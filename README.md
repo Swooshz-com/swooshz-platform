@@ -39,9 +39,11 @@ This repository now also includes the first executable TypeScript domain core fo
 
 ADR 0002 defines the provider-agnostic auth/session strategy: the platform owns sessions and app launch decisions, while a future auth provider proves identity only.
 
+ADR 0003 defines the persistence and migration strategy: platform account state should use relational persistence behind repository/service boundaries while the TypeScript domain core stays storage-agnostic.
+
 No Next.js, Vite, React, frontend shell, database migration, real auth provider, public signup, deployment, Supabase setup, Stripe setup, billing implementation, or secrets are part of this scaffold.
 
-The next likely platform PR should decide the provider selection or backend persistence boundary. Frontend shell work should still wait until those backend decisions are stable.
+The next likely platform PR should decide the database/provider tool choice or start the first persistence adapter behind the agreed boundary. Frontend shell work should still wait until those backend decisions are stable.
 
 ## First App Integration Target
 
@@ -56,4 +58,5 @@ The platform will eventually provide KQAG with platform-issued identity and work
 - `docs/kqag-integration-contract.md`
 - `docs/adr/0001-platform-accounts-first.md`
 - `docs/adr/0002-auth-session-strategy.md`
+- `docs/adr/0003-persistence-and-migrations.md`
 - `docs/roadmap.md`
