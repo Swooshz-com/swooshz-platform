@@ -45,11 +45,13 @@ Non-goals:
 
 ## Phase 2: Auth Provider Decision And Login Backend
 
-Goal: choose and implement the authentication backend boundary.
+Goal: choose and implement the authentication backend boundary after persistence direction is settled.
 
 Candidate deliverables:
 
 - Provider-agnostic auth/session strategy ADR.
+- Persistence and migration strategy ADR.
+- Database/provider/tooling selection decision.
 - Auth provider selection ADR or decision record.
 - Login callback/session handling.
 - Logout/session revocation.
@@ -62,6 +64,7 @@ Non-goals:
 - Public self-serve signup.
 - Customer portal.
 - Frontend shell before provider and persistence decisions are stable.
+- Database migrations before provider/tooling selection is approved.
 
 ## Phase 3: Minimal Admin/Internal Account Management
 
