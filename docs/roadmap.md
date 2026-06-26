@@ -49,7 +49,8 @@ Goal: choose and implement the authentication backend boundary.
 
 Candidate deliverables:
 
-- ADR for auth provider and session strategy.
+- Provider-agnostic auth/session strategy ADR.
+- Auth provider selection ADR or decision record.
 - Login callback/session handling.
 - Logout/session revocation.
 - Invitation acceptance path if compatible with selected auth provider.
@@ -60,6 +61,7 @@ Non-goals:
 - Email/password auth unless explicitly approved.
 - Public self-serve signup.
 - Customer portal.
+- Frontend shell before provider and persistence decisions are stable.
 
 ## Phase 3: Minimal Admin/Internal Account Management
 
