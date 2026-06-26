@@ -45,7 +45,7 @@ export interface DecideAppAccessInput {
   apps: readonly App[];
   entitlements: readonly AppEntitlement[];
   billingGate?: BillingGate;
-  now?: string;
+  now: string;
 }
 
 export interface AccessDecision {
@@ -157,13 +157,9 @@ function decision(result: AccessDecisionResult): AccessDecision {
   };
 }
 
-function isSessionUsable(session: Session, now?: string): boolean {
+function isSessionUsable(session: Session, now: string): boolean {
   if (session.revokedAt) {
     return false;
-  }
-
-  if (!now) {
-    return true;
   }
 
   return Date.parse(session.expiresAt) > Date.parse(now);

@@ -82,7 +82,12 @@ function baseFixture(overrides = {}) {
 
   return {
     appKey: "kqag",
-    session: overrides.session === undefined ? session : overrides.session,
+    session:
+      overrides.session === undefined
+        ? session
+        : overrides.session === null
+          ? null
+          : { ...session, ...overrides.session },
     user,
     selectedWorkspaceId:
       overrides.selectedWorkspaceId === undefined ? workspace.id : overrides.selectedWorkspaceId,
@@ -91,6 +96,7 @@ function baseFixture(overrides = {}) {
     apps: overrides.apps ?? [app],
     entitlements: overrides.entitlements ?? [entitlement],
     billingGate: overrides.billingGate,
+    now: overrides.now ?? now,
   };
 }
 
@@ -127,6 +133,34 @@ test("blocks KQAG for viewer role until a viewer adapter exists", () => {
 
 test("returns not_authenticated when no session exists", () => {
   assert.equal(resultFor({ session: null }).result, AccessDecisionResult.NotAuthenticated);
+});
+
+test("returns not_authenticated when session is expired", () => {
+  assert.equal(
+    resultFor({ session: { expiresAt: "2026-06-25T23:59:59.000Z" } }).result,
+    AccessDecisionResult.NotAuthenticated,
+  );
+});
+
+test("returns not_authenticated when session is revoked", () => {
+  assert.equal(
+    resultFor({ session: { revokedAt: "2026-06-26T00:00:00.000Z" } }).result,
+    AccessDecisionResult.NotAuthenticated,
+  );
+});
+
+test("returns not_authenticated when session user does not match the user", () => {
+  assert.equal(
+    resultFor({ session: { userId: "user_other_example" } }).result,
+    AccessDecisionResult.NotAuthenticated,
+  );
+});
+
+test("allows normal access when session is valid and unexpired", () => {
+  assert.equal(
+    resultFor({ session: { expiresAt: "2026-06-27T00:00:00.000Z" } }).result,
+    AccessDecisionResult.Allowed,
+  );
 });
 
 test("returns workspace_not_selected when no workspace is selected", () => {
