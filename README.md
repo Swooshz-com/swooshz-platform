@@ -26,16 +26,20 @@ The current priority is not a frontend shell. The current priority is to define 
 - Deployment, VPS, Coolify, DNS, TLS, or firewall setup in this initial contract PR.
 - Billing or credits implementation in this initial contract PR.
 
-## Current Priority
+## Current Implementation State
 
-Phase 0 is contract and architecture only:
+Phase 0 defined the contract and architecture:
 
 1. Define the account domain.
 2. Define workspace app access.
 3. Define the KQAG integration boundary.
 4. Record the decision to build accounts/workspaces/app access before UI.
 
-No Next.js, Vite, React, frontend shell, database migration, real auth provider, public signup, deployment, Supabase setup, Stripe setup, or secrets are part of this phase.
+This repository now also includes the first executable TypeScript domain core for account, workspace, membership, app entitlement, and app access decisions. It is intentionally pure domain code and unit tests only.
+
+No Next.js, Vite, React, frontend shell, database migration, real auth provider, public signup, deployment, Supabase setup, Stripe setup, billing implementation, or secrets are part of this scaffold.
+
+The next likely platform PR should decide the auth provider/session strategy or backend persistence boundary. Frontend shell work should still wait until those backend decisions are stable.
 
 ## First App Integration Target
 
