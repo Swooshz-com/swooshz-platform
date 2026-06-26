@@ -35,11 +35,13 @@ Phase 0 defined the contract and architecture:
 3. Define the KQAG integration boundary.
 4. Record the decision to build accounts/workspaces/app access before UI.
 
-This repository now also includes the first executable TypeScript domain core for account, workspace, membership, app entitlement, and app access decisions. It is intentionally pure domain code and unit tests only.
+This repository now also includes the first executable TypeScript domain core for account, workspace, membership, app entitlement, and app access decisions. It is intentionally pure domain code and unit tests only. GitHub Actions CI guards the TypeScript domain core on pull requests and `main` pushes.
+
+ADR 0002 defines the provider-agnostic auth/session strategy: the platform owns sessions and app launch decisions, while a future auth provider proves identity only.
 
 No Next.js, Vite, React, frontend shell, database migration, real auth provider, public signup, deployment, Supabase setup, Stripe setup, billing implementation, or secrets are part of this scaffold.
 
-The next likely platform PR should decide the auth provider/session strategy or backend persistence boundary. Frontend shell work should still wait until those backend decisions are stable.
+The next likely platform PR should decide the provider selection or backend persistence boundary. Frontend shell work should still wait until those backend decisions are stable.
 
 ## First App Integration Target
 
@@ -53,4 +55,5 @@ The platform will eventually provide KQAG with platform-issued identity and work
 - `docs/app-access-contract.md`
 - `docs/kqag-integration-contract.md`
 - `docs/adr/0001-platform-accounts-first.md`
+- `docs/adr/0002-auth-session-strategy.md`
 - `docs/roadmap.md`
