@@ -1,0 +1,134 @@
+# Platform Roadmap
+
+This roadmap sequences Swooshz Platform work so account and app-access scope is settled before frontend implementation.
+
+## Phase 0: Contracts And Architecture
+
+Goal: define the platform account and app-access contract.
+
+Deliverables:
+
+- `README.md` platform ownership boundary.
+- `docs/accounts-contract.md`.
+- `docs/app-access-contract.md`.
+- `docs/kqag-integration-contract.md`.
+- `docs/adr/0001-platform-accounts-first.md`.
+- Initial roadmap.
+
+Non-goals:
+
+- Frontend shell.
+- Real auth provider.
+- Database migrations.
+- Billing.
+- Deployment.
+- KQAG code changes.
+
+## Phase 1: Account/Workspace/App-Access Backend Scaffold
+
+Goal: create the backend model and service skeleton that implements the contracts.
+
+Candidate deliverables:
+
+- Entity definitions for user, workspace, membership, role, invitation, session, audit event, app, and entitlement.
+- Access decision service.
+- Privacy-safe error/result types.
+- Unit tests for invariants and app launch decisions.
+- Local-only seed or fixture data using synthetic values.
+
+Non-goals:
+
+- Public signup.
+- Billing.
+- Production auth provider integration.
+- Frontend shell.
+
+## Phase 2: Auth Provider Decision And Login Backend
+
+Goal: choose and implement the authentication backend boundary.
+
+Candidate deliverables:
+
+- ADR for auth provider and session strategy.
+- Login callback/session handling.
+- Logout/session revocation.
+- Invitation acceptance path if compatible with selected auth provider.
+- Tests for session, token, and provider-error privacy behavior.
+
+Non-goals:
+
+- Email/password auth unless explicitly approved.
+- Public self-serve signup.
+- Customer portal.
+
+## Phase 3: Minimal Admin/Internal Account Management
+
+Goal: allow internal administrators to manage workspaces, memberships, and app entitlements safely.
+
+Candidate deliverables:
+
+- Workspace create/update backend operations.
+- Membership and invitation backend operations.
+- App entitlement enable/disable backend operations.
+- Audit event recording.
+- Internal-only admin API or minimal admin surface as approved.
+
+Non-goals:
+
+- Full polished platform shell.
+- Public account settings.
+- Billing screens.
+
+## Phase 4: KQAG Integration
+
+Goal: connect platform identity and workspace access to KQAG through a defined adapter.
+
+Candidate deliverables:
+
+- KQAG launch context contract.
+- Signed launch token or backend exchange mechanism.
+- KQAG workspace-scoped runtime/session boundary.
+- Tests proving platform grants KQAG launch only for entitled workspaces and permitted roles.
+
+Non-goals:
+
+- Billing inside KQAG.
+- KQAG-owned users or workspaces.
+- Customer portal.
+
+## Phase 5: Platform Frontend Shell
+
+Goal: build the smallest useful frontend after backend contracts are stable.
+
+Candidate deliverables:
+
+- Login entry.
+- Workspace switcher.
+- App launcher.
+- Basic account/membership/admin surfaces.
+- KQAG launch entry point.
+
+Non-goals:
+
+- Marketing site.
+- Public SaaS onboarding.
+- Billing UI unless Phase 6 is approved.
+
+## Phase 6: Billing/Credits Later
+
+Goal: add commercial controls only if approved later.
+
+Candidate deliverables:
+
+- Billing/credits ADR.
+- Billing customer/subscription model.
+- Credit pool and transaction model.
+- Usage event contract.
+- Entitlement impact rules for billing status.
+
+Non-goals until approved:
+
+- Stripe integration.
+- Payment collection.
+- Pricing plans.
+- Customer billing portal.
