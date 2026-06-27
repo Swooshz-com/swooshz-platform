@@ -25,6 +25,10 @@ export type AuthProviderErrorCode =
   | "invalid_verified_identity"
   | "provider_verification_failed";
 
+export type AuthSessionErrorCode =
+  | "session_lookup_failed"
+  | "session_revocation_failed";
+
 export class AuthConfigError extends Error {
   readonly code: AuthConfigErrorCode;
   readonly publicMessage = "Authentication configuration is invalid.";
@@ -54,6 +58,17 @@ export class AuthProviderError extends Error {
   constructor(code: AuthProviderErrorCode, message: string) {
     super(message);
     this.name = "AuthProviderError";
+    this.code = code;
+  }
+}
+
+export class AuthSessionError extends Error {
+  readonly code: AuthSessionErrorCode;
+  readonly publicMessage = "Session operation could not be completed.";
+
+  constructor(code: AuthSessionErrorCode, message: string) {
+    super(message);
+    this.name = "AuthSessionError";
     this.code = code;
   }
 }

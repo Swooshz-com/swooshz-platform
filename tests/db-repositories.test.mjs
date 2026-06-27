@@ -82,6 +82,10 @@ const sessionRow = {
   revokedAt: null,
   metadata: { userAgentFamily: "synthetic" },
 };
+const revokedSessionRow = {
+  ...sessionRow,
+  revokedAt: updatedAt,
+};
 
 const auditEventRow = {
   id: "audit_event_example",
@@ -303,6 +307,7 @@ test("Drizzle repository create, update, and append methods return mapped record
     ]),
     updateRows: new Map([
       [schema.invitations, [{ ...invitationRow, status: "accepted" }]],
+      [schema.sessions, [revokedSessionRow]],
     ]),
   });
   const repositories = createDrizzlePlatformRepositories(fakeDb);
@@ -315,6 +320,10 @@ test("Drizzle repository create, update, and append methods return mapped record
   assert.deepEqual(
     await repositories.sessions.create(mapSessionRow(sessionRow)),
     mapSessionRow(sessionRow),
+  );
+  assert.deepEqual(
+    await repositories.sessions.revoke(sessionRow.id, updatedAt.toISOString()),
+    mapSessionRow(revokedSessionRow),
   );
   assert.deepEqual(
     await repositories.invitations.create(mapInvitationRow(invitationRow)),
@@ -343,6 +352,11 @@ test("Drizzle repository create, update, and append methods return mapped record
   assert.ok(sessionInsert);
   assert.equal("token" in sessionInsert.values, false);
   assert.equal("sessionSecret" in sessionInsert.values, false);
+  const sessionUpdate = fakeDb.calls.find(
+    (call) => call.operation === "update.set" && call.table === schema.sessions,
+  );
+  assert.ok(sessionUpdate);
+  assert.deepEqual(Object.keys(sessionUpdate.values), ["revokedAt"]);
 });
 
 test("pure domain and platform port modules do not import database adapter details", async () => {
