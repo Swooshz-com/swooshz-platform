@@ -2,6 +2,12 @@ import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from "node:
 import type { BillingGate } from "../access/decide-app-access.js";
 import type { SessionRevocationServiceDependencies } from "../auth/session-revocation-service.js";
 import type { PlatformRepositories } from "../platform/repositories.js";
+import {
+  handleAuthCallbackRequest,
+  handleAuthStartRequest,
+  type AuthCallbackHttpDependencies,
+  type AuthStartHttpDependencies,
+} from "./auth-handlers.js";
 import type { CsrfTokenValidator } from "./csrf.js";
 import type { CsrfTokenServiceDependencies } from "./csrf-token-service.js";
 import {
@@ -29,6 +35,8 @@ export interface NodePlatformHttpAdapterDependencies {
   csrfTokenValidator?: CsrfTokenValidator;
   csrfTokenIssuer?: CsrfTokenServiceDependencies;
   csrfTokenTtlSeconds?: number;
+  authStart?: AuthStartHttpDependencies;
+  authCallback?: AuthCallbackHttpDependencies;
   billingGate?: BillingGate;
 }
 
@@ -92,6 +100,37 @@ export async function handleNodePlatformHttpRequest(
       outcome: "ok",
       service: "swooshz-platform",
     });
+  }
+
+  if (route.id === "platform_auth_start") {
+    if (!dependencies.authStart) {
+      return authStartFailureResponse();
+    }
+
+    return toNodeResponse(
+      await handleAuthStartRequest(dependencies.authStart, {
+        now: dependencies.now(),
+      }),
+    );
+  }
+
+  if (route.id === "platform_auth_callback") {
+    if (!dependencies.authCallback) {
+      return authCallbackFailureResponse(500);
+    }
+
+    return toNodeResponse(
+      await handleAuthCallbackRequest(dependencies.authCallback, {
+        query: {
+          code: optionalSearchParam(parsedUrl, "code"),
+          state: optionalSearchParam(parsedUrl, "state"),
+          error: optionalSearchParam(parsedUrl, "error"),
+          error_description: optionalSearchParam(parsedUrl, "error_description"),
+        },
+        now: dependencies.now(),
+        cookie: dependencies.cookie,
+      }),
+    );
   }
 
   if (route.id === "platform_session_app_access") {
@@ -262,6 +301,20 @@ function csrfIssueFailureResponse(): NodePlatformHttpResponse {
   });
 }
 
+function authStartFailureResponse(): NodePlatformHttpResponse {
+  return jsonResponse(500, {
+    outcome: "error",
+    message: "Authentication start could not be completed.",
+  });
+}
+
+function authCallbackFailureResponse(status: 400 | 500): NodePlatformHttpResponse {
+  return jsonResponse(status, {
+    outcome: "error",
+    message: "Authentication callback could not be completed.",
+  });
+}
+
 function securityFailureResponse(
   status: 403 | 500,
   reason: string,
@@ -310,4 +363,8 @@ function readHeader(
   );
 
   return matchingKey ? headers[matchingKey] : undefined;
+}
+
+function optionalSearchParam(parsedUrl: URL, name: string): string | undefined {
+  return parsedUrl.searchParams.get(name) ?? undefined;
 }

@@ -1,5 +1,7 @@
 export type HttpRouteId =
   | "healthz"
+  | "platform_auth_start"
+  | "platform_auth_callback"
   | "platform_session_app_access"
   | "platform_session_csrf"
   | "platform_logout";
@@ -42,6 +44,34 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     requiredQuery: [],
     handlerContract: null,
     idempotent: true,
+    implemented: false,
+  },
+  {
+    id: "platform_auth_start",
+    method: "GET",
+    path: "/api/platform/auth/start",
+    browserSession: "none",
+    csrf: {
+      required: false,
+      strategy: "none",
+    },
+    requiredQuery: [],
+    handlerContract: "handleAuthStartRequest",
+    idempotent: false,
+    implemented: false,
+  },
+  {
+    id: "platform_auth_callback",
+    method: "GET",
+    path: "/api/platform/auth/callback",
+    browserSession: "none",
+    csrf: {
+      required: false,
+      strategy: "none",
+    },
+    requiredQuery: ["code", "state"],
+    handlerContract: "handleAuthCallbackRequest",
+    idempotent: false,
     implemented: false,
   },
   {

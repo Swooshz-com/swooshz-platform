@@ -12,6 +12,8 @@ test("route manifest includes only approved initial platform routes", () => {
     HTTP_ROUTE_CONTRACTS.map((route) => route.id),
     [
       "healthz",
+      "platform_auth_start",
+      "platform_auth_callback",
       "platform_session_app_access",
       "platform_session_csrf",
       "platform_logout",
@@ -21,6 +23,8 @@ test("route manifest includes only approved initial platform routes", () => {
     HTTP_ROUTE_CONTRACTS.map((route) => `${route.method} ${route.path}`),
     [
       "GET /healthz",
+      "GET /api/platform/auth/start",
+      "GET /api/platform/auth/callback",
       "GET /api/platform/session/app-access",
       "GET /api/platform/session/csrf",
       "POST /api/platform/logout",
@@ -39,6 +43,30 @@ test("state-changing browser-cookie routes require CSRF protection", () => {
     required: true,
     strategy: "origin_referer_and_csrf_token",
   });
+});
+
+test("auth start route is GET-only and does not require browser session or CSRF", () => {
+  const route = getHttpRouteContract("platform_auth_start");
+
+  assert.equal(route.method, "GET");
+  assert.equal(route.path, "/api/platform/auth/start");
+  assert.equal(route.browserSession, "none");
+  assert.equal(route.csrf.required, false);
+  assert.equal(route.csrf.strategy, "none");
+  assert.deepEqual(route.requiredQuery, []);
+  assert.equal(route.handlerContract, "handleAuthStartRequest");
+});
+
+test("auth callback route is GET-only and relies on OIDC state instead of generic CSRF", () => {
+  const route = getHttpRouteContract("platform_auth_callback");
+
+  assert.equal(route.method, "GET");
+  assert.equal(route.path, "/api/platform/auth/callback");
+  assert.equal(route.browserSession, "none");
+  assert.equal(route.csrf.required, false);
+  assert.equal(route.csrf.strategy, "none");
+  assert.deepEqual(route.requiredQuery, ["code", "state"]);
+  assert.equal(route.handlerContract, "handleAuthCallbackRequest");
 });
 
 test("protected app-access route requires browser session cookie and safe query inputs", () => {

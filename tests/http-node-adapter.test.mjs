@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   handleNodePlatformHttpRequest,
 } from "../dist/index.js";
+import { readAuthConfig } from "../dist/auth/index.js";
 import { createInMemoryPlatformRepositories } from "./helpers/in-memory-platform-repositories.mjs";
 
 const now = "2026-06-27T00:00:00.000Z";
@@ -17,8 +18,23 @@ const validCsrfToken = "csrf-token-valid-example";
 const issuedCsrfToken = "issued-csrf-token-reference";
 const issuedCsrfTokenHash = "hash_issued_csrf_token_reference";
 const csrfExpiresAt = "2026-06-27T00:15:00.000Z";
+const authState = "synthetic-browser-state-reference";
+const authNonce = "synthetic-browser-nonce-reference";
+const authStateHash = "hash_synthetic_browser_state_reference";
+const authNonceHash = "hash_synthetic_browser_nonce_reference";
+const providerAuthorizationUrl =
+  "https://auth.example.invalid/oauth2/authorize?request=synthetic-authorization";
 const privateUrl =
   "https://private.example.test/path?csrf=raw-csrf-token&db=postgresql://private-host";
+const authConfig = readAuthConfig({
+  AUTH_PROVIDER_KEY: "Example-OIDC",
+  AUTH_AUTHORIZATION_URL: "https://auth.example.invalid/oauth2/authorize",
+  AUTH_TOKEN_URL: "https://auth.example.invalid/oauth2/token",
+  AUTH_CLIENT_ID: "synthetic-client-id",
+  AUTH_CLIENT_SECRET: "synthetic-client-secret-value",
+  AUTH_REDIRECT_URI: "https://platform.example.invalid/api/platform/auth/callback",
+  SESSION_SECRET: "synthetic-session-secret-value-32",
+});
 
 test("GET /healthz returns 200 safe JSON without platform repositories", async () => {
   const { response, body } = await request({
@@ -167,6 +183,92 @@ test("CSRF issuance route returns safe 405 for wrong method", async () => {
   });
   assert.equal(fixture.calls.csrfTokenCreate, 0);
   assertResponseIsPrivacySafe(response);
+});
+
+test("auth start route redirects to provider and stores only state references", async () => {
+  const fixture = createAdapterFixture();
+  const { response, body } = await request({
+    method: "GET",
+    url: "/api/platform/auth/start",
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 302);
+  assert.equal(response.headers.location, providerAuthorizationUrl);
+  assert.deepEqual(body, { outcome: "redirecting" });
+  assert.equal(fixture.calls.authStateStore, 1);
+  assert.deepEqual(fixture.records.authStates[0], {
+    providerKey: "example-oidc",
+    stateHash: authStateHash,
+    nonceHash: authNonceHash,
+    redirectUri: "https://platform.example.invalid/api/platform/auth/callback",
+    createdAt: now,
+    expiresAt: "2026-06-27T00:10:00.000Z",
+  });
+  assert.doesNotMatch(JSON.stringify(fixture.records.authStates), /synthetic-browser-state-reference/);
+  assert.doesNotMatch(JSON.stringify(fixture.records.authStates), /synthetic-browser-nonce-reference/);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("auth callback route sets a browser session cookie on success", async () => {
+  const fixture = createAdapterFixture();
+  const { response, body } = await request({
+    method: "GET",
+    url: `/api/platform/auth/callback?code=synthetic-auth-code&state=${authState}`,
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 302);
+  assert.equal(response.headers.location, "/app");
+  assert.match(response.headers["set-cookie"], /^swooshz_session=session_auth_callback_1;/);
+  assert.match(response.headers["set-cookie"], /HttpOnly/);
+  assert.match(response.headers["set-cookie"], /SameSite=Lax/);
+  assert.match(response.headers["set-cookie"], /Secure/);
+  assert.deepEqual(body, { outcome: "authenticated" });
+  assert.equal(fixture.calls.authStateConsume, 1);
+  assert.equal(fixture.calls.authTokenExchange, 1);
+  assert.doesNotMatch(JSON.stringify(body), /session_auth_callback_1/);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("auth callback missing code or state returns safe error", async () => {
+  const fixture = createAdapterFixture();
+  const { response, body } = await request({
+    method: "GET",
+    url: `/api/platform/auth/callback?state=${authState}`,
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(body, {
+    outcome: "error",
+    message: "Authentication callback could not be completed.",
+  });
+  assert.equal(response.headers["set-cookie"], undefined);
+  assert.equal(fixture.calls.authTokenExchange, 0);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("auth route wrong methods return safe 405 responses", async () => {
+  const start = await request({
+    method: "POST",
+    url: "/api/platform/auth/start",
+  });
+  const callback = await request({
+    method: "POST",
+    url: "/api/platform/auth/callback?code=synthetic-auth-code&state=synthetic-state",
+  });
+
+  assert.equal(start.response.statusCode, 405);
+  assert.equal(start.response.headers.allow, "GET");
+  assert.deepEqual(start.body, {
+    outcome: "error",
+    message: "Method not allowed.",
+  });
+  assert.equal(callback.response.statusCode, 405);
+  assert.equal(callback.response.headers.allow, "GET");
+  assertResponseIsPrivacySafe(start.response);
+  assertResponseIsPrivacySafe(callback.response);
 });
 
 test("logout POST validates request security before revocation", async () => {
@@ -408,6 +510,7 @@ function createAdapterFixture(overrides = {}) {
     ],
     auditEvents: [],
     csrfTokens: [],
+    authStates: [],
   };
   const repositories = createInMemoryPlatformRepositories(records);
   const calls = instrumentRepositories(repositories);
@@ -460,6 +563,68 @@ function createAdapterFixture(overrides = {}) {
         return { valid: overrides.csrfValid !== false };
       },
     },
+    authStart: {
+      authConfig,
+      oidcAdapter: createAuthOidcAdapter(calls, overrides),
+      stateStore: {
+        async storeState(record) {
+          calls.authStateStore += 1;
+          records.authStates.push(record);
+          return record;
+        },
+      },
+      stateFactory: {
+        createState() {
+          return authState;
+        },
+      },
+      nonceFactory: {
+        createNonce() {
+          return authNonce;
+        },
+      },
+      stateReferenceFactory(value) {
+        return hashAuthReference(value);
+      },
+      ttlSeconds: 600,
+    },
+    authCallback: {
+      authConfig,
+      oidcAdapter: createAuthOidcAdapter(calls, overrides),
+      stateStore: {
+        async consumeState(input) {
+          calls.authStateConsume += 1;
+          assert.equal(input.stateHash, authStateHash);
+          return {
+            providerKey: "example-oidc",
+            stateHash: authStateHash,
+            nonceHash: authNonceHash,
+            redirectUri: "https://platform.example.invalid/api/platform/auth/callback",
+            createdAt: earlier,
+            expiresAt: future,
+          };
+        },
+      },
+      stateReferenceFactory(value) {
+        return hashAuthReference(value);
+      },
+      platformIdentityResolver: {
+        async resolveAuthenticatedIdentity(input) {
+          return {
+            platformUserId: "user_owner_example",
+            providerIdentityId: "provider_identity_auth_callback_1",
+            session: {
+              id: "session_auth_callback_1",
+              userId: "user_owner_example",
+              createdAt: input.now,
+              expiresAt: future,
+              lastSeenAt: input.now,
+              revokedAt: null,
+            },
+          };
+        },
+      },
+    },
   };
 
   return { records, repositories, calls, dependencies };
@@ -472,6 +637,9 @@ function instrumentRepositories(repositories) {
     sessionsRevoke: 0,
     csrfValidate: 0,
     csrfTokenCreate: 0,
+    authStateStore: 0,
+    authStateConsume: 0,
+    authTokenExchange: 0,
   };
 
   const originalFindById = repositories.sessions.findById.bind(repositories.sessions);
@@ -489,6 +657,51 @@ function instrumentRepositories(repositories) {
   };
 
   return calls;
+}
+
+function createAuthOidcAdapter(calls, overrides) {
+  return {
+    async buildAuthorizationUrl(input) {
+      assert.equal(input.state, authState);
+      assert.equal(input.nonce, authNonce);
+      return { url: providerAuthorizationUrl };
+    },
+    async exchangeCodeForTokens(input) {
+      calls.authTokenExchange += 1;
+
+      if (overrides.authProviderFails) {
+        throw new Error("provider exploded synthetic-auth-code raw-claim postgresql://private-host");
+      }
+
+      assert.equal(input.code, "synthetic-auth-code");
+      return {
+        providerKey: input.providerKey,
+        receivedAt: input.now,
+        tokenSetRef: "adapter_internal",
+      };
+    },
+    async verifyTokens() {
+      return {
+        providerKey: "example-oidc",
+        providerSubject: "provider-subject-123",
+        verifiedEmail: "owner@example.com",
+        displayName: "Synthetic Owner",
+        metadata: { emailVerified: true },
+      };
+    },
+  };
+}
+
+function hashAuthReference(value) {
+  if (value === authState) {
+    return authStateHash;
+  }
+
+  if (value === authNonce) {
+    return authNonceHash;
+  }
+
+  return "hash_unknown_reference";
 }
 
 function logoutHeaders({ csrfToken = validCsrfToken } = {}) {
@@ -521,8 +734,10 @@ function assertResponseIsPrivacySafe(response) {
 
   assert.doesNotMatch(serialized, /raw-session-token|session-secret|provider-token/i);
   assert.doesNotMatch(serialized, /raw-csrf-token|csrf-secret|auth-code|raw-claim/i);
+  assert.doesNotMatch(serialized, /synthetic-auth-code|synthetic-browser-state-reference/i);
+  assert.doesNotMatch(serialized, /synthetic-browser-nonce-reference|synthetic-client-secret/i);
   assert.doesNotMatch(serialized, /postgresql:\/\/private-host|select \*|database exploded/i);
-  assert.doesNotMatch(serialized, /private\.example\.test|\/path\?|callback/i);
+  assert.doesNotMatch(serialized, /private\.example\.test|\/path\?/i);
   assert.doesNotMatch(
     serialized,
     new RegExp(`${"logo"}_${"data"}_${"url"}|${"data"}:${"image"}|pricing|quote export`, "i"),

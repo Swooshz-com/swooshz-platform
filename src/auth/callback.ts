@@ -36,6 +36,10 @@ export interface AuthStateStore {
   consumeState(input: AuthStateLookupInput): Promise<StoredAuthState | null>;
 }
 
+export interface AuthStateIssueStore {
+  storeState(input: StoredAuthStateInput): Promise<StoredAuthState>;
+}
+
 export interface AuthStateLookupInput {
   providerKey: string;
   stateHash: string;
