@@ -126,6 +126,14 @@ export function createDrizzlePlatformRepositories(
         const rows = await db.insert(sessions).values(sessionToValues(session)).returning();
         return mapOneRequired(rows[0], mapSessionRow);
       },
+      async revoke(id, revokedAt) {
+        const rows = await db
+          .update(sessions)
+          .set({ revokedAt: toDate(revokedAt) })
+          .where(eq(sessions.id, id))
+          .returning();
+        return mapOne(rows[0], mapSessionRow);
+      },
     },
     workspaces: {
       async findById(id) {

@@ -4,3 +4,4 @@ export * from "./config.js";
 export * from "./errors.js";
 export * from "./oidc.js";
 export * from "./platform-identity-resolver.js";
+export * from "./session-revocation-service.js";

@@ -63,7 +63,8 @@ Candidate deliverables:
 - Provider-agnostic OIDC adapter interface.
 - Auth callback service skeleton using a fake adapter and storage-agnostic service ports.
 - Platform session creation through repository boundaries.
-- Logout/session revocation contract.
+- Storage-agnostic session revocation service.
+- HTTP logout route after cookie/session handling is separately approved.
 - Minimal protected session or app-access decision endpoint after session persistence is stable.
 - Login callback/session handling after HTTP routes and real provider verification are separately approved.
 - Invitation acceptance path if compatible with selected auth provider.

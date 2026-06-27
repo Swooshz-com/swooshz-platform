@@ -48,6 +48,16 @@ export function createInMemoryPlatformRepositories(records = {}) {
         sessions.push(session);
         return session;
       },
+      async revoke(id, revokedAt) {
+        const session = sessions.find((candidate) => candidate.id === id);
+
+        if (!session) {
+          return null;
+        }
+
+        session.revokedAt = revokedAt;
+        return session;
+      },
     },
     workspaces: {
       async findById(id) {

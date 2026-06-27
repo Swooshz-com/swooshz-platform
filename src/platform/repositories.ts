@@ -48,6 +48,7 @@ export interface ProviderIdentityRepository {
 export interface SessionRepository {
   findById(id: string): Promise<Session | null>;
   create(session: Session): Promise<Session>;
+  revoke(id: string, revokedAt: IsoTimestamp): Promise<Session | null>;
 }
 
 export interface WorkspaceRepository {
