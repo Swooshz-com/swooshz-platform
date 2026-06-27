@@ -35,11 +35,14 @@ import {
 import type {
   AuditEvent,
   InvitationStatus,
+  Session,
+  User,
 } from "../accounts/types.js";
 import type {
   InvitationRecord,
   InvitationStatusTimestamps,
   PlatformRepositories,
+  ProviderIdentity,
 } from "../platform/repositories.js";
 
 type Table = unknown;
@@ -81,6 +84,10 @@ export function createDrizzlePlatformRepositories(
       async findByNormalizedEmail(email) {
         return mapOne(await selectOne(db, users, eq(users.email, email)), mapUserRow);
       },
+      async create(user) {
+        const rows = await db.insert(users).values(userToValues(user)).returning();
+        return mapOneRequired(rows[0], mapUserRow);
+      },
     },
     providerIdentities: {
       async findByProviderSubject(providerKey, providerSubject) {
@@ -103,10 +110,21 @@ export function createDrizzlePlatformRepositories(
           .where(eq(providerIdentities.userId, userId));
         return rows.map((row) => mapProviderIdentityRow(row as unknown as ProviderIdentityRow));
       },
+      async create(identity) {
+        const rows = await db
+          .insert(providerIdentities)
+          .values(providerIdentityToValues(identity))
+          .returning();
+        return mapOneRequired(rows[0], mapProviderIdentityRow);
+      },
     },
     sessions: {
       async findById(id) {
         return mapOne(await selectOne(db, sessions, eq(sessions.id, id)), mapSessionRow);
+      },
+      async create(session) {
+        const rows = await db.insert(sessions).values(sessionToValues(session)).returning();
+        return mapOneRequired(rows[0], mapSessionRow);
       },
     },
     workspaces: {
@@ -216,6 +234,40 @@ function mapOneRequired<T, RowType>(
   }
 
   return mapper(row as unknown as RowType);
+}
+
+function userToValues(user: User): Row {
+  return {
+    id: user.id,
+    email: user.email,
+    displayName: user.displayName,
+    status: user.status,
+    createdAt: toDate(user.createdAt),
+    updatedAt: toDate(user.updatedAt),
+    lastLoginAt: toDate(user.lastLoginAt),
+  };
+}
+
+function providerIdentityToValues(identity: ProviderIdentity): Row {
+  return {
+    id: identity.id,
+    userId: identity.userId,
+    providerKey: identity.providerKey,
+    providerSubject: identity.providerSubject,
+    createdAt: toDate(identity.createdAt),
+    updatedAt: toDate(identity.updatedAt),
+  };
+}
+
+function sessionToValues(session: Session): Row {
+  return {
+    id: session.id,
+    userId: session.userId,
+    createdAt: toDate(session.createdAt),
+    expiresAt: toDate(session.expiresAt),
+    lastSeenAt: toDate(session.lastSeenAt),
+    revokedAt: toDate(session.revokedAt),
+  };
 }
 
 function invitationToValues(invitation: InvitationRecord): Row {

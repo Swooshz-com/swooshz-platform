@@ -17,7 +17,9 @@ export type AuthCallbackErrorCode =
   | "domain_not_allowed"
   | "verified_email_required"
   | "provider_identity_link_failed"
-  | "session_creation_failed";
+  | "session_creation_failed"
+  | "user_not_active"
+  | "invalid_platform_identity_state";
 
 export type AuthProviderErrorCode =
   | "invalid_verified_identity"

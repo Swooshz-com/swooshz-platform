@@ -1,5 +1,6 @@
 export function createInMemoryPlatformRepositories(records = {}) {
   const users = records.users ?? [];
+  const providerIdentities = records.providerIdentities ?? [];
   const sessions = records.sessions ?? [];
   const workspaces = records.workspaces ?? [];
   const memberships = records.memberships ?? [];
@@ -16,10 +17,36 @@ export function createInMemoryPlatformRepositories(records = {}) {
       async findByNormalizedEmail(email) {
         return users.find((user) => user.email === email) ?? null;
       },
+      async create(user) {
+        users.push(user);
+        return user;
+      },
+    },
+    providerIdentities: {
+      async findByProviderSubject(providerKey, providerSubject) {
+        return (
+          providerIdentities.find(
+            (identity) =>
+              identity.providerKey === providerKey &&
+              identity.providerSubject === providerSubject,
+          ) ?? null
+        );
+      },
+      async listForUser(userId) {
+        return providerIdentities.filter((identity) => identity.userId === userId);
+      },
+      async create(identity) {
+        providerIdentities.push(identity);
+        return identity;
+      },
     },
     sessions: {
       async findById(id) {
         return sessions.find((session) => session.id === id) ?? null;
+      },
+      async create(session) {
+        sessions.push(session);
+        return session;
       },
     },
     workspaces: {

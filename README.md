@@ -55,11 +55,11 @@ ADR 0006 selects the auth provider strategy: start with a provider-agnostic OIDC
 
 The repo now includes the first auth foundation layer: environment/config parsing, provider-agnostic OIDC adapter contracts, callback parameter/state contracts, a DB-free callback service skeleton, and privacy-safe auth error types. These are contract-driven modules only. They do not perform real login route handling, logout, provider network calls, real token exchange, cookie issuance, DB writes, or frontend work.
 
-The auth callback service skeleton consumes stored auth state by hash/reference, delegates provider exchange and identity verification to an injected OIDC adapter, applies configured email/domain allowlists, and returns a safe platform identity plus session-creation intent through a storage-agnostic resolver port. Workspace membership and app access remain separate platform decisions.
+The auth callback service consumes stored auth state by hash/reference, delegates provider exchange and identity verification to an injected OIDC adapter, applies configured email/domain allowlists, and now persists platform sessions through storage-agnostic repository ports. It resolves provider identity by provider key plus provider subject, creates or links platform users only through repository boundaries, and returns a safe platform identity plus persisted session record. Workspace membership and app access remain separate platform decisions.
 
 No Next.js, Vite, React, frontend shell, real auth provider, public signup, database provisioning, deployment, Supabase setup, Stripe setup, billing implementation, KQAG adapter, or secrets are part of this scaffold.
 
-The next likely platform PR should add platform session creation persistence through repository boundaries, define logout/session revocation, or add a minimal protected app-access/launch-decision endpoint after session creation is stable. Frontend shell work should still wait until backend auth, session, persistence, and app-access boundaries are stable.
+The next likely platform PR should define logout/session revocation or add a minimal protected session/app-access decision endpoint after session creation is stable. Frontend shell work should still wait until backend auth, session, persistence, and app-access boundaries are stable.
 
 ## First App Integration Target
 

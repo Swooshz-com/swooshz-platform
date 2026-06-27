@@ -33,6 +33,7 @@ export interface InvitationStatusTimestamps {
 export interface UserRepository {
   findById(id: string): Promise<User | null>;
   findByNormalizedEmail(email: string): Promise<User | null>;
+  create(user: User): Promise<User>;
 }
 
 export interface ProviderIdentityRepository {
@@ -41,10 +42,12 @@ export interface ProviderIdentityRepository {
     providerSubject: string,
   ): Promise<ProviderIdentity | null>;
   listForUser(userId: string): Promise<readonly ProviderIdentity[]>;
+  create(identity: ProviderIdentity): Promise<ProviderIdentity>;
 }
 
 export interface SessionRepository {
   findById(id: string): Promise<Session | null>;
+  create(session: Session): Promise<Session>;
 }
 
 export interface WorkspaceRepository {
