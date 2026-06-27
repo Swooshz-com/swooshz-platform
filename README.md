@@ -63,9 +63,11 @@ The repo also includes a protected app-access decision service. It accepts a pla
 
 The repo now includes framework-agnostic browser session cookie helpers and plain-object HTTP handler contracts for protected app-access decisions and logout. These contracts parse only platform session references from cookies, build secure default `Set-Cookie` headers, clear session cookies for logout, and return privacy-safe response bodies. They do not wire a real HTTP server, framework route, CSRF middleware, frontend, or KQAG adapter.
 
+ADR 0007 defines the HTTP transport and CSRF strategy: keep handlers framework-agnostic for now, use the route manifest as the next wiring contract, require `SameSite=Lax` cookies with `Secure` in production, and require Origin/Referer validation plus a CSRF token strategy for future state-changing browser-cookie routes.
+
 No Next.js, Vite, React, frontend shell, real auth provider, public signup, database provisioning, deployment, Supabase setup, Stripe setup, billing implementation, KQAG adapter, or secrets are part of this scaffold.
 
-The next likely platform PR should define real HTTP route wiring only after the framework/server boundary and CSRF posture are separately approved. Frontend shell work should still wait until backend auth, session, persistence, and app-access boundaries are stable.
+The next likely platform PR should wire the first real HTTP adapter only if it preserves the ADR 0007 route and CSRF posture. Frontend shell work should still wait until backend auth, session, persistence, and app-access boundaries are stable.
 
 ## First App Integration Target
 
@@ -84,4 +86,5 @@ The platform will eventually provide KQAG with platform-issued identity and work
 - `docs/adr/0004-database-tooling-selection.md`
 - `docs/adr/0005-database-connection-and-migration-execution.md`
 - `docs/adr/0006-auth-provider-selection.md`
+- `docs/adr/0007-http-transport-and-csrf-strategy.md`
 - `docs/roadmap.md`
