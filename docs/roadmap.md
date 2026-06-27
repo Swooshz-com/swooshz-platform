@@ -57,6 +57,7 @@ Candidate deliverables:
 - Drizzle-backed repository adapters around the database scaffold.
 - Database connection and migration execution workflow decision.
 - Database connection and explicit migration execution implementation.
+- Database provisioning or DB integration-test workflow if separately approved.
 - Auth provider selection ADR or decision record.
 - Login callback/session handling.
 - Logout/session revocation.

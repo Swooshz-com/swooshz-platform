@@ -43,17 +43,17 @@ ADR 0003 defines the persistence and migration strategy: platform account state 
 
 ADR 0004 selects Postgres-compatible persistence with Drizzle ORM and Drizzle Kit as the preferred future TypeScript schema/migration tooling, while deferring the managed database provider.
 
-The repo now includes the first Drizzle/Postgres database scaffold: schema definitions, Drizzle config, and a generated initial SQL migration for review. It does not connect to a real database yet.
+The repo now includes the first Drizzle/Postgres database scaffold: schema definitions, Drizzle config, and a generated initial SQL migration for review.
 
-The repo also includes storage-agnostic repository and service ports for loading platform account, workspace, session, app, and entitlement records before delegating app launch decisions to the pure domain core. These ports do not implement a real database adapter yet, and the pure domain core remains independent of Drizzle and persistence details.
+The repo also includes storage-agnostic repository and service ports for loading platform account, workspace, session, app, and entitlement records before delegating app launch decisions to the pure domain core. The pure domain core remains independent of Drizzle and persistence details.
 
-The first Drizzle-backed repository adapters now map database rows to plain platform/domain records behind those ports. They are adapter implementations only: no real database connection, `pg` client, database provisioning, or migration execution workflow exists yet.
+The first Drizzle-backed repository adapters now map database rows to plain platform/domain records behind those ports.
 
-ADR 0005 defines the future database connection and migration execution workflow: use Drizzle with `pg` when real connection code is added, keep `DATABASE_URL` out of the repo, keep default CI DB-free, and require deliberate operator-controlled migration execution. This repository still does not connect to a database.
+ADR 0005 defines the database connection and migration execution workflow. The repo now has a lazy `pg`/Drizzle client boundary and explicit `npm run db:migrate` command. `DATABASE_URL` is required for live connection or migration execution, no populated `.env` is committed, migrations do not run automatically, and default CI plus `npm test` remain DB-free.
 
-No Next.js, Vite, React, frontend shell, real auth provider, public signup, deployment, Supabase setup, Stripe setup, billing implementation, KQAG adapter, or secrets are part of this scaffold.
+No Next.js, Vite, React, frontend shell, real auth provider, public signup, database provisioning, deployment, Supabase setup, Stripe setup, billing implementation, KQAG adapter, or secrets are part of this scaffold.
 
-The next likely platform PR should implement the database connection/migration execution workflow or decide the auth provider. Generated migrations remain review-only until an explicit database execution implementation exists. Frontend shell work should still wait until those backend decisions are stable.
+The next likely platform PR should decide the auth provider or add a separately approved database provisioning/integration-test workflow. Frontend shell work should still wait until those backend decisions are stable.
 
 ## First App Integration Target
 
