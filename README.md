@@ -53,11 +53,13 @@ ADR 0005 defines the database connection and migration execution workflow. The r
 
 ADR 0006 selects the auth provider strategy: start with a provider-agnostic OIDC adapter boundary. The auth provider proves identity only; Swooshz Platform continues to own users, provider identities, platform sessions, workspace membership, invitations, audit events, app entitlements, and app access decisions. No auth implementation exists yet.
 
-The repo now includes the first auth foundation layer: environment/config parsing, provider-agnostic OIDC adapter contracts, callback parameter/state contracts, and privacy-safe auth error types. These are DB-free contract modules only. They do not perform login, callback handling, logout, provider network calls, token exchange, cookie issuance, DB writes, or frontend work.
+The repo now includes the first auth foundation layer: environment/config parsing, provider-agnostic OIDC adapter contracts, callback parameter/state contracts, a DB-free callback service skeleton, and privacy-safe auth error types. These are contract-driven modules only. They do not perform real login route handling, logout, provider network calls, real token exchange, cookie issuance, DB writes, or frontend work.
+
+The auth callback service skeleton consumes stored auth state by hash/reference, delegates provider exchange and identity verification to an injected OIDC adapter, applies configured email/domain allowlists, and returns a safe platform identity plus session-creation intent through a storage-agnostic resolver port. Workspace membership and app access remain separate platform decisions.
 
 No Next.js, Vite, React, frontend shell, real auth provider, public signup, database provisioning, deployment, Supabase setup, Stripe setup, billing implementation, KQAG adapter, or secrets are part of this scaffold.
 
-The next likely platform PR should add an auth callback service skeleton using a fake OIDC adapter and repository contracts, or add a separately approved auth state/session contract. Frontend shell work should still wait until backend auth, session, persistence, and app-access boundaries are stable.
+The next likely platform PR should add platform session creation persistence through repository boundaries, define logout/session revocation, or add a minimal protected app-access/launch-decision endpoint after session creation is stable. Frontend shell work should still wait until backend auth, session, persistence, and app-access boundaries are stable.
 
 ## First App Integration Target
 
