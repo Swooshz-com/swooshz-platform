@@ -75,9 +75,11 @@ The repo now includes storage-agnostic CSRF token lifecycle contracts, a framewo
 
 The repo now includes an explicit runtime dependency composition contract for the approved Node HTTP adapter/server. It assembles Drizzle platform repositories, the Drizzle CSRF token repository, secure CSRF token factory/hash adapters, the repository-backed CSRF validator, CSRF issuer dependencies, cookie config, and origin config from injected inputs. It requires an injected `CSRF_TOKEN_HASH_SECRET`-style secret config and does not listen, connect, run migrations, invoke auth providers, or call KQAG by itself.
 
+The repo now includes explicit Node bootstrap wiring for the approved platform routes. The bootstrap reads runtime config and secret config from injected environment values, creates the database client through the existing DB boundary only when `start()` is called, composes platform runtime dependencies, creates the Node server, and exposes explicit `start()`/`stop()` lifecycle methods. Importing or creating the bootstrap object does not start a server, run migrations, or invoke provider/KQAG flows.
+
 No Next.js, Vite, React, frontend shell, real auth provider, public signup, database provisioning, deployment, Supabase setup, Stripe setup, billing implementation, KQAG adapter, or secrets are part of this scaffold.
 
-The next likely platform PR should define explicit live bootstrap wiring, real auth route implementation, or logout route hardening before broadening browser routes. Frontend shell work should still wait until backend auth, session, persistence, CSRF, and app-access boundaries are stable.
+The next likely platform PR should define real auth route implementation, logout route hardening, or deployment/runtime operation notes before broadening browser routes. Frontend shell work should still wait until backend auth, session, persistence, CSRF, and app-access boundaries are stable.
 
 ## First App Integration Target
 
