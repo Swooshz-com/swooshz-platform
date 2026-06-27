@@ -22,6 +22,8 @@ Future real HTTP adapters must call `validateHttpRequestSecurityForRoute` before
 
 CSRF token lifecycle logic is now defined behind injected token factory, token hash, and repository boundaries. The service stores only token hashes and metadata; raw tokens may be returned only by issuance responses for an active browser session. CSRF issuance responses set `Cache-Control: no-store, no-cache, must-revalidate`, `Pragma: no-cache`, and `Expires: 0`. Real secure token generation and HMAC hashing adapters exist, and the Drizzle repository adapter stores only token hashes. Live dependency composition and database execution remain deferred.
 
+Runtime dependency composition now lives under `src/runtime`. It assembles the approved Node adapter dependency object from an injected Drizzle database object, runtime config, a CSRF hash secret config, a deterministic `now` factory, and an injected CSRF token id factory. This composition does not create a DB connection, run migrations, listen on a port, read provider config, or call KQAG.
+
 The Node adapter does not create or listen on a server. It keeps routing limited to the approved manifest, delegates app-access and logout behaviour to existing handlers, and calls `validateHttpRequestSecurityForRoute` before logout.
 
 The Node server factory does not listen on import and does not create live repositories. Production runtime config requires secure cookies, a valid public base URL, and explicit allowed origins. It does not require `DATABASE_URL` or auth provider configuration.
