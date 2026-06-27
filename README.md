@@ -65,9 +65,11 @@ The repo now includes framework-agnostic browser session cookie helpers and plai
 
 ADR 0007 defines the HTTP transport and CSRF strategy: keep handlers framework-agnostic for now, use the route manifest as the next wiring contract, require `SameSite=Lax` cookies with `Secure` in production, and require Origin/Referer validation plus a CSRF token strategy for future state-changing browser-cookie routes.
 
+The HTTP scaffold now includes framework-agnostic Origin/Referer validation, CSRF token validation contracts, and a combined route-aware request security helper. These helpers prepare the logout route and future state-changing browser-cookie routes for real wiring, but do not generate or store CSRF tokens and do not add middleware or a real server.
+
 No Next.js, Vite, React, frontend shell, real auth provider, public signup, database provisioning, deployment, Supabase setup, Stripe setup, billing implementation, KQAG adapter, or secrets are part of this scaffold.
 
-The next likely platform PR should wire the first real HTTP adapter only if it preserves the ADR 0007 route and CSRF posture. Frontend shell work should still wait until backend auth, session, persistence, and app-access boundaries are stable.
+The next likely platform PR should wire the first real HTTP adapter only if it calls the route-aware request security helper before state-changing browser-cookie handlers. Frontend shell work should still wait until backend auth, session, persistence, and app-access boundaries are stable.
 
 ## First App Integration Target
 
