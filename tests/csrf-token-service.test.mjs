@@ -93,6 +93,49 @@ test("issue service handles repository create failure safely", async () => {
   );
 });
 
+test("issue service rejects invalid now and ttlSeconds safely", async () => {
+  const invalidInputs = [
+    { now: "not-a-date synthetic-csrf-token-reference", ttlSeconds: 900 },
+    { now, ttlSeconds: 0 },
+    { now, ttlSeconds: -1 },
+    { now, ttlSeconds: Number.POSITIVE_INFINITY },
+    { now, ttlSeconds: Number.NaN },
+  ];
+
+  for (const invalidInput of invalidInputs) {
+    const fixture = csrfFixture();
+
+    await assert.rejects(
+      () => issueCsrfTokenForSession(fixture.dependencies, issueInput(invalidInput)),
+      assertPrivacySafeError("invalid_expiry"),
+    );
+    assert.equal(fixture.records.length, 0);
+  }
+});
+
+test("issue service handles id factory failure safely", async () => {
+  const fixture = csrfFixture({ failId: true });
+
+  await assert.rejects(
+    () => issueCsrfTokenForSession(fixture.dependencies, issueInput()),
+    assertPrivacySafeError("token_store_failed"),
+  );
+});
+
+test("issue service rejects blank token and blank hash safely", async () => {
+  const blankToken = csrfFixture({ blankToken: true });
+  const blankHash = csrfFixture({ blankHash: true });
+
+  await assert.rejects(
+    () => issueCsrfTokenForSession(blankToken.dependencies, issueInput()),
+    assertPrivacySafeError("token_factory_failed"),
+  );
+  await assert.rejects(
+    () => issueCsrfTokenForSession(blankHash.dependencies, issueInput()),
+    assertPrivacySafeError("token_hash_failed"),
+  );
+});
+
 test("repository-backed validator accepts valid token for same session", async () => {
   const fixture = csrfFixture({
     records: [tokenRecord()],
@@ -285,6 +328,9 @@ test("CSRF lifecycle modules do not use Math.random or weak token generation", a
   const files = [
     "src/http/csrf-token-repositories.ts",
     "src/http/csrf-token-service.ts",
+    "src/http/handlers.ts",
+    "src/http/node-adapter.ts",
+    "src/http/route-contracts.ts",
   ];
 
   for (const filePath of files) {
@@ -335,6 +381,10 @@ function csrfFixture(options = {}) {
           throw new Error(privateFailure);
         }
 
+        if (options.blankToken) {
+          return "   ";
+        }
+
         return rawToken;
       },
     },
@@ -346,11 +396,19 @@ function csrfFixture(options = {}) {
         }
 
         assert.equal(token, rawToken);
+        if (options.blankHash) {
+          return "   ";
+        }
+
         return tokenHash;
       },
     },
     idFactory: {
       createId() {
+        if (options.failId) {
+          throw new Error(privateFailure);
+        }
+
         return `csrf_record_${records.length + 1}`;
       },
     },

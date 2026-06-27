@@ -4,6 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  handleCsrfTokenIssueRequest,
   handleLogoutRequest,
   handleProtectedAppAccessRequest,
 } from "../dist/index.js";
@@ -15,6 +16,9 @@ const future = "2026-06-27T01:00:00.000Z";
 const past = "2026-06-26T22:00:00.000Z";
 const privateStorageError =
   "database exploded postgresql://private-host raw-session-token SQL select *";
+const issuedCsrfToken = "issued-csrf-token-reference";
+const issuedCsrfTokenHash = "hash_issued_csrf_token_reference";
+const csrfExpiresAt = "2026-06-27T00:15:00.000Z";
 
 test("protected app-access handler returns 401 for missing cookie without reading app-access repositories", async () => {
   const { repositories, calls } = httpFixture();
@@ -208,6 +212,120 @@ test("logout handler returns privacy-safe response for revocation failure", asyn
   assertResponseIsPrivacySafe(response);
 });
 
+test("CSRF issue handler denies missing session cookie safely", async () => {
+  const { repositories, calls } = httpFixture();
+  const csrf = csrfIssueFixture();
+
+  const response = await handleCsrfTokenIssueRequest(
+    { sessions: repositories.sessions, csrf: csrf.dependencies },
+    {
+      headers: {},
+      now,
+      ttlSeconds: 900,
+    },
+  );
+
+  assert.equal(response.status, 401);
+  assert.deepEqual(response.body, {
+    outcome: "denied",
+    reason: "missing_session",
+  });
+  assert.equal(calls.sessionsFindById, 0);
+  assert.equal(csrf.records.length, 0);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("CSRF issue handler denies unknown revoked and expired sessions safely", async () => {
+  const unknown = httpFixture({ sessions: [] });
+  const revoked = httpFixture({ session: { revokedAt: earlier } });
+  const expired = httpFixture({ session: { expiresAt: past } });
+
+  const unknownResponse = await handleCsrfTokenIssueRequest(
+    { sessions: unknown.repositories.sessions, csrf: csrfIssueFixture().dependencies },
+    csrfIssueRequestWithCookie("session_owner_example"),
+  );
+  const revokedResponse = await handleCsrfTokenIssueRequest(
+    { sessions: revoked.repositories.sessions, csrf: csrfIssueFixture().dependencies },
+    csrfIssueRequestWithCookie("session_owner_example"),
+  );
+  const expiredResponse = await handleCsrfTokenIssueRequest(
+    { sessions: expired.repositories.sessions, csrf: csrfIssueFixture().dependencies },
+    csrfIssueRequestWithCookie("session_owner_example"),
+  );
+
+  assert.deepEqual(unknownResponse.body, {
+    outcome: "denied",
+    reason: "unknown_session",
+  });
+  assert.deepEqual(revokedResponse.body, {
+    outcome: "denied",
+    reason: "revoked_session",
+  });
+  assert.deepEqual(expiredResponse.body, {
+    outcome: "denied",
+    reason: "expired_session",
+  });
+  assert.equal(unknownResponse.status, 401);
+  assert.equal(revokedResponse.status, 401);
+  assert.equal(expiredResponse.status, 401);
+  assertResponseIsPrivacySafe(unknownResponse);
+  assertResponseIsPrivacySafe(revokedResponse);
+  assertResponseIsPrivacySafe(expiredResponse);
+});
+
+test("CSRF issue handler issues a token for an active session and stores only the token hash", async () => {
+  const { repositories } = httpFixture();
+  const csrf = csrfIssueFixture();
+
+  const response = await handleCsrfTokenIssueRequest(
+    { sessions: repositories.sessions, csrf: csrf.dependencies },
+    csrfIssueRequestWithCookie("session_owner_example"),
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body, {
+    outcome: "issued",
+    csrfToken: issuedCsrfToken,
+    expiresAt: csrfExpiresAt,
+  });
+  assert.equal("tokenHash" in response.body, false);
+  assert.equal(csrf.records.length, 1);
+  assert.equal(csrf.records[0].sessionId, "session_owner_example");
+  assert.equal(csrf.records[0].tokenHash, issuedCsrfTokenHash);
+  assert.equal(csrf.records[0].csrfToken, undefined);
+  assert.doesNotMatch(JSON.stringify(csrf.records), new RegExp(issuedCsrfToken));
+});
+
+test("CSRF issue handler handles token lifecycle failures safely", async () => {
+  const failures = [
+    "failTokenFactory",
+    "failHash",
+    "failId",
+    "failCreate",
+    "invalidTtl",
+    "invalidNow",
+  ];
+
+  for (const failure of failures) {
+    const { repositories } = httpFixture();
+    const csrf = csrfIssueFixture({ [failure]: true });
+    const response = await handleCsrfTokenIssueRequest(
+      { sessions: repositories.sessions, csrf: csrf.dependencies },
+      csrfIssueRequestWithCookie("session_owner_example", {
+        ttlSeconds: failure === "invalidTtl" ? 0 : 900,
+        now: failure === "invalidNow" ? "not-a-date raw-session-token" : now,
+      }),
+    );
+
+    assert.equal(response.status, 500);
+    assert.deepEqual(response.body, {
+      outcome: "error",
+      message: "CSRF token could not be issued.",
+    });
+    assertResponseIsPrivacySafe(response);
+  }
+});
+
 test("HTTP modules do not import DB, frontend, KQAG, provider SDK, or live server modules", async () => {
   const httpFiles = (await listFiles("src/http")).filter(
     (filePath) => ![
@@ -342,6 +460,66 @@ function logoutRequestWithCookie(sessionId) {
     now,
     cookie: { secure: true },
   };
+}
+
+function csrfIssueRequestWithCookie(sessionId, overrides = {}) {
+  return {
+    headers: {
+      cookie: `swooshz_session=${sessionId}`,
+    },
+    now,
+    ttlSeconds: 900,
+    ...overrides,
+  };
+}
+
+function csrfIssueFixture(options = {}) {
+  const records = [];
+  const dependencies = {
+    tokens: {
+      async create(record) {
+        if (options.failCreate) {
+          throw new Error(privateStorageError);
+        }
+
+        records.push(record);
+        return record;
+      },
+      async findBySessionAndTokenHash() {
+        return null;
+      },
+    },
+    tokenFactory: {
+      async createToken() {
+        if (options.failTokenFactory) {
+          throw new Error(privateStorageError);
+        }
+
+        return issuedCsrfToken;
+      },
+    },
+    tokenHasher: {
+      async hashToken(token) {
+        if (options.failHash) {
+          throw new Error(privateStorageError);
+        }
+
+        assert.equal(token, issuedCsrfToken);
+        return issuedCsrfTokenHash;
+      },
+    },
+    idFactory: {
+      createId() {
+        if (options.failId) {
+          throw new Error(privateStorageError);
+        }
+
+        return `csrf_record_${records.length + 1}`;
+      },
+    },
+  };
+
+  return { records, dependencies };
 }
 
 function instrumentRepositories(repositories, options) {

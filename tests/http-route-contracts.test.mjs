@@ -10,13 +10,19 @@ import {
 test("route manifest includes only approved initial platform routes", () => {
   assert.deepEqual(
     HTTP_ROUTE_CONTRACTS.map((route) => route.id),
-    ["healthz", "platform_session_app_access", "platform_logout"],
+    [
+      "healthz",
+      "platform_session_app_access",
+      "platform_session_csrf",
+      "platform_logout",
+    ],
   );
   assert.deepEqual(
     HTTP_ROUTE_CONTRACTS.map((route) => `${route.method} ${route.path}`),
     [
       "GET /healthz",
       "GET /api/platform/session/app-access",
+      "GET /api/platform/session/csrf",
       "POST /api/platform/logout",
     ],
   );
@@ -53,6 +59,18 @@ test("logout route is POST-only, cookie-aware, idempotent, and CSRF-protected", 
   assert.equal(route.csrf.required, true);
   assert.equal(route.idempotent, true);
   assert.equal(route.handlerContract, "handleLogoutRequest");
+});
+
+test("CSRF issuance route is GET-only, session-protected, and does not require CSRF", () => {
+  const route = getHttpRouteContract("platform_session_csrf");
+
+  assert.equal(route.method, "GET");
+  assert.equal(route.path, "/api/platform/session/csrf");
+  assert.equal(route.browserSession, "required");
+  assert.equal(route.csrf.required, false);
+  assert.equal(route.csrf.strategy, "none");
+  assert.deepEqual(route.requiredQuery, []);
+  assert.equal(route.handlerContract, "handleCsrfTokenIssueRequest");
 });
 
 test("route manifest does not include launch tokens KQAG adapter or frontend dashboard work", () => {

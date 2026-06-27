@@ -3,7 +3,9 @@ import type { BillingGate } from "../access/decide-app-access.js";
 import type { SessionRevocationServiceDependencies } from "../auth/session-revocation-service.js";
 import type { PlatformRepositories } from "../platform/repositories.js";
 import type { CsrfTokenValidator } from "./csrf.js";
+import type { CsrfTokenServiceDependencies } from "./csrf-token-service.js";
 import {
+  handleCsrfTokenIssueRequest,
   handleLogoutRequest,
   handleProtectedAppAccessRequest,
   type HttpRequestHeaders,
@@ -25,6 +27,8 @@ export interface NodePlatformHttpAdapterDependencies {
   cookie?: BrowserSessionCookieConfig;
   originConfig: HttpOriginValidationConfig;
   csrfTokenValidator?: CsrfTokenValidator;
+  csrfTokenIssuer?: CsrfTokenServiceDependencies;
+  csrfTokenTtlSeconds?: number;
   billingGate?: BillingGate;
 }
 
@@ -42,6 +46,7 @@ export interface NodePlatformHttpResponse {
 
 const jsonContentType = "application/json; charset=utf-8";
 const adapterUrlBase = "http://swooshz-platform.local";
+const defaultCsrfTokenTtlSeconds = 900;
 
 export async function handleNodePlatformHttpRequest(
   dependencies: NodePlatformHttpAdapterDependencies,
@@ -109,6 +114,27 @@ export async function handleNodePlatformHttpRequest(
         billingGate: dependencies.billingGate,
         cookie: dependencies.cookie,
       }),
+    );
+  }
+
+  if (route.id === "platform_session_csrf") {
+    if (!dependencies.csrfTokenIssuer) {
+      return csrfIssueFailureResponse();
+    }
+
+    return toNodeResponse(
+      await handleCsrfTokenIssueRequest(
+        {
+          sessions: dependencies.repositories.sessions,
+          csrf: dependencies.csrfTokenIssuer,
+        },
+        {
+          headers,
+          now: dependencies.now(),
+          ttlSeconds: dependencies.csrfTokenTtlSeconds ?? defaultCsrfTokenTtlSeconds,
+          cookie: dependencies.cookie,
+        },
+      ),
     );
   }
 
@@ -227,6 +253,13 @@ function toNodeResponse(response: HttpResponseLike): NodePlatformHttpResponse {
     response.body ?? null,
     response.headers,
   );
+}
+
+function csrfIssueFailureResponse(): NodePlatformHttpResponse {
+  return jsonResponse(500, {
+    outcome: "error",
+    message: "CSRF token could not be issued.",
+  });
 }
 
 function securityFailureResponse(

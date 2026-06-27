@@ -72,8 +72,9 @@ Candidate deliverables:
 - Minimal Node HTTP adapter for the approved platform route manifest.
 - Node server runtime/config contract around the approved HTTP adapter.
 - Storage-agnostic CSRF token lifecycle contracts and repository-backed validator.
-- HTTP logout route after server/framework and CSRF implementation are separately approved.
-- Minimal protected session or app-access decision endpoint after server/framework and CSRF implementation are separately approved.
+- Framework-agnostic CSRF issuance route contract for active browser sessions.
+- Live dependency wiring for CSRF token storage and secure token/hash implementations after the storage boundary is approved.
+- HTTP logout route hardening after real CSRF storage and browser wiring are separately approved.
 - Login callback/session handling after HTTP routes and real provider verification are separately approved.
 - Invitation acceptance path if compatible with selected auth provider.
 - Tests for session, token, and provider-error privacy behavior.

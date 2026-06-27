@@ -7,6 +7,7 @@ import type {
 
 export type CsrfTokenServiceErrorCode =
   | "invalid_session"
+  | "invalid_expiry"
   | "token_factory_failed"
   | "token_hash_failed"
   | "token_store_failed";
@@ -68,12 +69,12 @@ export async function issueCsrfTokenForSession(
     throw new CsrfTokenServiceError("invalid_session");
   }
 
+  const expiresAt = getExpiresAtSafely(input.now, input.ttlSeconds);
   const csrfToken = await createTokenSafely(dependencies.tokenFactory);
   const tokenHash = await hashTokenSafely(dependencies.tokenHasher, csrfToken);
-  const expiresAt = addSeconds(input.now, input.ttlSeconds);
 
   await createRecordSafely(dependencies.tokens, {
-    id: dependencies.idFactory.createId(),
+    id: createIdSafely(dependencies.idFactory),
     sessionId: input.sessionId,
     tokenHash,
     purpose: input.purpose,
@@ -132,7 +133,13 @@ async function createTokenSafely(
   tokenFactory: CsrfTokenFactory,
 ): Promise<string> {
   try {
-    return await tokenFactory.createToken();
+    const token = await tokenFactory.createToken();
+
+    if (!token.trim()) {
+      throw new Error("Blank CSRF token.");
+    }
+
+    return token;
   } catch {
     throw new CsrfTokenServiceError("token_factory_failed");
   }
@@ -143,9 +150,23 @@ async function hashTokenSafely(
   csrfToken: string,
 ): Promise<string> {
   try {
-    return await tokenHasher.hashToken(csrfToken);
+    const tokenHash = await tokenHasher.hashToken(csrfToken);
+
+    if (!tokenHash.trim()) {
+      throw new Error("Blank CSRF token hash.");
+    }
+
+    return tokenHash;
   } catch {
     throw new CsrfTokenServiceError("token_hash_failed");
+  }
+}
+
+function createIdSafely(idFactory: CsrfTokenIdFactory): string {
+  try {
+    return idFactory.createId();
+  } catch {
+    throw new CsrfTokenServiceError("token_store_failed");
   }
 }
 
@@ -160,8 +181,18 @@ async function createRecordSafely(
   }
 }
 
-function addSeconds(now: string, ttlSeconds: number): string {
-  return new Date(new Date(now).getTime() + ttlSeconds * 1000).toISOString();
+function getExpiresAtSafely(now: string, ttlSeconds: number): string {
+  if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
+    throw new CsrfTokenServiceError("invalid_expiry");
+  }
+
+  const nowMs = Date.parse(now);
+
+  if (!Number.isFinite(nowMs)) {
+    throw new CsrfTokenServiceError("invalid_expiry");
+  }
+
+  return new Date(nowMs + ttlSeconds * 1000).toISOString();
 }
 
 function isInactive(record: CsrfTokenRecord): boolean {
