@@ -94,6 +94,54 @@ test("start failure is privacy-safe and closes an opened DB client", async () =>
   assert.equal(fixture.calls.closeDatabase, 1);
 });
 
+test("Node-style listen error event is privacy-safe closes DB and leaves bootstrap stopped", async () => {
+  const fixture = createBootstrapFixture({
+    listenOutcomes: ["error-event"],
+  });
+  const bootstrap = createPlatformNodeBootstrap(fixture.input);
+
+  await assert.rejects(
+    () => bootstrap.start(),
+    assertPrivacySafeBootstrapError("server_start_failed"),
+  );
+
+  assert.equal(fixture.calls.closeDatabase, 1);
+  assert.equal(bootstrap.getServer(), null);
+  assert.equal(fixture.lastServer.listening, false);
+  assert.equal(fixture.lastServer.listenerCount("error"), 0);
+});
+
+test("start can retry deterministically after a Node-style listen error event", async () => {
+  const fixture = createBootstrapFixture({
+    listenOutcomes: ["error-event", "success"],
+  });
+  const bootstrap = createPlatformNodeBootstrap(fixture.input);
+
+  await assert.rejects(
+    () => bootstrap.start(),
+    assertPrivacySafeBootstrapError("server_start_failed"),
+  );
+  const retryResult = await bootstrap.start();
+
+  assert.deepEqual(retryResult, {
+    host: "127.0.0.1",
+    port: 4317,
+  });
+  assert.equal(fixture.calls.closeDatabase, 1);
+  assert.equal(fixture.calls.listen, 2);
+  assert.equal(fixture.lastServer.listening, true);
+  assert.equal(fixture.lastServer.listenerCount("error"), 0);
+});
+
+test("successful listen cleans up the temporary error listener", async () => {
+  const fixture = createBootstrapFixture();
+  const bootstrap = createPlatformNodeBootstrap(fixture.input);
+
+  await bootstrap.start();
+
+  assert.equal(fixture.lastServer.listenerCount("error"), 0);
+});
+
 test("invalid runtime config is privacy-safe", async () => {
   const fixture = createBootstrapFixture({
     env: {
@@ -262,7 +310,16 @@ function createBootstrapFixture(options = {}) {
       serverFactory(dependencies) {
         calls.serverFactory += 1;
         calls.serverDependencies.push(dependencies);
-        fixture.lastServer = createFakeServer({ calls, dependencies, failListen: options.failListen });
+        const listenOutcomes = options.listenOutcomes ?? [
+          options.failListen ? "callback-error" : "success",
+        ];
+        const listenOutcome =
+          listenOutcomes[Math.min(calls.serverFactory - 1, listenOutcomes.length - 1)];
+        fixture.lastServer = createFakeServer({
+          calls,
+          dependencies,
+          listenOutcome,
+        });
         return fixture.lastServer;
       },
     },
@@ -271,31 +328,82 @@ function createBootstrapFixture(options = {}) {
   return fixture;
 }
 
-function createFakeServer({ calls, dependencies, failListen }) {
-  return {
+function createFakeServer({ calls, dependencies, listenOutcome }) {
+  const listeners = new Map();
+  const server = {
     listening: false,
+    once(event, listener) {
+      const eventListeners = listeners.get(event) ?? [];
+      eventListeners.push(listener);
+      listeners.set(event, eventListeners);
+      return this;
+    },
+    off(event, listener) {
+      removeListener(event, listener);
+      return this;
+    },
+    removeListener(event, listener) {
+      removeListener(event, listener);
+      return this;
+    },
+    listenerCount(event) {
+      return (listeners.get(event) ?? []).length;
+    },
     listen(port, host, callback) {
       calls.listen += 1;
       calls.listenArgs.push({ port, host });
 
-      if (failListen) {
+      if (listenOutcome === "callback-error") {
         callback(new Error(`listen failed ${privateUrl}`));
-        return;
+        return this;
+      }
+
+      if (listenOutcome === "error-event") {
+        const error = new Error(`listen failed ${privateUrl}`);
+
+        if (this.listenerCount("error") > 0) {
+          emitOnce("error", error);
+          return this;
+        }
+
+        callback();
+        return this;
       }
 
       this.listening = true;
       callback();
+      return this;
     },
     close(callback) {
       calls.closeServer += 1;
       this.listening = false;
       callback();
+      return this;
     },
     async handle(request) {
       const { handleNodePlatformHttpRequest } = await import("../dist/index.js");
       return handleNodePlatformHttpRequest(dependencies, request);
     },
   };
+
+  function removeListener(event, listener) {
+    const eventListeners = listeners.get(event) ?? [];
+    listeners.set(
+      event,
+      eventListeners.filter((candidate) => candidate !== listener),
+    );
+  }
+
+  function emitOnce(event, error) {
+    const eventListeners = listeners.get(event) ?? [];
+    listeners.set(event, []);
+
+    for (const listener of eventListeners) {
+      listener(error);
+    }
+  }
+
+  return server;
 }
 
 function createFakeDrizzleDb(calls) {

@@ -37,6 +37,9 @@ export interface PlatformBootstrapDatabaseClient {
 
 export interface PlatformBootstrapServer {
   readonly listening?: boolean;
+  once(event: "error", listener: (error: unknown) => void): unknown;
+  off?(event: "error", listener: (error: unknown) => void): unknown;
+  removeListener?(event: "error", listener: (error: unknown) => void): unknown;
   listen(
     port: number,
     host: string,
@@ -220,19 +223,58 @@ function listenSafely(
   runtimeConfig: NodePlatformRuntimeConfig,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => {
+      removeServerErrorListener(server, onError);
+    };
+    const fail = () => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      cleanup();
+      reject(new PlatformNodeBootstrapError("server_start_failed"));
+    };
+    const succeed = () => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      cleanup();
+      resolve();
+    };
+    const onError = () => {
+      fail();
+    };
+
     try {
+      server.once("error", onError);
       server.listen(runtimeConfig.port, runtimeConfig.host, (error?: unknown) => {
         if (error) {
-          reject(new PlatformNodeBootstrapError("server_start_failed"));
+          fail();
           return;
         }
 
-        resolve();
+        succeed();
       });
     } catch {
-      reject(new PlatformNodeBootstrapError("server_start_failed"));
+      fail();
     }
   });
+}
+
+function removeServerErrorListener(
+  server: PlatformBootstrapServer,
+  listener: (error: unknown) => void,
+): void {
+  if (server.off) {
+    server.off("error", listener);
+    return;
+  }
+
+  server.removeListener?.("error", listener);
 }
 
 function closeServerSafely(server: PlatformBootstrapServer): Promise<void> {
