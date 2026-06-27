@@ -19,8 +19,9 @@ export interface ProviderIdentity {
   updatedAt: IsoTimestamp;
 }
 
-export interface InvitationRecord extends Invitation {
-  tokenHash: string;
+export interface InvitationRecord extends Omit<Invitation, "invitedByUserId"> {
+  tokenHash: string | null;
+  invitedByUserId: string | null;
   revokedAt: IsoTimestamp | null;
 }
 

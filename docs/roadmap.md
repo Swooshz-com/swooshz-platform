@@ -55,6 +55,7 @@ Candidate deliverables:
 - First database scaffold behind repository/service boundaries.
 - Storage-agnostic repository/service ports around the app-access decision boundary.
 - Drizzle-backed repository adapters around the database scaffold.
+- Database connection and migration execution workflow decision.
 - Auth provider selection ADR or decision record.
 - Login callback/session handling.
 - Logout/session revocation.
