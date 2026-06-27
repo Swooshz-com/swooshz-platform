@@ -59,9 +59,11 @@ The auth callback service consumes stored auth state by hash/reference, delegate
 
 The repo also includes a storage-agnostic session revocation service for logout/session lifecycle work. It can revoke active or expired sessions through repository ports, treats already revoked sessions idempotently, and returns privacy-safe results without issuing cookies or exposing HTTP routes.
 
+The repo also includes a protected app-access decision service. It accepts a platform session id, selected workspace id, app key, and deterministic timestamp, gates missing/revoked/expired sessions first, and then delegates app-access rules to the existing repository-backed decision service. It does not issue cookies, create launch tokens, write platform records, or call KQAG.
+
 No Next.js, Vite, React, frontend shell, real auth provider, public signup, database provisioning, deployment, Supabase setup, Stripe setup, billing implementation, KQAG adapter, or secrets are part of this scaffold.
 
-The next likely platform PR should add a minimal protected session/app-access decision endpoint or define HTTP logout wiring after session lifecycle services are stable. Frontend shell work should still wait until backend auth, session, persistence, and app-access boundaries are stable.
+The next likely platform PR should define HTTP wiring for protected session/app-access decisions or logout after cookie/session handling is separately approved. Frontend shell work should still wait until backend auth, session, persistence, and app-access boundaries are stable.
 
 ## First App Integration Target
 
