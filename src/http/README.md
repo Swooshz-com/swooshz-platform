@@ -6,6 +6,7 @@ This folder contains framework-agnostic HTTP boundary contracts for Swooshz Plat
 - `handlers.ts` adapts plain request-like objects to the storage-agnostic protected app-access and session revocation services.
 - `route-contracts.ts` records the first approved route map without wiring a real server or framework.
 - `origin-validation.ts`, `csrf.ts`, and `request-security.ts` provide framework-agnostic Origin/Referer and CSRF token validation contracts for future state-changing browser-cookie routes.
+- `csrf-token-repositories.ts` and `csrf-token-service.ts` define the storage-agnostic CSRF token lifecycle used by repository-backed validators.
 - `node-adapter.ts` adapts Node-style HTTP request data to the approved route contracts for `GET /healthz`, `GET /api/platform/session/app-access`, and `POST /api/platform/logout`.
 - `runtime-config.ts` parses privacy-safe Node HTTP runtime config for local and production hosting posture.
 - `node-server.ts` creates a Node HTTP server around the adapter only when explicitly invoked by a future bootstrap.
@@ -18,8 +19,10 @@ ADR 0007 defines the HTTP transport and CSRF strategy. State-changing browser-co
 
 Future real HTTP adapters must call `validateHttpRequestSecurityForRoute` before invoking state-changing browser-cookie handlers. CSRF token generation and storage remain deferred until an approved secret/session-store boundary exists.
 
+CSRF token lifecycle logic is now defined behind injected token factory, token hash, and repository boundaries. The service stores only token hashes and metadata; raw tokens may be returned only by issuance results for a future browser bootstrap flow. Real secure token generation, hashing implementation, storage adapter, and HTTP issuance route remain deferred.
+
 The Node adapter does not create or listen on a server. It keeps routing limited to the approved manifest, delegates app-access and logout behaviour to existing handlers, and calls `validateHttpRequestSecurityForRoute` before logout.
 
 The Node server factory does not listen on import and does not create live repositories. Production runtime config requires secure cookies, a valid public base URL, and explicit allowed origins. It does not require `DATABASE_URL` or auth provider configuration.
 
-No CLI bootstrap, deployment script, framework route, middleware, CSRF token generation/storage, browser UI, app launch token, KQAG adapter, live database usage, or migration execution is included here.
+No CLI bootstrap, deployment script, framework route, middleware, real CSRF crypto/storage adapter, browser UI, app launch token, KQAG adapter, live database usage, or migration execution is included here.

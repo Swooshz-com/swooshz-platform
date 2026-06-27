@@ -71,6 +71,7 @@ Candidate deliverables:
 - Framework-agnostic Origin/Referer and CSRF validation contracts.
 - Minimal Node HTTP adapter for the approved platform route manifest.
 - Node server runtime/config contract around the approved HTTP adapter.
+- Storage-agnostic CSRF token lifecycle contracts and repository-backed validator.
 - HTTP logout route after server/framework and CSRF implementation are separately approved.
 - Minimal protected session or app-access decision endpoint after server/framework and CSRF implementation are separately approved.
 - Login callback/session handling after HTTP routes and real provider verification are separately approved.
