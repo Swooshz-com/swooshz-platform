@@ -3,11 +3,11 @@
 This folder contains framework-agnostic HTTP boundary contracts for Swooshz Platform.
 
 - `session-cookie.ts` parses the browser cookie header, extracts the platform session reference, builds session `Set-Cookie` headers, and builds logout clearing cookies.
-- `handlers.ts` adapts plain request-like objects to the storage-agnostic protected app-access and session revocation services.
+- `handlers.ts` adapts plain request-like objects to the storage-agnostic protected app-access, CSRF token issuance, and session revocation services.
 - `route-contracts.ts` records the first approved route map without wiring a real server or framework.
 - `origin-validation.ts`, `csrf.ts`, and `request-security.ts` provide framework-agnostic Origin/Referer and CSRF token validation contracts for future state-changing browser-cookie routes.
 - `csrf-token-repositories.ts` and `csrf-token-service.ts` define the storage-agnostic CSRF token lifecycle used by repository-backed validators.
-- `node-adapter.ts` adapts Node-style HTTP request data to the approved route contracts for `GET /healthz`, `GET /api/platform/session/app-access`, and `POST /api/platform/logout`.
+- `node-adapter.ts` adapts Node-style HTTP request data to the approved route contracts for `GET /healthz`, `GET /api/platform/session/app-access`, `GET /api/platform/session/csrf`, and `POST /api/platform/logout`.
 - `runtime-config.ts` parses privacy-safe Node HTTP runtime config for local and production hosting posture.
 - `node-server.ts` creates a Node HTTP server around the adapter only when explicitly invoked by a future bootstrap.
 
@@ -17,9 +17,9 @@ This scaffold does not implement cryptographic signing. Future real HTTP wiring 
 
 ADR 0007 defines the HTTP transport and CSRF strategy. State-changing browser-cookie routes must use Origin/Referer validation plus a CSRF token strategy when real route wiring is implemented. Logout is POST-only in the route contract even though the logout response remains idempotent and privacy-safe.
 
-Future real HTTP adapters must call `validateHttpRequestSecurityForRoute` before invoking state-changing browser-cookie handlers. CSRF token generation and storage remain deferred until an approved secret/session-store boundary exists.
+Future real HTTP adapters must call `validateHttpRequestSecurityForRoute` before invoking state-changing browser-cookie handlers.
 
-CSRF token lifecycle logic is now defined behind injected token factory, token hash, and repository boundaries. The service stores only token hashes and metadata; raw tokens may be returned only by issuance results for a future browser bootstrap flow. Real secure token generation, hashing implementation, storage adapter, and HTTP issuance route remain deferred.
+CSRF token lifecycle logic is now defined behind injected token factory, token hash, and repository boundaries. The service stores only token hashes and metadata; raw tokens may be returned only by issuance responses for an active browser session. CSRF issuance responses set `Cache-Control: no-store, no-cache, must-revalidate`, `Pragma: no-cache`, and `Expires: 0`. Real secure token generation, hashing implementation, and live storage adapter remain deferred.
 
 The Node adapter does not create or listen on a server. It keeps routing limited to the approved manifest, delegates app-access and logout behaviour to existing handlers, and calls `validateHttpRequestSecurityForRoute` before logout.
 

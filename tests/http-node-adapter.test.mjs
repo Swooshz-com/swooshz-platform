@@ -14,6 +14,9 @@ const future = "2026-06-27T01:00:00.000Z";
 const allowedOrigin = "https://platform.example.test";
 const sessionId = "session_owner_example";
 const validCsrfToken = "csrf-token-valid-example";
+const issuedCsrfToken = "issued-csrf-token-reference";
+const issuedCsrfTokenHash = "hash_issued_csrf_token_reference";
+const csrfExpiresAt = "2026-06-27T00:15:00.000Z";
 const privateUrl =
   "https://private.example.test/path?csrf=raw-csrf-token&db=postgresql://private-host";
 
@@ -117,6 +120,53 @@ test("app-access route does not require CSRF", async () => {
   assert.equal(response.statusCode, 200);
   assert.equal(body.outcome, "allowed");
   assert.equal(fixture.calls.csrfValidate, 0);
+});
+
+test("CSRF issuance route issues a token for an active browser session", async () => {
+  const fixture = createAdapterFixture();
+  const { response, body } = await request({
+    method: "GET",
+    url: "/api/platform/session/csrf",
+    headers: {
+      cookie: `swooshz_session=${sessionId}; unrelated=value`,
+    },
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(body, {
+    outcome: "issued",
+    csrfToken: issuedCsrfToken,
+    expiresAt: csrfExpiresAt,
+  });
+  assertNoStoreHeaders(response.headers);
+  assert.equal(fixture.calls.sessionsFindById, 1);
+  assert.equal(fixture.calls.csrfValidate, 0);
+  assert.equal(fixture.calls.csrfTokenCreate, 1);
+  assert.equal(fixture.records.csrfTokens[0].tokenHash, issuedCsrfTokenHash);
+  assert.equal(fixture.records.csrfTokens[0].csrfToken, undefined);
+  assert.doesNotMatch(JSON.stringify(fixture.records.csrfTokens), new RegExp(issuedCsrfToken));
+});
+
+test("CSRF issuance route returns safe 405 for wrong method", async () => {
+  const fixture = createAdapterFixture();
+  const { response, body } = await request({
+    method: "POST",
+    url: "/api/platform/session/csrf",
+    headers: {
+      cookie: `swooshz_session=${sessionId}`,
+    },
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 405);
+  assert.equal(response.headers.allow, "GET");
+  assert.deepEqual(body, {
+    outcome: "error",
+    message: "Method not allowed.",
+  });
+  assert.equal(fixture.calls.csrfTokenCreate, 0);
+  assertResponseIsPrivacySafe(response);
 });
 
 test("logout POST validates request security before revocation", async () => {
@@ -357,6 +407,7 @@ function createAdapterFixture(overrides = {}) {
       },
     ],
     auditEvents: [],
+    csrfTokens: [],
   };
   const repositories = createInMemoryPlatformRepositories(records);
   const calls = instrumentRepositories(repositories);
@@ -365,6 +416,34 @@ function createAdapterFixture(overrides = {}) {
     now: () => now,
     cookie: { secure: true },
     originConfig: { allowedOrigins: [allowedOrigin] },
+    csrfTokenIssuer: {
+      tokens: {
+        async create(record) {
+          calls.csrfTokenCreate += 1;
+          records.csrfTokens.push(record);
+          return record;
+        },
+        async findBySessionAndTokenHash() {
+          return null;
+        },
+      },
+      tokenFactory: {
+        async createToken() {
+          return issuedCsrfToken;
+        },
+      },
+      tokenHasher: {
+        async hashToken(token) {
+          assert.equal(token, issuedCsrfToken);
+          return issuedCsrfTokenHash;
+        },
+      },
+      idFactory: {
+        createId() {
+          return `csrf_record_${records.csrfTokens.length + 1}`;
+        },
+      },
+    },
     csrfTokenValidator: {
       async validate(input) {
         calls.order.push("csrf");
@@ -392,6 +471,7 @@ function instrumentRepositories(repositories) {
     sessionsFindById: 0,
     sessionsRevoke: 0,
     csrfValidate: 0,
+    csrfTokenCreate: 0,
   };
 
   const originalFindById = repositories.sessions.findById.bind(repositories.sessions);
@@ -447,4 +527,10 @@ function assertResponseIsPrivacySafe(response) {
     serialized,
     new RegExp(`${"logo"}_${"data"}_${"url"}|${"data"}:${"image"}|pricing|quote export`, "i"),
   );
+}
+
+function assertNoStoreHeaders(headers) {
+  assert.equal(headers["cache-control"], "no-store, no-cache, must-revalidate");
+  assert.equal(headers.pragma, "no-cache");
+  assert.equal(headers.expires, "0");
 }
