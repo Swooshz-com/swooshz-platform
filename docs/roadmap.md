@@ -61,9 +61,9 @@ Candidate deliverables:
 - Auth provider selection ADR or decision record.
 - Auth config/env parser and callback contract tests.
 - Provider-agnostic OIDC adapter interface.
-- Auth callback service skeleton using a fake adapter and repository contracts.
+- Auth callback service skeleton using a fake adapter and storage-agnostic service ports.
 - Platform session creation through repository boundaries.
-- Login callback/session handling.
+- Login callback/session handling after HTTP routes and real provider verification are separately approved.
 - Logout/session revocation.
 - Invitation acceptance path if compatible with selected auth provider.
 - Tests for session, token, and provider-error privacy behavior.

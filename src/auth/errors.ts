@@ -9,7 +9,15 @@ export type AuthConfigErrorCode =
 export type AuthCallbackErrorCode =
   | "provider_error"
   | "missing_code"
-  | "missing_state";
+  | "missing_state"
+  | "missing_stored_state"
+  | "expired_state"
+  | "provider_identity_rejected"
+  | "email_not_allowed"
+  | "domain_not_allowed"
+  | "verified_email_required"
+  | "provider_identity_link_failed"
+  | "session_creation_failed";
 
 export type AuthProviderErrorCode =
   | "invalid_verified_identity"
