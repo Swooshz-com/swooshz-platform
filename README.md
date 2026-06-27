@@ -49,9 +49,11 @@ The repo also includes storage-agnostic repository and service ports for loading
 
 The first Drizzle-backed repository adapters now map database rows to plain platform/domain records behind those ports. They are adapter implementations only: no real database connection, `pg` client, database provisioning, or migration execution workflow exists yet.
 
+ADR 0005 defines the future database connection and migration execution workflow: use Drizzle with `pg` when real connection code is added, keep `DATABASE_URL` out of the repo, keep default CI DB-free, and require deliberate operator-controlled migration execution. This repository still does not connect to a database.
+
 No Next.js, Vite, React, frontend shell, real auth provider, public signup, deployment, Supabase setup, Stripe setup, billing implementation, KQAG adapter, or secrets are part of this scaffold.
 
-The next likely platform PR should decide the database connection/execution workflow or decide the auth provider. Generated migrations remain review-only until an explicit database execution workflow exists. Frontend shell work should still wait until those backend decisions are stable.
+The next likely platform PR should implement the database connection/migration execution workflow or decide the auth provider. Generated migrations remain review-only until an explicit database execution implementation exists. Frontend shell work should still wait until those backend decisions are stable.
 
 ## First App Integration Target
 
@@ -68,4 +70,5 @@ The platform will eventually provide KQAG with platform-issued identity and work
 - `docs/adr/0002-auth-session-strategy.md`
 - `docs/adr/0003-persistence-and-migrations.md`
 - `docs/adr/0004-database-tooling-selection.md`
+- `docs/adr/0005-database-connection-and-migration-execution.md`
 - `docs/roadmap.md`
