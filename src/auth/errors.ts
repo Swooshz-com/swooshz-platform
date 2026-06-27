@@ -1,0 +1,49 @@
+export type AuthConfigErrorCode =
+  | "missing_required_env"
+  | "invalid_provider_key"
+  | "invalid_url"
+  | "session_secret_too_short"
+  | "invalid_allowed_email"
+  | "invalid_allowed_domain";
+
+export type AuthCallbackErrorCode =
+  | "provider_error"
+  | "missing_code"
+  | "missing_state";
+
+export type AuthProviderErrorCode =
+  | "invalid_verified_identity"
+  | "provider_verification_failed";
+
+export class AuthConfigError extends Error {
+  readonly code: AuthConfigErrorCode;
+  readonly publicMessage = "Authentication configuration is invalid.";
+
+  constructor(code: AuthConfigErrorCode, message: string) {
+    super(message);
+    this.name = "AuthConfigError";
+    this.code = code;
+  }
+}
+
+export class AuthCallbackError extends Error {
+  readonly code: AuthCallbackErrorCode;
+  readonly publicMessage = "Authentication callback could not be completed.";
+
+  constructor(code: AuthCallbackErrorCode, message: string) {
+    super(message);
+    this.name = "AuthCallbackError";
+    this.code = code;
+  }
+}
+
+export class AuthProviderError extends Error {
+  readonly code: AuthProviderErrorCode;
+  readonly publicMessage = "Authentication provider verification failed.";
+
+  constructor(code: AuthProviderErrorCode, message: string) {
+    super(message);
+    this.name = "AuthProviderError";
+    this.code = code;
+  }
+}
