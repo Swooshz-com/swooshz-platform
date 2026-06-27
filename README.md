@@ -71,9 +71,11 @@ The repo now includes a minimal Node HTTP adapter for the approved route manifes
 
 The repo now includes a minimal Node server runtime contract around that adapter. Runtime config parsing supports safe local defaults, requires explicit public base URL and allowed origins in production, and enforces secure cookies for production. The server factory uses Node's built-in HTTP module only in runtime-specific code and does not listen automatically on import.
 
+The repo now includes storage-agnostic CSRF token lifecycle contracts. Raw CSRF tokens are produced only by an injected secure token factory, hashed by an injected hashing boundary, stored only as hashes through repository ports, and returned only at issuance time for a future browser flow. No CSRF issuance route, real crypto implementation, or live persistence adapter is included yet.
+
 No Next.js, Vite, React, frontend shell, real auth provider, public signup, database provisioning, deployment, Supabase setup, Stripe setup, billing implementation, KQAG adapter, or secrets are part of this scaffold.
 
-The next likely platform PR should define the CSRF token lifecycle, live dependency wiring, or auth route implementation before broadening browser routes. Frontend shell work should still wait until backend auth, session, persistence, and app-access boundaries are stable.
+The next likely platform PR should define the CSRF issuance route, live dependency wiring, or auth route implementation before broadening browser routes. Frontend shell work should still wait until backend auth, session, persistence, and app-access boundaries are stable.
 
 ## First App Integration Target
 
