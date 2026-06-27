@@ -77,9 +77,11 @@ The repo now includes an explicit runtime dependency composition contract for th
 
 The repo now includes explicit Node bootstrap wiring for the approved platform routes. The bootstrap reads runtime config and secret config from injected environment values, creates the database client through the existing DB boundary only when `start()` is called, composes platform runtime dependencies, creates the Node server, and exposes explicit `start()`/`stop()` lifecycle methods. Importing or creating the bootstrap object does not start a server, run migrations, or invoke provider/KQAG flows.
 
+The repo now includes framework-agnostic auth HTTP route contracts for browser login start and provider callback. `GET /api/platform/auth/start` stores only hashed state/nonce references through injected state-store dependencies and redirects through an injected OIDC authorization URL builder. `GET /api/platform/auth/callback` wraps the existing callback service and sets the platform browser session cookie only after successful platform session creation. These route contracts do not perform real provider networking, add auth SDKs, build frontend UI, create app launch tokens, or call KQAG.
+
 No Next.js, Vite, React, frontend shell, real auth provider, public signup, database provisioning, deployment, Supabase setup, Stripe setup, billing implementation, KQAG adapter, or secrets are part of this scaffold.
 
-The next likely platform PR should define real auth route implementation, logout route hardening, or deployment/runtime operation notes before broadening browser routes. Frontend shell work should still wait until backend auth, session, persistence, CSRF, and app-access boundaries are stable.
+The next likely platform PR should define real auth state persistence/adapter wiring or provider network verification behind the existing contracts before broadening browser routes. Frontend shell work should still wait until backend auth, session, persistence, CSRF, and app-access boundaries are stable.
 
 ## First App Integration Target
 

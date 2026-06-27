@@ -2,6 +2,7 @@ export * from "./accounts/normalization.js";
 export * from "./accounts/types.js";
 export * from "./access/decide-app-access.js";
 export * from "./apps/types.js";
+export * from "./http/auth-handlers.js";
 export * from "./http/csrf.js";
 export * from "./http/csrf-token-crypto.js";
 export * from "./http/csrf-token-repositories.js";
