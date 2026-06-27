@@ -52,6 +52,7 @@ Candidate deliverables:
 - Provider-agnostic auth/session strategy ADR.
 - Persistence and migration strategy ADR.
 - Database/provider/tooling selection decision.
+- First database scaffold behind repository/service boundaries.
 - Auth provider selection ADR or decision record.
 - Login callback/session handling.
 - Logout/session revocation.
@@ -65,6 +66,7 @@ Non-goals:
 - Customer portal.
 - Frontend shell before provider and persistence decisions are stable.
 - Database migrations before provider/tooling selection is approved.
+- Auth-provider coupling in the database layer.
 
 ## Phase 3: Minimal Admin/Internal Account Management
 
