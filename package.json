@@ -6,14 +6,17 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "db:generate": "drizzle-kit generate",
+    "db:migrate": "npm run build && node scripts/db-migrate.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "npm run build && node --test tests/*.test.mjs"
   },
   "devDependencies": {
+    "@types/pg": "^8.20.0",
     "drizzle-kit": "^0.31.10",
     "typescript": "^5.9.2"
   },
   "dependencies": {
-    "drizzle-orm": "^0.45.2"
+    "drizzle-orm": "^0.45.2",
+    "pg": "^8.22.0"
   }
 }
