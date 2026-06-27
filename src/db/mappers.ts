@@ -18,6 +18,7 @@ import type {
 } from "../apps/types.js";
 import type { InvitationRecord, ProviderIdentity } from "../platform/repositories.js";
 import type { InvitationStatus } from "../accounts/types.js";
+import type { CsrfTokenRecord } from "../http/csrf-token-repositories.js";
 
 type TimestampValue = Date | string;
 
@@ -80,6 +81,18 @@ export interface SessionRow {
   expiresAt: TimestampValue;
   lastSeenAt: TimestampValue;
   revokedAt: TimestampValue | null;
+}
+
+export interface CsrfTokenRow {
+  id: string;
+  sessionId: string;
+  tokenHash: string;
+  purpose: CsrfTokenRecord["purpose"];
+  createdAt: TimestampValue;
+  expiresAt: TimestampValue;
+  consumedAt: TimestampValue | null;
+  revokedAt: TimestampValue | null;
+  replacedByTokenId: string | null;
 }
 
 export interface AuditEventRow {
@@ -183,6 +196,20 @@ export function mapSessionRow(row: SessionRow): Session {
     expiresAt: toIsoTimestamp(row.expiresAt),
     lastSeenAt: toIsoTimestamp(row.lastSeenAt),
     revokedAt: toNullableIsoTimestamp(row.revokedAt),
+  };
+}
+
+export function mapCsrfTokenRow(row: CsrfTokenRow): CsrfTokenRecord {
+  return {
+    id: row.id,
+    sessionId: row.sessionId,
+    tokenHash: row.tokenHash,
+    purpose: row.purpose,
+    createdAt: toIsoTimestamp(row.createdAt),
+    expiresAt: toIsoTimestamp(row.expiresAt),
+    consumedAt: toNullableIsoTimestamp(row.consumedAt),
+    revokedAt: toNullableIsoTimestamp(row.revokedAt),
+    replacedByTokenId: row.replacedByTokenId,
   };
 }
 

@@ -33,6 +33,9 @@ export const entitlementStatusEnum = pgEnum("entitlement_status", [
   "trial",
   "suspended",
 ]);
+export const csrfTokenPurposeEnum = pgEnum("csrf_token_purpose", [
+  "browser_session",
+]);
 
 const timestamps = {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -160,6 +163,32 @@ export const sessions = pgTable(
     index("sessions_expires_at_idx").on(table.expiresAt),
     index("sessions_revoked_at_idx").on(table.revokedAt),
     index("sessions_user_expiry_idx").on(table.userId, table.expiresAt),
+  ],
+);
+
+export const csrfTokens = pgTable(
+  "csrf_tokens",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull(),
+    purpose: csrfTokenPurposeEnum("purpose").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    replacedByTokenId: text("replaced_by_token_id"),
+  },
+  (table) => [
+    index("csrf_tokens_session_id_idx").on(table.sessionId),
+    uniqueIndex("csrf_tokens_session_hash_purpose_unique").on(
+      table.sessionId,
+      table.tokenHash,
+      table.purpose,
+    ),
+    index("csrf_tokens_expires_at_idx").on(table.expiresAt),
   ],
 );
 
