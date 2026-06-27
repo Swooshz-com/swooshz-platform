@@ -65,17 +65,19 @@ The repo now includes framework-agnostic browser session cookie helpers and plai
 
 ADR 0007 defines the HTTP transport and CSRF strategy: keep handlers framework-agnostic for now, use the route manifest as the next wiring contract, require `SameSite=Lax` cookies with `Secure` in production, and require Origin/Referer validation plus a CSRF token strategy for future state-changing browser-cookie routes.
 
-The HTTP scaffold now includes framework-agnostic Origin/Referer validation, CSRF token validation contracts, and a combined route-aware request security helper. These helpers prepare the logout route and future state-changing browser-cookie routes for real wiring, but do not generate or store CSRF tokens and do not add middleware or a real server.
+The HTTP scaffold now includes framework-agnostic Origin/Referer validation, CSRF token validation contracts, and a combined route-aware request security helper. These helpers prepare the logout route and future state-changing browser-cookie routes for real wiring without adding middleware or a real server.
 
 The repo now includes a minimal Node HTTP adapter for the approved route manifest: `GET /healthz`, `GET /api/platform/session/app-access`, `GET /api/platform/session/csrf`, and `POST /api/platform/logout`. The adapter delegates business logic to the framework-agnostic handlers, uses the combined request security helper before logout, returns privacy-safe JSON, and does not start a listener or add a framework.
 
 The repo now includes a minimal Node server runtime contract around that adapter. Runtime config parsing supports safe local defaults, requires explicit public base URL and allowed origins in production, and enforces secure cookies for production. The server factory uses Node's built-in HTTP module only in runtime-specific code and does not listen automatically on import.
 
-The repo now includes storage-agnostic CSRF token lifecycle contracts, a framework-agnostic browser-session CSRF issuance route contract, secure Node crypto adapters for CSRF token generation and HMAC hashing, and a Drizzle/Postgres-compatible CSRF token repository adapter. `GET /api/platform/session/csrf` requires an active platform session cookie, issues a raw CSRF token only in the response body, and persists only token hashes. The CSRF token migration is generated for review, but live dependency composition, live database execution, frontend, and provider route wiring remain deferred.
+The repo now includes storage-agnostic CSRF token lifecycle contracts, a framework-agnostic browser-session CSRF issuance route contract, secure Node crypto adapters for CSRF token generation and HMAC hashing, and a Drizzle/Postgres-compatible CSRF token repository adapter. `GET /api/platform/session/csrf` requires an active platform session cookie, issues a raw CSRF token only in the response body, and persists only token hashes. The CSRF token migration is generated for review.
+
+The repo now includes an explicit runtime dependency composition contract for the approved Node HTTP adapter/server. It assembles Drizzle platform repositories, the Drizzle CSRF token repository, secure CSRF token factory/hash adapters, the repository-backed CSRF validator, CSRF issuer dependencies, cookie config, and origin config from injected inputs. It requires an injected `CSRF_TOKEN_HASH_SECRET`-style secret config and does not listen, connect, run migrations, invoke auth providers, or call KQAG by itself.
 
 No Next.js, Vite, React, frontend shell, real auth provider, public signup, database provisioning, deployment, Supabase setup, Stripe setup, billing implementation, KQAG adapter, or secrets are part of this scaffold.
 
-The next likely platform PR should define live dependency wiring, real auth route implementation, or logout route hardening before broadening browser routes. Frontend shell work should still wait until backend auth, session, persistence, CSRF, and app-access boundaries are stable.
+The next likely platform PR should define explicit live bootstrap wiring, real auth route implementation, or logout route hardening before broadening browser routes. Frontend shell work should still wait until backend auth, session, persistence, CSRF, and app-access boundaries are stable.
 
 ## First App Integration Target
 
