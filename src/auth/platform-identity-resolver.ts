@@ -61,14 +61,10 @@ async function resolveAuthenticatedIdentity(
   dependencies: PlatformIdentitySessionResolverDependencies,
   input: AuthenticatedPlatformIdentityInput,
 ): Promise<AuthCallbackPlatformIdentityResolution> {
-  const providerIdentity =
-    await dependencies.repositories.providerIdentities.findByProviderSubject(
-      input.identity.providerKey,
-      input.identity.providerSubject,
-    );
+  const providerIdentity = await findProviderIdentitySafely(dependencies, input);
 
   if (providerIdentity) {
-    const user = await dependencies.repositories.users.findById(providerIdentity.userId);
+    const user = await findUserByIdSafely(dependencies, providerIdentity.userId);
 
     if (!user) {
       throw new AuthCallbackError(
@@ -111,7 +107,8 @@ async function createUserForNewProviderIdentity(
     );
   }
 
-  const existingUser = await dependencies.repositories.users.findByNormalizedEmail(
+  const existingUser = await findUserByNormalizedEmailSafely(
+    dependencies,
     input.identity.verifiedEmail,
   );
 
@@ -137,6 +134,51 @@ async function createUserForNewProviderIdentity(
       updatedAt: input.now,
       lastLoginAt: input.now,
     });
+  } catch {
+    throw new AuthCallbackError(
+      "provider_identity_link_failed",
+      "Authenticated provider identity could not be linked.",
+    );
+  }
+}
+
+async function findProviderIdentitySafely(
+  dependencies: PlatformIdentitySessionResolverDependencies,
+  input: AuthenticatedPlatformIdentityInput,
+): Promise<ProviderIdentity | null> {
+  try {
+    return await dependencies.repositories.providerIdentities.findByProviderSubject(
+      input.identity.providerKey,
+      input.identity.providerSubject,
+    );
+  } catch {
+    throw new AuthCallbackError(
+      "provider_identity_link_failed",
+      "Authenticated provider identity could not be linked.",
+    );
+  }
+}
+
+async function findUserByIdSafely(
+  dependencies: PlatformIdentitySessionResolverDependencies,
+  userId: string,
+): Promise<User | null> {
+  try {
+    return await dependencies.repositories.users.findById(userId);
+  } catch {
+    throw new AuthCallbackError(
+      "provider_identity_link_failed",
+      "Authenticated provider identity could not be linked.",
+    );
+  }
+}
+
+async function findUserByNormalizedEmailSafely(
+  dependencies: PlatformIdentitySessionResolverDependencies,
+  email: string,
+): Promise<User | null> {
+  try {
+    return await dependencies.repositories.users.findByNormalizedEmail(email);
   } catch {
     throw new AuthCallbackError(
       "provider_identity_link_failed",

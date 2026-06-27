@@ -44,6 +44,8 @@ const verifiedIdentity = {
   displayName: "Synthetic Owner",
   metadata: { emailVerified: true },
 };
+const privateStorageError =
+  "database exploded owner@example.com provider-subject-123 postgresql://private-host";
 
 test("existing provider identity resolves existing active user and creates session", async () => {
   const deps = createResolverDependencies({
@@ -256,6 +258,62 @@ test("disabled user mapped from provider identity is rejected", async () => {
   );
 });
 
+test("provider identity lookup errors become privacy-safe auth errors", async () => {
+  const deps = createResolverDependencies({
+    failProviderIdentityLookup: true,
+  });
+  const resolver = createPlatformIdentitySessionResolver(deps);
+
+  await assert.rejects(
+    () =>
+      resolver.resolveAuthenticatedIdentity({
+        identity: verifiedIdentity,
+        stateReference: createStateReference(),
+        now,
+      }),
+    assertPrivacySafeLookupError("provider_identity_link_failed"),
+  );
+});
+
+test("user lookup by id errors become privacy-safe auth errors", async () => {
+  const deps = createResolverDependencies({
+    users: [activeUser],
+    providerIdentities: [existingProviderIdentity],
+    failUserFindById: true,
+  });
+  const resolver = createPlatformIdentitySessionResolver(deps);
+
+  await assert.rejects(
+    () =>
+      resolver.resolveAuthenticatedIdentity({
+        identity: verifiedIdentity,
+        stateReference: createStateReference(),
+        now,
+      }),
+    assertPrivacySafeLookupError("provider_identity_link_failed"),
+  );
+});
+
+test("user lookup by normalized email errors become privacy-safe auth errors", async () => {
+  const deps = createResolverDependencies({
+    failUserFindByNormalizedEmail: true,
+  });
+  const resolver = createPlatformIdentitySessionResolver(deps);
+
+  await assert.rejects(
+    () =>
+      resolver.resolveAuthenticatedIdentity({
+        identity: {
+          ...verifiedIdentity,
+          providerSubject: "new-provider-subject",
+        },
+        stateReference: createStateReference(),
+        now,
+      }),
+    assertPrivacySafeLookupError("provider_identity_link_failed"),
+  );
+});
+
 test("session repository errors become privacy-safe auth errors", async () => {
   const deps = createResolverDependencies({
     users: [activeUser],
@@ -297,9 +355,17 @@ function createResolverDependencies(options = {}) {
   const repositories = {
     users: {
       async findById(id) {
+        if (options.failUserFindById) {
+          throw new Error(privateStorageError);
+        }
+
         return records.users.find((user) => user.id === id) ?? null;
       },
       async findByNormalizedEmail(email) {
+        if (options.failUserFindByNormalizedEmail) {
+          throw new Error(privateStorageError);
+        }
+
         return records.users.find((user) => user.email === email) ?? null;
       },
       async create(user) {
@@ -309,6 +375,10 @@ function createResolverDependencies(options = {}) {
     },
     providerIdentities: {
       async findByProviderSubject(providerKey, providerSubject) {
+        if (options.failProviderIdentityLookup) {
+          throw new Error(privateStorageError);
+        }
+
         return (
           records.providerIdentities.find(
             (identity) =>
@@ -347,6 +417,19 @@ function createResolverDependencies(options = {}) {
     sessionIdFactory: options.sessionIdFactory ?? (() => "session_auth_callback_1"),
     userIdFactory: () => "user_auth_callback_1",
     providerIdentityIdFactory: () => "provider_identity_auth_callback_1",
+  };
+}
+
+function assertPrivacySafeLookupError(expectedCode) {
+  return (error) => {
+    assert.equal(error instanceof AuthCallbackError, true);
+    assert.equal(error.code, expectedCode);
+    assert.doesNotMatch(error.message, /database exploded/);
+    assert.doesNotMatch(error.message, /owner@example.com/);
+    assert.doesNotMatch(error.message, /provider-subject-123/);
+    assert.doesNotMatch(error.message, /postgresql:\/\/private-host/);
+    assert.doesNotMatch(error.message, /storage|sql|database|db url/i);
+    return true;
   };
 }
 
