@@ -53,7 +53,8 @@ Candidate deliverables:
 - Persistence and migration strategy ADR.
 - Database/provider/tooling selection decision.
 - First database scaffold behind repository/service boundaries.
-- Repository/service adapters around the database scaffold.
+- Storage-agnostic repository/service ports around the app-access decision boundary.
+- Drizzle-backed repository adapters around the database scaffold.
 - Auth provider selection ADR or decision record.
 - Login callback/session handling.
 - Logout/session revocation.
