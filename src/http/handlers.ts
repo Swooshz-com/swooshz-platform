@@ -120,7 +120,7 @@ export async function handleCsrfTokenIssueRequest(
   const sessionId = extractSessionId(request.headers, request.cookie);
 
   if (!sessionId) {
-    return denied(401, "missing_session");
+    return csrfIssueDenied("missing_session");
   }
 
   const session = await findSessionSafely(dependencies.sessions, sessionId);
@@ -130,15 +130,15 @@ export async function handleCsrfTokenIssueRequest(
   }
 
   if (!session) {
-    return denied(401, "unknown_session");
+    return csrfIssueDenied("unknown_session");
   }
 
   if (session.revokedAt) {
-    return denied(401, "revoked_session");
+    return csrfIssueDenied("revoked_session");
   }
 
   if (Date.parse(session.expiresAt) <= Date.parse(request.now)) {
-    return denied(401, "expired_session");
+    return csrfIssueDenied("expired_session");
   }
 
   try {
@@ -151,6 +151,7 @@ export async function handleCsrfTokenIssueRequest(
 
     return {
       status: 200,
+      headers: csrfIssueHeaders(),
       body: {
         outcome: "issued",
         csrfToken: issued.csrfToken,
@@ -164,6 +165,23 @@ export async function handleCsrfTokenIssueRequest(
 
     return csrfIssueFailure();
   }
+}
+
+function csrfIssueDenied(
+  reason:
+    | "missing_session"
+    | "unknown_session"
+    | "revoked_session"
+    | "expired_session",
+) {
+  return {
+    status: 401,
+    headers: csrfIssueHeaders(),
+    body: {
+      outcome: "denied",
+      reason,
+    },
+  };
 }
 
 export async function handleLogoutRequest(
@@ -254,10 +272,19 @@ function denied(
 function csrfIssueFailure() {
   return {
     status: 500,
+    headers: csrfIssueHeaders(),
     body: {
       outcome: "error",
       message: "CSRF token could not be issued.",
     },
+  };
+}
+
+function csrfIssueHeaders(): Record<string, string> {
+  return {
+    "cache-control": "no-store, no-cache, must-revalidate",
+    pragma: "no-cache",
+    expires: "0",
   };
 }
 

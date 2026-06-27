@@ -19,7 +19,7 @@ ADR 0007 defines the HTTP transport and CSRF strategy. State-changing browser-co
 
 Future real HTTP adapters must call `validateHttpRequestSecurityForRoute` before invoking state-changing browser-cookie handlers.
 
-CSRF token lifecycle logic is now defined behind injected token factory, token hash, and repository boundaries. The service stores only token hashes and metadata; raw tokens may be returned only by issuance responses for an active browser session. Real secure token generation, hashing implementation, and live storage adapter remain deferred.
+CSRF token lifecycle logic is now defined behind injected token factory, token hash, and repository boundaries. The service stores only token hashes and metadata; raw tokens may be returned only by issuance responses for an active browser session. CSRF issuance responses set `Cache-Control: no-store, no-cache, must-revalidate`, `Pragma: no-cache`, and `Expires: 0`. Real secure token generation, hashing implementation, and live storage adapter remain deferred.
 
 The Node adapter does not create or listen on a server. It keeps routing limited to the approved manifest, delegates app-access and logout behaviour to existing handlers, and calls `validateHttpRequestSecurityForRoute` before logout.
 

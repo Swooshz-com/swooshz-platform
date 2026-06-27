@@ -230,6 +230,7 @@ test("CSRF issue handler denies missing session cookie safely", async () => {
     outcome: "denied",
     reason: "missing_session",
   });
+  assertNoStoreHeaders(response.headers);
   assert.equal(calls.sessionsFindById, 0);
   assert.equal(csrf.records.length, 0);
   assertResponseIsPrivacySafe(response);
@@ -268,6 +269,9 @@ test("CSRF issue handler denies unknown revoked and expired sessions safely", as
   assert.equal(unknownResponse.status, 401);
   assert.equal(revokedResponse.status, 401);
   assert.equal(expiredResponse.status, 401);
+  assertNoStoreHeaders(unknownResponse.headers);
+  assertNoStoreHeaders(revokedResponse.headers);
+  assertNoStoreHeaders(expiredResponse.headers);
   assertResponseIsPrivacySafe(unknownResponse);
   assertResponseIsPrivacySafe(revokedResponse);
   assertResponseIsPrivacySafe(expiredResponse);
@@ -288,6 +292,7 @@ test("CSRF issue handler issues a token for an active session and stores only th
     csrfToken: issuedCsrfToken,
     expiresAt: csrfExpiresAt,
   });
+  assertNoStoreHeaders(response.headers);
   assert.equal("tokenHash" in response.body, false);
   assert.equal(csrf.records.length, 1);
   assert.equal(csrf.records[0].sessionId, "session_owner_example");
@@ -322,6 +327,7 @@ test("CSRF issue handler handles token lifecycle failures safely", async () => {
       outcome: "error",
       message: "CSRF token could not be issued.",
     });
+    assertNoStoreHeaders(response.headers);
     assertResponseIsPrivacySafe(response);
   }
 });
@@ -596,4 +602,12 @@ function assertResponseIsPrivacySafe(response) {
   assert.doesNotMatch(serialized, /raw-session-token|session-secret|provider-token/i);
   assert.doesNotMatch(serialized, /auth-code|raw-claim|client-secret/i);
   assert.doesNotMatch(serialized, /postgresql:\/\/private-host|select \*|database exploded/i);
+}
+
+function assertNoStoreHeaders(headers) {
+  assert.deepEqual(headers, {
+    "cache-control": "no-store, no-cache, must-revalidate",
+    pragma: "no-cache",
+    expires: "0",
+  });
 }

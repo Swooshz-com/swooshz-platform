@@ -139,6 +139,7 @@ test("CSRF issuance route issues a token for an active browser session", async (
     csrfToken: issuedCsrfToken,
     expiresAt: csrfExpiresAt,
   });
+  assertNoStoreHeaders(response.headers);
   assert.equal(fixture.calls.sessionsFindById, 1);
   assert.equal(fixture.calls.csrfValidate, 0);
   assert.equal(fixture.calls.csrfTokenCreate, 1);
@@ -526,4 +527,10 @@ function assertResponseIsPrivacySafe(response) {
     serialized,
     new RegExp(`${"logo"}_${"data"}_${"url"}|${"data"}:${"image"}|pricing|quote export`, "i"),
   );
+}
+
+function assertNoStoreHeaders(headers) {
+  assert.equal(headers["cache-control"], "no-store, no-cache, must-revalidate");
+  assert.equal(headers.pragma, "no-cache");
+  assert.equal(headers.expires, "0");
 }
