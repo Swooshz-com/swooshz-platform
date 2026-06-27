@@ -41,9 +41,11 @@ ADR 0002 defines the provider-agnostic auth/session strategy: the platform owns 
 
 ADR 0003 defines the persistence and migration strategy: platform account state should use relational persistence behind repository/service boundaries while the TypeScript domain core stays storage-agnostic.
 
+ADR 0004 selects Postgres-compatible persistence with Drizzle ORM and Drizzle Kit as the preferred future TypeScript schema/migration tooling, while deferring the managed database provider.
+
 No Next.js, Vite, React, frontend shell, database migration, real auth provider, public signup, deployment, Supabase setup, Stripe setup, billing implementation, or secrets are part of this scaffold.
 
-The next likely platform PR should decide the database/provider tool choice or start the first persistence adapter behind the agreed boundary. Frontend shell work should still wait until those backend decisions are stable.
+The next likely platform PR should add the first database scaffold behind repository/service boundaries or decide the auth provider. Frontend shell work should still wait until those backend decisions are stable.
 
 ## First App Integration Target
 
@@ -59,4 +61,5 @@ The platform will eventually provide KQAG with platform-issued identity and work
 - `docs/adr/0001-platform-accounts-first.md`
 - `docs/adr/0002-auth-session-strategy.md`
 - `docs/adr/0003-persistence-and-migrations.md`
+- `docs/adr/0004-database-tooling-selection.md`
 - `docs/roadmap.md`
