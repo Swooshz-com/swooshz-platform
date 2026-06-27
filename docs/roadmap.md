@@ -59,6 +59,8 @@ Candidate deliverables:
 - Database connection and explicit migration execution implementation.
 - Database provisioning or DB integration-test workflow if separately approved.
 - Auth provider selection ADR or decision record.
+- Auth config/env parser and callback contract tests.
+- Provider-agnostic OIDC adapter interface.
 - Login callback/session handling.
 - Logout/session revocation.
 - Invitation acceptance path if compatible with selected auth provider.

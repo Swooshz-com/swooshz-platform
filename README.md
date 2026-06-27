@@ -51,9 +51,11 @@ The first Drizzle-backed repository adapters now map database rows to plain plat
 
 ADR 0005 defines the database connection and migration execution workflow. The repo now has a lazy `pg`/Drizzle client boundary and explicit `npm run db:migrate` command. `DATABASE_URL` is required for live connection or migration execution, no populated `.env` is committed, migrations do not run automatically, and default CI plus `npm test` remain DB-free.
 
+ADR 0006 selects the auth provider strategy: start with a provider-agnostic OIDC adapter boundary. The auth provider proves identity only; Swooshz Platform continues to own users, provider identities, platform sessions, workspace membership, invitations, audit events, app entitlements, and app access decisions. No auth implementation exists yet.
+
 No Next.js, Vite, React, frontend shell, real auth provider, public signup, database provisioning, deployment, Supabase setup, Stripe setup, billing implementation, KQAG adapter, or secrets are part of this scaffold.
 
-The next likely platform PR should decide the auth provider or add a separately approved database provisioning/integration-test workflow. Frontend shell work should still wait until those backend decisions are stable.
+The next likely platform PR should add auth config/env parsing and callback contract tests or add a separately approved database provisioning/integration-test workflow. Frontend shell work should still wait until backend auth, session, persistence, and app-access boundaries are stable.
 
 ## First App Integration Target
 
@@ -71,4 +73,5 @@ The platform will eventually provide KQAG with platform-issued identity and work
 - `docs/adr/0003-persistence-and-migrations.md`
 - `docs/adr/0004-database-tooling-selection.md`
 - `docs/adr/0005-database-connection-and-migration-execution.md`
+- `docs/adr/0006-auth-provider-selection.md`
 - `docs/roadmap.md`
