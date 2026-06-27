@@ -4,6 +4,7 @@ export * from "./access/decide-app-access.js";
 export * from "./apps/types.js";
 export * from "./http/csrf.js";
 export * from "./http/handlers.js";
+export * from "./http/node-adapter.js";
 export * from "./http/origin-validation.js";
 export * from "./http/request-security.js";
 export * from "./http/route-contracts.js";

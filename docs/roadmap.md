@@ -69,6 +69,7 @@ Candidate deliverables:
 - HTTP transport and CSRF strategy ADR.
 - Route contract manifest for first real HTTP endpoints.
 - Framework-agnostic Origin/Referer and CSRF validation contracts.
+- Minimal Node HTTP adapter for the approved platform route manifest.
 - HTTP logout route after server/framework and CSRF implementation are separately approved.
 - Minimal protected session or app-access decision endpoint after server/framework and CSRF implementation are separately approved.
 - Login callback/session handling after HTTP routes and real provider verification are separately approved.

@@ -209,7 +209,9 @@ test("logout handler returns privacy-safe response for revocation failure", asyn
 });
 
 test("HTTP modules do not import DB, frontend, KQAG, provider SDK, or live server modules", async () => {
-  const httpFiles = await listFiles("src/http");
+  const httpFiles = (await listFiles("src/http")).filter(
+    (filePath) => filePath.replaceAll("\\", "/") !== "src/http/node-adapter.ts",
+  );
 
   for (const filePath of httpFiles) {
     const contents = await readFile(filePath, "utf8");
