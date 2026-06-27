@@ -7,6 +7,8 @@ This folder contains framework-agnostic HTTP boundary contracts for Swooshz Plat
 - `route-contracts.ts` records the first approved route map without wiring a real server or framework.
 - `origin-validation.ts`, `csrf.ts`, and `request-security.ts` provide framework-agnostic Origin/Referer and CSRF token validation contracts for future state-changing browser-cookie routes.
 - `node-adapter.ts` adapts Node-style HTTP request data to the approved route contracts for `GET /healthz`, `GET /api/platform/session/app-access`, and `POST /api/platform/logout`.
+- `runtime-config.ts` parses privacy-safe Node HTTP runtime config for local and production hosting posture.
+- `node-server.ts` creates a Node HTTP server around the adapter only when explicitly invoked by a future bootstrap.
 
 The cookie value is a platform session reference only. It must not contain provider tokens, auth codes, raw OIDC claims, client secrets, session secrets, database URLs, KQAG workflow data, quote exports, pricing files, embedded logos, or customer/company/bank data.
 
@@ -18,4 +20,6 @@ Future real HTTP adapters must call `validateHttpRequestSecurityForRoute` before
 
 The Node adapter does not create or listen on a server. It keeps routing limited to the approved manifest, delegates app-access and logout behaviour to existing handlers, and calls `validateHttpRequestSecurityForRoute` before logout.
 
-No HTTP server listener, framework route, middleware, CSRF token generation/storage, browser UI, app launch token, KQAG adapter, live database usage, or migration execution is included here.
+The Node server factory does not listen on import and does not create live repositories. Production runtime config requires secure cookies, a valid public base URL, and explicit allowed origins. It does not require `DATABASE_URL` or auth provider configuration.
+
+No CLI bootstrap, deployment script, framework route, middleware, CSRF token generation/storage, browser UI, app launch token, KQAG adapter, live database usage, or migration execution is included here.
