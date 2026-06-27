@@ -47,9 +47,11 @@ The repo now includes the first Drizzle/Postgres database scaffold: schema defin
 
 The repo also includes storage-agnostic repository and service ports for loading platform account, workspace, session, app, and entitlement records before delegating app launch decisions to the pure domain core. These ports do not implement a real database adapter yet, and the pure domain core remains independent of Drizzle and persistence details.
 
+The first Drizzle-backed repository adapters now map database rows to plain platform/domain records behind those ports. They are adapter implementations only: no real database connection, `pg` client, database provisioning, or migration execution workflow exists yet.
+
 No Next.js, Vite, React, frontend shell, real auth provider, public signup, deployment, Supabase setup, Stripe setup, billing implementation, KQAG adapter, or secrets are part of this scaffold.
 
-The next likely platform PR should add Drizzle-backed repository adapters around the database scaffold or decide the auth provider. Generated migrations remain review-only until an explicit database execution workflow exists. Frontend shell work should still wait until those backend decisions are stable.
+The next likely platform PR should decide the database connection/execution workflow or decide the auth provider. Generated migrations remain review-only until an explicit database execution workflow exists. Frontend shell work should still wait until those backend decisions are stable.
 
 ## First App Integration Target
 
