@@ -3,6 +3,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import type {
   CsrfTokenFactory,
   CsrfTokenHasher,
+  CsrfTokenIdFactory,
 } from "./csrf-token-service.js";
 
 export type CsrfTokenCryptoConfigErrorCode =
@@ -70,6 +71,24 @@ export function createHmacCsrfTokenHasher(
         .digest("base64url");
 
       return `${hashPrefix}:${digest}`;
+    },
+  };
+}
+
+export function createSecureCsrfTokenIdFactory(
+  options: SecureCsrfTokenFactoryOptions = {},
+): CsrfTokenIdFactory {
+  const byteLength = options.byteLength ?? defaultTokenByteLength;
+
+  return {
+    createId() {
+      const id = randomBytes(byteLength).toString("base64url");
+
+      if (!id.trim()) {
+        throw new CsrfTokenCryptoConfigError("invalid_token");
+      }
+
+      return `csrf_${id}`;
     },
   };
 }

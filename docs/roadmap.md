@@ -75,7 +75,7 @@ Candidate deliverables:
 - Framework-agnostic CSRF issuance route contract for active browser sessions.
 - Drizzle/Postgres CSRF token storage adapter plus secure Node crypto token/hash adapters.
 - Runtime dependency composition contract for the approved Node HTTP adapter/server.
-- Explicit live bootstrap wiring after runtime composition is separately approved.
+- Explicit Node bootstrap wiring with start/stop lifecycle for the approved route set.
 - HTTP logout route hardening after real CSRF storage and browser wiring are separately approved.
 - Login callback/session handling after HTTP routes and real provider verification are separately approved.
 - Invitation acceptance path if compatible with selected auth provider.

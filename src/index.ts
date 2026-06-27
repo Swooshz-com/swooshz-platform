@@ -19,3 +19,5 @@ export * from "./platform/protected-app-access-service.js";
 export * from "./platform/repositories.js";
 export * from "./runtime/platform-runtime-dependencies.js";
 export * from "./runtime/runtime-secrets.js";
+export * from "./runtime/bootstrap-config.js";
+export * from "./runtime/node-bootstrap.js";

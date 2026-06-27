@@ -10,7 +10,7 @@ This folder contains framework-agnostic HTTP boundary contracts for Swooshz Plat
 - `csrf-token-crypto.ts` provides Node crypto-backed CSRF token generation and HMAC hashing adapters for future live dependency composition.
 - `node-adapter.ts` adapts Node-style HTTP request data to the approved route contracts for `GET /healthz`, `GET /api/platform/session/app-access`, `GET /api/platform/session/csrf`, and `POST /api/platform/logout`.
 - `runtime-config.ts` parses privacy-safe Node HTTP runtime config for local and production hosting posture.
-- `node-server.ts` creates a Node HTTP server around the adapter only when explicitly invoked by a future bootstrap.
+- `node-server.ts` creates a Node HTTP server around the adapter only when explicitly invoked.
 
 The cookie value is a platform session reference only. It must not contain provider tokens, auth codes, raw OIDC claims, client secrets, session secrets, database URLs, KQAG workflow data, quote exports, pricing files, embedded logos, or customer/company/bank data.
 
@@ -24,8 +24,10 @@ CSRF token lifecycle logic is now defined behind injected token factory, token h
 
 Runtime dependency composition now lives under `src/runtime`. It assembles the approved Node adapter dependency object from an injected Drizzle database object, runtime config, a CSRF hash secret config, a deterministic `now` factory, and an injected CSRF token id factory. This composition does not create a DB connection, run migrations, listen on a port, read provider config, or call KQAG.
 
+Explicit Node bootstrap wiring also lives under `src/runtime`. It reads runtime and secret config from injected environment values, creates the DB client through the existing database boundary only during `start()`, composes dependencies, starts the server only through explicit `start()`, and closes the server plus owned DB client on `stop()`. It does not run migrations or create auth/provider/KQAG flows.
+
 The Node adapter does not create or listen on a server. It keeps routing limited to the approved manifest, delegates app-access and logout behaviour to existing handlers, and calls `validateHttpRequestSecurityForRoute` before logout.
 
 The Node server factory does not listen on import and does not create live repositories. Production runtime config requires secure cookies, a valid public base URL, and explicit allowed origins. It does not require `DATABASE_URL` or auth provider configuration.
 
-No CLI bootstrap, deployment script, framework route, middleware, browser UI, app launch token, KQAG adapter, live database usage, or migration execution is included here.
+No CLI bootstrap, deployment script, framework route, middleware, browser UI, app launch token, KQAG adapter, or migration execution is included here.
