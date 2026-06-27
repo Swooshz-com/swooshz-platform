@@ -295,6 +295,9 @@ test("Drizzle repository list methods return arrays", async () => {
 test("Drizzle repository create, update, and append methods return mapped records", async () => {
   const fakeDb = createFakeDrizzleDb({
     insertRows: new Map([
+      [schema.users, [userRow]],
+      [schema.providerIdentities, [providerIdentityRow]],
+      [schema.sessions, [sessionRow]],
       [schema.invitations, [invitationRow]],
       [schema.auditEvents, [auditEventRow]],
     ]),
@@ -304,6 +307,15 @@ test("Drizzle repository create, update, and append methods return mapped record
   });
   const repositories = createDrizzlePlatformRepositories(fakeDb);
 
+  assert.deepEqual(await repositories.users.create(mapUserRow(userRow)), mapUserRow(userRow));
+  assert.deepEqual(
+    await repositories.providerIdentities.create(mapProviderIdentityRow(providerIdentityRow)),
+    mapProviderIdentityRow(providerIdentityRow),
+  );
+  assert.deepEqual(
+    await repositories.sessions.create(mapSessionRow(sessionRow)),
+    mapSessionRow(sessionRow),
+  );
   assert.deepEqual(
     await repositories.invitations.create(mapInvitationRow(invitationRow)),
     mapInvitationRow(invitationRow),
@@ -322,9 +334,15 @@ test("Drizzle repository create, update, and append methods return mapped record
   const invitationInsert = fakeDb.calls.find(
     (call) => call.operation === "insert.values" && call.table === schema.invitations,
   );
+  const sessionInsert = fakeDb.calls.find(
+    (call) => call.operation === "insert.values" && call.table === schema.sessions,
+  );
   assert.ok(invitationInsert);
   assert.equal("token" in invitationInsert.values, false);
   assert.equal(invitationInsert.values.tokenHash, invitationRow.tokenHash);
+  assert.ok(sessionInsert);
+  assert.equal("token" in sessionInsert.values, false);
+  assert.equal("sessionSecret" in sessionInsert.values, false);
 });
 
 test("pure domain and platform port modules do not import database adapter details", async () => {

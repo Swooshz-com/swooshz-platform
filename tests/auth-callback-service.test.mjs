@@ -39,10 +39,13 @@ test("successful callback returns safe platform auth result", async () => {
     providerKey: "example-oidc",
     providerSubject: "provider-subject-123",
   });
-  assert.deepEqual(result.sessionCreationIntent, {
+  assert.deepEqual(result.session, {
+    id: "session_auth_callback_1",
     userId: "user_owner",
     createdAt: now,
-    reason: "auth_callback_verified_identity",
+    expiresAt: future,
+    lastSeenAt: now,
+    revokedAt: null,
   });
   assert.equal(result.verifiedEmail, "owner@example.com");
   assert.equal(result.displayName, "Synthetic Owner");
@@ -448,10 +451,13 @@ function createServiceDependencies(options = {}) {
       return {
         platformUserId: "user_owner",
         providerIdentityId: "provider_identity_1",
-        sessionCreationIntent: {
+        session: {
+          id: "session_auth_callback_1",
           userId: "user_owner",
           createdAt: input.now,
-          reason: "auth_callback_verified_identity",
+          expiresAt: future,
+          lastSeenAt: input.now,
+          revokedAt: null,
         },
       };
     },

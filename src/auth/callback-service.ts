@@ -1,4 +1,5 @@
 import type { AuthConfig } from "./config.js";
+import type { Session } from "../accounts/types.js";
 import type {
   AuthCallbackParams,
   AuthStateStore,
@@ -49,20 +50,14 @@ export interface AuthStateReference {
 export interface AuthCallbackPlatformIdentityResolution {
   platformUserId: string;
   providerIdentityId: string;
-  sessionCreationIntent: PlatformSessionCreationIntent;
-}
-
-export interface PlatformSessionCreationIntent {
-  userId: string;
-  createdAt: string;
-  reason: "auth_callback_verified_identity";
+  session: Session;
 }
 
 export interface AuthCallbackServiceResult {
   outcome: "authenticated";
   platformUserId: string;
   providerIdentity: AuthCallbackProviderIdentityResult;
-  sessionCreationIntent: PlatformSessionCreationIntent;
+  session: Session;
   verifiedEmail: string | null;
   displayName: string | null;
   workspaceMembershipGranted: false;
@@ -127,7 +122,7 @@ export async function handleAuthCallback(
       providerKey: identity.providerKey,
       providerSubject: identity.providerSubject,
     },
-    sessionCreationIntent: resolution.sessionCreationIntent,
+    session: resolution.session,
     verifiedEmail: identity.verifiedEmail,
     displayName: identity.displayName,
     workspaceMembershipGranted: false,
