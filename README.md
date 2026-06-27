@@ -43,9 +43,11 @@ ADR 0003 defines the persistence and migration strategy: platform account state 
 
 ADR 0004 selects Postgres-compatible persistence with Drizzle ORM and Drizzle Kit as the preferred future TypeScript schema/migration tooling, while deferring the managed database provider.
 
-No Next.js, Vite, React, frontend shell, database migration, real auth provider, public signup, deployment, Supabase setup, Stripe setup, billing implementation, or secrets are part of this scaffold.
+The repo now includes the first Drizzle/Postgres database scaffold: schema definitions, Drizzle config, and a generated initial SQL migration for review. It does not connect to a real database yet.
 
-The next likely platform PR should add the first database scaffold behind repository/service boundaries or decide the auth provider. Frontend shell work should still wait until those backend decisions are stable.
+No Next.js, Vite, React, frontend shell, real auth provider, public signup, deployment, Supabase setup, Stripe setup, billing implementation, or secrets are part of this scaffold.
+
+The next likely platform PR should add repository/service adapters around the database scaffold or decide the auth provider. Frontend shell work should still wait until those backend decisions are stable.
 
 ## First App Integration Target
 
