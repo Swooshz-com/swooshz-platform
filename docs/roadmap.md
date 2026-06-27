@@ -64,8 +64,9 @@ Candidate deliverables:
 - Auth callback service skeleton using a fake adapter and storage-agnostic service ports.
 - Platform session creation through repository boundaries.
 - Storage-agnostic session revocation service.
+- Protected app-access decision service over repository ports.
 - HTTP logout route after cookie/session handling is separately approved.
-- Minimal protected session or app-access decision endpoint after session persistence is stable.
+- Minimal protected session or app-access decision endpoint after session/cookie handling is separately approved.
 - Login callback/session handling after HTTP routes and real provider verification are separately approved.
 - Invitation acceptance path if compatible with selected auth provider.
 - Tests for session, token, and provider-error privacy behavior.

@@ -3,4 +3,5 @@ export * from "./accounts/types.js";
 export * from "./access/decide-app-access.js";
 export * from "./apps/types.js";
 export * from "./platform/app-access-service.js";
+export * from "./platform/protected-app-access-service.js";
 export * from "./platform/repositories.js";
