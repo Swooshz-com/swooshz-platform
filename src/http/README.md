@@ -6,6 +6,7 @@ This folder contains framework-agnostic HTTP boundary contracts for Swooshz Plat
 - `handlers.ts` adapts plain request-like objects to the storage-agnostic protected app-access and session revocation services.
 - `route-contracts.ts` records the first approved route map without wiring a real server or framework.
 - `origin-validation.ts`, `csrf.ts`, and `request-security.ts` provide framework-agnostic Origin/Referer and CSRF token validation contracts for future state-changing browser-cookie routes.
+- `node-adapter.ts` adapts Node-style HTTP request data to the approved route contracts for `GET /healthz`, `GET /api/platform/session/app-access`, and `POST /api/platform/logout`.
 
 The cookie value is a platform session reference only. It must not contain provider tokens, auth codes, raw OIDC claims, client secrets, session secrets, database URLs, KQAG workflow data, quote exports, pricing files, embedded logos, or customer/company/bank data.
 
@@ -15,4 +16,6 @@ ADR 0007 defines the HTTP transport and CSRF strategy. State-changing browser-co
 
 Future real HTTP adapters must call `validateHttpRequestSecurityForRoute` before invoking state-changing browser-cookie handlers. CSRF token generation and storage remain deferred until an approved secret/session-store boundary exists.
 
-No HTTP server, framework route, middleware, CSRF token generation/storage, browser UI, app launch token, KQAG adapter, live database usage, or migration execution is included here.
+The Node adapter does not create or listen on a server. It keeps routing limited to the approved manifest, delegates app-access and logout behaviour to existing handlers, and calls `validateHttpRequestSecurityForRoute` before logout.
+
+No HTTP server listener, framework route, middleware, CSRF token generation/storage, browser UI, app launch token, KQAG adapter, live database usage, or migration execution is included here.

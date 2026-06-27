@@ -67,9 +67,11 @@ ADR 0007 defines the HTTP transport and CSRF strategy: keep handlers framework-a
 
 The HTTP scaffold now includes framework-agnostic Origin/Referer validation, CSRF token validation contracts, and a combined route-aware request security helper. These helpers prepare the logout route and future state-changing browser-cookie routes for real wiring, but do not generate or store CSRF tokens and do not add middleware or a real server.
 
+The repo now includes a minimal Node HTTP adapter for the approved route manifest: `GET /healthz`, `GET /api/platform/session/app-access`, and `POST /api/platform/logout`. The adapter delegates business logic to the framework-agnostic handlers, uses the combined request security helper before logout, returns privacy-safe JSON, and does not start a listener or add a framework.
+
 No Next.js, Vite, React, frontend shell, real auth provider, public signup, database provisioning, deployment, Supabase setup, Stripe setup, billing implementation, KQAG adapter, or secrets are part of this scaffold.
 
-The next likely platform PR should wire the first real HTTP adapter only if it calls the route-aware request security helper before state-changing browser-cookie handlers. Frontend shell work should still wait until backend auth, session, persistence, and app-access boundaries are stable.
+The next likely platform PR should define the approved server bootstrap/runtime or CSRF token lifecycle before broadening browser routes. Frontend shell work should still wait until backend auth, session, persistence, and app-access boundaries are stable.
 
 ## First App Integration Target
 
