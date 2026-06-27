@@ -231,3 +231,5 @@ This ADR does not implement:
 The next implementation PR can wire real HTTP endpoints against `src/http/route-contracts.ts`, `src/http/handlers.ts`, and `src/http/session-cookie.ts`.
 
 Before real browser-cookie state-changing routes ship, the implementation must add and test Origin/Referer validation plus the selected CSRF token strategy. Real route wiring must preserve the existing privacy-safe response and module-boundary rules.
+
+The framework-agnostic validation contracts should remain the boundary for real route wiring. Future adapters must call the combined request security helper before invoking state-changing browser-cookie handlers such as logout. CSRF token generation and storage remain deferred until an approved secret/session-store boundary exists.
