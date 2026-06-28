@@ -271,6 +271,13 @@ Recommended next auth implementation sequence:
 
 KQAG adapter work should wait until platform auth/session/app-access endpoints can provide platform-scoped launch context without exposing provider auth material.
 
+Implementation status after later PRs:
+
+- The provider-agnostic OIDC contracts, auth start/callback routes, auth state storage, runtime wiring, and a generic OIDC adapter factory now exist.
+- The generic adapter can build authorization URLs and perform token/userinfo HTTP calls only inside explicit adapter methods with injected HTTP boundaries.
+- Live cryptographic JWT/JWKS verification remains delegated to an explicit verifier interface until issuer, audience, expiry, nonce, and signature checks are implemented and tested.
+- Provider SDKs, frontend login UI, KQAG launch/storage integration, app launch tokens, fake-login shortcuts, billing, deployment, and migration execution remain outside the auth-provider boundary.
+
 ## Consequences
 
 Positive consequences:
@@ -299,7 +306,9 @@ Tradeoffs:
 - Public signup, if ever approved.
 - KQAG launch-token or backend exchange protocol.
 
-## Explicit Non-Goals
+## Explicit Non-Goals For The Original Decision PR
+
+These non-goals describe the ADR/introduction PR scope. Later implementation PRs may complete items from the future sequence above while preserving the provider-agnostic boundary.
 
 - No login implementation.
 - No callback implementation.
