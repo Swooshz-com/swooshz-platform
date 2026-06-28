@@ -22,6 +22,36 @@ const clientId = "synthetic-client-id";
 const providerKey = "example-oidc";
 const accessTokenField = "access_" + "token";
 const idTokenField = "id_" + "token";
+const unsafeMetadataKeys = [
+  "raw_claim",
+  "rawClaims",
+  "RawProfile",
+  "raw_provider_response",
+  "providerResponse",
+  "access_token",
+  "accessToken",
+  "AccessToken",
+  "access-token",
+  "refresh_token",
+  "refreshToken",
+  "id_token",
+  "idToken",
+  "client_secret",
+  "clientSecret",
+  "auth_code",
+  "authCode",
+  "authorization_code",
+  "authorizationCode",
+  "api_key",
+  "apiKey",
+  "private_key",
+  "privateKey",
+  "password",
+  "credential",
+  "credentials",
+  "token",
+  "secret",
+];
 
 test("generic OIDC JWKS verifier verifies a synthetic signed ID token", async () => {
   const fixture = createVerifierFixture();
@@ -58,6 +88,38 @@ test("generic OIDC JWKS verifier verifies a synthetic signed ID token", async ()
     tenant: "synthetic-team",
   });
   assertPrivacySafe(claims);
+});
+
+test("generic OIDC JWKS verifier keeps only safe primitive metadata", async () => {
+  const fixture = createVerifierFixture();
+  const blockedMetadata = Object.fromEntries(
+    unsafeMetadataKeys.map((key, index) => [key, `blocked-value-${index}`]),
+  );
+  const idToken = signJwt(fixture.keys, {
+    ...baseClaims(),
+    tenant: "synthetic-team",
+    login_count: 7,
+    plan: "internal",
+    workspace_hint: "workspace-alpha",
+    nested_profile: {
+      nested: "blocked-nested-value",
+    },
+    roles: ["blocked-array-value"],
+    preferred_username: "blocked-standard-claim",
+    azp: "blocked-authorized-party",
+    ...blockedMetadata,
+  });
+
+  const claims = await fixture.verifier.verify(verifierInput({ idToken }));
+  const serialized = JSON.stringify(claims.metadata);
+
+  assert.deepEqual(claims.metadata, {
+    login_count: 7,
+    plan: "internal",
+    tenant: "synthetic-team",
+    workspace_hint: "workspace-alpha",
+  });
+  assert.doesNotMatch(serialized, /blocked-/);
 });
 
 test("generic OIDC JWKS verifier rejects bad signatures and unsafe algorithms", async () => {

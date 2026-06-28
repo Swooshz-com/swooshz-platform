@@ -381,14 +381,28 @@ function readSafeMetadata(claims: Record<string, unknown>): OidcSafeMetadata {
 }
 
 function isUnsafeMetadataKey(key: string): boolean {
-  const normalized = key.toLowerCase();
+  const normalized = key.trim().toLowerCase();
+  const compact = normalized.replace(/[^a-z0-9]/g, "");
+
+  if (!compact) {
+    return true;
+  }
 
   return (
-    normalized.startsWith("raw_") ||
-    normalized.endsWith("_token") ||
-    normalized.endsWith("_secret") ||
-    normalized === "token" ||
-    normalized === "secret"
+    compact.startsWith("raw") ||
+    compact.includes("providerresponse") ||
+    compact.includes("providerpayload") ||
+    compact.includes("token") ||
+    compact.includes("secret") ||
+    compact.includes("password") ||
+    compact.includes("credential") ||
+    compact.includes("apikey") ||
+    compact.includes("privatekey") ||
+    compact === "key" ||
+    compact.endsWith("key") ||
+    compact === "code" ||
+    compact.includes("authcode") ||
+    compact.includes("authorizationcode")
   );
 }
 
