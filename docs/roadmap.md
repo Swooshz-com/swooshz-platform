@@ -94,6 +94,7 @@ Non-goals:
 - Real auth provider network calls before the callback/service contract is tested.
 - Provider SDKs or real provider networking before a live provider adapter PR is explicitly approved.
 - Fake-login shortcuts or email-only user precreation for future provider linking.
+- User plus provider identity seeding before an explicit transactional identity seed boundary is approved.
 - Customer portal.
 - Frontend shell before provider and persistence decisions are stable.
 - Database migrations before provider/tooling selection is approved.

@@ -28,9 +28,7 @@ export type InternalAccessSeedErrorCode =
   | "user_not_found"
   | "user_conflict"
   | "email_only_user_creation_forbidden"
-  | "existing_email_without_provider_identity"
-  | "provider_identity_conflict"
-  | "provider_identity_required"
+  | "provider_identity_seed_requires_transaction"
   | "repository_failure";
 
 export class InternalAccessSeedError extends Error {
@@ -152,9 +150,11 @@ async function ensureInternalWorkspaceAppAccessSafely(
     throw new InternalAccessSeedError("role_not_seedable");
   }
 
+  rejectUnsupportedProviderIdentitySeed(input.user);
+
   const workspace = await ensureWorkspace(repositories, input, created);
   const app = await ensureApp(repositories, input, created);
-  const identityResult = await ensureSeedUser(repositories, input, created);
+  const identityResult = await ensureSeedUser(repositories, input);
   const entitlement = await ensureEntitlement(
     repositories,
     input,
@@ -321,7 +321,6 @@ async function ensureMembership(
 async function ensureSeedUser(
   repositories: PlatformRepositories,
   input: InternalAccessSeedInput,
-  created: InternalAccessSeedCreatedFlags,
 ): Promise<{ user: User; providerIdentity: ProviderIdentity | null }> {
   if (input.user.mode === "existing") {
     return {
@@ -330,7 +329,25 @@ async function ensureSeedUser(
     };
   }
 
-  return ensureProviderIdentityUser(repositories, input, created);
+  throw new InternalAccessSeedError("provider_identity_seed_requires_transaction");
+}
+
+function rejectUnsupportedProviderIdentitySeed(input: InternalAccessSeedUserInput): void {
+  if (input.mode === "existing") {
+    return;
+  }
+
+  if (
+    !input.userId ||
+    !input.providerIdentityId ||
+    !input.providerKey ||
+    !input.providerSubject ||
+    !input.verifiedEmail
+  ) {
+    throw new InternalAccessSeedError("email_only_user_creation_forbidden");
+  }
+
+  throw new InternalAccessSeedError("provider_identity_seed_requires_transaction");
 }
 
 async function findExistingUser(
@@ -365,84 +382,4 @@ async function findExistingUser(
   }
 
   return user;
-}
-
-async function ensureProviderIdentityUser(
-  repositories: PlatformRepositories,
-  input: InternalAccessSeedInput,
-  created: InternalAccessSeedCreatedFlags,
-): Promise<{ user: User; providerIdentity: ProviderIdentity }> {
-  const userInput = input.user as Extract<
-    InternalAccessSeedUserInput,
-    { mode: "create_with_provider_identity" }
-  >;
-  const providerIdentities = repositories.providerIdentities;
-
-  if (!providerIdentities) {
-    throw new InternalAccessSeedError("provider_identity_required");
-  }
-
-  if (
-    !userInput.userId ||
-    !userInput.providerIdentityId ||
-    !userInput.providerKey ||
-    !userInput.providerSubject ||
-    !userInput.verifiedEmail
-  ) {
-    throw new InternalAccessSeedError("email_only_user_creation_forbidden");
-  }
-
-  const verifiedEmail = normalizeEmail(userInput.verifiedEmail);
-  const existingIdentity = await providerIdentities.findByProviderSubject(
-    userInput.providerKey,
-    userInput.providerSubject,
-  );
-
-  if (existingIdentity) {
-    const existingUser = await repositories.users.findById(existingIdentity.userId);
-
-    if (
-      !existingUser ||
-      existingUser.id !== existingIdentity.userId ||
-      existingUser.id !== userInput.userId ||
-      existingUser.email !== verifiedEmail ||
-      existingUser.status !== UserStatus.Active
-    ) {
-      throw new InternalAccessSeedError("provider_identity_conflict");
-    }
-
-    return {
-      user: existingUser,
-      providerIdentity: existingIdentity,
-    };
-  }
-
-  const existingEmailUser = await repositories.users.findByNormalizedEmail(verifiedEmail);
-
-  if (existingEmailUser) {
-    throw new InternalAccessSeedError("existing_email_without_provider_identity");
-  }
-
-  const user = await repositories.users.create({
-    id: userInput.userId,
-    email: verifiedEmail,
-    displayName: userInput.displayName?.trim() || verifiedEmail,
-    status: UserStatus.Active,
-    createdAt: input.now,
-    updatedAt: input.now,
-    lastLoginAt: null,
-  });
-  const providerIdentity = await providerIdentities.create({
-    id: userInput.providerIdentityId,
-    userId: user.id,
-    providerKey: userInput.providerKey,
-    providerSubject: userInput.providerSubject,
-    createdAt: input.now,
-    updatedAt: input.now,
-  });
-
-  created.user = true;
-  created.providerIdentity = true;
-
-  return { user, providerIdentity };
 }

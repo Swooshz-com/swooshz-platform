@@ -64,24 +64,25 @@ test("internal access seed can grant membership to an existing user found by nor
   assert.equal(fixture.records.providerIdentities.length, 0);
 });
 
-test("internal access seed creates user and provider identity together only with explicit provider identity", async () => {
+test("internal access seed defers provider identity user creation before any identity writes", async () => {
   const fixture = createSeedFixture();
 
-  const result = await ensureInternalWorkspaceAppAccess(
-    fixture.repositories,
-    providerIdentitySeed(),
+  await assert.rejects(
+    () => ensureInternalWorkspaceAppAccess(fixture.repositories, providerIdentitySeed()),
+    assertSeedError("provider_identity_seed_requires_transaction"),
   );
 
-  assert.equal(result.created.user, true);
-  assert.equal(result.created.providerIdentity, true);
-  assert.equal(result.user.email, "provider.user@example.test");
-  assert.equal(result.providerIdentity.providerKey, "example-oidc");
-  assert.equal(result.providerIdentity.providerSubject, "provider-subject-internal");
-  assert.equal(fixture.records.users.length, 1);
-  assert.equal(fixture.records.providerIdentities.length, 1);
+  assert.equal(fixture.records.workspaces.length, 0);
+  assert.equal(fixture.records.apps.length, 0);
+  assert.equal(fixture.records.appEntitlements.length, 0);
+  assert.equal(fixture.records.memberships.length, 0);
+  assert.equal(fixture.records.users.length, 0);
+  assert.equal(fixture.records.providerIdentities.length, 0);
+  assert.equal(fixture.writeCounts.users, 0);
+  assert.equal(fixture.writeCounts.providerIdentities, 0);
 });
 
-test("internal access seed refuses email-only user creation and provider linking to existing email-only users", async () => {
+test("internal access seed refuses email-only user creation and defers provider linking to existing email-only users", async () => {
   const emptyFixture = createSeedFixture();
 
   await assert.rejects(
@@ -98,8 +99,12 @@ test("internal access seed refuses email-only user creation and provider linking
       existingEmailFixture.repositories,
       providerIdentitySeed(),
     ),
-    assertSeedError("existing_email_without_provider_identity"),
+    assertSeedError("provider_identity_seed_requires_transaction"),
   );
+  assert.equal(existingEmailFixture.records.users.length, 1);
+  assert.equal(existingEmailFixture.records.providerIdentities.length, 0);
+  assert.equal(existingEmailFixture.writeCounts.users, 0);
+  assert.equal(existingEmailFixture.writeCounts.providerIdentities, 0);
 });
 
 test("internal access seed refuses conflicting existing platform state safely", async () => {
@@ -180,8 +185,10 @@ test("internal access seed refuses conflicting provider identity state safely", 
 
   await assert.rejects(
     () => ensureInternalWorkspaceAppAccess(fixture.repositories, providerIdentitySeed()),
-    assertSeedError("provider_identity_conflict"),
+    assertSeedError("provider_identity_seed_requires_transaction"),
   );
+  assert.equal(fixture.writeCounts.users, 0);
+  assert.equal(fixture.writeCounts.providerIdentities, 0);
 });
 
 test("seeded KQAG access is allowed for owner admin member and viewer remains blocked", async () => {
@@ -361,9 +368,14 @@ function createSeedFixture(initial = {}) {
     apps: initial.apps ?? [],
     appEntitlements: initial.appEntitlements ?? [],
   };
+  const writeCounts = {
+    users: 0,
+    providerIdentities: 0,
+  };
 
   return {
     records,
+    writeCounts,
     repositories: {
       users: {
         async findById(id) {
@@ -373,6 +385,7 @@ function createSeedFixture(initial = {}) {
           return records.users.find((user) => user.email === email) ?? null;
         },
         async create(user) {
+          writeCounts.users += 1;
           records.users.push(user);
           return user;
         },
@@ -389,6 +402,7 @@ function createSeedFixture(initial = {}) {
           return records.providerIdentities.filter((identity) => identity.userId === userId);
         },
         async create(identity) {
+          writeCounts.providerIdentities += 1;
           records.providerIdentities.push(identity);
           return identity;
         },

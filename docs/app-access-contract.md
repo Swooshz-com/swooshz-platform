@@ -96,7 +96,7 @@ The platform may prepare internal KQAG/SAQG access before a frontend or KQAG lau
 
 The seed must be explicit and idempotent. It may reuse matching records and must fail safely on conflicts. It must not create fake login state, create app launch tokens, call KQAG, write KQAG storage, run migrations, call provider networks, or grant viewer launch access for `kqag`.
 
-Membership can be granted to an existing active user by user id or normalized email lookup. Creating a new user is allowed only when provider key, provider subject, and verified email are supplied in the same seed operation so the user and provider identity are created together. Email-only user precreation for future provider linking is forbidden.
+Membership can be granted to an existing active user by user id or normalized email lookup. Creating a new user together with a provider identity is deferred until an explicit transactional identity seed boundary exists. This avoids partial identity state such as an active email-only user without the intended provider identity. Email-only user precreation for future provider linking is forbidden.
 
 ## App Launch Flow
 

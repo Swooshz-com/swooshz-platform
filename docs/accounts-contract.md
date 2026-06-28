@@ -286,12 +286,13 @@ Internal workspace/app-access seed code is a platform-only backend contract. It 
 - An enabled or trial workspace entitlement for that app.
 - An active membership grant for an owner, admin, or member.
 
-The seed contract must be idempotent. Existing matching workspace, app, entitlement, membership, user, or provider identity records may be reused. Existing conflicting records must fail with privacy-safe stable errors instead of being overwritten silently.
+The seed contract must be idempotent. Existing matching workspace, app, entitlement, membership, or user records may be reused. Existing conflicting records must fail with privacy-safe stable errors instead of being overwritten silently.
 
 Identity-linking safety is required:
 
 - A membership may be granted to an existing user by user id or normalized email lookup only if that user already exists and is active.
-- A new user may be created only together with an explicit provider identity when provider key, provider subject, and verified email are all supplied.
+- Creating a new user together with a provider identity is deferred until an explicit transactional identity seed boundary exists.
+- Provider-identity user creation must fail before any platform writes in this PR so it cannot leave behind a partial active user or identity record.
 - The seed must never create an email-only user intended for future provider linking. The auth resolver intentionally rejects linking a new provider identity to an existing email-only user to avoid account takeover, and seed code must preserve that behaviour.
 - Viewer grants must not be seeded for KQAG launch because the current app-access decision blocks KQAG viewer launch.
 
