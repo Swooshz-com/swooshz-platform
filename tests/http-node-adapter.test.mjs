@@ -138,6 +138,61 @@ test("app-access route does not require CSRF", async () => {
   assert.equal(fixture.calls.csrfValidate, 0);
 });
 
+test("session context route returns safe no-store context and does not require CSRF", async () => {
+  const fixture = createAdapterFixture({
+    csrfThrows: true,
+  });
+  const { response, body } = await request({
+    method: "GET",
+    url: "/api/platform/session/context?workspaceId=workspace_koncept_images",
+    headers: {
+      cookie: `swooshz_session=${sessionId}; unrelated=value`,
+    },
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 200);
+  assertNoStoreHeaders(response.headers);
+  assert.equal(body.outcome, "authenticated");
+  assert.equal(body.user.userId, "user_owner_example");
+  assert.equal(body.selectedWorkspaceId, "workspace_koncept_images");
+  assert.deepEqual(body.workspaces[0].apps[0].access, {
+    result: "allowed",
+    allowed: true,
+    message: "Access allowed.",
+  });
+  assert.equal(fixture.calls.sessionsFindById, 1);
+  assert.equal(fixture.calls.csrfValidate, 0);
+  assert.equal(fixture.calls.sessionsRevoke, 0);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("session context route handles missing cookie and wrong method safely", async () => {
+  const missing = await request({
+    method: "GET",
+    url: "/api/platform/session/context",
+  });
+  const wrongMethod = await request({
+    method: "POST",
+    url: "/api/platform/session/context",
+  });
+
+  assert.equal(missing.response.statusCode, 401);
+  assertNoStoreHeaders(missing.response.headers);
+  assert.deepEqual(missing.body, {
+    outcome: "unauthenticated",
+    reason: "missing_session",
+  });
+  assert.equal(wrongMethod.response.statusCode, 405);
+  assert.equal(wrongMethod.response.headers.allow, "GET");
+  assert.deepEqual(wrongMethod.body, {
+    outcome: "error",
+    message: "Method not allowed.",
+  });
+  assertResponseIsPrivacySafe(missing.response);
+  assertResponseIsPrivacySafe(wrongMethod.response);
+});
+
 test("CSRF issuance route issues a token for an active browser session", async () => {
   const fixture = createAdapterFixture();
   const { response, body } = await request({

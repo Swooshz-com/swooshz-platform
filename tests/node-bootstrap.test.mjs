@@ -829,15 +829,11 @@ function createFakeDrizzleDb(calls, records) {
       return {
         from(table) {
           calls.dbOperations.push(`select:${readTableName(table)}`);
-          return {
-            where() {
-              return new FakeSelectResult(
-                selectRows(table, records),
-                calls,
-                readTableName(table),
-              );
-            },
-          };
+          return new FakeSelectResult(
+            selectRows(table, records),
+            calls,
+            readTableName(table),
+          );
         },
       };
     },
@@ -983,6 +979,11 @@ class FakeSelectResult {
   limit() {
     this.calls?.dbOperations.push(`limit:${this.tableName}:${this.rows.length}`);
     return Promise.resolve(this.rows.slice(0, 1));
+  }
+
+  where() {
+    this.calls?.dbOperations.push(`where:${this.tableName}`);
+    return this;
   }
 
   then(onFulfilled, onRejected) {

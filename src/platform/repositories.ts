@@ -76,11 +76,13 @@ export interface InvitationRepository {
 export interface AppRepository {
   findByKey(key: string): Promise<App | null>;
   findById(id: string): Promise<App | null>;
+  listAll(): Promise<readonly App[]>;
   create(app: App): Promise<App>;
 }
 
 export interface AppEntitlementRepository {
   findForWorkspaceApp(workspaceId: string, appId: string): Promise<AppEntitlement | null>;
+  listForWorkspace(workspaceId: string): Promise<readonly AppEntitlement[]>;
   create(entitlement: AppEntitlement): Promise<AppEntitlement>;
 }
 

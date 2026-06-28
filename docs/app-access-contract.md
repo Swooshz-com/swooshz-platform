@@ -98,6 +98,12 @@ The seed must be explicit and idempotent. It may reuse matching records and must
 
 Membership can be granted to an existing active user by user id or normalized email lookup. Creating a new user together with a provider identity is deferred until an explicit transactional identity seed boundary exists. This avoids partial identity state such as an active email-only user without the intended provider identity. Email-only user precreation for future provider linking is forbidden.
 
+## Current Session Context
+
+`GET /api/platform/session/context` is a read-only platform endpoint for a future platform shell or dashboard. It uses the browser session cookie to return safe active-session status, platform user summary, active workspace memberships, and per-workspace app access summaries derived from the same entitlement and role rules as app launch decisions.
+
+The session context response is informational. It does not launch apps, mint app launch tokens, persist workspace selection, accept invitations, create memberships, grant entitlements, call KQAG, or expose provider tokens, raw claims, session secrets, CSRF material, database details, quote data, pricing files, or private app payloads.
+
 ## App Launch Flow
 
 The platform app launch flow is:

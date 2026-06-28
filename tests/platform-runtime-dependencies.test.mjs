@@ -562,11 +562,7 @@ function createFakeDrizzleDb(records) {
     select() {
       return {
         from(table) {
-          return {
-            where() {
-              return new FakeSelectResult(selectRows(table, records));
-            },
-          };
+          return new FakeSelectResult(selectRows(table, records));
         },
       };
     },
@@ -732,6 +728,10 @@ class FakeSelectResult {
 
   limit(limit) {
     return Promise.resolve(this.rows.slice(0, limit));
+  }
+
+  where() {
+    return this;
   }
 
   then(onFulfilled, onRejected) {

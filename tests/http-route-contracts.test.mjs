@@ -15,6 +15,7 @@ test("route manifest includes only approved initial platform routes", () => {
       "platform_auth_start",
       "platform_auth_callback",
       "platform_session_app_access",
+      "platform_session_context",
       "platform_session_csrf",
       "platform_logout",
     ],
@@ -26,6 +27,7 @@ test("route manifest includes only approved initial platform routes", () => {
       "GET /api/platform/auth/start",
       "GET /api/platform/auth/callback",
       "GET /api/platform/session/app-access",
+      "GET /api/platform/session/context",
       "GET /api/platform/session/csrf",
       "POST /api/platform/logout",
     ],
@@ -77,6 +79,19 @@ test("protected app-access route requires browser session cookie and safe query 
   assert.equal(route.csrf.required, false);
   assert.deepEqual(route.requiredQuery, ["workspaceId", "appKey"]);
   assert.equal(route.handlerContract, "handleProtectedAppAccessRequest");
+});
+
+test("session context route is GET-only read-only and requires browser session", () => {
+  const route = getHttpRouteContract("platform_session_context");
+
+  assert.equal(route.method, "GET");
+  assert.equal(route.path, "/api/platform/session/context");
+  assert.equal(route.browserSession, "required");
+  assert.equal(route.csrf.required, false);
+  assert.equal(route.csrf.strategy, "none");
+  assert.deepEqual(route.requiredQuery, []);
+  assert.equal(route.handlerContract, "handleSessionContextRequest");
+  assert.equal(route.idempotent, true);
 });
 
 test("logout route is POST-only, cookie-aware, idempotent, and CSRF-protected", () => {

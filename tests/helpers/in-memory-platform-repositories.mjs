@@ -113,6 +113,9 @@ export function createInMemoryPlatformRepositories(records = {}) {
       async findById(id) {
         return apps.find((app) => app.id === id) ?? null;
       },
+      async listAll() {
+        return apps;
+      },
       async create(app) {
         apps.push(app);
         return app;
@@ -125,6 +128,11 @@ export function createInMemoryPlatformRepositories(records = {}) {
             (entitlement) =>
               entitlement.workspaceId === workspaceId && entitlement.appId === appId,
           ) ?? null
+        );
+      },
+      async listForWorkspace(workspaceId) {
+        return appEntitlements.filter(
+          (entitlement) => entitlement.workspaceId === workspaceId,
         );
       },
       async create(entitlement) {
