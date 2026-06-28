@@ -4,12 +4,12 @@ This folder contains framework-agnostic HTTP boundary contracts for Swooshz Plat
 
 - `session-cookie.ts` parses the browser cookie header, extracts the platform session reference, builds session `Set-Cookie` headers, and builds logout clearing cookies.
 - `auth-handlers.ts` defines framework-agnostic browser auth start/callback handler contracts over injected OIDC adapter, state store, and callback service dependencies.
-- `handlers.ts` adapts plain request-like objects to the storage-agnostic protected app-access, CSRF token issuance, and session revocation services.
+- `handlers.ts` adapts plain request-like objects to the storage-agnostic protected app-access, current session context, CSRF token issuance, and session revocation services.
 - `route-contracts.ts` records the first approved route map without wiring a real server or framework.
 - `origin-validation.ts`, `csrf.ts`, and `request-security.ts` provide framework-agnostic Origin/Referer and CSRF token validation contracts for future state-changing browser-cookie routes.
 - `csrf-token-repositories.ts` and `csrf-token-service.ts` define the storage-agnostic CSRF token lifecycle used by repository-backed validators.
 - `csrf-token-crypto.ts` provides Node crypto-backed CSRF token generation and HMAC hashing adapters for future live dependency composition.
-- `node-adapter.ts` adapts Node-style HTTP request data to the approved route contracts for `GET /healthz`, `GET /api/platform/auth/start`, `GET /api/platform/auth/callback`, `GET /api/platform/session/app-access`, `GET /api/platform/session/csrf`, and `POST /api/platform/logout`.
+- `node-adapter.ts` adapts Node-style HTTP request data to the approved route contracts for `GET /healthz`, `GET /api/platform/auth/start`, `GET /api/platform/auth/callback`, `GET /api/platform/session/app-access`, `GET /api/platform/session/context`, `GET /api/platform/session/csrf`, and `POST /api/platform/logout`.
 - `runtime-config.ts` parses privacy-safe Node HTTP runtime config for local and production hosting posture.
 - `node-server.ts` creates a Node HTTP server around the adapter only when explicitly invoked.
 
@@ -27,7 +27,9 @@ Runtime dependency composition now lives under `src/runtime`. It assembles the a
 
 Explicit Node bootstrap wiring also lives under `src/runtime`. It reads runtime and secret config from injected environment values, creates the DB client through the existing database boundary only during `start()`, composes dependencies, starts the server only through explicit `start()`, and closes the server plus owned DB client on `stop()`. When an OIDC adapter is injected or `PLATFORM_AUTH_PROVIDER_MODE=generic_oidc` is set, bootstrap can include auth start/callback dependencies and requires `AUTH_STATE_HASH_SECRET`; generic mode also requires issuer and JWKS config plus an injected HTTP client. Creating the bootstrap object and calling `start()` do not call provider networking. It does not run migrations or create KQAG flows.
 
-The Node adapter does not create or listen on a server. It keeps routing limited to the approved manifest, delegates app-access and logout behaviour to existing handlers, and calls `validateHttpRequestSecurityForRoute` before logout.
+The Node adapter does not create or listen on a server. It keeps routing limited to the approved manifest, delegates app-access, session context, and logout behaviour to existing handlers, and calls `validateHttpRequestSecurityForRoute` before logout.
+
+`GET /api/platform/session/context` is a read-only browser-session endpoint for future platform shell/dashboard use. It requires the platform session cookie, does not require CSRF, and returns no-store/no-cache responses containing only safe active-session status, platform user summary, accessible workspace memberships, and app access summaries derived from existing app entitlement rules. It does not expose raw cookies, provider subjects, provider tokens, raw claims, state/nonce data, CSRF material, DB details, launch tokens, KQAG runtime data, or private app payloads. It does not launch apps or persist workspace selection.
 
 Browser auth route contracts now exist for starting provider login and receiving the provider callback. Auth start stores only hashed state/nonce references through an injected state store and redirects through an injected OIDC authorization URL builder. Auth callback wraps the existing callback service, sets the platform browser session cookie only after successful platform session creation, and keeps provider tokens, raw claims, auth codes, raw state/nonce, state hashes, nonce hashes, and client secrets out of response bodies and errors. Provider networking remains behind the injected OIDC adapter boundary; auth SDKs, frontend login UI, and live state persistence remain deferred.
 

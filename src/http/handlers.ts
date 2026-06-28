@@ -7,6 +7,10 @@ import {
   decideProtectedAppAccess,
   ProtectedAppAccessServiceError,
 } from "../platform/protected-app-access-service.js";
+import {
+  getPlatformSessionContext,
+  PlatformSessionContextServiceError,
+} from "../platform/session-context-service.js";
 import type { PlatformRepositories, SessionRepository } from "../platform/repositories.js";
 import {
   CsrfTokenServiceError,
@@ -41,6 +45,13 @@ export interface ProtectedAppAccessHttpRequest {
 export interface LogoutHttpRequest {
   headers?: HttpRequestHeaders;
   now: string;
+  cookie?: BrowserSessionCookieConfig;
+}
+
+export interface SessionContextHttpRequest {
+  headers?: HttpRequestHeaders;
+  now: string;
+  selectedWorkspaceId?: string | null;
   cookie?: BrowserSessionCookieConfig;
 }
 
@@ -184,6 +195,63 @@ function csrfIssueDenied(
   };
 }
 
+export async function handleSessionContextRequest(
+  repositories: PlatformRepositories,
+  request: SessionContextHttpRequest,
+): Promise<HttpResponseLike> {
+  const sessionId = extractSessionId(request.headers, request.cookie);
+
+  if (!sessionId) {
+    return sessionContextUnauthenticated("missing_session");
+  }
+
+  try {
+    const context = await getPlatformSessionContext(repositories, {
+      sessionId,
+      now: request.now,
+      selectedWorkspaceId: request.selectedWorkspaceId,
+    });
+
+    if (context.outcome === "unauthenticated") {
+      return {
+        status: 401,
+        headers: noStoreHeaders(),
+        body: context,
+      };
+    }
+
+    return {
+      status: 200,
+      headers: noStoreHeaders(),
+      body: context,
+    };
+  } catch (error) {
+    if (error instanceof PlatformSessionContextServiceError) {
+      return sessionContextFailure();
+    }
+
+    return sessionContextFailure();
+  }
+}
+
+function sessionContextUnauthenticated(
+  reason:
+    | "missing_session"
+    | "revoked_session"
+    | "expired_session"
+    | "missing_user"
+    | "user_not_active",
+) {
+  return {
+    status: 401,
+    headers: noStoreHeaders(),
+    body: {
+      outcome: "unauthenticated",
+      reason,
+    },
+  };
+}
+
 export async function handleLogoutRequest(
   dependencies: SessionRevocationServiceDependencies,
   request: LogoutHttpRequest,
@@ -281,10 +349,25 @@ function csrfIssueFailure() {
 }
 
 function csrfIssueHeaders(): Record<string, string> {
+  return noStoreHeaders();
+}
+
+function noStoreHeaders(): Record<string, string> {
   return {
     "cache-control": "no-store, no-cache, must-revalidate",
     pragma: "no-cache",
     expires: "0",
+  };
+}
+
+function sessionContextFailure() {
+  return {
+    status: 500,
+    headers: noStoreHeaders(),
+    body: {
+      outcome: "error",
+      message: "Session context could not be loaded.",
+    },
   };
 }
 

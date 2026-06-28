@@ -284,6 +284,8 @@ test("Drizzle repository list methods return arrays", async () => {
       selectRows: new Map([
         [schema.providerIdentities, [providerIdentityRow]],
         [schema.memberships, [membershipRow]],
+        [schema.apps, [appRow]],
+        [schema.appEntitlements, [entitlementRow]],
       ]),
     }),
   );
@@ -293,6 +295,10 @@ test("Drizzle repository list methods return arrays", async () => {
   ]);
   assert.deepEqual(await repositories.memberships.listForUser(userRow.id), [
     mapMembershipRow(membershipRow),
+  ]);
+  assert.deepEqual(await repositories.apps.listAll(), [mapAppRow(appRow)]);
+  assert.deepEqual(await repositories.appEntitlements.listForWorkspace(workspaceRow.id), [
+    mapAppEntitlementRow(entitlementRow),
   ]);
 });
 
@@ -431,12 +437,7 @@ function createFakeDrizzleDb({ selectRows, insertRows, updateRows } = {}) {
         from(table) {
           calls.push({ operation: "select.from", table });
 
-          return {
-            where(condition) {
-              calls.push({ operation: "select.where", table, condition });
-              return new FakeSelectResult(selectRows?.get(table) ?? [], calls, table);
-            },
-          };
+          return new FakeSelectResult(selectRows?.get(table) ?? [], calls, table);
         },
       };
     },
@@ -500,6 +501,11 @@ class FakeSelectResult {
   limit(limit) {
     this.calls.push({ operation: "select.limit", table: this.table, limit });
     return Promise.resolve(this.rows.slice(0, limit));
+  }
+
+  where(condition) {
+    this.calls.push({ operation: "select.where", table: this.table, condition });
+    return this;
   }
 
   then(onFulfilled, onRejected) {

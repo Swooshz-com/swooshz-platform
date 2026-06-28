@@ -14,6 +14,7 @@ import {
   handleCsrfTokenIssueRequest,
   handleLogoutRequest,
   handleProtectedAppAccessRequest,
+  handleSessionContextRequest,
   type HttpRequestHeaders,
   type HttpResponseLike,
 } from "./handlers.js";
@@ -151,6 +152,17 @@ export async function handleNodePlatformHttpRequest(
         appKey,
         now: dependencies.now(),
         billingGate: dependencies.billingGate,
+        cookie: dependencies.cookie,
+      }),
+    );
+  }
+
+  if (route.id === "platform_session_context") {
+    return toNodeResponse(
+      await handleSessionContextRequest(dependencies.repositories, {
+        headers,
+        now: dependencies.now(),
+        selectedWorkspaceId: optionalSearchParam(parsedUrl, "workspaceId"),
         cookie: dependencies.cookie,
       }),
     );

@@ -7,6 +7,7 @@ import {
   handleCsrfTokenIssueRequest,
   handleLogoutRequest,
   handleProtectedAppAccessRequest,
+  handleSessionContextRequest,
 } from "../dist/index.js";
 import { createInMemoryPlatformRepositories } from "./helpers/in-memory-platform-repositories.mjs";
 
@@ -133,6 +134,78 @@ test("protected app-access handler returns 500 safe body for service failure", a
     outcome: "error",
     message: "App access decision could not be completed.",
   });
+  assertResponseIsPrivacySafe(response);
+});
+
+test("session context handler returns 401 for missing cookie without repository reads", async () => {
+  const { repositories, calls } = httpFixture();
+
+  const response = await handleSessionContextRequest(repositories, {
+    headers: {},
+    now,
+  });
+
+  assert.equal(response.status, 401);
+  assert.deepEqual(response.body, {
+    outcome: "unauthenticated",
+    reason: "missing_session",
+  });
+  assertNoStoreHeaders(response.headers);
+  assert.equal(calls.sessionsFindById, 0);
+  assert.equal(calls.usersFindById, 0);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("session context handler returns 200 safe context for active session", async () => {
+  const { repositories, calls } = httpFixture();
+
+  const response = await handleSessionContextRequest(repositories, {
+    headers: {
+      cookie: "swooshz_session=session_owner_example; unrelated=value",
+    },
+    now,
+    selectedWorkspaceId: "workspace_koncept_images",
+  });
+
+  assert.equal(response.status, 200);
+  assertNoStoreHeaders(response.headers);
+  assert.equal(response.body.outcome, "authenticated");
+  assert.equal(response.body.user.userId, "user_owner_example");
+  assert.equal(response.body.selectedWorkspaceId, "workspace_koncept_images");
+  assert.deepEqual(
+    response.body.workspaces.map((workspace) => ({
+      workspaceId: workspace.workspaceId,
+      apps: workspace.apps.map((app) => app.access.result),
+    })),
+    [
+      {
+        workspaceId: "workspace_koncept_images",
+        apps: ["allowed"],
+      },
+    ],
+  );
+  assert.equal(calls.sessionsFindById, 1);
+  assert.equal(calls.membershipsListForUser, 1);
+  assert.equal(calls.csrfValidate ?? 0, 0);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("session context handler returns 500 safe body for repository failure", async () => {
+  const { repositories } = httpFixture({ failUserFind: true });
+
+  const response = await handleSessionContextRequest(repositories, {
+    headers: {
+      cookie: "swooshz_session=session_owner_example",
+    },
+    now,
+  });
+
+  assert.equal(response.status, 500);
+  assert.deepEqual(response.body, {
+    outcome: "error",
+    message: "Session context could not be loaded.",
+  });
+  assertNoStoreHeaders(response.headers);
   assertResponseIsPrivacySafe(response);
 });
 
@@ -533,8 +606,11 @@ function instrumentRepositories(repositories, options) {
     sessionsFindById: 0,
     sessionsRevoke: 0,
     usersFindById: 0,
+    membershipsListForUser: 0,
     membershipsFindForUserInWorkspace: 0,
     appsFindByKey: 0,
+    appsListAll: 0,
+    appEntitlementsListForWorkspace: 0,
   };
 
   const originalSessionFindById = repositories.sessions.findById.bind(repositories.sessions);
@@ -570,11 +646,35 @@ function instrumentRepositories(repositories, options) {
     return originalMembershipFind(userId, workspaceId);
   };
 
+  const originalMembershipList =
+    repositories.memberships.listForUser.bind(repositories.memberships);
+  repositories.memberships.listForUser = async (userId) => {
+    calls.membershipsListForUser += 1;
+    return originalMembershipList(userId);
+  };
+
   const originalAppFindByKey = repositories.apps.findByKey.bind(repositories.apps);
   repositories.apps.findByKey = async (key) => {
     calls.appsFindByKey += 1;
     return originalAppFindByKey(key);
   };
+
+  if (repositories.apps.listAll) {
+    const originalAppsListAll = repositories.apps.listAll.bind(repositories.apps);
+    repositories.apps.listAll = async () => {
+      calls.appsListAll += 1;
+      return originalAppsListAll();
+    };
+  }
+
+  if (repositories.appEntitlements.listForWorkspace) {
+    const originalListForWorkspace =
+      repositories.appEntitlements.listForWorkspace.bind(repositories.appEntitlements);
+    repositories.appEntitlements.listForWorkspace = async (workspaceId) => {
+      calls.appEntitlementsListForWorkspace += 1;
+      return originalListForWorkspace(workspaceId);
+    };
+  }
 
   return calls;
 }

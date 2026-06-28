@@ -58,7 +58,7 @@ export interface DrizzleSelectResult extends PromiseLike<readonly Row[]> {
 
 export interface DrizzleDatabase {
   select(): {
-    from(table: Table): {
+    from(table: Table): DrizzleSelectResult & {
       where(condition: Condition): DrizzleSelectResult;
     };
   };
@@ -209,6 +209,10 @@ export function createDrizzlePlatformRepositories(
       async findById(id) {
         return mapOne(await selectOne(db, apps, eq(apps.id, id)), mapAppRow);
       },
+      async listAll() {
+        const rows = await db.select().from(apps);
+        return rows.map((row) => mapAppRow(row as unknown as AppRow));
+      },
       async create(app) {
         const rows = await db.insert(apps).values(appToValues(app)).returning();
         return mapOneRequired(rows[0], mapAppRow);
@@ -227,6 +231,13 @@ export function createDrizzlePlatformRepositories(
           ),
           mapAppEntitlementRow,
         );
+      },
+      async listForWorkspace(workspaceId) {
+        const rows = await db
+          .select()
+          .from(appEntitlements)
+          .where(eq(appEntitlements.workspaceId, workspaceId));
+        return rows.map((row) => mapAppEntitlementRow(row as unknown as AppEntitlementRow));
       },
       async create(entitlement) {
         const rows = await db

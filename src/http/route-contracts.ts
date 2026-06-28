@@ -3,6 +3,7 @@ export type HttpRouteId =
   | "platform_auth_start"
   | "platform_auth_callback"
   | "platform_session_app_access"
+  | "platform_session_context"
   | "platform_session_csrf"
   | "platform_logout";
 
@@ -85,6 +86,20 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     },
     requiredQuery: ["workspaceId", "appKey"],
     handlerContract: "handleProtectedAppAccessRequest",
+    idempotent: true,
+    implemented: false,
+  },
+  {
+    id: "platform_session_context",
+    method: "GET",
+    path: "/api/platform/session/context",
+    browserSession: "required",
+    csrf: {
+      required: false,
+      strategy: "none",
+    },
+    requiredQuery: [],
+    handlerContract: "handleSessionContextRequest",
     idempotent: true,
     implemented: false,
   },
