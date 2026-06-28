@@ -1,4 +1,6 @@
 export type HttpRouteId =
+  | "platform_landing_page"
+  | "platform_app_shell"
   | "healthz"
   | "platform_auth_start"
   | "platform_auth_callback"
@@ -10,6 +12,8 @@ export type HttpRouteId =
   | "platform_logout";
 
 export type HttpRouteMethod = "GET" | "POST";
+
+export type HttpRouteResponseKind = "json" | "html";
 
 export type BrowserSessionRequirement = "none" | "optional" | "required";
 
@@ -30,11 +34,42 @@ export interface HttpRouteContract {
   csrf: HttpRouteCsrfContract;
   requiredQuery: readonly string[];
   handlerContract: string | null;
+  responseKind: HttpRouteResponseKind;
   idempotent: boolean;
   implemented: false;
 }
 
 export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
+  {
+    id: "platform_landing_page",
+    method: "GET",
+    path: "/",
+    browserSession: "none",
+    csrf: {
+      required: false,
+      strategy: "none",
+    },
+    requiredQuery: [],
+    handlerContract: "renderLandingPage",
+    responseKind: "html",
+    idempotent: true,
+    implemented: false,
+  },
+  {
+    id: "platform_app_shell",
+    method: "GET",
+    path: "/app",
+    browserSession: "none",
+    csrf: {
+      required: false,
+      strategy: "none",
+    },
+    requiredQuery: [],
+    handlerContract: "renderAppShellPage",
+    responseKind: "html",
+    idempotent: true,
+    implemented: false,
+  },
   {
     id: "healthz",
     method: "GET",
@@ -46,6 +81,7 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     },
     requiredQuery: [],
     handlerContract: null,
+    responseKind: "json",
     idempotent: true,
     implemented: false,
   },
@@ -60,6 +96,7 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     },
     requiredQuery: [],
     handlerContract: "handleAuthStartRequest",
+    responseKind: "json",
     idempotent: false,
     implemented: false,
   },
@@ -74,6 +111,7 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     },
     requiredQuery: ["code", "state"],
     handlerContract: "handleAuthCallbackRequest",
+    responseKind: "json",
     idempotent: false,
     implemented: false,
   },
@@ -88,6 +126,7 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     },
     requiredQuery: ["workspaceId", "appKey"],
     handlerContract: "handleProtectedAppAccessRequest",
+    responseKind: "json",
     idempotent: true,
     implemented: false,
   },
@@ -102,6 +141,7 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     },
     requiredQuery: [],
     handlerContract: "handleSessionContextRequest",
+    responseKind: "json",
     idempotent: true,
     implemented: false,
   },
@@ -116,6 +156,7 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     },
     requiredQuery: [],
     handlerContract: "handleCsrfTokenIssueRequest",
+    responseKind: "json",
     idempotent: false,
     implemented: false,
   },
@@ -130,6 +171,7 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     },
     requiredQuery: ["workspaceId", "appKey"],
     handlerContract: "handleAppLaunchIntentRequest",
+    responseKind: "json",
     idempotent: false,
     implemented: false,
   },
@@ -144,6 +186,7 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     },
     requiredQuery: ["appKey"],
     handlerContract: "handleAppLaunchTokenConsumeRequest",
+    responseKind: "json",
     idempotent: false,
     implemented: false,
   },
@@ -158,6 +201,7 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     },
     requiredQuery: [],
     handlerContract: "handleLogoutRequest",
+    responseKind: "json",
     idempotent: true,
     implemented: false,
   },

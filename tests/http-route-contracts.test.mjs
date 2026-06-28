@@ -11,6 +11,8 @@ test("route manifest includes only approved initial platform routes", () => {
   assert.deepEqual(
     HTTP_ROUTE_CONTRACTS.map((route) => route.id),
     [
+      "platform_landing_page",
+      "platform_app_shell",
       "healthz",
       "platform_auth_start",
       "platform_auth_callback",
@@ -25,6 +27,8 @@ test("route manifest includes only approved initial platform routes", () => {
   assert.deepEqual(
     HTTP_ROUTE_CONTRACTS.map((route) => `${route.method} ${route.path}`),
     [
+      "GET /",
+      "GET /app",
       "GET /healthz",
       "GET /api/platform/auth/start",
       "GET /api/platform/auth/callback",
@@ -56,6 +60,44 @@ test("state-changing browser-cookie routes require CSRF protection", () => {
   }
 });
 
+test("browser page routes are GET-only HTML without CSRF or required browser session", () => {
+  const landing = getHttpRouteContract("platform_landing_page");
+  const appShell = getHttpRouteContract("platform_app_shell");
+
+  assert.deepEqual(
+    [landing, appShell].map((route) => ({
+      method: route.method,
+      browserSession: route.browserSession,
+      csrf: route.csrf,
+      responseKind: route.responseKind,
+      requiredQuery: route.requiredQuery,
+      idempotent: route.idempotent,
+    })),
+    [
+      {
+        method: "GET",
+        browserSession: "none",
+        csrf: { required: false, strategy: "none" },
+        responseKind: "html",
+        requiredQuery: [],
+        idempotent: true,
+      },
+      {
+        method: "GET",
+        browserSession: "none",
+        csrf: { required: false, strategy: "none" },
+        responseKind: "html",
+        requiredQuery: [],
+        idempotent: true,
+      },
+    ],
+  );
+  assert.equal(landing.path, "/");
+  assert.equal(landing.handlerContract, "renderLandingPage");
+  assert.equal(appShell.path, "/app");
+  assert.equal(appShell.handlerContract, "renderAppShellPage");
+});
+
 test("auth start route is GET-only and does not require browser session or CSRF", () => {
   const route = getHttpRouteContract("platform_auth_start");
 
@@ -66,6 +108,7 @@ test("auth start route is GET-only and does not require browser session or CSRF"
   assert.equal(route.csrf.strategy, "none");
   assert.deepEqual(route.requiredQuery, []);
   assert.equal(route.handlerContract, "handleAuthStartRequest");
+  assert.equal(route.responseKind, "json");
 });
 
 test("auth callback route is GET-only and relies on OIDC state instead of generic CSRF", () => {

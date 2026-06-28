@@ -55,6 +55,63 @@ test("GET /healthz returns 200 safe JSON without platform repositories", async (
   assertResponseIsPrivacySafe(response);
 });
 
+test("GET / renders the framework-free landing page as no-store HTML", async () => {
+  const { response } = await rawRequest({
+    method: "GET",
+    url: "/",
+    dependencies: createAdapterFixture().dependencies,
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers["content-type"], "text/html; charset=utf-8");
+  assertNoStoreHeaders(response.headers);
+  assert.match(response.body, /Swooshz Platform/);
+  assert.match(response.body, /\/api\/platform\/auth\/start/);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("GET /app renders the browser shell as no-store HTML without requiring session or CSRF", async () => {
+  const fixture = createAdapterFixture({
+    csrfThrows: true,
+  });
+  const { response } = await rawRequest({
+    method: "GET",
+    url: "/app",
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers["content-type"], "text/html; charset=utf-8");
+  assertNoStoreHeaders(response.headers);
+  assert.match(response.body, /\/api\/platform\/session\/context/);
+  assert.match(response.body, /\/api\/platform\/apps\/launch/);
+  assert.equal(fixture.calls.sessionsFindById, 0);
+  assert.equal(fixture.calls.csrfValidate, 0);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("POST /app returns 405 with Allow GET without touching repositories", async () => {
+  const fixture = createAdapterFixture({
+    csrfThrows: true,
+  });
+  const { response, body } = await request({
+    method: "POST",
+    url: "/app",
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 405);
+  assert.equal(response.headers.allow, "GET");
+  assert.deepEqual(body, {
+    outcome: "error",
+    message: "Method not allowed.",
+  });
+  assertNoStoreHeaders(response.headers);
+  assert.equal(fixture.calls.sessionsFindById, 0);
+  assert.equal(fixture.calls.csrfValidate, 0);
+  assertResponseIsPrivacySafe(response);
+});
+
 test("unknown route returns safe 404 JSON", async () => {
   const { response, body } = await request({
     method: "GET",
@@ -81,6 +138,7 @@ test("wrong method for a known route returns safe 405 JSON", async () => {
     outcome: "error",
     message: "Method not allowed.",
   });
+  assert.equal(response.headers["content-type"], "application/json; charset=utf-8");
   assertResponseIsPrivacySafe(response);
 });
 
@@ -697,6 +755,21 @@ async function request({
     response,
     body: JSON.parse(response.body),
   };
+}
+
+async function rawRequest({
+  method,
+  url,
+  headers = {},
+  dependencies = createAdapterFixture().dependencies,
+}) {
+  const response = await handleNodePlatformHttpRequest(dependencies, {
+    method,
+    url,
+    headers,
+  });
+
+  return { response };
 }
 
 function createAdapterFixture(overrides = {}) {

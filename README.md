@@ -2,7 +2,7 @@
 
 Swooshz Platform is the future shared platform layer for Swooshz apps. It will own account identity, workspace membership, app access, app whitelisting, and eventually billing or credits when those are explicitly approved.
 
-The current priority is not a frontend shell. The current priority is to define the account, workspace, and app-access contract clearly enough that backend scaffolding can start without reopening basic product boundaries.
+The current priority is a minimal internal platform shell over the existing backend contracts, not a polished dashboard or public product surface. The platform still prioritizes clear account, workspace, and app-access boundaries before broader UI or app integration work.
 
 ## What This Platform Owns
 
@@ -14,7 +14,7 @@ The current priority is not a frontend shell. The current priority is to define 
 - App registry records for Swooshz apps.
 - App entitlements and app access decisions per workspace.
 - Later billing, credits, subscriptions, or usage ledgers if approved in a future phase.
-- Later shared platform shell and cross-app navigation after the backend contract is stable.
+- Shared platform shell and cross-app navigation, starting with a minimal internal browser shell over the stable backend contract.
 
 ## What This Platform Does Not Own
 
@@ -89,11 +89,13 @@ The repo now includes platform-only internal workspace/app-access seed contracts
 
 The repo now includes a read-only current session context service and `GET /api/platform/session/context` route. It loads the current browser session from the platform session cookie, returns safe active-session status, user summary, accessible workspace memberships, and app access summaries based on existing app entitlement rules. Responses use no-store/no-cache headers. The endpoint does not launch apps, persist workspace selection, accept invitations, create grants, expose provider tokens/raw claims/session secrets, or call KQAG.
 
-The repo now includes platform-only app launch token contracts. `POST /api/platform/apps/launch?workspaceId=...&appKey=...` requires the browser session cookie plus Origin/Referer and CSRF token validation, re-checks protected app access, and creates a short-lived launch token record that stores only an HMAC hash. The raw launch token is returned only once in the immediate no-store response. `POST /api/platform/apps/launch/consume?appKey=...` accepts the raw launch token only through the `x-app-launch-token` header, requires no browser cookie or CSRF token, hashes before lookup, rejects unknown/expired/consumed/revoked tokens safely, re-checks app access, consumes the token once, and returns safe user/workspace/app context for future app integration. `APP_LAUNCH_TOKEN_HASH_SECRET` is required when runtime/bootstrap composes launch issuing and consume dependencies. This PR does not add KQAG storage or launch adapters, app launch redirects, frontend UI, fake login, provider SDKs, billing, deployment, or migration execution.
+The repo now includes platform-only app launch token contracts. `POST /api/platform/apps/launch?workspaceId=...&appKey=...` requires the browser session cookie plus Origin/Referer and CSRF token validation, re-checks protected app access, and creates a short-lived launch token record that stores only an HMAC hash. The raw launch token is returned only once in the immediate no-store response. `POST /api/platform/apps/launch/consume?appKey=...` accepts the raw launch token only through the `x-app-launch-token` header, requires no browser cookie or CSRF token, hashes before lookup, rejects unknown/expired/consumed/revoked tokens safely, re-checks app access, consumes the token once, and returns safe user/workspace/app context for future app integration. `APP_LAUNCH_TOKEN_HASH_SECRET` is required when runtime/bootstrap composes launch issuing and consume dependencies. This does not add KQAG storage or launch adapters, app launch redirects, fake login, provider SDKs, billing, deployment, or migration execution.
 
-No Next.js, Vite, React, frontend shell, provider SDK, provider-specific account model, public signup, database provisioning, deployment, Supabase setup, Stripe setup, billing implementation, KQAG adapter, or secrets are part of this scaffold.
+The repo now includes a minimal framework-free browser shell. `GET /` renders an internal Swooshz Platform landing page with a login link to `GET /api/platform/auth/start`. `GET /app` renders a no-store HTML shell that loads the current session context, requests a CSRF token only for state-changing actions, can create app launch intents through the existing browser route, and displays the immediate launch handoff payload. The launch token is shown only in that temporary internal handoff area, is not placed in a URL, and is not written to browser storage. The shell does not call the launch consume route, bypass service contracts, expose cookies or token hashes, or integrate with KQAG.
 
-The next likely platform PR should keep provider configuration operational review separate from broadening browser routes. Frontend shell work should still wait until backend auth, session, persistence, CSRF, and app-access boundaries are stable.
+No Next.js, Vite, React, provider SDK, provider-specific account model, public signup, database provisioning, deployment, Supabase setup, Stripe setup, billing implementation, KQAG adapter, polished dashboard, app redirect integration, or secrets are part of this scaffold.
+
+The next likely platform PR should keep provider configuration operational review separate from broadening browser routes. Polished dashboard work and KQAG launch integration should still wait for a separately approved app integration phase.
 
 ## First App Integration Target
 

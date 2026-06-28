@@ -11,6 +11,7 @@ export * from "./http/handlers.js";
 export * from "./http/node-adapter.js";
 export * from "./http/node-server.js";
 export * from "./http/origin-validation.js";
+export * from "./http/platform-shell.js";
 export * from "./http/request-security.js";
 export * from "./http/route-contracts.js";
 export * from "./http/runtime-config.js";
