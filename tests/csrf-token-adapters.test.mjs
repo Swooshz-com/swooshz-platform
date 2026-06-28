@@ -173,10 +173,11 @@ test("Drizzle CSRF repository returns null for missing token records", async () 
   );
 });
 
-test("CSRF crypto imports stay in the crypto adapter module only", async () => {
+test("CSRF crypto imports stay in dedicated crypto adapter modules", async () => {
   const sourceFiles = await listFiles("src");
   const allowed = new Set([
     "src/auth/auth-state-crypto.ts",
+    "src/auth/generic-oidc-jwks-verifier.ts",
     "src/http/csrf-token-crypto.ts",
   ]);
 

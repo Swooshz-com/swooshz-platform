@@ -375,10 +375,11 @@ test("runtime composition modules do not import frontend KQAG provider SDK frame
   }
 });
 
-test("crypto imports remain only in the CSRF crypto adapter module", async () => {
+test("crypto imports remain only in dedicated crypto adapter modules", async () => {
   const sourceFiles = await listFiles("src");
   const allowed = new Set([
     "src/auth/auth-state-crypto.ts",
+    "src/auth/generic-oidc-jwks-verifier.ts",
     "src/http/csrf-token-crypto.ts",
   ]);
 
