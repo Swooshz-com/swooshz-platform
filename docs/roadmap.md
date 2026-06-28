@@ -78,8 +78,9 @@ Candidate deliverables:
 - Explicit Node bootstrap wiring with start/stop lifecycle for the approved route set.
 - Framework-agnostic browser auth HTTP route contracts for provider login start and callback.
 - Node adapter wiring for `GET /api/platform/auth/start` and `GET /api/platform/auth/callback` using injected fake/test dependencies only.
+- Drizzle/Postgres auth state storage adapter plus secure Node crypto state/nonce and HMAC reference adapters.
 - HTTP logout route hardening after real CSRF storage and browser wiring are separately approved.
-- Real auth state persistence, provider network verification, and login callback runtime wiring after HTTP contracts are separately approved.
+- Auth start/callback runtime dependency composition and provider network verification after HTTP contracts are separately approved.
 - Invitation acceptance path if compatible with selected auth provider.
 - Tests for session, token, and provider-error privacy behavior.
 

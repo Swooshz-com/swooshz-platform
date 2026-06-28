@@ -18,6 +18,7 @@ import type {
 } from "../apps/types.js";
 import type { InvitationRecord, ProviderIdentity } from "../platform/repositories.js";
 import type { InvitationStatus } from "../accounts/types.js";
+import type { StoredAuthStateLifecycleRecord } from "../auth/auth-state-repositories.js";
 import type { CsrfTokenRecord } from "../http/csrf-token-repositories.js";
 
 type TimestampValue = Date | string;
@@ -93,6 +94,17 @@ export interface CsrfTokenRow {
   consumedAt: TimestampValue | null;
   revokedAt: TimestampValue | null;
   replacedByTokenId: string | null;
+}
+
+export interface AuthStateRow {
+  providerKey: string;
+  stateHash: string;
+  nonceHash: string;
+  redirectUri: string;
+  createdAt: TimestampValue;
+  expiresAt: TimestampValue;
+  consumedAt: TimestampValue | null;
+  revokedAt: TimestampValue | null;
 }
 
 export interface AuditEventRow {
@@ -210,6 +222,19 @@ export function mapCsrfTokenRow(row: CsrfTokenRow): CsrfTokenRecord {
     consumedAt: toNullableIsoTimestamp(row.consumedAt),
     revokedAt: toNullableIsoTimestamp(row.revokedAt),
     replacedByTokenId: row.replacedByTokenId,
+  };
+}
+
+export function mapAuthStateRow(row: AuthStateRow): StoredAuthStateLifecycleRecord {
+  return {
+    providerKey: row.providerKey,
+    stateHash: row.stateHash,
+    nonceHash: row.nonceHash,
+    redirectUri: row.redirectUri,
+    createdAt: toIsoTimestamp(row.createdAt),
+    expiresAt: toIsoTimestamp(row.expiresAt),
+    consumedAt: toNullableIsoTimestamp(row.consumedAt),
+    revokedAt: toNullableIsoTimestamp(row.revokedAt),
   };
 }
 

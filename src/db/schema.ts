@@ -192,6 +192,28 @@ export const csrfTokens = pgTable(
   ],
 );
 
+export const authStates = pgTable(
+  "auth_states",
+  {
+    providerKey: text("provider_key").notNull(),
+    stateHash: text("state_hash").notNull(),
+    nonceHash: text("nonce_hash").notNull(),
+    redirectUri: text("redirect_uri").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("auth_states_provider_state_unique").on(
+      table.providerKey,
+      table.stateHash,
+    ),
+    index("auth_states_expires_at_idx").on(table.expiresAt),
+    index("auth_states_consumed_at_idx").on(table.consumedAt),
+  ],
+);
+
 export const auditEvents = pgTable(
   "audit_events",
   {

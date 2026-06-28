@@ -7,6 +7,7 @@ Current scope:
 - Drizzle schema definitions only.
 - Reviewable SQL migration generation via `npm run db:generate`.
 - Drizzle-backed repository adapter functions that accept an already-wired database object.
+- Auth state storage through hashed `state_hash`/`nonce_hash` references only; raw OIDC state and nonce values are not persisted.
 - Lazy `pg`/Drizzle client construction via `src/db/client.ts`.
 - Explicit migration execution via `npm run db:migrate`.
 - No local, staging, or production database provisioning.

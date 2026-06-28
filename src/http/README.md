@@ -31,6 +31,8 @@ The Node adapter does not create or listen on a server. It keeps routing limited
 
 Browser auth route contracts now exist for starting provider login and receiving the provider callback. Auth start stores only hashed state/nonce references through an injected state store and redirects through an injected OIDC authorization URL builder. Auth callback wraps the existing callback service, sets the platform browser session cookie only after successful platform session creation, and keeps provider tokens, raw claims, auth codes, raw state/nonce, state hashes, nonce hashes, and client secrets out of response bodies and errors. Real provider networking, auth SDKs, frontend login UI, and live state persistence remain deferred.
 
+Auth state lifecycle now has real storage and crypto adapters. `src/auth/auth-state-crypto.ts` provides secure CSPRNG state/nonce factories and HMAC reference hashing with an injected secret, while `src/db/auth-state-repository.ts` stores and consumes only hashed state/nonce references through Drizzle. The generated `auth_states` migration is review-only until an explicit migration execution workflow is invoked.
+
 The Node server factory does not listen on import and does not create live repositories. Production runtime config requires secure cookies, a valid public base URL, and explicit allowed origins. It does not require `DATABASE_URL` or auth provider configuration.
 
 No CLI bootstrap, deployment script, framework route, middleware, browser UI, app launch token, KQAG adapter, or migration execution is included here.
