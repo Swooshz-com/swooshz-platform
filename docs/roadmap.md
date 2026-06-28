@@ -82,8 +82,9 @@ Candidate deliverables:
 - Runtime auth dependency composition for `GET /api/platform/auth/start` and `GET /api/platform/auth/callback` using the Drizzle auth state store, secure state/nonce factories, `AUTH_STATE_HASH_SECRET`, existing auth config parsing, and an injected OIDC adapter.
 - Explicit Node bootstrap wiring that can pass injected auth dependencies into the approved Node adapter without provider calls during creation or start.
 - Platform-only internal access seed service and repository create ports for preparing an internal workspace, the `kqag` app record, app entitlement, and owner/admin/member membership grants without KQAG changes.
+- Provider-agnostic generic OIDC adapter for authorization URL building, form-encoded token exchange, adapter-private token references, userinfo after verifier success, and normalized identity output through an injected verifier boundary.
 - HTTP logout route hardening after real CSRF storage and browser wiring are separately approved.
-- Provider network verification and any live provider adapter after HTTP/runtime contracts are separately approved.
+- Cryptographic JWT/JWKS verifier implementation after the generic adapter boundary is reviewed.
 - Invitation acceptance path if compatible with selected auth provider.
 - Tests for session, token, and provider-error privacy behavior.
 
@@ -93,6 +94,7 @@ Non-goals:
 - Public self-serve signup.
 - Real auth provider network calls before the callback/service contract is tested.
 - Provider SDKs or real provider networking before a live provider adapter PR is explicitly approved.
+- Claiming production-ready JWT/JWKS verification before issuer, audience, expiry, nonce, and signature checks are implemented and tested.
 - Fake-login shortcuts or email-only user precreation for future provider linking.
 - User plus provider identity seeding before an explicit transactional identity seed boundary is approved.
 - Customer portal.
