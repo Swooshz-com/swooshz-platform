@@ -93,6 +93,17 @@ The repo now includes platform-only app launch token contracts. `POST /api/platf
 
 The repo now includes a minimal framework-free browser shell. `GET /` renders an internal Swooshz Platform landing page with a login link to `GET /api/platform/auth/start`. `GET /app` renders a no-store HTML shell that loads the current session context, requests a CSRF token only for state-changing actions, can create app launch intents through the existing browser route, and displays the immediate launch handoff payload. The launch token is shown only in that temporary internal handoff area, is not placed in a URL, and is not written to browser storage. The shell does not call the launch consume route, bypass service contracts, expose cookies or token hashes, or integrate with KQAG.
 
+The repo now includes an explicit internal platform access seed CLI for already-authenticated platform users. After real OIDC login creates the platform user and provider identity, an admin/dev can run `npm run platform:seed-internal-access` with `PLATFORM_SEED_CONFIRM=seed-reviewed-internal-access` and `PLATFORM_SEED_USER_EMAIL` to create or reuse the internal workspace, `kqag` app record, workspace entitlement, and owner/admin/member membership. The CLI validates confirmation and email before opening a DB connection, requires the existing user to have a provider identity, closes the DB pool after completion, prints only a safe summary, and does not run migrations. It does not create users, provider identities, sessions, app launch tokens, fake login state, KQAG storage, private KQAG profile/pricing data, or deployment artifacts.
+
+Safe internal setup flow:
+
+1. Configure real OIDC and platform runtime env.
+2. Build and run the platform server.
+3. Internal tester logs in once through `/api/platform/auth/start`.
+4. Run `npm run platform:seed-internal-access` with the required seed env.
+5. Visit `/app`.
+6. Create a launch intent for an accessible app.
+
 No Next.js, Vite, React, provider SDK, provider-specific account model, public signup, database provisioning, deployment, Supabase setup, Stripe setup, billing implementation, KQAG adapter, polished dashboard, app redirect integration, or secrets are part of this scaffold.
 
 The next likely platform PR should keep provider configuration operational review separate from broadening browser routes. Polished dashboard work and KQAG launch integration should still wait for a separately approved app integration phase.

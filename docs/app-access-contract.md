@@ -98,6 +98,8 @@ The seed must be explicit and idempotent. It may reuse matching records and must
 
 Membership can be granted to an existing active user by user id or normalized email lookup. Creating a new user together with a provider identity is deferred until an explicit transactional identity seed boundary exists. This avoids partial identity state such as an active email-only user without the intended provider identity. Email-only user precreation for future provider linking is forbidden.
 
+The internal seed CLI, `npm run platform:seed-internal-access`, exists only for granting app access to a platform user who has already logged in through real OIDC and therefore already has a provider identity. It requires `PLATFORM_SEED_CONFIRM=seed-reviewed-internal-access` and `PLATFORM_SEED_USER_EMAIL`, validates those before connecting to the database, and refuses users without provider identity records. It creates or reuses only platform-owned workspace, app registry, entitlement, and membership records. It does not create users, provider identities, sessions, app launch tokens, fake login state, KQAG storage, private KQAG profile/pricing data, migrations, provider network calls, or deployment changes.
+
 ## Current Session Context
 
 `GET /api/platform/session/context` is a read-only platform endpoint for a future platform shell or dashboard. It uses the browser session cookie to return safe active-session status, platform user summary, active workspace memberships, and per-workspace app access summaries derived from the same entitlement and role rules as app launch decisions.

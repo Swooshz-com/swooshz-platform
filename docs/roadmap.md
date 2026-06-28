@@ -89,6 +89,7 @@ Candidate deliverables:
 - CSRF-protected app launch intent endpoint that re-checks platform app access, stores only short-lived launch token hashes, and returns the raw launch token only once.
 - Platform-side app launch token consume endpoint that accepts raw launch tokens only by header, hashes before lookup, rejects unsafe token lifecycle states, re-checks app access, marks tokens consumed once, and returns safe user/workspace/app context without KQAG integration.
 - Minimal framework-free internal browser shell at `GET /` and `GET /app` that uses the existing session context, CSRF issuance, launch intent, and logout JSON APIs. The shell can display the temporary launch handoff payload but does not call launch consume, place launch tokens in URLs or browser storage, integrate with KQAG, add a frontend framework, or become the final dashboard design.
+- Explicit internal access seed CLI for existing provider-backed platform users. It requires reviewed confirmation, refuses missing users and email-only users without provider identities, creates or reuses only platform-owned workspace/app/entitlement/membership records, does not run migrations, and does not create users, provider identities, sessions, app launch tokens, fake login state, KQAG storage, billing, deployment, or provider network calls.
 - HTTP logout route hardening after real CSRF storage and browser wiring are separately approved.
 - Invitation acceptance path if compatible with selected auth provider.
 - Tests for session, token, and provider-error privacy behavior.
