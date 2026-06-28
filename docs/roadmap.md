@@ -90,6 +90,7 @@ Candidate deliverables:
 - Platform-side app launch token consume endpoint that accepts raw launch tokens only by header, hashes before lookup, rejects unsafe token lifecycle states, re-checks app access, marks tokens consumed once, and returns safe user/workspace/app context without KQAG integration.
 - Minimal framework-free internal browser shell at `GET /` and `GET /app` that uses the existing session context, CSRF issuance, launch intent, and logout JSON APIs. The shell can display the temporary launch handoff payload but does not call launch consume, place launch tokens in URLs or browser storage, integrate with KQAG, add a frontend framework, or become the final dashboard design.
 - Explicit internal access seed CLI for existing provider-backed platform users. It requires reviewed confirmation, refuses missing users and email-only users without provider identities, creates or reuses only platform-owned workspace/app/entitlement/membership records, does not run migrations, and does not create users, provider identities, sessions, app launch tokens, fake login state, KQAG storage, billing, deployment, or provider network calls.
+- Internal platform smoke runbook for verifying the existing database, OIDC, runtime, seed, browser shell, and app-launch path without adding database provisioning, deployment, migration automation, fake login, or KQAG integration. Operational smoke should be the first gate before any separately approved KQAG integration work.
 - HTTP logout route hardening after real CSRF storage and browser wiring are separately approved.
 - Invitation acceptance path if compatible with selected auth provider.
 - Tests for session, token, and provider-error privacy behavior.
@@ -137,6 +138,7 @@ Goal: connect platform identity and workspace access to KQAG through a defined a
 
 Candidate deliverables:
 
+- Run the internal platform smoke runbook successfully against reviewed existing services before starting KQAG adapter work.
 - KQAG launch context contract.
 - App-side backend exchange using the platform launch token consume contract.
 - KQAG workspace-scoped runtime/session boundary.

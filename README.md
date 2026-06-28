@@ -106,6 +106,8 @@ Safe internal setup flow:
 
 No Next.js, Vite, React, provider SDK, provider-specific account model, public signup, database provisioning, deployment, Supabase setup, Stripe setup, billing implementation, KQAG adapter, polished dashboard, app redirect integration, or secrets are part of this scaffold.
 
+The internal smoke checklist is documented in `docs/internal-platform-smoke-runbook.md`. It covers the existing database/OIDC/runtime/seed/browser-launch path, keeps migrations explicit, and confirms that KQAG integration remains deferred.
+
 The next likely platform PR should keep provider configuration operational review separate from broadening browser routes. Polished dashboard work and KQAG launch integration should still wait for a separately approved app integration phase.
 
 ## First App Integration Target
@@ -126,4 +128,5 @@ The platform will eventually provide KQAG with platform-issued identity and work
 - `docs/adr/0005-database-connection-and-migration-execution.md`
 - `docs/adr/0006-auth-provider-selection.md`
 - `docs/adr/0007-http-transport-and-csrf-strategy.md`
+- `docs/internal-platform-smoke-runbook.md`
 - `docs/roadmap.md`
