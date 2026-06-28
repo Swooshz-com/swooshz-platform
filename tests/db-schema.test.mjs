@@ -13,6 +13,7 @@ const expectedTableExports = [
   "invitations",
   "sessions",
   "csrfTokens",
+  "authStates",
   "auditEvents",
   "apps",
   "appEntitlements",
@@ -53,6 +54,21 @@ test("database schema and migrations include csrf_tokens without raw token stora
   assert.match(migrationSql, /"csrf_tokens_session_hash_purpose_unique"/);
   assert.match(migrationSql, /FOREIGN KEY \("session_id"\) REFERENCES "public"\."sessions"\("id"\)/);
   assert.doesNotMatch(migrationSql, /raw_token|csrf_token_value|token_value/i);
+});
+
+test("database schema and migrations include auth_states without raw state or nonce storage", async () => {
+  assert.ok(schema.authStates, "expected authStates table to be exported");
+
+  const migrationSql = await readMigrationSql();
+
+  assert.match(migrationSql, /CREATE TABLE "auth_states"/);
+  assert.match(migrationSql, /"provider_key" text NOT NULL/);
+  assert.match(migrationSql, /"state_hash" text NOT NULL/);
+  assert.match(migrationSql, /"nonce_hash" text NOT NULL/);
+  assert.match(migrationSql, /"redirect_uri" text NOT NULL/);
+  assert.match(migrationSql, /"auth_states_provider_state_unique"/);
+  assert.match(migrationSql, /"auth_states_expires_at_idx"/);
+  assert.doesNotMatch(migrationSql, /raw_state|raw_nonce|state_value|nonce_value/i);
 });
 
 test("pure domain modules do not import database implementation details", async () => {

@@ -175,7 +175,10 @@ test("Drizzle CSRF repository returns null for missing token records", async () 
 
 test("CSRF crypto imports stay in the crypto adapter module only", async () => {
   const sourceFiles = await listFiles("src");
-  const allowed = new Set(["src/http/csrf-token-crypto.ts"]);
+  const allowed = new Set([
+    "src/auth/auth-state-crypto.ts",
+    "src/http/csrf-token-crypto.ts",
+  ]);
 
   for (const filePath of sourceFiles) {
     const normalized = filePath.replaceAll("\\", "/");
