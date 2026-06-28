@@ -84,6 +84,7 @@ Candidate deliverables:
 - Platform-only internal access seed service and repository create ports for preparing an internal workspace, the `kqag` app record, app entitlement, and owner/admin/member membership grants without KQAG changes.
 - Provider-agnostic generic OIDC adapter for authorization URL building, form-encoded token exchange, adapter-private token references, userinfo after verifier success, and normalized identity output through an injected verifier boundary.
 - Provider-agnostic generic OIDC JWT/JWKS verifier for real RS256 signature verification, issuer/audience/time/subject validation, nonce return, verified-email handling, and safe metadata normalization through the existing verifier interface.
+- Explicit generic OIDC runtime mode that composes the generic adapter and JWT/JWKS verifier from injected config and HTTP boundaries without provider calls during import, composition, bootstrap creation, or bootstrap start.
 - HTTP logout route hardening after real CSRF storage and browser wiring are separately approved.
 - Invitation acceptance path if compatible with selected auth provider.
 - Tests for session, token, and provider-error privacy behavior.
