@@ -28,6 +28,7 @@ import {
   HTTP_ROUTE_CONTRACTS,
   type HttpRouteContract,
 } from "./route-contracts.js";
+import { renderAppShellPage, renderLandingPage } from "./platform-shell.js";
 import type { BrowserSessionCookieConfig } from "./session-cookie.js";
 import { extractBrowserSessionIdFromCookieHeader } from "./session-cookie.js";
 import { validateHttpRequestSecurityForRoute } from "./request-security.js";
@@ -60,6 +61,7 @@ export interface NodePlatformHttpResponse {
 }
 
 const jsonContentType = "application/json; charset=utf-8";
+const htmlContentType = "text/html; charset=utf-8";
 const adapterUrlBase = "http://swooshz-platform.local";
 const defaultCsrfTokenTtlSeconds = 900;
 
@@ -97,7 +99,8 @@ export async function handleNodePlatformHttpRequest(
       {
         allow: route.method,
         ...(route.id === "platform_app_launch" ||
-        route.id === "platform_app_launch_consume"
+        route.id === "platform_app_launch_consume" ||
+        route.responseKind === "html"
           ? noStoreHeaders()
           : {}),
       },
@@ -105,6 +108,14 @@ export async function handleNodePlatformHttpRequest(
   }
 
   const headers = normalizeHeaders(request.headers);
+
+  if (route.id === "platform_landing_page") {
+    return htmlResponse(200, renderLandingPage(), noStoreHeaders());
+  }
+
+  if (route.id === "platform_app_shell") {
+    return htmlResponse(200, renderAppShellPage(), noStoreHeaders());
+  }
 
   if (route.id === "healthz") {
     return jsonResponse(200, {
@@ -479,6 +490,21 @@ function jsonResponse(
       ...headers,
     },
     body: JSON.stringify(body),
+  };
+}
+
+function htmlResponse(
+  statusCode: number,
+  body: string,
+  headers: Record<string, string> = {},
+): NodePlatformHttpResponse {
+  return {
+    statusCode,
+    headers: {
+      "content-type": htmlContentType,
+      ...headers,
+    },
+    body,
   };
 }
 

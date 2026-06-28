@@ -88,6 +88,7 @@ Candidate deliverables:
 - Read-only current session context endpoint for future platform shell/dashboard UX, returning safe user, workspace membership, and app access summaries without app launch, persistent workspace selection, frontend, or KQAG integration.
 - CSRF-protected app launch intent endpoint that re-checks platform app access, stores only short-lived launch token hashes, and returns the raw launch token only once.
 - Platform-side app launch token consume endpoint that accepts raw launch tokens only by header, hashes before lookup, rejects unsafe token lifecycle states, re-checks app access, marks tokens consumed once, and returns safe user/workspace/app context without KQAG integration.
+- Minimal framework-free internal browser shell at `GET /` and `GET /app` that uses the existing session context, CSRF issuance, launch intent, and logout JSON APIs. The shell can display the temporary launch handoff payload but does not call launch consume, place launch tokens in URLs or browser storage, integrate with KQAG, add a frontend framework, or become the final dashboard design.
 - HTTP logout route hardening after real CSRF storage and browser wiring are separately approved.
 - Invitation acceptance path if compatible with selected auth provider.
 - Tests for session, token, and provider-error privacy behavior.
@@ -102,7 +103,7 @@ Non-goals:
 - Fake-login shortcuts or email-only user precreation for future provider linking.
 - User plus provider identity seeding before an explicit transactional identity seed boundary is approved.
 - Customer portal.
-- Frontend shell before provider and persistence decisions are stable.
+- Polished dashboard or broad frontend shell beyond the minimal internal browser shell.
 - KQAG launch/storage integration, app redirects, or app launch UI before separately approved integration work.
 - Database migrations before provider/tooling selection is approved.
 - Auth-provider coupling in the database layer.
@@ -148,11 +149,11 @@ Non-goals:
 
 ## Phase 5: Platform Frontend Shell
 
-Goal: build the smallest useful frontend after backend contracts are stable.
+Goal: evolve the minimal internal shell into a fuller platform dashboard after backend and app-integration contracts are stable.
 
 Candidate deliverables:
 
-- Login entry.
+- Polished login entry.
 - Workspace switcher.
 - App launcher.
 - Basic account/membership/admin surfaces.
