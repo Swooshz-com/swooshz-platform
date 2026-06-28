@@ -4,6 +4,17 @@ import {
   type DatabaseClient,
   type DatabaseEnvironment,
 } from "../db/client.js";
+import {
+  readAuthConfig,
+  type AuthConfig,
+  type AuthEnvironment,
+} from "../auth/config.js";
+import type { OidcProviderAdapter } from "../auth/oidc.js";
+import type {
+  ProviderIdentityIdFactoryInput,
+  SessionIdFactoryInput,
+  UserIdFactoryInput,
+} from "../auth/platform-identity-resolver.js";
 import type { DrizzleDatabase } from "../db/repositories.js";
 import { createSecureCsrfTokenIdFactory } from "../http/csrf-token-crypto.js";
 import { createNodePlatformHttpServer } from "../http/node-server.js";
@@ -28,7 +39,8 @@ import { PlatformNodeBootstrapError } from "./bootstrap-config.js";
 export type PlatformNodeBootstrapEnv =
   NodePlatformRuntimeConfigEnv &
   PlatformRuntimeSecretEnv &
-  DatabaseEnvironment;
+  DatabaseEnvironment &
+  AuthEnvironment;
 
 export interface PlatformBootstrapDatabaseClient {
   db: DrizzleDatabase;
@@ -57,6 +69,16 @@ export interface PlatformNodeBootstrapInput {
   serverFactory?: (
     dependencies: NodePlatformHttpAdapterDependencies,
   ) => PlatformBootstrapServer;
+  oidcAdapter?: OidcProviderAdapter;
+  authProviderAdapter?: OidcProviderAdapter;
+  authSessionDurationMs?: number;
+  authSessionIdFactory?(input: SessionIdFactoryInput): string;
+  authUserIdFactory?(input: UserIdFactoryInput): string;
+  authProviderIdentityIdFactory?(input: ProviderIdentityIdFactoryInput): string;
+  authStateTtlSeconds?: number;
+  authStateByteLength?: number;
+  authNonceByteLength?: number;
+  authSuccessRedirectPath?: string;
   csrfTokenIdFactory?: CsrfTokenIdFactory;
   csrfTokenByteLength?: number;
   csrfTokenTtlSeconds?: number;
@@ -76,6 +98,7 @@ export interface PlatformNodeBootstrapController {
 interface BootstrapState {
   runtimeConfig: NodePlatformRuntimeConfig | null;
   secrets: PlatformRuntimeSecretConfig | null;
+  authConfig: AuthConfig | null;
   databaseClient: PlatformBootstrapDatabaseClient | null;
   server: PlatformBootstrapServer | null;
   started: boolean;
@@ -87,6 +110,7 @@ export function createPlatformNodeBootstrap(
   const state: BootstrapState = {
     runtimeConfig: null,
     secrets: null,
+    authConfig: null,
     databaseClient: null,
     server: null,
     started: false,
@@ -99,7 +123,9 @@ export function createPlatformNodeBootstrap(
       }
 
       const runtimeConfig = readRuntimeConfigSafely(input.env);
-      const secrets = readSecretConfigSafely(input.env);
+      const authAdapter = readAuthAdapter(input);
+      const secrets = readSecretConfigSafely(input.env, Boolean(authAdapter));
+      const authConfig = authAdapter ? readAuthConfigSafely(input.env) : null;
       const databaseClient = createDatabaseClientSafely(input);
 
       try {
@@ -112,6 +138,9 @@ export function createPlatformNodeBootstrap(
             input.csrfTokenIdFactory ?? createSecureCsrfTokenIdFactory(),
           csrfTokenByteLength: input.csrfTokenByteLength,
           csrfTokenTtlSeconds: input.csrfTokenTtlSeconds,
+          auth: authAdapter && authConfig
+            ? createBootstrapAuthInput(input, authAdapter, authConfig)
+            : undefined,
         });
         const server = (input.serverFactory ?? createNodePlatformHttpServer)(
           dependencies,
@@ -121,6 +150,7 @@ export function createPlatformNodeBootstrap(
 
         state.runtimeConfig = runtimeConfig;
         state.secrets = secrets;
+        state.authConfig = authConfig;
         state.databaseClient = databaseClient;
         state.server = server;
         state.started = true;
@@ -145,6 +175,7 @@ export function createPlatformNodeBootstrap(
 
       state.runtimeConfig = null;
       state.secrets = null;
+      state.authConfig = null;
       state.server = null;
       state.databaseClient = null;
       state.started = false;
@@ -175,12 +206,55 @@ function readRuntimeConfigSafely(
 
 function readSecretConfigSafely(
   env: PlatformNodeBootstrapEnv,
+  requireAuthStateHashSecret: boolean,
 ): PlatformRuntimeSecretConfig {
   try {
-    return readPlatformRuntimeSecretConfig(env);
+    return readPlatformRuntimeSecretConfig(env, { requireAuthStateHashSecret });
   } catch {
     throw new PlatformNodeBootstrapError("invalid_config");
   }
+}
+
+function readAuthConfigSafely(env: PlatformNodeBootstrapEnv): AuthConfig {
+  try {
+    return readAuthConfig(env);
+  } catch {
+    throw new PlatformNodeBootstrapError("invalid_config");
+  }
+}
+
+function readAuthAdapter(
+  input: PlatformNodeBootstrapInput,
+): OidcProviderAdapter | undefined {
+  return input.oidcAdapter ?? input.authProviderAdapter;
+}
+
+function createBootstrapAuthInput(
+  input: PlatformNodeBootstrapInput,
+  oidcAdapter: OidcProviderAdapter,
+  authConfig: AuthConfig,
+): NonNullable<PlatformRuntimeDependencyInput["auth"]> {
+  if (
+    !input.authSessionDurationMs ||
+    !input.authSessionIdFactory ||
+    !input.authUserIdFactory ||
+    !input.authProviderIdentityIdFactory
+  ) {
+    throw new PlatformNodeBootstrapError("dependency_composition_failed");
+  }
+
+  return {
+    authConfig,
+    oidcAdapter,
+    sessionDurationMs: input.authSessionDurationMs,
+    sessionIdFactory: input.authSessionIdFactory,
+    userIdFactory: input.authUserIdFactory,
+    providerIdentityIdFactory: input.authProviderIdentityIdFactory,
+    stateTtlSeconds: input.authStateTtlSeconds,
+    stateByteLength: input.authStateByteLength,
+    nonceByteLength: input.authNonceByteLength,
+    successRedirectPath: input.authSuccessRedirectPath,
+  };
 }
 
 function createDatabaseClientSafely(

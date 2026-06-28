@@ -81,9 +81,11 @@ The repo now includes framework-agnostic auth HTTP route contracts for browser l
 
 The repo now includes secure auth state/nonce crypto adapters and a Drizzle/Postgres-compatible auth state store. Browser auth start can use CSPRNG-generated state/nonce values, HMAC reference hashing with an injected secret, and review-only `auth_states` migration artifacts. Raw OIDC state and nonce values are never persisted; only hashes and lifecycle metadata are stored.
 
+The approved Node runtime dependency composition can now wire the framework-agnostic auth start/callback routes when an OIDC provider adapter is injected. Auth composition reads the existing auth config contract, uses the Drizzle auth state store, secure state/nonce factories, and `AUTH_STATE_HASH_SECRET` for HMAC auth state references. `AUTH_STATE_HASH_SECRET` is required only when auth runtime composition is enabled. Bootstrap creation still does not listen, connect, query, run migrations, or call provider/KQAG flows; `start()` remains explicit and provider calls occur only when an injected adapter is deliberately invoked by an auth route request.
+
 No Next.js, Vite, React, frontend shell, real auth provider, public signup, database provisioning, deployment, Supabase setup, Stripe setup, billing implementation, KQAG adapter, or secrets are part of this scaffold.
 
-The next likely platform PR should define explicit runtime composition for auth start/callback dependencies or provider network verification behind the existing contracts before broadening browser routes. Frontend shell work should still wait until backend auth, session, persistence, CSRF, and app-access boundaries are stable.
+The next likely platform PR should define a live provider adapter or provider network verification behind the existing injected OIDC boundary before broadening browser routes. Frontend shell work should still wait until backend auth, session, persistence, CSRF, and app-access boundaries are stable.
 
 ## First App Integration Target
 

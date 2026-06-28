@@ -79,8 +79,10 @@ Candidate deliverables:
 - Framework-agnostic browser auth HTTP route contracts for provider login start and callback.
 - Node adapter wiring for `GET /api/platform/auth/start` and `GET /api/platform/auth/callback` using injected fake/test dependencies only.
 - Drizzle/Postgres auth state storage adapter plus secure Node crypto state/nonce and HMAC reference adapters.
+- Runtime auth dependency composition for `GET /api/platform/auth/start` and `GET /api/platform/auth/callback` using the Drizzle auth state store, secure state/nonce factories, `AUTH_STATE_HASH_SECRET`, existing auth config parsing, and an injected OIDC adapter.
+- Explicit Node bootstrap wiring that can pass injected auth dependencies into the approved Node adapter without provider calls during creation or start.
 - HTTP logout route hardening after real CSRF storage and browser wiring are separately approved.
-- Auth start/callback runtime dependency composition and provider network verification after HTTP contracts are separately approved.
+- Provider network verification and any live provider adapter after HTTP/runtime contracts are separately approved.
 - Invitation acceptance path if compatible with selected auth provider.
 - Tests for session, token, and provider-error privacy behavior.
 
@@ -89,6 +91,7 @@ Non-goals:
 - Email/password auth unless explicitly approved.
 - Public self-serve signup.
 - Real auth provider network calls before the callback/service contract is tested.
+- Provider SDKs or real provider networking before a live provider adapter PR is explicitly approved.
 - Customer portal.
 - Frontend shell before provider and persistence decisions are stable.
 - Database migrations before provider/tooling selection is approved.
