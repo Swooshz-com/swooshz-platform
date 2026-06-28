@@ -243,6 +243,99 @@ test("generic OIDC adapter uses userinfo only after verifier succeeds", async ()
   assertPrivacySafe(identity);
 });
 
+test("generic OIDC adapter rejects userinfo without an exact subject match", async () => {
+  for (const userinfoResponse of [
+    {
+      email: "do-not-leak-userinfo@example.test",
+      email_verified: true,
+      name: "do-not-leak-userinfo-name",
+    },
+    {
+      sub: "   ",
+      email: "do-not-leak-userinfo@example.test",
+      email_verified: true,
+      name: "do-not-leak-userinfo-name",
+    },
+    {
+      sub: "do-not-leak-different-subject",
+      email: "do-not-leak-userinfo@example.test",
+      email_verified: true,
+      name: "do-not-leak-userinfo-name",
+    },
+  ]) {
+    const fixture = createAdapterFixture({
+      tokenResponse: {
+        [idTokenField]: "synthetic-id-token-placeholder",
+        [accessTokenField]: "synthetic-access-token-placeholder",
+        token_type: "Bearer",
+        expires_in: 300,
+      },
+      verifiedClaims: {
+        subject: "provider-subject-123",
+        email: null,
+        emailVerified: false,
+        displayName: null,
+        nonce: "synthetic-nonce-value",
+        metadata: {},
+      },
+      userinfoResponse,
+    });
+    const exchange = await fixture.adapter.exchangeCodeForTokens({
+      providerKey: authConfig.providerKey,
+      code: "synthetic-auth-code-value",
+      redirectUri: authConfig.redirectUri,
+      now,
+    });
+
+    await assert.rejects(
+      () =>
+        fixture.adapter.verifyTokens({
+          providerKey: authConfig.providerKey,
+          tokenExchange: exchange,
+          expectedNonceHash: "nonce-hash:synthetic-nonce-value",
+        }),
+      assertProviderErrorIsSafe,
+    );
+    assert.equal(fixture.httpCalls.length, 2);
+  }
+});
+
+test("generic OIDC adapter does not call userinfo when verifier fails", async () => {
+  const fixture = createAdapterFixture({
+    tokenResponse: {
+      [idTokenField]: "synthetic-id-token-placeholder",
+      [accessTokenField]: "synthetic-access-token-placeholder",
+      token_type: "Bearer",
+      expires_in: 300,
+    },
+    verifierError: new Error("do-not-leak-raw-claims"),
+    userinfoResponse: {
+      sub: "provider-subject-123",
+      email: "do-not-leak-userinfo@example.test",
+      email_verified: true,
+      name: "do-not-leak-userinfo-name",
+    },
+  });
+  const exchange = await fixture.adapter.exchangeCodeForTokens({
+    providerKey: authConfig.providerKey,
+    code: "synthetic-auth-code-value",
+    redirectUri: authConfig.redirectUri,
+    now,
+  });
+
+  await assert.rejects(
+    () =>
+      fixture.adapter.verifyTokens({
+        providerKey: authConfig.providerKey,
+        tokenExchange: exchange,
+        expectedNonceHash: "nonce-hash:synthetic-nonce-value",
+      }),
+    assertProviderErrorIsSafe,
+  );
+  assert.equal(fixture.httpCalls.length, 1);
+  assert.equal(fixture.httpCalls[0].url, authConfig.tokenUrl);
+});
+
 test("generic OIDC adapter module keeps provider and app boundaries clean", async () => {
   const contents = await readFile("src/auth/generic-oidc-provider-adapter.ts", "utf8");
 

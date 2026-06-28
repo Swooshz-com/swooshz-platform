@@ -294,7 +294,7 @@ async function readVerifiedUserinfo(
 
   const userinfoSubject = readString(body.sub);
 
-  if (userinfoSubject && userinfoSubject !== subject) {
+  if (!userinfoSubject || userinfoSubject !== subject) {
     throw createProviderFailure("OIDC userinfo subject did not match.");
   }
 
