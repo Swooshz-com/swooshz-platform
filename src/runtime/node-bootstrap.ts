@@ -9,6 +9,7 @@ import {
   type AuthConfig,
   type AuthEnvironment,
 } from "../auth/config.js";
+import type { GenericOidcHttpClient } from "../auth/generic-oidc-provider-adapter.js";
 import type { OidcProviderAdapter } from "../auth/oidc.js";
 import type {
   ProviderIdentityIdFactoryInput,
@@ -27,6 +28,7 @@ import type { CsrfTokenIdFactory } from "../http/csrf-token-service.js";
 import type { NodePlatformHttpAdapterDependencies } from "../http/node-adapter.js";
 import {
   createPlatformRuntimeDependencies,
+  type PlatformRuntimeAuthProviderMode,
   type PlatformRuntimeDependencyInput,
 } from "./platform-runtime-dependencies.js";
 import {
@@ -40,7 +42,9 @@ export type PlatformNodeBootstrapEnv =
   NodePlatformRuntimeConfigEnv &
   PlatformRuntimeSecretEnv &
   DatabaseEnvironment &
-  AuthEnvironment;
+  AuthEnvironment & {
+    PLATFORM_AUTH_PROVIDER_MODE?: string;
+  };
 
 export interface PlatformBootstrapDatabaseClient {
   db: DrizzleDatabase;
@@ -71,6 +75,7 @@ export interface PlatformNodeBootstrapInput {
   ) => PlatformBootstrapServer;
   oidcAdapter?: OidcProviderAdapter;
   authProviderAdapter?: OidcProviderAdapter;
+  genericOidcHttpClient?: GenericOidcHttpClient;
   authSessionDurationMs?: number;
   authSessionIdFactory?(input: SessionIdFactoryInput): string;
   authUserIdFactory?(input: UserIdFactoryInput): string;
@@ -123,9 +128,15 @@ export function createPlatformNodeBootstrap(
       }
 
       const runtimeConfig = readRuntimeConfigSafely(input.env);
+      const authProviderMode = readAuthProviderModeSafely(input.env);
       const authAdapter = readAuthAdapter(input);
-      const secrets = readSecretConfigSafely(input.env, Boolean(authAdapter));
-      const authConfig = authAdapter ? readAuthConfigSafely(input.env) : null;
+      const authEnabled =
+        authProviderMode === "generic_oidc" || Boolean(authAdapter);
+      const secrets = readSecretConfigSafely(input.env, authEnabled);
+      const authConfig = authEnabled
+        ? readAuthConfigSafely(input.env, authProviderMode)
+        : null;
+      assertGenericOidcRuntimeInput(input, authProviderMode);
       const databaseClient = createDatabaseClientSafely(input);
 
       try {
@@ -138,8 +149,13 @@ export function createPlatformNodeBootstrap(
             input.csrfTokenIdFactory ?? createSecureCsrfTokenIdFactory(),
           csrfTokenByteLength: input.csrfTokenByteLength,
           csrfTokenTtlSeconds: input.csrfTokenTtlSeconds,
-          auth: authAdapter && authConfig
-            ? createBootstrapAuthInput(input, authAdapter, authConfig)
+          auth: authEnabled && authConfig
+            ? createBootstrapAuthInput(
+                input,
+                authAdapter,
+                authConfig,
+                authProviderMode,
+              )
             : undefined,
         });
         const server = (input.serverFactory ?? createNodePlatformHttpServer)(
@@ -215,9 +231,34 @@ function readSecretConfigSafely(
   }
 }
 
-function readAuthConfigSafely(env: PlatformNodeBootstrapEnv): AuthConfig {
+function readAuthProviderModeSafely(
+  env: PlatformNodeBootstrapEnv,
+): PlatformRuntimeAuthProviderMode | undefined {
+  const mode = env.PLATFORM_AUTH_PROVIDER_MODE?.trim();
+
+  if (!mode) {
+    return undefined;
+  }
+
+  if (mode === "generic_oidc") {
+    return "generic_oidc";
+  }
+
+  throw new PlatformNodeBootstrapError("invalid_config");
+}
+
+function readAuthConfigSafely(
+  env: PlatformNodeBootstrapEnv,
+  authProviderMode: PlatformRuntimeAuthProviderMode | undefined,
+): AuthConfig {
   try {
-    return readAuthConfig(env);
+    const authConfig = readAuthConfig(env);
+
+    if (authProviderMode === "generic_oidc") {
+      assertGenericOidcAuthConfig(authConfig);
+    }
+
+    return authConfig;
   } catch {
     throw new PlatformNodeBootstrapError("invalid_config");
   }
@@ -231,8 +272,9 @@ function readAuthAdapter(
 
 function createBootstrapAuthInput(
   input: PlatformNodeBootstrapInput,
-  oidcAdapter: OidcProviderAdapter,
+  oidcAdapter: OidcProviderAdapter | undefined,
   authConfig: AuthConfig,
+  authProviderMode: PlatformRuntimeAuthProviderMode | undefined,
 ): NonNullable<PlatformRuntimeDependencyInput["auth"]> {
   if (
     !input.authSessionDurationMs ||
@@ -246,6 +288,8 @@ function createBootstrapAuthInput(
   return {
     authConfig,
     oidcAdapter,
+    providerMode: authProviderMode ?? "injected_adapter",
+    genericOidcHttpClient: input.genericOidcHttpClient,
     sessionDurationMs: input.authSessionDurationMs,
     sessionIdFactory: input.authSessionIdFactory,
     userIdFactory: input.authUserIdFactory,
@@ -255,6 +299,21 @@ function createBootstrapAuthInput(
     nonceByteLength: input.authNonceByteLength,
     successRedirectPath: input.authSuccessRedirectPath,
   };
+}
+
+function assertGenericOidcAuthConfig(authConfig: AuthConfig): void {
+  if (!authConfig.issuerUrl?.trim() || !authConfig.jwksUrl?.trim()) {
+    throw new PlatformNodeBootstrapError("invalid_config");
+  }
+}
+
+function assertGenericOidcRuntimeInput(
+  input: PlatformNodeBootstrapInput,
+  authProviderMode: PlatformRuntimeAuthProviderMode | undefined,
+): void {
+  if (authProviderMode === "generic_oidc" && !input.genericOidcHttpClient) {
+    throw new PlatformNodeBootstrapError("invalid_config");
+  }
 }
 
 function createDatabaseClientSafely(

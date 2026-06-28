@@ -1,4 +1,9 @@
 import assert from "node:assert/strict";
+import {
+  createSign,
+  generateKeyPairSync,
+  randomUUID,
+} from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
@@ -16,6 +21,10 @@ const databaseUrl =
   "postgres://example_user:example_pass@db.example.invalid:5432/swooshz_platform";
 const privateUrl =
   "https://private.example.test/path?token=raw-session-token&db=postgresql://private-host";
+const issuerUrl = "https://issuer.example.invalid/";
+const jwksUrl = "https://issuer.example.invalid/.well-known/jwks.json";
+const idTokenField = "id_" + "token";
+const accessTokenField = "access_" + "token";
 
 test("creating bootstrap object does not listen connect query or run migrations", () => {
   const fixture = createBootstrapFixture();
@@ -342,6 +351,153 @@ test("bootstrap auth config failures are privacy-safe", async () => {
   assert.equal(fixture.calls.databaseClientFactory, 0);
 });
 
+test("bootstrap generic OIDC mode requires explicit opt-in and config", async () => {
+  for (const env of [
+    { PLATFORM_AUTH_PROVIDER_MODE: "unknown-mode" },
+    {
+      PLATFORM_AUTH_PROVIDER_MODE: "generic_oidc",
+      AUTH_ISSUER_URL: undefined,
+    },
+    {
+      PLATFORM_AUTH_PROVIDER_MODE: "generic_oidc",
+      AUTH_JWKS_URL: undefined,
+    },
+    {
+      PLATFORM_AUTH_PROVIDER_MODE: "generic_oidc",
+      AUTH_STATE_HASH_SECRET: undefined,
+    },
+  ]) {
+    const fixture = createBootstrapFixture({
+      withGenericAuth: true,
+      env,
+    });
+    const bootstrap = createPlatformNodeBootstrap(fixture.input);
+
+    await assert.rejects(
+      () => bootstrap.start(),
+      assertPrivacySafeBootstrapError("invalid_config"),
+    );
+    assert.equal(fixture.calls.databaseClientFactory, 0);
+    assert.equal(fixture.calls.genericOidcHttp, 0);
+  }
+
+  const missingHttpFixture = createBootstrapFixture({ withGenericAuth: true });
+  delete missingHttpFixture.input.genericOidcHttpClient;
+  const missingHttpBootstrap = createPlatformNodeBootstrap(missingHttpFixture.input);
+
+  await assert.rejects(
+    () => missingHttpBootstrap.start(),
+    assertPrivacySafeBootstrapError("invalid_config"),
+  );
+  assert.equal(missingHttpFixture.calls.databaseClientFactory, 0);
+  assert.equal(missingHttpFixture.calls.genericOidcHttp, 0);
+});
+
+test("bootstrap generic OIDC mode calls provider network only during callback", async () => {
+  const fixture = createBootstrapFixture({ withGenericAuth: true });
+  const bootstrap = createPlatformNodeBootstrap(fixture.input);
+
+  createPlatformNodeBootstrap(fixture.input);
+  assert.equal(fixture.calls.genericOidcHttp, 0);
+
+  await bootstrap.start();
+  assert.equal(fixture.calls.genericOidcHttp, 0);
+
+  const startResponse = await fixture.lastServer.handle({
+    method: "GET",
+    url: "/api/platform/auth/start",
+    headers: {},
+  });
+  const authorizationUrl = new URL(startResponse.headers.location);
+  const state = authorizationUrl.searchParams.get("state");
+  const nonce = authorizationUrl.searchParams.get("nonce");
+
+  assert.equal(startResponse.statusCode, 302);
+  assert.equal(fixture.calls.genericOidcHttp, 0);
+  assert.equal(fixture.records.authStates.length, 1);
+  assert.match(fixture.records.authStates[0].stateHash, /^auth-state:v1:hmac-sha256:/);
+  assert.match(fixture.records.authStates[0].nonceHash, /^auth-state:v1:hmac-sha256:/);
+  assert.doesNotMatch(JSON.stringify(fixture.records.authStates), new RegExp(state));
+  assert.doesNotMatch(JSON.stringify(fixture.records.authStates), new RegExp(nonce));
+
+  fixture.syntheticIdToken = signJwt(fixture.keys, {
+    iss: issuerUrl,
+    aud: "synthetic-client-id",
+    sub: "provider-subject-generic-bootstrap",
+    exp: Math.floor(Date.parse(now) / 1000) + 300,
+    iat: Math.floor(Date.parse(now) / 1000),
+    nbf: Math.floor(Date.parse(now) / 1000) - 10,
+    email: "GENERIC@Example.COM",
+    email_verified: true,
+    name: "Generic Bootstrap",
+    nonce,
+  });
+
+  const response = await fixture.lastServer.handle({
+    method: "GET",
+    url: `/api/platform/auth/callback?code=synthetic-auth-code&state=${state}`,
+    headers: {},
+  });
+
+  assert.equal(response.statusCode, 302);
+  assert.equal(response.headers.location, "/app");
+  assert.match(response.headers["set-cookie"], /^swooshz_session=session_auth_bootstrap_1;/);
+  assert.equal(fixture.calls.genericOidcHttp, 2);
+  assert.deepEqual(
+    fixture.calls.genericOidcHttpUrls,
+    ["https://auth.example.invalid/oauth2/token", jwksUrl],
+  );
+  assert.equal(fixture.records.users.length, 1);
+  assert.equal(fixture.records.providerIdentities.length, 1);
+  assert.equal(fixture.records.sessions.length, 1);
+  assert.equal(fixture.records.providerIdentities[0].providerSubject, "provider-subject-generic-bootstrap");
+  assert.equal(fixture.records.users[0].email, "generic@example.com");
+  assertResponseIsPrivacySafe(response);
+});
+
+test("bootstrap generic OIDC mode fails nonce mismatch and bad signature safely", async () => {
+  for (const failure of ["nonce", "signature"]) {
+    const fixture = createBootstrapFixture({ withGenericAuth: true });
+    const bootstrap = createPlatformNodeBootstrap(fixture.input);
+    await bootstrap.start();
+    const startResponse = await fixture.lastServer.handle({
+      method: "GET",
+      url: "/api/platform/auth/start",
+      headers: {},
+    });
+    const authorizationUrl = new URL(startResponse.headers.location);
+    const state = authorizationUrl.searchParams.get("state");
+    const nonce = authorizationUrl.searchParams.get("nonce");
+    const idToken = signJwt(fixture.keys, {
+      iss: issuerUrl,
+      aud: "synthetic-client-id",
+      sub: "provider-subject-generic-bootstrap",
+      exp: Math.floor(Date.parse(now) / 1000) + 300,
+      iat: Math.floor(Date.parse(now) / 1000),
+      nbf: Math.floor(Date.parse(now) / 1000) - 10,
+      email: "GENERIC@Example.COM",
+      email_verified: true,
+      name: "Generic Bootstrap",
+      nonce: failure === "nonce" ? "wrong-synthetic-nonce" : nonce,
+    });
+
+    fixture.syntheticIdToken =
+      failure === "signature"
+        ? `${idToken.split(".").slice(0, 2).join(".")}.invalid-signature`
+        : idToken;
+
+    const response = await fixture.lastServer.handle({
+      method: "GET",
+      url: `/api/platform/auth/callback?code=synthetic-auth-code&state=${state}`,
+      headers: {},
+    });
+
+    assert.equal(response.statusCode, 400);
+    assert.equal(fixture.records.sessions.length, 0);
+    assertResponseIsPrivacySafe(response);
+  }
+});
+
 test("bootstrap module does not import migrations frontend KQAG provider SDK or framework packages", async () => {
   const files = [
     "src/runtime/node-bootstrap.ts",
@@ -391,6 +547,8 @@ function createBootstrapFixture(options = {}) {
     authBuildAuthorizationUrl: 0,
     authExchangeCodeForTokens: 0,
     authVerifyTokens: 0,
+    genericOidcHttp: 0,
+    genericOidcHttpUrls: [],
     lastAuthStartInput: null,
     dbOperations: [],
   };
@@ -423,12 +581,29 @@ function createBootstrapFixture(options = {}) {
           SESSION_SECRET: "synthetic-session-secret-value-32",
         }
       : {}),
+    ...(options.withGenericAuth
+      ? {
+          PLATFORM_AUTH_PROVIDER_MODE: "generic_oidc",
+          AUTH_STATE_HASH_SECRET: authStateHashSecret,
+          AUTH_PROVIDER_KEY: "Example-OIDC",
+          AUTH_ISSUER_URL: issuerUrl,
+          AUTH_AUTHORIZATION_URL: "https://auth.example.invalid/oauth2/authorize",
+          AUTH_TOKEN_URL: "https://auth.example.invalid/oauth2/token",
+          AUTH_JWKS_URL: jwksUrl,
+          AUTH_CLIENT_ID: "synthetic-client-id",
+          AUTH_CLIENT_SECRET: "synthetic-client-secret-value",
+          AUTH_REDIRECT_URI: "https://platform.example.invalid/api/platform/auth/callback",
+          SESSION_SECRET: "synthetic-session-secret-value-32",
+        }
+      : {}),
     ...options.env,
   };
   const fixture = {
     calls,
     records,
+    keys: createSyntheticKeyPair(),
     lastServer: null,
+    syntheticIdToken: null,
     input: {
       env,
       now: () => now,
@@ -441,6 +616,38 @@ function createBootstrapFixture(options = {}) {
       ...(options.withAuth
         ? {
             oidcAdapter: createBootstrapOidcAdapter(calls),
+            authSessionDurationMs: 60 * 60 * 1000,
+            authSessionIdFactory: () => "session_auth_bootstrap_1",
+            authUserIdFactory: () => "user_auth_bootstrap_1",
+            authProviderIdentityIdFactory: () => "provider_identity_auth_bootstrap_1",
+            authStateTtlSeconds: 600,
+          }
+        : {}),
+      ...(options.withGenericAuth
+        ? {
+            genericOidcHttpClient: async (request) => {
+              calls.genericOidcHttp += 1;
+              calls.genericOidcHttpUrls.push(request.url);
+
+              if (request.url === env.AUTH_TOKEN_URL) {
+                return jsonResponse(200, {
+                  [idTokenField]: fixture.syntheticIdToken,
+                  [accessTokenField]: "synthetic-access-token-placeholder",
+                  token_type: "Bearer",
+                  expires_in: 300,
+                });
+              }
+
+              if (request.url === env.AUTH_JWKS_URL) {
+                return jsonResponse(200, {
+                  keys: [fixture.keys.publicJwk],
+                });
+              }
+
+              return jsonResponse(404, {
+                error: "unexpected synthetic endpoint",
+              });
+            },
             authSessionDurationMs: 60 * 60 * 1000,
             authSessionIdFactory: () => "session_auth_bootstrap_1",
             authUserIdFactory: () => "user_auth_bootstrap_1",
@@ -482,6 +689,59 @@ function createBootstrapFixture(options = {}) {
   };
 
   return fixture;
+}
+
+function createSyntheticKeyPair() {
+  const { publicKey, privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+  });
+  const kid = `synthetic-${randomUUID()}`;
+  const publicJwk = {
+    ...publicKey.export({ format: "jwk" }),
+    alg: "RS256",
+    kid,
+    use: "sig",
+  };
+
+  return {
+    kid,
+    privateKey,
+    publicJwk,
+  };
+}
+
+function signJwt(keys, claims, headerOverrides = {}) {
+  const header = {
+    alg: "RS256",
+    kid: keys.kid,
+    typ: "JWT",
+    ...headerOverrides,
+  };
+  const signingInput = `${base64UrlJson(header)}.${base64UrlJson(claims)}`;
+  const signature = createSign("RSA-SHA256")
+    .update(signingInput)
+    .end()
+    .sign(keys.privateKey);
+
+  return `${signingInput}.${base64Url(signature)}`;
+}
+
+function base64UrlJson(value) {
+  return base64Url(Buffer.from(JSON.stringify(value)));
+}
+
+function base64Url(value) {
+  return Buffer.from(value).toString("base64url");
+}
+
+function jsonResponse(status, body) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    async json() {
+      return body;
+    },
+  };
 }
 
 function createFakeServer({ calls, dependencies, listenOutcome }) {

@@ -23,10 +23,14 @@ const authStateHashSecret = "synthetic_auth_state_hash_secret_32_chars_min";
 const rawTokenPattern = /csrf_[A-Za-z0-9_-]+|synthetic-raw-csrf-token|raw-csrf-token/i;
 const rawAuthPattern =
   /synthetic-auth-code|synthetic-provider-token|synthetic-raw-claim|synthetic-client-secret|synthetic-session-secret|postgresql:\/\/private-host/i;
+const issuerUrl = "https://issuer.example.invalid/";
+const jwksUrl = "https://issuer.example.invalid/.well-known/jwks.json";
 const authConfig = readAuthConfig({
   AUTH_PROVIDER_KEY: "Example-OIDC",
   AUTH_AUTHORIZATION_URL: "https://auth.example.invalid/oauth2/authorize",
   AUTH_TOKEN_URL: "https://auth.example.invalid/oauth2/token",
+  AUTH_ISSUER_URL: issuerUrl,
+  AUTH_JWKS_URL: jwksUrl,
   AUTH_CLIENT_ID: "synthetic-client-id",
   AUTH_CLIENT_SECRET: "synthetic-client-secret-value",
   AUTH_REDIRECT_URI: "https://platform.example.invalid/api/platform/auth/callback",
@@ -324,6 +328,109 @@ test("runtime composition wires auth callback through injected provider adapter 
   assert.doesNotMatch(JSON.stringify(fixture.records.authStates), new RegExp(fixture.calls.lastAuthStartInput.state));
   assert.doesNotMatch(JSON.stringify(fixture.records.authStates), new RegExp(fixture.calls.lastAuthStartInput.nonce));
   assertResponseIsPrivacySafe(response);
+});
+
+test("runtime composition can opt into generic OIDC without provider calls during creation", () => {
+  const fixture = createRuntimeFixture();
+  const httpCalls = [];
+
+  const dependencies = createPlatformRuntimeDependencies({
+    db: fixture.db,
+    runtimeConfig: fixture.runtimeConfig,
+    secrets: {
+      csrfTokenHashSecret: csrfSecret,
+      authStateHashSecret,
+    },
+    now: () => now,
+    csrfTokenIdFactory: {
+      createId() {
+        return "csrf_record_1";
+      },
+    },
+    auth: {
+      authConfig,
+      providerMode: "generic_oidc",
+      genericOidcHttpClient: async (request) => {
+        httpCalls.push(request);
+        throw new Error("Synthetic HTTP client should not be called during composition.");
+      },
+      sessionDurationMs: 60 * 60 * 1000,
+      sessionIdFactory: () => "session_auth_runtime_1",
+      userIdFactory: () => "user_auth_runtime_1",
+      providerIdentityIdFactory: () => "provider_identity_auth_runtime_1",
+    },
+  });
+
+  assert.ok(dependencies.authStart);
+  assert.ok(dependencies.authCallback);
+  assert.equal(httpCalls.length, 0);
+  assert.equal(fixture.calls.connect, 0);
+  assert.equal(fixture.calls.listen, 0);
+  assert.equal(fixture.calls.migrate, 0);
+});
+
+test("runtime generic OIDC mode validates required issuer and JWKS config safely", () => {
+  const fixture = createRuntimeFixture();
+
+  for (const invalidAuthConfig of [
+    { ...authConfig, issuerUrl: null },
+    { ...authConfig, jwksUrl: null },
+  ]) {
+    assert.throws(
+      () => createPlatformRuntimeDependencies({
+        db: fixture.db,
+        runtimeConfig: fixture.runtimeConfig,
+        secrets: {
+          csrfTokenHashSecret: csrfSecret,
+          authStateHashSecret,
+        },
+        now: () => now,
+        csrfTokenIdFactory: {
+          createId() {
+            return "csrf_record_1";
+          },
+        },
+        auth: {
+          authConfig: invalidAuthConfig,
+          providerMode: "generic_oidc",
+          genericOidcHttpClient: async () => {
+            throw new Error("Synthetic HTTP client should not be called.");
+          },
+          sessionDurationMs: 60 * 60 * 1000,
+          sessionIdFactory: () => "session_auth_runtime_1",
+          userIdFactory: () => "user_auth_runtime_1",
+          providerIdentityIdFactory: () => "provider_identity_auth_runtime_1",
+        },
+      }),
+      assertPrivacySafeRuntimeAuthConfigError,
+    );
+  }
+
+  assert.throws(
+    () => createPlatformRuntimeDependencies({
+      db: fixture.db,
+      runtimeConfig: fixture.runtimeConfig,
+      secrets: {
+        csrfTokenHashSecret: csrfSecret,
+        authStateHashSecret,
+      },
+      now: () => now,
+      csrfTokenIdFactory: {
+        createId() {
+          return "csrf_record_1";
+        },
+      },
+      auth: {
+        authConfig,
+        providerMode: "generic_oidc",
+        sessionDurationMs: 60 * 60 * 1000,
+        sessionIdFactory: () => "session_auth_runtime_1",
+        userIdFactory: () => "user_auth_runtime_1",
+        providerIdentityIdFactory: () => "provider_identity_auth_runtime_1",
+      },
+    }),
+    assertPrivacySafeRuntimeAuthConfigError,
+  );
 });
 
 test("runtime composition errors do not expose private values", () => {
@@ -642,6 +749,16 @@ function assertPrivacySafeSecretError(expectedCode) {
     assert.doesNotMatch(serialized, /private\.example\.test|raw-session-token|raw-csrf-token/);
     return true;
   };
+}
+
+function assertPrivacySafeRuntimeAuthConfigError(error) {
+  assert.equal(error.name, "PlatformRuntimeAuthConfigError");
+  assert.match(error.code, /^missing_generic_oidc_/);
+  assert.equal(error.publicMessage, "Platform runtime auth config is invalid.");
+  const serialized = JSON.stringify(error) + String(error.message ?? "");
+  assert.doesNotMatch(serialized, /synthetic-client-secret|synthetic-session-secret/i);
+  assert.doesNotMatch(serialized, /issuer\.example|auth\.example|https?:\/\//i);
+  return true;
 }
 
 async function listFiles(directory) {

@@ -10,6 +10,13 @@ import {
   createSecureAuthNonceFactory,
   createSecureAuthStateFactory,
 } from "../auth/auth-state-crypto.js";
+import {
+  createGenericOidcJwksTokenVerifier,
+} from "../auth/generic-oidc-jwks-verifier.js";
+import {
+  createGenericOidcProviderAdapter,
+  type GenericOidcHttpClient,
+} from "../auth/generic-oidc-provider-adapter.js";
 import type {
   ProviderIdentityIdFactoryInput,
   SessionIdFactoryInput,
@@ -45,9 +52,31 @@ export interface PlatformRuntimeDependencyInput {
   auth?: PlatformRuntimeAuthDependencyInput;
 }
 
+export type PlatformRuntimeAuthProviderMode = "injected_adapter" | "generic_oidc";
+
+export type PlatformRuntimeAuthConfigErrorCode =
+  | "missing_injected_oidc_adapter"
+  | "missing_generic_oidc_issuer_url"
+  | "missing_generic_oidc_jwks_url"
+  | "missing_generic_oidc_http_client"
+  | "invalid_auth_provider_mode";
+
+export class PlatformRuntimeAuthConfigError extends Error {
+  readonly code: PlatformRuntimeAuthConfigErrorCode;
+  readonly publicMessage = "Platform runtime auth config is invalid.";
+
+  constructor(code: PlatformRuntimeAuthConfigErrorCode) {
+    super("Platform runtime auth config is invalid.");
+    this.name = "PlatformRuntimeAuthConfigError";
+    this.code = code;
+  }
+}
+
 export interface PlatformRuntimeAuthDependencyInput {
   authConfig: AuthConfig;
-  oidcAdapter: OidcProviderAdapter;
+  oidcAdapter?: OidcProviderAdapter;
+  providerMode?: PlatformRuntimeAuthProviderMode;
+  genericOidcHttpClient?: GenericOidcHttpClient;
   sessionDurationMs: number;
   sessionIdFactory(input: SessionIdFactoryInput): string;
   userIdFactory(input: UserIdFactoryInput): string;
@@ -113,11 +142,12 @@ function createAuthDependencies({
 }): Pick<NodePlatformHttpAdapterDependencies, "authStart" | "authCallback"> {
   const stateStore = createDrizzleAuthStateStore(db);
   const stateReferenceFactory = createAuthStateReferenceFactorySafely(secrets);
+  const oidcAdapter = createOidcAdapterSafely(auth, stateReferenceFactory);
 
   return {
     authStart: {
       authConfig: auth.authConfig,
-      oidcAdapter: auth.oidcAdapter,
+      oidcAdapter,
       stateStore,
       stateFactory: createSecureAuthStateFactory({
         byteLength: auth.stateByteLength,
@@ -130,7 +160,7 @@ function createAuthDependencies({
     },
     authCallback: {
       authConfig: auth.authConfig,
-      oidcAdapter: auth.oidcAdapter,
+      oidcAdapter,
       stateStore,
       stateReferenceFactory,
       platformIdentityResolver: createPlatformIdentitySessionResolver({
@@ -147,6 +177,59 @@ function createAuthDependencies({
       successRedirectPath: auth.successRedirectPath,
     },
   };
+}
+
+function createOidcAdapterSafely(
+  auth: PlatformRuntimeAuthDependencyInput,
+  stateReferenceFactory: (value: string) => string,
+): OidcProviderAdapter {
+  const mode = auth.providerMode ?? "injected_adapter";
+
+  if (mode === "injected_adapter") {
+    if (!auth.oidcAdapter) {
+      throw new PlatformRuntimeAuthConfigError("missing_injected_oidc_adapter");
+    }
+
+    return auth.oidcAdapter;
+  }
+
+  if (mode === "generic_oidc") {
+    assertGenericOidcConfig(auth.authConfig);
+    const httpClient = readGenericOidcHttpClient(auth);
+
+    const tokenVerifier = createGenericOidcJwksTokenVerifier({
+      httpClient,
+    });
+
+    return createGenericOidcProviderAdapter({
+      authConfig: auth.authConfig,
+      httpClient,
+      tokenVerifier,
+      nonceReferenceFactory: stateReferenceFactory,
+    });
+  }
+
+  throw new PlatformRuntimeAuthConfigError("invalid_auth_provider_mode");
+}
+
+function assertGenericOidcConfig(authConfig: AuthConfig): void {
+  if (!authConfig.issuerUrl?.trim()) {
+    throw new PlatformRuntimeAuthConfigError("missing_generic_oidc_issuer_url");
+  }
+
+  if (!authConfig.jwksUrl?.trim()) {
+    throw new PlatformRuntimeAuthConfigError("missing_generic_oidc_jwks_url");
+  }
+}
+
+function readGenericOidcHttpClient(
+  auth: PlatformRuntimeAuthDependencyInput,
+): GenericOidcHttpClient {
+  if (!auth.genericOidcHttpClient) {
+    throw new PlatformRuntimeAuthConfigError("missing_generic_oidc_http_client");
+  }
+
+  return auth.genericOidcHttpClient;
 }
 
 function createCsrfTokenHasherSafely(secrets: PlatformRuntimeSecretConfig) {

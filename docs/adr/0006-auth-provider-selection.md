@@ -277,7 +277,7 @@ Implementation status after later PRs:
 
 - The provider-agnostic OIDC contracts, auth start/callback routes, auth state storage, runtime wiring, and a generic OIDC adapter factory now exist.
 - The generic adapter can build authorization URLs and perform token/userinfo HTTP calls only inside explicit adapter methods with injected HTTP boundaries.
-- Live cryptographic JWT/JWKS verification remains delegated to an explicit verifier interface until issuer, audience, expiry, nonce, and signature checks are implemented and tested.
+- Live cryptographic JWT/JWKS verification now exists behind the explicit verifier interface, and the approved runtime can opt into the generic adapter with `PLATFORM_AUTH_PROVIDER_MODE=generic_oidc`, issuer/JWKS config, and an injected HTTP client. Provider/JWKS network calls remain limited to explicit route-time adapter verification through injected HTTP boundaries.
 - Provider SDKs, frontend login UI, KQAG launch/storage integration, app launch tokens, fake-login shortcuts, billing, deployment, and migration execution remain outside the auth-provider boundary.
 
 ## Consequences
