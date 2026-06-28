@@ -6,10 +6,12 @@ import test from "node:test";
 import * as schema from "../dist/db/schema.js";
 import {
   createPlatformRuntimeDependencies,
+  handleNodePlatformHttpRequest,
   PlatformRuntimeSecretConfigError,
   readPlatformRuntimeSecretConfig,
   issueCsrfTokenForSession,
 } from "../dist/index.js";
+import { readAuthConfig } from "../dist/auth/index.js";
 
 const now = "2026-06-27T00:00:00.000Z";
 const future = "2026-06-27T00:15:00.000Z";
@@ -17,7 +19,19 @@ const allowedOrigin = "https://platform.example.test";
 const sessionId = "session_owner_example";
 const userId = "user_owner_example";
 const csrfSecret = "synthetic_csrf_hash_secret_32_chars_min";
+const authStateHashSecret = "synthetic_auth_state_hash_secret_32_chars_min";
 const rawTokenPattern = /csrf_[A-Za-z0-9_-]+|synthetic-raw-csrf-token|raw-csrf-token/i;
+const rawAuthPattern =
+  /synthetic-auth-code|synthetic-provider-token|synthetic-raw-claim|synthetic-client-secret|synthetic-session-secret|postgresql:\/\/private-host/i;
+const authConfig = readAuthConfig({
+  AUTH_PROVIDER_KEY: "Example-OIDC",
+  AUTH_AUTHORIZATION_URL: "https://auth.example.invalid/oauth2/authorize",
+  AUTH_TOKEN_URL: "https://auth.example.invalid/oauth2/token",
+  AUTH_CLIENT_ID: "synthetic-client-id",
+  AUTH_CLIENT_SECRET: "synthetic-client-secret-value",
+  AUTH_REDIRECT_URI: "https://platform.example.invalid/api/platform/auth/callback",
+  SESSION_SECRET: "synthetic-session-secret-value-32",
+});
 
 test("runtime secret config accepts strong synthetic CSRF hash secret", () => {
   const config = readPlatformRuntimeSecretConfig({
@@ -26,6 +40,21 @@ test("runtime secret config accepts strong synthetic CSRF hash secret", () => {
 
   assert.deepEqual(config, {
     csrfTokenHashSecret: csrfSecret,
+  });
+});
+
+test("runtime secret config accepts strong synthetic auth state hash secret when auth is required", () => {
+  const config = readPlatformRuntimeSecretConfig(
+    {
+      CSRF_TOKEN_HASH_SECRET: csrfSecret,
+      AUTH_STATE_HASH_SECRET: authStateHashSecret,
+    },
+    { requireAuthStateHashSecret: true },
+  );
+
+  assert.deepEqual(config, {
+    csrfTokenHashSecret: csrfSecret,
+    authStateHashSecret,
   });
 });
 
@@ -40,6 +69,32 @@ test("runtime secret config rejects missing blank and weak CSRF hash secrets saf
   assert.throws(
     () => readPlatformRuntimeSecretConfig({ CSRF_TOKEN_HASH_SECRET: "short-secret" }),
     assertPrivacySafeSecretError("invalid_csrf_token_hash_secret"),
+  );
+});
+
+test("runtime secret config rejects missing blank and weak auth state hash secrets safely", () => {
+  for (const secret of [undefined, "", "   "]) {
+    assert.throws(
+      () => readPlatformRuntimeSecretConfig(
+        {
+          CSRF_TOKEN_HASH_SECRET: csrfSecret,
+          AUTH_STATE_HASH_SECRET: secret,
+        },
+        { requireAuthStateHashSecret: true },
+      ),
+      assertPrivacySafeSecretError("missing_auth_state_hash_secret"),
+    );
+  }
+
+  assert.throws(
+    () => readPlatformRuntimeSecretConfig(
+      {
+        CSRF_TOKEN_HASH_SECRET: csrfSecret,
+        AUTH_STATE_HASH_SECRET: "short-secret",
+      },
+      { requireAuthStateHashSecret: true },
+    ),
+    assertPrivacySafeSecretError("invalid_auth_state_hash_secret"),
   );
 });
 
@@ -141,6 +196,136 @@ test("composed CSRF validator accepts a token issued by composed dependencies", 
   assert.doesNotMatch(JSON.stringify(result), rawTokenPattern);
 });
 
+test("runtime composition wires auth start without provider calls during creation", async () => {
+  const fixture = createRuntimeFixture();
+  const oidcAdapter = createNoNetworkOidcAdapter(fixture);
+
+  const dependencies = createPlatformRuntimeDependencies({
+    db: fixture.db,
+    runtimeConfig: fixture.runtimeConfig,
+    secrets: {
+      csrfTokenHashSecret: csrfSecret,
+      authStateHashSecret,
+    },
+    now: () => now,
+    csrfTokenIdFactory: {
+      createId() {
+        return "csrf_record_1";
+      },
+    },
+    auth: {
+      authConfig,
+      oidcAdapter,
+      stateTtlSeconds: 600,
+      sessionDurationMs: 60 * 60 * 1000,
+      sessionIdFactory: () => "session_auth_runtime_1",
+      userIdFactory: () => "user_auth_runtime_1",
+      providerIdentityIdFactory: () => "provider_identity_auth_runtime_1",
+    },
+  });
+
+  assert.ok(dependencies.authStart);
+  assert.ok(dependencies.authCallback);
+  assert.equal(fixture.calls.authBuildAuthorizationUrl, 0);
+  assert.equal(fixture.calls.authExchangeCodeForTokens, 0);
+  assert.equal(fixture.calls.authVerifyTokens, 0);
+  assert.equal(fixture.calls.connect, 0);
+  assert.equal(fixture.calls.listen, 0);
+  assert.equal(fixture.calls.migrate, 0);
+
+  const response = await handleNodePlatformHttpRequest(dependencies, {
+    method: "GET",
+    url: "/api/platform/auth/start",
+    headers: {},
+  });
+  const body = JSON.parse(response.body);
+
+  assert.equal(response.statusCode, 302);
+  assert.equal(response.headers.location, "https://auth.example.invalid/authorize");
+  assert.deepEqual(body, { outcome: "redirecting" });
+  assert.equal(fixture.calls.authBuildAuthorizationUrl, 1);
+  assert.equal(fixture.records.authStates.length, 1);
+  assert.match(fixture.records.authStates[0].stateHash, /^auth-state:v1:hmac-sha256:/);
+  assert.match(fixture.records.authStates[0].nonceHash, /^auth-state:v1:hmac-sha256:/);
+  assert.equal(fixture.records.authStates[0].providerKey, "example-oidc");
+  assert.equal(fixture.records.authStates[0].redirectUri, authConfig.redirectUri);
+  assert.equal(fixture.records.authStates[0].createdAt.toISOString(), now);
+  assert.equal(
+    fixture.records.authStates[0].expiresAt.toISOString(),
+    "2026-06-27T00:10:00.000Z",
+  );
+  assert.equal("state" in fixture.records.authStates[0], false);
+  assert.equal("nonce" in fixture.records.authStates[0], false);
+  assert.doesNotMatch(
+    JSON.stringify(fixture.records.authStates),
+    new RegExp(fixture.calls.lastAuthStartInput.state),
+  );
+  assert.doesNotMatch(
+    JSON.stringify(fixture.records.authStates),
+    new RegExp(fixture.calls.lastAuthStartInput.nonce),
+  );
+  assertResponseIsPrivacySafe(response);
+});
+
+test("runtime composition wires auth callback through injected provider adapter and session cookie path", async () => {
+  const fixture = createRuntimeFixture();
+  fixture.records.users = [];
+  fixture.records.sessions = [];
+  const oidcAdapter = createNoNetworkOidcAdapter(fixture);
+  const dependencies = createPlatformRuntimeDependencies({
+    db: fixture.db,
+    runtimeConfig: fixture.runtimeConfig,
+    secrets: {
+      csrfTokenHashSecret: csrfSecret,
+      authStateHashSecret,
+    },
+    now: () => now,
+    csrfTokenIdFactory: {
+      createId() {
+        return "csrf_record_1";
+      },
+    },
+    auth: {
+      authConfig,
+      oidcAdapter,
+      stateTtlSeconds: 600,
+      sessionDurationMs: 60 * 60 * 1000,
+      sessionIdFactory: () => "session_auth_runtime_1",
+      userIdFactory: () => "user_auth_runtime_1",
+      providerIdentityIdFactory: () => "provider_identity_auth_runtime_1",
+    },
+  });
+
+  await handleNodePlatformHttpRequest(dependencies, {
+    method: "GET",
+    url: "/api/platform/auth/start",
+    headers: {},
+  });
+
+  const response = await handleNodePlatformHttpRequest(dependencies, {
+    method: "GET",
+    url: `/api/platform/auth/callback?code=synthetic-auth-code&state=${fixture.calls.lastAuthStartInput.state}`,
+    headers: {},
+  });
+  const body = JSON.parse(response.body);
+
+  assert.equal(response.statusCode, 302);
+  assert.equal(response.headers.location, "/app");
+  assert.match(response.headers["set-cookie"], /^swooshz_session=session_auth_runtime_1;/);
+  assert.deepEqual(body, { outcome: "authenticated" });
+  assert.equal(fixture.calls.authExchangeCodeForTokens, 1);
+  assert.equal(fixture.calls.authVerifyTokens, 1);
+  assert.equal(fixture.records.users.length, 1);
+  assert.equal(fixture.records.providerIdentities.length, 1);
+  assert.equal(fixture.records.sessions.length, 1);
+  assert.equal(fixture.records.authStates[0].consumedAt.toISOString(), now);
+  assert.doesNotMatch(JSON.stringify(body), rawAuthPattern);
+  assert.doesNotMatch(JSON.stringify(response.headers), /synthetic-auth-code/);
+  assert.doesNotMatch(JSON.stringify(fixture.records.authStates), new RegExp(fixture.calls.lastAuthStartInput.state));
+  assert.doesNotMatch(JSON.stringify(fixture.records.authStates), new RegExp(fixture.calls.lastAuthStartInput.nonce));
+  assertResponseIsPrivacySafe(response);
+});
+
 test("runtime composition errors do not expose private values", () => {
   assert.throws(
     () => createPlatformRuntimeDependencies({
@@ -150,6 +335,27 @@ test("runtime composition errors do not expose private values", () => {
       now: () => now,
     }),
     assertPrivacySafeSecretError("invalid_csrf_token_hash_secret"),
+  );
+});
+
+test("runtime composition requires auth state hash secret when auth dependencies are supplied", () => {
+  assert.throws(
+    () => createPlatformRuntimeDependencies({
+      db: createRuntimeFixture().db,
+      runtimeConfig: createRuntimeFixture().runtimeConfig,
+      secrets: { csrfTokenHashSecret: csrfSecret },
+      now: () => now,
+      auth: {
+        authConfig,
+        oidcAdapter: createNoNetworkOidcAdapter(createRuntimeFixture()),
+        stateTtlSeconds: 600,
+        sessionDurationMs: 60 * 60 * 1000,
+        sessionIdFactory: () => "session_auth_runtime_1",
+        userIdFactory: () => "user_auth_runtime_1",
+        providerIdentityIdFactory: () => "provider_identity_auth_runtime_1",
+      },
+    }),
+    assertPrivacySafeSecretError("missing_auth_state_hash_secret"),
   );
 });
 
@@ -193,6 +399,10 @@ function createRuntimeFixture() {
     connect: 0,
     listen: 0,
     migrate: 0,
+    authBuildAuthorizationUrl: 0,
+    authExchangeCodeForTokens: 0,
+    authVerifyTokens: 0,
+    lastAuthStartInput: null,
   };
   const records = {
     users: [
@@ -217,6 +427,8 @@ function createRuntimeFixture() {
       },
     ],
     csrfTokens: [],
+    authStates: [],
+    providerIdentities: [],
   };
 
   return {
@@ -253,22 +465,8 @@ function createFakeDrizzleDb(records) {
     insert(table) {
       return {
         values(values) {
-          if (table !== schema.csrfTokens) {
-            throw new Error("Only CSRF token writes are expected in this test.");
-          }
-
-          const row = {
-            id: values.id,
-            sessionId: values.sessionId,
-            tokenHash: values.tokenHash,
-            purpose: values.purpose,
-            createdAt: values.createdAt,
-            expiresAt: values.expiresAt,
-            consumedAt: values.consumedAt,
-            revokedAt: values.revokedAt,
-            replacedByTokenId: values.replacedByTokenId,
-          };
-          records.csrfTokens.push(row);
+          const row = mapInsertValues(table, values);
+          insertRow(table, records, row);
 
           return {
             returning() {
@@ -278,8 +476,31 @@ function createFakeDrizzleDb(records) {
         },
       };
     },
-    update() {
-      throw new Error("Runtime composition tests do not update records.");
+    update(table) {
+      return {
+        set(values) {
+          return {
+            where() {
+              return {
+                returning() {
+                  if (table === schema.authStates) {
+                    const row = records.authStates[0];
+
+                    if (!row) {
+                      return Promise.resolve([]);
+                    }
+
+                    Object.assign(row, values);
+                    return Promise.resolve([row]);
+                  }
+
+                  throw new Error("Only auth state updates are expected in this test.");
+                },
+              };
+            },
+          };
+        },
+      };
     },
   };
 }
@@ -297,7 +518,103 @@ function selectRows(table, records) {
     return records.csrfTokens;
   }
 
+  if (table === schema.authStates) {
+    return records.authStates.filter((row) => !row.consumedAt && !row.revokedAt);
+  }
+
+  if (table === schema.providerIdentities) {
+    return records.providerIdentities;
+  }
+
   return [];
+}
+
+function mapInsertValues(table, values) {
+  if (table === schema.csrfTokens) {
+    return {
+      id: values.id,
+      sessionId: values.sessionId,
+      tokenHash: values.tokenHash,
+      purpose: values.purpose,
+      createdAt: values.createdAt,
+      expiresAt: values.expiresAt,
+      consumedAt: values.consumedAt,
+      revokedAt: values.revokedAt,
+      replacedByTokenId: values.replacedByTokenId,
+    };
+  }
+
+  return { ...values };
+}
+
+function insertRow(table, records, row) {
+  if (table === schema.csrfTokens) {
+    records.csrfTokens.push(row);
+    return;
+  }
+
+  if (table === schema.authStates) {
+    records.authStates.push(row);
+    return;
+  }
+
+  if (table === schema.users) {
+    records.users.push(row);
+    return;
+  }
+
+  if (table === schema.providerIdentities) {
+    records.providerIdentities.push(row);
+    return;
+  }
+
+  if (table === schema.sessions) {
+    records.sessions.push(row);
+    return;
+  }
+
+  throw new Error("Unexpected table write in runtime composition test.");
+}
+
+function createNoNetworkOidcAdapter(fixture) {
+  return {
+    async buildAuthorizationUrl(input) {
+      fixture.calls.authBuildAuthorizationUrl += 1;
+      fixture.calls.lastAuthStartInput = input;
+
+      return { url: "https://auth.example.invalid/authorize" };
+    },
+    async exchangeCodeForTokens(input) {
+      fixture.calls.authExchangeCodeForTokens += 1;
+      assert.equal(input.code, "synthetic-auth-code");
+
+      return {
+        providerKey: input.providerKey,
+        receivedAt: input.now,
+        tokenSetRef: "adapter_internal",
+      };
+    },
+    async verifyTokens(input) {
+      fixture.calls.authVerifyTokens += 1;
+      assert.equal(input.tokenExchange.tokenSetRef, "adapter_internal");
+      assert.match(input.expectedNonceHash, /^auth-state:v1:hmac-sha256:/);
+
+      return {
+        providerKey: "example-oidc",
+        providerSubject: "provider-subject-runtime",
+        verifiedEmail: "runtime-owner@example.com",
+        displayName: "Runtime Owner",
+        metadata: { synthetic: true },
+      };
+    },
+  };
+}
+
+function assertResponseIsPrivacySafe(response) {
+  const serialized = JSON.stringify(response);
+
+  assert.doesNotMatch(serialized, rawAuthPattern);
+  assert.doesNotMatch(serialized, /raw-csrf-token|raw-session-token|private\.example\.test/i);
 }
 
 class FakeSelectResult {
