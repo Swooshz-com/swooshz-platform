@@ -66,6 +66,10 @@ export function createInMemoryPlatformRepositories(records = {}) {
       async findBySlug(slug) {
         return workspaces.find((workspace) => workspace.slug === slug) ?? null;
       },
+      async create(workspace) {
+        workspaces.push(workspace);
+        return workspace;
+      },
     },
     memberships: {
       async findForUserInWorkspace(userId, workspaceId) {
@@ -78,6 +82,10 @@ export function createInMemoryPlatformRepositories(records = {}) {
       },
       async listForUser(userId) {
         return memberships.filter((membership) => membership.userId === userId);
+      },
+      async create(membership) {
+        memberships.push(membership);
+        return membership;
       },
     },
     invitations: {
@@ -105,6 +113,10 @@ export function createInMemoryPlatformRepositories(records = {}) {
       async findById(id) {
         return apps.find((app) => app.id === id) ?? null;
       },
+      async create(app) {
+        apps.push(app);
+        return app;
+      },
     },
     appEntitlements: {
       async findForWorkspaceApp(workspaceId, appId) {
@@ -114,6 +126,10 @@ export function createInMemoryPlatformRepositories(records = {}) {
               entitlement.workspaceId === workspaceId && entitlement.appId === appId,
           ) ?? null
         );
+      },
+      async create(entitlement) {
+        appEntitlements.push(entitlement);
+        return entitlement;
       },
     },
     auditEvents: {

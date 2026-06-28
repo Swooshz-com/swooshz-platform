@@ -302,7 +302,11 @@ test("Drizzle repository create, update, and append methods return mapped record
       [schema.users, [userRow]],
       [schema.providerIdentities, [providerIdentityRow]],
       [schema.sessions, [sessionRow]],
+      [schema.workspaces, [workspaceRow]],
+      [schema.memberships, [membershipRow]],
       [schema.invitations, [invitationRow]],
+      [schema.apps, [appRow]],
+      [schema.appEntitlements, [entitlementRow]],
       [schema.auditEvents, [auditEventRow]],
     ]),
     updateRows: new Map([
@@ -320,6 +324,19 @@ test("Drizzle repository create, update, and append methods return mapped record
   assert.deepEqual(
     await repositories.sessions.create(mapSessionRow(sessionRow)),
     mapSessionRow(sessionRow),
+  );
+  assert.deepEqual(
+    await repositories.workspaces.create(mapWorkspaceRow(workspaceRow)),
+    mapWorkspaceRow(workspaceRow),
+  );
+  assert.deepEqual(
+    await repositories.memberships.create(mapMembershipRow(membershipRow)),
+    mapMembershipRow(membershipRow),
+  );
+  assert.deepEqual(await repositories.apps.create(mapAppRow(appRow)), mapAppRow(appRow));
+  assert.deepEqual(
+    await repositories.appEntitlements.create(mapAppEntitlementRow(entitlementRow)),
+    mapAppEntitlementRow(entitlementRow),
   );
   assert.deepEqual(
     await repositories.sessions.revoke(sessionRow.id, updatedAt.toISOString()),
@@ -352,6 +369,30 @@ test("Drizzle repository create, update, and append methods return mapped record
   assert.ok(sessionInsert);
   assert.equal("token" in sessionInsert.values, false);
   assert.equal("sessionSecret" in sessionInsert.values, false);
+  const workspaceInsert = fakeDb.calls.find(
+    (call) => call.operation === "insert.values" && call.table === schema.workspaces,
+  );
+  const membershipInsert = fakeDb.calls.find(
+    (call) => call.operation === "insert.values" && call.table === schema.memberships,
+  );
+  const appInsert = fakeDb.calls.find(
+    (call) => call.operation === "insert.values" && call.table === schema.apps,
+  );
+  const entitlementInsert = fakeDb.calls.find(
+    (call) => call.operation === "insert.values" && call.table === schema.appEntitlements,
+  );
+  assert.ok(workspaceInsert);
+  assert.equal(workspaceInsert.values.slug, workspaceRow.slug);
+  assert.equal(workspaceInsert.values.status, workspaceRow.status);
+  assert.ok(membershipInsert);
+  assert.equal(membershipInsert.values.role, membershipRow.role);
+  assert.equal(membershipInsert.values.status, membershipRow.status);
+  assert.ok(appInsert);
+  assert.equal(appInsert.values.key, appRow.key);
+  assert.equal(appInsert.values.status, appRow.status);
+  assert.ok(entitlementInsert);
+  assert.equal(entitlementInsert.values.status, entitlementRow.status);
+  assert.equal(entitlementInsert.values.grantedByUserId, entitlementRow.grantedByUserId);
   const sessionUpdate = fakeDb.calls.find(
     (call) => call.operation === "update.set" && call.table === schema.sessions,
   );
