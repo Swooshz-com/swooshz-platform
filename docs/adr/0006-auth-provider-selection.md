@@ -27,6 +27,8 @@ The first implementation should support a generic OIDC provider contract with:
 - Provider key from environment.
 - Platform-owned session creation after provider identity is verified.
 
+The implementation now includes a provider-agnostic JWT/JWKS verifier behind the generic OIDC verifier interface. It performs real RS256 signature verification with JWKS, validates issuer, audience, expiry, not-before, issued-at, and subject claims, returns nonce for platform-side nonce hash comparison, and only trusts email when `email_verified === true`. It does not add provider SDKs, frontend login UI, KQAG launch/storage integration, app launch tokens, billing, deployment, migration execution, or fake-login shortcuts.
+
 Do not hard-couple the platform account model to Clerk, Auth0, Supabase Auth, or another provider SDK in the first implementation. A specific managed provider may still be used behind the generic OIDC contract if it fits the environment and security needs, but platform user, workspace, membership, invitation, session, app entitlement, and app access logic must remain provider-owned only at the identity-proof boundary.
 
 Do not select Supabase Auth in this ADR. Supabase remains only a possible managed Postgres provider from the database ADRs, not an auth decision.

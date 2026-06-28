@@ -205,6 +205,7 @@ test("auth state crypto imports stay in dedicated crypto adapter modules", async
   const sourceFiles = await listFiles("src");
   const allowed = new Set([
     "src/auth/auth-state-crypto.ts",
+    "src/auth/generic-oidc-jwks-verifier.ts",
     "src/http/csrf-token-crypto.ts",
   ]);
 
