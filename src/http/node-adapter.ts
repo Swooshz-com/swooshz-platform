@@ -1,6 +1,7 @@
 import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from "node:http";
 import type { BillingGate } from "../access/decide-app-access.js";
 import type { SessionRevocationServiceDependencies } from "../auth/session-revocation-service.js";
+import type { AppLaunchIntentDependencies } from "../platform/app-launch-intent-service.js";
 import type { PlatformRepositories } from "../platform/repositories.js";
 import {
   handleAuthCallbackRequest,
@@ -12,6 +13,7 @@ import type { CsrfTokenValidator } from "./csrf.js";
 import type { CsrfTokenServiceDependencies } from "./csrf-token-service.js";
 import {
   handleCsrfTokenIssueRequest,
+  handleAppLaunchIntentRequest,
   handleLogoutRequest,
   handleProtectedAppAccessRequest,
   handleSessionContextRequest,
@@ -38,6 +40,7 @@ export interface NodePlatformHttpAdapterDependencies {
   csrfTokenTtlSeconds?: number;
   authStart?: AuthStartHttpDependencies;
   authCallback?: AuthCallbackHttpDependencies;
+  appLaunchIntent?: AppLaunchIntentDependencies;
   billingGate?: BillingGate;
 }
 
@@ -90,6 +93,7 @@ export async function handleNodePlatformHttpRequest(
       },
       {
         allow: route.method,
+        ...(route.id === "platform_app_launch" ? noStoreHeaders() : {}),
       },
     );
   }
@@ -186,6 +190,58 @@ export async function handleNodePlatformHttpRequest(
           cookie: dependencies.cookie,
         },
       ),
+    );
+  }
+
+  if (route.id === "platform_app_launch") {
+    const selectedWorkspaceId = parsedUrl.searchParams.get("workspaceId");
+    const appKey = parsedUrl.searchParams.get("appKey");
+
+    if (!selectedWorkspaceId || !appKey) {
+      return jsonResponse(
+        400,
+        {
+          outcome: "error",
+          message: "Required query parameters are missing.",
+        },
+        noStoreHeaders(),
+      );
+    }
+
+    const now = dependencies.now();
+    const sessionId = extractBrowserSessionIdFromCookieHeader(
+      readHeader(headers, "cookie"),
+      dependencies.cookie,
+    );
+    const securityResult = await validateHttpRequestSecurityForRoute({
+      route: getHttpRouteContract("platform_app_launch"),
+      headers,
+      sessionId,
+      now,
+      originConfig: dependencies.originConfig,
+      csrfTokenValidator: dependencies.csrfTokenValidator,
+    });
+
+    if (!securityResult.allowed) {
+      return securityFailureResponse(
+        securityResult.recommendedStatus,
+        securityResult.reason,
+        noStoreHeaders(),
+      );
+    }
+
+    if (!dependencies.appLaunchIntent) {
+      return appLaunchFailureResponse();
+    }
+
+    return toNodeResponse(
+      await handleAppLaunchIntentRequest(dependencies.appLaunchIntent, {
+        headers,
+        selectedWorkspaceId,
+        appKey,
+        now,
+        cookie: dependencies.cookie,
+      }),
     );
   }
 
@@ -327,21 +383,41 @@ function authCallbackFailureResponse(status: 400 | 500): NodePlatformHttpRespons
   });
 }
 
+function appLaunchFailureResponse(): NodePlatformHttpResponse {
+  return jsonResponse(
+    500,
+    {
+      outcome: "error",
+      message: "App launch intent could not be created.",
+    },
+    noStoreHeaders(),
+  );
+}
+
 function securityFailureResponse(
   status: 403 | 500,
   reason: string,
+  headers: Record<string, string> = {},
 ): NodePlatformHttpResponse {
   if (status === 500) {
-    return jsonResponse(500, {
-      outcome: "error",
-      message: "Request security could not be completed.",
-    });
+    return jsonResponse(
+      500,
+      {
+        outcome: "error",
+        message: "Request security could not be completed.",
+      },
+      headers,
+    );
   }
 
-  return jsonResponse(403, {
-    outcome: "denied",
-    reason,
-  });
+  return jsonResponse(
+    403,
+    {
+      outcome: "denied",
+      reason,
+    },
+    headers,
+  );
 }
 
 function jsonResponse(
@@ -379,4 +455,12 @@ function readHeader(
 
 function optionalSearchParam(parsedUrl: URL, name: string): string | undefined {
   return parsedUrl.searchParams.get(name) ?? undefined;
+}
+
+function noStoreHeaders(): Record<string, string> {
+  return {
+    "cache-control": "no-store, no-cache, must-revalidate",
+    pragma: "no-cache",
+    expires: "0",
+  };
 }

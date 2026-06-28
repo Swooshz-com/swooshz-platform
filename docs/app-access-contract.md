@@ -104,6 +104,14 @@ Membership can be granted to an existing active user by user id or normalized em
 
 The session context response is informational. It does not launch apps, mint app launch tokens, persist workspace selection, accept invitations, create memberships, grant entitlements, call KQAG, or expose provider tokens, raw claims, session secrets, CSRF material, database details, quote data, pricing files, or private app payloads.
 
+## App Launch Intent Endpoint
+
+`POST /api/platform/apps/launch?workspaceId=...&appKey=...` creates a platform launch intent for an active browser session. It is a state-changing browser-cookie route, so it requires Origin/Referer validation and a CSRF token before the handler can create a launch token.
+
+The endpoint re-checks the same protected app access rules used by session app-access decisions. Missing, revoked, or expired platform sessions are unauthenticated. Denied app access, including KQAG viewer access while no read-only KQAG mode exists, does not create a token.
+
+Allowed access creates one short-lived launch token record. The database stores only a versioned HMAC token hash plus session, user, workspace, app, expiry, consumed, and revoked metadata. The raw launch token/reference is returned only once in the immediate no-store response with the app key, workspace id, optional app launch URL, and expiry. Token consumption/validation, redirects, KQAG launch/storage integration, frontend UI, fake login, billing, deployment, and migration execution are out of scope until separately approved.
+
 ## App Launch Flow
 
 The platform app launch flow is:

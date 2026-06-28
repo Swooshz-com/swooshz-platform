@@ -30,6 +30,19 @@ export interface InvitationStatusTimestamps {
   revokedAt?: IsoTimestamp | null;
 }
 
+export interface AppLaunchTokenRecord {
+  id: string;
+  sessionId: string;
+  userId: string;
+  workspaceId: string;
+  appId: string;
+  tokenHash: string;
+  createdAt: IsoTimestamp;
+  expiresAt: IsoTimestamp;
+  consumedAt: IsoTimestamp | null;
+  revokedAt: IsoTimestamp | null;
+}
+
 export interface UserRepository {
   findById(id: string): Promise<User | null>;
   findByNormalizedEmail(email: string): Promise<User | null>;
@@ -90,6 +103,10 @@ export interface AuditEventRepository {
   append(event: AuditEvent): Promise<AuditEvent>;
 }
 
+export interface AppLaunchTokenRepository {
+  create(record: AppLaunchTokenRecord): Promise<AppLaunchTokenRecord>;
+}
+
 export interface PlatformRepositories {
   users: UserRepository;
   providerIdentities?: ProviderIdentityRepository;
@@ -100,4 +117,5 @@ export interface PlatformRepositories {
   apps: AppRepository;
   appEntitlements: AppEntitlementRepository;
   auditEvents?: AuditEventRepository;
+  appLaunchTokens?: AppLaunchTokenRepository;
 }

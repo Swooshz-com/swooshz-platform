@@ -207,6 +207,7 @@ test("auth state crypto imports stay in dedicated crypto adapter modules", async
     "src/auth/auth-state-crypto.ts",
     "src/auth/generic-oidc-jwks-verifier.ts",
     "src/http/csrf-token-crypto.ts",
+    "src/platform/app-launch-token-crypto.ts",
   ]);
 
   for (const filePath of sourceFiles) {

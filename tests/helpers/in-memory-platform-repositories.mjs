@@ -8,6 +8,7 @@ export function createInMemoryPlatformRepositories(records = {}) {
   const apps = records.apps ?? [];
   const appEntitlements = records.appEntitlements ?? [];
   const auditEvents = records.auditEvents ?? [];
+  const appLaunchTokens = records.appLaunchTokens ?? [];
 
   return {
     users: {
@@ -144,6 +145,12 @@ export function createInMemoryPlatformRepositories(records = {}) {
       async append(event) {
         auditEvents.push(event);
         return event;
+      },
+    },
+    appLaunchTokens: {
+      async create(record) {
+        appLaunchTokens.push(record);
+        return record;
       },
     },
   };

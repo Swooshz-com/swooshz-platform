@@ -4,6 +4,11 @@ import {
   type SessionRevocationServiceDependencies,
 } from "../auth/session-revocation-service.js";
 import {
+  AppLaunchIntentServiceError,
+  createAppLaunchIntent,
+  type AppLaunchIntentDependencies,
+} from "../platform/app-launch-intent-service.js";
+import {
   decideProtectedAppAccess,
   ProtectedAppAccessServiceError,
 } from "../platform/protected-app-access-service.js";
@@ -64,6 +69,14 @@ export interface CsrfTokenIssueHttpRequest {
   headers?: HttpRequestHeaders;
   now: string;
   ttlSeconds: number;
+  cookie?: BrowserSessionCookieConfig;
+}
+
+export interface AppLaunchIntentHttpRequest {
+  headers?: HttpRequestHeaders;
+  selectedWorkspaceId: string;
+  appKey: string;
+  now: string;
   cookie?: BrowserSessionCookieConfig;
 }
 
@@ -195,6 +208,72 @@ function csrfIssueDenied(
   };
 }
 
+export async function handleAppLaunchIntentRequest(
+  dependencies: AppLaunchIntentDependencies,
+  request: AppLaunchIntentHttpRequest,
+): Promise<HttpResponseLike> {
+  const sessionId = extractSessionId(request.headers, request.cookie);
+
+  if (!sessionId) {
+    return appLaunchUnauthenticated("missing_session");
+  }
+
+  if (!request.selectedWorkspaceId.trim() || !request.appKey.trim()) {
+    return {
+      status: 400,
+      headers: noStoreHeaders(),
+      body: {
+        outcome: "error",
+        message: "Required query parameters are missing.",
+      },
+    };
+  }
+
+  try {
+    const result = await createAppLaunchIntent(dependencies, {
+      sessionId,
+      selectedWorkspaceId: request.selectedWorkspaceId,
+      appKey: request.appKey,
+      now: request.now,
+    });
+
+    if (result.outcome === "created") {
+      return {
+        status: 201,
+        headers: noStoreHeaders(),
+        body: {
+          outcome: "launch_intent_created",
+          appKey: result.appKey,
+          workspaceId: result.workspaceId,
+          launchUrl: result.appLaunchUrl,
+          launchToken: result.launchToken,
+          launchTokenExpiresAt: result.launchTokenExpiresAt,
+        },
+      };
+    }
+
+    if (result.outcome === "unauthenticated") {
+      return appLaunchUnauthenticated(result.reason);
+    }
+
+    return {
+      status: 403,
+      headers: noStoreHeaders(),
+      body: {
+        outcome: "denied",
+        reason: "app_access_denied",
+        decision: result.decision,
+      },
+    };
+  } catch (error) {
+    if (error instanceof AppLaunchIntentServiceError) {
+      return appLaunchFailure();
+    }
+
+    return appLaunchFailure();
+  }
+}
+
 export async function handleSessionContextRequest(
   repositories: PlatformRepositories,
   request: SessionContextHttpRequest,
@@ -241,6 +320,22 @@ function sessionContextUnauthenticated(
     | "expired_session"
     | "missing_user"
     | "user_not_active",
+) {
+  return {
+    status: 401,
+    headers: noStoreHeaders(),
+    body: {
+      outcome: "unauthenticated",
+      reason,
+    },
+  };
+}
+
+function appLaunchUnauthenticated(
+  reason:
+    | "missing_session"
+    | "revoked_session"
+    | "expired_session",
 ) {
   return {
     status: 401,
@@ -367,6 +462,17 @@ function sessionContextFailure() {
     body: {
       outcome: "error",
       message: "Session context could not be loaded.",
+    },
+  };
+}
+
+function appLaunchFailure() {
+  return {
+    status: 500,
+    headers: noStoreHeaders(),
+    body: {
+      outcome: "error",
+      message: "App launch intent could not be created.",
     },
   };
 }

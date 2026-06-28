@@ -17,6 +17,7 @@ test("route manifest includes only approved initial platform routes", () => {
       "platform_session_app_access",
       "platform_session_context",
       "platform_session_csrf",
+      "platform_app_launch",
       "platform_logout",
     ],
   );
@@ -29,6 +30,7 @@ test("route manifest includes only approved initial platform routes", () => {
       "GET /api/platform/session/app-access",
       "GET /api/platform/session/context",
       "GET /api/platform/session/csrf",
+      "POST /api/platform/apps/launch",
       "POST /api/platform/logout",
     ],
   );
@@ -39,12 +41,17 @@ test("state-changing browser-cookie routes require CSRF protection", () => {
     (route) => route.method !== "GET",
   );
 
-  assert.equal(stateChangingRoutes.length, 1);
-  assert.equal(stateChangingRoutes[0].id, "platform_logout");
-  assert.deepEqual(stateChangingRoutes[0].csrf, {
-    required: true,
-    strategy: "origin_referer_and_csrf_token",
-  });
+  assert.deepEqual(
+    stateChangingRoutes.map((route) => route.id),
+    ["platform_app_launch", "platform_logout"],
+  );
+
+  for (const route of stateChangingRoutes) {
+    assert.deepEqual(route.csrf, {
+      required: true,
+      strategy: "origin_referer_and_csrf_token",
+    });
+  }
 });
 
 test("auth start route is GET-only and does not require browser session or CSRF", () => {
@@ -116,10 +123,22 @@ test("CSRF issuance route is GET-only, session-protected, and does not require C
   assert.equal(route.handlerContract, "handleCsrfTokenIssueRequest");
 });
 
-test("route manifest does not include launch tokens KQAG adapter or frontend dashboard work", () => {
+test("app launch intent route is POST-only session-protected and CSRF-protected", () => {
+  const route = getHttpRouteContract("platform_app_launch");
+
+  assert.equal(route.method, "POST");
+  assert.equal(route.path, "/api/platform/apps/launch");
+  assert.equal(route.browserSession, "required");
+  assert.equal(route.csrf.required, true);
+  assert.equal(route.csrf.strategy, "origin_referer_and_csrf_token");
+  assert.deepEqual(route.requiredQuery, ["workspaceId", "appKey"]);
+  assert.equal(route.handlerContract, "handleAppLaunchIntentRequest");
+  assert.equal(route.idempotent, false);
+});
+
+test("route manifest does not include KQAG adapter or frontend dashboard work", () => {
   const serialized = JSON.stringify(HTTP_ROUTE_CONTRACTS);
 
-  assert.doesNotMatch(serialized, /launchToken|launch_token|redirectUrl|redirect_url/i);
   assert.doesNotMatch(serialized, /kqag|quote|pricing|pdf|xlsx/i);
   assert.doesNotMatch(serialized, /frontend|dashboard|react|next|vite/i);
 });

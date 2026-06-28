@@ -20,9 +20,12 @@ const sessionId = "session_owner_example";
 const userId = "user_owner_example";
 const csrfSecret = "synthetic_csrf_hash_secret_32_chars_min";
 const authStateHashSecret = "synthetic_auth_state_hash_secret_32_chars_min";
+const appLaunchTokenHashSecret = "synthetic_app_launch_hash_secret_32_chars_min";
 const rawTokenPattern = /csrf_[A-Za-z0-9_-]+|synthetic-raw-csrf-token|raw-csrf-token/i;
 const rawAuthPattern =
   /synthetic-auth-code|synthetic-provider-token|synthetic-raw-claim|synthetic-client-secret|synthetic-session-secret|postgresql:\/\/private-host/i;
+const rawLaunchTokenPattern =
+  /synthetic-raw-launch-token|app-launch:v1:hmac-sha256:synthetic_hash_reference/i;
 const issuerUrl = "https://issuer.example.invalid/";
 const jwksUrl = "https://issuer.example.invalid/.well-known/jwks.json";
 const authConfig = readAuthConfig({
@@ -59,6 +62,21 @@ test("runtime secret config accepts strong synthetic auth state hash secret when
   assert.deepEqual(config, {
     csrfTokenHashSecret: csrfSecret,
     authStateHashSecret,
+  });
+});
+
+test("runtime secret config accepts strong synthetic app launch hash secret when launch issuer is required", () => {
+  const config = readPlatformRuntimeSecretConfig(
+    {
+      CSRF_TOKEN_HASH_SECRET: csrfSecret,
+      APP_LAUNCH_TOKEN_HASH_SECRET: appLaunchTokenHashSecret,
+    },
+    { requireAppLaunchTokenHashSecret: true },
+  );
+
+  assert.deepEqual(config, {
+    csrfTokenHashSecret: csrfSecret,
+    appLaunchTokenHashSecret,
   });
 });
 
@@ -102,6 +120,32 @@ test("runtime secret config rejects missing blank and weak auth state hash secre
   );
 });
 
+test("runtime secret config rejects missing blank and weak app launch hash secrets safely", () => {
+  for (const secret of [undefined, "", "   "]) {
+    assert.throws(
+      () => readPlatformRuntimeSecretConfig(
+        {
+          CSRF_TOKEN_HASH_SECRET: csrfSecret,
+          APP_LAUNCH_TOKEN_HASH_SECRET: secret,
+        },
+        { requireAppLaunchTokenHashSecret: true },
+      ),
+      assertPrivacySafeSecretError("missing_app_launch_token_hash_secret"),
+    );
+  }
+
+  assert.throws(
+    () => readPlatformRuntimeSecretConfig(
+      {
+        CSRF_TOKEN_HASH_SECRET: csrfSecret,
+        APP_LAUNCH_TOKEN_HASH_SECRET: "short-secret",
+      },
+      { requireAppLaunchTokenHashSecret: true },
+    ),
+    assertPrivacySafeSecretError("invalid_app_launch_token_hash_secret"),
+  );
+});
+
 test("runtime composition creates Node adapter dependencies without side effects", () => {
   const fixture = createRuntimeFixture();
 
@@ -129,6 +173,93 @@ test("runtime composition creates Node adapter dependencies without side effects
   assert.equal(fixture.calls.listen, 0);
   assert.equal(fixture.calls.migrate, 0);
   assert.equal(fixture.calls.connect, 0);
+});
+
+test("runtime composition wires app launch token issuer dependencies when enabled", async () => {
+  const fixture = createRuntimeFixture({ withAppAccessRecords: true });
+
+  const dependencies = createPlatformRuntimeDependencies({
+    db: fixture.db,
+    runtimeConfig: fixture.runtimeConfig,
+    secrets: {
+      csrfTokenHashSecret: csrfSecret,
+      appLaunchTokenHashSecret,
+    },
+    now: () => now,
+    csrfTokenIdFactory: {
+      createId() {
+        return "csrf_record_1";
+      },
+    },
+    appLaunch: {
+      tokenIdFactory: {
+        createId() {
+          return `app_launch_token_${fixture.records.appLaunchTokens.length + 1}`;
+        },
+      },
+      ttlSeconds: 300,
+    },
+  });
+
+  assert.ok(dependencies.appLaunchIntent);
+  assert.equal(fixture.calls.connect, 0);
+  assert.equal(fixture.calls.listen, 0);
+  assert.equal(fixture.calls.migrate, 0);
+
+  const issued = await issueCsrfTokenForSession(dependencies.csrfTokenIssuer, {
+    sessionId,
+    now,
+    ttlSeconds: 900,
+    purpose: "browser_session",
+  });
+  const response = await handleNodePlatformHttpRequest(dependencies, {
+    method: "POST",
+    url: "/api/platform/apps/launch?workspaceId=workspace_koncept_images&appKey=kqag",
+    headers: {
+      origin: allowedOrigin,
+      cookie: `swooshz_session=${sessionId}`,
+      "x-csrf-token": issued.csrfToken,
+    },
+  });
+  const body = JSON.parse(response.body);
+
+  assert.equal(response.statusCode, 201);
+  assert.equal(body.outcome, "launch_intent_created");
+  assert.equal(body.appKey, "kqag");
+  assert.equal(body.workspaceId, "workspace_koncept_images");
+  assert.equal(body.launchUrl, null);
+  assert.match(body.launchToken, /^[A-Za-z0-9_-]+$/);
+  assert.equal(body.launchTokenExpiresAt, "2026-06-27T00:05:00.000Z");
+  assert.equal(fixture.records.appLaunchTokens.length, 1);
+  assert.match(
+    fixture.records.appLaunchTokens[0].tokenHash,
+    /^app-launch:v1:hmac-sha256:/,
+  );
+  assert.equal("launchToken" in fixture.records.appLaunchTokens[0], false);
+  assert.doesNotMatch(
+    JSON.stringify(fixture.records.appLaunchTokens),
+    new RegExp(body.launchToken),
+  );
+  assertResponseIsPrivacySafe(response);
+});
+
+test("runtime composition requires app launch hash secret when launch dependencies are supplied", () => {
+  assert.throws(
+    () => createPlatformRuntimeDependencies({
+      db: createRuntimeFixture().db,
+      runtimeConfig: createRuntimeFixture().runtimeConfig,
+      secrets: { csrfTokenHashSecret: csrfSecret },
+      now: () => now,
+      appLaunch: {
+        tokenIdFactory: {
+          createId() {
+            return "app_launch_token_1";
+          },
+        },
+      },
+    }),
+    assertPrivacySafeSecretError("missing_app_launch_token_hash_secret"),
+  );
 });
 
 test("composed CSRF issuer stores only token hashes through Drizzle repository", async () => {
@@ -488,6 +619,7 @@ test("crypto imports remain only in dedicated crypto adapter modules", async () 
     "src/auth/auth-state-crypto.ts",
     "src/auth/generic-oidc-jwks-verifier.ts",
     "src/http/csrf-token-crypto.ts",
+    "src/platform/app-launch-token-crypto.ts",
   ]);
 
   for (const filePath of sourceFiles) {
@@ -502,7 +634,7 @@ test("crypto imports remain only in dedicated crypto adapter modules", async () 
   }
 });
 
-function createRuntimeFixture() {
+function createRuntimeFixture(options = {}) {
   const calls = {
     connect: 0,
     listen: 0,
@@ -537,6 +669,58 @@ function createRuntimeFixture() {
     csrfTokens: [],
     authStates: [],
     providerIdentities: [],
+    workspaces: options.withAppAccessRecords
+      ? [
+          {
+            id: "workspace_koncept_images",
+            slug: "koncept-images-pte-ltd",
+            displayName: "Koncept Images Pte Ltd",
+            status: "active",
+            createdAt: now,
+            updatedAt: now,
+          },
+        ]
+      : [],
+    memberships: options.withAppAccessRecords
+      ? [
+          {
+            id: "membership_owner_example",
+            workspaceId: "workspace_koncept_images",
+            userId,
+            role: "owner",
+            status: "active",
+            createdAt: now,
+            updatedAt: now,
+          },
+        ]
+      : [],
+    apps: options.withAppAccessRecords
+      ? [
+          {
+            id: "app_kqag",
+            key: "kqag",
+            name: "KQAG / SAQG",
+            status: "private_preview",
+            launchUrl: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ]
+      : [],
+    appEntitlements: options.withAppAccessRecords
+      ? [
+          {
+            id: "entitlement_koncept_kqag",
+            workspaceId: "workspace_koncept_images",
+            appId: "app_kqag",
+            status: "enabled",
+            grantedByUserId: userId,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ]
+      : [],
+    appLaunchTokens: [],
   };
 
   return {
@@ -630,6 +814,26 @@ function selectRows(table, records) {
     return records.providerIdentities;
   }
 
+  if (table === schema.workspaces) {
+    return records.workspaces;
+  }
+
+  if (table === schema.memberships) {
+    return records.memberships;
+  }
+
+  if (table === schema.apps) {
+    return records.apps;
+  }
+
+  if (table === schema.appEntitlements) {
+    return records.appEntitlements;
+  }
+
+  if (table === schema.appLaunchTokens) {
+    return records.appLaunchTokens;
+  }
+
   return [];
 }
 
@@ -654,6 +858,11 @@ function mapInsertValues(table, values) {
 function insertRow(table, records, row) {
   if (table === schema.csrfTokens) {
     records.csrfTokens.push(row);
+    return;
+  }
+
+  if (table === schema.appLaunchTokens) {
+    records.appLaunchTokens.push(row);
     return;
   }
 
@@ -718,6 +927,7 @@ function assertResponseIsPrivacySafe(response) {
   const serialized = JSON.stringify(response);
 
   assert.doesNotMatch(serialized, rawAuthPattern);
+  assert.doesNotMatch(serialized, rawLaunchTokenPattern);
   assert.doesNotMatch(serialized, /raw-csrf-token|raw-session-token|private\.example\.test/i);
 }
 

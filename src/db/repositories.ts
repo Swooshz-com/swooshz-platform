@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 
 import {
   appEntitlements,
+  appLaunchTokens,
   apps,
   auditEvents,
   invitations,
@@ -13,6 +14,7 @@ import {
 } from "./schema.js";
 import {
   mapAppEntitlementRow,
+  mapAppLaunchTokenRow,
   mapAppRow,
   mapAuditEventRow,
   mapInvitationRow,
@@ -23,6 +25,7 @@ import {
   mapWorkspaceRow,
   toDate,
   type AppEntitlementRow,
+  type AppLaunchTokenRow,
   type AppRow,
   type AuditEventRow,
   type InvitationRow,
@@ -44,6 +47,7 @@ import type { App, AppEntitlement } from "../apps/types.js";
 import type {
   InvitationRecord,
   InvitationStatusTimestamps,
+  AppLaunchTokenRecord,
   PlatformRepositories,
   ProviderIdentity,
 } from "../platform/repositories.js";
@@ -253,6 +257,15 @@ export function createDrizzlePlatformRepositories(
         return mapOneRequired(rows[0], mapAuditEventRow);
       },
     },
+    appLaunchTokens: {
+      async create(record) {
+        const rows = await db
+          .insert(appLaunchTokens)
+          .values(appLaunchTokenToValues(record))
+          .returning();
+        return mapOneRequired(rows[0], mapAppLaunchTokenRow);
+      },
+    },
   };
 }
 
@@ -405,5 +418,20 @@ function auditEventToValues(event: AuditEvent): Row {
     targetId: event.targetId,
     createdAt: toDate(event.createdAt),
     metadata: event.metadata,
+  };
+}
+
+function appLaunchTokenToValues(record: AppLaunchTokenRecord): Row {
+  return {
+    id: record.id,
+    sessionId: record.sessionId,
+    userId: record.userId,
+    workspaceId: record.workspaceId,
+    appId: record.appId,
+    tokenHash: record.tokenHash,
+    createdAt: toDate(record.createdAt),
+    expiresAt: toDate(record.expiresAt),
+    consumedAt: toDate(record.consumedAt),
+    revokedAt: toDate(record.revokedAt),
   };
 }

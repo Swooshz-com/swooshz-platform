@@ -17,6 +17,7 @@ import type {
   EntitlementStatus,
 } from "../apps/types.js";
 import type { InvitationRecord, ProviderIdentity } from "../platform/repositories.js";
+import type { AppLaunchTokenRecord } from "../platform/repositories.js";
 import type { InvitationStatus } from "../accounts/types.js";
 import type { StoredAuthStateLifecycleRecord } from "../auth/auth-state-repositories.js";
 import type { CsrfTokenRecord } from "../http/csrf-token-repositories.js";
@@ -136,6 +137,19 @@ export interface AppEntitlementRow {
   grantedByUserId: string | null;
   createdAt: TimestampValue;
   updatedAt: TimestampValue;
+}
+
+export interface AppLaunchTokenRow {
+  id: string;
+  sessionId: string;
+  userId: string;
+  workspaceId: string;
+  appId: string;
+  tokenHash: string;
+  createdAt: TimestampValue;
+  expiresAt: TimestampValue;
+  consumedAt: TimestampValue | null;
+  revokedAt: TimestampValue | null;
 }
 
 export function mapUserRow(row: UserRow): User {
@@ -272,6 +286,23 @@ export function mapAppEntitlementRow(row: AppEntitlementRow): AppEntitlement {
     grantedByUserId: row.grantedByUserId,
     createdAt: toIsoTimestamp(row.createdAt),
     updatedAt: toIsoTimestamp(row.updatedAt),
+  };
+}
+
+export function mapAppLaunchTokenRow(
+  row: AppLaunchTokenRow,
+): AppLaunchTokenRecord {
+  return {
+    id: row.id,
+    sessionId: row.sessionId,
+    userId: row.userId,
+    workspaceId: row.workspaceId,
+    appId: row.appId,
+    tokenHash: row.tokenHash,
+    createdAt: toIsoTimestamp(row.createdAt),
+    expiresAt: toIsoTimestamp(row.expiresAt),
+    consumedAt: toNullableIsoTimestamp(row.consumedAt),
+    revokedAt: toNullableIsoTimestamp(row.revokedAt),
   };
 }
 
