@@ -243,6 +243,76 @@ test("runtime composition wires app launch token issuer dependencies when enable
   assertResponseIsPrivacySafe(response);
 });
 
+test("runtime composition wires app launch token consume dependencies when enabled", async () => {
+  const fixture = createRuntimeFixture({ withAppAccessRecords: true });
+
+  const dependencies = createPlatformRuntimeDependencies({
+    db: fixture.db,
+    runtimeConfig: fixture.runtimeConfig,
+    secrets: {
+      csrfTokenHashSecret: csrfSecret,
+      appLaunchTokenHashSecret,
+    },
+    now: () => now,
+    csrfTokenIdFactory: {
+      createId() {
+        return "csrf_record_1";
+      },
+    },
+    appLaunch: {
+      tokenIdFactory: {
+        createId() {
+          return `app_launch_token_${fixture.records.appLaunchTokens.length + 1}`;
+        },
+      },
+      ttlSeconds: 300,
+    },
+  });
+
+  assert.ok(dependencies.appLaunchIntent);
+  assert.ok(dependencies.appLaunchTokenConsume);
+  assert.equal(fixture.records.appLaunchTokens.length, 0);
+  assert.equal(fixture.calls.connect, 0);
+  assert.equal(fixture.calls.listen, 0);
+  assert.equal(fixture.calls.migrate, 0);
+
+  const issued = await issueCsrfTokenForSession(dependencies.csrfTokenIssuer, {
+    sessionId,
+    now,
+    ttlSeconds: 900,
+    purpose: "browser_session",
+  });
+  const issueResponse = await handleNodePlatformHttpRequest(dependencies, {
+    method: "POST",
+    url: "/api/platform/apps/launch?workspaceId=workspace_koncept_images&appKey=kqag",
+    headers: {
+      origin: allowedOrigin,
+      cookie: `swooshz_session=${sessionId}`,
+      "x-csrf-token": issued.csrfToken,
+    },
+  });
+  const issueBody = JSON.parse(issueResponse.body);
+
+  const consumeResponse = await handleNodePlatformHttpRequest(dependencies, {
+    method: "POST",
+    url: "/api/platform/apps/launch/consume?appKey=kqag",
+    headers: {
+      "x-app-launch-token": issueBody.launchToken,
+    },
+  });
+  const consumeBody = JSON.parse(consumeResponse.body);
+
+  assert.equal(consumeResponse.statusCode, 200);
+  assert.equal(consumeBody.outcome, "consumed");
+  assert.equal(consumeBody.user.userId, userId);
+  assert.equal(consumeBody.workspace.workspaceId, "workspace_koncept_images");
+  assert.equal(consumeBody.app.appKey, "kqag");
+  assert.equal(consumeBody.membershipRole, "owner");
+  assert.equal(fixture.records.appLaunchTokens[0].consumedAt.toISOString(), now);
+  assert.doesNotMatch(JSON.stringify(consumeResponse), new RegExp(issueBody.launchToken));
+  assertResponseIsPrivacySafe(consumeResponse);
+});
+
 test("runtime composition requires app launch hash secret when launch dependencies are supplied", () => {
   assert.throws(
     () => createPlatformRuntimeDependencies({
@@ -782,7 +852,20 @@ function createFakeDrizzleDb(records) {
                     return Promise.resolve([row]);
                   }
 
-                  throw new Error("Only auth state updates are expected in this test.");
+                  if (table === schema.appLaunchTokens) {
+                    const row = records.appLaunchTokens.find(
+                      (candidate) => !candidate.consumedAt && !candidate.revokedAt,
+                    );
+
+                    if (!row) {
+                      return Promise.resolve([]);
+                    }
+
+                    Object.assign(row, values);
+                    return Promise.resolve([row]);
+                  }
+
+                  throw new Error("Only auth state and app launch token updates are expected in this test.");
                 },
               };
             },

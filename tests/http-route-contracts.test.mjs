@@ -18,6 +18,7 @@ test("route manifest includes only approved initial platform routes", () => {
       "platform_session_context",
       "platform_session_csrf",
       "platform_app_launch",
+      "platform_app_launch_consume",
       "platform_logout",
     ],
   );
@@ -31,6 +32,7 @@ test("route manifest includes only approved initial platform routes", () => {
       "GET /api/platform/session/context",
       "GET /api/platform/session/csrf",
       "POST /api/platform/apps/launch",
+      "POST /api/platform/apps/launch/consume",
       "POST /api/platform/logout",
     ],
   );
@@ -38,7 +40,7 @@ test("route manifest includes only approved initial platform routes", () => {
 
 test("state-changing browser-cookie routes require CSRF protection", () => {
   const stateChangingRoutes = HTTP_ROUTE_CONTRACTS.filter(
-    (route) => route.method !== "GET",
+    (route) => route.method !== "GET" && route.browserSession !== "none",
   );
 
   assert.deepEqual(
@@ -133,6 +135,19 @@ test("app launch intent route is POST-only session-protected and CSRF-protected"
   assert.equal(route.csrf.strategy, "origin_referer_and_csrf_token");
   assert.deepEqual(route.requiredQuery, ["workspaceId", "appKey"]);
   assert.equal(route.handlerContract, "handleAppLaunchIntentRequest");
+  assert.equal(route.idempotent, false);
+});
+
+test("app launch token consume route is POST-only token-protected and not CSRF-protected", () => {
+  const route = getHttpRouteContract("platform_app_launch_consume");
+
+  assert.equal(route.method, "POST");
+  assert.equal(route.path, "/api/platform/apps/launch/consume");
+  assert.equal(route.browserSession, "none");
+  assert.equal(route.csrf.required, false);
+  assert.equal(route.csrf.strategy, "none");
+  assert.deepEqual(route.requiredQuery, ["appKey"]);
+  assert.equal(route.handlerContract, "handleAppLaunchTokenConsumeRequest");
   assert.equal(route.idempotent, false);
 });
 

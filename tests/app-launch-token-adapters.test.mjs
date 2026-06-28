@@ -64,6 +64,51 @@ test("Drizzle app launch token repository create stores only token hashes", asyn
   assert.doesNotMatch(JSON.stringify(insert.values), new RegExp(rawLaunchToken));
 });
 
+test("Drizzle app launch token repository finds records by token hash only", async () => {
+  const fakeDb = createFakeDrizzleDb({
+    selectRows: new Map([[schema.appLaunchTokens, [appLaunchTokenRow]]]),
+  });
+  const repository = createDrizzleAppLaunchTokenRepository(fakeDb);
+
+  const found = await repository.findByTokenHash(tokenHash);
+
+  assert.deepEqual(found, mapAppLaunchTokenRow(appLaunchTokenRow));
+  assert.equal(fakeDb.calls.some((call) => call.operation === "select.where"), true);
+  assert.doesNotMatch(serializePrimitiveCalls(fakeDb.calls), new RegExp(rawLaunchToken));
+});
+
+test("Drizzle app launch token repository consumes only unconsumed active records", async () => {
+  const fakeDb = createFakeDrizzleDb({
+    updateRows: new Map([[schema.appLaunchTokens, [{ ...appLaunchTokenRow, consumedAt: createdAt }]]]),
+  });
+  const repository = createDrizzleAppLaunchTokenRepository(fakeDb);
+
+  const consumed = await repository.consumeUnconsumed(
+    "app_launch_token_example",
+    createdAt.toISOString(),
+  );
+
+  assert.equal(consumed.consumedAt, createdAt.toISOString());
+  const updateSet = fakeDb.calls.find((call) => call.operation === "update.set");
+  assert.ok(updateSet);
+  assert.deepEqual(updateSet.values, { consumedAt: createdAt });
+  assert.doesNotMatch(serializePrimitiveCalls(fakeDb.calls), new RegExp(rawLaunchToken));
+});
+
+test("Drizzle app launch token repository returns null when consume loses replay race", async () => {
+  const fakeDb = createFakeDrizzleDb({
+    updateRows: new Map([[schema.appLaunchTokens, []]]),
+  });
+  const repository = createDrizzleAppLaunchTokenRepository(fakeDb);
+
+  const consumed = await repository.consumeUnconsumed(
+    "app_launch_token_example",
+    createdAt.toISOString(),
+  );
+
+  assert.equal(consumed, null);
+});
+
 test("app launch token adapter modules do not import frontend KQAG provider SDK live DB clients or frameworks", async () => {
   const files = [
     "src/platform/app-launch-token-crypto.ts",
@@ -88,11 +133,33 @@ test("app launch token schema has hash-only lifecycle indexes and no raw token c
   assert.doesNotMatch(schemaContents, /launchToken|rawToken/);
 });
 
-function createFakeDrizzleDb({ insertRows } = {}) {
+function createFakeDrizzleDb({ insertRows, selectRows, updateRows } = {}) {
   const calls = [];
 
   return {
     calls,
+    select() {
+      calls.push({ operation: "select" });
+
+      return {
+        from(table) {
+          calls.push({ operation: "select.from", table });
+
+          return {
+            where(condition) {
+              calls.push({ operation: "select.where", table, condition });
+
+              return {
+                limit(limit) {
+                  calls.push({ operation: "select.limit", table, limit });
+                  return Promise.resolve(selectRows?.get(table) ?? []);
+                },
+              };
+            },
+          };
+        },
+      };
+    },
     insert(table) {
       calls.push({ operation: "insert", table });
 
@@ -109,5 +176,37 @@ function createFakeDrizzleDb({ insertRows } = {}) {
         },
       };
     },
+    update(table) {
+      calls.push({ operation: "update", table });
+
+      return {
+        set(values) {
+          calls.push({ operation: "update.set", table, values });
+
+          return {
+            where(condition) {
+              calls.push({ operation: "update.where", table, condition });
+
+              return {
+                returning() {
+                  calls.push({ operation: "update.returning", table });
+                  return Promise.resolve(updateRows?.get(table) ?? []);
+                },
+              };
+            },
+          };
+        },
+      };
+    },
   };
+}
+
+function serializePrimitiveCalls(calls) {
+  return JSON.stringify(
+    calls.map((call) => ({
+      operation: call.operation,
+      values: call.values,
+      limit: call.limit,
+    })),
+  );
 }

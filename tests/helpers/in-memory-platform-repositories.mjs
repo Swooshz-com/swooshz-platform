@@ -152,6 +152,19 @@ export function createInMemoryPlatformRepositories(records = {}) {
         appLaunchTokens.push(record);
         return record;
       },
+      async findByTokenHash(tokenHash) {
+        return appLaunchTokens.find((record) => record.tokenHash === tokenHash) ?? null;
+      },
+      async consumeUnconsumed(id, consumedAt) {
+        const record = appLaunchTokens.find((candidate) => candidate.id === id);
+
+        if (!record || record.consumedAt || record.revokedAt) {
+          return null;
+        }
+
+        record.consumedAt = consumedAt;
+        return record;
+      },
     },
   };
 }

@@ -86,7 +86,8 @@ Candidate deliverables:
 - Provider-agnostic generic OIDC JWT/JWKS verifier for real RS256 signature verification, issuer/audience/time/subject validation, nonce return, verified-email handling, and safe metadata normalization through the existing verifier interface.
 - Explicit generic OIDC runtime mode that composes the generic adapter and JWT/JWKS verifier from injected config and HTTP boundaries without provider calls during import, composition, bootstrap creation, or bootstrap start.
 - Read-only current session context endpoint for future platform shell/dashboard UX, returning safe user, workspace membership, and app access summaries without app launch, persistent workspace selection, frontend, or KQAG integration.
-- CSRF-protected app launch intent endpoint that re-checks platform app access, stores only short-lived launch token hashes, returns the raw launch token only once, and leaves launch-token consumption plus KQAG integration deferred.
+- CSRF-protected app launch intent endpoint that re-checks platform app access, stores only short-lived launch token hashes, and returns the raw launch token only once.
+- Platform-side app launch token consume endpoint that accepts raw launch tokens only by header, hashes before lookup, rejects unsafe token lifecycle states, re-checks app access, marks tokens consumed once, and returns safe user/workspace/app context without KQAG integration.
 - HTTP logout route hardening after real CSRF storage and browser wiring are separately approved.
 - Invitation acceptance path if compatible with selected auth provider.
 - Tests for session, token, and provider-error privacy behavior.
@@ -102,7 +103,7 @@ Non-goals:
 - User plus provider identity seeding before an explicit transactional identity seed boundary is approved.
 - Customer portal.
 - Frontend shell before provider and persistence decisions are stable.
-- Launch-token consume/validation contract, KQAG launch/storage integration, app redirects, or app launch UI before separately approved integration work.
+- KQAG launch/storage integration, app redirects, or app launch UI before separately approved integration work.
 - Database migrations before provider/tooling selection is approved.
 - Auth-provider coupling in the database layer.
 - Production, staging, or local database execution before an explicit DB workflow is approved.
@@ -126,7 +127,7 @@ Non-goals:
 - Public account settings.
 - Billing screens.
 - KQAG launch/storage adapter.
-- Launch-token consume/validation contract.
+- App redirect flow or app launch UI.
 
 ## Phase 4: KQAG Integration
 
@@ -135,7 +136,7 @@ Goal: connect platform identity and workspace access to KQAG through a defined a
 Candidate deliverables:
 
 - KQAG launch context contract.
-- Signed launch token or backend exchange mechanism.
+- App-side backend exchange using the platform launch token consume contract.
 - KQAG workspace-scoped runtime/session boundary.
 - Tests proving platform grants KQAG launch only for entitled workspaces and permitted roles.
 

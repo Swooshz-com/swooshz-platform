@@ -332,6 +332,117 @@ test("app launch route creates a hash-only launch token after valid CSRF", async
   assertResponseIsPrivacySafe(response);
 });
 
+test("app launch consume route is POST-only and requires appKey", async () => {
+  const fixture = createAdapterFixture({ withLaunchConsumeToken: true });
+  const get = await request({
+    method: "GET",
+    url: "/api/platform/apps/launch/consume?appKey=kqag",
+    headers: {
+      "x-app-launch-token": rawLaunchToken,
+    },
+    dependencies: fixture.dependencies,
+  });
+  const missingAppKey = await request({
+    method: "POST",
+    url: "/api/platform/apps/launch/consume",
+    headers: {
+      "x-app-launch-token": rawLaunchToken,
+    },
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(get.response.statusCode, 405);
+  assert.equal(get.response.headers.allow, "POST");
+  assertNoStoreHeaders(get.response.headers);
+  assert.equal(missingAppKey.response.statusCode, 400);
+  assertNoStoreHeaders(missingAppKey.response.headers);
+  assert.equal(fixture.calls.csrfValidate, 0);
+  assert.equal(fixture.records.appLaunchTokens[0].consumedAt, null);
+  assertResponseIsPrivacySafe(get.response);
+  assertResponseIsPrivacySafe(missingAppKey.response);
+});
+
+test("app launch consume route consumes token without browser cookie or CSRF", async () => {
+  const fixture = createAdapterFixture({ withLaunchConsumeToken: true });
+
+  const { response, body } = await request({
+    method: "POST",
+    url: "/api/platform/apps/launch/consume?appKey=kqag",
+    headers: {
+      "x-app-launch-token": rawLaunchToken,
+    },
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 200);
+  assertNoStoreHeaders(response.headers);
+  assert.deepEqual(body, {
+    outcome: "consumed",
+    user: {
+      userId: "user_owner_example",
+      email: "owner@example.com",
+      displayName: "Owner Example",
+      status: "active",
+    },
+    workspace: {
+      workspaceId: "workspace_koncept_images",
+      workspaceSlug: "koncept-images-pte-ltd",
+      workspaceName: "Koncept Images Pte Ltd",
+    },
+    app: {
+      appKey: "kqag",
+      appName: "KQAG / SAQG",
+    },
+    membershipRole: "owner",
+    launchTokenExpiresAt,
+  });
+  assert.equal(fixture.calls.csrfValidate, 0);
+  assert.equal(fixture.records.appLaunchTokens[0].consumedAt, now);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("app launch consume route rejects missing or replayed token safely", async () => {
+  const fixture = createAdapterFixture({ withLaunchConsumeToken: true });
+  const missing = await request({
+    method: "POST",
+    url: "/api/platform/apps/launch/consume?appKey=kqag",
+    dependencies: fixture.dependencies,
+  });
+  const first = await request({
+    method: "POST",
+    url: "/api/platform/apps/launch/consume?appKey=kqag",
+    headers: {
+      "x-app-launch-token": rawLaunchToken,
+    },
+    dependencies: fixture.dependencies,
+  });
+  const replay = await request({
+    method: "POST",
+    url: "/api/platform/apps/launch/consume?appKey=kqag",
+    headers: {
+      "x-app-launch-token": rawLaunchToken,
+    },
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(missing.response.statusCode, 401);
+  assertNoStoreHeaders(missing.response.headers);
+  assert.deepEqual(missing.body, {
+    outcome: "invalid",
+    reason: "missing_launch_token",
+  });
+  assert.equal(first.response.statusCode, 200);
+  assert.equal(replay.response.statusCode, 401);
+  assertNoStoreHeaders(replay.response.headers);
+  assert.deepEqual(replay.body, {
+    outcome: "invalid",
+    reason: "consumed_launch_token",
+  });
+  assert.equal(fixture.calls.csrfValidate, 0);
+  assertResponseIsPrivacySafe(missing.response);
+  assertResponseIsPrivacySafe(replay.response);
+});
+
 test("auth start route redirects to provider and stores only state references", async () => {
   const fixture = createAdapterFixture();
   const { response, body } = await request({
@@ -661,10 +772,36 @@ function createAdapterFixture(overrides = {}) {
     authStates: [],
     appLaunchTokens: [],
   };
+  if (overrides.withLaunchConsumeToken) {
+    records.appLaunchTokens.push({
+      id: "app_launch_token_1",
+      sessionId,
+      userId: "user_owner_example",
+      workspaceId: "workspace_koncept_images",
+      appId: "app_kqag",
+      tokenHash: launchTokenHash,
+      createdAt: now,
+      expiresAt: launchTokenExpiresAt,
+      consumedAt: null,
+      revokedAt: null,
+    });
+  }
   const repositories = createInMemoryPlatformRepositories(records);
   repositories.appLaunchTokens = {
     async create(record) {
       records.appLaunchTokens.push(record);
+      return record;
+    },
+    async findByTokenHash(tokenHash) {
+      return records.appLaunchTokens.find((record) => record.tokenHash === tokenHash) ?? null;
+    },
+    async consumeUnconsumed(id, consumedAt) {
+      const record = records.appLaunchTokens.find((candidate) => candidate.id === id);
+      if (!record || record.consumedAt || record.revokedAt) {
+        return null;
+      }
+
+      record.consumedAt = consumedAt;
       return record;
     },
   };
@@ -799,6 +936,15 @@ function createAdapterFixture(overrides = {}) {
         },
       },
       ttlSeconds: 300,
+    },
+    appLaunchTokenConsume: {
+      repositories,
+      launchTokenHasher: {
+        async hashToken(token) {
+          assert.equal(token, rawLaunchToken);
+          return launchTokenHash;
+        },
+      },
     },
   };
 
