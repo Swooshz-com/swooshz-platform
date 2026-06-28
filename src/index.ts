@@ -17,6 +17,7 @@ export * from "./http/runtime-config.js";
 export * from "./http/session-cookie.js";
 export * from "./platform/app-access-service.js";
 export * from "./platform/app-launch-intent-service.js";
+export * from "./platform/app-launch-token-consume-service.js";
 export * from "./platform/app-launch-token-crypto.js";
 export * from "./platform/internal-access-seed-service.js";
 export * from "./platform/protected-app-access-service.js";

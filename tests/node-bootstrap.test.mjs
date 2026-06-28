@@ -226,6 +226,7 @@ test("bootstrap start wires app launch dependencies without issuing tokens", asy
   await bootstrap.start();
 
   assert.ok(fixture.calls.serverDependencies[0].appLaunchIntent);
+  assert.ok(fixture.calls.serverDependencies[0].appLaunchTokenConsume);
   assert.equal(fixture.records.appLaunchTokens.length, 0);
   assert.equal(fixture.calls.migrations, 0);
 });
@@ -269,6 +270,50 @@ test("bootstrap-created server can serve POST /api/platform/apps/launch with fak
     new RegExp(body.launchToken),
   );
   assertResponseIsPrivacySafe(response);
+});
+
+test("bootstrap-created server can serve POST /api/platform/apps/launch/consume without cookie or CSRF", async () => {
+  const fixture = createBootstrapFixture({ withAppAccessRecords: true });
+  const bootstrap = createPlatformNodeBootstrap(fixture.input);
+
+  await bootstrap.start();
+  const { issueCsrfTokenForSession } = await import("../dist/index.js");
+  const dependencies = fixture.calls.serverDependencies[0];
+  const issued = await issueCsrfTokenForSession(dependencies.csrfTokenIssuer, {
+    sessionId: "session_owner_example",
+    now,
+    ttlSeconds: 900,
+    purpose: "browser_session",
+  });
+  const launchResponse = await fixture.lastServer.handle({
+    method: "POST",
+    url: "/api/platform/apps/launch?workspaceId=workspace_koncept_images&appKey=kqag",
+    headers: {
+      origin: "https://platform.example.test",
+      cookie: "swooshz_session=session_owner_example",
+      "x-csrf-token": issued.csrfToken,
+    },
+  });
+  const launchBody = JSON.parse(launchResponse.body);
+
+  const consumeResponse = await fixture.lastServer.handle({
+    method: "POST",
+    url: "/api/platform/apps/launch/consume?appKey=kqag",
+    headers: {
+      "x-app-launch-token": launchBody.launchToken,
+    },
+  });
+  const consumeBody = JSON.parse(consumeResponse.body);
+
+  assert.equal(consumeResponse.statusCode, 200);
+  assert.equal(consumeBody.outcome, "consumed");
+  assert.equal(consumeBody.user.userId, "user_owner_example");
+  assert.equal(consumeBody.workspace.workspaceId, "workspace_koncept_images");
+  assert.equal(consumeBody.app.appKey, "kqag");
+  assert.equal(consumeBody.membershipRole, "owner");
+  assert.equal(fixture.records.appLaunchTokens[0].consumedAt.toISOString(), now);
+  assert.doesNotMatch(JSON.stringify(consumeResponse), new RegExp(launchBody.launchToken));
+  assertResponseIsPrivacySafe(consumeResponse);
 });
 
 test("bootstrap start can include auth dependencies without provider calls during creation or start", async () => {
@@ -996,6 +1041,19 @@ function createFakeDrizzleDb(calls, records) {
                 returning() {
                   if (readTableName(table) === "auth_states") {
                     const row = records.authStates[0];
+
+                    if (!row) {
+                      return Promise.resolve([]);
+                    }
+
+                    Object.assign(row, values);
+                    return Promise.resolve([row]);
+                  }
+
+                  if (readTableName(table) === "app_launch_tokens") {
+                    const row = records.appLaunchTokens.find(
+                      (candidate) => !candidate.consumedAt && !candidate.revokedAt,
+                    );
 
                     if (!row) {
                       return Promise.resolve([]);

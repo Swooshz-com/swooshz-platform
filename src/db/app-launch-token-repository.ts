@@ -1,3 +1,5 @@
+import { and, eq, isNull } from "drizzle-orm";
+
 import {
   mapAppLaunchTokenRow,
   toDate,
@@ -13,7 +15,7 @@ import type {
 type Row = Record<string, unknown>;
 
 export function createDrizzleAppLaunchTokenRepository(
-  db: Pick<DrizzleDatabase, "insert">,
+  db: Pick<DrizzleDatabase, "insert" | "select" | "update">,
 ): AppLaunchTokenRepository {
   return {
     async create(input) {
@@ -24,7 +26,38 @@ export function createDrizzleAppLaunchTokenRepository(
 
       return mapOneRequired(rows[0], mapAppLaunchTokenRow);
     },
+    async findByTokenHash(tokenHash) {
+      const rows = await db
+        .select()
+        .from(appLaunchTokens)
+        .where(eq(appLaunchTokens.tokenHash, tokenHash))
+        .limit(1);
+
+      return mapOne(rows[0], mapAppLaunchTokenRow);
+    },
+    async consumeUnconsumed(id, consumedAt) {
+      const rows = await db
+        .update(appLaunchTokens)
+        .set({ consumedAt: toDate(consumedAt) })
+        .where(
+          and(
+            eq(appLaunchTokens.id, id),
+            isNull(appLaunchTokens.consumedAt),
+            isNull(appLaunchTokens.revokedAt),
+          ),
+        )
+        .returning();
+
+      return mapOne(rows[0], mapAppLaunchTokenRow);
+    },
   };
+}
+
+function mapOne<T, RowType>(
+  row: Row | undefined,
+  mapper: (row: RowType) => T,
+): T | null {
+  return row ? mapper(row as unknown as RowType) : null;
 }
 
 function mapOneRequired<T, RowType>(

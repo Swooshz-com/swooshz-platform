@@ -105,6 +105,11 @@ export interface AuditEventRepository {
 
 export interface AppLaunchTokenRepository {
   create(record: AppLaunchTokenRecord): Promise<AppLaunchTokenRecord>;
+  findByTokenHash(tokenHash: string): Promise<AppLaunchTokenRecord | null>;
+  consumeUnconsumed(
+    id: string,
+    consumedAt: IsoTimestamp,
+  ): Promise<AppLaunchTokenRecord | null>;
 }
 
 export interface PlatformRepositories {

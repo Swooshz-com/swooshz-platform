@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 
 import {
   appEntitlements,
@@ -264,6 +264,26 @@ export function createDrizzlePlatformRepositories(
           .values(appLaunchTokenToValues(record))
           .returning();
         return mapOneRequired(rows[0], mapAppLaunchTokenRow);
+      },
+      async findByTokenHash(tokenHash) {
+        return mapOne(
+          await selectOne(db, appLaunchTokens, eq(appLaunchTokens.tokenHash, tokenHash)),
+          mapAppLaunchTokenRow,
+        );
+      },
+      async consumeUnconsumed(id, consumedAt) {
+        const rows = await db
+          .update(appLaunchTokens)
+          .set({ consumedAt: toDate(consumedAt) })
+          .where(
+            and(
+              eq(appLaunchTokens.id, id),
+              isNull(appLaunchTokens.consumedAt),
+              isNull(appLaunchTokens.revokedAt),
+            ),
+          )
+          .returning();
+        return mapOne(rows[0], mapAppLaunchTokenRow);
       },
     },
   };

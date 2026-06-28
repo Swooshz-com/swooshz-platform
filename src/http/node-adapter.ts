@@ -2,6 +2,7 @@ import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from "node:
 import type { BillingGate } from "../access/decide-app-access.js";
 import type { SessionRevocationServiceDependencies } from "../auth/session-revocation-service.js";
 import type { AppLaunchIntentDependencies } from "../platform/app-launch-intent-service.js";
+import type { AppLaunchTokenConsumeDependencies } from "../platform/app-launch-token-consume-service.js";
 import type { PlatformRepositories } from "../platform/repositories.js";
 import {
   handleAuthCallbackRequest,
@@ -13,6 +14,7 @@ import type { CsrfTokenValidator } from "./csrf.js";
 import type { CsrfTokenServiceDependencies } from "./csrf-token-service.js";
 import {
   handleCsrfTokenIssueRequest,
+  handleAppLaunchTokenConsumeRequest,
   handleAppLaunchIntentRequest,
   handleLogoutRequest,
   handleProtectedAppAccessRequest,
@@ -41,6 +43,7 @@ export interface NodePlatformHttpAdapterDependencies {
   authStart?: AuthStartHttpDependencies;
   authCallback?: AuthCallbackHttpDependencies;
   appLaunchIntent?: AppLaunchIntentDependencies;
+  appLaunchTokenConsume?: AppLaunchTokenConsumeDependencies;
   billingGate?: BillingGate;
 }
 
@@ -93,7 +96,10 @@ export async function handleNodePlatformHttpRequest(
       },
       {
         allow: route.method,
-        ...(route.id === "platform_app_launch" ? noStoreHeaders() : {}),
+        ...(route.id === "platform_app_launch" ||
+        route.id === "platform_app_launch_consume"
+          ? noStoreHeaders()
+          : {}),
       },
     );
   }
@@ -245,6 +251,36 @@ export async function handleNodePlatformHttpRequest(
     );
   }
 
+  if (route.id === "platform_app_launch_consume") {
+    const appKey = parsedUrl.searchParams.get("appKey");
+
+    if (!appKey) {
+      return jsonResponse(
+        400,
+        {
+          outcome: "error",
+          message: "Required query parameters are missing.",
+        },
+        noStoreHeaders(),
+      );
+    }
+
+    if (!dependencies.appLaunchTokenConsume) {
+      return appLaunchConsumeFailureResponse();
+    }
+
+    return toNodeResponse(
+      await handleAppLaunchTokenConsumeRequest(
+        dependencies.appLaunchTokenConsume,
+        {
+          headers,
+          appKey,
+          now: dependencies.now(),
+        },
+      ),
+    );
+  }
+
   if (route.id === "platform_logout") {
     const now = dependencies.now();
     const sessionId = extractBrowserSessionIdFromCookieHeader(
@@ -389,6 +425,17 @@ function appLaunchFailureResponse(): NodePlatformHttpResponse {
     {
       outcome: "error",
       message: "App launch intent could not be created.",
+    },
+    noStoreHeaders(),
+  );
+}
+
+function appLaunchConsumeFailureResponse(): NodePlatformHttpResponse {
+  return jsonResponse(
+    500,
+    {
+      outcome: "error",
+      message: "App launch token could not be consumed.",
     },
     noStoreHeaders(),
   );

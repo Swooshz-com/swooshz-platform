@@ -6,6 +6,7 @@ export type HttpRouteId =
   | "platform_session_context"
   | "platform_session_csrf"
   | "platform_app_launch"
+  | "platform_app_launch_consume"
   | "platform_logout";
 
 export type HttpRouteMethod = "GET" | "POST";
@@ -129,6 +130,20 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     },
     requiredQuery: ["workspaceId", "appKey"],
     handlerContract: "handleAppLaunchIntentRequest",
+    idempotent: false,
+    implemented: false,
+  },
+  {
+    id: "platform_app_launch_consume",
+    method: "POST",
+    path: "/api/platform/apps/launch/consume",
+    browserSession: "none",
+    csrf: {
+      required: false,
+      strategy: "none",
+    },
+    requiredQuery: ["appKey"],
+    handlerContract: "handleAppLaunchTokenConsumeRequest",
     idempotent: false,
     implemented: false,
   },

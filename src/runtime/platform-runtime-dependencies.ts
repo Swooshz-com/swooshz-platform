@@ -165,19 +165,32 @@ function createAppLaunchDependencies({
   db: DrizzleDatabase;
   repositories: ReturnType<typeof createDrizzlePlatformRepositories>;
   secrets: PlatformRuntimeSecretConfig;
-}): Pick<NodePlatformHttpAdapterDependencies, "appLaunchIntent"> {
+}): Pick<
+  NodePlatformHttpAdapterDependencies,
+  "appLaunchIntent" | "appLaunchTokenConsume"
+> {
+  const appLaunchTokens = createDrizzleAppLaunchTokenRepository(db);
+  const launchTokenHasher = createAppLaunchTokenHasherSafely(secrets);
+
   return {
     appLaunchIntent: {
       repositories: {
         ...repositories,
-        appLaunchTokens: createDrizzleAppLaunchTokenRepository(db),
+        appLaunchTokens,
       },
       launchTokenFactory: createSecureAppLaunchTokenFactory({
         byteLength: appLaunch.tokenByteLength,
       }),
-      launchTokenHasher: createAppLaunchTokenHasherSafely(secrets),
+      launchTokenHasher,
       launchTokenIdFactory: appLaunch.tokenIdFactory,
       ttlSeconds: appLaunch.ttlSeconds ?? defaultAppLaunchTokenTtlSeconds,
+    },
+    appLaunchTokenConsume: {
+      repositories: {
+        ...repositories,
+        appLaunchTokens,
+      },
+      launchTokenHasher,
     },
   };
 }

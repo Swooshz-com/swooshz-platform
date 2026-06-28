@@ -5,6 +5,7 @@ import test from "node:test";
 
 import {
   handleCsrfTokenIssueRequest,
+  handleAppLaunchTokenConsumeRequest,
   handleAppLaunchIntentRequest,
   handleLogoutRequest,
   handleProtectedAppAccessRequest,
@@ -526,6 +527,153 @@ test("app launch handler returns privacy-safe failure body", async () => {
   assertResponseIsPrivacySafe(response);
 });
 
+test("app launch consume handler requires token header and appKey safely", async () => {
+  const { records } = httpFixture();
+  const consume = launchConsumeFixture(records, { defaultToken: true });
+
+  const missingToken = await handleAppLaunchTokenConsumeRequest(consume.dependencies, {
+    headers: {},
+    appKey: "kqag",
+    now,
+  });
+  const missingAppKey = await handleAppLaunchTokenConsumeRequest(consume.dependencies, {
+    headers: {
+      "x-app-launch-token": rawLaunchToken,
+    },
+    appKey: "",
+    now,
+  });
+
+  assert.equal(missingToken.status, 401);
+  assertNoStoreHeaders(missingToken.headers);
+  assert.deepEqual(missingToken.body, {
+    outcome: "invalid",
+    reason: "missing_launch_token",
+  });
+  assert.equal(missingAppKey.status, 400);
+  assertNoStoreHeaders(missingAppKey.headers);
+  assert.deepEqual(missingAppKey.body, {
+    outcome: "error",
+    message: "Required query parameters are missing.",
+  });
+  assert.equal(records.appLaunchTokens[0].consumedAt, null);
+  assertResponseIsPrivacySafe(missingToken);
+  assertResponseIsPrivacySafe(missingAppKey);
+});
+
+test("app launch consume handler denies invalid consumed and expired tokens safely", async () => {
+  for (const [overrides, reason] of [
+    [{ appLaunchTokens: [] }, "invalid_launch_token"],
+    [{ launchToken: { consumedAt: earlier } }, "consumed_launch_token"],
+    [{ launchToken: { expiresAt: past } }, "expired_launch_token"],
+  ]) {
+    const { records } = httpFixture();
+    const consume = launchConsumeFixture(records, {
+      defaultToken: !Object.hasOwn(overrides, "appLaunchTokens"),
+      ...overrides,
+    });
+
+    const response = await handleAppLaunchTokenConsumeRequest(consume.dependencies, {
+      headers: {
+        "x-app-launch-token": rawLaunchToken,
+      },
+      appKey: "kqag",
+      now,
+    });
+
+    assert.equal(response.status, 401);
+    assertNoStoreHeaders(response.headers);
+    assert.deepEqual(response.body, {
+      outcome: "invalid",
+      reason,
+    });
+    assertResponseIsPrivacySafe(response);
+  }
+});
+
+test("app launch consume handler denies app access without consuming token", async () => {
+  const { records } = httpFixture({ role: "viewer" });
+  const consume = launchConsumeFixture(records, { defaultToken: true });
+
+  const response = await handleAppLaunchTokenConsumeRequest(consume.dependencies, {
+    headers: {
+      "x-app-launch-token": rawLaunchToken,
+    },
+    appKey: "kqag",
+    now,
+  });
+
+  assert.equal(response.status, 403);
+  assertNoStoreHeaders(response.headers);
+  assert.equal(response.body.outcome, "denied");
+  assert.equal(response.body.reason, "app_access_denied");
+  assert.equal(records.appLaunchTokens[0].consumedAt, null);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("app launch consume handler returns safe launch context and consumes once", async () => {
+  const { records } = httpFixture();
+  const consume = launchConsumeFixture(records, { defaultToken: true });
+
+  const response = await handleAppLaunchTokenConsumeRequest(consume.dependencies, {
+    headers: {
+      "x-app-launch-token": rawLaunchToken,
+      cookie: "swooshz_session=raw-session-token-ignored",
+    },
+    appKey: "kqag",
+    now,
+  });
+
+  assert.equal(response.status, 200);
+  assertNoStoreHeaders(response.headers);
+  assert.deepEqual(response.body, {
+    outcome: "consumed",
+    user: {
+      userId: "user_owner_example",
+      email: "owner@example.com",
+      displayName: "Owner Example",
+      status: "active",
+    },
+    workspace: {
+      workspaceId: "workspace_koncept_images",
+      workspaceSlug: "koncept-images-pte-ltd",
+      workspaceName: "Koncept Images Pte Ltd",
+    },
+    app: {
+      appKey: "kqag",
+      appName: "KQAG / SAQG",
+    },
+    membershipRole: "owner",
+    launchTokenExpiresAt,
+  });
+  assert.equal(records.appLaunchTokens[0].consumedAt, now);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("app launch consume handler returns privacy-safe failure body", async () => {
+  const { records } = httpFixture();
+  const consume = launchConsumeFixture(records, {
+    defaultToken: true,
+    failFindByTokenHash: true,
+  });
+
+  const response = await handleAppLaunchTokenConsumeRequest(consume.dependencies, {
+    headers: {
+      "x-app-launch-token": rawLaunchToken,
+    },
+    appKey: "kqag",
+    now,
+  });
+
+  assert.equal(response.status, 500);
+  assertNoStoreHeaders(response.headers);
+  assert.deepEqual(response.body, {
+    outcome: "error",
+    message: "App launch token could not be consumed.",
+  });
+  assertResponseIsPrivacySafe(response);
+});
+
 test("HTTP modules do not import DB, frontend, KQAG, provider SDK, or live server modules", async () => {
   const httpFiles = (await listFiles("src/http")).filter(
     (filePath) => ![
@@ -627,15 +775,15 @@ function httpFixture(overrides = {}) {
     updatedAt: now,
   };
   const records = {
-    users: [user],
+    users: overrides.users ?? [user],
     providerIdentities: [],
     sessions: overrides.sessions ?? [session],
-    workspaces: [workspace],
-    memberships,
-    apps: [app],
-    appEntitlements: [entitlement],
+    workspaces: overrides.workspaces ?? [workspace],
+    memberships: overrides.memberships ?? memberships,
+    apps: overrides.apps ?? [app],
+    appEntitlements: overrides.appEntitlements ?? [entitlement],
     auditEvents: [],
-    appLaunchTokens: [],
+    appLaunchTokens: overrides.appLaunchTokens ?? [],
   };
   const repositories = createInMemoryPlatformRepositories(records);
   const calls = instrumentRepositories(repositories, overrides);
@@ -832,6 +980,64 @@ function launchIssueFixture(records, options = {}) {
       }
 
       records.appLaunchTokens.push(record);
+      return record;
+    },
+  };
+
+  return { dependencies };
+}
+
+function launchConsumeFixture(records, options = {}) {
+  if (options.defaultToken) {
+    const session = records.sessions[0];
+    const user = records.users[0];
+    const workspace = records.workspaces[0];
+    const app = records.apps[0];
+
+    records.appLaunchTokens.push({
+      id: "app_launch_token_1",
+      sessionId: session?.id ?? "missing_session",
+      userId: user?.id ?? "missing_user",
+      workspaceId: workspace?.id ?? "missing_workspace",
+      appId: app?.id ?? "missing_app",
+      tokenHash: launchTokenHash,
+      createdAt: now,
+      expiresAt: launchTokenExpiresAt,
+      consumedAt: null,
+      revokedAt: null,
+      ...options.launchToken,
+    });
+  }
+
+  const dependencies = {
+    repositories: createInMemoryPlatformRepositories(records),
+    launchTokenHasher: {
+      async hashToken(token) {
+        assert.equal(token, rawLaunchToken);
+        return launchTokenHash;
+      },
+    },
+  };
+
+  dependencies.repositories.appLaunchTokens = {
+    async create(record) {
+      records.appLaunchTokens.push(record);
+      return record;
+    },
+    async findByTokenHash(tokenHash) {
+      if (options.failFindByTokenHash) {
+        throw new Error(privateStorageError);
+      }
+
+      return records.appLaunchTokens.find((record) => record.tokenHash === tokenHash) ?? null;
+    },
+    async consumeUnconsumed(id, consumedAt) {
+      const record = records.appLaunchTokens.find((candidate) => candidate.id === id);
+      if (!record || record.consumedAt || record.revokedAt) {
+        return null;
+      }
+
+      record.consumedAt = consumedAt;
       return record;
     },
   };

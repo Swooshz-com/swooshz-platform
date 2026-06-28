@@ -110,7 +110,17 @@ The session context response is informational. It does not launch apps, mint app
 
 The endpoint re-checks the same protected app access rules used by session app-access decisions. Missing, revoked, or expired platform sessions are unauthenticated. Denied app access, including KQAG viewer access while no read-only KQAG mode exists, does not create a token.
 
-Allowed access creates one short-lived launch token record. The database stores only a versioned HMAC token hash plus session, user, workspace, app, expiry, consumed, and revoked metadata. The raw launch token/reference is returned only once in the immediate no-store response with the app key, workspace id, optional app launch URL, and expiry. Token consumption/validation, redirects, KQAG launch/storage integration, frontend UI, fake login, billing, deployment, and migration execution are out of scope until separately approved.
+Allowed access creates one short-lived launch token record. The database stores only a versioned HMAC token hash plus session, user, workspace, app, expiry, consumed, and revoked metadata. The raw launch token/reference is returned only once in the immediate no-store response with the app key, workspace id, optional app launch URL, and expiry. Redirects, KQAG launch/storage integration, frontend UI, fake login, billing, deployment, and migration execution are out of scope until separately approved.
+
+## App Launch Token Consume Endpoint
+
+`POST /api/platform/apps/launch/consume?appKey=...` validates and consumes a platform-issued app launch token for a future app backend. It does not require a platform browser session cookie and does not require CSRF because the raw launch token is the credential.
+
+The raw launch token is accepted only in the `x-app-launch-token` header, not in the query string. The platform hashes the raw token before lookup and never returns the raw token or token hash. Unknown, expired, consumed, revoked, and app-mismatched tokens fail safely without returning launch context.
+
+Before returning context, the platform reloads the launch token's session, user, workspace, app, membership, and entitlement context and re-checks app access using the same protected app access rules as the launch intent endpoint. Denied access, including KQAG viewer access while no read-only KQAG mode exists, does not consume the token when possible.
+
+Successful validation marks the unconsumed active token consumed and returns only safe user, workspace, app, membership role, and launch-token expiry context for future app integration. It does not call KQAG, redirect to apps, create app sessions, write KQAG storage, add frontend UI, add billing, or run migrations.
 
 ## App Launch Flow
 

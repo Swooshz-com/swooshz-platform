@@ -9,6 +9,12 @@ import {
   type AppLaunchIntentDependencies,
 } from "../platform/app-launch-intent-service.js";
 import {
+  AppLaunchTokenConsumeServiceError,
+  consumeAppLaunchToken,
+  type AppLaunchTokenConsumeDependencies,
+  type AppLaunchTokenConsumeInvalidReason,
+} from "../platform/app-launch-token-consume-service.js";
+import {
   decideProtectedAppAccess,
   ProtectedAppAccessServiceError,
 } from "../platform/protected-app-access-service.js";
@@ -78,6 +84,12 @@ export interface AppLaunchIntentHttpRequest {
   appKey: string;
   now: string;
   cookie?: BrowserSessionCookieConfig;
+}
+
+export interface AppLaunchTokenConsumeHttpRequest {
+  headers?: HttpRequestHeaders;
+  appKey: string;
+  now: string;
 }
 
 export async function handleProtectedAppAccessRequest(
@@ -271,6 +283,56 @@ export async function handleAppLaunchIntentRequest(
     }
 
     return appLaunchFailure();
+  }
+}
+
+export async function handleAppLaunchTokenConsumeRequest(
+  dependencies: AppLaunchTokenConsumeDependencies,
+  request: AppLaunchTokenConsumeHttpRequest,
+): Promise<HttpResponseLike> {
+  if (!request.appKey.trim()) {
+    return {
+      status: 400,
+      headers: noStoreHeaders(),
+      body: {
+        outcome: "error",
+        message: "Required query parameters are missing.",
+      },
+    };
+  }
+
+  const rawLaunchToken = readHeader(request.headers, "x-app-launch-token") ?? "";
+
+  try {
+    const result = await consumeAppLaunchToken(dependencies, {
+      rawLaunchToken,
+      appKey: request.appKey,
+      now: request.now,
+    });
+
+    if (result.outcome === "consumed") {
+      return {
+        status: 200,
+        headers: noStoreHeaders(),
+        body: result,
+      };
+    }
+
+    if (result.outcome === "denied") {
+      return {
+        status: 403,
+        headers: noStoreHeaders(),
+        body: result,
+      };
+    }
+
+    return appLaunchConsumeInvalid(result.reason);
+  } catch (error) {
+    if (error instanceof AppLaunchTokenConsumeServiceError) {
+      return appLaunchConsumeFailure();
+    }
+
+    return appLaunchConsumeFailure();
   }
 }
 
@@ -473,6 +535,28 @@ function appLaunchFailure() {
     body: {
       outcome: "error",
       message: "App launch intent could not be created.",
+    },
+  };
+}
+
+function appLaunchConsumeInvalid(reason: AppLaunchTokenConsumeInvalidReason) {
+  return {
+    status: 401,
+    headers: noStoreHeaders(),
+    body: {
+      outcome: "invalid",
+      reason,
+    },
+  };
+}
+
+function appLaunchConsumeFailure() {
+  return {
+    status: 500,
+    headers: noStoreHeaders(),
+    body: {
+      outcome: "error",
+      message: "App launch token could not be consumed.",
     },
   };
 }
