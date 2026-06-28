@@ -81,6 +81,7 @@ Candidate deliverables:
 - Drizzle/Postgres auth state storage adapter plus secure Node crypto state/nonce and HMAC reference adapters.
 - Runtime auth dependency composition for `GET /api/platform/auth/start` and `GET /api/platform/auth/callback` using the Drizzle auth state store, secure state/nonce factories, `AUTH_STATE_HASH_SECRET`, existing auth config parsing, and an injected OIDC adapter.
 - Explicit Node bootstrap wiring that can pass injected auth dependencies into the approved Node adapter without provider calls during creation or start.
+- Platform-only internal access seed service and repository create ports for preparing an internal workspace, the `kqag` app record, app entitlement, and owner/admin/member membership grants without KQAG changes.
 - HTTP logout route hardening after real CSRF storage and browser wiring are separately approved.
 - Provider network verification and any live provider adapter after HTTP/runtime contracts are separately approved.
 - Invitation acceptance path if compatible with selected auth provider.
@@ -92,6 +93,8 @@ Non-goals:
 - Public self-serve signup.
 - Real auth provider network calls before the callback/service contract is tested.
 - Provider SDKs or real provider networking before a live provider adapter PR is explicitly approved.
+- Fake-login shortcuts or email-only user precreation for future provider linking.
+- User plus provider identity seeding before an explicit transactional identity seed boundary is approved.
 - Customer portal.
 - Frontend shell before provider and persistence decisions are stable.
 - Database migrations before provider/tooling selection is approved.
@@ -109,12 +112,15 @@ Candidate deliverables:
 - App entitlement enable/disable backend operations.
 - Audit event recording.
 - Internal-only admin API or minimal admin surface as approved.
+- Optional explicit reviewed seed command after a safe operator-confirmation contract exists.
 
 Non-goals:
 
 - Full polished platform shell.
 - Public account settings.
 - Billing screens.
+- KQAG launch/storage adapter.
+- App launch tokens.
 
 ## Phase 4: KQAG Integration
 

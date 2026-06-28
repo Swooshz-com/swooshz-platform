@@ -54,11 +54,13 @@ export interface SessionRepository {
 export interface WorkspaceRepository {
   findById(id: string): Promise<Workspace | null>;
   findBySlug(slug: string): Promise<Workspace | null>;
+  create(workspace: Workspace): Promise<Workspace>;
 }
 
 export interface MembershipRepository {
   findForUserInWorkspace(userId: string, workspaceId: string): Promise<Membership | null>;
   listForUser(userId: string): Promise<readonly Membership[]>;
+  create(membership: Membership): Promise<Membership>;
 }
 
 export interface InvitationRepository {
@@ -74,10 +76,12 @@ export interface InvitationRepository {
 export interface AppRepository {
   findByKey(key: string): Promise<App | null>;
   findById(id: string): Promise<App | null>;
+  create(app: App): Promise<App>;
 }
 
 export interface AppEntitlementRepository {
   findForWorkspaceApp(workspaceId: string, appId: string): Promise<AppEntitlement | null>;
+  create(entitlement: AppEntitlement): Promise<AppEntitlement>;
 }
 
 export interface AuditEventRepository {

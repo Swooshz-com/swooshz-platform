@@ -85,6 +85,19 @@ To disable an app for a workspace:
 4. Reject new launch attempts.
 5. Do not delete app-owned data unless a separate retention workflow exists.
 
+## Internal Seed Preparation
+
+The platform may prepare internal KQAG/SAQG access before a frontend or KQAG launch adapter exists. The internal seed contract is limited to platform-owned records:
+
+- Active workspace.
+- App registry entry with key `kqag`.
+- Workspace app entitlement.
+- Active owner/admin/member membership for an authenticated platform user.
+
+The seed must be explicit and idempotent. It may reuse matching records and must fail safely on conflicts. It must not create fake login state, create app launch tokens, call KQAG, write KQAG storage, run migrations, call provider networks, or grant viewer launch access for `kqag`.
+
+Membership can be granted to an existing active user by user id or normalized email lookup. Creating a new user together with a provider identity is deferred until an explicit transactional identity seed boundary exists. This avoids partial identity state such as an active email-only user without the intended provider identity. Email-only user precreation for future provider linking is forbidden.
+
 ## App Launch Flow
 
 The platform app launch flow is:

@@ -35,9 +35,12 @@ import {
 import type {
   AuditEvent,
   InvitationStatus,
+  Membership,
   Session,
   User,
+  Workspace,
 } from "../accounts/types.js";
+import type { App, AppEntitlement } from "../apps/types.js";
 import type {
   InvitationRecord,
   InvitationStatusTimestamps,
@@ -145,6 +148,13 @@ export function createDrizzlePlatformRepositories(
           mapWorkspaceRow,
         );
       },
+      async create(workspace) {
+        const rows = await db
+          .insert(workspaces)
+          .values(workspaceToValues(workspace))
+          .returning();
+        return mapOneRequired(rows[0], mapWorkspaceRow);
+      },
     },
     memberships: {
       async findForUserInWorkspace(userId, workspaceId) {
@@ -163,6 +173,13 @@ export function createDrizzlePlatformRepositories(
           .from(memberships)
           .where(eq(memberships.userId, userId));
         return rows.map((row) => mapMembershipRow(row as unknown as MembershipRow));
+      },
+      async create(membership) {
+        const rows = await db
+          .insert(memberships)
+          .values(membershipToValues(membership))
+          .returning();
+        return mapOneRequired(rows[0], mapMembershipRow);
       },
     },
     invitations: {
@@ -192,6 +209,10 @@ export function createDrizzlePlatformRepositories(
       async findById(id) {
         return mapOne(await selectOne(db, apps, eq(apps.id, id)), mapAppRow);
       },
+      async create(app) {
+        const rows = await db.insert(apps).values(appToValues(app)).returning();
+        return mapOneRequired(rows[0], mapAppRow);
+      },
     },
     appEntitlements: {
       async findForWorkspaceApp(workspaceId, appId) {
@@ -206,6 +227,13 @@ export function createDrizzlePlatformRepositories(
           ),
           mapAppEntitlementRow,
         );
+      },
+      async create(entitlement) {
+        const rows = await db
+          .insert(appEntitlements)
+          .values(appEntitlementToValues(entitlement))
+          .returning();
+        return mapOneRequired(rows[0], mapAppEntitlementRow);
       },
     },
     auditEvents: {
@@ -275,6 +303,53 @@ function sessionToValues(session: Session): Row {
     expiresAt: toDate(session.expiresAt),
     lastSeenAt: toDate(session.lastSeenAt),
     revokedAt: toDate(session.revokedAt),
+  };
+}
+
+function workspaceToValues(workspace: Workspace): Row {
+  return {
+    id: workspace.id,
+    slug: workspace.slug,
+    displayName: workspace.displayName,
+    status: workspace.status,
+    createdAt: toDate(workspace.createdAt),
+    updatedAt: toDate(workspace.updatedAt),
+  };
+}
+
+function membershipToValues(membership: Membership): Row {
+  return {
+    id: membership.id,
+    workspaceId: membership.workspaceId,
+    userId: membership.userId,
+    role: membership.role,
+    status: membership.status,
+    createdAt: toDate(membership.createdAt),
+    updatedAt: toDate(membership.updatedAt),
+  };
+}
+
+function appToValues(app: App): Row {
+  return {
+    id: app.id,
+    key: app.key,
+    name: app.name,
+    status: app.status,
+    launchUrl: app.launchUrl,
+    createdAt: toDate(app.createdAt),
+    updatedAt: toDate(app.updatedAt),
+  };
+}
+
+function appEntitlementToValues(entitlement: AppEntitlement): Row {
+  return {
+    id: entitlement.id,
+    workspaceId: entitlement.workspaceId,
+    appId: entitlement.appId,
+    status: entitlement.status,
+    grantedByUserId: entitlement.grantedByUserId,
+    createdAt: toDate(entitlement.createdAt),
+    updatedAt: toDate(entitlement.updatedAt),
   };
 }
 

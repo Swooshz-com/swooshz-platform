@@ -277,6 +277,27 @@ Invariants:
 - Suspended entitlement blocks app launch even for owners.
 - Billing/credits can later influence entitlement status but must not be mixed into the membership model.
 
+## Internal Access Seed Contract
+
+Internal workspace/app-access seed code is a platform-only backend contract. It may prepare:
+
+- An active internal workspace by stable slug.
+- The `kqag` app registry record.
+- An enabled or trial workspace entitlement for that app.
+- An active membership grant for an owner, admin, or member.
+
+The seed contract must be idempotent. Existing matching workspace, app, entitlement, membership, or user records may be reused. Existing conflicting records must fail with privacy-safe stable errors instead of being overwritten silently.
+
+Identity-linking safety is required:
+
+- A membership may be granted to an existing user by user id or normalized email lookup only if that user already exists and is active.
+- Creating a new user together with a provider identity is deferred until an explicit transactional identity seed boundary exists.
+- Provider-identity user creation must fail before any platform writes in this PR so it cannot leave behind a partial active user or identity record.
+- The seed must never create an email-only user intended for future provider linking. The auth resolver intentionally rejects linking a new provider identity to an existing email-only user to avoid account takeover, and seed code must preserve that behaviour.
+- Viewer grants must not be seeded for KQAG launch because the current app-access decision blocks KQAG viewer launch.
+
+This contract does not add a fake-login shortcut, hardcoded production account, provider SDK, provider network call, migration execution path, frontend, KQAG adapter, app launch token, billing, deployment script, or live seed command.
+
 ### Billing / Credits Reserved Concepts
 
 Billing and credits are reserved for later phases. They are named now to avoid polluting the account model later, but they are not implemented in this PR.
