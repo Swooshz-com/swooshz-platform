@@ -53,6 +53,7 @@ export interface InternalAppSeedInput {
   key?: string;
   name: string;
   status?: AppStatus;
+  launchUrl?: string | null;
 }
 
 export interface InternalEntitlementSeedInput {
@@ -220,6 +221,7 @@ async function ensureApp(
 ): Promise<App> {
   const key = input.app.key ?? defaultAppKey;
   const status = input.app.status ?? defaultAppStatus;
+  const launchUrl = input.app.launchUrl ?? null;
   const existing = await repositories.apps.findByKey(key);
 
   if (existing) {
@@ -227,7 +229,7 @@ async function ensureApp(
       existing.id !== input.app.id ||
       existing.name !== input.app.name ||
       existing.status !== status ||
-      existing.launchUrl !== null
+      existing.launchUrl !== launchUrl
     ) {
       throw new InternalAccessSeedError("app_conflict");
     }
@@ -241,7 +243,7 @@ async function ensureApp(
     key,
     name: input.app.name,
     status,
-    launchUrl: null,
+    launchUrl,
     createdAt: input.now,
     updatedAt: input.now,
   });

@@ -38,6 +38,7 @@ Invariants:
 - Email is unique among non-deleted users after normalization.
 - A disabled user cannot start new sessions.
 - A user alone does not grant app access; access is decided through workspace membership plus app entitlement.
+- Internal access seeding must not create email-only users for future provider linking. A user should receive seeded app access only after real auth has created the platform user and provider identity records.
 
 ### Workspace / Account
 
