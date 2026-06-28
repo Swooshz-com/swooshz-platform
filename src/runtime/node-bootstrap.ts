@@ -18,6 +18,8 @@ import type {
 } from "../auth/platform-identity-resolver.js";
 import type { DrizzleDatabase } from "../db/repositories.js";
 import { createSecureCsrfTokenIdFactory } from "../http/csrf-token-crypto.js";
+import { createSecureAppLaunchTokenIdFactory } from "../platform/app-launch-token-crypto.js";
+import type { AppLaunchTokenIdFactory } from "../platform/app-launch-intent-service.js";
 import { createNodePlatformHttpServer } from "../http/node-server.js";
 import {
   readNodePlatformRuntimeConfig,
@@ -87,6 +89,9 @@ export interface PlatformNodeBootstrapInput {
   csrfTokenIdFactory?: CsrfTokenIdFactory;
   csrfTokenByteLength?: number;
   csrfTokenTtlSeconds?: number;
+  appLaunchTokenIdFactory?: AppLaunchTokenIdFactory;
+  appLaunchTokenByteLength?: number;
+  appLaunchTokenTtlSeconds?: number;
 }
 
 export interface PlatformNodeBootstrapStartResult {
@@ -132,7 +137,7 @@ export function createPlatformNodeBootstrap(
       const authAdapter = readAuthAdapter(input);
       const authEnabled =
         authProviderMode === "generic_oidc" || Boolean(authAdapter);
-      const secrets = readSecretConfigSafely(input.env, authEnabled);
+      const secrets = readSecretConfigSafely(input.env, authEnabled, true);
       const authConfig = authEnabled
         ? readAuthConfigSafely(input.env, authProviderMode)
         : null;
@@ -149,6 +154,13 @@ export function createPlatformNodeBootstrap(
             input.csrfTokenIdFactory ?? createSecureCsrfTokenIdFactory(),
           csrfTokenByteLength: input.csrfTokenByteLength,
           csrfTokenTtlSeconds: input.csrfTokenTtlSeconds,
+          appLaunch: {
+            tokenIdFactory:
+              input.appLaunchTokenIdFactory ??
+              createSecureAppLaunchTokenIdFactory(),
+            tokenByteLength: input.appLaunchTokenByteLength,
+            ttlSeconds: input.appLaunchTokenTtlSeconds,
+          },
           auth: authEnabled && authConfig
             ? createBootstrapAuthInput(
                 input,
@@ -223,9 +235,13 @@ function readRuntimeConfigSafely(
 function readSecretConfigSafely(
   env: PlatformNodeBootstrapEnv,
   requireAuthStateHashSecret: boolean,
+  requireAppLaunchTokenHashSecret: boolean,
 ): PlatformRuntimeSecretConfig {
   try {
-    return readPlatformRuntimeSecretConfig(env, { requireAuthStateHashSecret });
+    return readPlatformRuntimeSecretConfig(env, {
+      requireAuthStateHashSecret,
+      requireAppLaunchTokenHashSecret,
+    });
   } catch {
     throw new PlatformNodeBootstrapError("invalid_config");
   }

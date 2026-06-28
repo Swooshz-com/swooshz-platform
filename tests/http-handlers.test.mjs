@@ -5,6 +5,7 @@ import test from "node:test";
 
 import {
   handleCsrfTokenIssueRequest,
+  handleAppLaunchIntentRequest,
   handleLogoutRequest,
   handleProtectedAppAccessRequest,
   handleSessionContextRequest,
@@ -20,6 +21,9 @@ const privateStorageError =
 const issuedCsrfToken = "issued-csrf-token-reference";
 const issuedCsrfTokenHash = "hash_issued_csrf_token_reference";
 const csrfExpiresAt = "2026-06-27T00:15:00.000Z";
+const rawLaunchToken = "synthetic-raw-launch-token-reference";
+const launchTokenHash = "app-launch:v1:hmac-sha256:synthetic_hash_reference";
+const launchTokenExpiresAt = "2026-06-27T00:05:00.000Z";
 
 test("protected app-access handler returns 401 for missing cookie without reading app-access repositories", async () => {
   const { repositories, calls } = httpFixture();
@@ -405,6 +409,123 @@ test("CSRF issue handler handles token lifecycle failures safely", async () => {
   }
 });
 
+test("app launch handler returns 401 for missing cookie without creating a token", async () => {
+  const { repositories, records } = httpFixture();
+  const launch = launchIssueFixture(records);
+
+  const response = await handleAppLaunchIntentRequest(launch.dependencies, {
+    headers: {},
+    selectedWorkspaceId: "workspace_koncept_images",
+    appKey: "kqag",
+    now,
+  });
+
+  assert.equal(response.status, 401);
+  assertNoStoreHeaders(response.headers);
+  assert.deepEqual(response.body, {
+    outcome: "unauthenticated",
+    reason: "missing_session",
+  });
+  assert.equal(records.appLaunchTokens.length, 0);
+});
+
+test("app launch handler returns 400 for missing query fields without creating a token", async () => {
+  const { records } = httpFixture();
+  const launch = launchIssueFixture(records);
+
+  const response = await handleAppLaunchIntentRequest(launch.dependencies, {
+    headers: {
+      cookie: "swooshz_session=session_owner_example",
+    },
+    selectedWorkspaceId: "",
+    appKey: "kqag",
+    now,
+  });
+
+  assert.equal(response.status, 400);
+  assertNoStoreHeaders(response.headers);
+  assert.deepEqual(response.body, {
+    outcome: "error",
+    message: "Required query parameters are missing.",
+  });
+  assert.equal(records.appLaunchTokens.length, 0);
+});
+
+test("app launch handler denies access without creating a token", async () => {
+  const { records } = httpFixture({ role: "viewer" });
+  const launch = launchIssueFixture(records);
+
+  const response = await handleAppLaunchIntentRequest(launch.dependencies, {
+    headers: {
+      cookie: "swooshz_session=session_viewer_example",
+    },
+    selectedWorkspaceId: "workspace_koncept_images",
+    appKey: "kqag",
+    now,
+  });
+
+  assert.equal(response.status, 403);
+  assertNoStoreHeaders(response.headers);
+  assert.equal(response.body.outcome, "denied");
+  assert.equal(response.body.reason, "app_access_denied");
+  assert.equal(records.appLaunchTokens.length, 0);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("app launch handler returns one raw launch token and stores only the hash", async () => {
+  const { records } = httpFixture({
+    app: { launchUrl: "https://apps.example.invalid/kqag" },
+  });
+  const launch = launchIssueFixture(records);
+
+  const response = await handleAppLaunchIntentRequest(launch.dependencies, {
+    headers: {
+      cookie: "swooshz_session=session_owner_example",
+    },
+    selectedWorkspaceId: "workspace_koncept_images",
+    appKey: "kqag",
+    now,
+  });
+
+  assert.equal(response.status, 201);
+  assertNoStoreHeaders(response.headers);
+  assert.deepEqual(response.body, {
+    outcome: "launch_intent_created",
+    appKey: "kqag",
+    workspaceId: "workspace_koncept_images",
+    launchUrl: "https://apps.example.invalid/kqag",
+    launchToken: rawLaunchToken,
+    launchTokenExpiresAt,
+  });
+  assert.equal(records.appLaunchTokens.length, 1);
+  assert.equal(records.appLaunchTokens[0].tokenHash, launchTokenHash);
+  assert.equal("launchToken" in records.appLaunchTokens[0], false);
+  assert.doesNotMatch(JSON.stringify(records.appLaunchTokens), new RegExp(rawLaunchToken));
+  assert.doesNotMatch(JSON.stringify(response), new RegExp(launchTokenHash));
+});
+
+test("app launch handler returns privacy-safe failure body", async () => {
+  const { records } = httpFixture();
+  const launch = launchIssueFixture(records, { failCreate: true });
+
+  const response = await handleAppLaunchIntentRequest(launch.dependencies, {
+    headers: {
+      cookie: "swooshz_session=session_owner_example",
+    },
+    selectedWorkspaceId: "workspace_koncept_images",
+    appKey: "kqag",
+    now,
+  });
+
+  assert.equal(response.status, 500);
+  assertNoStoreHeaders(response.headers);
+  assert.deepEqual(response.body, {
+    outcome: "error",
+    message: "App launch intent could not be created.",
+  });
+  assertResponseIsPrivacySafe(response);
+});
+
 test("HTTP modules do not import DB, frontend, KQAG, provider SDK, or live server modules", async () => {
   const httpFiles = (await listFiles("src/http")).filter(
     (filePath) => ![
@@ -458,6 +579,7 @@ function httpFixture(overrides = {}) {
     name: "KQAG / SAQG",
     status: "private_preview",
     launchUrl: null,
+    ...overrides.app,
     createdAt: now,
     updatedAt: now,
   };
@@ -513,6 +635,7 @@ function httpFixture(overrides = {}) {
     apps: [app],
     appEntitlements: [entitlement],
     auditEvents: [],
+    appLaunchTokens: [],
   };
   const repositories = createInMemoryPlatformRepositories(records);
   const calls = instrumentRepositories(repositories, overrides);
@@ -679,6 +802,43 @@ function instrumentRepositories(repositories, options) {
   return calls;
 }
 
+function launchIssueFixture(records, options = {}) {
+  records.appLaunchTokens ??= [];
+  const dependencies = {
+    repositories: createInMemoryPlatformRepositories(records),
+    launchTokenFactory: {
+      async createToken() {
+        return rawLaunchToken;
+      },
+    },
+    launchTokenHasher: {
+      async hashToken(token) {
+        assert.equal(token, rawLaunchToken);
+        return launchTokenHash;
+      },
+    },
+    launchTokenIdFactory: {
+      createId() {
+        return `app_launch_token_${records.appLaunchTokens.length + 1}`;
+      },
+    },
+    ttlSeconds: 300,
+  };
+
+  dependencies.repositories.appLaunchTokens = {
+    async create(record) {
+      if (options.failCreate) {
+        throw new Error(privateStorageError);
+      }
+
+      records.appLaunchTokens.push(record);
+      return record;
+    },
+  };
+
+  return { dependencies };
+}
+
 async function listFiles(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
   const files = [];
@@ -701,6 +861,7 @@ function assertResponseIsPrivacySafe(response) {
 
   assert.doesNotMatch(serialized, /raw-session-token|session-secret|provider-token/i);
   assert.doesNotMatch(serialized, /auth-code|raw-claim|client-secret/i);
+  assert.doesNotMatch(serialized, new RegExp(launchTokenHash));
   assert.doesNotMatch(serialized, /postgresql:\/\/private-host|select \*|database exploded/i);
 }
 

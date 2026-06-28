@@ -254,6 +254,37 @@ export const apps = pgTable(
   ],
 );
 
+export const appLaunchTokens = pgTable(
+  "app_launch_tokens",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "restrict" }),
+    appId: text("app_id")
+      .notNull()
+      .references(() => apps.id, { onDelete: "restrict" }),
+    tokenHash: text("token_hash").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("app_launch_tokens_token_hash_unique").on(table.tokenHash),
+    index("app_launch_tokens_session_id_idx").on(table.sessionId),
+    index("app_launch_tokens_workspace_app_idx").on(table.workspaceId, table.appId),
+    index("app_launch_tokens_expires_at_idx").on(table.expiresAt),
+    index("app_launch_tokens_consumed_at_idx").on(table.consumedAt),
+  ],
+);
+
 export const appEntitlements = pgTable(
   "app_entitlements",
   {

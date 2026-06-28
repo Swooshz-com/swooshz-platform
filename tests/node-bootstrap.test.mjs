@@ -17,6 +17,7 @@ import {
 const now = "2026-06-27T00:00:00.000Z";
 const csrfSecret = "synthetic_csrf_hash_secret_32_chars_min";
 const authStateHashSecret = "synthetic_auth_state_hash_secret_32_chars_min";
+const appLaunchTokenHashSecret = "synthetic_app_launch_hash_secret_32_chars_min";
 const databaseUrl =
   "postgres://example_user:example_pass@db.example.invalid:5432/swooshz_platform";
 const privateUrl =
@@ -212,6 +213,62 @@ test("bootstrap composes runtime dependencies with secure cookie origin and CSRF
   assert.equal(dependencies.csrfTokenTtlSeconds, 321);
   assert.ok(dependencies.csrfTokenIssuer);
   assert.ok(dependencies.csrfTokenValidator);
+  assert.ok(dependencies.appLaunchIntent);
+});
+
+test("bootstrap start wires app launch dependencies without issuing tokens", async () => {
+  const fixture = createBootstrapFixture({ withAppAccessRecords: true });
+  const bootstrap = createPlatformNodeBootstrap(fixture.input);
+
+  createPlatformNodeBootstrap(fixture.input);
+  assert.equal(fixture.records.appLaunchTokens.length, 0);
+
+  await bootstrap.start();
+
+  assert.ok(fixture.calls.serverDependencies[0].appLaunchIntent);
+  assert.equal(fixture.records.appLaunchTokens.length, 0);
+  assert.equal(fixture.calls.migrations, 0);
+});
+
+test("bootstrap-created server can serve POST /api/platform/apps/launch with fake local dependencies", async () => {
+  const fixture = createBootstrapFixture({ withAppAccessRecords: true });
+  const bootstrap = createPlatformNodeBootstrap(fixture.input);
+
+  await bootstrap.start();
+  const { issueCsrfTokenForSession } = await import("../dist/index.js");
+  const dependencies = fixture.calls.serverDependencies[0];
+  const issued = await issueCsrfTokenForSession(dependencies.csrfTokenIssuer, {
+    sessionId: "session_owner_example",
+    now,
+    ttlSeconds: 900,
+    purpose: "browser_session",
+  });
+  const response = await fixture.lastServer.handle({
+    method: "POST",
+    url: "/api/platform/apps/launch?workspaceId=workspace_koncept_images&appKey=kqag",
+    headers: {
+      origin: "https://platform.example.test",
+      cookie: "swooshz_session=session_owner_example",
+      "x-csrf-token": issued.csrfToken,
+    },
+  });
+  const body = JSON.parse(response.body);
+
+  assert.equal(response.statusCode, 201);
+  assert.equal(body.outcome, "launch_intent_created");
+  assert.equal(body.appKey, "kqag");
+  assert.equal(body.workspaceId, "workspace_koncept_images");
+  assert.equal(body.launchUrl, null);
+  assert.match(body.launchToken, /^[A-Za-z0-9_-]+$/);
+  assert.equal(body.launchTokenExpiresAt, "2026-06-27T00:05:00.000Z");
+  assert.equal(fixture.records.appLaunchTokens.length, 1);
+  assert.match(fixture.records.appLaunchTokens[0].tokenHash, /^app-launch:v1:hmac-sha256:/);
+  assert.equal("launchToken" in fixture.records.appLaunchTokens[0], false);
+  assert.doesNotMatch(
+    JSON.stringify(fixture.records.appLaunchTokens),
+    new RegExp(body.launchToken),
+  );
+  assertResponseIsPrivacySafe(response);
 });
 
 test("bootstrap start can include auth dependencies without provider calls during creation or start", async () => {
@@ -553,11 +610,86 @@ function createBootstrapFixture(options = {}) {
     dbOperations: [],
   };
   const records = {
-    users: [],
+    users: options.withAppAccessRecords
+      ? [
+          {
+            id: "user_owner_example",
+            email: "owner@example.com",
+            displayName: "Owner Example",
+            status: "active",
+            createdAt: now,
+            updatedAt: now,
+            lastLoginAt: now,
+          },
+        ]
+      : [],
     providerIdentities: [],
-    sessions: [],
+    sessions: options.withAppAccessRecords
+      ? [
+          {
+            id: "session_owner_example",
+            userId: "user_owner_example",
+            createdAt: now,
+            expiresAt: "2026-06-27T01:00:00.000Z",
+            lastSeenAt: now,
+            revokedAt: null,
+          },
+        ]
+      : [],
     csrfTokens: [],
     authStates: [],
+    workspaces: options.withAppAccessRecords
+      ? [
+          {
+            id: "workspace_koncept_images",
+            slug: "koncept-images-pte-ltd",
+            displayName: "Koncept Images Pte Ltd",
+            status: "active",
+            createdAt: now,
+            updatedAt: now,
+          },
+        ]
+      : [],
+    memberships: options.withAppAccessRecords
+      ? [
+          {
+            id: "membership_owner_example",
+            workspaceId: "workspace_koncept_images",
+            userId: "user_owner_example",
+            role: "owner",
+            status: "active",
+            createdAt: now,
+            updatedAt: now,
+          },
+        ]
+      : [],
+    apps: options.withAppAccessRecords
+      ? [
+          {
+            id: "app_kqag",
+            key: "kqag",
+            name: "KQAG / SAQG",
+            status: "private_preview",
+            launchUrl: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ]
+      : [],
+    appEntitlements: options.withAppAccessRecords
+      ? [
+          {
+            id: "entitlement_koncept_kqag",
+            workspaceId: "workspace_koncept_images",
+            appId: "app_kqag",
+            status: "enabled",
+            grantedByUserId: "user_owner_example",
+            createdAt: now,
+            updatedAt: now,
+          },
+        ]
+      : [],
+    appLaunchTokens: [],
   };
   const db = createFakeDrizzleDb(calls, records);
   const env = {
@@ -569,6 +701,7 @@ function createBootstrapFixture(options = {}) {
     NODE_ENV: "production",
     DATABASE_URL: databaseUrl,
     CSRF_TOKEN_HASH_SECRET: csrfSecret,
+    APP_LAUNCH_TOKEN_HASH_SECRET: appLaunchTokenHashSecret,
     ...(options.withAuth
       ? {
           AUTH_STATE_HASH_SECRET: authStateHashSecret,
@@ -895,8 +1028,20 @@ function selectRows(table, records) {
       return records.providerIdentities;
     case "sessions":
       return records.sessions;
+    case "csrf_tokens":
+      return records.csrfTokens;
     case "auth_states":
       return records.authStates.filter((row) => !row.consumedAt && !row.revokedAt);
+    case "workspaces":
+      return records.workspaces;
+    case "memberships":
+      return records.memberships;
+    case "apps":
+      return records.apps;
+    case "app_entitlements":
+      return records.appEntitlements;
+    case "app_launch_tokens":
+      return records.appLaunchTokens;
     default:
       return [];
   }
@@ -922,6 +1067,9 @@ function insertRow(table, records, row) {
       return;
     case "csrf_tokens":
       records.csrfTokens.push(row);
+      return;
+    case "app_launch_tokens":
+      records.appLaunchTokens.push(row);
       return;
     default:
       return;
@@ -1009,6 +1157,7 @@ function assertResponseIsPrivacySafe(response) {
 
   assert.doesNotMatch(serialized, /synthetic-auth-code|synthetic-client-secret/i);
   assert.doesNotMatch(serialized, /synthetic-session-secret|provider-token|raw-claim/i);
+  assert.doesNotMatch(serialized, /app-launch:v1:hmac-sha256:/i);
   assert.doesNotMatch(serialized, /postgresql:\/\/private-host|private\.example\.test/i);
 }
 

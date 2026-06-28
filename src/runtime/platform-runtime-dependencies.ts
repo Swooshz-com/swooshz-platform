@@ -1,4 +1,5 @@
 import { createDrizzleAuthStateStore } from "../db/auth-state-repository.js";
+import { createDrizzleAppLaunchTokenRepository } from "../db/app-launch-token-repository.js";
 import { createDrizzleCsrfTokenRepository } from "../db/csrf-token-repository.js";
 import {
   createDrizzlePlatformRepositories,
@@ -26,6 +27,14 @@ import { createPlatformIdentitySessionResolver } from "../auth/platform-identity
 import type { AuthConfig } from "../auth/config.js";
 import type { OidcProviderAdapter } from "../auth/oidc.js";
 import {
+  AppLaunchTokenCryptoConfigError,
+  createHmacAppLaunchTokenHasher,
+  createSecureAppLaunchTokenFactory,
+} from "../platform/app-launch-token-crypto.js";
+import type {
+  AppLaunchTokenIdFactory,
+} from "../platform/app-launch-intent-service.js";
+import {
   createHmacCsrfTokenHasher,
   createSecureCsrfTokenFactory,
   CsrfTokenCryptoConfigError,
@@ -49,7 +58,14 @@ export interface PlatformRuntimeDependencyInput {
   csrfTokenIdFactory: CsrfTokenIdFactory;
   csrfTokenByteLength?: number;
   csrfTokenTtlSeconds?: number;
+  appLaunch?: PlatformRuntimeAppLaunchDependencyInput;
   auth?: PlatformRuntimeAuthDependencyInput;
+}
+
+export interface PlatformRuntimeAppLaunchDependencyInput {
+  tokenIdFactory: AppLaunchTokenIdFactory;
+  tokenByteLength?: number;
+  ttlSeconds?: number;
 }
 
 export type PlatformRuntimeAuthProviderMode = "injected_adapter" | "generic_oidc";
@@ -89,6 +105,7 @@ export interface PlatformRuntimeAuthDependencyInput {
 
 const defaultCsrfTokenTtlSeconds = 900;
 const defaultAuthStateTtlSeconds = 600;
+const defaultAppLaunchTokenTtlSeconds = 300;
 
 export function createPlatformRuntimeDependencies(
   input: PlatformRuntimeDependencyInput,
@@ -113,6 +130,14 @@ export function createPlatformRuntimeDependencies(
         secrets: input.secrets,
       })
     : {};
+  const appLaunchDependencies = input.appLaunch
+    ? createAppLaunchDependencies({
+        appLaunch: input.appLaunch,
+        db: input.db,
+        repositories,
+        secrets: input.secrets,
+      })
+    : {};
 
   return {
     repositories,
@@ -125,7 +150,35 @@ export function createPlatformRuntimeDependencies(
       tokenHasher,
     }),
     csrfTokenTtlSeconds: input.csrfTokenTtlSeconds ?? defaultCsrfTokenTtlSeconds,
+    ...appLaunchDependencies,
     ...authDependencies,
+  };
+}
+
+function createAppLaunchDependencies({
+  appLaunch,
+  db,
+  repositories,
+  secrets,
+}: {
+  appLaunch: PlatformRuntimeAppLaunchDependencyInput;
+  db: DrizzleDatabase;
+  repositories: ReturnType<typeof createDrizzlePlatformRepositories>;
+  secrets: PlatformRuntimeSecretConfig;
+}): Pick<NodePlatformHttpAdapterDependencies, "appLaunchIntent"> {
+  return {
+    appLaunchIntent: {
+      repositories: {
+        ...repositories,
+        appLaunchTokens: createDrizzleAppLaunchTokenRepository(db),
+      },
+      launchTokenFactory: createSecureAppLaunchTokenFactory({
+        byteLength: appLaunch.tokenByteLength,
+      }),
+      launchTokenHasher: createAppLaunchTokenHasherSafely(secrets),
+      launchTokenIdFactory: appLaunch.tokenIdFactory,
+      ttlSeconds: appLaunch.ttlSeconds ?? defaultAppLaunchTokenTtlSeconds,
+    },
   };
 }
 
@@ -243,6 +296,30 @@ function createCsrfTokenHasherSafely(secrets: PlatformRuntimeSecretConfig) {
     }
 
     throw new PlatformRuntimeSecretConfigError("invalid_csrf_token_hash_secret");
+  }
+}
+
+function createAppLaunchTokenHasherSafely(secrets: PlatformRuntimeSecretConfig) {
+  const secret = secrets.appLaunchTokenHashSecret?.trim();
+
+  if (!secret) {
+    throw new PlatformRuntimeSecretConfigError(
+      "missing_app_launch_token_hash_secret",
+    );
+  }
+
+  try {
+    return createHmacAppLaunchTokenHasher({ secret });
+  } catch (error) {
+    if (error instanceof AppLaunchTokenCryptoConfigError) {
+      throw new PlatformRuntimeSecretConfigError(
+        "invalid_app_launch_token_hash_secret",
+      );
+    }
+
+    throw new PlatformRuntimeSecretConfigError(
+      "invalid_app_launch_token_hash_secret",
+    );
   }
 }
 

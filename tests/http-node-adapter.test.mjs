@@ -18,6 +18,9 @@ const validCsrfToken = "csrf-token-valid-example";
 const issuedCsrfToken = "issued-csrf-token-reference";
 const issuedCsrfTokenHash = "hash_issued_csrf_token_reference";
 const csrfExpiresAt = "2026-06-27T00:15:00.000Z";
+const rawLaunchToken = "synthetic-raw-launch-token-reference";
+const launchTokenHash = "app-launch:v1:hmac-sha256:synthetic_hash_reference";
+const launchTokenExpiresAt = "2026-06-27T00:05:00.000Z";
 const authState = "synthetic-browser-state-reference";
 const authNonce = "synthetic-browser-nonce-reference";
 const authStateHash = "hash_synthetic_browser_state_reference";
@@ -237,6 +240,95 @@ test("CSRF issuance route returns safe 405 for wrong method", async () => {
     message: "Method not allowed.",
   });
   assert.equal(fixture.calls.csrfTokenCreate, 0);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("app launch route is POST-only and requires query inputs", async () => {
+  const fixture = createAdapterFixture();
+  const get = await request({
+    method: "GET",
+    url: "/api/platform/apps/launch?workspaceId=workspace_koncept_images&appKey=kqag",
+    headers: logoutHeaders(),
+    dependencies: fixture.dependencies,
+  });
+  const missingQuery = await request({
+    method: "POST",
+    url: "/api/platform/apps/launch?workspaceId=workspace_koncept_images",
+    headers: logoutHeaders(),
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(get.response.statusCode, 405);
+  assert.equal(get.response.headers.allow, "POST");
+  assertNoStoreHeaders(get.response.headers);
+  assert.deepEqual(get.body, {
+    outcome: "error",
+    message: "Method not allowed.",
+  });
+  assert.equal(missingQuery.response.statusCode, 400);
+  assertNoStoreHeaders(missingQuery.response.headers);
+  assert.deepEqual(missingQuery.body, {
+    outcome: "error",
+    message: "Required query parameters are missing.",
+  });
+  assert.equal(fixture.records.appLaunchTokens.length, 0);
+  assert.equal(fixture.calls.csrfValidate, 0);
+  assertResponseIsPrivacySafe(get.response);
+  assertResponseIsPrivacySafe(missingQuery.response);
+});
+
+test("app launch route validates Origin and CSRF before creating a token", async () => {
+  const fixture = createAdapterFixture();
+  const { response, body } = await request({
+    method: "POST",
+    url: "/api/platform/apps/launch?workspaceId=workspace_koncept_images&appKey=kqag",
+    headers: {
+      cookie: `swooshz_session=${sessionId}`,
+      "x-csrf-token": validCsrfToken,
+    },
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 403);
+  assertNoStoreHeaders(response.headers);
+  assert.deepEqual(body, {
+    outcome: "denied",
+    reason: "missing_origin",
+  });
+  assert.equal(fixture.records.appLaunchTokens.length, 0);
+  assert.equal(fixture.calls.csrfValidate, 0);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("app launch route creates a hash-only launch token after valid CSRF", async () => {
+  const fixture = createAdapterFixture({
+    app: { launchUrl: "https://apps.example.invalid/kqag" },
+  });
+
+  const { response, body } = await request({
+    method: "POST",
+    url: "/api/platform/apps/launch?workspaceId=workspace_koncept_images&appKey=kqag",
+    headers: logoutHeaders(),
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 201);
+  assertNoStoreHeaders(response.headers);
+  assert.deepEqual(body, {
+    outcome: "launch_intent_created",
+    appKey: "kqag",
+    workspaceId: "workspace_koncept_images",
+    launchUrl: "https://apps.example.invalid/kqag",
+    launchToken: rawLaunchToken,
+    launchTokenExpiresAt,
+  });
+  assert.deepEqual(fixture.calls.order.slice(0, 2), ["csrf", "sessionsFindById"]);
+  assert.equal(fixture.calls.csrfValidate, 1);
+  assert.equal(fixture.records.appLaunchTokens.length, 1);
+  assert.equal(fixture.records.appLaunchTokens[0].tokenHash, launchTokenHash);
+  assert.equal("launchToken" in fixture.records.appLaunchTokens[0], false);
+  assert.doesNotMatch(JSON.stringify(fixture.records.appLaunchTokens), new RegExp(rawLaunchToken));
+  assert.doesNotMatch(JSON.stringify(response), new RegExp(launchTokenHash));
   assertResponseIsPrivacySafe(response);
 });
 
@@ -548,6 +640,7 @@ function createAdapterFixture(overrides = {}) {
         name: "KQAG / SAQG",
         status: "private_preview",
         launchUrl: null,
+        ...overrides.app,
         createdAt: now,
         updatedAt: now,
       },
@@ -566,8 +659,15 @@ function createAdapterFixture(overrides = {}) {
     auditEvents: [],
     csrfTokens: [],
     authStates: [],
+    appLaunchTokens: [],
   };
   const repositories = createInMemoryPlatformRepositories(records);
+  repositories.appLaunchTokens = {
+    async create(record) {
+      records.appLaunchTokens.push(record);
+      return record;
+    },
+  };
   const calls = instrumentRepositories(repositories);
   const dependencies = {
     repositories,
@@ -680,6 +780,26 @@ function createAdapterFixture(overrides = {}) {
         },
       },
     },
+    appLaunchIntent: {
+      repositories,
+      launchTokenFactory: {
+        async createToken() {
+          return rawLaunchToken;
+        },
+      },
+      launchTokenHasher: {
+        async hashToken(token) {
+          assert.equal(token, rawLaunchToken);
+          return launchTokenHash;
+        },
+      },
+      launchTokenIdFactory: {
+        createId() {
+          return `app_launch_token_${records.appLaunchTokens.length + 1}`;
+        },
+      },
+      ttlSeconds: 300,
+    },
   };
 
   return { records, repositories, calls, dependencies };
@@ -789,6 +909,7 @@ function assertResponseIsPrivacySafe(response) {
 
   assert.doesNotMatch(serialized, /raw-session-token|session-secret|provider-token/i);
   assert.doesNotMatch(serialized, /raw-csrf-token|csrf-secret|auth-code|raw-claim/i);
+  assert.doesNotMatch(serialized, new RegExp(launchTokenHash));
   assert.doesNotMatch(serialized, /synthetic-auth-code|synthetic-browser-state-reference/i);
   assert.doesNotMatch(serialized, /synthetic-browser-nonce-reference|synthetic-client-secret/i);
   assert.doesNotMatch(serialized, /postgresql:\/\/private-host|select \*|database exploded/i);
