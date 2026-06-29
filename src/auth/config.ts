@@ -60,7 +60,7 @@ export function readAuthConfig(env: AuthEnvironment): AuthConfig {
     clientSecret,
     redirectUri,
     sessionSecret,
-    issuerUrl: readOptionalUrl(env, "AUTH_ISSUER_URL"),
+    issuerUrl: readOptionalIssuerUrl(env, "AUTH_ISSUER_URL"),
     userinfoUrl: readOptionalUrl(env, "AUTH_USERINFO_URL"),
     jwksUrl: readOptionalUrl(env, "AUTH_JWKS_URL"),
     allowedEmails: readAllowedEmails(env.AUTH_ALLOWED_EMAILS),
@@ -108,7 +108,28 @@ function readOptionalUrl(env: AuthEnvironment, key: keyof AuthEnvironment): stri
   return normalizeUrl(value, key);
 }
 
+function readOptionalIssuerUrl(
+  env: AuthEnvironment,
+  key: keyof AuthEnvironment,
+): string | null {
+  const value = env[key]?.trim();
+
+  if (!value) {
+    return null;
+  }
+
+  validateUrl(value, key);
+
+  return value;
+}
+
 function normalizeUrl(value: string, key: keyof AuthEnvironment): string {
+  const parsed = validateUrl(value, key);
+
+  return parsed.toString();
+}
+
+function validateUrl(value: string, key: keyof AuthEnvironment): URL {
   try {
     const parsed = new URL(value);
 
@@ -116,7 +137,7 @@ function normalizeUrl(value: string, key: keyof AuthEnvironment): string {
       throw new Error("Unsupported URL protocol.");
     }
 
-    return parsed.toString();
+    return parsed;
   } catch {
     throw new AuthConfigError("invalid_url", `${key} must be a valid URL.`);
   }

@@ -71,6 +71,15 @@ test("readAuthConfig parses valid synthetic config", () => {
   assert.deepEqual(config.allowedDomains, []);
 });
 
+test("readAuthConfig preserves issuer identifiers without adding a trailing slash", () => {
+  const config = readAuthConfig({
+    ...validSyntheticAuthEnv,
+    AUTH_ISSUER_URL: " https://accounts.google.com ",
+  });
+
+  assert.equal(config.issuerUrl, "https://accounts.google.com");
+});
+
 test("readAuthConfig normalizes allowed emails and domains", () => {
   const config = readAuthConfig({
     ...validSyntheticAuthEnv,
