@@ -501,6 +501,24 @@ test("app launch consume route rejects missing or replayed token safely", async 
   assertResponseIsPrivacySafe(replay.response);
 });
 
+test("app launch consume route ignores launch tokens in query strings", async () => {
+  const fixture = createAdapterFixture({ withLaunchConsumeToken: true });
+  const { response, body } = await request({
+    method: "POST",
+    url: `/api/platform/apps/launch/consume?appKey=kqag&launchToken=${encodeURIComponent(rawLaunchToken)}`,
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 401);
+  assertNoStoreHeaders(response.headers);
+  assert.deepEqual(body, {
+    outcome: "invalid",
+    reason: "missing_launch_token",
+  });
+  assert.equal(fixture.records.appLaunchTokens[0].consumedAt, null);
+  assertResponseIsPrivacySafe(response);
+});
+
 test("auth start route redirects to provider and stores only state references", async () => {
   const fixture = createAdapterFixture();
   const { response, body } = await request({
