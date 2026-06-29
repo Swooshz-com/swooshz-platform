@@ -20,7 +20,7 @@ The current priority is a minimal internal platform shell over the existing back
 
 - App-specific workflow logic.
 - Quote generation, pricing reference import, quotation layout, or quote export logic.
-- KQAG/SAQG runtime behavior until a platform adapter phase is explicitly started.
+- KQAG/SAQG quote workflow behavior and app-owned runtime data.
 - Customer portal behavior.
 - Public SaaS launch behavior.
 - Deployment, VPS, Coolify, DNS, TLS, or firewall setup in this initial contract PR.
@@ -89,9 +89,9 @@ The repo now includes platform-only internal workspace/app-access seed contracts
 
 The repo now includes a read-only current session context service and `GET /api/platform/session/context` route. It loads the current browser session from the platform session cookie, returns safe active-session status, user summary, accessible workspace memberships, and app access summaries based on existing app entitlement rules. Responses use no-store/no-cache headers. The endpoint does not launch apps, persist workspace selection, accept invitations, create grants, expose provider tokens/raw claims/session secrets, or call KQAG.
 
-The repo now includes platform-only app launch token contracts. `POST /api/platform/apps/launch?workspaceId=...&appKey=...` requires the browser session cookie plus Origin/Referer and CSRF token validation, re-checks protected app access, and creates a short-lived launch token record that stores only an HMAC hash. The raw launch token is returned only once in the immediate no-store response. `POST /api/platform/apps/launch/consume?appKey=...` accepts the raw launch token only through the `x-app-launch-token` header, requires no browser cookie or CSRF token, hashes before lookup, rejects unknown/expired/consumed/revoked tokens safely, re-checks app access, consumes the token once, and returns safe user/workspace/app context for future app integration. `APP_LAUNCH_TOKEN_HASH_SECRET` is required when runtime/bootstrap composes launch issuing and consume dependencies. This does not add KQAG storage or launch adapters, app launch redirects, fake login, provider SDKs, billing, deployment, or migration execution.
+The repo now includes platform-only app launch token contracts. `POST /api/platform/apps/launch?workspaceId=...&appKey=...` requires the browser session cookie plus Origin/Referer and CSRF token validation, re-checks protected app access, and creates a short-lived launch token record that stores only an HMAC hash. The raw launch token is returned only once in the immediate no-store response for diagnostics. `POST /api/platform/apps/launch/consume?appKey=...` accepts the raw launch token only through the `x-app-launch-token` header, requires no browser cookie or CSRF token, hashes before lookup, rejects unknown/expired/consumed/revoked tokens safely, re-checks app access, consumes the token once, and returns safe user/workspace/app context for app integration. `APP_LAUNCH_TOKEN_HASH_SECRET` is required when runtime/bootstrap composes launch issuing and consume dependencies. This does not add KQAG storage, fake login, provider SDKs, billing, deployment, or migration execution.
 
-The repo now includes a minimal framework-free browser shell. `GET /` renders an internal Swooshz Platform landing page with a login link to `GET /api/platform/auth/start`. `GET /app` renders a no-store HTML shell that loads the current session context, requests a CSRF token only for state-changing actions, can create app launch intents through the existing browser route, and displays the immediate launch handoff payload. The launch token is shown only in that temporary internal handoff area, is not placed in a URL, and is not written to browser storage. The shell does not call the launch consume route, bypass service contracts, expose cookies or token hashes, or integrate with KQAG.
+The repo now includes a minimal framework-free browser shell. `GET /` renders an internal Swooshz Platform landing page with a login link to `GET /api/platform/auth/start`. `GET /app` renders a no-store HTML shell that loads the current session context, requests a CSRF token only for state-changing actions, and can start a browser-safe KQAG launch through `POST /api/platform/apps/launch/open?workspaceId=...&appKey=kqag`. The open route creates the platform launch intent server-side, sends the raw launch token to KQAG only in the server-side `x-app-launch-token` header, relays the safe KQAG session cookie response, and returns only a launch URL to the browser. The launch token is not placed in a URL, response body, cookie, or browser storage. The shell does not bypass service contracts, expose cookies or token hashes, add KQAG storage, or become a polished dashboard.
 
 The repo now includes an explicit internal platform access seed CLI for already-authenticated platform users. After real OIDC login creates the platform user and provider identity, an admin/dev can run `npm run platform:seed-internal-access` with `PLATFORM_SEED_CONFIRM=seed-reviewed-internal-access` and `PLATFORM_SEED_USER_EMAIL` to create or reuse the internal workspace, `kqag` app record, workspace entitlement, and owner/admin/member membership. The CLI validates confirmation and email before opening a DB connection, requires the existing user to have a provider identity, closes the DB pool after completion, prints only a safe summary, and does not run migrations. It does not create users, provider identities, sessions, app launch tokens, fake login state, KQAG storage, private KQAG profile/pricing data, or deployment artifacts.
 
@@ -102,23 +102,23 @@ Safe internal setup flow:
 3. Internal tester logs in once through `/api/platform/auth/start`.
 4. Run `npm run platform:seed-internal-access` with the required seed env.
 5. Visit `/app`.
-6. Create a launch intent for an accessible app.
+6. Click the KQAG launch button.
 
-The `platform:start` command is a narrow operator CLI over the existing Node bootstrap/runtime boundary. It does not run migrations, provision a database service, seed access, call provider endpoints on startup, call KQAG, or add deployment behavior.
+The `platform:start` command is a narrow operator CLI over the existing Node bootstrap/runtime boundary. It does not run migrations, provision a database service, seed access, call provider endpoints on startup, call KQAG on startup, or add deployment behavior. Browser-safe KQAG handoff is disabled by default and requires explicit local UAT env such as `PLATFORM_KQAG_LAUNCH_MODE=server_handoff` and `PLATFORM_KQAG_APP_BASE_URL=<kqag-local-base-url>`.
 
-No Next.js, Vite, React, provider SDK, provider-specific account model, public signup, database provisioning, deployment, Supabase setup, Stripe setup, billing implementation, KQAG adapter, polished dashboard, app redirect integration, or secrets are part of this scaffold.
+No Next.js, Vite, React, provider SDK, provider-specific account model, public signup, database provisioning, deployment, Supabase setup, Stripe setup, billing implementation, KQAG-owned auth, KQAG storage, polished dashboard, broad app proxy, or secrets are part of this scaffold.
 
-The internal smoke checklist is documented in `docs/internal-platform-smoke-runbook.md`. It covers the existing database/OIDC/runtime/seed/browser-launch path, keeps migrations explicit, and confirms that KQAG integration remains deferred.
+The internal smoke checklist is documented in `docs/internal-platform-smoke-runbook.md`. It covers the existing database/OIDC/runtime/seed/browser-launch path, keeps migrations explicit, and documents the local same-host KQAG handoff shape without putting launch tokens in browser URLs or storage.
 
 External provider setup notes are documented in `docs/auth-provider-selection.md`, `docs/google-oidc-setup-runbook.md`, and `docs/workos-authkit-fit-notes.md`. Google OIDC is the first operational provider setup target for internal UAT. WorkOS/AuthKit remains documented as a likely future B2B/hosted-auth candidate, not runtime-wired. Platform-owned email/password auth, fake login, and active multi-provider login remain deferred.
 
-The next likely platform PR should keep provider configuration operational review separate from broadening browser routes. Polished dashboard work and KQAG launch integration should still wait for a separately approved app integration phase.
+The next likely platform PR should keep provider configuration operational review separate from broadening browser routes. Polished dashboard work, deployment routing, and KQAG app-data changes should still wait for separately approved phases.
 
 ## First App Integration Target
 
 KQAG/SAQG is the first app integration target. It remains a separate app in `Swooshz-com/koncept-quote-auto-generator` and stays quote-workflow-specific.
 
-The platform will eventually provide KQAG with platform-issued identity and workspace context. KQAG should not grow its own accounts, users, billing, workspace membership, app registry, customer portal, or platform shell.
+The platform provides KQAG with platform-issued identity and workspace context through the launch consume contract and the browser-safe handoff route. KQAG should not grow its own accounts, users, billing, workspace membership, app registry, customer portal, or platform shell.
 
 ## Contract Docs
 

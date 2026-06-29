@@ -1,6 +1,6 @@
 # KQAG Integration Contract
 
-KQAG/SAQG is the first app integration target for Swooshz Platform. This contract defines the platform-owned boundary for the later KQAG adapter PR. The current platform code already implements the launch-token issue and consume endpoints; KQAG integration code remains out of scope for this PR.
+KQAG/SAQG is the first app integration target for Swooshz Platform. This contract defines the platform-owned launch boundary now that KQAG can consume platform launch context server-side. The current platform code implements the launch-token issue and consume endpoints plus a narrow browser-safe KQAG handoff route. KQAG quote workflow storage and app behavior remain owned by the KQAG repository.
 
 ## Boundary Summary
 
@@ -27,7 +27,7 @@ Swooshz Platform owns:
 - Short-lived app launch token issue and consume.
 - Platform audit events.
 - Billing and credits later, if approved.
-- Shared platform shell later.
+- Shared platform shell and KQAG browser launch handoff.
 
 KQAG must not grow:
 
@@ -47,16 +47,20 @@ The platform-side handoff contract is now explicit:
 
 1. Browser user signs in to Swooshz Platform through OIDC.
 2. Swooshz Platform owns the browser session, platform user, workspace membership, membership role, app entitlement, and app access decision.
-3. A browser launch intent calls `POST /api/platform/apps/launch?workspaceId=<platform-workspace-id>&appKey=kqag`.
+3. A browser launch intent can call the low-level diagnostic route `POST /api/platform/apps/launch?workspaceId=<platform-workspace-id>&appKey=kqag`.
 4. The launch intent route requires an active browser session cookie plus Origin/Referer and CSRF validation.
 5. Platform re-checks app access before minting a launch token.
 6. Platform stores only a versioned hash of the launch token plus lifecycle metadata.
-7. The raw launch token is returned once only in the immediate no-store response.
+7. The raw launch token is returned once only in the immediate no-store response from the low-level diagnostic route.
 8. The raw launch token must not be placed in URL query parameters, browser storage, logs, docs, screenshots, committed files, or app telemetry.
-9. The future KQAG adapter must send the raw launch token only in the `x-app-launch-token` header to `POST /api/platform/apps/launch/consume?appKey=kqag`.
-10. The consume route requires no browser cookie and no CSRF token because the raw launch token is the credential.
-11. Platform hashes the submitted token before lookup, rejects missing, invalid, expired, consumed, revoked, and app-mismatched tokens safely, re-checks app access, consumes the token once, and returns only safe user/workspace/app context.
-12. The consume response is the only platform-owned context KQAG should use to create its own adapter-side runtime/session boundary.
+9. The browser-safe KQAG handoff route is `POST /api/platform/apps/launch/open?workspaceId=<platform-workspace-id>&appKey=kqag`.
+10. The browser-safe handoff route also requires an active browser session cookie plus Origin/Referer and CSRF validation.
+11. In browser-safe handoff mode, Platform creates the launch intent internally, sends the raw launch token only in the server-side `x-app-launch-token` header to KQAG, receives KQAG's session cookie response, and returns only a safe launch URL to the browser.
+12. The browser-safe handoff response must not include the raw launch token, token hash, provider tokens, provider claims, auth code, state, nonce, database URL, or platform session secret.
+13. KQAG must send any raw launch token only in the `x-app-launch-token` header to `POST /api/platform/apps/launch/consume?appKey=kqag`.
+14. The consume route requires no browser cookie and no CSRF token because the raw launch token is the credential.
+15. Platform hashes the submitted token before lookup, rejects missing, invalid, expired, consumed, revoked, and app-mismatched tokens safely, re-checks app access, consumes the token once, and returns only safe user/workspace/app context.
+16. The consume response is the only platform-owned context KQAG should use to create its own adapter-side runtime/session boundary.
 
 Safe launch intent response shape:
 
@@ -70,6 +74,36 @@ Safe launch intent response shape:
   "launchTokenExpiresAt": "<iso-expiry>"
 }
 ```
+
+Safe browser launch request shape:
+
+```http
+POST /api/platform/apps/launch/open?workspaceId=<platform-workspace-id>&appKey=kqag HTTP/1.1
+Host: <platform-host>
+Cookie: <platform-browser-session-cookie>
+X-CSRF-Token: <platform-csrf-token>
+Origin: <platform-origin>
+```
+
+Safe browser launch server-side KQAG consume request shape:
+
+```http
+POST <kqag-local-base-url>/api/platform/launch HTTP/1.1
+X-App-Launch-Token: <one-time-raw-launch-token>
+```
+
+Safe browser launch response shape:
+
+```json
+{
+  "outcome": "launch_opened",
+  "appKey": "kqag",
+  "workspaceId": "<platform-workspace-id>",
+  "launchUrl": "<kqag-local-base-url>"
+}
+```
+
+The browser-safe launch response does not include the raw launch token. The raw token is not placed in URL query parameters, fragments, browser storage, cookies, logs, docs, screenshots, committed files, or app telemetry.
 
 Safe consume request shape for the future KQAG adapter:
 
@@ -127,15 +161,16 @@ KQAG should use the safe consume context to scope runtime/session/history data o
 
 Today, KQAG can use local/runtime storage for internal UAT. The next KQAG adapter phase should move KQAG runtime and session history behind the platform consume context without making KQAG the owner of accounts.
 
-The future direction is:
+The current browser-safe local UAT direction is:
 
 1. Platform authenticates the user.
 2. Platform selects the workspace.
 3. Platform authorizes KQAG launch.
 4. Platform issues a one-time launch token.
-5. KQAG adapter consumes that token through the platform header-only consume endpoint.
-6. KQAG receives scoped workspace identity.
-7. KQAG stores or resolves quote workflow state under that workspace context.
+5. Platform posts the token server-to-server to KQAG as `x-app-launch-token`.
+6. KQAG consumes that token through the platform header-only consume endpoint.
+7. KQAG receives scoped workspace identity.
+8. KQAG stores or resolves quote workflow state under that workspace context.
 
 This does not mean KQAG becomes the owner of accounts. It means KQAG uses the platform account context to partition quote workflow data.
 
@@ -188,15 +223,26 @@ Auth provider selection may happen here or in a dedicated preceding decision rec
 
 ### Phase 3: Platform-Side Launch Handoff Contract
 
-Current phase. Finalize the platform-side handoff contract around the already-implemented launch-token issue and consume endpoints before changing KQAG.
+Finalize the platform-side handoff contract around the launch-token issue, consume, and browser-safe open endpoints.
 
-No KQAG code changes, app redirect integration, provider SDKs, fake login, billing, deployment, or migration automation.
+No provider SDKs, fake login, billing, deployment, or migration automation.
 
 ### Phase 4: KQAG Platform Adapter
 
-Implement the KQAG-side adapter in the KQAG repository after this platform contract is merged. The adapter should consume the platform launch token through the header-only consume endpoint and remain scoped to quote workflow runtime/session behavior.
+Implement and harden the KQAG-side adapter in the KQAG repository. The adapter consumes the platform launch token through the header-only consume endpoint and remains scoped to quote workflow runtime/session behavior.
 
 KQAG changes should stay adapter-scoped and quote-workflow-specific.
+
+## Local UAT Configuration
+
+Browser-safe KQAG launch is disabled by default. To enable it for local UAT, use placeholders such as:
+
+```text
+PLATFORM_KQAG_LAUNCH_MODE=server_handoff
+PLATFORM_KQAG_APP_BASE_URL=<kqag-local-base-url>
+```
+
+The platform start CLI validates the configured KQAG base URL before listening and does not call KQAG during startup. The browser-safe handoff requires Platform and KQAG to be reachable on the same browser cookie host for local UAT. Different ports on `127.0.0.1` are acceptable for this local shape; mixing `localhost` and `127.0.0.1` is intentionally rejected.
 
 ### Phase 5: Platform Frontend Shell
 

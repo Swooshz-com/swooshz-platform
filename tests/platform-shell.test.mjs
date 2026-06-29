@@ -20,7 +20,7 @@ test("app shell references only existing browser JSON APIs", () => {
 
   assert.match(html, /\/api\/platform\/session\/context/);
   assert.match(html, /\/api\/platform\/session\/csrf/);
-  assert.match(html, /\/api\/platform\/apps\/launch/);
+  assert.match(html, /\/api\/platform\/apps\/launch\/open/);
   assert.match(html, /\/api\/platform\/logout/);
 });
 
@@ -38,6 +38,7 @@ test("app shell does not persist launch tokens in browser storage or URLs", () =
   const html = renderAppShellPage();
 
   assert.doesNotMatch(html, /localStorage|sessionStorage/);
+  assert.doesNotMatch(html, /launchToken|token-box|clipboard/i);
   assert.doesNotMatch(html, /launchToken=.*location|location.*launchToken/s);
   assert.doesNotMatch(html, /URLSearchParams\([^)]*launchToken/s);
 });

@@ -46,6 +46,8 @@ export type PlatformNodeBootstrapEnv =
   DatabaseEnvironment &
   AuthEnvironment & {
     PLATFORM_AUTH_PROVIDER_MODE?: string;
+    PLATFORM_KQAG_LAUNCH_MODE?: string;
+    PLATFORM_KQAG_APP_BASE_URL?: string;
   };
 
 export interface PlatformBootstrapDatabaseClient {
@@ -92,6 +94,7 @@ export interface PlatformNodeBootstrapInput {
   appLaunchTokenIdFactory?: AppLaunchTokenIdFactory;
   appLaunchTokenByteLength?: number;
   appLaunchTokenTtlSeconds?: number;
+  kqagBrowserLaunch?: PlatformRuntimeDependencyInput["kqagBrowserLaunch"];
 }
 
 export interface PlatformNodeBootstrapStartResult {
@@ -161,6 +164,7 @@ export function createPlatformNodeBootstrap(
             tokenByteLength: input.appLaunchTokenByteLength,
             ttlSeconds: input.appLaunchTokenTtlSeconds,
           },
+          kqagBrowserLaunch: input.kqagBrowserLaunch,
           auth: authEnabled && authConfig
             ? createBootstrapAuthInput(
                 input,

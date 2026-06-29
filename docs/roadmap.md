@@ -88,10 +88,11 @@ Candidate deliverables:
 - Read-only current session context endpoint for future platform shell/dashboard UX, returning safe user, workspace membership, and app access summaries without app launch, persistent workspace selection, frontend, or KQAG integration.
 - CSRF-protected app launch intent endpoint that re-checks platform app access, stores only short-lived launch token hashes, and returns the raw launch token only once.
 - Platform-side app launch token consume endpoint that accepts raw launch tokens only by header, hashes before lookup, rejects unsafe token lifecycle states, re-checks app access, marks tokens consumed once, and returns safe user/workspace/app context without KQAG integration.
-- Minimal framework-free internal browser shell at `GET /` and `GET /app` that uses the existing session context, CSRF issuance, launch intent, and logout JSON APIs. The shell can display the temporary launch handoff payload but does not call launch consume, place launch tokens in URLs or browser storage, integrate with KQAG, add a frontend framework, or become the final dashboard design.
+- Minimal framework-free internal browser shell at `GET /` and `GET /app` that uses the existing session context, CSRF issuance, KQAG browser launch handoff, and logout JSON APIs. The shell can launch KQAG through `POST /api/platform/apps/launch/open?workspaceId=...&appKey=kqag` without placing raw launch tokens in URLs, browser storage, cookies, logs, or response bodies. It does not add a frontend framework, KQAG-owned auth/storage, a broad app proxy, or the final dashboard design.
 - Explicit internal access seed CLI for existing provider-backed platform users. It requires reviewed confirmation, refuses missing users and email-only users without provider identities, creates or reuses only platform-owned workspace/app/entitlement/membership records, does not run migrations, and does not create users, provider identities, sessions, app launch tokens, fake login state, KQAG storage, billing, deployment, or provider network calls.
-- Internal platform smoke runbook for verifying the existing database, OIDC, runtime, seed, browser shell, and app-launch path without adding database provisioning, deployment, migration automation, fake login, or KQAG integration. Operational smoke should be the first gate before any separately approved KQAG integration work.
-- Explicit `npm run platform:start` operator CLI over the existing Node bootstrap/runtime boundary. It starts the platform HTTP server, supports graceful shutdown, injects the generic OIDC HTTP boundary when configured, and does not run migrations, provision databases, seed access, call provider endpoints on startup, call KQAG, or add deployment behavior.
+- Internal platform smoke runbook for verifying the existing database, OIDC, runtime, seed, browser shell, and KQAG browser launch path without adding database provisioning, deployment, migration automation, fake login, KQAG-owned auth, or KQAG app-data storage. Operational smoke remains the first gate before broader app integration work.
+- Explicit `npm run platform:start` operator CLI over the existing Node bootstrap/runtime boundary. It starts the platform HTTP server, supports graceful shutdown, injects the generic OIDC HTTP boundary when configured, and does not run migrations, provision databases, seed access, call provider endpoints on startup, call KQAG on startup, or add deployment behavior. KQAG browser handoff is disabled by default and requires explicit local UAT configuration.
+- Narrow KQAG browser-safe launch handoff. Platform creates the launch intent server-side, sends the raw launch token to KQAG only as `x-app-launch-token`, requires same browser cookie host for local UAT, rejects unsafe host mismatch, and returns only a safe launch URL to the browser.
 - External provider setup docs: `docs/auth-provider-selection.md`, `docs/google-oidc-setup-runbook.md`, and `docs/workos-authkit-fit-notes.md`.
 - Google OIDC as the first operational provider setup target for internal UAT against the existing generic OIDC runtime.
 - WorkOS/AuthKit documented as a future B2B/hosted-auth candidate requiring a provider-fit check before runtime wiring.
@@ -112,7 +113,7 @@ Non-goals:
 - User plus provider identity seeding before an explicit transactional identity seed boundary is approved.
 - Customer portal.
 - Polished dashboard or broad frontend shell beyond the minimal internal browser shell.
-- KQAG launch/storage integration, app redirects, or app launch UI before separately approved integration work.
+- KQAG-owned auth, KQAG storage, deployment routing, broad app proxying, or polished app launch UI before separately approved integration work.
 - Database migrations before provider/tooling selection is approved.
 - Auth-provider coupling in the database layer.
 - Production, staging, or local database execution before an explicit DB workflow is approved.
@@ -135,8 +136,8 @@ Non-goals:
 - Full polished platform shell.
 - Public account settings.
 - Billing screens.
-- KQAG launch/storage adapter.
-- App redirect flow or app launch UI.
+- KQAG-owned auth/storage adapter.
+- Broad app redirect flow or polished app launch UI.
 
 ## Phase 4: KQAG Integration
 
@@ -144,8 +145,8 @@ Goal: connect platform identity and workspace access to KQAG through a defined a
 
 Candidate deliverables:
 
-- Run the internal platform smoke runbook successfully against reviewed existing services before starting KQAG adapter work.
-- Platform-side KQAG launch handoff contract finalized around the existing short-lived launch token issue and consume endpoints.
+- Run the internal platform smoke runbook successfully against reviewed existing services before broadening KQAG integration work.
+- Platform-side KQAG launch handoff contract finalized around the existing short-lived launch token issue, consume, and browser-safe open endpoints.
 - KQAG launch context contract aligned to the platform consume response.
 - App-side backend exchange using the platform launch token consume contract.
 - KQAG workspace-scoped runtime/session boundary.

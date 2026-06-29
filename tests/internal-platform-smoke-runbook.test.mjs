@@ -40,12 +40,15 @@ test("internal platform smoke runbook documents the full smoke sequence", async 
     "AUTH_JWKS_URL",
     "PLATFORM_SEED_CONFIRM=seed-reviewed-internal-access",
     "PLATFORM_SEED_USER_EMAIL=<email-used-for-login>",
+    "PLATFORM_KQAG_LAUNCH_MODE=server_handoff",
+    "PLATFORM_KQAG_APP_BASE_URL=<kqag-local-base-url>",
     "Visit `/`",
     "redirects to `/app`",
     "npm run platform:seed-internal-access",
     "Refresh `/app`",
     "workspace appears",
-    "launch token appears only in the temporary handoff area",
+    "Click the KQAG launch button",
+    "without any launch",
     "x-app-launch-token",
     "not in the query string",
   ];
@@ -66,7 +69,7 @@ test("internal platform smoke runbook documents the explicit start CLI", async (
   assert.match(runbook, /does not run migrations/i);
   assert.match(runbook, /does not seed access/i);
   assert.match(runbook, /does not call provider token, JWKS, or userinfo endpoints during startup/i);
-  assert.match(runbook, /does not call KQAG/i);
+  assert.match(runbook, /does not call KQAG during startup/i);
 });
 
 test("internal platform smoke runbook covers troubleshooting and hard boundaries", async () => {
@@ -83,6 +86,8 @@ test("internal platform smoke runbook covers troubleshooting and hard boundaries
     "launch denied",
     "CSRF/origin failure",
     "consumed/expired launch token",
+    "KQAG browser launch is not configured",
+    "KQAG browser launch could not be completed",
   ];
 
   for (const phrase of troubleshooting) {
@@ -90,7 +95,8 @@ test("internal platform smoke runbook covers troubleshooting and hard boundaries
   }
 
   assert.match(runbook, /no fake login/i);
-  assert.match(runbook, /no KQAG integration/i);
+  assert.match(runbook, /no KQAG-owned auth/i);
+  assert.match(runbook, /no broad app proxy or open proxy/i);
   assert.match(runbook, /does not create users, provider identities, or sessions/i);
   assert.match(runbook, /does not provision a database service/i);
   assert.match(runbook, /does not deploy/i);
@@ -112,6 +118,7 @@ test("internal platform smoke runbook uses placeholders and avoids private mater
   assert.match(runbook, /<database-url-from-existing-service>/);
   assert.match(runbook, /<strong-random-placeholder>/);
   assert.match(runbook, /<email-used-for-login>/);
+  assert.match(runbook, /<kqag-local-base-url>/);
   assert.match(runbook, /<launch-token-from-immediate-handoff>/);
 });
 

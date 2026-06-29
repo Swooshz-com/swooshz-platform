@@ -16,11 +16,13 @@ import {
   handleCsrfTokenIssueRequest,
   handleAppLaunchTokenConsumeRequest,
   handleAppLaunchIntentRequest,
+  handleKqagBrowserLaunchRequest,
   handleLogoutRequest,
   handleProtectedAppAccessRequest,
   handleSessionContextRequest,
   type HttpRequestHeaders,
   type HttpResponseLike,
+  type KqagBrowserLaunchDependencies,
 } from "./handlers.js";
 import type { HttpOriginValidationConfig } from "./origin-validation.js";
 import {
@@ -45,6 +47,7 @@ export interface NodePlatformHttpAdapterDependencies {
   authCallback?: AuthCallbackHttpDependencies;
   appLaunchIntent?: AppLaunchIntentDependencies;
   appLaunchTokenConsume?: AppLaunchTokenConsumeDependencies;
+  kqagBrowserLaunch?: KqagBrowserLaunchDependencies["kqag"];
   billingGate?: BillingGate;
 }
 
@@ -262,6 +265,80 @@ export async function handleNodePlatformHttpRequest(
     );
   }
 
+  if (route.id === "platform_kqag_launch_open") {
+    const selectedWorkspaceId = parsedUrl.searchParams.get("workspaceId");
+    const appKey = parsedUrl.searchParams.get("appKey");
+
+    if (!selectedWorkspaceId || !appKey) {
+      return jsonResponse(
+        400,
+        {
+          outcome: "error",
+          message: "Required query parameters are missing.",
+        },
+        noStoreHeaders(),
+      );
+    }
+
+    const now = dependencies.now();
+    const sessionId = extractBrowserSessionIdFromCookieHeader(
+      readHeader(headers, "cookie"),
+      dependencies.cookie,
+    );
+
+    if (!sessionId) {
+      return toNodeResponse({
+        status: 401,
+        headers: noStoreHeaders(),
+        body: {
+          outcome: "unauthenticated",
+          reason: "missing_session",
+        },
+      });
+    }
+
+    const securityResult = await validateHttpRequestSecurityForRoute({
+      route: getHttpRouteContract("platform_kqag_launch_open"),
+      headers,
+      sessionId,
+      now,
+      originConfig: dependencies.originConfig,
+      csrfTokenValidator: dependencies.csrfTokenValidator,
+    });
+
+    if (!securityResult.allowed) {
+      return securityFailureResponse(
+        securityResult.recommendedStatus,
+        securityResult.reason,
+        noStoreHeaders(),
+      );
+    }
+
+    if (
+      !dependencies.appLaunchIntent ||
+      !dependencies.kqagBrowserLaunch ||
+      !isSafeSameHostKqagLaunch(headers, dependencies.kqagBrowserLaunch.baseUrl)
+    ) {
+      return kqagLaunchNotConfiguredResponse();
+    }
+
+    return toNodeResponse(
+      await handleKqagBrowserLaunchRequest(
+        {
+          appLaunchIntent: dependencies.appLaunchIntent,
+          kqag: dependencies.kqagBrowserLaunch,
+        },
+        {
+          headers,
+          selectedWorkspaceId,
+          appKey,
+          now,
+          cookie: dependencies.cookie,
+        },
+      ),
+    );
+  }
+
   if (route.id === "platform_app_launch_consume") {
     const appKey = parsedUrl.searchParams.get("appKey");
 
@@ -452,6 +529,17 @@ function appLaunchConsumeFailureResponse(): NodePlatformHttpResponse {
   );
 }
 
+function kqagLaunchNotConfiguredResponse(): NodePlatformHttpResponse {
+  return jsonResponse(
+    503,
+    {
+      outcome: "error",
+      message: "KQAG browser launch is not configured.",
+    },
+    noStoreHeaders(),
+  );
+}
+
 function securityFailureResponse(
   status: 403 | 500,
   reason: string,
@@ -506,6 +594,29 @@ function htmlResponse(
     },
     body,
   };
+}
+
+function isSafeSameHostKqagLaunch(
+  headers: HttpRequestHeaders,
+  baseUrl: string,
+): boolean {
+  const requestHost = readHeader(headers, "host")?.split(":")[0]?.trim().toLowerCase();
+
+  if (!requestHost) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(baseUrl);
+
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return false;
+    }
+
+    return parsed.hostname.toLowerCase() === requestHost;
+  } catch {
+    return false;
+  }
 }
 
 function readHeader(
