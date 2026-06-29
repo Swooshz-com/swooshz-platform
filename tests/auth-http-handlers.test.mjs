@@ -4,10 +4,11 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  formatAuthCallbackFailureDiagnostic,
   handleAuthCallbackRequest,
   handleAuthStartRequest,
 } from "../dist/index.js";
-import { readAuthConfig } from "../dist/auth/index.js";
+import { AuthProviderError, readAuthConfig } from "../dist/auth/index.js";
 
 const now = "2026-06-27T00:00:00.000Z";
 const future = "2026-06-27T00:10:00.000Z";
@@ -71,8 +72,13 @@ test("auth start errors are privacy-safe", async () => {
 });
 
 test("auth callback missing code or state is privacy-safe", async () => {
+  const diagnostics = [];
   const missingCode = await handleAuthCallbackRequest(
-    createAuthCallbackFixture().dependencies,
+    createAuthCallbackFixture({
+      callbackFailureReporter(diagnostic) {
+        diagnostics.push(diagnostic);
+      },
+    }).dependencies,
     {
       query: { state: "synthetic-browser-state-reference" },
       now,
@@ -80,7 +86,11 @@ test("auth callback missing code or state is privacy-safe", async () => {
     },
   );
   const missingState = await handleAuthCallbackRequest(
-    createAuthCallbackFixture().dependencies,
+    createAuthCallbackFixture({
+      callbackFailureReporter(diagnostic) {
+        diagnostics.push(diagnostic);
+      },
+    }).dependencies,
     {
       query: { code: "synthetic-auth-code" },
       now,
@@ -95,6 +105,10 @@ test("auth callback missing code or state is privacy-safe", async () => {
     message: "Authentication callback could not be completed.",
   });
   assert.deepEqual(missingState.body, missingCode.body);
+  assert.deepEqual(diagnostics, [
+    { category: "missing_code" },
+    { category: "missing_state" },
+  ]);
   assertHttpAuthResponseIsSafe(missingCode);
   assertHttpAuthResponseIsSafe(missingState);
 });
@@ -122,7 +136,13 @@ test("auth callback success sets browser session cookie without exposing session
 });
 
 test("auth callback failure does not expose provider or callback details", async () => {
-  const fixture = createAuthCallbackFixture({ providerFails: true });
+  const diagnostics = [];
+  const fixture = createAuthCallbackFixture({
+    providerFails: true,
+    callbackFailureReporter(diagnostic) {
+      diagnostics.push(diagnostic);
+    },
+  });
 
   const response = await handleAuthCallbackRequest(fixture.dependencies, {
     query: {
@@ -141,7 +161,44 @@ test("auth callback failure does not expose provider or callback details", async
     message: "Authentication callback could not be completed.",
   });
   assert.equal(response.headers?.["set-cookie"], undefined);
+  assert.deepEqual(diagnostics, [{ category: "provider_error" }]);
   assertHttpAuthResponseIsSafe(response);
+  assertHttpAuthDiagnosticIsSafe(diagnostics);
+});
+
+test("auth callback provider diagnostics report only a stable safe category", async () => {
+  const diagnostics = [];
+  const fixture = createAuthCallbackFixture({
+    exchangeError: new AuthProviderError(
+      "provider_verification_failed",
+      "OIDC token exchange failed.",
+    ),
+    callbackFailureReporter(diagnostic) {
+      diagnostics.push(diagnostic);
+    },
+  });
+
+  const response = await handleAuthCallbackRequest(fixture.dependencies, {
+    query: {
+      code: "synthetic-auth-code",
+      state: rawState,
+    },
+    now,
+    cookie: { secure: true },
+  });
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(response.body, {
+    outcome: "error",
+    message: "Authentication callback could not be completed.",
+  });
+  assert.deepEqual(diagnostics, [{ category: "token_exchange_failed" }]);
+  assert.equal(
+    formatAuthCallbackFailureDiagnostic(diagnostics[0]),
+    "auth_callback_failure category=token_exchange_failed",
+  );
+  assertHttpAuthResponseIsSafe(response);
+  assertHttpAuthDiagnosticIsSafe(diagnostics);
 });
 
 test("auth HTTP handler modules do not import DB frontend KQAG provider SDK or HTTP frameworks", async () => {
@@ -253,6 +310,10 @@ function createAuthCallbackFixture(options = {}) {
       throw new Error("Not used by callback handler tests.");
     },
     async exchangeCodeForTokens(input) {
+      if (options.exchangeError) {
+        throw options.exchangeError;
+      }
+
       if (options.providerFails) {
         throw new Error(privateFailure);
       }
@@ -298,6 +359,7 @@ function createAuthCallbackFixture(options = {}) {
       authConfig,
       oidcAdapter,
       platformIdentityResolver,
+      callbackFailureReporter: options.callbackFailureReporter,
       stateReferenceFactory(value) {
         assert.equal(value, rawState);
         return stateHash;
@@ -312,6 +374,20 @@ function assertHttpAuthResponseIsSafe(response) {
   const headersWithoutLocation = { ...(response.headers ?? {}) };
   delete headersWithoutLocation.location;
   const serialized = `${body} ${JSON.stringify(headersWithoutLocation)}`;
+
+  assert.doesNotMatch(serialized, /synthetic-auth-code/);
+  assert.doesNotMatch(serialized, /synthetic-browser-state-reference/);
+  assert.doesNotMatch(serialized, /synthetic-browser-nonce-reference/);
+  assert.doesNotMatch(serialized, /hash_synthetic_browser_state_reference/);
+  assert.doesNotMatch(serialized, /hash_synthetic_browser_nonce_reference/);
+  assert.doesNotMatch(serialized, /synthetic-client-secret|synthetic-session-secret/i);
+  assert.doesNotMatch(serialized, /access-token|refresh-token|id-token|provider-token/i);
+  assert.doesNotMatch(serialized, /raw-claim|rawProviderResponse|claims/i);
+  assert.doesNotMatch(serialized, /postgresql:\/\/private-host|database exploded|select \*/i);
+}
+
+function assertHttpAuthDiagnosticIsSafe(diagnostics) {
+  const serialized = JSON.stringify(diagnostics);
 
   assert.doesNotMatch(serialized, /synthetic-auth-code/);
   assert.doesNotMatch(serialized, /synthetic-browser-state-reference/);

@@ -431,6 +431,7 @@ test("runtime composition wires auth start without provider calls during creatio
 
   assert.ok(dependencies.authStart);
   assert.ok(dependencies.authCallback);
+  assert.equal(typeof dependencies.authCallback.callbackFailureReporter, "function");
   assert.equal(fixture.calls.authBuildAuthorizationUrl, 0);
   assert.equal(fixture.calls.authExchangeCodeForTokens, 0);
   assert.equal(fixture.calls.authVerifyTokens, 0);
@@ -469,6 +470,54 @@ test("runtime composition wires auth start without provider calls during creatio
     JSON.stringify(fixture.records.authStates),
     new RegExp(fixture.calls.lastAuthStartInput.nonce),
   );
+  assertResponseIsPrivacySafe(response);
+});
+
+test("runtime auth callback diagnostics expose only safe failure categories", async () => {
+  const fixture = createRuntimeFixture();
+  const diagnostics = [];
+  const oidcAdapter = createNoNetworkOidcAdapter(fixture);
+  const dependencies = createPlatformRuntimeDependencies({
+    db: fixture.db,
+    runtimeConfig: fixture.runtimeConfig,
+    secrets: {
+      csrfTokenHashSecret: csrfSecret,
+      authStateHashSecret,
+    },
+    now: () => now,
+    csrfTokenIdFactory: {
+      createId() {
+        return "csrf_record_1";
+      },
+    },
+    auth: {
+      authConfig,
+      oidcAdapter,
+      stateTtlSeconds: 600,
+      sessionDurationMs: 60 * 60 * 1000,
+      sessionIdFactory: () => "session_auth_runtime_1",
+      userIdFactory: () => "user_auth_runtime_1",
+      providerIdentityIdFactory: () => "provider_identity_auth_runtime_1",
+      callbackFailureReporter(diagnostic) {
+        diagnostics.push(diagnostic);
+      },
+    },
+  });
+
+  const response = await handleNodePlatformHttpRequest(dependencies, {
+    method: "GET",
+    url: "/api/platform/auth/callback?code=synthetic-auth-code",
+    headers: {},
+  });
+  const body = JSON.parse(response.body);
+
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(body, {
+    outcome: "error",
+    message: "Authentication callback could not be completed.",
+  });
+  assert.deepEqual(diagnostics, [{ category: "missing_state" }]);
+  assert.doesNotMatch(JSON.stringify(diagnostics), rawAuthPattern);
   assertResponseIsPrivacySafe(response);
 });
 

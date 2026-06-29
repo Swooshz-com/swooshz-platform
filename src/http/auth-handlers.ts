@@ -7,6 +7,10 @@ import type { AuthCallbackServiceDependencies } from "../auth/callback-service.j
 import { handleAuthCallback } from "../auth/callback-service.js";
 import type { AuthConfig } from "../auth/config.js";
 import type { OidcProviderAdapter } from "../auth/oidc.js";
+import {
+  AuthCallbackError,
+  AuthProviderError,
+} from "../auth/errors.js";
 import type { HttpResponseLike } from "./handlers.js";
 import {
   buildBrowserSessionSetCookie,
@@ -41,7 +45,61 @@ export interface AuthStartHttpRequest {
 export interface AuthCallbackHttpDependencies
   extends AuthCallbackServiceDependencies {
   successRedirectPath?: string;
+  callbackFailureReporter?: AuthCallbackFailureReporter;
 }
+
+export interface AuthCallbackFailureDiagnostic {
+  category: AuthCallbackFailureCategory;
+}
+
+export type AuthCallbackFailureReporter = (
+  diagnostic: AuthCallbackFailureDiagnostic,
+) => void;
+
+export type AuthCallbackFailureCategory =
+  | "provider_error"
+  | "missing_code"
+  | "missing_state"
+  | "missing_stored_state"
+  | "expired_state"
+  | "provider_identity_rejected"
+  | "email_not_allowed"
+  | "domain_not_allowed"
+  | "verified_email_required"
+  | "provider_identity_link_failed"
+  | "session_creation_failed"
+  | "user_not_active"
+  | "invalid_platform_identity_state"
+  | "oidc_http_client_unavailable"
+  | "authorization_url_build_failed"
+  | "token_exchange_failed"
+  | "token_response_invalid"
+  | "token_verification_failed"
+  | "verifier_config_incomplete"
+  | "id_token_invalid"
+  | "id_token_algorithm_unsupported"
+  | "jwks_fetch_failed"
+  | "jwks_response_invalid"
+  | "jwks_signing_key_not_found"
+  | "jwks_key_invalid"
+  | "id_token_signature_invalid"
+  | "issuer_mismatch"
+  | "audience_mismatch"
+  | "provider_subject_missing"
+  | "token_expiry_invalid"
+  | "id_token_expired"
+  | "id_token_not_before_invalid"
+  | "id_token_not_yet_valid"
+  | "id_token_issued_at_invalid"
+  | "id_token_issued_at_future"
+  | "nonce_mismatch"
+  | "userinfo_fetch_failed"
+  | "userinfo_response_invalid"
+  | "provider_subject_mismatch"
+  | "provider_key_mismatch"
+  | "invalid_verified_identity"
+  | "provider_verification_failed"
+  | "unexpected_callback_failure";
 
 export interface AuthCallbackHttpRequest {
   query: RawAuthCallbackParams;
@@ -129,8 +187,105 @@ export async function handleAuthCallbackRequest(
         outcome: "authenticated",
       },
     };
-  } catch {
+  } catch (error) {
+    dependencies.callbackFailureReporter?.({
+      category: classifyAuthCallbackFailure(error),
+    });
+
     return authCallbackFailure();
+  }
+}
+
+export function reportAuthCallbackFailureToConsole(
+  diagnostic: AuthCallbackFailureDiagnostic,
+): void {
+  console.error(formatAuthCallbackFailureDiagnostic(diagnostic));
+}
+
+export function formatAuthCallbackFailureDiagnostic(
+  diagnostic: AuthCallbackFailureDiagnostic,
+): string {
+  return `auth_callback_failure category=${diagnostic.category}`;
+}
+
+export function classifyAuthCallbackFailure(
+  error: unknown,
+): AuthCallbackFailureCategory {
+  if (error instanceof AuthCallbackError) {
+    return error.code;
+  }
+
+  if (error instanceof AuthProviderError) {
+    return classifyAuthProviderFailure(error);
+  }
+
+  return "unexpected_callback_failure";
+}
+
+function classifyAuthProviderFailure(
+  error: AuthProviderError,
+): AuthCallbackFailureCategory {
+  if (error.code === "invalid_verified_identity") {
+    return "invalid_verified_identity";
+  }
+
+  switch (error.message) {
+    case "OIDC HTTP client is unavailable.":
+      return "oidc_http_client_unavailable";
+    case "OIDC authorization URL could not be built.":
+      return "authorization_url_build_failed";
+    case "OIDC token exchange failed.":
+      return "token_exchange_failed";
+    case "OIDC token response was invalid.":
+      return "token_response_invalid";
+    case "OIDC token verification failed.":
+      return "token_verification_failed";
+    case "OIDC verifier configuration is incomplete.":
+      return "verifier_config_incomplete";
+    case "OIDC ID token was invalid.":
+      return "id_token_invalid";
+    case "OIDC ID token algorithm is not supported.":
+      return "id_token_algorithm_unsupported";
+    case "OIDC JWKS request failed.":
+      return "jwks_fetch_failed";
+    case "OIDC JWKS response was invalid.":
+      return "jwks_response_invalid";
+    case "OIDC signing key was not found.":
+      return "jwks_signing_key_not_found";
+    case "OIDC JWKS could not be used.":
+      return "jwks_key_invalid";
+    case "OIDC ID token signature could not be verified.":
+      return "id_token_signature_invalid";
+    case "OIDC issuer did not match.":
+      return "issuer_mismatch";
+    case "OIDC audience did not match.":
+      return "audience_mismatch";
+    case "OIDC subject was missing.":
+      return "provider_subject_missing";
+    case "OIDC expiry was invalid.":
+      return "token_expiry_invalid";
+    case "OIDC ID token expired.":
+      return "id_token_expired";
+    case "OIDC not-before claim was invalid.":
+      return "id_token_not_before_invalid";
+    case "OIDC ID token is not yet valid.":
+      return "id_token_not_yet_valid";
+    case "OIDC issued-at claim was invalid.":
+      return "id_token_issued_at_invalid";
+    case "OIDC ID token issued-at claim is in the future.":
+      return "id_token_issued_at_future";
+    case "OIDC nonce could not be verified.":
+      return "nonce_mismatch";
+    case "OIDC userinfo request failed.":
+      return "userinfo_fetch_failed";
+    case "OIDC userinfo response was invalid.":
+      return "userinfo_response_invalid";
+    case "OIDC userinfo subject did not match.":
+      return "provider_subject_mismatch";
+    case "OIDC provider key did not match configuration.":
+      return "provider_key_mismatch";
+    default:
+      return "provider_verification_failed";
   }
 }
 
