@@ -71,6 +71,7 @@ test("app launch crypto imports stay only in dedicated crypto adapter modules", 
   const allowed = new Set([
     "src/auth/auth-state-crypto.ts",
     "src/auth/generic-oidc-jwks-verifier.ts",
+    "src/auth/platform-identity-crypto.ts",
     "src/http/csrf-token-crypto.ts",
     "src/platform/app-launch-token-crypto.ts",
   ]);

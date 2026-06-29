@@ -98,11 +98,13 @@ The repo now includes an explicit internal platform access seed CLI for already-
 Safe internal setup flow:
 
 1. Configure real OIDC and platform runtime env.
-2. Build and run the platform server.
+2. Build and run `npm run platform:start`.
 3. Internal tester logs in once through `/api/platform/auth/start`.
 4. Run `npm run platform:seed-internal-access` with the required seed env.
 5. Visit `/app`.
 6. Create a launch intent for an accessible app.
+
+The `platform:start` command is a narrow operator CLI over the existing Node bootstrap/runtime boundary. It does not run migrations, provision a database service, seed access, call provider endpoints on startup, call KQAG, or add deployment behavior.
 
 No Next.js, Vite, React, provider SDK, provider-specific account model, public signup, database provisioning, deployment, Supabase setup, Stripe setup, billing implementation, KQAG adapter, polished dashboard, app redirect integration, or secrets are part of this scaffold.
 
