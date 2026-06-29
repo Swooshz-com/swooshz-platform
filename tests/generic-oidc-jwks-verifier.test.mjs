@@ -17,6 +17,7 @@ import {
 const now = "2026-06-28T00:00:00.000Z";
 const nowSeconds = Math.floor(Date.parse(now) / 1000);
 const issuerUrl = "https://issuer.example.invalid/";
+const googleIssuerUrl = "https://accounts.google.com";
 const jwksUrl = "https://issuer.example.invalid/.well-known/jwks.json";
 const clientId = "synthetic-client-id";
 const providerKey = "example-oidc";
@@ -88,6 +89,23 @@ test("generic OIDC JWKS verifier verifies a synthetic signed ID token", async ()
     tenant: "synthetic-team",
   });
   assertPrivacySafe(claims);
+});
+
+test("generic OIDC JWKS verifier accepts Google issuer identifier without trailing slash", async () => {
+  const fixture = createVerifierFixture();
+  const idToken = signJwt(fixture.keys, {
+    ...baseClaims(),
+    iss: googleIssuerUrl,
+  });
+
+  const claims = await fixture.verifier.verify(
+    verifierInput({
+      idToken,
+      issuerUrl: googleIssuerUrl,
+    }),
+  );
+
+  assert.equal(claims.subject, "provider-subject-123");
 });
 
 test("generic OIDC JWKS verifier keeps only safe primitive metadata", async () => {
