@@ -145,7 +145,8 @@ Goal: connect platform identity and workspace access to KQAG through a defined a
 Candidate deliverables:
 
 - Run the internal platform smoke runbook successfully against reviewed existing services before starting KQAG adapter work.
-- KQAG launch context contract.
+- Platform-side KQAG launch handoff contract finalized around the existing short-lived launch token issue and consume endpoints.
+- KQAG launch context contract aligned to the platform consume response.
 - App-side backend exchange using the platform launch token consume contract.
 - KQAG workspace-scoped runtime/session boundary.
 - Tests proving platform grants KQAG launch only for entitled workspaces and permitted roles.
