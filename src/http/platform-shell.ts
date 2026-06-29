@@ -509,6 +509,12 @@ function htmlDocument({
       background: var(--accent-strong);
     }
 
+    .landing .primary-action {
+      display: flex;
+      width: max-content;
+      margin-left: auto;
+    }
+
     .secondary-action {
       background: var(--surface);
       border-color: var(--line);
