@@ -44,6 +44,10 @@ import {
   type CsrfTokenIdFactory,
 } from "../http/csrf-token-service.js";
 import type { NodePlatformHttpAdapterDependencies } from "../http/node-adapter.js";
+import {
+  reportAuthCallbackFailureToConsole,
+  type AuthCallbackFailureReporter,
+} from "../http/auth-handlers.js";
 import type { NodePlatformRuntimeConfig } from "../http/runtime-config.js";
 import {
   PlatformRuntimeSecretConfigError,
@@ -101,6 +105,7 @@ export interface PlatformRuntimeAuthDependencyInput {
   stateByteLength?: number;
   nonceByteLength?: number;
   successRedirectPath?: string;
+  callbackFailureReporter?: AuthCallbackFailureReporter;
 }
 
 const defaultCsrfTokenTtlSeconds = 900;
@@ -241,6 +246,8 @@ function createAuthDependencies({
         providerIdentityIdFactory: auth.providerIdentityIdFactory,
       }),
       successRedirectPath: auth.successRedirectPath,
+      callbackFailureReporter:
+        auth.callbackFailureReporter ?? reportAuthCallbackFailureToConsole,
     },
   };
 }
