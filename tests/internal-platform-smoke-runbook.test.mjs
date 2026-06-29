@@ -55,14 +55,18 @@ test("internal platform smoke runbook documents the full smoke sequence", async 
   }
 });
 
-test("internal platform smoke runbook is honest about the missing start CLI", async () => {
+test("internal platform smoke runbook documents the explicit start CLI", async () => {
   const runbook = await readRunbook();
   const packageJson = JSON.parse(await readFile("package.json", "utf8"));
 
   assert.equal(packageJson.scripts.start, undefined);
-  assert.doesNotMatch(JSON.stringify(packageJson.scripts), /platform:start/);
-  assert.match(runbook, /There is not yet a committed runnable start CLI/i);
-  assert.match(runbook, /next PR should add a narrow start script/i);
+  assert.equal(packageJson.scripts["platform:start"], "node scripts/platform-start.mjs");
+  assert.match(runbook, /npm run platform:start/);
+  assert.match(runbook, /existing Node bootstrap\/runtime boundary/i);
+  assert.match(runbook, /does not run migrations/i);
+  assert.match(runbook, /does not seed access/i);
+  assert.match(runbook, /does not call provider token, JWKS, or userinfo endpoints during startup/i);
+  assert.match(runbook, /does not call KQAG/i);
 });
 
 test("internal platform smoke runbook covers troubleshooting and hard boundaries", async () => {
@@ -125,7 +129,7 @@ test("runbook change does not add forbidden scope imports or scripts", async () 
   const scripts = JSON.stringify(packageJson.scripts);
 
   assert.doesNotMatch(scripts, /deploy|provision|docker|stripe|kqag/i);
-  assert.doesNotMatch(scripts, /platform:start|start:platform/i);
+  assert.doesNotMatch(scripts, /start:platform/i);
 
   const runbook = await readRunbook();
   assert.doesNotMatch(runbook, /next\.js|vite|react|express|fastify|hono/i);

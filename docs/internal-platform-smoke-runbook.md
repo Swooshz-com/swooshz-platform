@@ -105,9 +105,15 @@ This command should be run deliberately by an operator. It is not called by boot
 
 ### D. Start Platform Server
 
-There is not yet a committed runnable start CLI in `package.json` or `scripts/`. The existing Node runtime exposes the bootstrap contract and explicit `start()` lifecycle for callers and tests, but this repo does not yet ship a safe operator command for starting it.
+Start the existing Node runtime through the explicit operator CLI:
 
-For an internal smoke run, use the approved local harness or operator wrapper that calls the existing Node bootstrap. The next PR should add a narrow start script if the team wants a committed operator command. Do not invent an undocumented start command for this runbook.
+```powershell
+npm run platform:start
+```
+
+The start CLI calls the existing Node bootstrap/runtime boundary and then listens on the configured host and port. It uses the already-configured database service through the existing DB boundary, but it does not run migrations, does not provision a database service, does not seed access, does not create users or platform records by itself, does not issue or consume app launch tokens on startup, and does not call KQAG.
+
+When `PLATFORM_AUTH_PROVIDER_MODE=generic_oidc` is configured, the CLI injects the generic OIDC HTTP client boundary required by runtime composition. It does not call provider token, JWKS, or userinfo endpoints during startup; provider HTTP happens only when an auth route is deliberately invoked.
 
 ### E. Login Once
 
@@ -179,7 +185,7 @@ This runbook adds no product feature and no runtime behavior. It documents the e
 - no database provisioning
 - no automatic migration execution
 - does not deploy and adds no deployment script
-- no committed server auto-start command
+- no server auto-start on import or bootstrap creation
 - no provider SDK
 - no billing or credits work
 - no real secrets, provider responses, provider subjects, staff emails, private domains, or database credentials
