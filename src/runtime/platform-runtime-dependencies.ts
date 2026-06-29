@@ -44,6 +44,7 @@ import {
   type CsrfTokenIdFactory,
 } from "../http/csrf-token-service.js";
 import type { NodePlatformHttpAdapterDependencies } from "../http/node-adapter.js";
+import type { KqagBrowserLaunchDependencies } from "../http/handlers.js";
 import {
   reportAuthCallbackFailureToConsole,
   type AuthCallbackFailureReporter,
@@ -64,6 +65,7 @@ export interface PlatformRuntimeDependencyInput {
   csrfTokenTtlSeconds?: number;
   appLaunch?: PlatformRuntimeAppLaunchDependencyInput;
   auth?: PlatformRuntimeAuthDependencyInput;
+  kqagBrowserLaunch?: KqagBrowserLaunchDependencies["kqag"];
 }
 
 export interface PlatformRuntimeAppLaunchDependencyInput {
@@ -155,6 +157,7 @@ export function createPlatformRuntimeDependencies(
       tokenHasher,
     }),
     csrfTokenTtlSeconds: input.csrfTokenTtlSeconds ?? defaultCsrfTokenTtlSeconds,
+    kqagBrowserLaunch: input.kqagBrowserLaunch,
     ...appLaunchDependencies,
     ...authDependencies,
   };

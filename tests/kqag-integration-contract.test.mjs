@@ -26,15 +26,17 @@ test("repo ignore rules protect local env and secret files while allowing templa
 test("KQAG integration contract documents current platform launch handoff", async () => {
   const doc = await readFile(contractPath, "utf8");
   const requiredPhrases = [
-    "current platform code already implements the launch-token issue and consume endpoints",
+    "current platform code implements the launch-token issue and consume endpoints plus a narrow browser-safe KQAG handoff route",
     "Browser user signs in to Swooshz Platform through OIDC",
     "Swooshz Platform owns the browser session, platform user, workspace membership, membership role, app entitlement, and app access decision",
     "POST /api/platform/apps/launch?workspaceId=<platform-workspace-id>&appKey=kqag",
+    "POST /api/platform/apps/launch/open?workspaceId=<platform-workspace-id>&appKey=kqag",
     "requires an active browser session cookie plus Origin/Referer and CSRF validation",
     "stores only a versioned hash of the launch token",
     "raw launch token is returned once only in the immediate no-store response",
     "must not be placed in URL query parameters, browser storage, logs, docs, screenshots, committed files, or app telemetry",
     "x-app-launch-token",
+    "POST <kqag-local-base-url>/api/platform/launch",
     "POST /api/platform/apps/launch/consume?appKey=kqag",
     "requires no browser cookie and no CSRF token",
     "hashes the submitted token before lookup",
@@ -42,6 +44,10 @@ test("KQAG integration contract documents current platform launch handoff", asyn
     "re-checks app access",
     "consumes the token once",
     "returns only safe user/workspace/app context",
+    "PLATFORM_KQAG_LAUNCH_MODE=server_handoff",
+    "PLATFORM_KQAG_APP_BASE_URL=<kqag-local-base-url>",
+    "The browser-safe launch response does not include the raw launch token",
+    "does not call KQAG during startup",
   ];
 
   for (const phrase of requiredPhrases) {

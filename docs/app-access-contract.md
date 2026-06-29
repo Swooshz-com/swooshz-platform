@@ -112,7 +112,17 @@ The session context response is informational. It does not launch apps, mint app
 
 The endpoint re-checks the same protected app access rules used by session app-access decisions. Missing, revoked, or expired platform sessions are unauthenticated. Denied app access, including KQAG viewer access while no read-only KQAG mode exists, does not create a token.
 
-Allowed access creates one short-lived launch token record. The database stores only a versioned HMAC token hash plus session, user, workspace, app, expiry, consumed, and revoked metadata. The raw launch token/reference is returned only once in the immediate no-store response with the app key, workspace id, optional app launch URL, and expiry. Redirects, KQAG launch/storage integration, frontend UI, fake login, billing, deployment, and migration execution are out of scope until separately approved.
+Allowed access creates one short-lived launch token record. The database stores only a versioned HMAC token hash plus session, user, workspace, app, expiry, consumed, and revoked metadata. The raw launch token/reference is returned only once in the immediate no-store response with the app key, workspace id, optional app launch URL, and expiry. This low-level route exists for service-contract diagnostics and must not put raw tokens in URLs, browser storage, cookies, logs, screenshots, docs, or telemetry.
+
+## KQAG Browser Launch Open Endpoint
+
+`POST /api/platform/apps/launch/open?workspaceId=...&appKey=kqag` is the browser-safe local UAT handoff for KQAG. It requires the active Platform browser session cookie, Origin/Referer validation, and a CSRF token. It re-checks protected KQAG app access by creating a normal Platform launch intent server-side.
+
+When explicitly configured with `PLATFORM_KQAG_LAUNCH_MODE=server_handoff` and `PLATFORM_KQAG_APP_BASE_URL=<kqag-local-base-url>`, Platform forwards the raw one-time launch token to KQAG server-to-server as `x-app-launch-token` on `POST <kqag-local-base-url>/api/platform/launch`. Platform then returns KQAG's session cookie and a safe `launchUrl` response to the browser. The response does not include the raw launch token.
+
+The local UAT shape is fully clickable only when Platform and KQAG are visited through the same browser cookie host, for example the same `127.0.0.1` host on different ports. If the configured KQAG URL host differs from the Platform request host, Platform fails closed instead of creating an open proxy or forwarding cookies across an unsafe boundary.
+
+The endpoint is restricted to `appKey=kqag`. It does not create KQAG users, KQAG auth, KQAG storage, billing, public signup, invitations, member management, deployment automation, DNS/TLS, object storage, or a general-purpose proxy.
 
 ## App Launch Token Consume Endpoint
 
@@ -122,7 +132,7 @@ The raw launch token is accepted only in the `x-app-launch-token` header, not in
 
 Before returning context, the platform reloads the launch token's session, user, workspace, app, membership, and entitlement context and re-checks app access using the same protected app access rules as the launch intent endpoint. Denied access, including KQAG viewer access while no read-only KQAG mode exists, does not consume the token when possible.
 
-Successful validation marks the unconsumed active token consumed and returns only safe user, workspace, app, membership role, and launch-token expiry context for future app integration. It does not call KQAG, redirect to apps, create app sessions, write KQAG storage, add frontend UI, add billing, or run migrations.
+Successful validation marks the unconsumed active token consumed and returns only safe user, workspace, app, membership role, and launch-token expiry context for app integration. It does not create app sessions, write KQAG storage, add billing, or run migrations.
 
 ## App Launch Flow
 
@@ -135,7 +145,7 @@ The platform app launch flow is:
 5. Platform verifies workspace entitlement for the app.
 6. Platform verifies the user's role can launch the app.
 7. Later: platform verifies billing or credit status.
-8. Platform launches the app through a defined integration boundary.
+8. Platform launches KQAG through the server-side browser handoff when explicitly configured for local UAT.
 9. App receives or resolves platform identity/workspace context through that boundary.
 
 No app should infer workspace access from a display name, email domain, or local app setting.

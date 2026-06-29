@@ -34,7 +34,7 @@ test("importing platform start CLI does not start server connect DB run migratio
     /if \(process\.argv\[1\] && import\.meta\.url === pathToFileURL\(process\.argv\[1\]\)\.href\) {\s+await main\(\);\s+}/,
   );
   assert.doesNotMatch(source, /db-migrate|platform-seed-internal-access|migrate\(/i);
-  assert.doesNotMatch(source, /kqag|saqg/i);
+  assert.doesNotMatch(source, /saqg/i);
 });
 
 test("start CLI builds bootstrap input from existing env contracts", () => {
@@ -55,6 +55,49 @@ test("start CLI builds bootstrap input from existing env contracts", () => {
   assert.equal(typeof input.authProviderIdentityIdFactory, "function");
   assert.equal(input.authSessionDurationMs, 60 * 60 * 1000);
   assert.equal(calls.fetch, 0);
+});
+
+test("start CLI builds KQAG server handoff input only from explicit env", () => {
+  const env = createEnv({
+    PLATFORM_KQAG_LAUNCH_MODE: "server_handoff",
+    PLATFORM_KQAG_APP_BASE_URL: "http://127.0.0.1:8765",
+  });
+  const calls = { fetch: 0 };
+  const input = createPlatformStartBootstrapInput({
+    env,
+    fetchImplementation: async () => {
+      calls.fetch += 1;
+      throw new Error("KQAG fetch should not run during input creation");
+    },
+  });
+
+  assert.equal(input.kqagBrowserLaunch?.baseUrl, "http://127.0.0.1:8765/");
+  assert.equal(typeof input.kqagBrowserLaunch?.httpClient.post, "function");
+  assert.equal(calls.fetch, 0);
+});
+
+test("KQAG server handoff mode fails safely before listen when fetch or base URL is missing", () => {
+  assert.throws(
+    () =>
+      createPlatformStartBootstrapInput({
+        env: createEnv({
+          PLATFORM_KQAG_LAUNCH_MODE: "server_handoff",
+          PLATFORM_KQAG_APP_BASE_URL: "http://127.0.0.1:8765",
+        }),
+        fetchImplementation: undefined,
+      }),
+    assertPrivacySafeStartError("invalid_config"),
+  );
+  assert.throws(
+    () =>
+      createPlatformStartBootstrapInput({
+        env: createEnv({
+          PLATFORM_KQAG_LAUNCH_MODE: "server_handoff",
+          PLATFORM_KQAG_APP_BASE_URL: "",
+        }),
+      }),
+    assertPrivacySafeStartError("invalid_config"),
+  );
 });
 
 test("generic OIDC fetch HTTP client does not call fetch until invoked", async () => {
@@ -136,6 +179,36 @@ test("executePlatformStart does not call provider fetch during generic OIDC star
     },
     createBootstrap(input) {
       assert.equal(typeof input.genericOidcHttpClient, "function");
+      return {
+        async start() {
+          calls.start += 1;
+          return { host: "127.0.0.1", port: 4317 };
+        },
+        async stop() {},
+      };
+    },
+    writeLine() {},
+  });
+
+  assert.equal(calls.start, 1);
+  assert.equal(calls.fetch, 0);
+});
+
+test("executePlatformStart does not call KQAG fetch during server handoff startup", async () => {
+  const calls = { fetch: 0, start: 0 };
+
+  await executePlatformStart({
+    env: createEnv({
+      PLATFORM_KQAG_LAUNCH_MODE: "server_handoff",
+      PLATFORM_KQAG_APP_BASE_URL: "http://127.0.0.1:8765",
+    }),
+    fetchImplementation: async () => {
+      calls.fetch += 1;
+      throw new Error("KQAG fetch should not run during startup");
+    },
+    createBootstrap(input) {
+      assert.equal(input.kqagBrowserLaunch?.baseUrl, "http://127.0.0.1:8765/");
+      assert.equal(typeof input.kqagBrowserLaunch?.httpClient.post, "function");
       return {
         async start() {
           calls.start += 1;

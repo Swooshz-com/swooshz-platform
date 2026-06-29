@@ -23,6 +23,7 @@ export class PlatformStartCliError extends Error {
 export function createPlatformStartBootstrapInput(options = {}) {
   const { env, fetchImplementation } = options;
   const authMode = readAuthMode(env);
+  const kqagLaunchMode = readKqagLaunchMode(env);
   const fetchForProvider =
     Object.hasOwn(options, "fetchImplementation")
       ? fetchImplementation
@@ -40,6 +41,15 @@ export function createPlatformStartBootstrapInput(options = {}) {
     input.authUserIdFactory = createSecureAuthUserIdFactory();
     input.authProviderIdentityIdFactory =
       createSecureAuthProviderIdentityIdFactory();
+  }
+
+  if (kqagLaunchMode === "server_handoff") {
+    input.kqagBrowserLaunch = {
+      baseUrl: readKqagAppBaseUrl(env),
+      httpClient: createPlatformStartKqagBrowserLaunchHttpClient({
+        fetchImplementation: readFetchImplementation(fetchForProvider),
+      }),
+    };
   }
 
   return input;
@@ -67,6 +77,38 @@ export function createPlatformStartGenericOidcHttpClient(options = {}) {
         return response.json();
       },
     };
+  };
+}
+
+export function createPlatformStartKqagBrowserLaunchHttpClient(options = {}) {
+  const { fetchImplementation } = options;
+  const fetchForKqag = readFetchImplementation(
+    Object.hasOwn(options, "fetchImplementation")
+      ? fetchImplementation
+      : globalThis.fetch,
+  );
+
+  return {
+    async post(request) {
+      const response = await fetchForKqag(request.url, {
+        method: "POST",
+        headers: request.headers,
+      });
+
+      return {
+        status: response.status,
+        headers: {
+          "set-cookie": readSetCookieHeader(response.headers),
+        },
+        async body() {
+          try {
+            return await response.json();
+          } catch {
+            return null;
+          }
+        },
+      };
+    },
   };
 }
 
@@ -176,6 +218,54 @@ function readAuthMode(env) {
   const mode = env?.PLATFORM_AUTH_PROVIDER_MODE?.trim();
 
   return mode || undefined;
+}
+
+function readKqagLaunchMode(env) {
+  const mode = env?.PLATFORM_KQAG_LAUNCH_MODE?.trim() || "manual";
+
+  if (mode === "manual" || mode === "server_handoff") {
+    return mode;
+  }
+
+  throw new PlatformStartCliError("invalid_config");
+}
+
+function readKqagAppBaseUrl(env) {
+  const value = env?.PLATFORM_KQAG_APP_BASE_URL?.trim();
+
+  if (!value) {
+    throw new PlatformStartCliError("invalid_config");
+  }
+
+  try {
+    const parsed = new URL(value);
+
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error("unsupported protocol");
+    }
+
+    parsed.search = "";
+    parsed.hash = "";
+    parsed.pathname = parsed.pathname.endsWith("/")
+      ? parsed.pathname
+      : `${parsed.pathname}/`;
+
+    return parsed.toString();
+  } catch {
+    throw new PlatformStartCliError("invalid_config");
+  }
+}
+
+function readSetCookieHeader(headers) {
+  if (typeof headers?.getSetCookie === "function") {
+    return headers.getSetCookie()[0] ?? "";
+  }
+
+  if (typeof headers?.get === "function") {
+    return headers.get("set-cookie") ?? "";
+  }
+
+  return "";
 }
 
 function readEnvironment(env) {

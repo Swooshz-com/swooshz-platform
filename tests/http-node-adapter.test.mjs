@@ -390,6 +390,170 @@ test("app launch route creates a hash-only launch token after valid CSRF", async
   assertResponseIsPrivacySafe(response);
 });
 
+test("KQAG browser launch handoff consumes token server-side and returns safe launch URL", async () => {
+  const fixture = createAdapterFixture({
+    kqagLaunchHandoff: {
+      baseUrl: "http://127.0.0.1:8765",
+    },
+  });
+
+  const { response, body } = await request({
+    method: "POST",
+    url: "/api/platform/apps/launch/open?workspaceId=workspace_koncept_images&appKey=kqag",
+    headers: {
+      ...logoutHeaders(),
+      host: "127.0.0.1:4317",
+    },
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 200);
+  assertNoStoreHeaders(response.headers);
+  assert.equal(response.headers["set-cookie"], "swooshz_quote_session=safe-kqag-session; Path=/; HttpOnly; SameSite=Lax");
+  assert.deepEqual(body, {
+    outcome: "launch_opened",
+    appKey: "kqag",
+    workspaceId: "workspace_koncept_images",
+    launchUrl: "http://127.0.0.1:8765/",
+  });
+  assert.equal(fixture.records.appLaunchTokens.length, 1);
+  assert.equal(fixture.records.appLaunchTokens[0].tokenHash, launchTokenHash);
+  assert.equal("launchToken" in fixture.records.appLaunchTokens[0], false);
+  assert.deepEqual(fixture.calls.kqagLaunchRequests, [
+    {
+      url: "http://127.0.0.1:8765/api/platform/launch",
+      method: "POST",
+      token: rawLaunchToken,
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(response), new RegExp(rawLaunchToken));
+  assert.doesNotMatch(JSON.stringify(body), new RegExp(rawLaunchToken));
+  assert.doesNotMatch(response.headers.location ?? "", new RegExp(rawLaunchToken));
+  assert.doesNotMatch(response.headers["set-cookie"], new RegExp(rawLaunchToken));
+  assertResponseIsPrivacySafe(response);
+});
+
+test("KQAG browser launch handoff fails safely without session access config or safe cookie host", async () => {
+  const missingSession = await request({
+    method: "POST",
+    url: "/api/platform/apps/launch/open?workspaceId=workspace_koncept_images&appKey=kqag",
+    headers: {
+      origin: allowedOrigin,
+      "x-csrf-token": validCsrfToken,
+      host: "127.0.0.1:4317",
+    },
+    dependencies: createAdapterFixture({
+      kqagLaunchHandoff: {
+        baseUrl: "http://127.0.0.1:8765",
+      },
+    }).dependencies,
+  });
+  const missingConfigFixture = createAdapterFixture();
+  const missingConfig = await request({
+    method: "POST",
+    url: "/api/platform/apps/launch/open?workspaceId=workspace_koncept_images&appKey=kqag",
+    headers: {
+      ...logoutHeaders(),
+      host: "127.0.0.1:4317",
+    },
+    dependencies: missingConfigFixture.dependencies,
+  });
+  const unsafeHostFixture = createAdapterFixture({
+    kqagLaunchHandoff: {
+      baseUrl: "http://localhost:8765",
+    },
+  });
+  const unsafeHost = await request({
+    method: "POST",
+    url: "/api/platform/apps/launch/open?workspaceId=workspace_koncept_images&appKey=kqag",
+    headers: {
+      ...logoutHeaders(),
+      host: "127.0.0.1:4317",
+    },
+    dependencies: unsafeHostFixture.dependencies,
+  });
+
+  assert.equal(missingSession.response.statusCode, 401);
+  assertNoStoreHeaders(missingSession.response.headers);
+  assert.deepEqual(missingSession.body, {
+    outcome: "unauthenticated",
+    reason: "missing_session",
+  });
+  assert.equal(missingConfig.response.statusCode, 503);
+  assertNoStoreHeaders(missingConfig.response.headers);
+  assert.deepEqual(missingConfig.body, {
+    outcome: "error",
+    message: "KQAG browser launch is not configured.",
+  });
+  assert.equal(unsafeHost.response.statusCode, 503);
+  assertNoStoreHeaders(unsafeHost.response.headers);
+  assert.deepEqual(unsafeHost.body, {
+    outcome: "error",
+    message: "KQAG browser launch is not configured.",
+  });
+  assert.equal(missingConfigFixture.records.appLaunchTokens.length, 0);
+  assert.equal(unsafeHostFixture.records.appLaunchTokens.length, 0);
+  assert.deepEqual(missingConfigFixture.calls.kqagLaunchRequests, []);
+  assert.deepEqual(unsafeHostFixture.calls.kqagLaunchRequests, []);
+  assertResponseIsPrivacySafe(missingSession.response);
+  assertResponseIsPrivacySafe(missingConfig.response);
+  assertResponseIsPrivacySafe(unsafeHost.response);
+});
+
+test("KQAG browser launch handoff fails closed for wrong app access denial and KQAG consume failure", async () => {
+  const wrongAppFixture = createAdapterFixture({
+    kqagLaunchHandoff: {
+      baseUrl: "http://127.0.0.1:8765",
+    },
+  });
+  const wrongApp = await request({
+    method: "POST",
+    url: "/api/platform/apps/launch/open?workspaceId=workspace_koncept_images&appKey=other",
+    headers: {
+      ...logoutHeaders(),
+      host: "127.0.0.1:4317",
+    },
+    dependencies: wrongAppFixture.dependencies,
+  });
+  const consumeFailureFixture = createAdapterFixture({
+    kqagLaunchHandoff: {
+      baseUrl: "http://127.0.0.1:8765",
+      status: 502,
+      body: { status: "blocked", errors: ["private provider payload"] },
+    },
+  });
+  const consumeFailure = await request({
+    method: "POST",
+    url: "/api/platform/apps/launch/open?workspaceId=workspace_koncept_images&appKey=kqag",
+    headers: {
+      ...logoutHeaders(),
+      host: "127.0.0.1:4317",
+    },
+    dependencies: consumeFailureFixture.dependencies,
+  });
+
+  assert.equal(wrongApp.response.statusCode, 403);
+  assertNoStoreHeaders(wrongApp.response.headers);
+  assert.equal(wrongApp.body.outcome, "denied");
+  assert.equal(wrongApp.body.reason, "app_access_denied");
+  assert.equal(wrongAppFixture.records.appLaunchTokens.length, 0);
+  assert.deepEqual(wrongAppFixture.calls.kqagLaunchRequests, []);
+  assert.equal(consumeFailure.response.statusCode, 502);
+  assertNoStoreHeaders(consumeFailure.response.headers);
+  assert.deepEqual(consumeFailure.body, {
+    outcome: "error",
+    message: "KQAG browser launch could not be completed.",
+  });
+  assert.equal(consumeFailureFixture.records.appLaunchTokens.length, 1);
+  assert.equal(consumeFailureFixture.records.appLaunchTokens[0].tokenHash, launchTokenHash);
+  assert.equal("launchToken" in consumeFailureFixture.records.appLaunchTokens[0], false);
+  assert.equal(consumeFailureFixture.calls.kqagLaunchRequests[0].token, rawLaunchToken);
+  assert.doesNotMatch(JSON.stringify(consumeFailure.response), /private provider payload/);
+  assert.doesNotMatch(JSON.stringify(consumeFailure.response), new RegExp(rawLaunchToken));
+  assertResponseIsPrivacySafe(wrongApp.response);
+  assertResponseIsPrivacySafe(consumeFailure.response);
+});
+
 test("app launch consume route is POST-only and requires appKey", async () => {
   const fixture = createAdapterFixture({ withLaunchConsumeToken: true });
   const get = await request({
@@ -897,6 +1061,7 @@ function createAdapterFixture(overrides = {}) {
     },
   };
   const calls = instrumentRepositories(repositories);
+  calls.kqagLaunchRequests = [];
   const dependencies = {
     repositories,
     now: () => now,
@@ -1038,6 +1203,31 @@ function createAdapterFixture(overrides = {}) {
       },
     },
   };
+  if (overrides.kqagLaunchHandoff) {
+    dependencies.kqagBrowserLaunch = {
+      baseUrl: overrides.kqagLaunchHandoff.baseUrl,
+      httpClient: {
+        async post(input) {
+          calls.kqagLaunchRequests.push({
+            url: input.url,
+            method: "POST",
+            token: input.headers["x-app-launch-token"],
+          });
+          assert.deepEqual(Object.keys(input.headers), ["x-app-launch-token"]);
+          return {
+            status: overrides.kqagLaunchHandoff.status ?? 200,
+            headers: {
+              "set-cookie": "swooshz_quote_session=safe-kqag-session; Path=/; HttpOnly; SameSite=Lax",
+            },
+            body: overrides.kqagLaunchHandoff.body ?? {
+              status: "platform_session_created",
+              redirect_url: "/",
+            },
+          };
+        },
+      },
+    };
+  }
 
   return { records, repositories, calls, dependencies };
 }

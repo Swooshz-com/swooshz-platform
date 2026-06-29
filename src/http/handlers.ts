@@ -92,6 +92,33 @@ export interface AppLaunchTokenConsumeHttpRequest {
   now: string;
 }
 
+export interface KqagBrowserLaunchHttpClient {
+  post(input: {
+    url: string;
+    headers: HttpRequestHeaders;
+  }): Promise<{
+    status: number;
+    headers?: HttpRequestHeaders;
+    body?: unknown;
+  }>;
+}
+
+export interface KqagBrowserLaunchDependencies {
+  appLaunchIntent: AppLaunchIntentDependencies;
+  kqag: {
+    baseUrl: string;
+    httpClient: KqagBrowserLaunchHttpClient;
+  };
+}
+
+export interface KqagBrowserLaunchHttpRequest {
+  headers?: HttpRequestHeaders;
+  selectedWorkspaceId: string;
+  appKey: string;
+  now: string;
+  cookie?: BrowserSessionCookieConfig;
+}
+
 export async function handleProtectedAppAccessRequest(
   repositories: PlatformRepositories,
   request: ProtectedAppAccessHttpRequest,
@@ -336,6 +363,111 @@ export async function handleAppLaunchTokenConsumeRequest(
   }
 }
 
+export async function handleKqagBrowserLaunchRequest(
+  dependencies: KqagBrowserLaunchDependencies,
+  request: KqagBrowserLaunchHttpRequest,
+): Promise<HttpResponseLike> {
+  const sessionId = extractSessionId(request.headers, request.cookie);
+
+  if (!sessionId) {
+    return appLaunchUnauthenticated("missing_session");
+  }
+
+  if (!request.selectedWorkspaceId.trim() || !request.appKey.trim()) {
+    return {
+      status: 400,
+      headers: noStoreHeaders(),
+      body: {
+        outcome: "error",
+        message: "Required query parameters are missing.",
+      },
+    };
+  }
+
+  if (request.appKey !== "kqag") {
+    return {
+      status: 403,
+      headers: noStoreHeaders(),
+      body: {
+        outcome: "denied",
+        reason: "app_access_denied",
+      },
+    };
+  }
+
+  let launch: Awaited<ReturnType<typeof createAppLaunchIntent>>;
+
+  try {
+    launch = await createAppLaunchIntent(dependencies.appLaunchIntent, {
+      sessionId,
+      selectedWorkspaceId: request.selectedWorkspaceId,
+      appKey: request.appKey,
+      now: request.now,
+    });
+  } catch {
+    return kqagLaunchFailure();
+  }
+
+  if (launch.outcome === "unauthenticated") {
+    return appLaunchUnauthenticated(launch.reason);
+  }
+
+  if (launch.outcome === "denied") {
+    return {
+      status: 403,
+      headers: noStoreHeaders(),
+      body: {
+        outcome: "denied",
+        reason: "app_access_denied",
+        decision: launch.decision,
+      },
+    };
+  }
+
+  const baseUrl = parseKqagBaseUrl(dependencies.kqag.baseUrl);
+
+  if (!baseUrl) {
+    return kqagLaunchNotConfigured();
+  }
+
+  let kqagResponse: Awaited<ReturnType<KqagBrowserLaunchHttpClient["post"]>>;
+
+  try {
+    kqagResponse = await dependencies.kqag.httpClient.post({
+      url: new URL("/api/platform/launch", baseUrl).toString(),
+      headers: {
+        "x-app-launch-token": launch.launchToken,
+      },
+    });
+  } catch {
+    return kqagLaunchFailure();
+  }
+
+  if (kqagResponse.status < 200 || kqagResponse.status >= 300) {
+    return kqagLaunchFailure();
+  }
+
+  const setCookie = readHeader(kqagResponse.headers, "set-cookie");
+
+  if (!setCookie) {
+    return kqagLaunchFailure();
+  }
+
+  return {
+    status: 200,
+    headers: {
+      ...noStoreHeaders(),
+      "set-cookie": setCookie,
+    },
+    body: {
+      outcome: "launch_opened",
+      appKey: launch.appKey,
+      workspaceId: launch.workspaceId,
+      launchUrl: baseUrl.toString(),
+    },
+  };
+}
+
 export async function handleSessionContextRequest(
   repositories: PlatformRepositories,
   request: SessionContextHttpRequest,
@@ -559,6 +691,48 @@ function appLaunchConsumeFailure() {
       message: "App launch token could not be consumed.",
     },
   };
+}
+
+function kqagLaunchFailure(): HttpResponseLike {
+  return {
+    status: 502,
+    headers: noStoreHeaders(),
+    body: {
+      outcome: "error",
+      message: "KQAG browser launch could not be completed.",
+    },
+  };
+}
+
+function kqagLaunchNotConfigured(): HttpResponseLike {
+  return {
+    status: 503,
+    headers: noStoreHeaders(),
+    body: {
+      outcome: "error",
+      message: "KQAG browser launch is not configured.",
+    },
+  };
+}
+
+function parseKqagBaseUrl(value: string): URL | null {
+  try {
+    const parsed = new URL(value);
+
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null;
+    }
+
+    parsed.pathname = parsed.pathname.endsWith("/")
+      ? parsed.pathname
+      : `${parsed.pathname}/`;
+    parsed.search = "";
+    parsed.hash = "";
+
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 function serviceFailure() {

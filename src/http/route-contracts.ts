@@ -8,6 +8,7 @@ export type HttpRouteId =
   | "platform_session_context"
   | "platform_session_csrf"
   | "platform_app_launch"
+  | "platform_kqag_launch_open"
   | "platform_app_launch_consume"
   | "platform_logout";
 
@@ -171,6 +172,21 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     },
     requiredQuery: ["workspaceId", "appKey"],
     handlerContract: "handleAppLaunchIntentRequest",
+    responseKind: "json",
+    idempotent: false,
+    implemented: false,
+  },
+  {
+    id: "platform_kqag_launch_open",
+    method: "POST",
+    path: "/api/platform/apps/launch/open",
+    browserSession: "required",
+    csrf: {
+      required: true,
+      strategy: "origin_referer_and_csrf_token",
+    },
+    requiredQuery: ["workspaceId", "appKey"],
+    handlerContract: "handleKqagBrowserLaunchRequest",
     responseKind: "json",
     idempotent: false,
     implemented: false,

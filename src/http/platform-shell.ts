@@ -40,7 +40,7 @@ export function renderAppShellPage(): string {
           const endpoints = {
             context: "/api/platform/session/context",
             csrf: "/api/platform/session/csrf",
-            launch: "/api/platform/apps/launch",
+            launch: "/api/platform/apps/launch/open",
             logout: "/api/platform/logout"
           };
 
@@ -168,7 +168,7 @@ export function renderAppShellPage(): string {
           }
 
           async function launchApp(workspaceId, appKey) {
-            setStatus("Creating app launch intent...");
+            setStatus("Opening app...");
             launchResult.hidden = true;
 
             try {
@@ -188,15 +188,15 @@ export function renderAppShellPage(): string {
               );
               const payload = await readJson(response);
 
-              if (!response.ok || payload.outcome !== "launch_intent_created") {
-                setStatus("App launch intent could not be created.");
+              if (!response.ok || payload.outcome !== "launch_opened" || !payload.launchUrl) {
+                setStatus("App could not be opened.");
                 return;
               }
 
-              renderLaunchPayload(payload);
-              setStatus("App launch intent created.");
+              setStatus("Opening app...");
+              window.location.assign(payload.launchUrl);
             } catch {
-              setStatus("App launch intent could not be created.");
+              setStatus("App could not be opened.");
             }
           }
 
@@ -217,43 +217,6 @@ export function renderAppShellPage(): string {
 
             state.csrfToken = payload.csrfToken;
             return state.csrfToken;
-          }
-
-          function renderLaunchPayload(payload) {
-            launchResult.replaceChildren();
-
-            const title = document.createElement("h2");
-            title.textContent = "Temporary internal handoff";
-            launchResult.append(title);
-
-            if (payload.launchUrl) {
-              launchResult.append(textBlock("Launch URL", payload.launchUrl));
-            }
-
-            launchResult.append(
-              textBlock("App key", payload.appKey),
-              textBlock("Workspace", payload.workspaceId),
-              textBlock("Expires", payload.launchTokenExpiresAt)
-            );
-
-            const tokenBox = document.createElement("pre");
-            tokenBox.className = "token-box";
-            tokenBox.textContent = payload.launchToken || "";
-            launchResult.append(tokenBox);
-
-            if (payload.launchToken && navigator.clipboard?.writeText) {
-              const copy = document.createElement("button");
-              copy.type = "button";
-              copy.className = "secondary-action";
-              copy.textContent = "Copy token";
-              copy.addEventListener("click", async () => {
-                await navigator.clipboard.writeText(payload.launchToken);
-                setStatus("Launch token copied.");
-              });
-              launchResult.append(copy);
-            }
-
-            launchResult.hidden = false;
           }
 
           async function logout() {
@@ -528,17 +491,6 @@ function htmlDocument({
     .handoff {
       margin-top: 18px;
       background: var(--danger-soft);
-    }
-
-    .token-box {
-      max-width: 100%;
-      overflow-x: auto;
-      padding: 12px;
-      border-radius: 6px;
-      background: var(--surface);
-      border: 1px solid var(--line);
-      white-space: pre-wrap;
-      overflow-wrap: anywhere;
     }
 
     [hidden] {

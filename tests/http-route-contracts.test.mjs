@@ -20,6 +20,7 @@ test("route manifest includes only approved initial platform routes", () => {
       "platform_session_context",
       "platform_session_csrf",
       "platform_app_launch",
+      "platform_kqag_launch_open",
       "platform_app_launch_consume",
       "platform_logout",
     ],
@@ -36,6 +37,7 @@ test("route manifest includes only approved initial platform routes", () => {
       "GET /api/platform/session/context",
       "GET /api/platform/session/csrf",
       "POST /api/platform/apps/launch",
+      "POST /api/platform/apps/launch/open",
       "POST /api/platform/apps/launch/consume",
       "POST /api/platform/logout",
     ],
@@ -49,7 +51,7 @@ test("state-changing browser-cookie routes require CSRF protection", () => {
 
   assert.deepEqual(
     stateChangingRoutes.map((route) => route.id),
-    ["platform_app_launch", "platform_logout"],
+    ["platform_app_launch", "platform_kqag_launch_open", "platform_logout"],
   );
 
   for (const route of stateChangingRoutes) {
@@ -181,6 +183,19 @@ test("app launch intent route is POST-only session-protected and CSRF-protected"
   assert.equal(route.idempotent, false);
 });
 
+test("KQAG launch open route is POST-only session-protected and CSRF-protected", () => {
+  const route = getHttpRouteContract("platform_kqag_launch_open");
+
+  assert.equal(route.method, "POST");
+  assert.equal(route.path, "/api/platform/apps/launch/open");
+  assert.equal(route.browserSession, "required");
+  assert.equal(route.csrf.required, true);
+  assert.equal(route.csrf.strategy, "origin_referer_and_csrf_token");
+  assert.deepEqual(route.requiredQuery, ["workspaceId", "appKey"]);
+  assert.equal(route.handlerContract, "handleKqagBrowserLaunchRequest");
+  assert.equal(route.idempotent, false);
+});
+
 test("app launch token consume route is POST-only token-protected and not CSRF-protected", () => {
   const route = getHttpRouteContract("platform_app_launch_consume");
 
@@ -194,10 +209,10 @@ test("app launch token consume route is POST-only token-protected and not CSRF-p
   assert.equal(route.idempotent, false);
 });
 
-test("route manifest does not include KQAG adapter or frontend dashboard work", () => {
+test("route manifest does not include quote app storage or frontend dashboard work", () => {
   const serialized = JSON.stringify(HTTP_ROUTE_CONTRACTS);
 
-  assert.doesNotMatch(serialized, /kqag|quote|pricing|pdf|xlsx/i);
+  assert.doesNotMatch(serialized, /quote|pricing|pdf|xlsx/i);
   assert.doesNotMatch(serialized, /frontend|dashboard|react|next|vite/i);
 });
 
