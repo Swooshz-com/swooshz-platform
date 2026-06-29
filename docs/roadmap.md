@@ -92,6 +92,9 @@ Candidate deliverables:
 - Explicit internal access seed CLI for existing provider-backed platform users. It requires reviewed confirmation, refuses missing users and email-only users without provider identities, creates or reuses only platform-owned workspace/app/entitlement/membership records, does not run migrations, and does not create users, provider identities, sessions, app launch tokens, fake login state, KQAG storage, billing, deployment, or provider network calls.
 - Internal platform smoke runbook for verifying the existing database, OIDC, runtime, seed, browser shell, and app-launch path without adding database provisioning, deployment, migration automation, fake login, or KQAG integration. Operational smoke should be the first gate before any separately approved KQAG integration work.
 - Explicit `npm run platform:start` operator CLI over the existing Node bootstrap/runtime boundary. It starts the platform HTTP server, supports graceful shutdown, injects the generic OIDC HTTP boundary when configured, and does not run migrations, provision databases, seed access, call provider endpoints on startup, call KQAG, or add deployment behavior.
+- External provider setup docs: `docs/auth-provider-selection.md`, `docs/google-oidc-setup-runbook.md`, and `docs/workos-authkit-fit-notes.md`.
+- Google OIDC as the first operational provider setup target for internal UAT against the existing generic OIDC runtime.
+- WorkOS/AuthKit documented as a future B2B/hosted-auth candidate requiring a provider-fit check before runtime wiring.
 - HTTP logout route hardening after real CSRF storage and browser wiring are separately approved.
 - Invitation acceptance path if compatible with selected auth provider.
 - Tests for session, token, and provider-error privacy behavior.
@@ -99,11 +102,13 @@ Candidate deliverables:
 Non-goals:
 
 - Email/password auth unless explicitly approved.
+- Platform-owned email/password auth in the external-provider setup phase.
 - Public self-serve signup.
 - Real auth provider network calls before the callback/service contract is tested.
 - Provider SDKs or real provider networking before a live provider adapter PR is explicitly approved.
 - Claiming live-login readiness before provider configuration, runtime deployment posture, observability, and operational approval are reviewed.
 - Fake-login shortcuts or email-only user precreation for future provider linking.
+- Active multi-provider runtime implementation before a separate architecture PR covers provider selection, callback disambiguation, and controlled account linking.
 - User plus provider identity seeding before an explicit transactional identity seed boundary is approved.
 - Customer portal.
 - Polished dashboard or broad frontend shell beyond the minimal internal browser shell.
