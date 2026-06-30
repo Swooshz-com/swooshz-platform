@@ -431,6 +431,7 @@ test("runtime composition wires auth start without provider calls during creatio
 
   assert.ok(dependencies.authStart);
   assert.ok(dependencies.authCallback);
+  assert.equal(typeof dependencies.authStart.startFailureReporter, "function");
   assert.equal(typeof dependencies.authCallback.callbackFailureReporter, "function");
   assert.equal(fixture.calls.authBuildAuthorizationUrl, 0);
   assert.equal(fixture.calls.authExchangeCodeForTokens, 0);

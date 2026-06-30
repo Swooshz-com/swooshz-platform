@@ -47,7 +47,9 @@ import type { NodePlatformHttpAdapterDependencies } from "../http/node-adapter.j
 import type { KqagBrowserLaunchDependencies } from "../http/handlers.js";
 import {
   reportAuthCallbackFailureToConsole,
+  reportAuthStartFailureToConsole,
   type AuthCallbackFailureReporter,
+  type AuthStartFailureReporter,
 } from "../http/auth-handlers.js";
 import type { NodePlatformRuntimeConfig } from "../http/runtime-config.js";
 import {
@@ -107,6 +109,7 @@ export interface PlatformRuntimeAuthDependencyInput {
   stateByteLength?: number;
   nonceByteLength?: number;
   successRedirectPath?: string;
+  startFailureReporter?: AuthStartFailureReporter;
   callbackFailureReporter?: AuthCallbackFailureReporter;
 }
 
@@ -230,6 +233,8 @@ function createAuthDependencies({
         byteLength: auth.nonceByteLength,
       }),
       stateReferenceFactory,
+      startFailureReporter:
+        auth.startFailureReporter ?? reportAuthStartFailureToConsole,
       ttlSeconds: auth.stateTtlSeconds ?? defaultAuthStateTtlSeconds,
     },
     authCallback: {

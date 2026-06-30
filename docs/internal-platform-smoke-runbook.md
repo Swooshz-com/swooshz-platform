@@ -197,6 +197,7 @@ runbook `docs/platform-uat-smoke-runbook.md`.
 - `DATABASE_URL is required`: configure `DATABASE_URL` from the existing database service before live DB operations.
 - `missing migrations` or missing table errors: review migration files and run the explicit `npm run db:migrate` command with `DATABASE_MIGRATIONS_CONFIRM=apply-reviewed-migrations`.
 - `auth config invalid`: check required OIDC env names, callback URL alignment, and strong platform secrets. Do not paste raw secret values into tickets or docs.
+- auth start failure: copy only the safe console diagnostic line `auth_start_failure category=<category>` into troubleshooting notes; do not copy surrounding URLs, cookies, provider payloads, state, nonce, auth codes, secrets, database URLs, or staff emails.
 - `callback state/nonce failures`: retry the login flow from `/`; stale browser callbacks, mismatched auth state storage, or nonce mismatch can fail safely.
 - no session in `/app`: confirm the callback completed, the platform session cookie was set by the auth callback route, and the browser is visiting the same platform origin.
 - `user not found`: the seed command was run before the user completed real OIDC login.
