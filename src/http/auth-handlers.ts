@@ -36,11 +36,30 @@ export interface AuthStartHttpDependencies {
   stateReferenceFactory: AuthReferenceFactory;
   nonceReferenceFactory?: AuthReferenceFactory;
   ttlSeconds: number;
+  startFailureReporter?: AuthStartFailureReporter;
 }
 
 export interface AuthStartHttpRequest {
   now: string;
 }
+
+export interface AuthStartFailureDiagnostic {
+  category: AuthStartFailureCategory;
+}
+
+export type AuthStartFailureReporter = (
+  diagnostic: AuthStartFailureDiagnostic,
+) => void;
+
+export type AuthStartFailureCategory =
+  | "state_generation_failed"
+  | "nonce_generation_failed"
+  | "state_reference_failed"
+  | "nonce_reference_failed"
+  | "state_store_failed"
+  | "authorization_url_build_failed"
+  | "invalid_authorization_redirect"
+  | "unexpected_auth_start_failure";
 
 export interface AuthCallbackHttpDependencies
   extends AuthCallbackServiceDependencies {
@@ -113,33 +132,89 @@ export async function handleAuthStartRequest(
   dependencies: AuthStartHttpDependencies,
   request: AuthStartHttpRequest,
 ): Promise<HttpResponseLike> {
+  let state: string;
+  let nonce: string;
+  let stateHash: string;
+  let nonceHash: string;
+
   try {
-    const state = readFactoryValue(
+    state = readFactoryValue(
       dependencies.stateFactory.createState(),
     );
-    const nonce = readFactoryValue(
+  } catch (error) {
+    return authStartFailureFor(
+      dependencies,
+      error,
+      "state_generation_failed",
+    );
+  }
+
+  try {
+    nonce = readFactoryValue(
       dependencies.nonceFactory.createNonce(),
     );
-    const stateHash = readReference(
+  } catch (error) {
+    return authStartFailureFor(
+      dependencies,
+      error,
+      "nonce_generation_failed",
+    );
+  }
+
+  try {
+    stateHash = readReference(
       dependencies.stateReferenceFactory(state),
     );
-    const nonceHash = readReference(
+  } catch (error) {
+    return authStartFailureFor(
+      dependencies,
+      error,
+      "state_reference_failed",
+    );
+  }
+
+  try {
+    nonceHash = readReference(
       (dependencies.nonceReferenceFactory ?? dependencies.stateReferenceFactory)(
         nonce,
       ),
     );
-    const expiresAt = addSeconds(request.now, dependencies.ttlSeconds);
-    const stateRecord: StoredAuthStateInput = {
-      providerKey: dependencies.authConfig.providerKey,
-      stateHash,
-      nonceHash,
-      redirectUri: dependencies.authConfig.redirectUri,
-      createdAt: request.now,
-      expiresAt,
-    };
+  } catch (error) {
+    return authStartFailureFor(
+      dependencies,
+      error,
+      "nonce_reference_failed",
+    );
+  }
 
+  const stateRecord = createStoredAuthStateRecordSafely({
+    dependencies,
+    request,
+    stateHash,
+    nonceHash,
+  });
+
+  if (!stateRecord) {
+    return authStartFailureFor(
+      dependencies,
+      new Error("Invalid auth state expiry."),
+      "unexpected_auth_start_failure",
+    );
+  }
+
+  try {
     await dependencies.stateStore.storeState(stateRecord);
+  } catch (error) {
+    return authStartFailureFor(
+      dependencies,
+      error,
+      "state_store_failed",
+    );
+  }
 
+  let authorizationUrl: string;
+
+  try {
     const authorization = await dependencies.oidcAdapter.buildAuthorizationUrl({
       providerKey: dependencies.authConfig.providerKey,
       authorizationUrl: dependencies.authConfig.authorizationUrl,
@@ -148,20 +223,36 @@ export async function handleAuthStartRequest(
       state,
       nonce,
     });
-    const location = readRedirectUrl(authorization.url);
-
-    return {
-      status: 302,
-      headers: {
-        location,
-      },
-      body: {
-        outcome: "redirecting",
-      },
-    };
-  } catch {
-    return authStartFailure();
+    authorizationUrl = authorization.url;
+  } catch (error) {
+    return authStartFailureFor(
+      dependencies,
+      error,
+      "authorization_url_build_failed",
+    );
   }
+
+  let location: string;
+
+  try {
+    location = readRedirectUrl(authorizationUrl);
+  } catch (error) {
+    return authStartFailureFor(
+      dependencies,
+      error,
+      "invalid_authorization_redirect",
+    );
+  }
+
+  return {
+    status: 302,
+    headers: {
+      location,
+    },
+    body: {
+      outcome: "redirecting",
+    },
+  };
 }
 
 export async function handleAuthCallbackRequest(
@@ -202,10 +293,34 @@ export function reportAuthCallbackFailureToConsole(
   console.error(formatAuthCallbackFailureDiagnostic(diagnostic));
 }
 
+export function reportAuthStartFailureToConsole(
+  diagnostic: AuthStartFailureDiagnostic,
+): void {
+  console.error(formatAuthStartFailureDiagnostic(diagnostic));
+}
+
+export function formatAuthStartFailureDiagnostic(
+  diagnostic: AuthStartFailureDiagnostic,
+): string {
+  return `auth_start_failure category=${diagnostic.category}`;
+}
+
 export function formatAuthCallbackFailureDiagnostic(
   diagnostic: AuthCallbackFailureDiagnostic,
 ): string {
   return `auth_callback_failure category=${diagnostic.category}`;
+}
+
+export function classifyAuthStartFailure(
+  error: unknown,
+  fallbackCategory: AuthStartFailureCategory =
+    "unexpected_auth_start_failure",
+): AuthStartFailureCategory {
+  if (error instanceof AuthProviderError) {
+    return classifyAuthProviderStartFailure(error) ?? fallbackCategory;
+  }
+
+  return fallbackCategory;
 }
 
 export function classifyAuthCallbackFailure(
@@ -220,6 +335,17 @@ export function classifyAuthCallbackFailure(
   }
 
   return "unexpected_callback_failure";
+}
+
+function classifyAuthProviderStartFailure(
+  error: AuthProviderError,
+): AuthStartFailureCategory | null {
+  switch (error.message) {
+    case "OIDC authorization URL could not be built.":
+      return "authorization_url_build_failed";
+    default:
+      return null;
+  }
 }
 
 function classifyAuthProviderFailure(
@@ -319,6 +445,31 @@ function addSeconds(now: string, ttlSeconds: number): string {
   return new Date(timestamp + ttlSeconds * 1000).toISOString();
 }
 
+function createStoredAuthStateRecordSafely({
+  dependencies,
+  request,
+  stateHash,
+  nonceHash,
+}: {
+  dependencies: AuthStartHttpDependencies;
+  request: AuthStartHttpRequest;
+  stateHash: string;
+  nonceHash: string;
+}): StoredAuthStateInput | null {
+  try {
+    return {
+      providerKey: dependencies.authConfig.providerKey,
+      stateHash,
+      nonceHash,
+      redirectUri: dependencies.authConfig.redirectUri,
+      createdAt: request.now,
+      expiresAt: addSeconds(request.now, dependencies.ttlSeconds),
+    };
+  } catch {
+    return null;
+  }
+}
+
 function readRedirectUrl(value: string): string {
   const parsed = new URL(value);
 
@@ -337,6 +488,18 @@ function normalizeLocalRedirectPath(value: string | undefined): string {
   }
 
   return candidate;
+}
+
+function authStartFailureFor(
+  dependencies: AuthStartHttpDependencies,
+  error: unknown,
+  fallbackCategory: AuthStartFailureCategory,
+): HttpResponseLike {
+  dependencies.startFailureReporter?.({
+    category: classifyAuthStartFailure(error, fallbackCategory),
+  });
+
+  return authStartFailure();
 }
 
 function authStartFailure(): HttpResponseLike {

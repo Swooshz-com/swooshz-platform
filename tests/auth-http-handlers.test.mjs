@@ -4,6 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  formatAuthStartFailureDiagnostic,
   formatAuthCallbackFailureDiagnostic,
   handleAuthCallbackRequest,
   handleAuthStartRequest,
@@ -69,6 +70,73 @@ test("auth start errors are privacy-safe", async () => {
     });
     assertHttpAuthResponseIsSafe(response);
   }
+});
+
+test("auth start state store failure reports a safe diagnostic category", async () => {
+  const diagnostics = [];
+  const fixture = createAuthStartFixture({
+    fail: "stateStore",
+    startFailureReporter(diagnostic) {
+      diagnostics.push(diagnostic);
+    },
+  });
+
+  const response = await handleAuthStartRequest(fixture.dependencies, { now });
+
+  assert.equal(response.status, 500);
+  assert.deepEqual(response.body, {
+    outcome: "error",
+    message: "Authentication start could not be completed.",
+  });
+  assert.deepEqual(diagnostics, [{ category: "state_store_failed" }]);
+  assert.equal(
+    formatAuthStartFailureDiagnostic(diagnostics[0]),
+    "auth_start_failure category=state_store_failed",
+  );
+  assertHttpAuthResponseIsSafe(response);
+  assertHttpAuthDiagnosticIsSafe(diagnostics);
+});
+
+test("auth start authorization URL build failure reports a safe diagnostic category", async () => {
+  const diagnostics = [];
+  const fixture = createAuthStartFixture({
+    fail: "oidcAdapter",
+    startFailureReporter(diagnostic) {
+      diagnostics.push(diagnostic);
+    },
+  });
+
+  const response = await handleAuthStartRequest(fixture.dependencies, { now });
+
+  assert.equal(response.status, 500);
+  assert.deepEqual(response.body, {
+    outcome: "error",
+    message: "Authentication start could not be completed.",
+  });
+  assert.deepEqual(diagnostics, [{ category: "authorization_url_build_failed" }]);
+  assertHttpAuthResponseIsSafe(response);
+  assertHttpAuthDiagnosticIsSafe(diagnostics);
+});
+
+test("auth start invalid authorization redirect reports a safe diagnostic category", async () => {
+  const diagnostics = [];
+  const fixture = createAuthStartFixture({
+    authorizationUrl: "javascript:alert('synthetic-browser-state-reference')",
+    startFailureReporter(diagnostic) {
+      diagnostics.push(diagnostic);
+    },
+  });
+
+  const response = await handleAuthStartRequest(fixture.dependencies, { now });
+
+  assert.equal(response.status, 500);
+  assert.deepEqual(response.body, {
+    outcome: "error",
+    message: "Authentication start could not be completed.",
+  });
+  assert.deepEqual(diagnostics, [{ category: "invalid_authorization_redirect" }]);
+  assertHttpAuthResponseIsSafe(response);
+  assertHttpAuthDiagnosticIsSafe(diagnostics);
 });
 
 test("auth callback missing code or state is privacy-safe", async () => {
@@ -241,7 +309,7 @@ function createAuthStartFixture(options = {}) {
         }
 
         oidcAuthorizationInputs.push(input);
-        return { url: providerAuthorizationUrl };
+        return { url: options.authorizationUrl ?? providerAuthorizationUrl };
       },
     },
     stateStore: {
@@ -284,6 +352,7 @@ function createAuthStartFixture(options = {}) {
       throw new Error(privateFailure);
     },
     ttlSeconds: 600,
+    startFailureReporter: options.startFailureReporter,
   };
 
   return { dependencies, records, oidcAuthorizationInputs };

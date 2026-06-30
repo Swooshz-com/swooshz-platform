@@ -78,6 +78,7 @@ test("internal platform smoke runbook covers troubleshooting and hard boundaries
     "DATABASE_URL is required",
     "missing migrations",
     "auth config invalid",
+    "auth_start_failure category=<category>",
     "callback state/nonce failures",
     "no session in `/app`",
     "user not found",
