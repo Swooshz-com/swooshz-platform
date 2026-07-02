@@ -84,8 +84,33 @@ export function createInMemoryPlatformRepositories(records = {}) {
       async listForUser(userId) {
         return memberships.filter((membership) => membership.userId === userId);
       },
+      async listForWorkspace(workspaceId) {
+        return memberships.filter((membership) => membership.workspaceId === workspaceId);
+      },
       async create(membership) {
         memberships.push(membership);
+        return membership;
+      },
+      async updateRole(id, role, updatedAt) {
+        const membership = memberships.find((candidate) => candidate.id === id);
+
+        if (!membership) {
+          return null;
+        }
+
+        membership.role = role;
+        membership.updatedAt = updatedAt;
+        return membership;
+      },
+      async updateStatus(id, status, updatedAt) {
+        const membership = memberships.find((candidate) => candidate.id === id);
+
+        if (!membership) {
+          return null;
+        }
+
+        membership.status = status;
+        membership.updatedAt = updatedAt;
         return membership;
       },
     },
@@ -138,6 +163,18 @@ export function createInMemoryPlatformRepositories(records = {}) {
       },
       async create(entitlement) {
         appEntitlements.push(entitlement);
+        return entitlement;
+      },
+      async updateStatus(id, status, grantedByUserId, updatedAt) {
+        const entitlement = appEntitlements.find((candidate) => candidate.id === id);
+
+        if (!entitlement) {
+          return null;
+        }
+
+        entitlement.status = status;
+        entitlement.grantedByUserId = grantedByUserId;
+        entitlement.updatedAt = updatedAt;
         return entitlement;
       },
     },

@@ -296,6 +296,9 @@ test("Drizzle repository list methods return arrays", async () => {
   assert.deepEqual(await repositories.memberships.listForUser(userRow.id), [
     mapMembershipRow(membershipRow),
   ]);
+  assert.deepEqual(await repositories.memberships.listForWorkspace(workspaceRow.id), [
+    mapMembershipRow(membershipRow),
+  ]);
   assert.deepEqual(await repositories.apps.listAll(), [mapAppRow(appRow)]);
   assert.deepEqual(await repositories.appEntitlements.listForWorkspace(workspaceRow.id), [
     mapAppEntitlementRow(entitlementRow),
@@ -318,6 +321,8 @@ test("Drizzle repository create, update, and append methods return mapped record
     updateRows: new Map([
       [schema.invitations, [{ ...invitationRow, status: "accepted" }]],
       [schema.sessions, [revokedSessionRow]],
+      [schema.memberships, [{ ...membershipRow, role: "admin", updatedAt }]],
+      [schema.appEntitlements, [{ ...entitlementRow, status: "disabled", updatedAt }]],
     ]),
   });
   const repositories = createDrizzlePlatformRepositories(fakeDb);
@@ -349,6 +354,22 @@ test("Drizzle repository create, update, and append methods return mapped record
     mapSessionRow(revokedSessionRow),
   );
   assert.deepEqual(
+    await repositories.memberships.updateRole(
+      membershipRow.id,
+      "admin",
+      updatedAt.toISOString(),
+    ),
+    mapMembershipRow({ ...membershipRow, role: "admin", updatedAt }),
+  );
+  assert.deepEqual(
+    await repositories.memberships.updateStatus(
+      membershipRow.id,
+      "disabled",
+      updatedAt.toISOString(),
+    ),
+    mapMembershipRow({ ...membershipRow, role: "admin", updatedAt }),
+  );
+  assert.deepEqual(
     await repositories.invitations.create(mapInvitationRow(invitationRow)),
     mapInvitationRow(invitationRow),
   );
@@ -361,6 +382,15 @@ test("Drizzle repository create, update, and append methods return mapped record
   assert.deepEqual(
     await repositories.auditEvents.append(mapAuditEventRow(auditEventRow)),
     mapAuditEventRow(auditEventRow),
+  );
+  assert.deepEqual(
+    await repositories.appEntitlements.updateStatus(
+      entitlementRow.id,
+      "disabled",
+      userRow.id,
+      updatedAt.toISOString(),
+    ),
+    mapAppEntitlementRow({ ...entitlementRow, status: "disabled", updatedAt }),
   );
 
   const invitationInsert = fakeDb.calls.find(
@@ -404,6 +434,27 @@ test("Drizzle repository create, update, and append methods return mapped record
   );
   assert.ok(sessionUpdate);
   assert.deepEqual(Object.keys(sessionUpdate.values), ["revokedAt"]);
+  const membershipUpdates = fakeDb.calls.filter(
+    (call) => call.operation === "update.set" && call.table === schema.memberships,
+  );
+  assert.equal(membershipUpdates.length, 2);
+  assert.deepEqual(membershipUpdates[0].values, {
+    role: "admin",
+    updatedAt,
+  });
+  assert.deepEqual(membershipUpdates[1].values, {
+    status: "disabled",
+    updatedAt,
+  });
+  const entitlementUpdate = fakeDb.calls.find(
+    (call) => call.operation === "update.set" && call.table === schema.appEntitlements,
+  );
+  assert.ok(entitlementUpdate);
+  assert.deepEqual(entitlementUpdate.values, {
+    status: "disabled",
+    grantedByUserId: userRow.id,
+    updatedAt,
+  });
 });
 
 test("pure domain and platform port modules do not import database adapter details", async () => {

@@ -4,11 +4,13 @@ import type {
   InvitationStatus,
   IsoTimestamp,
   Membership,
+  MembershipStatus,
+  Role,
   Session,
   User,
   Workspace,
 } from "../accounts/types.js";
-import type { App, AppEntitlement } from "../apps/types.js";
+import type { App, AppEntitlement, EntitlementStatus } from "../apps/types.js";
 
 export interface ProviderIdentity {
   id: string;
@@ -73,7 +75,18 @@ export interface WorkspaceRepository {
 export interface MembershipRepository {
   findForUserInWorkspace(userId: string, workspaceId: string): Promise<Membership | null>;
   listForUser(userId: string): Promise<readonly Membership[]>;
+  listForWorkspace(workspaceId: string): Promise<readonly Membership[]>;
   create(membership: Membership): Promise<Membership>;
+  updateRole(
+    id: string,
+    role: Role,
+    updatedAt: IsoTimestamp,
+  ): Promise<Membership | null>;
+  updateStatus(
+    id: string,
+    status: MembershipStatus,
+    updatedAt: IsoTimestamp,
+  ): Promise<Membership | null>;
 }
 
 export interface InvitationRepository {
@@ -97,6 +110,12 @@ export interface AppEntitlementRepository {
   findForWorkspaceApp(workspaceId: string, appId: string): Promise<AppEntitlement | null>;
   listForWorkspace(workspaceId: string): Promise<readonly AppEntitlement[]>;
   create(entitlement: AppEntitlement): Promise<AppEntitlement>;
+  updateStatus(
+    id: string,
+    status: EntitlementStatus,
+    grantedByUserId: string | null,
+    updatedAt: IsoTimestamp,
+  ): Promise<AppEntitlement | null>;
 }
 
 export interface AuditEventRepository {
