@@ -125,6 +125,7 @@ The platform provides KQAG with platform-issued identity and workspace context t
 - `docs/accounts-contract.md`
 - `docs/app-access-contract.md`
 - `docs/kqag-integration-contract.md`
+- `docs/internal-alpha-platform-contract.md`
 - `docs/adr/0001-platform-accounts-first.md`
 - `docs/adr/0002-auth-session-strategy.md`
 - `docs/adr/0003-persistence-and-migrations.md`
