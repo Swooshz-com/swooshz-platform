@@ -177,7 +177,7 @@ The raw launch token must never appear in URL query parameters, URL fragments,
 browser local/session storage, cookies, logs, screenshots, docs, telemetry, or
 test snapshots.
 
-### H. Verify `/app/admin` Add Existing User
+### H. Verify `/app/admin` Add Existing User And Admin Controls
 
 Use this internal-alpha fallback only for a teammate who has completed real OIDC login at least once. That means the teammate is already an existing active provider-backed Platform user. The admin UI does not create provider accounts, does not create provider identities, and no invitation email is sent.
 
@@ -186,9 +186,11 @@ Use this internal-alpha fallback only for a teammate who has completed real OIDC
 3. Use the Add Existing User form with the placeholder email value the teammate used for login.
 4. For this check, set role to `member` for quote operators unless the teammate should administer the workspace.
 5. Submit the form and confirm the member appears in the team list with active membership status.
-6. If the form shows a generic failure, confirm the teammate completed real OIDC login, has an active provider-backed Platform user, is not already a workspace member, and that the browser request has a fresh CSRF token.
+6. Change a non-self member role, disable a non-self test membership when safe for the local UAT workspace, and enable or disable the KQAG entitlement only in the reviewed local UAT environment.
+7. Confirm role change, membership disable, and entitlement change requests succeed only with the existing session-cookie flow plus a fresh CSRF token/header.
+8. If the form shows a generic failure, confirm the teammate completed real OIDC login, has an active provider-backed Platform user, is not already a workspace member, and that the browser request has a fresh CSRF token.
 
-Do not paste real staff emails, private provider identity values, provider payloads, invitation secrets, cookies, or callback URLs with query params into local notes or shared screenshots.
+Audit/activity browsing remains future scope; verify audit side effects through tests and reviewed database inspection only when explicitly approved for the local UAT database. Do not paste real staff emails, private provider identity values, provider payloads, invitation secrets, cookies, audit screenshots with private values, or callback URLs with query params into local notes or shared screenshots. Admin UI responses must not show provider identifiers, provider payload internals, token material, session identifiers, database internals, or KQAG quote data.
 
 ### I. Optional Consume API Check
 

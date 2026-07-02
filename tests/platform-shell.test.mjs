@@ -63,6 +63,17 @@ test("admin shell references protected admin APIs and CSRF-protected actions", (
   assert.match(html, /"x-csrf-token": csrfToken/);
 });
 
+test("admin shell does not add audit browsing in the minimal UI PR", () => {
+  const html = renderAdminShellPage();
+
+  assert.doesNotMatch(html, /id="activity"/);
+  assert.doesNotMatch(html, /Activity/);
+  assert.doesNotMatch(html, /renderActivity/);
+  assert.doesNotMatch(html, /adminAuditEventsUrl/);
+  assert.doesNotMatch(html, /metadataSummary/);
+  assert.doesNotMatch(html, /\/audit-events/);
+});
+
 test("admin shell includes add-existing-user form with allowed non-owner roles", () => {
   const html = renderAdminShellPage();
 
@@ -95,6 +106,7 @@ test("admin shell keeps secret raw-auth and KQAG quote material out of static HT
   assert.doesNotMatch(html, /DATABASE_URL|postgresql:\/\/|private\.example/i);
   assert.doesNotMatch(html, /quote export|pricing|xlsx|quote session/i);
   assert.doesNotMatch(html, /localStorage|sessionStorage|clipboard/);
+  assert.doesNotMatch(html, /provider.?subject|provider_identity|rawEmail|sessionId/i);
 });
 
 test("platform shell module does not import frontend frameworks provider SDKs DB KQAG or migrations", async () => {

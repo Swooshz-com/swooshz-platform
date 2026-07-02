@@ -6,7 +6,7 @@ This audit defines what Swooshz Platform must own before Koncept Images internal
 
 KQAG / SAQG local UAT has a usable platform launch path: Google-compatible generic OIDC can create a platform session, an operator can seed an already-authenticated user into the internal workspace, `/app` can show the user's workspace/app access, and the KQAG browser launch handoff can send a one-time launch token server-to-server for same-host local UAT.
 
-Before Koncept Images internal alpha, Platform still needs a complete team and access-management product surface. The current code supports platform-owned users, provider identities, sessions, workspaces, memberships, app records, app entitlements, hashed auth state, hashed CSRF tokens, hashed one-time app launch tokens, a local browser shell, protected owner/admin-only HTTP route foundations for workspace member and KQAG app-access administration, and a minimal functional `/app/admin` browser surface for internal alpha administration. Owner/admin users can add an existing active provider-backed Platform user to the workspace by normalized email after that user has signed in once. It does not yet support full invitation delivery/acceptance, polished product UI, audit browsing, security/session management, or hosted internal-alpha operations.
+Before Koncept Images internal alpha, Platform still needs a complete team and access-management product surface. The current code supports platform-owned users, provider identities, sessions, workspaces, memberships, app records, app entitlements, hashed auth state, hashed CSRF tokens, hashed one-time app launch tokens, a local browser shell, protected owner/admin-only HTTP route foundations for workspace member and KQAG app-access administration, and a minimal functional `/app/admin` browser surface for internal alpha administration. Owner/admin users can add an existing active provider-backed Platform user to the workspace by normalized email after that user has signed in once. It does not yet support full invitation delivery/acceptance, audit/activity browsing, polished product UI, audit export/filtering/retention management, security/session management, or hosted internal-alpha operations.
 
 The next PRs should therefore finish the remaining team/user management and operations gaps before Google Stitch or visual dashboard work. Stitch should consume an approved page inventory from this document and should not invent business logic or product scope.
 
@@ -41,7 +41,7 @@ The platform currently behaves like a minimal internal shell plus backend contra
 - Owner/admin users can reach `/app/admin` from the app shell, review safe workspace/member/KQAG entitlement state, add an existing active provider-backed Platform user by email, change member roles, disable memberships, and enable or disable the KQAG workspace entitlement through protected admin routes.
 - KQAG launch works through an explicitly configured local same-host server handoff.
 
-It is not yet a complete internal admin product. The minimal admin UI is functional internal-alpha scaffolding, not a polished dashboard. Full invitation delivery/acceptance, disabled existing membership reactivation, audit browsing, security/session management, hosted deployment operations, and account settings remain missing.
+It is not yet a complete internal admin product. The minimal admin UI is functional internal-alpha scaffolding, not a polished dashboard. Full invitation delivery/acceptance, disabled existing membership reactivation, audit export/filtering/retention management, security/session management, hosted deployment operations, and account settings remain missing.
 
 ## Internal Alpha Requirements
 
@@ -85,7 +85,7 @@ Current schema supports `owner`, `admin`, `member`, and `viewer`, but not `opera
 
 | Capability | Current status | Alpha classification | Evidence | Internal-alpha requirement |
 | --- | --- | --- | --- | --- |
-| Listing workspace users | Implemented partial | Partial admin surface shipped; full invite remains blocker before broad rollout | Protected admin HTTP routes and `/app/admin` can list workspace members with safe user summaries. | Keep private provider material out of responses. Add audit browsing separately. |
+| Listing workspace users | Implemented partial | Partial admin surface shipped; full invite remains blocker before broad rollout | Protected admin HTTP routes and `/app/admin` can list workspace members with safe user summaries. | Keep private provider material out of responses. |
 | Adding user by email | Implemented partial | Reviewed internal-alpha fallback shipped; full email invitation delivery remains future scope | `/app/admin` and the protected add route can add an existing active provider-backed user by normalized email after that user signs in once. The route returns generic safe errors for missing users, users without provider identities, disabled users, existing memberships, invalid roles, and audit failures. No invitation delivery occurs. | Keep full invitation delivery/acceptance for a separate reviewed PR. Avoid user enumeration in public responses. Disabled existing membership reactivation remains future scope. |
 | Removing/deactivating user | Implemented partial | Partial admin surface shipped; global user disable remains a future decision | Protected admin HTTP routes and `/app/admin` can disable a workspace membership with audit events, last-owner protection, and self-removal guard. | Decide whether global user disable is needed for alpha. |
 | Changing role | Implemented partial | Partial admin surface shipped; operator-role decision remains future scope | Protected admin HTTP routes and `/app/admin` can change membership role with audit events, last-owner protection, and self-demotion guard. | Keep `member` as quote-operator mapping until a first-class `operator` role PR is approved. |
@@ -93,7 +93,7 @@ Current schema supports `owner`, `admin`, `member`, and `viewer`, but not `opera
 | Invited/pending users | Partial | Future production enhancement after alpha decision, unless invitations are selected for alpha | Invitation schema and repository create/update status exist; no invitation service, token flow, email delivery, or acceptance route. | Decide whether alpha uses invitation flow or admin adds only already-authenticated allowlisted users. Invitation tokens must be hashed. |
 | Fail-closed access if role/app access is missing | Implemented | Implemented | `decideAppAccess` denies missing session, inactive user, missing workspace selection, missing membership, inactive workspace, missing/unavailable app, missing entitlement, disallowed role, and future billing block. | Preserve this behavior while adding admin surfaces. |
 | Seeding first owner/admin | Partial | Blocker for hosted internal alpha operations | Seed CLI exists for an existing provider-backed user and uses explicit confirmation. It requires manual operator sequencing after first login. | Keep as bootstrap fallback, document hosted operator runbook, and do not use real staff emails in repo. |
-| Audit event recording for admin actions | Partial | Blocker before internal alpha admin surfaces | Workspace admin services emit privacy-minimized audit events for membership role change, membership disable, KQAG entitlement enable, and KQAG entitlement disable. Audit browsing/export is missing. | Add audit browsing and ensure future admin routes use the same service/audit path. |
+| Audit event recording for admin actions | Implemented partial | Audit/activity browsing remains future scope; Audit export/filtering/retention remains future scope | Workspace admin services emit privacy-minimized audit events for membership add, membership role change, membership disable, KQAG entitlement enable, and KQAG entitlement disable. No owner/admin audit browsing UI or route is shipped yet. | Keep future admin routes on the same service/audit path. Do not expose provider, auth, session, DB, or KQAG private material. |
 | Admin authorization checks | Implemented partial | Implemented for current admin routes and UI | Workspace admin services and protected HTTP routes check active session, active user, active workspace, active membership, and owner/admin role. Browser-cookie admin mutation routes use the existing CSRF/origin security helper before mutation. | Preserve fail-closed behavior for future admin routes. |
 
 ## Security Findings
@@ -112,7 +112,7 @@ Current schema supports `owner`, `admin`, `member`, and `viewer`, but not `opera
 | Fail-closed behavior | Missing/invalid config, missing app launch dependencies, unsafe KQAG host mismatch, denied access, invalid tokens, and CSRF/origin failures fail closed. | Preserve fail-closed defaults; do not add demo or fallback auth shortcuts. |
 | DB migration safety | Migration execution requires explicit confirmation and does not run on startup. | Hosted alpha needs a migration procedure with backup/rollback notes before first real-data migration. |
 | Logging privacy | Docs and code avoid printing secrets, raw provider payloads, auth headers, cookies, DB URLs, and private KQAG payloads. | Add privacy-safe request/event ids for support later; do not log raw prompts, quote files, provider responses, or token material. |
-| Audit events | Audit schema/repository exists, but product workflows for team/app-access management and consistent event emission are missing. | Treat audit event emission as a blocker for admin surfaces before internal alpha. |
+| Audit events | Audit schema/repository exists and admin mutations emit audit events. | Audit/activity browsing remains future scope. Audit export/filtering/retention remains future scope. Preserve privacy-minimized event summaries when browsing is later implemented. |
 
 ## Admin Foundation Runbook
 
@@ -143,6 +143,7 @@ Implemented browser/admin UI surface:
 - The shell loads safe workspace identity from the session context route, then calls the protected workspace members and app-entitlement routes above.
 - The add-existing-user form posts by calling the protected add route with the existing CSRF token/header. The teammate must sign in once first so a provider-backed Platform user exists; no invitation delivery or provider account creation happens.
 - Role changes, membership disables, and KQAG entitlement toggles use the existing CSRF token route and send the required `x-csrf-token` header to the protected routes.
+- Audit/activity browsing remains future scope; this PR does not add an audit listing route, activity UI, export, filtering, or retention workflow.
 
 Operational notes:
 
@@ -154,10 +155,10 @@ Operational notes:
 - Existing disabled memberships are not reactivated by the add route. Disabled existing membership reactivation remains future scope.
 - Protected admin HTTP routes follow the existing adapter convention of path parameters plus required query parameters for mutation inputs; there is no request-body parser in this foundation PR.
 - State-changing admin HTTP routes require active browser session, allowed Origin/Referer, and valid CSRF token before mutation.
-- Audit metadata uses internal ids and status/category values only. Do not add raw emails, provider claims, OAuth payloads, tokens, cookies, DB URLs, KQAG quote contents, or callback URLs with query params.
+- Audit metadata for admin mutations uses internal ids and status/category values only. Do not add raw emails, provider claims, OAuth payloads, tokens, cookies, DB URLs, KQAG quote contents, or callback URLs with query params.
 - No polished product UI exists yet; `/app/admin` is a plain functional internal-alpha surface.
-- The minimal admin UI and routes use active session checks, active workspace membership checks, owner/admin authorization, CSRF/origin validation for browser-cookie mutations, and generic user-facing errors. They do not add invitation delivery, audit browsing, global user disable, operator role, billing, KQAG app-data editing, or Google Stitch implementation.
-- The former blocker phrase "No product HTTP route or UI exists yet" is resolved only for the minimal `/app/admin` member/app-entitlement controls and existing-provider-backed add fallback; full invitations, audit browsing, and polished product UI remain out of scope.
+- The minimal admin UI and routes use active session checks, active workspace membership checks, owner/admin authorization, CSRF/origin validation for browser-cookie mutations, and generic user-facing errors. They do not add invitation delivery, audit export/filtering/retention, global user disable, operator role, billing, KQAG app-data editing, or Google Stitch implementation.
+- The former blocker phrase "No product HTTP route or UI exists yet" is resolved only for the minimal `/app/admin` member/app-entitlement controls and existing-provider-backed add fallback; full invitations, audit/activity browsing, audit export/filtering/retention, and polished product UI remain out of scope.
 - No KQAG app data responsibilities move into Platform. Platform manages access; KQAG still owns quote data.
 
 Remaining internal-alpha blockers after this foundation:
@@ -165,7 +166,8 @@ Remaining internal-alpha blockers after this foundation:
 - Full email invitation delivery/acceptance, if selected beyond the existing-provider-backed internal-alpha fallback.
 - Disabled existing membership reactivation, if approved.
 - Audit/activity browsing.
-- Hosted internal-alpha deployment runbook and smoke checklist.
+- Audit export/filtering/retention workflows.
+- Hosted internal-alpha deployment runbook and smoke checklist. Blocker before internal alpha.
 - Product decision on whether `operator` remains mapped to `member` or becomes a first-class role.
 
 ## Production And Deployment Readiness Audit
@@ -225,7 +227,7 @@ Remaining internal-alpha blockers after this foundation:
 | Workspace Settings | Show internal workspace identity and non-secret configuration. | Workspace name, slug, status, app entitlement summary, safe metadata. | Edit display name/status only if approved later; no destructive ownerless state. | Owner/admin. | Minimal identity summary appears in `/app/admin`; editable settings remain future scope. |
 | Team Members | Manage people in the workspace. | User display name, placeholder email, role, membership status, last login if safe, invitation status if used. | Add existing provider-backed user, remove/deactivate membership, change role, resend/revoke invite if invitations ship. | Owner/admin with last-owner guardrails. | Minimal list, existing-user add, role change, and membership disable are implemented in `/app/admin`; full invitations remain future scope. |
 | App Access | Manage workspace entitlement to SAQG and future apps. | App key/name/status, entitlement status, who granted it if available, launch eligibility summary. | Grant/revoke/suspend SAQG access, view denied reason, future app enablement. | Owner/admin. | Minimal KQAG entitlement list and enable/disable controls are implemented in `/app/admin`; future app support remains contract-specific. |
-| Audit / Activity | Review security and access changes. | Sign-in/out, membership changes, entitlement changes, seed operations, launch lifecycle metadata, actor/target ids, timestamps. | Filter/export later; no mutation except retention workflow later. | Owner/admin; maybe owner-only for export. | Audit events exist for admin services/routes; browsing/export still blocker for admin surfaces. |
+| Audit / Activity | Review security and access changes. | Recent workspace admin audit events: membership changes, entitlement changes, actor/target ids, timestamps, and safe metadata. | Browse/filter/export later; no mutation except retention workflow later. | Owner/admin; maybe owner-only for export. | Audit/activity browsing remains future scope. Audit export/filtering/retention remains future scope. |
 | Security / Sessions | Review active sessions and security posture. | Current session, recent auth failure categories, session expiry, allowed auth provider. | Logout current session now; revoke other sessions later. | Current user for own session; owner/admin for workspace-wide security later. | Partial logout exists; management page is future production enhancement. |
 | Deployment / Health | Internal operator page or runbook-only status. | Health check, app/runtime version, KQAG handoff mode, non-secret config presence checks. | Run smoke checklist manually; no secret display. | Operator/owner/admin, or runbook-only. | Future; hosted runbook is blocker before hosted alpha, UI is not. |
 | Billing / Credits | Reserve commercial concepts. | Placeholder only; no balances or payment provider ids. | None until billing is approved. | Owner later. | Future only; not an internal-alpha blocker. |
@@ -241,9 +243,9 @@ Stitch output should be treated as UI reference only. It is not the source of tr
 ## Recommended PR Sequence
 
 1. Full email invitation delivery/acceptance, if needed for alpha beyond the existing-provider-backed fallback.
-2. Audit/activity browsing.
-3. Hosted internal-alpha deployment runbook.
-4. Platform security/readiness guard checks.
+2. Hosted internal-alpha deployment runbook.
+3. Platform security/readiness guard checks.
+4. Audit export/filtering/retention, if needed before broader rollout.
 5. Google Stitch UI exploration based on approved IA and current functional admin surfaces.
 6. Implement Platform UI polish.
 7. Billing/credits later.

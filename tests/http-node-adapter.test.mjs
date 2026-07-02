@@ -111,6 +111,8 @@ test("GET /app/admin renders the admin shell as no-store HTML without requiring 
   assert.match(response.body, /\/disable/);
   assert.match(response.body, /\/app-entitlements/);
   assert.match(response.body, /\/kqag\/status\?status=/);
+  assert.doesNotMatch(response.body, /\/audit-events/);
+  assert.doesNotMatch(response.body, /id="activity"/);
   assert.equal(fixture.calls.sessionsFindById, 0);
   assert.equal(fixture.calls.csrfValidate, 0);
   assertResponseIsPrivacySafe(response);
