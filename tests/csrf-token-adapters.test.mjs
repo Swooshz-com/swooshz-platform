@@ -181,6 +181,7 @@ test("CSRF crypto imports stay in dedicated crypto adapter modules", async () =>
     "src/auth/platform-identity-crypto.ts",
     "src/http/csrf-token-crypto.ts",
     "src/platform/app-launch-token-crypto.ts",
+    "src/platform/workspace-admin-id-crypto.ts",
   ]);
 
   for (const filePath of sourceFiles) {

@@ -31,6 +31,7 @@ import {
   createHmacAppLaunchTokenHasher,
   createSecureAppLaunchTokenFactory,
 } from "../platform/app-launch-token-crypto.js";
+import { createSecureWorkspaceAdminIdFactory } from "../platform/workspace-admin-id-crypto.js";
 import type {
   AppLaunchTokenIdFactory,
 } from "../platform/app-launch-intent-service.js";
@@ -160,6 +161,7 @@ export function createPlatformRuntimeDependencies(
       tokenHasher,
     }),
     csrfTokenTtlSeconds: input.csrfTokenTtlSeconds ?? defaultCsrfTokenTtlSeconds,
+    workspaceAdminIdFactory: createSecureWorkspaceAdminIdFactory(),
     kqagBrowserLaunch: input.kqagBrowserLaunch,
     ...appLaunchDependencies,
     ...authDependencies,

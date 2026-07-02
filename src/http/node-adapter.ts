@@ -4,6 +4,7 @@ import type { SessionRevocationServiceDependencies } from "../auth/session-revoc
 import type { AppLaunchIntentDependencies } from "../platform/app-launch-intent-service.js";
 import type { AppLaunchTokenConsumeDependencies } from "../platform/app-launch-token-consume-service.js";
 import type { PlatformRepositories } from "../platform/repositories.js";
+import type { WorkspaceAdminIdFactory } from "../platform/workspace-admin-id.js";
 import {
   handleAuthCallbackRequest,
   handleAuthStartRequest,
@@ -20,6 +21,11 @@ import {
   handleLogoutRequest,
   handleProtectedAppAccessRequest,
   handleSessionContextRequest,
+  handleWorkspaceAppEntitlementsAdminRequest,
+  handleWorkspaceKqagEntitlementStatusRequest,
+  handleWorkspaceMembersAdminRequest,
+  handleWorkspaceMemberRoleChangeRequest,
+  handleWorkspaceMembershipDisableRequest,
   type HttpRequestHeaders,
   type HttpResponseLike,
   type KqagBrowserLaunchDependencies,
@@ -49,6 +55,7 @@ export interface NodePlatformHttpAdapterDependencies {
   appLaunchTokenConsume?: AppLaunchTokenConsumeDependencies;
   kqagBrowserLaunch?: KqagBrowserLaunchDependencies["kqag"];
   billingGate?: BillingGate;
+  workspaceAdminIdFactory?: WorkspaceAdminIdFactory;
 }
 
 export interface NodePlatformHttpRequestLike {
@@ -68,6 +75,11 @@ const htmlContentType = "text/html; charset=utf-8";
 const adapterUrlBase = "http://swooshz-platform.local";
 const defaultCsrfTokenTtlSeconds = 900;
 
+interface RouteMatch {
+  route: HttpRouteContract;
+  params: ReadonlyMap<string, string>;
+}
+
 export async function handleNodePlatformHttpRequest(
   dependencies: NodePlatformHttpAdapterDependencies,
   request: NodePlatformHttpRequestLike,
@@ -81,14 +93,16 @@ export async function handleNodePlatformHttpRequest(
     });
   }
 
-  const route = findRouteByPath(parsedUrl.pathname);
+  const routeMatch = findRouteByPath(parsedUrl.pathname);
 
-  if (!route) {
+  if (!routeMatch) {
     return jsonResponse(404, {
       outcome: "error",
       message: "Route not found.",
     });
   }
+
+  const route = routeMatch.route;
 
   const method = normalizeMethod(request.method);
 
@@ -210,6 +224,129 @@ export async function handleNodePlatformHttpRequest(
           cookie: dependencies.cookie,
         },
       ),
+    );
+  }
+
+  if (route.id === "platform_workspace_members") {
+    return toNodeResponse(
+      await handleWorkspaceMembersAdminRequest(dependencies.repositories, {
+        headers,
+        workspaceId: requiredRouteParam(routeMatch, "workspaceId"),
+        now: dependencies.now(),
+        cookie: dependencies.cookie,
+      }),
+    );
+  }
+
+  if (route.id === "platform_workspace_member_role") {
+    const role = parsedUrl.searchParams.get("role");
+
+    if (!role) {
+      return missingRequiredQueryResponse(noStoreHeaders());
+    }
+
+    const now = dependencies.now();
+    const securityResult = await validateAdminRouteSecurity({
+      route,
+      headers,
+      now,
+      dependencies,
+    });
+
+    if (!securityResult.allowed) {
+      return securityFailureResponse(
+        securityResult.recommendedStatus,
+        securityResult.reason,
+        noStoreHeaders(),
+      );
+    }
+
+    return toNodeResponse(
+      await handleWorkspaceMemberRoleChangeRequest(dependencies.repositories, {
+        headers,
+        workspaceId: requiredRouteParam(routeMatch, "workspaceId"),
+        membershipId: requiredRouteParam(routeMatch, "membershipId"),
+        role,
+        auditEventId: createWorkspaceAdminAuditEventId(dependencies),
+        now,
+        cookie: dependencies.cookie,
+      }),
+    );
+  }
+
+  if (route.id === "platform_workspace_member_disable") {
+    const now = dependencies.now();
+    const securityResult = await validateAdminRouteSecurity({
+      route,
+      headers,
+      now,
+      dependencies,
+    });
+
+    if (!securityResult.allowed) {
+      return securityFailureResponse(
+        securityResult.recommendedStatus,
+        securityResult.reason,
+        noStoreHeaders(),
+      );
+    }
+
+    return toNodeResponse(
+      await handleWorkspaceMembershipDisableRequest(dependencies.repositories, {
+        headers,
+        workspaceId: requiredRouteParam(routeMatch, "workspaceId"),
+        membershipId: requiredRouteParam(routeMatch, "membershipId"),
+        auditEventId: createWorkspaceAdminAuditEventId(dependencies),
+        now,
+        cookie: dependencies.cookie,
+      }),
+    );
+  }
+
+  if (route.id === "platform_workspace_app_entitlements") {
+    return toNodeResponse(
+      await handleWorkspaceAppEntitlementsAdminRequest(dependencies.repositories, {
+        headers,
+        workspaceId: requiredRouteParam(routeMatch, "workspaceId"),
+        now: dependencies.now(),
+        cookie: dependencies.cookie,
+      }),
+    );
+  }
+
+  if (route.id === "platform_workspace_kqag_entitlement_status") {
+    const status = parsedUrl.searchParams.get("status");
+
+    if (!status) {
+      return missingRequiredQueryResponse(noStoreHeaders());
+    }
+
+    const now = dependencies.now();
+    const securityResult = await validateAdminRouteSecurity({
+      route,
+      headers,
+      now,
+      dependencies,
+    });
+
+    if (!securityResult.allowed) {
+      return securityFailureResponse(
+        securityResult.recommendedStatus,
+        securityResult.reason,
+        noStoreHeaders(),
+      );
+    }
+
+    return toNodeResponse(
+      await handleWorkspaceKqagEntitlementStatusRequest(dependencies.repositories, {
+        headers,
+        workspaceId: requiredRouteParam(routeMatch, "workspaceId"),
+        status,
+        auditEventId: createWorkspaceAdminAuditEventId(dependencies),
+        entitlementId: createWorkspaceAdminEntitlementId(dependencies),
+        now,
+        cookie: dependencies.cookie,
+      }),
     );
   }
 
@@ -442,8 +579,56 @@ function parseRequestUrl(url: string | undefined): URL | null {
   }
 }
 
-function findRouteByPath(pathname: string): HttpRouteContract | null {
-  return HTTP_ROUTE_CONTRACTS.find((route) => route.path === pathname) ?? null;
+function findRouteByPath(pathname: string): RouteMatch | null {
+  for (const route of HTTP_ROUTE_CONTRACTS) {
+    const params = matchRoutePath(route.path, pathname);
+
+    if (params) {
+      return { route, params };
+    }
+  }
+
+  return null;
+}
+
+function matchRoutePath(pattern: string, pathname: string): ReadonlyMap<string, string> | null {
+  if (pattern === pathname) {
+    return new Map();
+  }
+
+  const patternSegments = pattern.split("/").filter(Boolean);
+  const pathSegments = pathname.split("/").filter(Boolean);
+
+  if (patternSegments.length !== pathSegments.length) {
+    return null;
+  }
+
+  const params = new Map<string, string>();
+
+  for (const [index, patternSegment] of patternSegments.entries()) {
+    const pathSegment = pathSegments[index];
+
+    if (patternSegment.startsWith(":")) {
+      params.set(patternSegment.slice(1), decodeURIComponent(pathSegment));
+      continue;
+    }
+
+    if (patternSegment !== pathSegment) {
+      return null;
+    }
+  }
+
+  return params;
+}
+
+function requiredRouteParam(routeMatch: RouteMatch, name: string): string {
+  const value = routeMatch.params.get(name);
+
+  if (!value) {
+    throw new Error("Required route parameter missing.");
+  }
+
+  return value;
 }
 
 function normalizeMethod(method: string | undefined): string {
@@ -491,6 +676,66 @@ function csrfIssueFailureResponse(): NodePlatformHttpResponse {
     outcome: "error",
     message: "CSRF token could not be issued.",
   });
+}
+
+function missingRequiredQueryResponse(
+  headers: Record<string, string> = {},
+): NodePlatformHttpResponse {
+  return jsonResponse(
+    400,
+    {
+      outcome: "error",
+      message: "Required query parameters are missing.",
+    },
+    headers,
+  );
+}
+
+async function validateAdminRouteSecurity({
+  route,
+  headers,
+  now,
+  dependencies,
+}: {
+  route: HttpRouteContract;
+  headers: HttpRequestHeaders;
+  now: string;
+  dependencies: NodePlatformHttpAdapterDependencies;
+}) {
+  const sessionId = extractBrowserSessionIdFromCookieHeader(
+    readHeader(headers, "cookie"),
+    dependencies.cookie,
+  );
+
+  return validateHttpRequestSecurityForRoute({
+    route,
+    headers,
+    sessionId,
+    now,
+    originConfig: dependencies.originConfig,
+    csrfTokenValidator: dependencies.csrfTokenValidator,
+  });
+}
+
+let fallbackWorkspaceAdminIdSequence = 0;
+
+function createWorkspaceAdminAuditEventId(
+  dependencies: NodePlatformHttpAdapterDependencies,
+): string {
+  return dependencies.workspaceAdminIdFactory?.createAuditEventId() ??
+    createFallbackWorkspaceAdminId("audit");
+}
+
+function createWorkspaceAdminEntitlementId(
+  dependencies: NodePlatformHttpAdapterDependencies,
+): string {
+  return dependencies.workspaceAdminIdFactory?.createEntitlementId() ??
+    createFallbackWorkspaceAdminId("entitlement");
+}
+
+function createFallbackWorkspaceAdminId(prefix: "audit" | "entitlement"): string {
+  fallbackWorkspaceAdminIdSequence += 1;
+  return `workspace_admin_${prefix}_${Date.now().toString(36)}_${fallbackWorkspaceAdminIdSequence}`;
 }
 
 function authStartFailureResponse(): NodePlatformHttpResponse {

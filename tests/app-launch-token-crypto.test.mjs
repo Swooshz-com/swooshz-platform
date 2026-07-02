@@ -74,6 +74,7 @@ test("app launch crypto imports stay only in dedicated crypto adapter modules", 
     "src/auth/platform-identity-crypto.ts",
     "src/http/csrf-token-crypto.ts",
     "src/platform/app-launch-token-crypto.ts",
+    "src/platform/workspace-admin-id-crypto.ts",
   ]);
 
   for (const filePath of sourceFiles) {

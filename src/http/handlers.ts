@@ -22,7 +22,17 @@ import {
   getPlatformSessionContext,
   PlatformSessionContextServiceError,
 } from "../platform/session-context-service.js";
+import {
+  changeWorkspaceMemberRole,
+  disableWorkspaceMembership,
+  listWorkspaceAppEntitlementsForAdmin,
+  listWorkspaceMembersForAdmin,
+  setWorkspaceAppEntitlementStatus,
+  WorkspaceAdminServiceError,
+} from "../platform/workspace-admin-service.js";
 import type { PlatformRepositories, SessionRepository } from "../platform/repositories.js";
+import type { Role } from "../accounts/types.js";
+import type { EntitlementStatus } from "../apps/types.js";
 import {
   CsrfTokenServiceError,
   issueCsrfTokenForSession,
@@ -117,6 +127,30 @@ export interface KqagBrowserLaunchHttpRequest {
   appKey: string;
   now: string;
   cookie?: BrowserSessionCookieConfig;
+}
+
+export interface WorkspaceAdminHttpRequest {
+  headers?: HttpRequestHeaders;
+  workspaceId: string;
+  now: string;
+  cookie?: BrowserSessionCookieConfig;
+}
+
+export interface WorkspaceMemberRoleChangeHttpRequest extends WorkspaceAdminHttpRequest {
+  membershipId: string;
+  role: string;
+  auditEventId: string;
+}
+
+export interface WorkspaceMembershipDisableHttpRequest extends WorkspaceAdminHttpRequest {
+  membershipId: string;
+  auditEventId: string;
+}
+
+export interface WorkspaceKqagEntitlementStatusHttpRequest extends WorkspaceAdminHttpRequest {
+  status: string;
+  auditEventId: string;
+  entitlementId: string;
 }
 
 export async function handleProtectedAppAccessRequest(
@@ -468,6 +502,175 @@ export async function handleKqagBrowserLaunchRequest(
   };
 }
 
+export async function handleWorkspaceMembersAdminRequest(
+  repositories: PlatformRepositories,
+  request: WorkspaceAdminHttpRequest,
+): Promise<HttpResponseLike> {
+  const sessionId = extractSessionId(request.headers, request.cookie);
+
+  if (!sessionId) {
+    return workspaceAdminMissingSession();
+  }
+
+  try {
+    const result = await listWorkspaceMembersForAdmin(repositories, {
+      sessionId,
+      workspaceId: request.workspaceId,
+      now: request.now,
+    });
+
+    return {
+      status: 200,
+      headers: noStoreHeaders(),
+      body: {
+        outcome: "listed",
+        workspaceId: result.workspaceId,
+        members: result.members,
+      },
+    };
+  } catch (error) {
+    return workspaceAdminErrorResponse(error);
+  }
+}
+
+export async function handleWorkspaceMemberRoleChangeRequest(
+  repositories: PlatformRepositories,
+  request: WorkspaceMemberRoleChangeHttpRequest,
+): Promise<HttpResponseLike> {
+  const sessionId = extractSessionId(request.headers, request.cookie);
+
+  if (!sessionId) {
+    return workspaceAdminMissingSession();
+  }
+
+  try {
+    const membership = await changeWorkspaceMemberRole(repositories, {
+      sessionId,
+      workspaceId: request.workspaceId,
+      now: request.now,
+      membershipId: request.membershipId,
+      role: request.role as Role,
+      auditEventId: request.auditEventId,
+    });
+
+    return {
+      status: 200,
+      headers: noStoreHeaders(),
+      body: {
+        outcome: "updated",
+        membership: toWorkspaceMembershipHttpSummary(membership),
+      },
+    };
+  } catch (error) {
+    return workspaceAdminErrorResponse(error);
+  }
+}
+
+export async function handleWorkspaceMembershipDisableRequest(
+  repositories: PlatformRepositories,
+  request: WorkspaceMembershipDisableHttpRequest,
+): Promise<HttpResponseLike> {
+  const sessionId = extractSessionId(request.headers, request.cookie);
+
+  if (!sessionId) {
+    return workspaceAdminMissingSession();
+  }
+
+  try {
+    const membership = await disableWorkspaceMembership(repositories, {
+      sessionId,
+      workspaceId: request.workspaceId,
+      now: request.now,
+      membershipId: request.membershipId,
+      auditEventId: request.auditEventId,
+    });
+
+    return {
+      status: 200,
+      headers: noStoreHeaders(),
+      body: {
+        outcome: "updated",
+        membership: toWorkspaceMembershipHttpSummary(membership),
+      },
+    };
+  } catch (error) {
+    return workspaceAdminErrorResponse(error);
+  }
+}
+
+export async function handleWorkspaceAppEntitlementsAdminRequest(
+  repositories: PlatformRepositories,
+  request: WorkspaceAdminHttpRequest,
+): Promise<HttpResponseLike> {
+  const sessionId = extractSessionId(request.headers, request.cookie);
+
+  if (!sessionId) {
+    return workspaceAdminMissingSession();
+  }
+
+  try {
+    const result = await listWorkspaceAppEntitlementsForAdmin(repositories, {
+      sessionId,
+      workspaceId: request.workspaceId,
+      now: request.now,
+    });
+
+    return {
+      status: 200,
+      headers: noStoreHeaders(),
+      body: {
+        outcome: "listed",
+        workspaceId: result.workspaceId,
+        entitlements: result.entitlements,
+      },
+    };
+  } catch (error) {
+    return workspaceAdminErrorResponse(error);
+  }
+}
+
+export async function handleWorkspaceKqagEntitlementStatusRequest(
+  repositories: PlatformRepositories,
+  request: WorkspaceKqagEntitlementStatusHttpRequest,
+): Promise<HttpResponseLike> {
+  const sessionId = extractSessionId(request.headers, request.cookie);
+
+  if (!sessionId) {
+    return workspaceAdminMissingSession();
+  }
+
+  try {
+    const entitlement = await setWorkspaceAppEntitlementStatus(repositories, {
+      sessionId,
+      workspaceId: request.workspaceId,
+      now: request.now,
+      appKey: "kqag",
+      status: request.status as Extract<EntitlementStatus, "enabled" | "disabled">,
+      auditEventId: request.auditEventId,
+      entitlementId: request.entitlementId,
+    });
+
+    return {
+      status: 200,
+      headers: noStoreHeaders(),
+      body: {
+        outcome: "updated",
+        entitlement: {
+          entitlementId: entitlement.id,
+          workspaceId: entitlement.workspaceId,
+          appId: entitlement.appId,
+          appKey: "kqag",
+          status: entitlement.status,
+          grantedByUserId: entitlement.grantedByUserId,
+          updatedAt: entitlement.updatedAt,
+        },
+      },
+    };
+  } catch (error) {
+    return workspaceAdminErrorResponse(error);
+  }
+}
+
 export async function handleSessionContextRequest(
   repositories: PlatformRepositories,
   request: SessionContextHttpRequest,
@@ -522,6 +725,85 @@ function sessionContextUnauthenticated(
       outcome: "unauthenticated",
       reason,
     },
+  };
+}
+
+function workspaceAdminMissingSession(): HttpResponseLike {
+  return {
+    status: 401,
+    headers: noStoreHeaders(),
+    body: {
+      outcome: "denied",
+      reason: "missing_session",
+    },
+  };
+}
+
+function workspaceAdminErrorResponse(error: unknown): HttpResponseLike {
+  if (error instanceof WorkspaceAdminServiceError) {
+    if (error.code === "not_authorized") {
+      return {
+        status: 403,
+        headers: noStoreHeaders(),
+        body: {
+          outcome: "denied",
+          reason: "not_authorized",
+        },
+      };
+    }
+
+    return {
+      status: workspaceAdminErrorStatus(error),
+      headers: noStoreHeaders(),
+      body: {
+        outcome: "error",
+        message: error.publicMessage,
+      },
+    };
+  }
+
+  return {
+    status: 500,
+    headers: noStoreHeaders(),
+    body: {
+      outcome: "error",
+      message: "Workspace admin action could not be completed.",
+    },
+  };
+}
+
+function workspaceAdminErrorStatus(error: WorkspaceAdminServiceError): number {
+  switch (error.code) {
+    case "not_found":
+      return 404;
+    case "invalid_role":
+    case "invalid_entitlement_status":
+      return 400;
+    case "last_owner_required":
+    case "self_change_not_allowed":
+      return 409;
+    case "repository_failure":
+      return 500;
+    case "not_authorized":
+      return 403;
+  }
+}
+
+function toWorkspaceMembershipHttpSummary(membership: {
+  id: string;
+  userId: string;
+  workspaceId: string;
+  role: string;
+  status: string;
+  updatedAt: string;
+}) {
+  return {
+    membershipId: membership.id,
+    userId: membership.userId,
+    workspaceId: membership.workspaceId,
+    role: membership.role,
+    status: membership.status,
+    updatedAt: membership.updatedAt,
   };
 }
 

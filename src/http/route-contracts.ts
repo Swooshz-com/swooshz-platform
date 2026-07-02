@@ -7,6 +7,11 @@ export type HttpRouteId =
   | "platform_session_app_access"
   | "platform_session_context"
   | "platform_session_csrf"
+  | "platform_workspace_members"
+  | "platform_workspace_member_role"
+  | "platform_workspace_member_disable"
+  | "platform_workspace_app_entitlements"
+  | "platform_workspace_kqag_entitlement_status"
   | "platform_app_launch"
   | "platform_kqag_launch_open"
   | "platform_app_launch_consume"
@@ -37,7 +42,7 @@ export interface HttpRouteContract {
   handlerContract: string | null;
   responseKind: HttpRouteResponseKind;
   idempotent: boolean;
-  implemented: false;
+  implemented: boolean;
 }
 
 export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
@@ -54,7 +59,7 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     handlerContract: "renderLandingPage",
     responseKind: "html",
     idempotent: true,
-    implemented: false,
+    implemented: true,
   },
   {
     id: "platform_app_shell",
@@ -69,7 +74,7 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     handlerContract: "renderAppShellPage",
     responseKind: "html",
     idempotent: true,
-    implemented: false,
+    implemented: true,
   },
   {
     id: "healthz",
@@ -84,7 +89,7 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     handlerContract: null,
     responseKind: "json",
     idempotent: true,
-    implemented: false,
+    implemented: true,
   },
   {
     id: "platform_auth_start",
@@ -99,7 +104,7 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     handlerContract: "handleAuthStartRequest",
     responseKind: "json",
     idempotent: false,
-    implemented: false,
+    implemented: true,
   },
   {
     id: "platform_auth_callback",
@@ -114,7 +119,7 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     handlerContract: "handleAuthCallbackRequest",
     responseKind: "json",
     idempotent: false,
-    implemented: false,
+    implemented: true,
   },
   {
     id: "platform_session_app_access",
@@ -129,7 +134,7 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     handlerContract: "handleProtectedAppAccessRequest",
     responseKind: "json",
     idempotent: true,
-    implemented: false,
+    implemented: true,
   },
   {
     id: "platform_session_context",
@@ -144,7 +149,7 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     handlerContract: "handleSessionContextRequest",
     responseKind: "json",
     idempotent: true,
-    implemented: false,
+    implemented: true,
   },
   {
     id: "platform_session_csrf",
@@ -159,7 +164,82 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     handlerContract: "handleCsrfTokenIssueRequest",
     responseKind: "json",
     idempotent: false,
-    implemented: false,
+    implemented: true,
+  },
+  {
+    id: "platform_workspace_members",
+    method: "GET",
+    path: "/api/platform/workspaces/:workspaceId/members",
+    browserSession: "required",
+    csrf: {
+      required: false,
+      strategy: "none",
+    },
+    requiredQuery: [],
+    handlerContract: "handleWorkspaceMembersAdminRequest",
+    responseKind: "json",
+    idempotent: true,
+    implemented: true,
+  },
+  {
+    id: "platform_workspace_member_role",
+    method: "POST",
+    path: "/api/platform/workspaces/:workspaceId/members/:membershipId/role",
+    browserSession: "required",
+    csrf: {
+      required: true,
+      strategy: "origin_referer_and_csrf_token",
+    },
+    requiredQuery: ["role"],
+    handlerContract: "handleWorkspaceMemberRoleChangeRequest",
+    responseKind: "json",
+    idempotent: false,
+    implemented: true,
+  },
+  {
+    id: "platform_workspace_member_disable",
+    method: "POST",
+    path: "/api/platform/workspaces/:workspaceId/members/:membershipId/disable",
+    browserSession: "required",
+    csrf: {
+      required: true,
+      strategy: "origin_referer_and_csrf_token",
+    },
+    requiredQuery: [],
+    handlerContract: "handleWorkspaceMembershipDisableRequest",
+    responseKind: "json",
+    idempotent: false,
+    implemented: true,
+  },
+  {
+    id: "platform_workspace_app_entitlements",
+    method: "GET",
+    path: "/api/platform/workspaces/:workspaceId/app-entitlements",
+    browserSession: "required",
+    csrf: {
+      required: false,
+      strategy: "none",
+    },
+    requiredQuery: [],
+    handlerContract: "handleWorkspaceAppEntitlementsAdminRequest",
+    responseKind: "json",
+    idempotent: true,
+    implemented: true,
+  },
+  {
+    id: "platform_workspace_kqag_entitlement_status",
+    method: "POST",
+    path: "/api/platform/workspaces/:workspaceId/app-entitlements/kqag/status",
+    browserSession: "required",
+    csrf: {
+      required: true,
+      strategy: "origin_referer_and_csrf_token",
+    },
+    requiredQuery: ["status"],
+    handlerContract: "handleWorkspaceKqagEntitlementStatusRequest",
+    responseKind: "json",
+    idempotent: false,
+    implemented: true,
   },
   {
     id: "platform_app_launch",
@@ -174,7 +254,7 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     handlerContract: "handleAppLaunchIntentRequest",
     responseKind: "json",
     idempotent: false,
-    implemented: false,
+    implemented: true,
   },
   {
     id: "platform_kqag_launch_open",
@@ -189,7 +269,7 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     handlerContract: "handleKqagBrowserLaunchRequest",
     responseKind: "json",
     idempotent: false,
-    implemented: false,
+    implemented: true,
   },
   {
     id: "platform_app_launch_consume",
@@ -204,7 +284,7 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     handlerContract: "handleAppLaunchTokenConsumeRequest",
     responseKind: "json",
     idempotent: false,
-    implemented: false,
+    implemented: true,
   },
   {
     id: "platform_logout",
@@ -219,7 +299,7 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     handlerContract: "handleLogoutRequest",
     responseKind: "json",
     idempotent: true,
-    implemented: false,
+    implemented: true,
   },
 ] as const;
 
