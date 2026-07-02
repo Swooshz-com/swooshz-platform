@@ -53,6 +53,7 @@ test("admin shell references protected admin APIs and CSRF-protected actions", (
   assert.match(html, /\/api\/platform\/session\/csrf/);
   assert.match(html, /\/api\/platform\/workspaces\//);
   assert.match(html, /\/members/);
+  assert.match(html, /\/add\?email=/);
   assert.match(html, /\/role\?role=/);
   assert.match(html, /\/disable/);
   assert.match(html, /\/app-entitlements/);
@@ -60,6 +61,20 @@ test("admin shell references protected admin APIs and CSRF-protected actions", (
   assert.match(html, /\/api\/platform\/logout/);
   assert.match(html, /method: "POST"/);
   assert.match(html, /"x-csrf-token": csrfToken/);
+});
+
+test("admin shell includes add-existing-user form with allowed non-owner roles", () => {
+  const html = renderAdminShellPage();
+
+  assert.match(html, /id="addMemberForm"/);
+  assert.match(html, /name="email"/);
+  assert.match(html, /name="role"/);
+  assert.match(html, /value="admin"/);
+  assert.match(html, /value="member"/);
+  assert.match(html, /value="viewer"/);
+  assert.doesNotMatch(html, /value="owner"/);
+  assert.match(html, /addExistingMember/);
+  assert.match(html, /await postAdminAction\(addMemberUrl/);
 });
 
 test("admin shell limits usable controls to owner/admin workspace context", () => {

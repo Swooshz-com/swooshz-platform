@@ -7,6 +7,7 @@ import type {
   User,
   Workspace,
 } from "../accounts/types.js";
+import { normalizeEmail } from "../accounts/normalization.js";
 import type { App, AppEntitlement, EntitlementStatus } from "../apps/types.js";
 import type { AuditEventRepository, PlatformRepositories } from "./repositories.js";
 
@@ -15,6 +16,7 @@ export type WorkspaceAdminServiceErrorCode =
   | "not_found"
   | "invalid_role"
   | "invalid_entitlement_status"
+  | "membership_conflict"
   | "last_owner_required"
   | "self_change_not_allowed"
   | "repository_failure";
@@ -63,6 +65,13 @@ export interface WorkspaceRoleChangeInput extends WorkspaceAdminInput {
 }
 
 export interface WorkspaceMembershipDisableInput extends WorkspaceAdminInput {
+  membershipId: string;
+  auditEventId: string;
+}
+
+export interface WorkspaceExistingUserAddInput extends WorkspaceAdminInput {
+  targetEmail: string;
+  role: Role;
   membershipId: string;
   auditEventId: string;
 }
@@ -225,6 +234,78 @@ export async function disableWorkspaceMembership(
     });
 
     return updated;
+  });
+}
+
+export async function addExistingWorkspaceUserByEmail(
+  repositories: PlatformRepositories,
+  input: WorkspaceExistingUserAddInput,
+): Promise<Membership> {
+  assertValidAddRole(input.role);
+
+  return runWorkspaceAdminTransaction(repositories, async (transactionRepositories) => {
+    const context = await requireAdminContext(transactionRepositories, input);
+    requireAuditRepository(transactionRepositories);
+    const targetEmail = normalizeEmail(input.targetEmail);
+
+    if (!targetEmail) {
+      throw adminError("not_found", "Target platform user was not found.");
+    }
+
+    const targetUser = await transactionRepositories.users.findByNormalizedEmail(targetEmail);
+
+    if (!targetUser || targetUser.status !== "active") {
+      throw adminError("not_found", "Target platform user was not found.");
+    }
+
+    const providerIdentities = await requireProviderIdentityRepository(
+      transactionRepositories,
+    ).listForUser(targetUser.id);
+
+    if (providerIdentities.length === 0) {
+      throw adminError("not_found", "Target platform user was not found.");
+    }
+
+    const existingMembership =
+      await transactionRepositories.memberships.findForUserInWorkspace(
+        targetUser.id,
+        input.workspaceId,
+      );
+
+    if (existingMembership) {
+      throw adminError(
+        "membership_conflict",
+        "Target platform user already has a workspace membership.",
+      );
+    }
+
+    const membership = await transactionRepositories.memberships.create({
+      id: input.membershipId,
+      workspaceId: input.workspaceId,
+      userId: targetUser.id,
+      role: input.role,
+      status: "active",
+      createdAt: input.now,
+      updatedAt: input.now,
+    });
+
+    await appendAuditEvent(transactionRepositories, {
+      id: input.auditEventId,
+      workspaceId: input.workspaceId,
+      actorUserId: context.actor.id,
+      eventType: "workspace.membership.added",
+      targetType: "membership",
+      targetId: membership.id,
+      createdAt: input.now,
+      metadata: {
+        newRole: input.role,
+        newStatus: "active",
+        targetUserId: targetUser.id,
+        source: "existing_provider_backed_user",
+      },
+    });
+
+    return membership;
   });
 }
 
@@ -409,6 +490,12 @@ function assertValidRole(role: Role): void {
   }
 }
 
+function assertValidAddRole(role: Role): void {
+  if (!["admin", "member", "viewer"].includes(role)) {
+    throw adminError("invalid_role", "Workspace role is not supported.");
+  }
+}
+
 function assertValidEntitlementStatus(status: string): void {
   if (!["enabled", "disabled"].includes(status)) {
     throw adminError("invalid_entitlement_status", "Entitlement status is not supported.");
@@ -451,6 +538,16 @@ function requireAuditRepository(
   }
 
   return repositories.auditEvents;
+}
+
+function requireProviderIdentityRepository(
+  repositories: PlatformRepositories,
+) {
+  if (!repositories.providerIdentities) {
+    throw adminError("repository_failure", "Provider identity repository is not configured.");
+  }
+
+  return repositories.providerIdentities;
 }
 
 async function runWorkspaceAdminTransaction<T>(

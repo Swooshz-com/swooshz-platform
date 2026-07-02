@@ -23,6 +23,7 @@ import {
   PlatformSessionContextServiceError,
 } from "../platform/session-context-service.js";
 import {
+  addExistingWorkspaceUserByEmail,
   changeWorkspaceMemberRole,
   disableWorkspaceMembership,
   listWorkspaceAppEntitlementsForAdmin,
@@ -139,6 +140,13 @@ export interface WorkspaceAdminHttpRequest {
 export interface WorkspaceMemberRoleChangeHttpRequest extends WorkspaceAdminHttpRequest {
   membershipId: string;
   role: string;
+  auditEventId: string;
+}
+
+export interface WorkspaceMemberAddHttpRequest extends WorkspaceAdminHttpRequest {
+  targetEmail: string;
+  role: string;
+  membershipId: string;
   auditEventId: string;
 }
 
@@ -566,6 +574,40 @@ export async function handleWorkspaceMemberRoleChangeRequest(
   }
 }
 
+export async function handleWorkspaceMemberAddRequest(
+  repositories: PlatformRepositories,
+  request: WorkspaceMemberAddHttpRequest,
+): Promise<HttpResponseLike> {
+  const sessionId = extractSessionId(request.headers, request.cookie);
+
+  if (!sessionId) {
+    return workspaceAdminMissingSession();
+  }
+
+  try {
+    const membership = await addExistingWorkspaceUserByEmail(repositories, {
+      sessionId,
+      workspaceId: request.workspaceId,
+      now: request.now,
+      targetEmail: request.targetEmail,
+      role: request.role as Role,
+      membershipId: request.membershipId,
+      auditEventId: request.auditEventId,
+    });
+
+    return {
+      status: 201,
+      headers: noStoreHeaders(),
+      body: {
+        outcome: "created",
+        membership: toWorkspaceMembershipHttpSummary(membership),
+      },
+    };
+  } catch (error) {
+    return workspaceAdminErrorResponse(error);
+  }
+}
+
 export async function handleWorkspaceMembershipDisableRequest(
   repositories: PlatformRepositories,
   request: WorkspaceMembershipDisableHttpRequest,
@@ -781,6 +823,7 @@ function workspaceAdminErrorStatus(error: WorkspaceAdminServiceError): number {
       return 400;
     case "last_owner_required":
     case "self_change_not_allowed":
+    case "membership_conflict":
       return 409;
     case "repository_failure":
       return 500;

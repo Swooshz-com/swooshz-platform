@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   AccessDecisionResult,
   WorkspaceAdminServiceError,
+  addExistingWorkspaceUserByEmail,
   changeWorkspaceMemberRole,
   decidePlatformAppAccess,
   disableWorkspaceMembership,
@@ -76,6 +77,57 @@ test("owner and admin can list workspace members with safe user summaries", asyn
   }
 });
 
+test("owner and admin can add an existing active provider-backed user by email", async () => {
+  for (const role of ["owner", "admin"]) {
+    for (const targetRole of ["admin", "member", "viewer"]) {
+      const { repositories, input, records } = adminFixture({
+        role,
+        extraUsers: [existingProviderBackedUser()],
+        providerBackedUserIds: ["user_existing_example"],
+      });
+
+      const result = await addExistingWorkspaceUserByEmail(repositories, {
+        ...input,
+        targetEmail: "  Existing.User@Example.Test  ",
+        role: targetRole,
+        membershipId: `membership_added_${role}_${targetRole}`,
+        auditEventId: `audit_added_${role}_${targetRole}`,
+      });
+
+      assert.deepEqual(result, {
+        id: `membership_added_${role}_${targetRole}`,
+        workspaceId: "workspace_koncept_images",
+        userId: "user_existing_example",
+        role: targetRole,
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+      });
+      assert.equal(
+        records.memberships.filter((membership) => membership.userId === "user_existing_example")
+          .length,
+        1,
+      );
+      assert.deepEqual(records.auditEvents.at(-1), {
+        id: `audit_added_${role}_${targetRole}`,
+        workspaceId: "workspace_koncept_images",
+        actorUserId: `user_${role}_example`,
+        eventType: "workspace.membership.added",
+        targetType: "membership",
+        targetId: `membership_added_${role}_${targetRole}`,
+        createdAt: now,
+        metadata: {
+          newRole: targetRole,
+          newStatus: "active",
+          targetUserId: "user_existing_example",
+          source: "existing_provider_backed_user",
+        },
+      });
+      assertAuditPrivacy(records.auditEvents.at(-1));
+    }
+  }
+});
+
 test("member and viewer cannot manage workspace members or app access", async () => {
   for (const role of ["member", "viewer"]) {
     const { repositories, input } = adminFixture({ role });
@@ -104,6 +156,17 @@ test("member and viewer cannot manage workspace members or app access", async ()
         }),
       assertAdminError("not_authorized"),
     );
+    await assert.rejects(
+      () =>
+        addExistingWorkspaceUserByEmail(repositories, {
+          ...input,
+          targetEmail: "existing.user@example.test",
+          role: "member",
+          membershipId: "membership_denied_add",
+          auditEventId: "audit_denied_add",
+        }),
+      assertAdminError("not_authorized"),
+    );
   }
 });
 
@@ -128,11 +191,114 @@ test("missing disabled or expired admin context fails closed before mutation", a
         }),
       assertAdminError("not_authorized"),
     );
+    await assert.rejects(
+      () =>
+        addExistingWorkspaceUserByEmail(repositories, {
+          ...input,
+          targetEmail: "existing.user@example.test",
+          role: "member",
+          membershipId: "membership_disabled_context_add",
+          auditEventId: "audit_disabled_context_add",
+        }),
+      assertAdminError("not_authorized"),
+    );
     assert.equal(records.auditEvents.length, 0);
     const targetMembership = records.memberships.find(
       (membership) => membership.id === "membership_member_example",
     );
     assert.equal(targetMembership?.status ?? "active", "active");
+  }
+});
+
+test("add existing user rejects unsafe targets and roles without mutation", async () => {
+  for (const [name, overrides, expectedCode] of [
+    ["missing user", {}, "not_found"],
+    ["user without provider identity", { extraUsers: [existingProviderBackedUser()] }, "not_found"],
+    [
+      "disabled user",
+      {
+        extraUsers: [existingProviderBackedUser({ status: "disabled" })],
+        providerBackedUserIds: ["user_existing_example"],
+      },
+      "not_found",
+    ],
+    [
+      "active member",
+      {
+        extraUsers: [existingProviderBackedUser()],
+        providerBackedUserIds: ["user_existing_example"],
+        extraMemberships: [
+          {
+            id: "membership_existing_user",
+            workspaceId: "workspace_koncept_images",
+            userId: "user_existing_example",
+            role: "member",
+            status: "active",
+            createdAt: earlier,
+            updatedAt: earlier,
+          },
+        ],
+      },
+      "membership_conflict",
+    ],
+    [
+      "disabled member",
+      {
+        extraUsers: [existingProviderBackedUser()],
+        providerBackedUserIds: ["user_existing_example"],
+        extraMemberships: [
+          {
+            id: "membership_existing_user",
+            workspaceId: "workspace_koncept_images",
+            userId: "user_existing_example",
+            role: "member",
+            status: "disabled",
+            createdAt: earlier,
+            updatedAt: earlier,
+          },
+        ],
+      },
+      "membership_conflict",
+    ],
+    [
+      "owner role",
+      {
+        extraUsers: [existingProviderBackedUser()],
+        providerBackedUserIds: ["user_existing_example"],
+        targetRole: "owner",
+      },
+      "invalid_role",
+    ],
+    [
+      "invalid role",
+      {
+        extraUsers: [existingProviderBackedUser()],
+        providerBackedUserIds: ["user_existing_example"],
+        targetRole: "operator",
+      },
+      "invalid_role",
+    ],
+  ]) {
+    const { repositories, input, records } = adminFixture(overrides);
+
+    await assert.rejects(
+      () =>
+        addExistingWorkspaceUserByEmail(repositories, {
+          ...input,
+          targetEmail: "existing.user@example.test",
+          role: overrides.targetRole ?? "member",
+          membershipId: `membership_rejected_${name.replaceAll(" ", "_")}`,
+          auditEventId: `audit_rejected_${name.replaceAll(" ", "_")}`,
+        }),
+      assertAdminError(expectedCode),
+    );
+    assert.equal(
+      records.memberships.some((membership) =>
+        membership.id.startsWith(`membership_rejected_${name.replaceAll(" ", "_")}`),
+      ),
+      false,
+    );
+    assert.equal(records.auditEvents.length, 0);
   }
 });
 
@@ -386,6 +552,17 @@ test("admin mutations require audit repository before changing state", async () 
       }),
     assertAdminError("repository_failure"),
   );
+  await assert.rejects(
+    () =>
+      addExistingWorkspaceUserByEmail(repositories, {
+        ...input,
+        targetEmail: "existing.user@example.test",
+        role: "member",
+        membershipId: "membership_missing_repo_add",
+        auditEventId: "audit_missing_repo_add",
+      }),
+    assertAdminError("repository_failure"),
+  );
 
   assert.equal(
     records.memberships.find((membership) => membership.id === "membership_viewer_example")
@@ -478,6 +655,32 @@ test("missing KQAG entitlement creation rolls back when audit append fails", asy
   assert.equal(records.auditEvents.length, 0);
 });
 
+test("membership add rolls back when audit append fails", async () => {
+  const { repositories, input, records } = adminFixture({
+    extraUsers: [existingProviderBackedUser()],
+    providerBackedUserIds: ["user_existing_example"],
+    failAuditAppend: true,
+  });
+
+  await assert.rejects(
+    () =>
+      addExistingWorkspaceUserByEmail(repositories, {
+        ...input,
+        targetEmail: "existing.user@example.test",
+        role: "member",
+        membershipId: "membership_add_append_failure",
+        auditEventId: "audit_add_append_failure",
+      }),
+    assertAdminError("repository_failure"),
+  );
+
+  assert.equal(
+    records.memberships.some((membership) => membership.id === "membership_add_append_failure"),
+    false,
+  );
+  assert.equal(records.auditEvents.length, 0);
+});
+
 function adminFixture(overrides = {}) {
   const workspace = {
     id: "workspace_koncept_images",
@@ -538,7 +741,10 @@ function adminFixture(overrides = {}) {
     ...overrides.entitlement,
   };
   const records = {
-    users: overrides.users ?? Object.values({ ...users, [role]: actorUser }),
+    users: overrides.users ?? [
+      ...Object.values({ ...users, [role]: actorUser }),
+      ...(overrides.extraUsers ?? []),
+    ],
     providerIdentities: [
       {
         id: "provider_identity_private",
@@ -548,10 +754,11 @@ function adminFixture(overrides = {}) {
         createdAt: now,
         updatedAt: now,
       },
+      ...(overrides.extraProviderIdentities ?? []),
     ],
     sessions: overrides.sessions ?? [session, memberSession],
     workspaces: overrides.workspaces ?? [workspace, otherWorkspace],
-    memberships,
+    memberships: [...memberships, ...(overrides.extraMemberships ?? [])],
     apps: overrides.apps ?? [app],
     appEntitlements: overrides.appEntitlements ?? [entitlement],
     auditEvents: [],
@@ -568,6 +775,18 @@ function adminFixture(overrides = {}) {
       throw new Error(privateStorageError);
     };
   }
+  if (overrides.providerBackedUserIds) {
+    const providerBackedUserIds = new Set(overrides.providerBackedUserIds);
+    const listForUser = repositories.providerIdentities.listForUser.bind(
+      repositories.providerIdentities,
+    );
+    repositories.providerIdentities.listForUser = async (userId) => {
+      if (providerBackedUserIds.has(userId)) {
+        return [{ userId }];
+      }
+      return listForUser(userId);
+    };
+  }
 
   return {
     records,
@@ -577,6 +796,19 @@ function adminFixture(overrides = {}) {
       workspaceId: overrides.workspaceId ?? workspace.id,
       now: overrides.now ?? now,
     },
+  };
+}
+
+function existingProviderBackedUser(overrides = {}) {
+  return {
+    id: "user_existing_example",
+    email: "existing.user@example.test",
+    displayName: "Existing User",
+    status: "active",
+    createdAt: earlier,
+    updatedAt: earlier,
+    lastLoginAt: now,
+    ...overrides,
   };
 }
 

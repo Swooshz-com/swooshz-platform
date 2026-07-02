@@ -9,6 +9,7 @@ export type HttpRouteId =
   | "platform_session_context"
   | "platform_session_csrf"
   | "platform_workspace_members"
+  | "platform_workspace_member_add"
   | "platform_workspace_member_role"
   | "platform_workspace_member_disable"
   | "platform_workspace_app_entitlements"
@@ -195,6 +196,21 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     handlerContract: "handleWorkspaceMembersAdminRequest",
     responseKind: "json",
     idempotent: true,
+    implemented: true,
+  },
+  {
+    id: "platform_workspace_member_add",
+    method: "POST",
+    path: "/api/platform/workspaces/:workspaceId/members/add",
+    browserSession: "required",
+    csrf: {
+      required: true,
+      strategy: "origin_referer_and_csrf_token",
+    },
+    requiredQuery: ["email", "role"],
+    handlerContract: "handleWorkspaceMemberAddRequest",
+    responseKind: "json",
+    idempotent: false,
     implemented: true,
   },
   {

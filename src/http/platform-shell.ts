@@ -307,6 +307,24 @@ export function renderAdminShellPage(): string {
         <section id="status" class="status" role="status">Loading platform session...</section>
         <section id="identity" class="identity" hidden></section>
         <section id="workspaceSummary" class="workspace" hidden></section>
+        <section id="addMember" class="workspace" hidden>
+          <h2>Add Existing User</h2>
+          <form id="addMemberForm" class="inline-form">
+            <label>
+              <strong>Email</strong>
+              <input name="email" type="email" autocomplete="email" required>
+            </label>
+            <label>
+              <strong>Role</strong>
+              <select name="role" required>
+                <option value="member">member</option>
+                <option value="admin">admin</option>
+                <option value="viewer">viewer</option>
+              </select>
+            </label>
+            <button class="primary-action compact" type="submit">Add</button>
+          </form>
+        </section>
         <section id="members" class="workspace" hidden></section>
         <section id="entitlements" class="workspace" hidden></section>
       </main>
@@ -327,12 +345,17 @@ export function renderAdminShellPage(): string {
           const status = document.getElementById("status");
           const identity = document.getElementById("identity");
           const workspaceSummary = document.getElementById("workspaceSummary");
+          const addMember = document.getElementById("addMember");
+          const addMemberForm = document.getElementById("addMemberForm");
           const members = document.getElementById("members");
           const entitlements = document.getElementById("entitlements");
           const logoutButton = document.getElementById("logoutButton");
 
           logoutButton.addEventListener("click", () => {
             void logout();
+          });
+          addMemberForm.addEventListener("submit", (event) => {
+            void addExistingMember(event);
           });
 
           void loadContext();
@@ -399,6 +422,7 @@ export function renderAdminShellPage(): string {
               }
 
               renderWorkspaceSummary(state.workspace);
+              addMember.hidden = false;
               renderMembers(membersPayload.members);
               renderEntitlements(entitlementsPayload.entitlements);
               setStatus("Workspace admin ready.");
@@ -587,6 +611,21 @@ export function renderAdminShellPage(): string {
             );
           }
 
+          async function addExistingMember(event) {
+            event.preventDefault();
+            const formData = new FormData(addMemberForm);
+            const email = String(formData.get("email") || "");
+            const role = String(formData.get("role") || "member");
+
+            if (!email.trim()) {
+              setStatus("Workspace admin action could not be completed.");
+              return;
+            }
+
+            await postAdminAction(addMemberUrl(state.workspace.workspaceId, email, role));
+            addMemberForm.reset();
+          }
+
           async function postAdminAction(url) {
             setStatus("Saving workspace admin change...");
 
@@ -662,6 +701,12 @@ export function renderAdminShellPage(): string {
             return "/api/platform/workspaces/" + encodeURIComponent(workspaceId) + "/members";
           }
 
+          function addMemberUrl(workspaceId, email, role) {
+            return adminMembersUrl(workspaceId) +
+              "/add?email=" + encodeURIComponent(email) +
+              "&role=" + encodeURIComponent(role);
+          }
+
           function adminMemberUrl(workspaceId, membershipId) {
             return adminMembersUrl(workspaceId) + "/" + encodeURIComponent(membershipId);
           }
@@ -675,9 +720,11 @@ export function renderAdminShellPage(): string {
           function hideAdminSections() {
             identity.hidden = true;
             workspaceSummary.hidden = true;
+            addMember.hidden = true;
             members.hidden = true;
             entitlements.hidden = true;
             workspaceSummary.replaceChildren();
+            addMemberForm.reset();
             members.replaceChildren();
             entitlements.replaceChildren();
           }
@@ -963,6 +1010,24 @@ function htmlDocument({
       font: inherit;
     }
 
+    input {
+      width: 100%;
+      min-height: 40px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--ink);
+      font: inherit;
+    }
+
+    .inline-form {
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) minmax(140px, 180px) auto;
+      gap: 12px;
+      align-items: end;
+    }
+
     button:disabled,
     select:disabled {
       cursor: not-allowed;
@@ -1031,7 +1096,8 @@ function htmlDocument({
       tbody,
       tr,
       th,
-      td {
+      td,
+      .inline-form {
         display: block;
         width: 100%;
       }

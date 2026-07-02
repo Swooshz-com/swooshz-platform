@@ -83,6 +83,12 @@ test("member and viewer cannot list or mutate workspace admin routes", async () 
       headers: secureSessionHeaders(role),
       dependencies: fixture.dependencies,
     });
+    const add = await request({
+      method: "POST",
+      url: "/api/platform/workspaces/workspace_koncept_images/members/add?email=existing.user%40example.test&role=member",
+      headers: secureSessionHeaders(role),
+      dependencies: fixture.dependencies,
+    });
 
     assert.equal(list.response.statusCode, 403);
     assert.deepEqual(list.body, {
@@ -94,6 +100,11 @@ test("member and viewer cannot list or mutate workspace admin routes", async () 
       outcome: "denied",
       reason: "not_authorized",
     });
+    assert.equal(add.response.statusCode, 403);
+    assert.deepEqual(add.body, {
+      outcome: "denied",
+      reason: "not_authorized",
+    });
     assert.equal(
       fixture.records.memberships.find((membership) => membership.id === "membership_viewer_example")
         ?.role,
@@ -102,6 +113,7 @@ test("member and viewer cannot list or mutate workspace admin routes", async () 
     assert.equal(fixture.records.auditEvents.length, 0);
     assertResponseIsPrivacySafe(list.response);
     assertResponseIsPrivacySafe(mutate.response);
+    assertResponseIsPrivacySafe(add.response);
   }
 });
 
@@ -190,6 +202,19 @@ test("state-changing admin routes validate Origin and CSRF before mutation", asy
     headers: secureSessionHeaders("owner"),
     dependencies: invalidCsrf.dependencies,
   });
+  const addWithoutOriginFixture = createAdminRouteFixture({
+    extraUsers: [existingProviderBackedUser()],
+    providerBackedUserIds: ["user_existing_example"],
+  });
+  const addWithoutOrigin = await request({
+    method: "POST",
+    url: "/api/platform/workspaces/workspace_koncept_images/members/add?email=existing.user%40example.test&role=member",
+    headers: {
+      cookie: "swooshz_session=session_owner_example",
+      "x-csrf-token": validCsrfToken,
+    },
+    dependencies: addWithoutOriginFixture.dependencies,
+  });
 
   assert.equal(roleWithoutOrigin.response.statusCode, 403);
   assert.deepEqual(roleWithoutOrigin.body, {
@@ -223,6 +248,170 @@ test("state-changing admin routes validate Origin and CSRF before mutation", asy
   assert.equal(invalidCsrf.calls.csrfValidate, 1);
   assert.equal(invalidCsrf.records.appEntitlements[0]?.status, "enabled");
   assert.equal(invalidCsrf.records.auditEvents.length, 0);
+  assert.equal(addWithoutOrigin.response.statusCode, 403);
+  assert.deepEqual(addWithoutOrigin.body, {
+    outcome: "denied",
+    reason: "missing_origin",
+  });
+  assert.equal(addWithoutOriginFixture.calls.csrfValidate, 0);
+  assert.equal(
+    addWithoutOriginFixture.records.memberships.some(
+      (membership) => membership.userId === "user_existing_example",
+    ),
+    false,
+  );
+  assert.equal(addWithoutOriginFixture.records.auditEvents.length, 0);
+});
+
+test("owner and admin can add an existing provider-backed user through admin route", async () => {
+  for (const role of ["owner", "admin"]) {
+    const fixture = createAdminRouteFixture({
+      extraUsers: [existingProviderBackedUser()],
+      providerBackedUserIds: ["user_existing_example"],
+    });
+
+    const { response, body } = await request({
+      method: "POST",
+      url: "/api/platform/workspaces/workspace_koncept_images/members/add?email=%20Existing.User%40Example.Test%20&role=member",
+      headers: secureSessionHeaders(role),
+      dependencies: fixture.dependencies,
+    });
+
+    assert.equal(response.statusCode, 201);
+    assertNoStoreHeaders(response.headers);
+    assert.deepEqual(body, {
+      outcome: "created",
+      membership: {
+        membershipId: "membership_http_1",
+        userId: "user_existing_example",
+        workspaceId: "workspace_koncept_images",
+        role: "member",
+        status: "active",
+        updatedAt: now,
+      },
+    });
+    assert.equal(fixture.calls.csrfValidate, 1);
+    assert.equal(
+      fixture.records.memberships.find((membership) => membership.id === "membership_http_1")
+        ?.userId,
+      "user_existing_example",
+    );
+    assert.deepEqual(fixture.records.auditEvents.at(-1), {
+      id: "audit_http_1",
+      workspaceId: "workspace_koncept_images",
+      actorUserId: `user_${role}_example`,
+      eventType: "workspace.membership.added",
+      targetType: "membership",
+      targetId: "membership_http_1",
+      createdAt: now,
+      metadata: {
+        newRole: "member",
+        newStatus: "active",
+        targetUserId: "user_existing_example",
+        source: "existing_provider_backed_user",
+      },
+    });
+    assertResponseIsPrivacySafe(response);
+    assertResponseIsPrivacySafe({ body: fixture.records.auditEvents.at(-1) });
+  }
+});
+
+test("add existing user route returns generic safe failures without mutation", async () => {
+  for (const [name, overrides, query, expectedStatus] of [
+    ["missing target", {}, "email=missing%40example.test&role=member", 404],
+    [
+      "target without provider identity",
+      { extraUsers: [existingProviderBackedUser()] },
+      "email=existing.user%40example.test&role=member",
+      404,
+    ],
+    [
+      "disabled target",
+      {
+        extraUsers: [existingProviderBackedUser({ status: "disabled" })],
+        providerBackedUserIds: ["user_existing_example"],
+      },
+      "email=existing.user%40example.test&role=member",
+      404,
+    ],
+    [
+      "existing membership",
+      {
+        extraUsers: [existingProviderBackedUser()],
+        providerBackedUserIds: ["user_existing_example"],
+        extraMemberships: [
+          {
+            id: "membership_existing_user",
+            workspaceId: "workspace_koncept_images",
+            userId: "user_existing_example",
+            role: "member",
+            status: "active",
+            createdAt: earlier,
+            updatedAt: earlier,
+          },
+        ],
+      },
+      "email=existing.user%40example.test&role=member",
+      409,
+    ],
+    [
+      "invalid role",
+      {
+        extraUsers: [existingProviderBackedUser()],
+        providerBackedUserIds: ["user_existing_example"],
+      },
+      "email=existing.user%40example.test&role=owner",
+      400,
+    ],
+  ]) {
+    const fixture = createAdminRouteFixture(overrides);
+
+    const { response, body } = await request({
+      method: "POST",
+      url: `/api/platform/workspaces/workspace_koncept_images/members/add?${query}`,
+      headers: secureSessionHeaders("owner"),
+      dependencies: fixture.dependencies,
+    });
+
+    assert.equal(response.statusCode, expectedStatus, name);
+    assert.deepEqual(body, {
+      outcome: "error",
+      message: "Workspace admin action could not be completed.",
+    });
+    assert.equal(
+      fixture.records.memberships.some((membership) => membership.id === "membership_http_1"),
+      false,
+    );
+    assert.equal(fixture.records.auditEvents.length, 0);
+    assertResponseIsPrivacySafe(response);
+  }
+});
+
+test("audit append failure through add existing user route rolls back membership creation", async () => {
+  const fixture = createAdminRouteFixture({
+    extraUsers: [existingProviderBackedUser()],
+    providerBackedUserIds: ["user_existing_example"],
+    failAuditAppend: true,
+  });
+
+  const { response, body } = await request({
+    method: "POST",
+    url: "/api/platform/workspaces/workspace_koncept_images/members/add?email=existing.user%40example.test&role=member",
+    headers: secureSessionHeaders("owner"),
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 500);
+  assert.deepEqual(body, {
+    outcome: "error",
+    message: "Workspace admin action could not be completed.",
+  });
+  assert.equal(
+    fixture.records.memberships.some((membership) => membership.id === "membership_http_1"),
+    false,
+  );
+  assert.equal(fixture.records.auditEvents.length, 0);
+  assertResponseIsPrivacySafe(response);
 });
 
 test("owner can change role and disable membership through admin routes", async () => {
@@ -435,7 +624,7 @@ function createAdminRouteFixture(overrides = {}) {
     updatedAt: now,
   };
   const records = {
-    users,
+    users: [...users, ...(overrides.extraUsers ?? [])],
     providerIdentities: [
       {
         id: "provider_identity_private",
@@ -445,6 +634,7 @@ function createAdminRouteFixture(overrides = {}) {
         createdAt: now,
         updatedAt: now,
       },
+      ...(overrides.extraProviderIdentities ?? []),
     ],
     sessions: ["owner", "admin", "member", "viewer"].map((role) => ({
       id: `session_${role}_example`,
@@ -466,7 +656,7 @@ function createAdminRouteFixture(overrides = {}) {
         ...overrides.workspace,
       },
     ],
-    memberships,
+    memberships: [...memberships, ...(overrides.extraMemberships ?? [])],
     apps: [app],
     appEntitlements:
       overrides.appEntitlements ??
@@ -491,6 +681,18 @@ function createAdminRouteFixture(overrides = {}) {
   if (overrides.failAuditAppend) {
     repositories.auditEvents.append = async () => {
       throw new Error(privateStorageError);
+    };
+  }
+  if (overrides.providerBackedUserIds) {
+    const providerBackedUserIds = new Set(overrides.providerBackedUserIds);
+    const listForUser = repositories.providerIdentities.listForUser.bind(
+      repositories.providerIdentities,
+    );
+    repositories.providerIdentities.listForUser = async (userId) => {
+      if (providerBackedUserIds.has(userId)) {
+        return [{ userId }];
+      }
+      return listForUser(userId);
     };
   }
 
@@ -518,8 +720,28 @@ function createAdminRouteFixture(overrides = {}) {
         createEntitlementId() {
           return `entitlement_http_${records.appEntitlements.length + 1}`;
         },
+        createMembershipId() {
+          return `membership_http_${
+            records.memberships.filter((membership) =>
+              membership.id.startsWith("membership_http_"),
+            ).length + 1
+          }`;
+        },
       },
     },
+  };
+}
+
+function existingProviderBackedUser(overrides = {}) {
+  return {
+    id: "user_existing_example",
+    email: "existing.user@example.test",
+    displayName: "Existing User",
+    status: "active",
+    createdAt: earlier,
+    updatedAt: earlier,
+    lastLoginAt: now,
+    ...overrides,
   };
 }
 

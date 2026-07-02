@@ -23,6 +23,7 @@ import {
   handleSessionContextRequest,
   handleWorkspaceAppEntitlementsAdminRequest,
   handleWorkspaceKqagEntitlementStatusRequest,
+  handleWorkspaceMemberAddRequest,
   handleWorkspaceMembersAdminRequest,
   handleWorkspaceMemberRoleChangeRequest,
   handleWorkspaceMembershipDisableRequest,
@@ -241,6 +242,44 @@ export async function handleNodePlatformHttpRequest(
         headers,
         workspaceId: requiredRouteParam(routeMatch, "workspaceId"),
         now: dependencies.now(),
+        cookie: dependencies.cookie,
+      }),
+    );
+  }
+
+  if (route.id === "platform_workspace_member_add") {
+    const targetEmail = parsedUrl.searchParams.get("email");
+    const role = parsedUrl.searchParams.get("role");
+
+    if (!targetEmail || !role) {
+      return missingRequiredQueryResponse(noStoreHeaders());
+    }
+
+    const now = dependencies.now();
+    const securityResult = await validateAdminRouteSecurity({
+      route,
+      headers,
+      now,
+      dependencies,
+    });
+
+    if (!securityResult.allowed) {
+      return securityFailureResponse(
+        securityResult.recommendedStatus,
+        securityResult.reason,
+        noStoreHeaders(),
+      );
+    }
+
+    return toNodeResponse(
+      await handleWorkspaceMemberAddRequest(dependencies.repositories, {
+        headers,
+        workspaceId: requiredRouteParam(routeMatch, "workspaceId"),
+        targetEmail,
+        role,
+        membershipId: createWorkspaceAdminMembershipId(dependencies),
+        auditEventId: createWorkspaceAdminAuditEventId(dependencies),
+        now,
         cookie: dependencies.cookie,
       }),
     );
@@ -741,7 +780,14 @@ function createWorkspaceAdminEntitlementId(
     createFallbackWorkspaceAdminId("entitlement");
 }
 
-function createFallbackWorkspaceAdminId(prefix: "audit" | "entitlement"): string {
+function createWorkspaceAdminMembershipId(
+  dependencies: NodePlatformHttpAdapterDependencies,
+): string {
+  return dependencies.workspaceAdminIdFactory?.createMembershipId() ??
+    createFallbackWorkspaceAdminId("membership");
+}
+
+function createFallbackWorkspaceAdminId(prefix: "audit" | "entitlement" | "membership"): string {
   fallbackWorkspaceAdminIdSequence += 1;
   return `workspace_admin_${prefix}_${Date.now().toString(36)}_${fallbackWorkspaceAdminIdSequence}`;
 }
