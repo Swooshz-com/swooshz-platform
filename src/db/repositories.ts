@@ -78,11 +78,14 @@ export interface DrizzleDatabase {
       };
     };
   };
+  transaction?<T>(operation: (transactionDb: DrizzleDatabase) => Promise<T>): Promise<T>;
 }
 
 export function createDrizzlePlatformRepositories(
   db: DrizzleDatabase,
 ): PlatformRepositories {
+  const transaction = db.transaction?.bind(db);
+
   return {
     users: {
       async findById(id) {
@@ -292,6 +295,15 @@ export function createDrizzlePlatformRepositories(
         return mapOneRequired(rows[0], mapAuditEventRow);
       },
     },
+    workspaceAdminTransactions: transaction
+      ? {
+          run(operation) {
+            return transaction((transactionDb) =>
+              operation(createDrizzlePlatformRepositories(transactionDb)),
+            );
+          },
+        }
+      : undefined,
     appLaunchTokens: {
       async create(record) {
         const rows = await db

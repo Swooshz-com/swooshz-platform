@@ -122,6 +122,10 @@ export interface AuditEventRepository {
   append(event: AuditEvent): Promise<AuditEvent>;
 }
 
+export interface WorkspaceAdminTransactionRepository {
+  run<T>(operation: (repositories: PlatformRepositories) => Promise<T>): Promise<T>;
+}
+
 export interface AppLaunchTokenRepository {
   create(record: AppLaunchTokenRecord): Promise<AppLaunchTokenRecord>;
   findByTokenHash(tokenHash: string): Promise<AppLaunchTokenRecord | null>;
@@ -141,5 +145,6 @@ export interface PlatformRepositories {
   apps: AppRepository;
   appEntitlements: AppEntitlementRepository;
   auditEvents?: AuditEventRepository;
+  workspaceAdminTransactions?: WorkspaceAdminTransactionRepository;
   appLaunchTokens?: AppLaunchTokenRepository;
 }

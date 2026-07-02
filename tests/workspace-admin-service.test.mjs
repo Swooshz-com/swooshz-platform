@@ -395,6 +395,89 @@ test("admin mutations require audit repository before changing state", async () 
   assert.equal(records.appEntitlements[0]?.status, "enabled");
 });
 
+test("membership role change rolls back when audit append fails", async () => {
+  const { repositories, input, records } = adminFixture({ failAuditAppend: true });
+
+  await assert.rejects(
+    () =>
+      changeWorkspaceMemberRole(repositories, {
+        ...input,
+        membershipId: "membership_viewer_example",
+        role: "member",
+        auditEventId: "audit_role_append_failure",
+      }),
+    assertAdminError("repository_failure"),
+  );
+
+  assert.equal(
+    records.memberships.find((membership) => membership.id === "membership_viewer_example")
+      ?.role,
+    "viewer",
+  );
+  assert.equal(records.auditEvents.length, 0);
+});
+
+test("membership disable rolls back when audit append fails", async () => {
+  const { repositories, input, records } = adminFixture({ failAuditAppend: true });
+
+  await assert.rejects(
+    () =>
+      disableWorkspaceMembership(repositories, {
+        ...input,
+        membershipId: "membership_member_example",
+        auditEventId: "audit_disable_append_failure",
+      }),
+    assertAdminError("repository_failure"),
+  );
+
+  assert.equal(
+    records.memberships.find((membership) => membership.id === "membership_member_example")
+      ?.status,
+    "active",
+  );
+  assert.equal(records.auditEvents.length, 0);
+});
+
+test("KQAG entitlement disable rolls back when audit append fails", async () => {
+  const { repositories, input, records } = adminFixture({ failAuditAppend: true });
+
+  await assert.rejects(
+    () =>
+      setWorkspaceAppEntitlementStatus(repositories, {
+        ...input,
+        appKey: "kqag",
+        status: "disabled",
+        auditEventId: "audit_kqag_disable_append_failure",
+      }),
+    assertAdminError("repository_failure"),
+  );
+
+  assert.equal(records.appEntitlements[0]?.status, "enabled");
+  assert.equal(records.auditEvents.length, 0);
+});
+
+test("missing KQAG entitlement creation rolls back when audit append fails", async () => {
+  const { repositories, input, records } = adminFixture({
+    appEntitlements: [],
+    failAuditAppend: true,
+  });
+
+  await assert.rejects(
+    () =>
+      setWorkspaceAppEntitlementStatus(repositories, {
+        ...input,
+        appKey: "kqag",
+        status: "enabled",
+        entitlementId: "entitlement_new_kqag",
+        auditEventId: "audit_kqag_create_append_failure",
+      }),
+    assertAdminError("repository_failure"),
+  );
+
+  assert.equal(records.appEntitlements.length, 0);
+  assert.equal(records.auditEvents.length, 0);
+});
+
 function adminFixture(overrides = {}) {
   const workspace = {
     id: "workspace_koncept_images",
@@ -477,6 +560,11 @@ function adminFixture(overrides = {}) {
 
   if (overrides.failMembershipList) {
     repositories.memberships.listForWorkspace = async () => {
+      throw new Error(privateStorageError);
+    };
+  }
+  if (overrides.failAuditAppend) {
+    repositories.auditEvents.append = async () => {
       throw new Error(privateStorageError);
     };
   }

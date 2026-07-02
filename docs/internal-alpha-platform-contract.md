@@ -22,7 +22,7 @@ The next PRs should therefore implement team/user management and app-access admi
 | Session handling | `src/auth/session-revocation-service.ts`, `src/http/session-cookie.ts`, `src/http/handlers.ts`, `src/platform/session-context-service.ts` | Server-side session records are referenced by an HttpOnly SameSite cookie. Logout revokes/clears the session. Session context is read-only and no-store. Expired, revoked, missing, or inactive-user sessions fail closed. |
 | Workspace model | `src/accounts/types.ts`, `src/db/schema.ts`, `docs/accounts-contract.md` | Workspaces have id, slug, display name, and status. Membership connects users to workspaces with owner/admin/member/viewer roles and active/disabled status. |
 | App access model | `src/apps/types.ts`, `src/access/decide-app-access.ts`, `src/platform/app-access-service.ts`, `docs/app-access-contract.md` | App launch requires valid session, active user, selected active workspace, active membership, available/private-preview app, enabled/trial entitlement, and role permission. KQAG launch is owner/admin/member only. |
-| Admin service foundation | `src/platform/workspace-admin-service.ts`, `src/platform/repositories.ts`, `src/db/repositories.ts` | Owner/admin service methods can list workspace members, change roles, disable memberships, list app entitlements, and enable/disable KQAG app entitlement. Mutations preserve last-owner/self-change guardrails and append privacy-minimized audit events. |
+| Admin service foundation | `src/platform/workspace-admin-service.ts`, `src/platform/repositories.ts`, `src/db/repositories.ts` | Owner/admin service methods can list workspace members, change roles, disable memberships, list app entitlements, and enable/disable KQAG app entitlement. Mutations preserve last-owner/self-change guardrails and write privacy-minimized audit events in the same transaction/unit-of-work. |
 | KQAG launch handoff | `src/platform/app-launch-intent-service.ts`, `src/platform/app-launch-token-consume-service.ts`, `src/http/handlers.ts`, `docs/kqag-integration-contract.md` | Platform creates a short-lived launch token, stores only an HMAC hash, sends the raw token only server-side to KQAG in `x-app-launch-token`, and exposes only a safe launch URL to the browser. Consume accepts the raw token only by header and marks it consumed once. |
 | Seed scripts | `scripts/platform-seed-internal-access.mjs`, `src/platform/internal-access-seed-service.ts` | The seed CLI can grant owner/admin/member KQAG access to an existing active provider-backed platform user after explicit confirmation. It refuses email-only user precreation and users without provider identity records. |
 | DB migrations | `drizzle/migrations/*`, `src/db/schema.ts`, `scripts/db-migrate.mjs`, `src/db/client.ts` | Drizzle migrations are committed. `npm run db:migrate` builds first, requires `DATABASE_URL`, and requires `DATABASE_MIGRATIONS_CONFIRM=apply-reviewed-migrations`. Migrations are not automatic. |
@@ -120,15 +120,16 @@ The current admin foundation is a service and repository foundation, not a produ
 Implemented service operations:
 
 - `listWorkspaceMembersForAdmin`: owner/admin-only workspace member listing with safe user and membership summaries.
-- `changeWorkspaceMemberRole`: owner/admin-only role changes with last-owner protection, self-demotion guard, and `workspace.membership.role_changed` audit event.
-- `disableWorkspaceMembership`: owner/admin-only membership deactivation with last-owner protection, self-removal guard, and `workspace.membership.disabled` audit event.
+- `changeWorkspaceMemberRole`: owner/admin-only role changes with last-owner protection, self-demotion guard, and `workspace.membership.role_changed` audit event in the same transaction/unit-of-work.
+- `disableWorkspaceMembership`: owner/admin-only membership deactivation with last-owner protection, self-removal guard, and `workspace.membership.disabled` audit event in the same transaction/unit-of-work.
 - `listWorkspaceAppEntitlementsForAdmin`: owner/admin-only workspace app entitlement listing.
-- `setWorkspaceAppEntitlementStatus`: owner/admin-only KQAG entitlement enable/disable with `workspace.app_entitlement.enabled` or `workspace.app_entitlement.disabled` audit event.
+- `setWorkspaceAppEntitlementStatus`: owner/admin-only KQAG entitlement enable/disable with `workspace.app_entitlement.enabled` or `workspace.app_entitlement.disabled` audit event in the same transaction/unit-of-work.
 
 Operational notes:
 
 - Quote operators remain mapped to `member` until an explicit `operator` role migration is approved.
 - Removed users are blocked from KQAG launch because disabled membership fails the existing app-access decision.
+- Membership and app-entitlement mutation audit append failure cannot leave membership or entitlement state changed without the matching audit event.
 - Audit metadata uses internal ids and status/category values only. Do not add raw emails, provider claims, OAuth payloads, tokens, cookies, DB URLs, KQAG quote contents, or callback URLs with query params.
 - The new services are not reachable from browsers yet. Product HTTP routes and UI must add active session checks, active workspace membership checks, owner/admin authorization, CSRF/origin validation for browser-cookie mutations, generic user-facing errors, and safe category-only logs.
 - No KQAG app data responsibilities move into Platform. Platform manages access; KQAG still owns quote data.

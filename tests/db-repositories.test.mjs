@@ -457,6 +457,26 @@ test("Drizzle repository create, update, and append methods return mapped record
   });
 });
 
+test("Drizzle repositories expose a transaction runner for admin mutations", async () => {
+  const fakeDb = createFakeDrizzleDb();
+  let transactionCalled = false;
+  fakeDb.transaction = async (operation) => {
+    transactionCalled = true;
+    return operation(fakeDb);
+  };
+
+  const repositories = createDrizzlePlatformRepositories(fakeDb);
+
+  assert.equal(typeof repositories.workspaceAdminTransactions?.run, "function");
+  const result = await repositories.workspaceAdminTransactions.run(async (transactionRepositories) => {
+    assert.notEqual(transactionRepositories, repositories);
+    return "committed";
+  });
+
+  assert.equal(result, "committed");
+  assert.equal(transactionCalled, true);
+});
+
 test("pure domain and platform port modules do not import database adapter details", async () => {
   const storageAgnosticFiles = [
     "src/accounts/types.ts",

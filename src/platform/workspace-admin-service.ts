@@ -127,11 +127,14 @@ export async function changeWorkspaceMemberRole(
   repositories: PlatformRepositories,
   input: WorkspaceRoleChangeInput,
 ): Promise<Membership> {
-  return runSafely(async () => {
-    assertValidRole(input.role);
-    const context = await requireAdminContext(repositories, input);
-    requireAuditRepository(repositories);
-    const memberships = await repositories.memberships.listForWorkspace(input.workspaceId);
+  assertValidRole(input.role);
+
+  return runWorkspaceAdminTransaction(repositories, async (transactionRepositories) => {
+    const context = await requireAdminContext(transactionRepositories, input);
+    requireAuditRepository(transactionRepositories);
+    const memberships = await transactionRepositories.memberships.listForWorkspace(
+      input.workspaceId,
+    );
     const target = findTargetMembership(memberships, input.membershipId);
     const previousRole = target.role;
     const previousStatus = target.status;
@@ -144,13 +147,17 @@ export async function changeWorkspaceMemberRole(
       throw adminError("self_change_not_allowed", "Administrators cannot change their own role.");
     }
 
-    const updated = await repositories.memberships.updateRole(target.id, input.role, input.now);
+    const updated = await transactionRepositories.memberships.updateRole(
+      target.id,
+      input.role,
+      input.now,
+    );
 
     if (!updated) {
       throw adminError("not_found", "Workspace membership was not found.");
     }
 
-    await appendAuditEvent(repositories, {
+    await appendAuditEvent(transactionRepositories, {
       id: input.auditEventId,
       workspaceId: input.workspaceId,
       actorUserId: context.actor.id,
@@ -174,10 +181,12 @@ export async function disableWorkspaceMembership(
   repositories: PlatformRepositories,
   input: WorkspaceMembershipDisableInput,
 ): Promise<Membership> {
-  return runSafely(async () => {
-    const context = await requireAdminContext(repositories, input);
-    requireAuditRepository(repositories);
-    const memberships = await repositories.memberships.listForWorkspace(input.workspaceId);
+  return runWorkspaceAdminTransaction(repositories, async (transactionRepositories) => {
+    const context = await requireAdminContext(transactionRepositories, input);
+    requireAuditRepository(transactionRepositories);
+    const memberships = await transactionRepositories.memberships.listForWorkspace(
+      input.workspaceId,
+    );
     const target = findTargetMembership(memberships, input.membershipId);
     const previousRole = target.role;
     const previousStatus = target.status;
@@ -190,13 +199,17 @@ export async function disableWorkspaceMembership(
       throw adminError("self_change_not_allowed", "Administrators cannot disable themselves.");
     }
 
-    const updated = await repositories.memberships.updateStatus(target.id, "disabled", input.now);
+    const updated = await transactionRepositories.memberships.updateStatus(
+      target.id,
+      "disabled",
+      input.now,
+    );
 
     if (!updated) {
       throw adminError("not_found", "Workspace membership was not found.");
     }
 
-    await appendAuditEvent(repositories, {
+    await appendAuditEvent(transactionRepositories, {
       id: input.auditEventId,
       workspaceId: input.workspaceId,
       actorUserId: context.actor.id,
@@ -245,31 +258,32 @@ export async function setWorkspaceAppEntitlementStatus(
   repositories: PlatformRepositories,
   input: WorkspaceAppEntitlementStatusInput,
 ): Promise<AppEntitlement> {
-  return runSafely(async () => {
-    assertValidEntitlementStatus(input.status);
-    const context = await requireAdminContext(repositories, input);
-    requireAuditRepository(repositories);
-    const app = await repositories.apps.findByKey(input.appKey);
+  assertValidEntitlementStatus(input.status);
+
+  return runWorkspaceAdminTransaction(repositories, async (transactionRepositories) => {
+    const context = await requireAdminContext(transactionRepositories, input);
+    requireAuditRepository(transactionRepositories);
+    const app = await transactionRepositories.apps.findByKey(input.appKey);
 
     if (!app || app.key !== "kqag" || !["available", "private_preview"].includes(app.status)) {
       throw adminError("not_found", "KQAG app was not found.");
     }
 
-    const existing = await repositories.appEntitlements.findForWorkspaceApp(
+    const existing = await transactionRepositories.appEntitlements.findForWorkspaceApp(
       input.workspaceId,
       app.id,
     );
     const previousStatus = existing?.status ?? null;
     const entitlement =
       existing ??
-      (await createMissingEntitlement(repositories, input, context, app));
+      (await createMissingEntitlement(transactionRepositories, input, context, app));
 
     if (!existing && input.status === "disabled") {
       throw adminError("not_found", "Workspace app entitlement was not found.");
     }
 
     const updated = existing
-      ? await repositories.appEntitlements.updateStatus(
+      ? await transactionRepositories.appEntitlements.updateStatus(
           existing.id,
           input.status,
           input.status === "enabled" ? context.actor.id : existing.grantedByUserId,
@@ -281,7 +295,7 @@ export async function setWorkspaceAppEntitlementStatus(
       throw adminError("not_found", "Workspace app entitlement was not found.");
     }
 
-    await appendAuditEvent(repositories, {
+    await appendAuditEvent(transactionRepositories, {
       id: input.auditEventId,
       workspaceId: input.workspaceId,
       actorUserId: context.actor.id,
@@ -437,6 +451,22 @@ function requireAuditRepository(
   }
 
   return repositories.auditEvents;
+}
+
+async function runWorkspaceAdminTransaction<T>(
+  repositories: PlatformRepositories,
+  operation: (repositories: PlatformRepositories) => Promise<T>,
+): Promise<T> {
+  return runSafely(async () => {
+    if (!repositories.workspaceAdminTransactions) {
+      throw adminError(
+        "repository_failure",
+        "Workspace admin transaction repository is not configured.",
+      );
+    }
+
+    return repositories.workspaceAdminTransactions.run(operation);
+  });
 }
 
 function adminError(

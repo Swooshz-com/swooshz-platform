@@ -68,6 +68,8 @@ test("internal alpha platform contract documents the admin foundation status", a
   assert.match(contract, /Owner\/admin service can disable a workspace membership/i);
   assert.match(contract, /Owner\/admin service can change membership role/i);
   assert.match(contract, /Owner\/admin service can list KQAG entitlements and enable\/disable KQAG entitlement/i);
+  assert.match(contract, /same transaction\/unit-of-work/i);
+  assert.match(contract, /audit append failure cannot leave membership or entitlement state changed/i);
   assert.match(contract, /Quote operators remain mapped to `member`/i);
   assert.match(contract, /product HTTP route or UI exists yet/i);
   assert.match(contract, /CSRF\/origin validation/i);
