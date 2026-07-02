@@ -14,6 +14,8 @@ const earlier = "2026-06-26T23:00:00.000Z";
 const future = "2026-06-27T01:00:00.000Z";
 const allowedOrigin = "https://platform.example.test";
 const sessionId = "session_owner_example";
+const memberSessionId = "session_member_example";
+const viewerSessionId = "session_viewer_example";
 const validCsrfToken = "csrf-token-valid-example";
 const issuedCsrfToken = "issued-csrf-token-reference";
 const issuedCsrfTokenHash = "hash_issued_csrf_token_reference";
@@ -85,6 +87,28 @@ test("GET /app renders the browser shell as no-store HTML without requiring sess
   assertNoStoreHeaders(response.headers);
   assert.match(response.body, /\/api\/platform\/session\/context/);
   assert.match(response.body, /\/api\/platform\/apps\/launch/);
+  assert.equal(fixture.calls.sessionsFindById, 0);
+  assert.equal(fixture.calls.csrfValidate, 0);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("GET /app/admin renders the admin shell as no-store HTML without requiring session or CSRF", async () => {
+  const fixture = createAdapterFixture({
+    csrfThrows: true,
+  });
+  const { response } = await rawRequest({
+    method: "GET",
+    url: "/app/admin",
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers["content-type"], "text/html; charset=utf-8");
+  assertNoStoreHeaders(response.headers);
+  assert.match(response.body, /\/api\/platform\/admin\/workspace/);
+  assert.match(response.body, /\/api\/platform\/admin\/members\/role/);
+  assert.match(response.body, /\/api\/platform\/admin\/members\/disable/);
+  assert.match(response.body, /\/api\/platform\/admin\/apps\/entitlement/);
   assert.equal(fixture.calls.sessionsFindById, 0);
   assert.equal(fixture.calls.csrfValidate, 0);
   assertResponseIsPrivacySafe(response);
@@ -254,6 +278,119 @@ test("session context route handles missing cookie and wrong method safely", asy
   assertResponseIsPrivacySafe(wrongMethod.response);
 });
 
+test("workspace admin overview returns safe members and KQAG entitlement for owner", async () => {
+  const fixture = createAdapterFixture({
+    csrfThrows: true,
+  });
+  const { response, body } = await request({
+    method: "GET",
+    url: "/api/platform/admin/workspace?workspaceId=workspace_koncept_images",
+    headers: {
+      cookie: `swooshz_session=${sessionId}; unrelated=value`,
+    },
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 200);
+  assertNoStoreHeaders(response.headers);
+  assert.equal(body.outcome, "loaded");
+  assert.deepEqual(body.workspace, {
+    workspaceId: "workspace_koncept_images",
+    workspaceSlug: "koncept-images-pte-ltd",
+    workspaceName: "Koncept Images Pte Ltd",
+    status: "active",
+  });
+  assert.deepEqual(
+    body.members.map((member) => ({
+      membershipId: member.membershipId,
+      email: member.user.email,
+      role: member.role,
+      status: member.status,
+      lastLoginAt: member.user.lastLoginAt,
+    })),
+    [
+      {
+        membershipId: "membership_owner_example",
+        email: "owner@example.com",
+        role: "owner",
+        status: "active",
+        lastLoginAt: now,
+      },
+      {
+        membershipId: "membership_member_example",
+        email: "member@example.com",
+        role: "member",
+        status: "active",
+        lastLoginAt: earlier,
+      },
+      {
+        membershipId: "membership_viewer_example",
+        email: "viewer@example.com",
+        role: "viewer",
+        status: "active",
+        lastLoginAt: null,
+      },
+    ],
+  );
+  assert.deepEqual(body.entitlements, [
+    {
+      entitlementId: "entitlement_koncept_kqag",
+      appId: "app_kqag",
+      appKey: "kqag",
+      appName: "KQAG / SAQG",
+      appStatus: "private_preview",
+      status: "enabled",
+      grantedByUserId: "user_owner_example",
+      updatedAt: now,
+    },
+  ]);
+  assert.equal(fixture.calls.csrfValidate, 0);
+  assert.equal(fixture.records.auditEvents.length, 0);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("workspace admin overview fails closed for missing session and member role", async () => {
+  const missing = await request({
+    method: "GET",
+    url: "/api/platform/admin/workspace?workspaceId=workspace_koncept_images",
+  });
+  const memberFixture = createAdapterFixture();
+  const member = await request({
+    method: "GET",
+    url: "/api/platform/admin/workspace?workspaceId=workspace_koncept_images",
+    headers: {
+      cookie: `swooshz_session=${memberSessionId}`,
+    },
+    dependencies: memberFixture.dependencies,
+  });
+  const viewer = await request({
+    method: "GET",
+    url: "/api/platform/admin/workspace?workspaceId=workspace_koncept_images",
+    headers: {
+      cookie: `swooshz_session=${viewerSessionId}`,
+    },
+    dependencies: memberFixture.dependencies,
+  });
+
+  assert.equal(missing.response.statusCode, 401);
+  assertNoStoreHeaders(missing.response.headers);
+  assert.deepEqual(missing.body, {
+    outcome: "unauthenticated",
+    reason: "missing_session",
+  });
+  assert.equal(member.response.statusCode, 403);
+  assertNoStoreHeaders(member.response.headers);
+  assert.deepEqual(member.body, {
+    outcome: "denied",
+    reason: "not_authorized",
+  });
+  assert.equal(viewer.response.statusCode, 403);
+  assert.equal(memberFixture.records.auditEvents.length, 0);
+  assertResponseIsPrivacySafe(missing.response);
+  assertResponseIsPrivacySafe(member.response);
+  assertResponseIsPrivacySafe(viewer.response);
+});
+
 test("CSRF issuance route issues a token for an active browser session", async () => {
   const fixture = createAdapterFixture();
   const { response, body } = await request({
@@ -298,6 +435,175 @@ test("CSRF issuance route returns safe 405 for wrong method", async () => {
     message: "Method not allowed.",
   });
   assert.equal(fixture.calls.csrfTokenCreate, 0);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("workspace admin role change validates CSRF before mutation and audit", async () => {
+  const fixture = createAdapterFixture();
+  const { response, body } = await request({
+    method: "POST",
+    url: "/api/platform/admin/members/role?workspaceId=workspace_koncept_images&membershipId=membership_viewer_example&role=member",
+    headers: {
+      cookie: `swooshz_session=${sessionId}`,
+      "x-csrf-token": validCsrfToken,
+    },
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 403);
+  assertNoStoreHeaders(response.headers);
+  assert.deepEqual(body, {
+    outcome: "denied",
+    reason: "missing_origin",
+  });
+  assert.equal(
+    fixture.records.memberships.find((membership) => membership.id === "membership_viewer_example")
+      ?.role,
+    "viewer",
+  );
+  assert.equal(fixture.records.auditEvents.length, 0);
+  assert.equal(fixture.calls.csrfValidate, 0);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("workspace admin role change updates state and records audit after valid CSRF", async () => {
+  const fixture = createAdapterFixture();
+  const { response, body } = await request({
+    method: "POST",
+    url: "/api/platform/admin/members/role?workspaceId=workspace_koncept_images&membershipId=membership_viewer_example&role=member",
+    headers: logoutHeaders(),
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 200);
+  assertNoStoreHeaders(response.headers);
+  assert.deepEqual(body, {
+    outcome: "role_changed",
+    membershipId: "membership_viewer_example",
+    role: "member",
+    status: "active",
+    updatedAt: now,
+  });
+  assert.equal(fixture.calls.csrfValidate, 1);
+  assert.equal(
+    fixture.records.memberships.find((membership) => membership.id === "membership_viewer_example")
+      ?.role,
+    "member",
+  );
+  assert.deepEqual(fixture.records.auditEvents.at(-1), {
+    id: "audit_member_role_change_1",
+    workspaceId: "workspace_koncept_images",
+    actorUserId: "user_owner_example",
+    eventType: "workspace.membership.role_changed",
+    targetType: "membership",
+    targetId: "membership_viewer_example",
+    createdAt: now,
+    metadata: {
+      previousRole: "viewer",
+      newRole: "member",
+      previousStatus: "active",
+      targetUserId: "user_viewer_example",
+    },
+  });
+  assertResponseIsPrivacySafe(response);
+});
+
+test("workspace admin membership disable updates state and records audit after valid CSRF", async () => {
+  const fixture = createAdapterFixture();
+  const { response, body } = await request({
+    method: "POST",
+    url: "/api/platform/admin/members/disable?workspaceId=workspace_koncept_images&membershipId=membership_member_example",
+    headers: logoutHeaders(),
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 200);
+  assertNoStoreHeaders(response.headers);
+  assert.deepEqual(body, {
+    outcome: "membership_disabled",
+    membershipId: "membership_member_example",
+    role: "member",
+    status: "disabled",
+    updatedAt: now,
+  });
+  assert.equal(
+    fixture.records.memberships.find((membership) => membership.id === "membership_member_example")
+      ?.status,
+    "disabled",
+  );
+  assert.deepEqual(fixture.records.auditEvents.at(-1), {
+    id: "audit_membership_disable_1",
+    workspaceId: "workspace_koncept_images",
+    actorUserId: "user_owner_example",
+    eventType: "workspace.membership.disabled",
+    targetType: "membership",
+    targetId: "membership_member_example",
+    createdAt: now,
+    metadata: {
+      previousRole: "member",
+      previousStatus: "active",
+      targetUserId: "user_member_example",
+    },
+  });
+  assertResponseIsPrivacySafe(response);
+});
+
+test("workspace admin KQAG entitlement route toggles state and records audit", async () => {
+  const fixture = createAdapterFixture();
+  const disabled = await request({
+    method: "POST",
+    url: "/api/platform/admin/apps/entitlement?workspaceId=workspace_koncept_images&appKey=kqag&status=disabled",
+    headers: logoutHeaders(),
+    dependencies: fixture.dependencies,
+  });
+  const enabled = await request({
+    method: "POST",
+    url: "/api/platform/admin/apps/entitlement?workspaceId=workspace_koncept_images&appKey=kqag&status=enabled",
+    headers: logoutHeaders(),
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(disabled.response.statusCode, 200);
+  assertNoStoreHeaders(disabled.response.headers);
+  assert.equal(disabled.body.outcome, "entitlement_updated");
+  assert.equal(disabled.body.entitlementId, "entitlement_koncept_kqag");
+  assert.equal(disabled.body.status, "disabled");
+  assert.equal(enabled.response.statusCode, 200);
+  assert.equal(enabled.body.status, "enabled");
+  assert.equal(fixture.records.appEntitlements[0].status, "enabled");
+  assert.deepEqual(
+    fixture.records.auditEvents.map((event) => event.eventType),
+    [
+      "workspace.app_entitlement.disabled",
+      "workspace.app_entitlement.enabled",
+    ],
+  );
+  assert.equal(fixture.records.auditEvents[0].id, "audit_app_entitlement_status_1");
+  assert.equal(fixture.records.auditEvents[1].id, "audit_app_entitlement_status_2");
+  assertResponseIsPrivacySafe(disabled.response);
+  assertResponseIsPrivacySafe(enabled.response);
+});
+
+test("workspace admin KQAG entitlement route blocks invalid CSRF before state change", async () => {
+  const fixture = createAdapterFixture({
+    csrfValid: false,
+  });
+  const { response, body } = await request({
+    method: "POST",
+    url: "/api/platform/admin/apps/entitlement?workspaceId=workspace_koncept_images&appKey=kqag&status=disabled",
+    headers: logoutHeaders({ csrfToken: "raw-csrf-token-private" }),
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 403);
+  assertNoStoreHeaders(response.headers);
+  assert.deepEqual(body, {
+    outcome: "denied",
+    reason: "invalid_csrf_token",
+  });
+  assert.equal(fixture.calls.csrfValidate, 1);
+  assert.equal(fixture.records.appEntitlements[0].status, "enabled");
+  assert.equal(fixture.records.auditEvents.length, 0);
   assertResponseIsPrivacySafe(response);
 });
 
@@ -966,12 +1272,46 @@ function createAdapterFixture(overrides = {}) {
         updatedAt: now,
         lastLoginAt: now,
       },
+      {
+        id: "user_member_example",
+        email: "member@example.com",
+        displayName: "Member Example",
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+        lastLoginAt: earlier,
+      },
+      {
+        id: "user_viewer_example",
+        email: "viewer@example.com",
+        displayName: "Viewer Example",
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+        lastLoginAt: null,
+      },
     ],
     providerIdentities: [],
     sessions: [
       {
         id: sessionId,
         userId: "user_owner_example",
+        createdAt: earlier,
+        expiresAt: future,
+        lastSeenAt: earlier,
+        revokedAt: null,
+      },
+      {
+        id: memberSessionId,
+        userId: "user_member_example",
+        createdAt: earlier,
+        expiresAt: future,
+        lastSeenAt: earlier,
+        revokedAt: null,
+      },
+      {
+        id: viewerSessionId,
+        userId: "user_viewer_example",
         createdAt: earlier,
         expiresAt: future,
         lastSeenAt: earlier,
@@ -994,6 +1334,24 @@ function createAdapterFixture(overrides = {}) {
         workspaceId: "workspace_koncept_images",
         userId: "user_owner_example",
         role: "owner",
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: "membership_member_example",
+        workspaceId: "workspace_koncept_images",
+        userId: "user_member_example",
+        role: "member",
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: "membership_viewer_example",
+        workspaceId: "workspace_koncept_images",
+        userId: "user_viewer_example",
+        role: "viewer",
         status: "active",
         createdAt: now,
         updatedAt: now,
@@ -1202,6 +1560,7 @@ function createAdapterFixture(overrides = {}) {
         },
       },
     },
+    workspaceAdminIdFactory: createWorkspaceAdminIdFactory(records),
   };
   if (overrides.kqagLaunchHandoff) {
     dependencies.kqagBrowserLaunch = {
@@ -1290,6 +1649,17 @@ function createAuthOidcAdapter(calls, overrides) {
         displayName: "Synthetic Owner",
         metadata: { emailVerified: true },
       };
+    },
+  };
+}
+
+function createWorkspaceAdminIdFactory(records) {
+  return {
+    createAuditEventId(input) {
+      return `audit_${input.operation}_${records.auditEvents.length + 1}`;
+    },
+    createEntitlementId() {
+      return `entitlement_admin_created_${records.appEntitlements.length + 1}`;
     },
   };
 }

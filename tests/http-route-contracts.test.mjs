@@ -13,12 +13,17 @@ test("route manifest includes only approved initial platform routes", () => {
     [
       "platform_landing_page",
       "platform_app_shell",
+      "platform_admin_shell",
       "healthz",
       "platform_auth_start",
       "platform_auth_callback",
       "platform_session_app_access",
       "platform_session_context",
       "platform_session_csrf",
+      "platform_workspace_admin_overview",
+      "platform_workspace_admin_member_role",
+      "platform_workspace_admin_member_disable",
+      "platform_workspace_admin_app_entitlement",
       "platform_app_launch",
       "platform_kqag_launch_open",
       "platform_app_launch_consume",
@@ -30,12 +35,17 @@ test("route manifest includes only approved initial platform routes", () => {
     [
       "GET /",
       "GET /app",
+      "GET /app/admin",
       "GET /healthz",
       "GET /api/platform/auth/start",
       "GET /api/platform/auth/callback",
       "GET /api/platform/session/app-access",
       "GET /api/platform/session/context",
       "GET /api/platform/session/csrf",
+      "GET /api/platform/admin/workspace",
+      "POST /api/platform/admin/members/role",
+      "POST /api/platform/admin/members/disable",
+      "POST /api/platform/admin/apps/entitlement",
       "POST /api/platform/apps/launch",
       "POST /api/platform/apps/launch/open",
       "POST /api/platform/apps/launch/consume",
@@ -51,7 +61,14 @@ test("state-changing browser-cookie routes require CSRF protection", () => {
 
   assert.deepEqual(
     stateChangingRoutes.map((route) => route.id),
-    ["platform_app_launch", "platform_kqag_launch_open", "platform_logout"],
+    [
+      "platform_workspace_admin_member_role",
+      "platform_workspace_admin_member_disable",
+      "platform_workspace_admin_app_entitlement",
+      "platform_app_launch",
+      "platform_kqag_launch_open",
+      "platform_logout",
+    ],
   );
 
   for (const route of stateChangingRoutes) {
@@ -65,9 +82,10 @@ test("state-changing browser-cookie routes require CSRF protection", () => {
 test("browser page routes are GET-only HTML without CSRF or required browser session", () => {
   const landing = getHttpRouteContract("platform_landing_page");
   const appShell = getHttpRouteContract("platform_app_shell");
+  const adminShell = getHttpRouteContract("platform_admin_shell");
 
   assert.deepEqual(
-    [landing, appShell].map((route) => ({
+    [landing, appShell, adminShell].map((route) => ({
       method: route.method,
       browserSession: route.browserSession,
       csrf: route.csrf,
@@ -92,12 +110,22 @@ test("browser page routes are GET-only HTML without CSRF or required browser ses
         requiredQuery: [],
         idempotent: true,
       },
+      {
+        method: "GET",
+        browserSession: "none",
+        csrf: { required: false, strategy: "none" },
+        responseKind: "html",
+        requiredQuery: [],
+        idempotent: true,
+      },
     ],
   );
   assert.equal(landing.path, "/");
   assert.equal(landing.handlerContract, "renderLandingPage");
   assert.equal(appShell.path, "/app");
   assert.equal(appShell.handlerContract, "renderAppShellPage");
+  assert.equal(adminShell.path, "/app/admin");
+  assert.equal(adminShell.handlerContract, "renderAdminShellPage");
 });
 
 test("auth start route is GET-only and does not require browser session or CSRF", () => {
@@ -168,6 +196,47 @@ test("CSRF issuance route is GET-only, session-protected, and does not require C
   assert.equal(route.csrf.strategy, "none");
   assert.deepEqual(route.requiredQuery, []);
   assert.equal(route.handlerContract, "handleCsrfTokenIssueRequest");
+});
+
+test("workspace admin overview is read-only and requires browser session", () => {
+  const route = getHttpRouteContract("platform_workspace_admin_overview");
+
+  assert.equal(route.method, "GET");
+  assert.equal(route.path, "/api/platform/admin/workspace");
+  assert.equal(route.browserSession, "required");
+  assert.equal(route.csrf.required, false);
+  assert.deepEqual(route.requiredQuery, ["workspaceId"]);
+  assert.equal(route.handlerContract, "handleWorkspaceAdminOverviewRequest");
+  assert.equal(route.idempotent, true);
+});
+
+test("workspace admin mutation routes are POST-only session and CSRF protected", () => {
+  for (const route of [
+    getHttpRouteContract("platform_workspace_admin_member_role"),
+    getHttpRouteContract("platform_workspace_admin_member_disable"),
+    getHttpRouteContract("platform_workspace_admin_app_entitlement"),
+  ]) {
+    assert.equal(route.method, "POST");
+    assert.equal(route.browserSession, "required");
+    assert.equal(route.csrf.required, true);
+    assert.equal(route.csrf.strategy, "origin_referer_and_csrf_token");
+    assert.equal(route.idempotent, false);
+  }
+
+  assert.deepEqual(getHttpRouteContract("platform_workspace_admin_member_role").requiredQuery, [
+    "workspaceId",
+    "membershipId",
+    "role",
+  ]);
+  assert.deepEqual(getHttpRouteContract("platform_workspace_admin_member_disable").requiredQuery, [
+    "workspaceId",
+    "membershipId",
+  ]);
+  assert.deepEqual(getHttpRouteContract("platform_workspace_admin_app_entitlement").requiredQuery, [
+    "workspaceId",
+    "appKey",
+    "status",
+  ]);
 });
 
 test("app launch intent route is POST-only session-protected and CSRF-protected", () => {

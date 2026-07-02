@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  renderAdminShellPage,
   renderAppShellPage,
   renderLandingPage,
 } from "../dist/index.js";
@@ -22,6 +23,19 @@ test("app shell references only existing browser JSON APIs", () => {
   assert.match(html, /\/api\/platform\/session\/csrf/);
   assert.match(html, /\/api\/platform\/apps\/launch\/open/);
   assert.match(html, /\/api\/platform\/logout/);
+  assert.match(html, /\/app\/admin/);
+});
+
+test("admin shell references only protected workspace admin browser APIs", () => {
+  const html = renderAdminShellPage();
+
+  assert.match(html, /\/api\/platform\/session\/context/);
+  assert.match(html, /\/api\/platform\/session\/csrf/);
+  assert.match(html, /\/api\/platform\/admin\/workspace/);
+  assert.match(html, /\/api\/platform\/admin\/members\/role/);
+  assert.match(html, /\/api\/platform\/admin\/members\/disable/);
+  assert.match(html, /\/api\/platform\/admin\/apps\/entitlement/);
+  assert.match(html, /\/api\/platform\/logout/);
 });
 
 test("app shell keeps secret and raw-auth material out of static HTML", () => {
@@ -34,6 +48,16 @@ test("app shell keeps secret and raw-auth material out of static HTML", () => {
   assert.doesNotMatch(html, /DATABASE_URL|postgresql:\/\/|private\.example/i);
 });
 
+test("admin shell keeps secret raw-auth KQAG and private material out of static HTML", () => {
+  const html = renderAdminShellPage();
+
+  assert.doesNotMatch(html, /swooshz_session=session_|session-secret/i);
+  assert.doesNotMatch(html, /CSRF_TOKEN_HASH_SECRET|csrf-secret/i);
+  assert.doesNotMatch(html, /auth-code|raw-state|raw-nonce|provider-token|raw-claim/i);
+  assert.doesNotMatch(html, /DATABASE_URL|postgresql:\/\/|private\.example/i);
+  assert.doesNotMatch(html, /quote export|pricing|xlsx|quote session/i);
+});
+
 test("app shell does not persist launch tokens in browser storage or URLs", () => {
   const html = renderAppShellPage();
 
@@ -41,6 +65,13 @@ test("app shell does not persist launch tokens in browser storage or URLs", () =
   assert.doesNotMatch(html, /launchToken|token-box|clipboard/i);
   assert.doesNotMatch(html, /launchToken=.*location|location.*launchToken/s);
   assert.doesNotMatch(html, /URLSearchParams\([^)]*launchToken/s);
+});
+
+test("admin shell does not persist private values in browser storage", () => {
+  const html = renderAdminShellPage();
+
+  assert.doesNotMatch(html, /localStorage|sessionStorage/);
+  assert.doesNotMatch(html, /clipboard|token-box/i);
 });
 
 test("platform shell module does not import frontend frameworks provider SDKs DB KQAG or migrations", async () => {

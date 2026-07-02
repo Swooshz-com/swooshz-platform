@@ -1,4 +1,5 @@
 import type { BillingGate } from "../access/decide-app-access.js";
+import type { Role } from "../accounts/types.js";
 import {
   revokePlatformSession,
   type SessionRevocationServiceDependencies,
@@ -23,6 +24,14 @@ import {
   PlatformSessionContextServiceError,
 } from "../platform/session-context-service.js";
 import type { PlatformRepositories, SessionRepository } from "../platform/repositories.js";
+import {
+  WorkspaceAdminServiceError,
+  changeWorkspaceMemberRole,
+  disableWorkspaceMembership,
+  listWorkspaceAppEntitlementsForAdmin,
+  listWorkspaceMembersForAdmin,
+  setWorkspaceAppEntitlementStatus,
+} from "../platform/workspace-admin-service.js";
 import {
   CsrfTokenServiceError,
   issueCsrfTokenForSession,
@@ -117,6 +126,31 @@ export interface KqagBrowserLaunchHttpRequest {
   appKey: string;
   now: string;
   cookie?: BrowserSessionCookieConfig;
+}
+
+export interface WorkspaceAdminOverviewHttpRequest {
+  headers?: HttpRequestHeaders;
+  workspaceId: string;
+  now: string;
+  cookie?: BrowserSessionCookieConfig;
+}
+
+export interface WorkspaceAdminRoleChangeHttpRequest extends WorkspaceAdminOverviewHttpRequest {
+  membershipId: string;
+  role: string;
+  auditEventId: string;
+}
+
+export interface WorkspaceAdminMembershipDisableHttpRequest extends WorkspaceAdminOverviewHttpRequest {
+  membershipId: string;
+  auditEventId: string;
+}
+
+export interface WorkspaceAdminAppEntitlementStatusHttpRequest extends WorkspaceAdminOverviewHttpRequest {
+  appKey: string;
+  status: string;
+  auditEventId: string;
+  entitlementId?: string;
 }
 
 export async function handleProtectedAppAccessRequest(
@@ -507,6 +541,180 @@ export async function handleSessionContextRequest(
   }
 }
 
+export async function handleWorkspaceAdminOverviewRequest(
+  repositories: PlatformRepositories,
+  request: WorkspaceAdminOverviewHttpRequest,
+): Promise<HttpResponseLike> {
+  const sessionId = extractSessionId(request.headers, request.cookie);
+
+  if (!sessionId) {
+    return workspaceAdminUnauthenticated();
+  }
+
+  if (!request.workspaceId.trim()) {
+    return requiredAdminParametersMissing();
+  }
+
+  try {
+    const [members, entitlements] = await Promise.all([
+      listWorkspaceMembersForAdmin(repositories, {
+        sessionId,
+        workspaceId: request.workspaceId,
+        now: request.now,
+      }),
+      listWorkspaceAppEntitlementsForAdmin(repositories, {
+        sessionId,
+        workspaceId: request.workspaceId,
+        now: request.now,
+      }),
+    ]);
+    const workspace = await repositories.workspaces.findById(request.workspaceId);
+
+    if (!workspace) {
+      return workspaceAdminNotFound();
+    }
+
+    return {
+      status: 200,
+      headers: noStoreHeaders(),
+      body: {
+        outcome: "loaded",
+        workspace: {
+          workspaceId: workspace.id,
+          workspaceSlug: workspace.slug,
+          workspaceName: workspace.displayName,
+          status: workspace.status,
+        },
+        members: members.members,
+        entitlements: entitlements.entitlements,
+      },
+    };
+  } catch (error) {
+    return workspaceAdminErrorResponse(error);
+  }
+}
+
+export async function handleWorkspaceAdminRoleChangeRequest(
+  repositories: PlatformRepositories,
+  request: WorkspaceAdminRoleChangeHttpRequest,
+): Promise<HttpResponseLike> {
+  const sessionId = extractSessionId(request.headers, request.cookie);
+
+  if (!sessionId) {
+    return workspaceAdminUnauthenticated();
+  }
+
+  if (!request.workspaceId.trim() || !request.membershipId.trim() || !request.role.trim()) {
+    return requiredAdminParametersMissing();
+  }
+
+  try {
+    const membership = await changeWorkspaceMemberRole(repositories, {
+      sessionId,
+      workspaceId: request.workspaceId,
+      membershipId: request.membershipId,
+      role: request.role as Role,
+      auditEventId: request.auditEventId,
+      now: request.now,
+    });
+
+    return {
+      status: 200,
+      headers: noStoreHeaders(),
+      body: {
+        outcome: "role_changed",
+        membershipId: membership.id,
+        role: membership.role,
+        status: membership.status,
+        updatedAt: membership.updatedAt,
+      },
+    };
+  } catch (error) {
+    return workspaceAdminErrorResponse(error);
+  }
+}
+
+export async function handleWorkspaceAdminMembershipDisableRequest(
+  repositories: PlatformRepositories,
+  request: WorkspaceAdminMembershipDisableHttpRequest,
+): Promise<HttpResponseLike> {
+  const sessionId = extractSessionId(request.headers, request.cookie);
+
+  if (!sessionId) {
+    return workspaceAdminUnauthenticated();
+  }
+
+  if (!request.workspaceId.trim() || !request.membershipId.trim()) {
+    return requiredAdminParametersMissing();
+  }
+
+  try {
+    const membership = await disableWorkspaceMembership(repositories, {
+      sessionId,
+      workspaceId: request.workspaceId,
+      membershipId: request.membershipId,
+      auditEventId: request.auditEventId,
+      now: request.now,
+    });
+
+    return {
+      status: 200,
+      headers: noStoreHeaders(),
+      body: {
+        outcome: "membership_disabled",
+        membershipId: membership.id,
+        role: membership.role,
+        status: membership.status,
+        updatedAt: membership.updatedAt,
+      },
+    };
+  } catch (error) {
+    return workspaceAdminErrorResponse(error);
+  }
+}
+
+export async function handleWorkspaceAdminAppEntitlementStatusRequest(
+  repositories: PlatformRepositories,
+  request: WorkspaceAdminAppEntitlementStatusHttpRequest,
+): Promise<HttpResponseLike> {
+  const sessionId = extractSessionId(request.headers, request.cookie);
+
+  if (!sessionId) {
+    return workspaceAdminUnauthenticated();
+  }
+
+  if (!request.workspaceId.trim() || !request.appKey.trim() || !request.status.trim()) {
+    return requiredAdminParametersMissing();
+  }
+
+  try {
+    const entitlement = await setWorkspaceAppEntitlementStatus(repositories, {
+      sessionId,
+      workspaceId: request.workspaceId,
+      appKey: request.appKey,
+      status: request.status as "enabled" | "disabled",
+      auditEventId: request.auditEventId,
+      entitlementId: request.entitlementId,
+      now: request.now,
+    });
+
+    return {
+      status: 200,
+      headers: noStoreHeaders(),
+      body: {
+        outcome: "entitlement_updated",
+        entitlementId: entitlement.id,
+        appId: entitlement.appId,
+        status: entitlement.status,
+        grantedByUserId: entitlement.grantedByUserId,
+        updatedAt: entitlement.updatedAt,
+      },
+    };
+  } catch (error) {
+    return workspaceAdminErrorResponse(error);
+  }
+}
+
 function sessionContextUnauthenticated(
   reason:
     | "missing_session"
@@ -523,6 +731,70 @@ function sessionContextUnauthenticated(
       reason,
     },
   };
+}
+
+function workspaceAdminUnauthenticated() {
+  return {
+    status: 401,
+    headers: noStoreHeaders(),
+    body: {
+      outcome: "unauthenticated",
+      reason: "missing_session",
+    },
+  };
+}
+
+function workspaceAdminNotFound(): HttpResponseLike {
+  return {
+    status: 404,
+    headers: noStoreHeaders(),
+    body: {
+      outcome: "error",
+      message: "Workspace admin action could not be completed.",
+    },
+  };
+}
+
+function requiredAdminParametersMissing(): HttpResponseLike {
+  return {
+    status: 400,
+    headers: noStoreHeaders(),
+    body: {
+      outcome: "error",
+      message: "Required query parameters are missing.",
+    },
+  };
+}
+
+function workspaceAdminErrorResponse(error: unknown): HttpResponseLike {
+  if (error instanceof WorkspaceAdminServiceError) {
+    if (error.code === "not_authorized") {
+      return {
+        status: 403,
+        headers: noStoreHeaders(),
+        body: {
+          outcome: "denied",
+          reason: "not_authorized",
+        },
+      };
+    }
+
+    if (error.code === "repository_failure") {
+      return workspaceAdminFailure();
+    }
+
+    return {
+      status: 400,
+      headers: noStoreHeaders(),
+      body: {
+        outcome: "error",
+        reason: error.code,
+        message: error.publicMessage,
+      },
+    };
+  }
+
+  return workspaceAdminFailure();
 }
 
 function appLaunchUnauthenticated(
@@ -741,6 +1013,17 @@ function serviceFailure() {
     body: {
       outcome: "error",
       message: "App access decision could not be completed.",
+    },
+  };
+}
+
+function workspaceAdminFailure(): HttpResponseLike {
+  return {
+    status: 500,
+    headers: noStoreHeaders(),
+    body: {
+      outcome: "error",
+      message: "Workspace admin action could not be completed.",
     },
   };
 }

@@ -20,6 +20,10 @@ import {
   handleLogoutRequest,
   handleProtectedAppAccessRequest,
   handleSessionContextRequest,
+  handleWorkspaceAdminAppEntitlementStatusRequest,
+  handleWorkspaceAdminMembershipDisableRequest,
+  handleWorkspaceAdminOverviewRequest,
+  handleWorkspaceAdminRoleChangeRequest,
   type HttpRequestHeaders,
   type HttpResponseLike,
   type KqagBrowserLaunchDependencies,
@@ -30,10 +34,30 @@ import {
   HTTP_ROUTE_CONTRACTS,
   type HttpRouteContract,
 } from "./route-contracts.js";
-import { renderAppShellPage, renderLandingPage } from "./platform-shell.js";
+import {
+  renderAdminShellPage,
+  renderAppShellPage,
+  renderLandingPage,
+} from "./platform-shell.js";
 import type { BrowserSessionCookieConfig } from "./session-cookie.js";
 import { extractBrowserSessionIdFromCookieHeader } from "./session-cookie.js";
 import { validateHttpRequestSecurityForRoute } from "./request-security.js";
+
+export interface WorkspaceAdminIdFactory {
+  createAuditEventId(input: WorkspaceAdminIdFactoryInput): string;
+  createEntitlementId(input: WorkspaceAdminIdFactoryInput): string;
+}
+
+export interface WorkspaceAdminIdFactoryInput {
+  operation:
+    | "member_role_change"
+    | "membership_disable"
+    | "app_entitlement_status";
+  workspaceId: string;
+  targetId?: string;
+  appKey?: string;
+  now: string;
+}
 
 export interface NodePlatformHttpAdapterDependencies {
   repositories: PlatformRepositories;
@@ -49,6 +73,7 @@ export interface NodePlatformHttpAdapterDependencies {
   appLaunchTokenConsume?: AppLaunchTokenConsumeDependencies;
   kqagBrowserLaunch?: KqagBrowserLaunchDependencies["kqag"];
   billingGate?: BillingGate;
+  workspaceAdminIdFactory?: WorkspaceAdminIdFactory;
 }
 
 export interface NodePlatformHttpRequestLike {
@@ -67,6 +92,7 @@ const jsonContentType = "application/json; charset=utf-8";
 const htmlContentType = "text/html; charset=utf-8";
 const adapterUrlBase = "http://swooshz-platform.local";
 const defaultCsrfTokenTtlSeconds = 900;
+let workspaceAdminIdCounter = 0;
 
 export async function handleNodePlatformHttpRequest(
   dependencies: NodePlatformHttpAdapterDependencies,
@@ -118,6 +144,10 @@ export async function handleNodePlatformHttpRequest(
 
   if (route.id === "platform_app_shell") {
     return htmlResponse(200, renderAppShellPage(), noStoreHeaders());
+  }
+
+  if (route.id === "platform_admin_shell") {
+    return htmlResponse(200, renderAdminShellPage(), noStoreHeaders());
   }
 
   if (route.id === "healthz") {
@@ -207,6 +237,189 @@ export async function handleNodePlatformHttpRequest(
           headers,
           now: dependencies.now(),
           ttlSeconds: dependencies.csrfTokenTtlSeconds ?? defaultCsrfTokenTtlSeconds,
+          cookie: dependencies.cookie,
+        },
+      ),
+    );
+  }
+
+  if (route.id === "platform_workspace_admin_overview") {
+    const workspaceId = parsedUrl.searchParams.get("workspaceId");
+
+    if (!workspaceId) {
+      return jsonResponse(
+        400,
+        {
+          outcome: "error",
+          message: "Required query parameters are missing.",
+        },
+        noStoreHeaders(),
+      );
+    }
+
+    return toNodeResponse(
+      await handleWorkspaceAdminOverviewRequest(dependencies.repositories, {
+        headers,
+        workspaceId,
+        now: dependencies.now(),
+        cookie: dependencies.cookie,
+      }),
+    );
+  }
+
+  if (route.id === "platform_workspace_admin_member_role") {
+    const workspaceId = parsedUrl.searchParams.get("workspaceId");
+    const membershipId = parsedUrl.searchParams.get("membershipId");
+    const role = parsedUrl.searchParams.get("role");
+
+    if (!workspaceId || !membershipId || !role) {
+      return jsonResponse(
+        400,
+        {
+          outcome: "error",
+          message: "Required query parameters are missing.",
+        },
+        noStoreHeaders(),
+      );
+    }
+
+    const now = dependencies.now();
+    const securityResult = await validateAdminRouteSecurity({
+      dependencies,
+      headers,
+      routeId: "platform_workspace_admin_member_role",
+      now,
+    });
+
+    if (!securityResult.allowed) {
+      return securityFailureResponse(
+        securityResult.recommendedStatus,
+        securityResult.reason,
+        noStoreHeaders(),
+      );
+    }
+
+    const idFactory = dependencies.workspaceAdminIdFactory ?? defaultWorkspaceAdminIdFactory;
+
+    return toNodeResponse(
+      await handleWorkspaceAdminRoleChangeRequest(dependencies.repositories, {
+        headers,
+        workspaceId,
+        membershipId,
+        role,
+        now,
+        auditEventId: idFactory.createAuditEventId({
+          operation: "member_role_change",
+          workspaceId,
+          targetId: membershipId,
+          now,
+        }),
+        cookie: dependencies.cookie,
+      }),
+    );
+  }
+
+  if (route.id === "platform_workspace_admin_member_disable") {
+    const workspaceId = parsedUrl.searchParams.get("workspaceId");
+    const membershipId = parsedUrl.searchParams.get("membershipId");
+
+    if (!workspaceId || !membershipId) {
+      return jsonResponse(
+        400,
+        {
+          outcome: "error",
+          message: "Required query parameters are missing.",
+        },
+        noStoreHeaders(),
+      );
+    }
+
+    const now = dependencies.now();
+    const securityResult = await validateAdminRouteSecurity({
+      dependencies,
+      headers,
+      routeId: "platform_workspace_admin_member_disable",
+      now,
+    });
+
+    if (!securityResult.allowed) {
+      return securityFailureResponse(
+        securityResult.recommendedStatus,
+        securityResult.reason,
+        noStoreHeaders(),
+      );
+    }
+
+    const idFactory = dependencies.workspaceAdminIdFactory ?? defaultWorkspaceAdminIdFactory;
+
+    return toNodeResponse(
+      await handleWorkspaceAdminMembershipDisableRequest(dependencies.repositories, {
+        headers,
+        workspaceId,
+        membershipId,
+        now,
+        auditEventId: idFactory.createAuditEventId({
+          operation: "membership_disable",
+          workspaceId,
+          targetId: membershipId,
+          now,
+        }),
+        cookie: dependencies.cookie,
+      }),
+    );
+  }
+
+  if (route.id === "platform_workspace_admin_app_entitlement") {
+    const workspaceId = parsedUrl.searchParams.get("workspaceId");
+    const appKey = parsedUrl.searchParams.get("appKey");
+    const status = parsedUrl.searchParams.get("status");
+
+    if (!workspaceId || !appKey || !status) {
+      return jsonResponse(
+        400,
+        {
+          outcome: "error",
+          message: "Required query parameters are missing.",
+        },
+        noStoreHeaders(),
+      );
+    }
+
+    const now = dependencies.now();
+    const securityResult = await validateAdminRouteSecurity({
+      dependencies,
+      headers,
+      routeId: "platform_workspace_admin_app_entitlement",
+      now,
+    });
+
+    if (!securityResult.allowed) {
+      return securityFailureResponse(
+        securityResult.recommendedStatus,
+        securityResult.reason,
+        noStoreHeaders(),
+      );
+    }
+
+    const idFactory = dependencies.workspaceAdminIdFactory ?? defaultWorkspaceAdminIdFactory;
+    const idInput = {
+      operation: "app_entitlement_status" as const,
+      workspaceId,
+      appKey,
+      now,
+    };
+
+    return toNodeResponse(
+      await handleWorkspaceAdminAppEntitlementStatusRequest(
+        dependencies.repositories,
+        {
+          headers,
+          workspaceId,
+          appKey,
+          status,
+          now,
+          auditEventId: idFactory.createAuditEventId(idInput),
+          entitlementId: idFactory.createEntitlementId(idInput),
           cookie: dependencies.cookie,
         },
       ),
@@ -446,6 +659,35 @@ function findRouteByPath(pathname: string): HttpRouteContract | null {
   return HTTP_ROUTE_CONTRACTS.find((route) => route.path === pathname) ?? null;
 }
 
+async function validateAdminRouteSecurity({
+  dependencies,
+  headers,
+  routeId,
+  now,
+}: {
+  dependencies: NodePlatformHttpAdapterDependencies;
+  headers: HttpRequestHeaders;
+  routeId:
+    | "platform_workspace_admin_member_role"
+    | "platform_workspace_admin_member_disable"
+    | "platform_workspace_admin_app_entitlement";
+  now: string;
+}): ReturnType<typeof validateHttpRequestSecurityForRoute> {
+  const sessionId = extractBrowserSessionIdFromCookieHeader(
+    readHeader(headers, "cookie"),
+    dependencies.cookie,
+  );
+
+  return validateHttpRequestSecurityForRoute({
+    route: getHttpRouteContract(routeId),
+    headers,
+    sessionId,
+    now,
+    originConfig: dependencies.originConfig,
+    csrfTokenValidator: dependencies.csrfTokenValidator,
+  });
+}
+
 function normalizeMethod(method: string | undefined): string {
   return method?.toUpperCase() ?? "";
 }
@@ -647,4 +889,18 @@ function noStoreHeaders(): Record<string, string> {
     pragma: "no-cache",
     expires: "0",
   };
+}
+
+const defaultWorkspaceAdminIdFactory: WorkspaceAdminIdFactory = {
+  createAuditEventId() {
+    return createDefaultWorkspaceAdminId("audit");
+  },
+  createEntitlementId() {
+    return createDefaultWorkspaceAdminId("entitlement");
+  },
+};
+
+function createDefaultWorkspaceAdminId(prefix: "audit" | "entitlement"): string {
+  workspaceAdminIdCounter += 1;
+  return `${prefix}_${Date.now().toString(36)}_${workspaceAdminIdCounter}`;
 }

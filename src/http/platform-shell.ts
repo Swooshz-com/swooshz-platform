@@ -27,7 +27,10 @@ export function renderAppShellPage(): string {
             <p class="eyebrow">Swooshz Platform</p>
             <h1>App Access</h1>
           </div>
-          <button id="logoutButton" class="secondary-action" type="button" hidden>Log out</button>
+          <div class="topbar-actions">
+            <a id="adminLink" class="secondary-action" href="/app/admin" hidden>Admin</a>
+            <button id="logoutButton" class="secondary-action" type="button" hidden>Log out</button>
+          </div>
         </header>
 
         <section id="status" class="status" role="status">Loading platform session...</section>
@@ -53,6 +56,7 @@ export function renderAppShellPage(): string {
           const workspaces = document.getElementById("workspaces");
           const launchResult = document.getElementById("launchResult");
           const logoutButton = document.getElementById("logoutButton");
+          const adminLink = document.getElementById("adminLink");
 
           logoutButton.addEventListener("click", () => {
             void logout();
@@ -83,6 +87,7 @@ export function renderAppShellPage(): string {
 
           function renderUnauthenticated() {
             logoutButton.hidden = true;
+            adminLink.hidden = true;
             identity.hidden = true;
             workspaces.replaceChildren();
             launchResult.hidden = true;
@@ -105,8 +110,20 @@ export function renderAppShellPage(): string {
             workspaces.replaceChildren();
 
             if (!Array.isArray(context.workspaces) || context.workspaces.length === 0) {
+              adminLink.hidden = true;
               workspaces.append(emptyMessage("No active workspaces are available."));
               return;
+            }
+
+            const adminWorkspace = context.workspaces.find((workspace) =>
+              workspace.membershipRole === "owner" || workspace.membershipRole === "admin"
+            );
+            if (adminWorkspace) {
+              adminLink.href =
+                "/app/admin?workspaceId=" + encodeURIComponent(adminWorkspace.workspaceId);
+              adminLink.hidden = false;
+            } else {
+              adminLink.hidden = true;
             }
 
             for (const workspace of context.workspaces) {
@@ -271,6 +288,450 @@ export function renderAppShellPage(): string {
   });
 }
 
+export function renderAdminShellPage(): string {
+  return htmlDocument({
+    title: "Swooshz Platform Admin",
+    body: `
+      <main class="shell">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Swooshz Platform</p>
+            <h1>Workspace Admin</h1>
+          </div>
+          <div class="topbar-actions">
+            <a class="secondary-action" href="/app">App Access</a>
+            <button id="logoutButton" class="secondary-action" type="button" hidden>Log out</button>
+          </div>
+        </header>
+
+        <section id="status" class="status" role="status">Loading platform session...</section>
+        <section id="identity" class="identity" hidden></section>
+        <section id="workspaceSummary" class="workspace" hidden></section>
+        <section id="members" class="workspace" hidden></section>
+        <section id="entitlements" class="workspace" hidden></section>
+      </main>
+      <script>
+        (() => {
+          const endpoints = {
+            context: "/api/platform/session/context",
+            csrf: "/api/platform/session/csrf",
+            overview: "/api/platform/admin/workspace",
+            role: "/api/platform/admin/members/role",
+            disable: "/api/platform/admin/members/disable",
+            entitlement: "/api/platform/admin/apps/entitlement",
+            logout: "/api/platform/logout"
+          };
+
+          const state = {
+            context: null,
+            csrfToken: null,
+            workspaceId: null
+          };
+
+          const status = document.getElementById("status");
+          const identity = document.getElementById("identity");
+          const workspaceSummary = document.getElementById("workspaceSummary");
+          const members = document.getElementById("members");
+          const entitlements = document.getElementById("entitlements");
+          const logoutButton = document.getElementById("logoutButton");
+
+          logoutButton.addEventListener("click", () => {
+            void logout();
+          });
+
+          void loadContext();
+
+          async function loadContext() {
+            setStatus("Loading platform session...");
+            hideAdminSections();
+
+            try {
+              const response = await fetch(endpoints.context, {
+                credentials: "same-origin",
+                cache: "no-store"
+              });
+              const context = await readJson(response);
+
+              if (!response.ok || context.outcome !== "authenticated") {
+                renderUnauthenticated();
+                return;
+              }
+
+              state.context = context;
+              logoutButton.hidden = false;
+              renderIdentity(context);
+
+              const workspaceId = chooseWorkspaceId(context);
+              if (!workspaceId) {
+                renderForbidden();
+                return;
+              }
+
+              state.workspaceId = workspaceId;
+              await loadAdminOverview();
+            } catch {
+              setStatus("Workspace admin could not be loaded.");
+            }
+          }
+
+          async function loadAdminOverview() {
+            setStatus("Loading workspace admin...");
+
+            try {
+              const response = await fetch(
+                endpoints.overview + "?workspaceId=" + encodeURIComponent(state.workspaceId),
+                {
+                  credentials: "same-origin",
+                  cache: "no-store"
+                }
+              );
+              const overview = await readJson(response);
+
+              if (!response.ok || overview.outcome !== "loaded") {
+                renderForbidden();
+                return;
+              }
+
+              renderOverview(overview);
+              setStatus("Workspace admin ready.");
+            } catch {
+              setStatus("Workspace admin could not be loaded.");
+              hideAdminSections();
+            }
+          }
+
+          function chooseWorkspaceId(context) {
+            const params = new URLSearchParams(window.location.search);
+            const requested = params.get("workspaceId");
+            const adminWorkspaces = Array.isArray(context.workspaces)
+              ? context.workspaces.filter((workspace) =>
+                  workspace.membershipRole === "owner" || workspace.membershipRole === "admin"
+                )
+              : [];
+
+            if (requested && adminWorkspaces.some((workspace) => workspace.workspaceId === requested)) {
+              return requested;
+            }
+
+            return adminWorkspaces[0]?.workspaceId ?? null;
+          }
+
+          function renderUnauthenticated() {
+            logoutButton.hidden = true;
+            hideAdminSections();
+            status.innerHTML =
+              '<span>No active platform session.</span> ' +
+              '<a href="/api/platform/auth/start">Sign in</a>';
+          }
+
+          function renderForbidden() {
+            hideAdminSections();
+            setStatus("Workspace admin is available to workspace owners and admins only.");
+          }
+
+          function renderIdentity(context) {
+            identity.hidden = false;
+            identity.replaceChildren(
+              textBlock("Signed in as", context.user.displayName || context.user.email),
+              textBlock("Email", context.user.email),
+              textBlock("User status", context.user.status)
+            );
+          }
+
+          function renderOverview(overview) {
+            renderWorkspaceSummary(overview.workspace);
+            renderMembers(overview.members);
+            renderEntitlements(overview.entitlements);
+          }
+
+          function renderWorkspaceSummary(workspace) {
+            workspaceSummary.hidden = false;
+            workspaceSummary.replaceChildren(
+              sectionHeading("Workspace"),
+              textBlock("Name", workspace.workspaceName),
+              textBlock("Slug", workspace.workspaceSlug),
+              textBlock("Workspace ID", workspace.workspaceId),
+              textBlock("Status", workspace.status)
+            );
+          }
+
+          function renderMembers(memberList) {
+            members.hidden = false;
+            members.replaceChildren(sectionHeading("Team Members"));
+
+            if (!Array.isArray(memberList) || memberList.length === 0) {
+              members.append(emptyMessage("No workspace members are available."));
+              return;
+            }
+
+            const table = document.createElement("table");
+            table.append(tableHead(["Name", "Email", "Role", "Status", "Last login", "Actions"]));
+            const body = document.createElement("tbody");
+
+            for (const member of memberList) {
+              const row = document.createElement("tr");
+              row.append(
+                tableCell(member.user?.displayName || ""),
+                tableCell(member.user?.email || ""),
+                roleCell(member),
+                tableCell(member.status || ""),
+                tableCell(formatDate(member.user?.lastLoginAt)),
+                memberActionsCell(member)
+              );
+              body.append(row);
+            }
+
+            table.append(body);
+            members.append(table);
+          }
+
+          function renderEntitlements(entitlementList) {
+            entitlements.hidden = false;
+            entitlements.replaceChildren(sectionHeading("App Access"));
+
+            if (!Array.isArray(entitlementList) || entitlementList.length === 0) {
+              entitlements.append(emptyMessage("No app entitlements are configured."));
+              return;
+            }
+
+            const list = document.createElement("div");
+            list.className = "apps";
+
+            for (const entitlement of entitlementList) {
+              const row = document.createElement("article");
+              row.className = "app-row";
+              const detail = document.createElement("div");
+              detail.append(
+                textBlock("App", entitlement.appName || entitlement.appKey),
+                textBlock("App key", entitlement.appKey),
+                textBlock("App status", entitlement.appStatus),
+                textBlock("Entitlement", entitlement.status),
+                textBlock("Granted by", entitlement.grantedByUserId || "Not available"),
+                textBlock("Updated", formatDate(entitlement.updatedAt))
+              );
+              row.append(detail);
+
+              if (entitlement.appKey === "kqag") {
+                const button = document.createElement("button");
+                button.type = "button";
+                button.className = "secondary-action compact";
+                const nextStatus = entitlement.status === "enabled" ? "disabled" : "enabled";
+                button.textContent = nextStatus === "enabled" ? "Enable" : "Disable";
+                button.addEventListener("click", () => {
+                  void updateEntitlement(entitlement.appKey, nextStatus);
+                });
+                row.append(button);
+              }
+
+              list.append(row);
+            }
+
+            entitlements.append(list);
+          }
+
+          function roleCell(member) {
+            const cell = document.createElement("td");
+            const select = document.createElement("select");
+            const roles = ["owner", "admin", "member", "viewer"];
+            const isSelf = member.user?.id === state.context?.user?.userId;
+
+            for (const role of roles) {
+              const option = document.createElement("option");
+              option.value = role;
+              option.textContent = role;
+              option.selected = member.role === role;
+              select.append(option);
+            }
+
+            select.disabled = isSelf || member.status !== "active";
+            select.addEventListener("change", () => {
+              void changeMemberRole(member.membershipId, select.value);
+            });
+            cell.append(select);
+            return cell;
+          }
+
+          function memberActionsCell(member) {
+            const cell = document.createElement("td");
+            const button = document.createElement("button");
+            const isSelf = member.user?.id === state.context?.user?.userId;
+            button.type = "button";
+            button.className = "secondary-action compact";
+            button.textContent = "Disable";
+            button.disabled = isSelf || member.status !== "active";
+            button.addEventListener("click", () => {
+              void disableMember(member.membershipId);
+            });
+            cell.append(button);
+            return cell;
+          }
+
+          async function changeMemberRole(membershipId, role) {
+            await postAdminAction(
+              endpoints.role +
+                "?workspaceId=" + encodeURIComponent(state.workspaceId) +
+                "&membershipId=" + encodeURIComponent(membershipId) +
+                "&role=" + encodeURIComponent(role)
+            );
+          }
+
+          async function disableMember(membershipId) {
+            await postAdminAction(
+              endpoints.disable +
+                "?workspaceId=" + encodeURIComponent(state.workspaceId) +
+                "&membershipId=" + encodeURIComponent(membershipId)
+            );
+          }
+
+          async function updateEntitlement(appKey, nextStatus) {
+            await postAdminAction(
+              endpoints.entitlement +
+                "?workspaceId=" + encodeURIComponent(state.workspaceId) +
+                "&appKey=" + encodeURIComponent(appKey) +
+                "&status=" + encodeURIComponent(nextStatus)
+            );
+          }
+
+          async function postAdminAction(url) {
+            setStatus("Saving workspace admin change...");
+
+            try {
+              const csrfToken = await getCsrfToken();
+              const response = await fetch(url, {
+                method: "POST",
+                credentials: "same-origin",
+                cache: "no-store",
+                headers: {
+                  "x-csrf-token": csrfToken
+                }
+              });
+
+              if (!response.ok) {
+                setStatus("Workspace admin action could not be completed.");
+                await loadAdminOverview();
+                return;
+              }
+
+              await loadAdminOverview();
+            } catch {
+              setStatus("Workspace admin action could not be completed.");
+            }
+          }
+
+          async function getCsrfToken() {
+            if (state.csrfToken) {
+              return state.csrfToken;
+            }
+
+            const response = await fetch(endpoints.csrf, {
+              credentials: "same-origin",
+              cache: "no-store"
+            });
+            const payload = await readJson(response);
+
+            if (!response.ok || payload.outcome !== "issued" || !payload.csrfToken) {
+              throw new Error("CSRF token unavailable.");
+            }
+
+            state.csrfToken = payload.csrfToken;
+            return state.csrfToken;
+          }
+
+          async function logout() {
+            setStatus("Signing out...");
+
+            try {
+              const csrfToken = await getCsrfToken();
+              await fetch(endpoints.logout, {
+                method: "POST",
+                credentials: "same-origin",
+                cache: "no-store",
+                headers: {
+                  "x-csrf-token": csrfToken
+                }
+              });
+            } finally {
+              window.location.assign("/");
+            }
+          }
+
+          async function readJson(response) {
+            try {
+              return await response.json();
+            } catch {
+              return {};
+            }
+          }
+
+          function hideAdminSections() {
+            identity.hidden = true;
+            workspaceSummary.hidden = true;
+            members.hidden = true;
+            entitlements.hidden = true;
+            workspaceSummary.replaceChildren();
+            members.replaceChildren();
+            entitlements.replaceChildren();
+          }
+
+          function setStatus(message) {
+            status.textContent = message;
+          }
+
+          function sectionHeading(value) {
+            const heading = document.createElement("h2");
+            heading.textContent = value;
+            return heading;
+          }
+
+          function textBlock(label, value) {
+            const block = document.createElement("p");
+            const strong = document.createElement("strong");
+            strong.textContent = label;
+            const span = document.createElement("span");
+            span.textContent = value ?? "";
+            block.append(strong, span);
+            return block;
+          }
+
+          function tableHead(labels) {
+            const head = document.createElement("thead");
+            const row = document.createElement("tr");
+            for (const label of labels) {
+              const cell = document.createElement("th");
+              cell.scope = "col";
+              cell.textContent = label;
+              row.append(cell);
+            }
+            head.append(row);
+            return head;
+          }
+
+          function tableCell(value) {
+            const cell = document.createElement("td");
+            cell.textContent = value ?? "";
+            return cell;
+          }
+
+          function formatDate(value) {
+            if (!value) {
+              return "Not available";
+            }
+
+            return String(value);
+          }
+
+          function emptyMessage(message) {
+            const node = document.createElement("p");
+            node.className = "empty";
+            node.textContent = message;
+            return node;
+          }
+        })();
+      </script>
+    `,
+  });
+}
+
 function htmlDocument({
   title,
   body,
@@ -357,6 +818,12 @@ function htmlDocument({
       margin-bottom: 20px;
     }
 
+    .topbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
     .eyebrow {
       margin: 0 0 8px;
       color: var(--muted);
@@ -429,6 +896,10 @@ function htmlDocument({
       padding: 20px;
     }
 
+    .workspace + .workspace {
+      margin-top: 16px;
+    }
+
     .workspace-header {
       align-items: flex-start;
       padding-bottom: 16px;
@@ -447,6 +918,46 @@ function htmlDocument({
       border: 1px solid var(--line);
       border-radius: 8px;
       background: #fbfaf7;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+
+    th,
+    td {
+      padding: 12px 10px;
+      border-top: 1px solid var(--line);
+      text-align: left;
+      vertical-align: middle;
+      overflow-wrap: anywhere;
+    }
+
+    th {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    select {
+      width: 100%;
+      min-height: 40px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--ink);
+      font: inherit;
+    }
+
+    button:disabled,
+    select:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
     }
 
     .primary-action,
@@ -499,10 +1010,25 @@ function htmlDocument({
 
     @media (max-width: 640px) {
       .topbar,
+      .topbar-actions,
       .workspace-header,
       .app-row {
         align-items: stretch;
         flex-direction: column;
+      }
+
+      table,
+      thead,
+      tbody,
+      tr,
+      th,
+      td {
+        display: block;
+        width: 100%;
+      }
+
+      th {
+        display: none;
       }
 
       .panel {

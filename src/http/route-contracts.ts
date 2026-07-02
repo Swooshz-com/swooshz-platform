@@ -1,12 +1,17 @@
 export type HttpRouteId =
   | "platform_landing_page"
   | "platform_app_shell"
+  | "platform_admin_shell"
   | "healthz"
   | "platform_auth_start"
   | "platform_auth_callback"
   | "platform_session_app_access"
   | "platform_session_context"
   | "platform_session_csrf"
+  | "platform_workspace_admin_overview"
+  | "platform_workspace_admin_member_role"
+  | "platform_workspace_admin_member_disable"
+  | "platform_workspace_admin_app_entitlement"
   | "platform_app_launch"
   | "platform_kqag_launch_open"
   | "platform_app_launch_consume"
@@ -67,6 +72,21 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     },
     requiredQuery: [],
     handlerContract: "renderAppShellPage",
+    responseKind: "html",
+    idempotent: true,
+    implemented: false,
+  },
+  {
+    id: "platform_admin_shell",
+    method: "GET",
+    path: "/app/admin",
+    browserSession: "none",
+    csrf: {
+      required: false,
+      strategy: "none",
+    },
+    requiredQuery: [],
+    handlerContract: "renderAdminShellPage",
     responseKind: "html",
     idempotent: true,
     implemented: false,
@@ -157,6 +177,66 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     },
     requiredQuery: [],
     handlerContract: "handleCsrfTokenIssueRequest",
+    responseKind: "json",
+    idempotent: false,
+    implemented: false,
+  },
+  {
+    id: "platform_workspace_admin_overview",
+    method: "GET",
+    path: "/api/platform/admin/workspace",
+    browserSession: "required",
+    csrf: {
+      required: false,
+      strategy: "none",
+    },
+    requiredQuery: ["workspaceId"],
+    handlerContract: "handleWorkspaceAdminOverviewRequest",
+    responseKind: "json",
+    idempotent: true,
+    implemented: false,
+  },
+  {
+    id: "platform_workspace_admin_member_role",
+    method: "POST",
+    path: "/api/platform/admin/members/role",
+    browserSession: "required",
+    csrf: {
+      required: true,
+      strategy: "origin_referer_and_csrf_token",
+    },
+    requiredQuery: ["workspaceId", "membershipId", "role"],
+    handlerContract: "handleWorkspaceAdminRoleChangeRequest",
+    responseKind: "json",
+    idempotent: false,
+    implemented: false,
+  },
+  {
+    id: "platform_workspace_admin_member_disable",
+    method: "POST",
+    path: "/api/platform/admin/members/disable",
+    browserSession: "required",
+    csrf: {
+      required: true,
+      strategy: "origin_referer_and_csrf_token",
+    },
+    requiredQuery: ["workspaceId", "membershipId"],
+    handlerContract: "handleWorkspaceAdminMembershipDisableRequest",
+    responseKind: "json",
+    idempotent: false,
+    implemented: false,
+  },
+  {
+    id: "platform_workspace_admin_app_entitlement",
+    method: "POST",
+    path: "/api/platform/admin/apps/entitlement",
+    browserSession: "required",
+    csrf: {
+      required: true,
+      strategy: "origin_referer_and_csrf_token",
+    },
+    requiredQuery: ["workspaceId", "appKey", "status"],
+    handlerContract: "handleWorkspaceAdminAppEntitlementStatusRequest",
     responseKind: "json",
     idempotent: false,
     implemented: false,
