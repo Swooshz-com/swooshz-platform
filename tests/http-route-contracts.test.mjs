@@ -21,6 +21,7 @@ test("route manifest includes only approved initial platform routes", () => {
       "platform_session_context",
       "platform_session_csrf",
       "platform_workspace_members",
+      "platform_workspace_member_add",
       "platform_workspace_member_role",
       "platform_workspace_member_disable",
       "platform_workspace_app_entitlements",
@@ -44,6 +45,7 @@ test("route manifest includes only approved initial platform routes", () => {
       "GET /api/platform/session/context",
       "GET /api/platform/session/csrf",
       "GET /api/platform/workspaces/:workspaceId/members",
+      "POST /api/platform/workspaces/:workspaceId/members/add",
       "POST /api/platform/workspaces/:workspaceId/members/:membershipId/role",
       "POST /api/platform/workspaces/:workspaceId/members/:membershipId/disable",
       "GET /api/platform/workspaces/:workspaceId/app-entitlements",
@@ -72,6 +74,7 @@ test("state-changing browser-cookie routes require CSRF protection", () => {
   assert.deepEqual(
     stateChangingRoutes.map((route) => route.id),
     [
+      "platform_workspace_member_add",
       "platform_workspace_member_role",
       "platform_workspace_member_disable",
       "platform_workspace_kqag_entitlement_status",
@@ -210,6 +213,7 @@ test("CSRF issuance route is GET-only, session-protected, and does not require C
 
 test("workspace admin member routes are session-protected and contract-driven", () => {
   const list = getHttpRouteContract("platform_workspace_members");
+  const add = getHttpRouteContract("platform_workspace_member_add");
   const role = getHttpRouteContract("platform_workspace_member_role");
   const disable = getHttpRouteContract("platform_workspace_member_disable");
 
@@ -219,6 +223,17 @@ test("workspace admin member routes are session-protected and contract-driven", 
   assert.equal(list.csrf.required, false);
   assert.deepEqual(list.requiredQuery, []);
   assert.equal(list.handlerContract, "handleWorkspaceMembersAdminRequest");
+
+  assert.equal(add.method, "POST");
+  assert.equal(add.path, "/api/platform/workspaces/:workspaceId/members/add");
+  assert.equal(add.browserSession, "required");
+  assert.deepEqual(add.csrf, {
+    required: true,
+    strategy: "origin_referer_and_csrf_token",
+  });
+  assert.deepEqual(add.requiredQuery, ["email", "role"]);
+  assert.equal(add.handlerContract, "handleWorkspaceMemberAddRequest");
+  assert.equal(add.idempotent, false);
 
   assert.equal(role.method, "POST");
   assert.equal(role.path, "/api/platform/workspaces/:workspaceId/members/:membershipId/role");

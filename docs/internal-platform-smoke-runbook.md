@@ -28,6 +28,8 @@ npm test
 
 Use placeholders only in local notes and shared docs. Do not paste real secrets, database credentials, staff emails, provider tokens, auth codes, provider subjects, callback payloads, or production domains.
 
+Use `127.0.0.1` consistently for local browser UAT examples and operator notes. Do not mix alternate loopback hostnames with `127.0.0.1` in the same local session, because browser cookies and same-host KQAG handoff checks are host-sensitive.
+
 Database:
 
 ```text
@@ -175,7 +177,20 @@ The raw launch token must never appear in URL query parameters, URL fragments,
 browser local/session storage, cookies, logs, screenshots, docs, telemetry, or
 test snapshots.
 
-### H. Optional Consume API Check
+### H. Verify `/app/admin` Add Existing User
+
+Use this internal-alpha fallback only for a teammate who has completed real OIDC login at least once. That means the teammate is already an existing active provider-backed Platform user. The admin UI does not create provider accounts, does not create provider identities, and no invitation email is sent.
+
+1. Have the teammate sign in once through `/` and confirm they reach `/app`.
+2. As an owner/admin, open `/app/admin`.
+3. Use the Add Existing User form with the placeholder email value the teammate used for login.
+4. For this check, set role to `member` for quote operators unless the teammate should administer the workspace.
+5. Submit the form and confirm the member appears in the team list with active membership status.
+6. If the form shows a generic failure, confirm the teammate completed real OIDC login, has an active provider-backed Platform user, is not already a workspace member, and that the browser request has a fresh CSRF token.
+
+Do not paste real staff emails, private provider identity values, provider payloads, invitation secrets, cookies, or callback URLs with query params into local notes or shared screenshots.
+
+### I. Optional Consume API Check
 
 Use the lower-level consume route only when debugging the Platform consume
 contract directly. A one-time token belongs only in the header accepted by the

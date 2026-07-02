@@ -68,6 +68,13 @@ test("internal alpha platform contract documents the admin foundation status", a
   assert.match(contract, /disable memberships/i);
   assert.match(contract, /change roles/i);
   assert.match(contract, /list app entitlements, and enable\/disable KQAG app entitlement/i);
+  assert.match(contract, /addExistingWorkspaceUserByEmail/i);
+  assert.match(contract, /existing active provider-backed user by normalized email/i);
+  assert.match(contract, /\/api\/platform\/workspaces\/:workspaceId\/members\/add\?email=<email>&role=<role>/i);
+  assert.match(contract, /workspace\.membership\.added/i);
+  assert.match(contract, /no invitation delivery/i);
+  assert.match(contract, /Full email invitation delivery remains future scope/i);
+  assert.match(contract, /disabled existing membership reactivation remains future scope/i);
   assert.match(contract, /Protected admin HTTP routes can list workspace members/i);
   assert.match(contract, /required query parameters for mutation inputs/i);
   assert.match(contract, /route manifest marks adapter-wired routes as implemented/i);

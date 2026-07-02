@@ -20,6 +20,9 @@ export function createSecureWorkspaceAdminIdFactory(
     createEntitlementId() {
       return `workspace_admin_entitlement_${randomId(byteLength)}`;
     },
+    createMembershipId() {
+      return `workspace_admin_membership_${randomId(byteLength)}`;
+    },
   };
 }
 
