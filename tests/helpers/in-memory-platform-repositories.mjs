@@ -10,7 +10,7 @@ export function createInMemoryPlatformRepositories(records = {}) {
   const auditEvents = records.auditEvents ?? [];
   const appLaunchTokens = records.appLaunchTokens ?? [];
 
-  return {
+  const repositories = {
     users: {
       async findById(id) {
         return users.find((user) => user.id === id) ?? null;
@@ -84,8 +84,33 @@ export function createInMemoryPlatformRepositories(records = {}) {
       async listForUser(userId) {
         return memberships.filter((membership) => membership.userId === userId);
       },
+      async listForWorkspace(workspaceId) {
+        return memberships.filter((membership) => membership.workspaceId === workspaceId);
+      },
       async create(membership) {
         memberships.push(membership);
+        return membership;
+      },
+      async updateRole(id, role, updatedAt) {
+        const membership = memberships.find((candidate) => candidate.id === id);
+
+        if (!membership) {
+          return null;
+        }
+
+        membership.role = role;
+        membership.updatedAt = updatedAt;
+        return membership;
+      },
+      async updateStatus(id, status, updatedAt) {
+        const membership = memberships.find((candidate) => candidate.id === id);
+
+        if (!membership) {
+          return null;
+        }
+
+        membership.status = status;
+        membership.updatedAt = updatedAt;
         return membership;
       },
     },
@@ -140,6 +165,18 @@ export function createInMemoryPlatformRepositories(records = {}) {
         appEntitlements.push(entitlement);
         return entitlement;
       },
+      async updateStatus(id, status, grantedByUserId, updatedAt) {
+        const entitlement = appEntitlements.find((candidate) => candidate.id === id);
+
+        if (!entitlement) {
+          return null;
+        }
+
+        entitlement.status = status;
+        entitlement.grantedByUserId = grantedByUserId;
+        entitlement.updatedAt = updatedAt;
+        return entitlement;
+      },
     },
     auditEvents: {
       async append(event) {
@@ -167,4 +204,47 @@ export function createInMemoryPlatformRepositories(records = {}) {
       },
     },
   };
+
+  repositories.workspaceAdminTransactions = {
+    async run(operation) {
+      const snapshots = [
+        users,
+        providerIdentities,
+        sessions,
+        workspaces,
+        memberships,
+        invitations,
+        apps,
+        appEntitlements,
+        auditEvents,
+        appLaunchTokens,
+      ].map(snapshotRecords);
+
+      try {
+        return await operation(repositories);
+      } catch (error) {
+        restoreRecords(users, snapshots[0]);
+        restoreRecords(providerIdentities, snapshots[1]);
+        restoreRecords(sessions, snapshots[2]);
+        restoreRecords(workspaces, snapshots[3]);
+        restoreRecords(memberships, snapshots[4]);
+        restoreRecords(invitations, snapshots[5]);
+        restoreRecords(apps, snapshots[6]);
+        restoreRecords(appEntitlements, snapshots[7]);
+        restoreRecords(auditEvents, snapshots[8]);
+        restoreRecords(appLaunchTokens, snapshots[9]);
+        throw error;
+      }
+    },
+  };
+
+  return repositories;
+}
+
+function snapshotRecords(records) {
+  return records.map((record) => ({ ...record }));
+}
+
+function restoreRecords(records, snapshot) {
+  records.splice(0, records.length, ...snapshot.map((record) => ({ ...record })));
 }

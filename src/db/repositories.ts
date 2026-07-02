@@ -78,11 +78,14 @@ export interface DrizzleDatabase {
       };
     };
   };
+  transaction?<T>(operation: (transactionDb: DrizzleDatabase) => Promise<T>): Promise<T>;
 }
 
 export function createDrizzlePlatformRepositories(
   db: DrizzleDatabase,
 ): PlatformRepositories {
+  const transaction = db.transaction?.bind(db);
+
   return {
     users: {
       async findById(id) {
@@ -178,12 +181,35 @@ export function createDrizzlePlatformRepositories(
           .where(eq(memberships.userId, userId));
         return rows.map((row) => mapMembershipRow(row as unknown as MembershipRow));
       },
+      async listForWorkspace(workspaceId) {
+        const rows = await db
+          .select()
+          .from(memberships)
+          .where(eq(memberships.workspaceId, workspaceId));
+        return rows.map((row) => mapMembershipRow(row as unknown as MembershipRow));
+      },
       async create(membership) {
         const rows = await db
           .insert(memberships)
           .values(membershipToValues(membership))
           .returning();
         return mapOneRequired(rows[0], mapMembershipRow);
+      },
+      async updateRole(id, role, updatedAt) {
+        const rows = await db
+          .update(memberships)
+          .set({ role, updatedAt: toDate(updatedAt) })
+          .where(eq(memberships.id, id))
+          .returning();
+        return mapOne(rows[0], mapMembershipRow);
+      },
+      async updateStatus(id, status, updatedAt) {
+        const rows = await db
+          .update(memberships)
+          .set({ status, updatedAt: toDate(updatedAt) })
+          .where(eq(memberships.id, id))
+          .returning();
+        return mapOne(rows[0], mapMembershipRow);
       },
     },
     invitations: {
@@ -250,6 +276,18 @@ export function createDrizzlePlatformRepositories(
           .returning();
         return mapOneRequired(rows[0], mapAppEntitlementRow);
       },
+      async updateStatus(id, status, grantedByUserId, updatedAt) {
+        const rows = await db
+          .update(appEntitlements)
+          .set({
+            status,
+            grantedByUserId,
+            updatedAt: toDate(updatedAt),
+          })
+          .where(eq(appEntitlements.id, id))
+          .returning();
+        return mapOne(rows[0], mapAppEntitlementRow);
+      },
     },
     auditEvents: {
       async append(event) {
@@ -257,6 +295,15 @@ export function createDrizzlePlatformRepositories(
         return mapOneRequired(rows[0], mapAuditEventRow);
       },
     },
+    workspaceAdminTransactions: transaction
+      ? {
+          run(operation) {
+            return transaction((transactionDb) =>
+              operation(createDrizzlePlatformRepositories(transactionDb)),
+            );
+          },
+        }
+      : undefined,
     appLaunchTokens: {
       async create(record) {
         const rows = await db

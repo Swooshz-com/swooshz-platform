@@ -16,6 +16,7 @@ test("internal alpha platform contract covers required audit sections", async ()
     "## Security Findings",
     "## Production And Deployment Readiness Audit",
     "## Platform And KQAG Boundary",
+    "## Admin Foundation Runbook",
     "## UI And IA Requirements Before Google Stitch",
     "## Google Stitch Recommendation",
     "## Recommended PR Sequence",
@@ -57,6 +58,21 @@ test("internal alpha platform contract preserves Stitch and implementation bound
   assert.match(contract, /not the source of truth for business logic/i);
   assert.match(contract, /does not approve UI implementation/i);
   assert.match(contract, /does not approve.*KQAG repository changes/i);
+  assert.match(contract, /No KQAG app data responsibilities move into Platform/i);
+});
+
+test("internal alpha platform contract documents the admin foundation status", async () => {
+  const contract = await readContract();
+
+  assert.match(contract, /owner\/admin service can list workspace members/i);
+  assert.match(contract, /Owner\/admin service can disable a workspace membership/i);
+  assert.match(contract, /Owner\/admin service can change membership role/i);
+  assert.match(contract, /Owner\/admin service can list KQAG entitlements and enable\/disable KQAG entitlement/i);
+  assert.match(contract, /same transaction\/unit-of-work/i);
+  assert.match(contract, /audit append failure cannot leave membership or entitlement state changed/i);
+  assert.match(contract, /Quote operators remain mapped to `member`/i);
+  assert.match(contract, /product HTTP route or UI exists yet/i);
+  assert.match(contract, /CSRF\/origin validation/i);
 });
 
 test("internal alpha platform contract uses placeholders and avoids private material", async () => {
