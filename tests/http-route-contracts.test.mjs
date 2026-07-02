@@ -19,6 +19,11 @@ test("route manifest includes only approved initial platform routes", () => {
       "platform_session_app_access",
       "platform_session_context",
       "platform_session_csrf",
+      "platform_workspace_members",
+      "platform_workspace_member_role",
+      "platform_workspace_member_disable",
+      "platform_workspace_app_entitlements",
+      "platform_workspace_kqag_entitlement_status",
       "platform_app_launch",
       "platform_kqag_launch_open",
       "platform_app_launch_consume",
@@ -36,12 +41,25 @@ test("route manifest includes only approved initial platform routes", () => {
       "GET /api/platform/session/app-access",
       "GET /api/platform/session/context",
       "GET /api/platform/session/csrf",
+      "GET /api/platform/workspaces/:workspaceId/members",
+      "POST /api/platform/workspaces/:workspaceId/members/:membershipId/role",
+      "POST /api/platform/workspaces/:workspaceId/members/:membershipId/disable",
+      "GET /api/platform/workspaces/:workspaceId/app-entitlements",
+      "POST /api/platform/workspaces/:workspaceId/app-entitlements/kqag/status",
       "POST /api/platform/apps/launch",
       "POST /api/platform/apps/launch/open",
       "POST /api/platform/apps/launch/consume",
       "POST /api/platform/logout",
     ],
   );
+});
+
+test("route manifest marks adapter-wired routes as implemented", () => {
+  assert.ok(HTTP_ROUTE_CONTRACTS.length > 0);
+
+  for (const route of HTTP_ROUTE_CONTRACTS) {
+    assert.equal(route.implemented, true);
+  }
 });
 
 test("state-changing browser-cookie routes require CSRF protection", () => {
@@ -51,7 +69,14 @@ test("state-changing browser-cookie routes require CSRF protection", () => {
 
   assert.deepEqual(
     stateChangingRoutes.map((route) => route.id),
-    ["platform_app_launch", "platform_kqag_launch_open", "platform_logout"],
+    [
+      "platform_workspace_member_role",
+      "platform_workspace_member_disable",
+      "platform_workspace_kqag_entitlement_status",
+      "platform_app_launch",
+      "platform_kqag_launch_open",
+      "platform_logout",
+    ],
   );
 
   for (const route of stateChangingRoutes) {
@@ -168,6 +193,62 @@ test("CSRF issuance route is GET-only, session-protected, and does not require C
   assert.equal(route.csrf.strategy, "none");
   assert.deepEqual(route.requiredQuery, []);
   assert.equal(route.handlerContract, "handleCsrfTokenIssueRequest");
+});
+
+test("workspace admin member routes are session-protected and contract-driven", () => {
+  const list = getHttpRouteContract("platform_workspace_members");
+  const role = getHttpRouteContract("platform_workspace_member_role");
+  const disable = getHttpRouteContract("platform_workspace_member_disable");
+
+  assert.equal(list.method, "GET");
+  assert.equal(list.path, "/api/platform/workspaces/:workspaceId/members");
+  assert.equal(list.browserSession, "required");
+  assert.equal(list.csrf.required, false);
+  assert.deepEqual(list.requiredQuery, []);
+  assert.equal(list.handlerContract, "handleWorkspaceMembersAdminRequest");
+
+  assert.equal(role.method, "POST");
+  assert.equal(role.path, "/api/platform/workspaces/:workspaceId/members/:membershipId/role");
+  assert.equal(role.browserSession, "required");
+  assert.deepEqual(role.csrf, {
+    required: true,
+    strategy: "origin_referer_and_csrf_token",
+  });
+  assert.deepEqual(role.requiredQuery, ["role"]);
+  assert.equal(role.handlerContract, "handleWorkspaceMemberRoleChangeRequest");
+
+  assert.equal(disable.method, "POST");
+  assert.equal(disable.path, "/api/platform/workspaces/:workspaceId/members/:membershipId/disable");
+  assert.equal(disable.browserSession, "required");
+  assert.deepEqual(disable.csrf, {
+    required: true,
+    strategy: "origin_referer_and_csrf_token",
+  });
+  assert.deepEqual(disable.requiredQuery, []);
+  assert.equal(disable.handlerContract, "handleWorkspaceMembershipDisableRequest");
+});
+
+test("workspace admin app entitlement routes are KQAG-scoped and session-protected", () => {
+  const list = getHttpRouteContract("platform_workspace_app_entitlements");
+  const status = getHttpRouteContract("platform_workspace_kqag_entitlement_status");
+
+  assert.equal(list.method, "GET");
+  assert.equal(list.path, "/api/platform/workspaces/:workspaceId/app-entitlements");
+  assert.equal(list.browserSession, "required");
+  assert.equal(list.csrf.required, false);
+  assert.deepEqual(list.requiredQuery, []);
+  assert.equal(list.handlerContract, "handleWorkspaceAppEntitlementsAdminRequest");
+
+  assert.equal(status.method, "POST");
+  assert.equal(status.path, "/api/platform/workspaces/:workspaceId/app-entitlements/kqag/status");
+  assert.equal(status.browserSession, "required");
+  assert.deepEqual(status.csrf, {
+    required: true,
+    strategy: "origin_referer_and_csrf_token",
+  });
+  assert.deepEqual(status.requiredQuery, ["status"]);
+  assert.equal(status.handlerContract, "handleWorkspaceKqagEntitlementStatusRequest");
+  assert.equal(status.idempotent, false);
 });
 
 test("app launch intent route is POST-only session-protected and CSRF-protected", () => {

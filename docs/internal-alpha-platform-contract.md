@@ -6,7 +6,7 @@ This audit defines what Swooshz Platform must own before Koncept Images internal
 
 KQAG / SAQG local UAT has a usable platform launch path: Google-compatible generic OIDC can create a platform session, an operator can seed an already-authenticated user into the internal workspace, `/app` can show the user's workspace/app access, and the KQAG browser launch handoff can send a one-time launch token server-to-server for same-host local UAT.
 
-Before Koncept Images internal alpha, Platform still needs a real team and access-management product surface. The current code supports platform-owned users, provider identities, sessions, workspaces, memberships, app records, app entitlements, hashed auth state, hashed CSRF tokens, hashed one-time app launch tokens, a local browser shell, and the first owner/admin-only service foundation for workspace member and KQAG app-access administration. It does not yet support invitation delivery/acceptance, product HTTP admin routes, product UI, audit browsing, security/session management, or hosted internal-alpha operations.
+Before Koncept Images internal alpha, Platform still needs a real team and access-management product surface. The current code supports platform-owned users, provider identities, sessions, workspaces, memberships, app records, app entitlements, hashed auth state, hashed CSRF tokens, hashed one-time app launch tokens, a local browser shell, and protected owner/admin-only HTTP route foundations for workspace member and KQAG app-access administration. It does not yet support invitation delivery/acceptance, polished product UI, audit browsing, security/session management, or hosted internal-alpha operations.
 
 The next PRs should therefore implement team/user management and app-access administration before Google Stitch or visual dashboard work. Stitch should consume an approved page inventory from this document and should not invent business logic or product scope.
 
@@ -17,12 +17,12 @@ The next PRs should therefore implement team/user management and app-access admi
 | Area | Current source | Current state |
 | --- | --- | --- |
 | Server entrypoints | `src/index.ts`, `scripts/platform-start.mjs`, `src/runtime/node-bootstrap.ts`, `src/http/node-server.ts`, `src/http/node-adapter.ts` | `npm run platform:start` starts the explicit Node bootstrap/server. Importing modules does not listen. Startup composes DB, runtime, auth, CSRF, launch-token, and optional KQAG handoff dependencies. |
-| HTTP route map | `src/http/route-contracts.ts`, `src/http/node-adapter.ts` | Routes exist for `/`, `/app`, `/healthz`, auth start/callback, session app access, session context, CSRF token issue, launch intent, KQAG launch open, launch consume, and logout. The route manifest still uses `implemented: false`, so adapter/tests are the current implementation evidence and the manifest flag should be cleaned up before generated route inventories rely on it. |
+| HTTP route map | `src/http/route-contracts.ts`, `src/http/node-adapter.ts` | Routes exist for `/`, `/app`, `/healthz`, auth start/callback, session app access, session context, CSRF token issue, protected workspace admin member routes, protected KQAG entitlement admin routes, launch intent, KQAG launch open, launch consume, and logout. The route manifest marks adapter-wired routes as implemented. |
 | Auth routes | `src/http/auth-handlers.ts`, `src/auth/*`, `src/runtime/platform-runtime-dependencies.ts` | `GET /api/platform/auth/start` stores hashed state/nonce references and redirects to the configured OIDC authorization URL. `GET /api/platform/auth/callback` consumes state, exchanges/verifies tokens through the adapter, resolves platform identity, creates a platform session, and sets the session cookie. |
 | Session handling | `src/auth/session-revocation-service.ts`, `src/http/session-cookie.ts`, `src/http/handlers.ts`, `src/platform/session-context-service.ts` | Server-side session records are referenced by an HttpOnly SameSite cookie. Logout revokes/clears the session. Session context is read-only and no-store. Expired, revoked, missing, or inactive-user sessions fail closed. |
 | Workspace model | `src/accounts/types.ts`, `src/db/schema.ts`, `docs/accounts-contract.md` | Workspaces have id, slug, display name, and status. Membership connects users to workspaces with owner/admin/member/viewer roles and active/disabled status. |
 | App access model | `src/apps/types.ts`, `src/access/decide-app-access.ts`, `src/platform/app-access-service.ts`, `docs/app-access-contract.md` | App launch requires valid session, active user, selected active workspace, active membership, available/private-preview app, enabled/trial entitlement, and role permission. KQAG launch is owner/admin/member only. |
-| Admin service foundation | `src/platform/workspace-admin-service.ts`, `src/platform/repositories.ts`, `src/db/repositories.ts` | Owner/admin service methods can list workspace members, change roles, disable memberships, list app entitlements, and enable/disable KQAG app entitlement. Mutations preserve last-owner/self-change guardrails and write privacy-minimized audit events in the same transaction/unit-of-work. |
+| Admin service foundation | `src/platform/workspace-admin-service.ts`, `src/platform/repositories.ts`, `src/db/repositories.ts`, `src/http/handlers.ts`, `src/http/node-adapter.ts` | Owner/admin service methods and protected HTTP routes can list workspace members, change roles, disable memberships, list app entitlements, and enable/disable KQAG app entitlement. Mutations preserve last-owner/self-change guardrails and write privacy-minimized audit events in the same transaction/unit-of-work. |
 | KQAG launch handoff | `src/platform/app-launch-intent-service.ts`, `src/platform/app-launch-token-consume-service.ts`, `src/http/handlers.ts`, `docs/kqag-integration-contract.md` | Platform creates a short-lived launch token, stores only an HMAC hash, sends the raw token only server-side to KQAG in `x-app-launch-token`, and exposes only a safe launch URL to the browser. Consume accepts the raw token only by header and marks it consumed once. |
 | Seed scripts | `scripts/platform-seed-internal-access.mjs`, `src/platform/internal-access-seed-service.ts` | The seed CLI can grant owner/admin/member KQAG access to an existing active provider-backed platform user after explicit confirmation. It refuses email-only user precreation and users without provider identity records. |
 | DB migrations | `drizzle/migrations/*`, `src/db/schema.ts`, `scripts/db-migrate.mjs`, `src/db/client.ts` | Drizzle migrations are committed. `npm run db:migrate` builds first, requires `DATABASE_URL`, and requires `DATABASE_MIGRATIONS_CONFIRM=apply-reviewed-migrations`. Migrations are not automatic. |
@@ -40,7 +40,7 @@ The platform currently behaves like a minimal internal shell plus backend contra
 - The `/app` shell can list the current user's active workspaces and launchable apps.
 - KQAG launch works through an explicitly configured local same-host server handoff.
 
-It is not yet an internal admin product. The service layer foundation exists for team membership and KQAG app-access administration, but there is no product HTTP admin API, admin UI, invitation acceptance, audit browsing, security/session management, hosted deployment operations, or account settings.
+It is not yet an internal admin product. The service and protected HTTP route foundation exists for team membership and KQAG app-access administration, but there is no polished product UI, invitation acceptance, audit browsing, security/session management, hosted deployment operations, or account settings.
 
 ## Internal Alpha Requirements
 
@@ -84,16 +84,16 @@ Current schema supports `owner`, `admin`, `member`, and `viewer`, but not `opera
 
 | Capability | Current status | Alpha classification | Evidence | Internal-alpha requirement |
 | --- | --- | --- | --- | --- |
-| Listing workspace users | Partial | Blocker before internal alpha | Owner/admin service can list workspace members with safe user summaries. No product HTTP route or UI exists yet. | Add protected admin route/UI on top of the service foundation, with no provider tokens/raw claims. |
+| Listing workspace users | Partial | Blocker before internal alpha | Protected admin HTTP routes can list workspace members with safe user summaries. No polished product UI exists yet. | Add product UI on top of the route foundation, with no provider tokens/raw claims. |
 | Adding user by email | Missing | Blocker before internal alpha | Invitation schema/ports exist, but no product flow to invite/add and no email delivery/acceptance path. Seed requires existing provider-backed user. | Add invite/add workflow or documented operator-controlled fallback for approved internal alpha. Avoid user enumeration in public responses. |
-| Removing/deactivating user | Partial | Blocker before internal alpha | Owner/admin service can disable a workspace membership with audit events, last-owner protection, and self-removal guard. No product HTTP route or UI exists yet. | Add protected admin route/UI and decide whether global user disable is needed for alpha. |
-| Changing role | Partial | Blocker before internal alpha | Owner/admin service can change membership role with audit events, last-owner protection, and self-demotion guard. No product HTTP route or UI exists yet. | Add protected admin route/UI and explicit product copy for `member` as quote-operator mapping. |
-| App access grant/revoke | Partial | Blocker before internal alpha | Owner/admin service can list KQAG entitlements and enable/disable KQAG entitlement with audit events. No product HTTP route or UI exists yet. | Add protected admin route/UI and keep future app support behind app-specific contracts. |
+| Removing/deactivating user | Partial | Blocker before internal alpha | Protected admin HTTP routes can disable a workspace membership with audit events, last-owner protection, and self-removal guard. No polished product UI exists yet. | Add product UI and decide whether global user disable is needed for alpha. |
+| Changing role | Partial | Blocker before internal alpha | Protected admin HTTP routes can change membership role with audit events, last-owner protection, and self-demotion guard. No polished product UI exists yet. | Add product UI and explicit product copy for `member` as quote-operator mapping. |
+| App access grant/revoke | Partial | Blocker before internal alpha | Protected admin HTTP routes can list KQAG entitlements and enable/disable KQAG entitlement with audit events. No polished product UI exists yet. | Add product UI and keep future app support behind app-specific contracts. |
 | Invited/pending users | Partial | Future production enhancement after alpha decision, unless invitations are selected for alpha | Invitation schema and repository create/update status exist; no invitation service, token flow, email delivery, or acceptance route. | Decide whether alpha uses invitation flow or admin adds only already-authenticated allowlisted users. Invitation tokens must be hashed. |
 | Fail-closed access if role/app access is missing | Implemented | Implemented | `decideAppAccess` denies missing session, inactive user, missing workspace selection, missing membership, inactive workspace, missing/unavailable app, missing entitlement, disallowed role, and future billing block. | Preserve this behavior while adding admin surfaces. |
 | Seeding first owner/admin | Partial | Blocker for hosted internal alpha operations | Seed CLI exists for an existing provider-backed user and uses explicit confirmation. It requires manual operator sequencing after first login. | Keep as bootstrap fallback, document hosted operator runbook, and do not use real staff emails in repo. |
 | Audit event recording for admin actions | Partial | Blocker before internal alpha admin surfaces | Workspace admin services emit privacy-minimized audit events for membership role change, membership disable, KQAG entitlement enable, and KQAG entitlement disable. Audit browsing/export is missing. | Add audit browsing and ensure future admin routes use the same service/audit path. |
-| Admin authorization checks | Partial | Blocker before internal alpha admin surfaces | Workspace admin services check active session, active user, active workspace, active membership, and owner/admin role. Browser route CSRF/origin checks do not apply yet because no admin HTTP routes exist. | Add browser-cookie admin routes only through existing CSRF/origin security helper. |
+| Admin authorization checks | Partial | Blocker before internal alpha admin surfaces | Workspace admin services and protected HTTP routes check active session, active user, active workspace, active membership, and owner/admin role. Browser-cookie admin mutation routes use the existing CSRF/origin security helper before mutation. | Preserve the service-backed route path and add product UI only through the protected routes. |
 
 ## Security Findings
 
@@ -115,7 +115,7 @@ Current schema supports `owner`, `admin`, `member`, and `viewer`, but not `opera
 
 ## Admin Foundation Runbook
 
-The current admin foundation is a service and repository foundation, not a product UI.
+The current admin foundation is a service, repository, and protected HTTP route foundation, not a product UI.
 
 Implemented service operations:
 
@@ -125,18 +125,28 @@ Implemented service operations:
 - `listWorkspaceAppEntitlementsForAdmin`: owner/admin-only workspace app entitlement listing.
 - `setWorkspaceAppEntitlementStatus`: owner/admin-only KQAG entitlement enable/disable with `workspace.app_entitlement.enabled` or `workspace.app_entitlement.disabled` audit event in the same transaction/unit-of-work.
 
+Implemented protected HTTP route operations:
+
+- `GET /api/platform/workspaces/:workspaceId/members`: lists workspace members through the service foundation.
+- `POST /api/platform/workspaces/:workspaceId/members/:membershipId/role?role=<role>`: changes a workspace member role through the service foundation.
+- `POST /api/platform/workspaces/:workspaceId/members/:membershipId/disable`: disables a workspace membership through the service foundation.
+- `GET /api/platform/workspaces/:workspaceId/app-entitlements`: lists workspace app entitlements through the service foundation.
+- `POST /api/platform/workspaces/:workspaceId/app-entitlements/kqag/status?status=<enabled|disabled>`: enables or disables the KQAG entitlement through the service foundation.
+
 Operational notes:
 
 - Quote operators remain mapped to `member` until an explicit `operator` role migration is approved.
 - Removed users are blocked from KQAG launch because disabled membership fails the existing app-access decision.
 - Membership and app-entitlement mutation audit append failure cannot leave membership or entitlement state changed without the matching audit event.
+- Protected admin HTTP routes follow the existing adapter convention of path parameters plus required query parameters for mutation inputs; there is no request-body parser in this foundation PR.
+- State-changing admin HTTP routes require active browser session, allowed Origin/Referer, and valid CSRF token before mutation.
 - Audit metadata uses internal ids and status/category values only. Do not add raw emails, provider claims, OAuth payloads, tokens, cookies, DB URLs, KQAG quote contents, or callback URLs with query params.
-- The new services are not reachable from browsers yet. Product HTTP routes and UI must add active session checks, active workspace membership checks, owner/admin authorization, CSRF/origin validation for browser-cookie mutations, generic user-facing errors, and safe category-only logs.
+- No polished product UI exists yet. Future UI must call these protected routes and preserve active session checks, active workspace membership checks, owner/admin authorization, CSRF/origin validation for browser-cookie mutations, generic user-facing errors, and safe category-only logs.
 - No KQAG app data responsibilities move into Platform. Platform manages access; KQAG still owns quote data.
 
 Remaining internal-alpha blockers after this foundation:
 
-- Protected admin HTTP routes and/or minimal admin UI.
+- Minimal admin UI.
 - Add/invite user workflow or a reviewed operator-controlled alpha fallback.
 - Audit/activity browsing.
 - Hosted internal-alpha deployment runbook and smoke checklist.
@@ -188,7 +198,7 @@ Remaining internal-alpha blockers after this foundation:
 - The platform shell is currently minimal and launch-focused; it should not become the source of KQAG quote history or pricing/profile administration.
 - KQAG should consume platform context but must not grow separate Swooshz accounts, workspace membership, app entitlement, or billing concepts.
 - Platform admin pages may display app access state, but they should not edit KQAG-owned quote data.
-- The route manifest `implemented` flag is stale relative to the Node adapter and should be clarified before docs or tooling derive route readiness from it.
+- The route manifest marks adapter-wired routes as implemented; keep future route inventory changes aligned with adapter tests before docs or tooling derive readiness from it.
 - Hosted KQAG handoff may require a different cookie/session strategy than same-host local UAT; do not assume the local handoff is production-ready.
 
 ## UI And IA Requirements Before Google Stitch

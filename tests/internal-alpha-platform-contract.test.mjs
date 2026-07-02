@@ -64,14 +64,17 @@ test("internal alpha platform contract preserves Stitch and implementation bound
 test("internal alpha platform contract documents the admin foundation status", async () => {
   const contract = await readContract();
 
-  assert.match(contract, /owner\/admin service can list workspace members/i);
-  assert.match(contract, /Owner\/admin service can disable a workspace membership/i);
-  assert.match(contract, /Owner\/admin service can change membership role/i);
-  assert.match(contract, /Owner\/admin service can list KQAG entitlements and enable\/disable KQAG entitlement/i);
+  assert.match(contract, /Owner\/admin service methods and protected HTTP routes can list workspace members/i);
+  assert.match(contract, /disable memberships/i);
+  assert.match(contract, /change roles/i);
+  assert.match(contract, /list app entitlements, and enable\/disable KQAG app entitlement/i);
+  assert.match(contract, /Protected admin HTTP routes can list workspace members/i);
+  assert.match(contract, /required query parameters for mutation inputs/i);
+  assert.match(contract, /route manifest marks adapter-wired routes as implemented/i);
   assert.match(contract, /same transaction\/unit-of-work/i);
   assert.match(contract, /audit append failure cannot leave membership or entitlement state changed/i);
   assert.match(contract, /Quote operators remain mapped to `member`/i);
-  assert.match(contract, /product HTTP route or UI exists yet/i);
+  assert.match(contract, /No polished product UI exists yet/i);
   assert.match(contract, /CSRF\/origin validation/i);
 });
 
