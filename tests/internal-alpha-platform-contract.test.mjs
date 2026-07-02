@@ -1,0 +1,84 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+const contractPath = "docs/internal-alpha-platform-contract.md";
+
+test("internal alpha platform contract covers required audit sections", async () => {
+  const contract = await readContract();
+  const headings = [
+    "# Internal Alpha Platform Contract Audit",
+    "## Executive Summary",
+    "## Current State",
+    "### Current Architecture Map",
+    "## Internal Alpha Requirements",
+    "## User And Team Management Gap Audit",
+    "## Security Findings",
+    "## Production And Deployment Readiness Audit",
+    "## Platform And KQAG Boundary",
+    "## UI And IA Requirements Before Google Stitch",
+    "## Google Stitch Recommendation",
+    "## Recommended PR Sequence",
+  ];
+
+  for (const heading of headings) {
+    assert.match(contract, new RegExp(escapeRegExp(heading)));
+  }
+});
+
+test("internal alpha platform contract classifies team and app access gaps", async () => {
+  const contract = await readContract();
+  const requiredPhrases = [
+    "Listing workspace users",
+    "Adding user by email",
+    "Removing/deactivating user",
+    "Changing role",
+    "App access grant/revoke",
+    "Invited/pending users",
+    "Fail-closed access if role/app access is missing",
+    "Blocker before internal alpha",
+    "Future production enhancement",
+    "Implemented",
+    "Partial",
+    "Missing",
+  ];
+
+  for (const phrase of requiredPhrases) {
+    assert.match(contract, new RegExp(escapeRegExp(phrase), "i"));
+  }
+});
+
+test("internal alpha platform contract preserves Stitch and implementation boundaries", async () => {
+  const contract = await readContract();
+
+  assert.match(contract, /Do not start visual Stitch implementation/i);
+  assert.match(contract, /screens based on the page inventory/i);
+  assert.match(contract, /UI reference only/i);
+  assert.match(contract, /not the source of truth for business logic/i);
+  assert.match(contract, /does not approve UI implementation/i);
+  assert.match(contract, /does not approve.*KQAG repository changes/i);
+});
+
+test("internal alpha platform contract uses placeholders and avoids private material", async () => {
+  const contract = await readContract();
+
+  assert.doesNotMatch(contract, /sk-[A-Za-z0-9]{20,}/);
+  assert.doesNotMatch(contract, /AKIA[0-9A-Z]{16}/);
+  assert.doesNotMatch(contract, /-----BEGIN [A-Z ]*PRIVATE KEY-----/);
+  assert.doesNotMatch(contract, /postgres(?:ql)?:\/\/[^\s>]+@/i);
+  assert.doesNotMatch(contract, /ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}/);
+  assert.doesNotMatch(contract, /access_token[=:][A-Za-z0-9._-]{20,}/i);
+  assert.doesNotMatch(contract, /refresh_token[=:][A-Za-z0-9._-]{20,}/i);
+  assert.doesNotMatch(contract, /id_token[=:][A-Za-z0-9._-]{20,}/i);
+  assert.doesNotMatch(contract, /@[A-Za-z0-9.-]+\.(?:com|net|org|io|co)\b/);
+  assert.match(contract, /Koncept Images Pte Ltd/);
+  assert.match(contract, /No real staff emails/);
+});
+
+async function readContract() {
+  return readFile(contractPath, "utf8");
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
