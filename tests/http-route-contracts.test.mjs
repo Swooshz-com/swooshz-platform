@@ -13,6 +13,7 @@ test("route manifest includes only approved initial platform routes", () => {
     [
       "platform_landing_page",
       "platform_app_shell",
+      "platform_admin_shell",
       "healthz",
       "platform_auth_start",
       "platform_auth_callback",
@@ -35,6 +36,7 @@ test("route manifest includes only approved initial platform routes", () => {
     [
       "GET /",
       "GET /app",
+      "GET /app/admin",
       "GET /healthz",
       "GET /api/platform/auth/start",
       "GET /api/platform/auth/callback",
@@ -90,9 +92,10 @@ test("state-changing browser-cookie routes require CSRF protection", () => {
 test("browser page routes are GET-only HTML without CSRF or required browser session", () => {
   const landing = getHttpRouteContract("platform_landing_page");
   const appShell = getHttpRouteContract("platform_app_shell");
+  const adminShell = getHttpRouteContract("platform_admin_shell");
 
   assert.deepEqual(
-    [landing, appShell].map((route) => ({
+    [landing, appShell, adminShell].map((route) => ({
       method: route.method,
       browserSession: route.browserSession,
       csrf: route.csrf,
@@ -117,12 +120,22 @@ test("browser page routes are GET-only HTML without CSRF or required browser ses
         requiredQuery: [],
         idempotent: true,
       },
+      {
+        method: "GET",
+        browserSession: "none",
+        csrf: { required: false, strategy: "none" },
+        responseKind: "html",
+        requiredQuery: [],
+        idempotent: true,
+      },
     ],
   );
   assert.equal(landing.path, "/");
   assert.equal(landing.handlerContract, "renderLandingPage");
   assert.equal(appShell.path, "/app");
   assert.equal(appShell.handlerContract, "renderAppShellPage");
+  assert.equal(adminShell.path, "/app/admin");
+  assert.equal(adminShell.handlerContract, "renderAdminShellPage");
 });
 
 test("auth start route is GET-only and does not require browser session or CSRF", () => {
