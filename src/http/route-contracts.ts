@@ -1,6 +1,7 @@
 export type HttpRouteId =
   | "platform_landing_page"
   | "platform_app_shell"
+  | "platform_admin_shell"
   | "healthz"
   | "platform_auth_start"
   | "platform_auth_callback"
@@ -72,6 +73,21 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     },
     requiredQuery: [],
     handlerContract: "renderAppShellPage",
+    responseKind: "html",
+    idempotent: true,
+    implemented: true,
+  },
+  {
+    id: "platform_admin_shell",
+    method: "GET",
+    path: "/app/admin",
+    browserSession: "none",
+    csrf: {
+      required: false,
+      strategy: "none",
+    },
+    requiredQuery: [],
+    handlerContract: "renderAdminShellPage",
     responseKind: "html",
     idempotent: true,
     implemented: true,

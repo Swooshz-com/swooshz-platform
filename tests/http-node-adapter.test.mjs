@@ -90,6 +90,32 @@ test("GET /app renders the browser shell as no-store HTML without requiring sess
   assertResponseIsPrivacySafe(response);
 });
 
+test("GET /app/admin renders the admin shell as no-store HTML without requiring session or CSRF", async () => {
+  const fixture = createAdapterFixture({
+    csrfThrows: true,
+  });
+  const { response } = await rawRequest({
+    method: "GET",
+    url: "/app/admin?workspaceId=workspace_koncept_images",
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers["content-type"], "text/html; charset=utf-8");
+  assertNoStoreHeaders(response.headers);
+  assert.match(response.body, /\/api\/platform\/session\/context/);
+  assert.match(response.body, /\/api\/platform\/session\/csrf/);
+  assert.match(response.body, /\/api\/platform\/workspaces\//);
+  assert.match(response.body, /\/members/);
+  assert.match(response.body, /\/role\?role=/);
+  assert.match(response.body, /\/disable/);
+  assert.match(response.body, /\/app-entitlements/);
+  assert.match(response.body, /\/kqag\/status\?status=/);
+  assert.equal(fixture.calls.sessionsFindById, 0);
+  assert.equal(fixture.calls.csrfValidate, 0);
+  assertResponseIsPrivacySafe(response);
+});
+
 test("POST /app returns 405 with Allow GET without touching repositories", async () => {
   const fixture = createAdapterFixture({
     csrfThrows: true,

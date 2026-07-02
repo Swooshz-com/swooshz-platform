@@ -36,7 +36,11 @@ import {
   HTTP_ROUTE_CONTRACTS,
   type HttpRouteContract,
 } from "./route-contracts.js";
-import { renderAppShellPage, renderLandingPage } from "./platform-shell.js";
+import {
+  renderAdminShellPage,
+  renderAppShellPage,
+  renderLandingPage,
+} from "./platform-shell.js";
 import type { BrowserSessionCookieConfig } from "./session-cookie.js";
 import { extractBrowserSessionIdFromCookieHeader } from "./session-cookie.js";
 import { validateHttpRequestSecurityForRoute } from "./request-security.js";
@@ -132,6 +136,10 @@ export async function handleNodePlatformHttpRequest(
 
   if (route.id === "platform_app_shell") {
     return htmlResponse(200, renderAppShellPage(), noStoreHeaders());
+  }
+
+  if (route.id === "platform_admin_shell") {
+    return htmlResponse(200, renderAdminShellPage(), noStoreHeaders());
   }
 
   if (route.id === "healthz") {
