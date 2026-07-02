@@ -174,6 +174,24 @@ test("missing expired revoked or disabled admin context fails closed", async () 
   }
 });
 
+test("workspace audit browsing endpoint is not added by the minimal admin UI PR", async () => {
+  const fixture = createAdminRouteFixture();
+  const { response, body } = await request({
+    method: "GET",
+    url: "/api/platform/workspaces/workspace_koncept_images/audit-events",
+    headers: sessionHeaders("owner"),
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 404);
+  assert.deepEqual(body, {
+    outcome: "error",
+    message: "Route not found.",
+  });
+  assert.equal(fixture.calls.csrfValidate, 0);
+  assertResponseIsPrivacySafe(response);
+});
+
 test("state-changing admin routes validate Origin and CSRF before mutation", async () => {
   const missingOrigin = createAdminRouteFixture();
   const roleWithoutOrigin = await request({
@@ -671,7 +689,7 @@ function createAdminRouteFixture(overrides = {}) {
           updatedAt: now,
         },
       ],
-    auditEvents: [],
+    auditEvents: overrides.auditEvents ?? [],
   };
   const repositories = createInMemoryPlatformRepositories(records);
   const calls = {

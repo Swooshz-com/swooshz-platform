@@ -72,6 +72,11 @@ test("internal alpha platform contract documents the admin foundation status", a
   assert.match(contract, /existing active provider-backed user by normalized email/i);
   assert.match(contract, /\/api\/platform\/workspaces\/:workspaceId\/members\/add\?email=<email>&role=<role>/i);
   assert.match(contract, /workspace\.membership\.added/i);
+  assert.match(contract, /Audit\/activity browsing remains future scope/i);
+  assert.match(contract, /Audit export\/filtering\/retention remains future scope/i);
+  assert.doesNotMatch(contract, /listWorkspaceAuditEventsForAdmin/i);
+  assert.doesNotMatch(contract, /\/api\/platform\/workspaces\/:workspaceId\/audit-events/i);
+  assert.doesNotMatch(contract, /Activity section/i);
   assert.match(contract, /no invitation delivery/i);
   assert.match(contract, /Full email invitation delivery remains future scope/i);
   assert.match(contract, /disabled existing membership reactivation remains future scope/i);

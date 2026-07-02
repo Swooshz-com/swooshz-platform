@@ -761,7 +761,7 @@ function adminFixture(overrides = {}) {
     memberships: [...memberships, ...(overrides.extraMemberships ?? [])],
     apps: overrides.apps ?? [app],
     appEntitlements: overrides.appEntitlements ?? [entitlement],
-    auditEvents: [],
+    auditEvents: overrides.auditEvents ?? [],
   };
   const repositories = createInMemoryPlatformRepositories(records);
 

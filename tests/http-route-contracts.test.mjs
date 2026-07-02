@@ -279,6 +279,17 @@ test("workspace admin app entitlement routes are KQAG-scoped and session-protect
   assert.equal(status.idempotent, false);
 });
 
+test("route manifest does not add audit browsing yet", () => {
+  const serialized = JSON.stringify(HTTP_ROUTE_CONTRACTS);
+
+  assert.throws(
+    () => getHttpRouteContract("platform_workspace_audit_events"),
+    /Unknown HTTP route contract/,
+  );
+  assert.doesNotMatch(serialized, /audit-events/);
+  assert.doesNotMatch(serialized, /handleWorkspaceAuditEventsAdminRequest/);
+});
+
 test("app launch intent route is POST-only session-protected and CSRF-protected", () => {
   const route = getHttpRouteContract("platform_app_launch");
 
