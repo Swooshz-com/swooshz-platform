@@ -224,7 +224,7 @@ Use this after a teammate signs in once through hosted Platform:
 7. Confirm member/viewer users are denied admin access to `/app/admin`.
 8. Confirm Activity shows the membership add event with safe metadata only.
 
-No invitation email is sent by this fallback. Disabled existing membership reactivation remains future scope.
+No invitation email is sent by this fallback. Add-existing-user does not reactivate disabled memberships; owners/admins must use the explicit Reactivate action for disabled non-owner memberships.
 
 ## KQAG Entitlement Check
 
@@ -243,6 +243,7 @@ Confirm `/app/admin` Activity shows recent admin events for:
 - add-existing-user membership creation.
 - role change.
 - membership disable.
+- membership reactivation.
 - KQAG entitlement enable/disable.
 
 Audit/activity verification should show event type, target type/id, actor user id, timestamp, and allowlisted status/category metadata only. It must not display raw provider material, cookies, DB connection values, app launch tokens, or KQAG private app data.
@@ -261,13 +262,14 @@ Run this checklist after hosted startup and before broader internal-alpha use:
 8. Add existing user by email after teammate signs in once.
 9. Change a non-owner member role and confirm last-owner/self-demotion guardrails still fail closed.
 10. Run membership disable on a non-owner membership and confirm the disabled user cannot launch KQAG.
-11. Run KQAG entitlement enable/disable and confirm app access updates.
-12. Confirm audit/activity shows admin events for add-user, role-change, membership-disable, and entitlement-change actions.
-13. Launch KQAG through the browser-safe path and confirm no raw token in browser URL, storage, or logs.
-14. Logout through the platform route and confirm the browser session is cleared.
-15. Confirm denied member/viewer admin access for `/app/admin` and admin APIs.
-16. Confirm missing, expired, or disabled session fail closed behavior for `/app`, `/app/admin`, launch, and logout.
-17. Review logs for category-only diagnostics and no secret values.
+11. Run membership reactivation on the disabled non-owner membership and confirm access is restored only according to role, entitlement, and app-status gates.
+12. Run KQAG entitlement enable/disable and confirm app access updates.
+13. Confirm audit/activity shows admin events for add-user, role-change, membership-disable, membership-reactivation, and entitlement-change actions.
+14. Launch KQAG through the browser-safe path and confirm no raw token in browser URL, storage, or logs.
+15. Logout through the platform route and confirm the browser session is cleared.
+16. Confirm denied member/viewer admin access for `/app/admin` and admin APIs.
+17. Confirm missing, expired, or disabled session fail closed behavior for `/app`, `/app/admin`, launch, and logout.
+18. Review logs for category-only diagnostics and no secret values.
 
 ## What Not To Paste Into Tickets/Screenshots/Logs
 

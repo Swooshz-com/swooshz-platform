@@ -105,6 +105,7 @@ test("hosted internal alpha smoke checklist covers fail-closed access and token 
     "add existing user by email after teammate signs in once",
     "role change",
     "membership disable",
+    "membership reactivation",
     "KQAG entitlement enable/disable",
     "audit/activity shows admin events",
     "no raw token in browser URL, storage, or logs",

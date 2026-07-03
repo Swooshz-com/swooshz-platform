@@ -12,6 +12,7 @@ import {
   listWorkspaceAppEntitlementsForAdmin,
   listWorkspaceAuditEventsForAdmin,
   listWorkspaceMembersForAdmin,
+  reactivateWorkspaceMembership,
   setWorkspaceAppEntitlementStatus,
 } from "../dist/index.js";
 import { createInMemoryPlatformRepositories } from "./helpers/in-memory-platform-repositories.mjs";
@@ -307,6 +308,15 @@ test("member and viewer cannot manage workspace members or app access", async ()
     );
     await assert.rejects(
       () =>
+        reactivateWorkspaceMembership(repositories, {
+          ...input,
+          membershipId: "membership_member_example",
+          auditEventId: "audit_reactivate_denied",
+        }),
+      assertAdminError("not_authorized"),
+    );
+    await assert.rejects(
+      () =>
         addExistingWorkspaceUserByEmail(repositories, {
           ...input,
           targetEmail: "existing.user@example.test",
@@ -352,6 +362,15 @@ test("missing disabled or expired admin context fails closed before mutation", a
           role: "member",
           membershipId: "membership_disabled_context_add",
           auditEventId: "audit_disabled_context_add",
+        }),
+      assertAdminError("not_authorized"),
+    );
+    await assert.rejects(
+      () =>
+        reactivateWorkspaceMembership(repositories, {
+          ...input,
+          membershipId: "membership_member_example",
+          auditEventId: "audit_disabled_context_reactivate",
         }),
       assertAdminError("not_authorized"),
     );
@@ -617,6 +636,106 @@ test("owner and admin can disable membership and disabled user cannot launch SAQ
   assert.equal(accessDecision.result, AccessDecisionResult.MembershipRequired);
 });
 
+test("owner and admin can reactivate disabled non-owner membership", async () => {
+  for (const role of ["owner", "admin"]) {
+    const { repositories, input, records } = adminFixture({ role });
+
+    await disableWorkspaceMembership(repositories, {
+      ...input,
+      membershipId: "membership_member_example",
+      auditEventId: `audit_membership_disabled_${role}`,
+    });
+
+    const deniedWhileDisabled = await decidePlatformAppAccess(repositories, {
+      sessionId: "session_member_example",
+      selectedWorkspaceId: "workspace_koncept_images",
+      appKey: "kqag",
+      now,
+    });
+    assert.equal(deniedWhileDisabled.result, AccessDecisionResult.MembershipRequired);
+
+    const result = await reactivateWorkspaceMembership(repositories, {
+      ...input,
+      membershipId: "membership_member_example",
+      auditEventId: `audit_membership_reactivated_${role}`,
+    });
+
+    assert.equal(result.status, "active");
+    assert.equal(
+      records.memberships.find((membership) => membership.id === "membership_member_example")
+        ?.status,
+      "active",
+    );
+    assert.deepEqual(records.auditEvents.at(-1), {
+      id: `audit_membership_reactivated_${role}`,
+      workspaceId: "workspace_koncept_images",
+      actorUserId: `user_${role}_example`,
+      eventType: "workspace.membership.reactivated",
+      targetType: "membership",
+      targetId: "membership_member_example",
+      createdAt: now,
+      metadata: {
+        previousRole: "member",
+        previousStatus: "disabled",
+        newStatus: "active",
+        targetUserId: "user_member_example",
+      },
+    });
+    assertAuditPrivacy(records.auditEvents.at(-1));
+
+    const allowedAfterReactivation = await decidePlatformAppAccess(repositories, {
+      sessionId: "session_member_example",
+      selectedWorkspaceId: "workspace_koncept_images",
+      appKey: "kqag",
+      now,
+    });
+    assert.equal(allowedAfterReactivation.result, AccessDecisionResult.Allowed);
+  }
+});
+
+test("membership reactivation rejects unsafe targets without mutation", async () => {
+  for (const [name, overrides, membershipId, expectedCode] of [
+    ["missing membership", {}, "membership_missing_example", "not_found"],
+    [
+      "already active membership",
+      {},
+      "membership_member_example",
+      "membership_conflict",
+    ],
+    [
+      "owner membership",
+      {
+        extraMemberships: [
+          {
+            id: "membership_disabled_owner_example",
+            workspaceId: "workspace_koncept_images",
+            userId: "user_member_example",
+            role: "owner",
+            status: "disabled",
+            createdAt: earlier,
+            updatedAt: earlier,
+          },
+        ],
+      },
+      "membership_disabled_owner_example",
+      "invalid_role",
+    ],
+  ]) {
+    const { repositories, input, records } = adminFixture(overrides);
+
+    await assert.rejects(
+      () =>
+        reactivateWorkspaceMembership(repositories, {
+          ...input,
+          membershipId,
+          auditEventId: `audit_reactivate_rejected_${name.replaceAll(" ", "_")}`,
+        }),
+      assertAdminError(expectedCode),
+    );
+    assert.equal(records.auditEvents.length, 0);
+  }
+});
+
 test("owner and admin can list and enable or disable KQAG app entitlement", async () => {
   const { repositories, input, records } = adminFixture({ role: "admin" });
 
@@ -856,6 +975,34 @@ test("membership disable rolls back when audit append fails", async () => {
     records.memberships.find((membership) => membership.id === "membership_member_example")
       ?.status,
     "active",
+  );
+  assert.equal(records.auditEvents.length, 0);
+});
+
+test("membership reactivation rolls back when audit append fails", async () => {
+  const { repositories, input, records } = adminFixture({
+    memberships: baseMemberships().map((membership) =>
+      membership.id === "membership_member_example"
+        ? { ...membership, status: "disabled" }
+        : membership,
+    ),
+    failAuditAppend: true,
+  });
+
+  await assert.rejects(
+    () =>
+      reactivateWorkspaceMembership(repositories, {
+        ...input,
+        membershipId: "membership_member_example",
+        auditEventId: "audit_reactivate_append_failure",
+      }),
+    assertAdminError("repository_failure"),
+  );
+
+  assert.equal(
+    records.memberships.find((membership) => membership.id === "membership_member_example")
+      ?.status,
+    "disabled",
   );
   assert.equal(records.auditEvents.length, 0);
 });

@@ -542,6 +542,9 @@ export function renderAdminShellPage(): string {
             const table = document.createElement("table");
             table.append(tableHead(["Name", "Email", "Role", "Status", "Last login", "Actions"]));
             const body = document.createElement("tbody");
+            const activeOwnerCount = memberList.filter((member) =>
+              member.role === "owner" && member.status === "active"
+            ).length;
 
             for (const member of memberList) {
               const row = document.createElement("tr");
@@ -551,7 +554,7 @@ export function renderAdminShellPage(): string {
                 roleCell(member),
                 tableCell(member.status || ""),
                 tableCell(formatDate(member.user?.lastLoginAt)),
-                memberActionsCell(member)
+                memberActionsCell(member, activeOwnerCount)
               );
               body.append(row);
             }
@@ -698,15 +701,24 @@ export function renderAdminShellPage(): string {
             return cell;
           }
 
-          function memberActionsCell(member) {
+          function memberActionsCell(member, activeOwnerCount) {
             const cell = document.createElement("td");
             const button = document.createElement("button");
             const isSelf = member.user?.id === state.context?.user?.userId;
+            const isProtectedOwner = member.role === "owner";
+            const isLastActiveOwner =
+              member.role === "owner" && member.status === "active" && activeOwnerCount <= 1;
+            const canAct = !isSelf && !isProtectedOwner && !isLastActiveOwner;
             button.type = "button";
             button.className = "secondary-action compact";
-            button.textContent = "Disable";
-            button.disabled = isSelf || member.status !== "active";
+            button.textContent = member.status === "disabled" ? "Reactivate" : "Disable";
+            button.disabled = !canAct || !["active", "disabled"].includes(member.status);
             button.addEventListener("click", () => {
+              if (member.status === "disabled") {
+                void reactivateMember(member.membershipId);
+                return;
+              }
+
               void disableMember(member.membershipId);
             });
             cell.append(button);
@@ -722,7 +734,15 @@ export function renderAdminShellPage(): string {
 
           async function disableMember(membershipId) {
             await postAdminAction(
-              adminMemberUrl(state.workspace.workspaceId, membershipId) + "/disable"
+              adminMemberUrl(state.workspace.workspaceId, membershipId) + "/disable",
+              "Member disabled."
+            );
+          }
+
+          async function reactivateMember(membershipId) {
+            await postAdminAction(
+              adminMemberUrl(state.workspace.workspaceId, membershipId) + "/reactivate",
+              "Member reactivated."
             );
           }
 
@@ -889,6 +909,8 @@ export function renderAdminShellPage(): string {
                 return "Member added";
               case "workspace.membership.disabled":
                 return "Member disabled";
+              case "workspace.membership.reactivated":
+                return "Member reactivated";
               case "workspace.membership.role_changed":
                 return "Member role changed";
               default:

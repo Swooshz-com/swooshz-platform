@@ -29,6 +29,7 @@ import {
   listWorkspaceAppEntitlementsForAdmin,
   listWorkspaceAuditEventsForAdmin,
   listWorkspaceMembersForAdmin,
+  reactivateWorkspaceMembership,
   setWorkspaceAppEntitlementStatus,
   WorkspaceAdminServiceError,
 } from "../platform/workspace-admin-service.js";
@@ -156,6 +157,11 @@ export interface WorkspaceMemberAddHttpRequest extends WorkspaceAdminHttpRequest
 }
 
 export interface WorkspaceMembershipDisableHttpRequest extends WorkspaceAdminHttpRequest {
+  membershipId: string;
+  auditEventId: string;
+}
+
+export interface WorkspaceMembershipReactivateHttpRequest extends WorkspaceAdminHttpRequest {
   membershipId: string;
   auditEventId: string;
 }
@@ -625,6 +631,38 @@ export async function handleWorkspaceMembershipDisableRequest(
 
   try {
     const membership = await disableWorkspaceMembership(repositories, {
+      sessionId,
+      workspaceId: request.workspaceId,
+      now: request.now,
+      membershipId: request.membershipId,
+      auditEventId: request.auditEventId,
+    });
+
+    return {
+      status: 200,
+      headers: noStoreHeaders(),
+      body: {
+        outcome: "updated",
+        membership: toWorkspaceMembershipHttpSummary(membership),
+      },
+    };
+  } catch (error) {
+    return workspaceAdminErrorResponse(error);
+  }
+}
+
+export async function handleWorkspaceMembershipReactivateRequest(
+  repositories: PlatformRepositories,
+  request: WorkspaceMembershipReactivateHttpRequest,
+): Promise<HttpResponseLike> {
+  const sessionId = extractSessionId(request.headers, request.cookie);
+
+  if (!sessionId) {
+    return workspaceAdminMissingSession();
+  }
+
+  try {
+    const membership = await reactivateWorkspaceMembership(repositories, {
       sessionId,
       workspaceId: request.workspaceId,
       now: request.now,

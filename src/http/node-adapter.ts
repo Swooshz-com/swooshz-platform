@@ -29,6 +29,7 @@ import {
   handleWorkspaceMembersAdminRequest,
   handleWorkspaceMemberRoleChangeRequest,
   handleWorkspaceMembershipDisableRequest,
+  handleWorkspaceMembershipReactivateRequest,
   type HttpRequestHeaders,
   type HttpResponseLike,
   type KqagBrowserLaunchDependencies,
@@ -364,6 +365,35 @@ export async function handleNodePlatformHttpRequest(
 
     return toNodeResponse(
       await handleWorkspaceMembershipDisableRequest(dependencies.repositories, {
+        headers,
+        workspaceId: requiredRouteParam(routeMatch, "workspaceId"),
+        membershipId: requiredRouteParam(routeMatch, "membershipId"),
+        auditEventId: createWorkspaceAdminAuditEventId(dependencies),
+        now,
+        cookie: dependencies.cookie,
+      }),
+    );
+  }
+
+  if (route.id === "platform_workspace_member_reactivate") {
+    const now = dependencies.now();
+    const securityResult = await validateAdminRouteSecurity({
+      route,
+      headers,
+      now,
+      dependencies,
+    });
+
+    if (!securityResult.allowed) {
+      return securityFailureResponse(
+        securityResult.recommendedStatus,
+        securityResult.reason,
+        noStoreHeaders(),
+      );
+    }
+
+    return toNodeResponse(
+      await handleWorkspaceMembershipReactivateRequest(dependencies.repositories, {
         headers,
         workspaceId: requiredRouteParam(routeMatch, "workspaceId"),
         membershipId: requiredRouteParam(routeMatch, "membershipId"),
