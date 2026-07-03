@@ -37,6 +37,7 @@ const linkedDocs = [
   "docs/internal-alpha-platform-contract.md",
   "docs/hosted-internal-alpha-runbook.md",
   "docs/hosted-internal-alpha-operator-decisions.md",
+  "docs/hosted-internal-alpha-operator-briefing.md",
   "docs/auth-session-security-contract.md",
   "docs/internal-platform-smoke-runbook.md",
   "docs/kqag-integration-contract.md",
