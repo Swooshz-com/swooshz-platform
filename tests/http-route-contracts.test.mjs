@@ -26,6 +26,7 @@ test("route manifest includes only approved initial platform routes", () => {
       "platform_workspace_member_disable",
       "platform_workspace_app_entitlements",
       "platform_workspace_kqag_entitlement_status",
+      "platform_workspace_audit_events",
       "platform_app_launch",
       "platform_kqag_launch_open",
       "platform_app_launch_consume",
@@ -50,6 +51,7 @@ test("route manifest includes only approved initial platform routes", () => {
       "POST /api/platform/workspaces/:workspaceId/members/:membershipId/disable",
       "GET /api/platform/workspaces/:workspaceId/app-entitlements",
       "POST /api/platform/workspaces/:workspaceId/app-entitlements/kqag/status",
+      "GET /api/platform/workspaces/:workspaceId/audit-events",
       "POST /api/platform/apps/launch",
       "POST /api/platform/apps/launch/open",
       "POST /api/platform/apps/launch/consume",
@@ -277,6 +279,22 @@ test("workspace admin app entitlement routes are KQAG-scoped and session-protect
   assert.deepEqual(status.requiredQuery, ["status"]);
   assert.equal(status.handlerContract, "handleWorkspaceKqagEntitlementStatusRequest");
   assert.equal(status.idempotent, false);
+});
+
+test("workspace admin audit event route is read-only session-protected and not CSRF-protected", () => {
+  const route = getHttpRouteContract("platform_workspace_audit_events");
+
+  assert.equal(route.method, "GET");
+  assert.equal(route.path, "/api/platform/workspaces/:workspaceId/audit-events");
+  assert.equal(route.browserSession, "required");
+  assert.deepEqual(route.csrf, {
+    required: false,
+    strategy: "none",
+  });
+  assert.deepEqual(route.requiredQuery, []);
+  assert.equal(route.handlerContract, "handleWorkspaceAuditEventsAdminRequest");
+  assert.equal(route.responseKind, "json");
+  assert.equal(route.idempotent, true);
 });
 
 test("app launch intent route is POST-only session-protected and CSRF-protected", () => {

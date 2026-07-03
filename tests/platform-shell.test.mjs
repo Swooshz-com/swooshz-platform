@@ -57,6 +57,7 @@ test("admin shell references protected admin APIs and CSRF-protected actions", (
   assert.match(html, /\/role\?role=/);
   assert.match(html, /\/disable/);
   assert.match(html, /\/app-entitlements/);
+  assert.match(html, /\/audit-events\?limit=50/);
   assert.match(html, /\/kqag\/status\?status=/);
   assert.match(html, /\/api\/platform\/logout/);
   assert.match(html, /method: "POST"/);
@@ -75,6 +76,21 @@ test("admin shell includes add-existing-user form with allowed non-owner roles",
   assert.doesNotMatch(html, /value="owner"/);
   assert.match(html, /addExistingMember/);
   assert.match(html, /await postAdminAction\(addMemberUrl/);
+});
+
+test("admin shell includes Activity section for safe audit browsing", () => {
+  const html = renderAdminShellPage();
+
+  assert.match(html, /id="activity"/);
+  assert.match(html, /sectionHeading\("Activity"\)/);
+  assert.match(html, /renderActivity/);
+  assert.match(html, /adminAuditEventsUrl/);
+  assert.match(html, /metadataSummary/);
+  assert.match(html, /Event/);
+  assert.match(html, /Target/);
+  assert.match(html, /Actor/);
+  assert.match(html, /Created/);
+  assert.match(html, /Metadata/);
 });
 
 test("admin shell limits usable controls to owner/admin workspace context", () => {

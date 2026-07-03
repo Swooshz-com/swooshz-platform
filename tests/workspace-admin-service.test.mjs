@@ -10,6 +10,7 @@ import {
   decidePlatformAppAccess,
   disableWorkspaceMembership,
   listWorkspaceAppEntitlementsForAdmin,
+  listWorkspaceAuditEventsForAdmin,
   listWorkspaceMembersForAdmin,
   setWorkspaceAppEntitlementStatus,
 } from "../dist/index.js";
@@ -74,6 +75,92 @@ test("owner and admin can list workspace members with safe user summaries", asyn
       ],
     );
     assert.doesNotMatch(JSON.stringify(result), /provider-token|raw-claim|cookie|secret/i);
+  }
+});
+
+test("owner and admin can list recent workspace audit events safely", async () => {
+  for (const role of ["owner", "admin"]) {
+    const { repositories, input } = adminFixture({
+      role,
+      auditEvents: [
+        auditEvent({
+          id: "audit_old",
+          eventType: "workspace.membership.role_changed",
+          targetId: "membership_member_example",
+          createdAt: earlier,
+          metadata: {
+            previousRole: "viewer",
+            newRole: "member",
+            targetUserId: "user_member_example",
+            privateProviderValue: "provider-token-raw-claim",
+          },
+        }),
+        auditEvent({
+          id: "audit_new",
+          eventType: "workspace.app_entitlement.disabled",
+          targetType: "app_entitlement",
+          targetId: "entitlement_koncept_kqag",
+          createdAt: now,
+          metadata: {
+            appId: "app_kqag",
+            appKey: "kqag",
+            previousStatus: "enabled",
+            newStatus: "disabled",
+            cookie: "raw-session-token",
+          },
+        }),
+        auditEvent({
+          id: "audit_other_workspace",
+          workspaceId: "workspace_other_example",
+          createdAt: future,
+        }),
+      ],
+    });
+
+    const result = await listWorkspaceAuditEventsForAdmin(repositories, {
+      ...input,
+      limit: 50,
+    });
+
+    assert.equal(result.workspaceId, "workspace_koncept_images");
+    assert.deepEqual(
+      result.events.map((event) => ({
+        eventId: event.eventId,
+        eventType: event.eventType,
+        targetType: event.targetType,
+        targetId: event.targetId,
+        createdAt: event.createdAt,
+        metadata: event.metadata,
+      })),
+      [
+        {
+          eventId: "audit_new",
+          eventType: "workspace.app_entitlement.disabled",
+          targetType: "app_entitlement",
+          targetId: "entitlement_koncept_kqag",
+          createdAt: now,
+          metadata: {
+            appId: "app_kqag",
+            appKey: "kqag",
+            previousStatus: "enabled",
+            newStatus: "disabled",
+          },
+        },
+        {
+          eventId: "audit_old",
+          eventType: "workspace.membership.role_changed",
+          targetType: "membership",
+          targetId: "membership_member_example",
+          createdAt: earlier,
+          metadata: {
+            previousRole: "viewer",
+            newRole: "member",
+            targetUserId: "user_member_example",
+          },
+        },
+      ],
+    );
+    assertAuditPrivacy(result);
   }
 });
 
@@ -167,6 +254,10 @@ test("member and viewer cannot manage workspace members or app access", async ()
         }),
       assertAdminError("not_authorized"),
     );
+    await assert.rejects(
+      () => listWorkspaceAuditEventsForAdmin(repositories, input),
+      assertAdminError("not_authorized"),
+    );
   }
 });
 
@@ -202,12 +293,47 @@ test("missing disabled or expired admin context fails closed before mutation", a
         }),
       assertAdminError("not_authorized"),
     );
+    await assert.rejects(
+      () => listWorkspaceAuditEventsForAdmin(repositories, input),
+      assertAdminError("not_authorized"),
+    );
     assert.equal(records.auditEvents.length, 0);
     const targetMembership = records.memberships.find(
       (membership) => membership.id === "membership_member_example",
     );
     assert.equal(targetMembership?.status ?? "active", "active");
   }
+});
+
+test("audit event listing defaults and caps limits newest first", async () => {
+  const { repositories, input } = adminFixture({
+    auditEvents: Array.from({ length: 120 }, (_, index) =>
+      auditEvent({
+        id: `audit_${String(index).padStart(3, "0")}`,
+        createdAt: new Date(Date.parse(now) + index * 1000).toISOString(),
+      }),
+    ),
+  });
+
+  const defaultResult = await listWorkspaceAuditEventsForAdmin(repositories, {
+    ...input,
+    limit: 0,
+  });
+  const cappedResult = await listWorkspaceAuditEventsForAdmin(repositories, {
+    ...input,
+    limit: 1000,
+  });
+  const smallResult = await listWorkspaceAuditEventsForAdmin(repositories, {
+    ...input,
+    limit: 3,
+  });
+
+  assert.equal(defaultResult.events.length, 50);
+  assert.equal(cappedResult.events.length, 100);
+  assert.deepEqual(
+    smallResult.events.map((event) => event.eventId),
+    ["audit_119", "audit_118", "audit_117"],
+  );
 });
 
 test("add existing user rejects unsafe targets and roles without mutation", async () => {
@@ -761,7 +887,7 @@ function adminFixture(overrides = {}) {
     memberships: [...memberships, ...(overrides.extraMemberships ?? [])],
     apps: overrides.apps ?? [app],
     appEntitlements: overrides.appEntitlements ?? [entitlement],
-    auditEvents: [],
+    auditEvents: overrides.auditEvents ?? [],
   };
   const repositories = createInMemoryPlatformRepositories(records);
 
@@ -808,6 +934,24 @@ function existingProviderBackedUser(overrides = {}) {
     createdAt: earlier,
     updatedAt: earlier,
     lastLoginAt: now,
+    ...overrides,
+  };
+}
+
+function auditEvent(overrides = {}) {
+  return {
+    id: "audit_event_example",
+    workspaceId: "workspace_koncept_images",
+    actorUserId: "user_owner_example",
+    eventType: "workspace.membership.disabled",
+    targetType: "membership",
+    targetId: "membership_member_example",
+    createdAt: now,
+    metadata: {
+      previousRole: "member",
+      previousStatus: "active",
+      targetUserId: "user_member_example",
+    },
     ...overrides,
   };
 }

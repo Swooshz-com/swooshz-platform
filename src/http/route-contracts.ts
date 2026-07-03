@@ -14,6 +14,7 @@ export type HttpRouteId =
   | "platform_workspace_member_disable"
   | "platform_workspace_app_entitlements"
   | "platform_workspace_kqag_entitlement_status"
+  | "platform_workspace_audit_events"
   | "platform_app_launch"
   | "platform_kqag_launch_open"
   | "platform_app_launch_consume"
@@ -271,6 +272,21 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     handlerContract: "handleWorkspaceKqagEntitlementStatusRequest",
     responseKind: "json",
     idempotent: false,
+    implemented: true,
+  },
+  {
+    id: "platform_workspace_audit_events",
+    method: "GET",
+    path: "/api/platform/workspaces/:workspaceId/audit-events",
+    browserSession: "required",
+    csrf: {
+      required: false,
+      strategy: "none",
+    },
+    requiredQuery: [],
+    handlerContract: "handleWorkspaceAuditEventsAdminRequest",
+    responseKind: "json",
+    idempotent: true,
     implemented: true,
   },
   {

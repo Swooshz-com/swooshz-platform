@@ -183,6 +183,12 @@ export function createInMemoryPlatformRepositories(records = {}) {
         auditEvents.push(event);
         return event;
       },
+      async listForWorkspace(workspaceId, limit) {
+        return auditEvents
+          .filter((event) => event.workspaceId === workspaceId)
+          .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+          .slice(0, limit);
+      },
     },
     appLaunchTokens: {
       async create(record) {

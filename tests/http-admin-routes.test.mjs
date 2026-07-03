@@ -174,6 +174,160 @@ test("missing expired revoked or disabled admin context fails closed", async () 
   }
 });
 
+test("owner and admin can list workspace audit events through admin route", async () => {
+  for (const role of ["owner", "admin"]) {
+    const fixture = createAdminRouteFixture({
+      auditEvents: [
+        auditEvent({
+          id: "audit_old",
+          eventType: "workspace.membership.added",
+          targetId: "membership_http_1",
+          createdAt: earlier,
+          metadata: {
+            newRole: "member",
+            newStatus: "active",
+            targetUserId: "user_existing_example",
+            source: "existing_provider_backed_user",
+            privateProviderValue: "raw-provider-claim-subject",
+          },
+        }),
+        auditEvent({
+          id: "audit_new",
+          eventType: "workspace.app_entitlement.enabled",
+          targetType: "app_entitlement",
+          targetId: "entitlement_koncept_kqag",
+          createdAt: now,
+          metadata: {
+            appId: "app_kqag",
+            appKey: "kqag",
+            previousStatus: "disabled",
+            newStatus: "enabled",
+            cookie: "raw-session-token",
+          },
+        }),
+      ],
+    });
+
+    const { response, body } = await request({
+      method: "GET",
+      url: "/api/platform/workspaces/workspace_koncept_images/audit-events?limit=50",
+      headers: sessionHeaders(role),
+      dependencies: fixture.dependencies,
+    });
+
+    assert.equal(response.statusCode, 200);
+    assertNoStoreHeaders(response.headers);
+    assert.deepEqual(body, {
+      outcome: "listed",
+      workspaceId: "workspace_koncept_images",
+      events: [
+        {
+          eventId: "audit_new",
+          workspaceId: "workspace_koncept_images",
+          actorUserId: "user_owner_example",
+          eventType: "workspace.app_entitlement.enabled",
+          targetType: "app_entitlement",
+          targetId: "entitlement_koncept_kqag",
+          createdAt: now,
+          metadata: {
+            appId: "app_kqag",
+            appKey: "kqag",
+            previousStatus: "disabled",
+            newStatus: "enabled",
+          },
+        },
+        {
+          eventId: "audit_old",
+          workspaceId: "workspace_koncept_images",
+          actorUserId: "user_owner_example",
+          eventType: "workspace.membership.added",
+          targetType: "membership",
+          targetId: "membership_http_1",
+          createdAt: earlier,
+          metadata: {
+            newRole: "member",
+            newStatus: "active",
+            targetUserId: "user_existing_example",
+            source: "existing_provider_backed_user",
+          },
+        },
+      ],
+    });
+    assert.equal(fixture.calls.csrfValidate, 0);
+    assertResponseIsPrivacySafe(response);
+  }
+});
+
+test("workspace audit event route fails closed and does not require CSRF", async () => {
+  for (const role of ["member", "viewer"]) {
+    const fixture = createAdminRouteFixture();
+
+    const { response, body } = await request({
+      method: "GET",
+      url: "/api/platform/workspaces/workspace_koncept_images/audit-events",
+      headers: sessionHeaders(role),
+      dependencies: fixture.dependencies,
+    });
+
+    assert.equal(response.statusCode, 403);
+    assert.deepEqual(body, {
+      outcome: "denied",
+      reason: "not_authorized",
+    });
+    assert.equal(fixture.calls.csrfValidate, 0);
+    assertResponseIsPrivacySafe(response);
+  }
+
+  const missing = await request({
+    method: "GET",
+    url: "/api/platform/workspaces/workspace_koncept_images/audit-events",
+    dependencies: createAdminRouteFixture().dependencies,
+  });
+  assert.equal(missing.response.statusCode, 401);
+  assert.deepEqual(missing.body, {
+    outcome: "denied",
+    reason: "missing_session",
+  });
+});
+
+test("workspace audit event route enforces default and max limits", async () => {
+  const fixture = createAdminRouteFixture({
+    auditEvents: Array.from({ length: 120 }, (_, index) =>
+      auditEvent({
+        id: `audit_${String(index).padStart(3, "0")}`,
+        createdAt: new Date(Date.parse(now) + index * 1000).toISOString(),
+      }),
+    ),
+  });
+
+  const invalid = await request({
+    method: "GET",
+    url: "/api/platform/workspaces/workspace_koncept_images/audit-events?limit=0",
+    headers: sessionHeaders("owner"),
+    dependencies: fixture.dependencies,
+  });
+  const capped = await request({
+    method: "GET",
+    url: "/api/platform/workspaces/workspace_koncept_images/audit-events?limit=1000",
+    headers: sessionHeaders("owner"),
+    dependencies: fixture.dependencies,
+  });
+  const small = await request({
+    method: "GET",
+    url: "/api/platform/workspaces/workspace_koncept_images/audit-events?limit=3",
+    headers: sessionHeaders("owner"),
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(invalid.body.events.length, 50);
+  assert.equal(capped.body.events.length, 100);
+  assert.deepEqual(
+    small.body.events.map((event) => event.eventId),
+    ["audit_119", "audit_118", "audit_117"],
+  );
+  assert.equal(fixture.calls.csrfValidate, 0);
+});
+
 test("state-changing admin routes validate Origin and CSRF before mutation", async () => {
   const missingOrigin = createAdminRouteFixture();
   const roleWithoutOrigin = await request({
@@ -671,7 +825,7 @@ function createAdminRouteFixture(overrides = {}) {
           updatedAt: now,
         },
       ],
-    auditEvents: [],
+    auditEvents: overrides.auditEvents ?? [],
   };
   const repositories = createInMemoryPlatformRepositories(records);
   const calls = {
@@ -741,6 +895,24 @@ function existingProviderBackedUser(overrides = {}) {
     createdAt: earlier,
     updatedAt: earlier,
     lastLoginAt: now,
+    ...overrides,
+  };
+}
+
+function auditEvent(overrides = {}) {
+  return {
+    id: "audit_event_example",
+    workspaceId: "workspace_koncept_images",
+    actorUserId: "user_owner_example",
+    eventType: "workspace.membership.disabled",
+    targetType: "membership",
+    targetId: "membership_member_example",
+    createdAt: now,
+    metadata: {
+      previousRole: "member",
+      previousStatus: "active",
+      targetUserId: "user_member_example",
+    },
     ...overrides,
   };
 }

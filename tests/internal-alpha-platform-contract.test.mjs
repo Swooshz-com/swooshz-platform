@@ -75,6 +75,11 @@ test("internal alpha platform contract documents the admin foundation status", a
   assert.match(contract, /no invitation delivery/i);
   assert.match(contract, /Full email invitation delivery remains future scope/i);
   assert.match(contract, /disabled existing membership reactivation remains future scope/i);
+  assert.match(contract, /listWorkspaceAuditEventsForAdmin/i);
+  assert.match(contract, /\/api\/platform\/workspaces\/:workspaceId\/audit-events\?limit=<number>/i);
+  assert.match(contract, /Activity section shows recent workspace audit events/i);
+  assert.match(contract, /Minimal Activity browsing is implemented in `\/app\/admin`/i);
+  assert.match(contract, /Audit export\/filtering\/retention workflows/i);
   assert.match(contract, /Protected admin HTTP routes can list workspace members/i);
   assert.match(contract, /required query parameters for mutation inputs/i);
   assert.match(contract, /route manifest marks adapter-wired routes as implemented/i);

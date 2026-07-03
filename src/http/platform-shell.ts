@@ -327,6 +327,7 @@ export function renderAdminShellPage(): string {
         </section>
         <section id="members" class="workspace" hidden></section>
         <section id="entitlements" class="workspace" hidden></section>
+        <section id="activity" class="workspace" hidden></section>
       </main>
       <script>
         (() => {
@@ -349,6 +350,7 @@ export function renderAdminShellPage(): string {
           const addMemberForm = document.getElementById("addMemberForm");
           const members = document.getElementById("members");
           const entitlements = document.getElementById("entitlements");
+          const activity = document.getElementById("activity");
           const logoutButton = document.getElementById("logoutButton");
 
           logoutButton.addEventListener("click", () => {
@@ -398,7 +400,7 @@ export function renderAdminShellPage(): string {
             const workspaceId = state.workspace.workspaceId;
 
             try {
-              const [membersResponse, entitlementsResponse] = await Promise.all([
+              const [membersResponse, entitlementsResponse, activityResponse] = await Promise.all([
                 fetch(adminMembersUrl(workspaceId), {
                   credentials: "same-origin",
                   cache: "no-store"
@@ -406,16 +408,23 @@ export function renderAdminShellPage(): string {
                 fetch(adminEntitlementsUrl(workspaceId), {
                   credentials: "same-origin",
                   cache: "no-store"
+                }),
+                fetch(adminAuditEventsUrl(workspaceId), {
+                  credentials: "same-origin",
+                  cache: "no-store"
                 })
               ]);
               const membersPayload = await readJson(membersResponse);
               const entitlementsPayload = await readJson(entitlementsResponse);
+              const activityPayload = await readJson(activityResponse);
 
               if (
                 !membersResponse.ok ||
                 !entitlementsResponse.ok ||
+                !activityResponse.ok ||
                 membersPayload.outcome !== "listed" ||
-                entitlementsPayload.outcome !== "listed"
+                entitlementsPayload.outcome !== "listed" ||
+                activityPayload.outcome !== "listed"
               ) {
                 renderForbidden();
                 return;
@@ -425,6 +434,7 @@ export function renderAdminShellPage(): string {
               addMember.hidden = false;
               renderMembers(membersPayload.members);
               renderEntitlements(entitlementsPayload.entitlements);
+              renderActivity(activityPayload.events);
               setStatus("Workspace admin ready.");
             } catch {
               setStatus("Workspace admin could not be loaded.");
@@ -552,6 +562,35 @@ export function renderAdminShellPage(): string {
             }
 
             entitlements.append(list);
+          }
+
+          function renderActivity(eventList) {
+            activity.hidden = false;
+            activity.replaceChildren(sectionHeading("Activity"));
+
+            if (!Array.isArray(eventList) || eventList.length === 0) {
+              activity.append(emptyMessage("No recent workspace activity is available."));
+              return;
+            }
+
+            const table = document.createElement("table");
+            table.append(tableHead(["Event", "Target", "Actor", "Created", "Metadata"]));
+            const body = document.createElement("tbody");
+
+            for (const event of eventList) {
+              const row = document.createElement("tr");
+              row.append(
+                tableCell(event.eventType || ""),
+                tableCell(targetLabel(event)),
+                tableCell(event.actorUserId || ""),
+                tableCell(formatDate(event.createdAt)),
+                tableCell(metadataSummary(event.metadata))
+              );
+              body.append(row);
+            }
+
+            table.append(body);
+            activity.append(table);
           }
 
           function roleCell(member) {
@@ -717,16 +756,46 @@ export function renderAdminShellPage(): string {
               "/app-entitlements";
           }
 
+          function adminAuditEventsUrl(workspaceId) {
+            return "/api/platform/workspaces/" +
+              encodeURIComponent(workspaceId) +
+              "/audit-events?limit=50";
+          }
+
+          function targetLabel(event) {
+            const type = event.targetType || "target";
+            const id = event.targetId || "unknown";
+            return type + ": " + id;
+          }
+
+          function metadataSummary(metadata) {
+            if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+              return "";
+            }
+
+            return Object.entries(metadata)
+              .filter(([, value]) =>
+                value === null ||
+                typeof value === "string" ||
+                typeof value === "number" ||
+                typeof value === "boolean"
+              )
+              .map(([key, value]) => key + "=" + String(value))
+              .join(", ");
+          }
+
           function hideAdminSections() {
             identity.hidden = true;
             workspaceSummary.hidden = true;
             addMember.hidden = true;
             members.hidden = true;
             entitlements.hidden = true;
+            activity.hidden = true;
             workspaceSummary.replaceChildren();
             addMemberForm.reset();
             members.replaceChildren();
             entitlements.replaceChildren();
+            activity.replaceChildren();
           }
 
           function setStatus(message) {

@@ -99,6 +99,26 @@ export interface WorkspaceAppEntitlementStatusInput extends WorkspaceAdminInput 
   entitlementId?: string;
 }
 
+export interface WorkspaceAuditEventsInput extends WorkspaceAdminInput {
+  limit?: number;
+}
+
+export interface WorkspaceAuditEventSummary {
+  eventId: string;
+  workspaceId: string;
+  actorUserId: string;
+  eventType: string;
+  targetType: string;
+  targetId: string;
+  createdAt: IsoTimestamp;
+  metadata: Record<string, string | number | boolean | null>;
+}
+
+export interface WorkspaceAuditEventsAdminResult {
+  workspaceId: string;
+  events: readonly WorkspaceAuditEventSummary[];
+}
+
 interface AdminContext {
   session: Session;
   actor: User;
@@ -128,6 +148,24 @@ export async function listWorkspaceMembersForAdmin(
     return {
       workspaceId: input.workspaceId,
       members,
+    };
+  });
+}
+
+export async function listWorkspaceAuditEventsForAdmin(
+  repositories: PlatformRepositories,
+  input: WorkspaceAuditEventsInput,
+): Promise<WorkspaceAuditEventsAdminResult> {
+  return runSafely(async () => {
+    await requireAdminContext(repositories, input);
+    const events = await requireAuditRepository(repositories).listForWorkspace(
+      input.workspaceId,
+      auditEventLimit(input.limit),
+    );
+
+    return {
+      workspaceId: input.workspaceId,
+      events: events.map(toAuditEventSummary),
     };
   });
 }
@@ -465,6 +503,19 @@ function toEntitlementSummary(
   };
 }
 
+function toAuditEventSummary(event: AuditEvent): WorkspaceAuditEventSummary {
+  return {
+    eventId: event.id,
+    workspaceId: event.workspaceId ?? "",
+    actorUserId: event.actorUserId ?? "",
+    eventType: event.eventType,
+    targetType: event.targetType ?? "",
+    targetId: event.targetId ?? "",
+    createdAt: event.createdAt,
+    metadata: safeAuditMetadata(event.metadata),
+  };
+}
+
 function findTargetMembership(
   memberships: readonly Membership[],
   membershipId: string,
@@ -500,6 +551,48 @@ function assertValidEntitlementStatus(status: string): void {
   if (!["enabled", "disabled"].includes(status)) {
     throw adminError("invalid_entitlement_status", "Entitlement status is not supported.");
   }
+}
+
+function auditEventLimit(limit: number | undefined): number {
+  if (limit === undefined || !Number.isInteger(limit) || limit < 1) {
+    return 50;
+  }
+
+  return Math.min(limit, 100);
+}
+
+const safeAuditMetadataKeys = new Set([
+  "appId",
+  "appKey",
+  "newRole",
+  "newStatus",
+  "previousRole",
+  "previousStatus",
+  "source",
+  "targetUserId",
+]);
+
+function safeAuditMetadata(
+  metadata: AuditEvent["metadata"],
+): Record<string, string | number | boolean | null> {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(metadata).filter(([key, value]) => {
+      if (!safeAuditMetadataKeys.has(key)) {
+        return false;
+      }
+
+      return (
+        value === null ||
+        typeof value === "string" ||
+        typeof value === "number" ||
+        typeof value === "boolean"
+      );
+    }),
+  ) as Record<string, string | number | boolean | null>;
 }
 
 async function createMissingEntitlement(
