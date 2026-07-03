@@ -110,11 +110,11 @@ No Next.js, Vite, React, provider SDK, provider-specific account model, public s
 
 The internal smoke checklist is documented in `docs/internal-platform-smoke-runbook.md`. It covers the existing database/OIDC/runtime/seed/browser-launch path, keeps migrations explicit, and documents the local same-host KQAG handoff shape without putting launch tokens in browser URLs or storage.
 
-The hosted internal-alpha runbook is documented in `docs/hosted-internal-alpha-runbook.md`. It covers hosted Platform/KQAG placeholders, the env checklist, manual migration/backup/rollback procedure, smoke checklist, and dry-run readiness check without deploying, provisioning, or exposing infrastructure.
+The hosted internal-alpha runbook is documented in `docs/hosted-internal-alpha-runbook.md`. It covers hosted Platform/KQAG placeholders, the env checklist, manual migration/backup/rollback procedure, smoke checklist, and dry-run readiness check without deploying, provisioning, or exposing infrastructure. The readiness check is hardened for hosted review: it requires production mode, HTTPS browser/provider-facing URLs, origin-only allowed origins, callback path shape, KQAG handoff URL guardrails, value-safe output, and no migration/server/network imports.
 
 External provider setup notes are documented in `docs/auth-provider-selection.md`, `docs/google-oidc-setup-runbook.md`, and `docs/workos-authkit-fit-notes.md`. Google OIDC is the first operational provider setup target for internal UAT. WorkOS/AuthKit remains documented as a likely future B2B/hosted-auth candidate, not runtime-wired. Platform-owned email/password auth, fake login, and active multi-provider login remain deferred.
 
-The next likely platform PR should keep provider configuration operational review separate from broadening browser routes. Polished dashboard work, deployment routing, and KQAG app-data changes should still wait for separately approved phases.
+The next likely platform PR should keep provider configuration operational review separate from broadening browser routes. Polished dashboard work, actual hosted deployment execution, and KQAG app-data changes should still wait for separately approved phases.
 
 ## First App Integration Target
 
