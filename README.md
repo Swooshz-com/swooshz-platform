@@ -114,6 +114,8 @@ The hosted internal-alpha runbook is documented in `docs/hosted-internal-alpha-r
 
 The hosted operator decision record is documented in `docs/hosted-internal-alpha-operator-decisions.md`. It lists the host/provider, TLS/proxy, process/container, database/backup/restore, migration/rollback, OIDC, secret, log, first owner/admin, add-existing-user, KQAG handoff, cross-host session/cookie, incident, and go/no-go approvals that must happen outside the repo before any actual hosted execution.
 
+The auth/session security contract is documented in `docs/auth-session-security-contract.md`. It records the implemented generic OIDC, provider-backed user, server-side session, secure cookie, CSRF/origin, app-launch token, read-only route, and audit-event posture, plus the pre-alpha gap inventory for deferred session-management UI and future security/admin surfaces.
+
 External provider setup notes are documented in `docs/auth-provider-selection.md`, `docs/google-oidc-setup-runbook.md`, and `docs/workos-authkit-fit-notes.md`. Google OIDC is the first operational provider setup target for internal UAT. WorkOS/AuthKit remains documented as a likely future B2B/hosted-auth candidate, not runtime-wired. Platform-owned email/password auth, fake login, and active multi-provider login remain deferred.
 
 The next likely platform PR should keep provider configuration operational review separate from broadening browser routes. Polished dashboard work, actual hosted deployment execution, and KQAG app-data changes should still wait for separately approved phases.
@@ -130,6 +132,7 @@ The platform provides KQAG with platform-issued identity and workspace context t
 - `docs/app-access-contract.md`
 - `docs/kqag-integration-contract.md`
 - `docs/internal-alpha-platform-contract.md`
+- `docs/auth-session-security-contract.md`
 - `docs/adr/0001-platform-accounts-first.md`
 - `docs/adr/0002-auth-session-strategy.md`
 - `docs/adr/0003-persistence-and-migrations.md`

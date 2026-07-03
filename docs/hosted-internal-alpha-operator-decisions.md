@@ -6,6 +6,7 @@ Hosted deployment is not approved by this PR. Do not deploy until every required
 
 Related docs:
 
+- `docs/auth-session-security-contract.md`
 - `docs/hosted-internal-alpha-runbook.md`
 - `docs/internal-alpha-platform-contract.md`
 - `docs/roadmap.md`
@@ -17,6 +18,8 @@ PR #55 readiness check only validates env shape and dry-run safety. It does not 
 The readiness checker does not prove OIDC, database, KQAG, backups, rollback, logs, session cookies, or cross-host handoff work. Those require operator approval and smoke testing after reviewed hosted infrastructure exists.
 
 Passing `npm run platform:readiness-check` means only that required hosted env categories and safe URL shapes are present in the current shell. It remains a preflight checklist, not a launch authorization.
+
+The auth/session security contract documents implemented auth/session behavior, intentionally deferred controls, and the pre-alpha gap inventory. It does not add a session-management UI, approve hosted deployment, or replace operator approval and smoke testing.
 
 ## Required Decisions
 
