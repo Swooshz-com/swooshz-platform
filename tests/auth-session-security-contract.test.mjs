@@ -20,7 +20,8 @@ const implementedBehaviors = [
   "hashed at rest",
   "header-only raw token",
   "no browser URL/storage token",
-  "Read-only routes that do not require CSRF",
+  "Read-only browser-session routes that do not require CSRF",
+  "Header-token app launch consume route",
   "Audit events for workspace/app-access admin actions",
 ];
 
@@ -83,6 +84,32 @@ test("auth/session security contract includes the gap inventory table", async ()
   for (const item of [...implementedBehaviors, ...deferredItems]) {
     assert.match(contract, new RegExp(escapeRegExp(item), "i"));
   }
+});
+
+test("auth/session security contract separates read-only CSRF exemptions from launch-token consume", async () => {
+  const contract = await readContract();
+
+  assert.match(
+    contract,
+    /Read-only browser-session routes that do not require CSRF: session context, session app-access checks, workspace member listing, app-entitlement listing, and workspace audit browsing/i,
+  );
+  assert.match(
+    contract,
+    /Header-token app launch consume route: `POST \/api\/platform\/apps\/launch\/consume` does not require browser CSRF because it does not use the browser session cookie/i,
+  );
+  assert.match(contract, /requires the raw one-time launch token in the request header/i);
+  assert.match(contract, /consumes it once/i);
+  assert.match(
+    contract,
+    /\| Header-token app launch consume route \| Implemented \|[^|]+\| `POST \/api\/platform\/apps\/launch\/consume` is state-changing because it consumes a one-time launch token/i,
+  );
+  assert.match(
+    contract,
+    /CSRF-exempt because it uses header-token auth and no browser session cookie/i,
+  );
+  assert.doesNotMatch(contract, /read-only[^.\n|]*app launch consume/i);
+  assert.doesNotMatch(contract, /app launch consume[^.\n|]*read-only/i);
+  assert.doesNotMatch(contract, /app launch consume[^.\n|]*idempotent/i);
 });
 
 test("auth/session security contract aligns runbooks and roadmap", async () => {
