@@ -11,8 +11,16 @@ const readinessDocPaths = [
   "docs/kqag-integration-contract.md",
   "docs/hosted-internal-alpha-runbook.md",
   "docs/hosted-internal-alpha-operator-decisions.md",
+  "docs/hosted-internal-alpha-operator-briefing.md",
   "docs/roadmap.md",
 ];
+
+test("internal-alpha readiness docs include the hosted operator briefing", () => {
+  assert.ok(
+    readinessDocPaths.includes("docs/hosted-internal-alpha-operator-briefing.md"),
+    "hosted operator briefing must stay in the readiness docs audit set",
+  );
+});
 
 test("internal-alpha readiness docs avoid stale PR-scoped framing and readiness overclaims", async () => {
   const docs = await readDocs();

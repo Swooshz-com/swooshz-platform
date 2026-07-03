@@ -9,6 +9,7 @@ Related source docs:
 - `docs/internal-alpha-platform-contract.md`
 - `docs/hosted-internal-alpha-runbook.md`
 - `docs/hosted-internal-alpha-operator-decisions.md`
+- `docs/hosted-internal-alpha-operator-briefing.md`
 - `docs/auth-session-security-contract.md`
 - `docs/internal-platform-smoke-runbook.md`
 - `docs/kqag-integration-contract.md`
@@ -94,6 +95,7 @@ Do not deploy until every required operator decision is approved outside repo an
 | Checklist item | Current status | Evidence/source doc or source file | Go/no-go decision | Notes |
 | --- | --- | --- | --- | --- |
 | Hosted operator decision record | Documented | `docs/hosted-internal-alpha-operator-decisions.md` | No-go until every required decision is approved outside repo | Includes host/provider, TLS/proxy, process/container, database, migration, OIDC, secret, log, identity, KQAG handoff, incident, and go/no-go approvals. |
+| Hosted operator briefing | Documented | `docs/hosted-internal-alpha-operator-briefing.md` | No-go until approvals and smoke pass | Concise operator-facing decision pack; planning guidance only, not hosted approval. |
 | Real infra choices | Blocked until operator approval | `docs/hosted-internal-alpha-operator-decisions.md` | No-go for hosted execution | Host, process manager/container, database, backup/restore, TLS, logs, and incident path remain outside repo. |
 | Real OIDC config | Blocked until operator approval | `docs/hosted-internal-alpha-runbook.md`; `docs/hosted-internal-alpha-operator-decisions.md` | No-go for hosted execution | Provider client values and redirect registration remain outside source control. |
 | Production observability/alerts | Future | `docs/hosted-internal-alpha-runbook.md`; `docs/auth-session-security-contract.md` | No-go until approved operations surface | Request ids, alert thresholds, retention, and dashboards remain future work. |

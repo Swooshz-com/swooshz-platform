@@ -7,6 +7,7 @@ Hosted deployment is not approved by this PR. Do not deploy until every required
 Related docs:
 
 - `docs/auth-session-security-contract.md`
+- `docs/hosted-internal-alpha-operator-briefing.md`
 - `docs/hosted-internal-alpha-runbook.md`
 - `docs/internal-alpha-platform-contract.md`
 - `docs/roadmap.md`

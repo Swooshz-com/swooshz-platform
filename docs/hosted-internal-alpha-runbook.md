@@ -2,7 +2,7 @@
 
 This runbook prepares Swooshz Platform for a reviewed hosted internal-alpha handoff. It is documentation, guardrails, and dry-run readiness tooling only. It does not deploy, provision, expose, sync, restart, or configure hosted infrastructure.
 
-Before using this runbook for a real hosted execution window, review the operator decision record in `docs/hosted-internal-alpha-operator-decisions.md`. That record tracks the required out-of-repo hosting, approval, ownership, handoff, incident, and go/no-go decisions. This runbook does not approve deployment by itself.
+Before using this runbook for a real hosted execution window, review the operator briefing in `docs/hosted-internal-alpha-operator-briefing.md` and the operator decision record in `docs/hosted-internal-alpha-operator-decisions.md`. The briefing summarizes the human go/no-go context; the decision record tracks the required out-of-repo hosting, approval, ownership, handoff, incident, and go/no-go decisions. This runbook does not approve deployment by itself.
 
 Also review the auth/session security contract in `docs/auth-session-security-contract.md`. That contract documents the implemented auth/session posture, the pre-alpha gap inventory, and the deferred security/session-management surfaces. This PR does not approve hosted deployment.
 
