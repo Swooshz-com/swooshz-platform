@@ -384,8 +384,8 @@ export async function setWorkspaceAppEntitlementStatus(
     requireAuditRepository(transactionRepositories);
     const app = await transactionRepositories.apps.findByKey(input.appKey);
 
-    if (!app || app.key !== "kqag" || !["available", "private_preview"].includes(app.status)) {
-      throw adminError("not_found", "KQAG app was not found.");
+    if (!app || !["available", "private_preview"].includes(app.status)) {
+      throw adminError("not_found", "Workspace app was not found.");
     }
 
     const existing = await transactionRepositories.appEntitlements.findForWorkspaceApp(

@@ -93,6 +93,17 @@ test("owner and admin can list recent workspace audit events safely", async () =
             newRole: "member",
             targetUserId: "user_member_example",
             privateProviderValue: "provider-token-raw-claim",
+            providerSubject: "oidc-provider-subject-private",
+            rawClaims: { sub: "provider-subject-private" },
+            token: "raw-oauth-token",
+            cookie: "raw-session-cookie",
+            oauthCode: "raw-oauth-code",
+            oauthState: "raw-oauth-state",
+            oauthNonce: "raw-oauth-nonce",
+            databaseUrl: "postgresql://private-host",
+            quoteSession: "private-kqag-quote-session",
+            pricingReference: "private-kqag-pricing-reference",
+            generatedArtifact: "private-kqag-generated-artifact",
           },
         }),
         auditEvent({
@@ -606,6 +617,63 @@ test("owner and admin can list and enable or disable KQAG app entitlement", asyn
   assert.equal(enabled.grantedByUserId, "user_admin_example");
   assert.equal(records.auditEvents.at(-1).eventType, "workspace.app_entitlement.enabled");
   assertAuditPrivacy(records.auditEvents.at(-1));
+});
+
+test("owner and admin can manage future app entitlements through the generic service", async () => {
+  const futureApp = {
+    id: "app_ops_console",
+    key: "ops_console",
+    name: "Ops Console",
+    status: "available",
+    launchUrl: "https://apps.example.invalid/ops-console",
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  for (const role of ["owner", "admin"]) {
+    const { repositories, input, records } = adminFixture({
+      role,
+      apps: [futureApp],
+      appEntitlements: [],
+    });
+
+    const created = await setWorkspaceAppEntitlementStatus(repositories, {
+      ...input,
+      appKey: futureApp.key,
+      status: "enabled",
+      entitlementId: `entitlement_ops_console_${role}`,
+      auditEventId: `audit_ops_console_enabled_${role}`,
+    });
+
+    assert.equal(created.id, `entitlement_ops_console_${role}`);
+    assert.equal(created.workspaceId, "workspace_koncept_images");
+    assert.equal(created.appId, futureApp.id);
+    assert.equal(created.status, "enabled");
+    assert.deepEqual(records.auditEvents.at(-1), {
+      id: `audit_ops_console_enabled_${role}`,
+      workspaceId: "workspace_koncept_images",
+      actorUserId: `user_${role}_example`,
+      eventType: "workspace.app_entitlement.enabled",
+      targetType: "app_entitlement",
+      targetId: `entitlement_ops_console_${role}`,
+      createdAt: now,
+      metadata: {
+        appId: futureApp.id,
+        appKey: futureApp.key,
+        previousStatus: null,
+        newStatus: "enabled",
+      },
+    });
+    assertAuditPrivacy(records.auditEvents.at(-1));
+
+    const accessDecision = await decidePlatformAppAccess(repositories, {
+      sessionId: "session_member_example",
+      selectedWorkspaceId: "workspace_koncept_images",
+      appKey: futureApp.key,
+      now,
+    });
+    assert.equal(accessDecision.result, AccessDecisionResult.Allowed);
+  }
 });
 
 test("owner can create a missing KQAG entitlement but cannot cross workspace boundaries", async () => {

@@ -81,7 +81,7 @@ function baseFixture(overrides = {}) {
   };
 
   return {
-    appKey: "kqag",
+    appKey: overrides.appKey ?? app.key,
     session:
       overrides.session === undefined
         ? session
@@ -129,6 +129,37 @@ test("allows KQAG for member role", () => {
 
 test("blocks KQAG for viewer role until a viewer adapter exists", () => {
   assert.equal(resultFor({ role: "viewer" }).result, AccessDecisionResult.RoleNotPermitted);
+});
+
+test("uses least-privilege launch roles for future apps by default", () => {
+  const futureApp = {
+    id: "app_ops_console",
+    key: "ops_console",
+    name: "Ops Console",
+    status: "available",
+  };
+
+  for (const role of ["owner", "admin", "member"]) {
+    assert.equal(
+      resultFor({
+        role,
+        appKey: futureApp.key,
+        app: futureApp,
+        entitlement: { appId: futureApp.id },
+      }).result,
+      AccessDecisionResult.Allowed,
+    );
+  }
+
+  assert.equal(
+    resultFor({
+      role: "viewer",
+      appKey: futureApp.key,
+      app: futureApp,
+      entitlement: { appId: futureApp.id },
+    }).result,
+    AccessDecisionResult.RoleNotPermitted,
+  );
 });
 
 test("returns not_authenticated when no session exists", () => {
@@ -196,6 +227,20 @@ test("returns app_not_available when app is globally disabled", () => {
   assert.equal(resultFor({ app: { status: "disabled" } }).result, AccessDecisionResult.AppNotAvailable);
 });
 
+test("allows private preview apps but blocks unknown unavailable app statuses", () => {
+  assert.equal(
+    resultFor({ app: { status: "private_preview" } }).result,
+    AccessDecisionResult.Allowed,
+  );
+
+  for (const status of ["inactive", "unavailable", "private_disabled"]) {
+    assert.equal(
+      resultFor({ app: { status } }).result,
+      AccessDecisionResult.AppNotAvailable,
+    );
+  }
+});
+
 test("returns app_not_available when app is missing from the whitelist", () => {
   assert.equal(resultFor({ apps: [] }).result, AccessDecisionResult.AppNotAvailable);
 });
@@ -207,6 +252,17 @@ test("returns app_not_enabled_for_workspace when entitlement is missing", () => 
 test("returns app_not_enabled_for_workspace when entitlement is suspended", () => {
   assert.equal(
     resultFor({ entitlement: { status: "suspended" } }).result,
+    AccessDecisionResult.AppNotEnabledForWorkspace,
+  );
+});
+
+test("allows trial entitlements but blocks disabled entitlements", () => {
+  assert.equal(
+    resultFor({ entitlement: { status: "trial" } }).result,
+    AccessDecisionResult.Allowed,
+  );
+  assert.equal(
+    resultFor({ entitlement: { status: "disabled" } }).result,
     AccessDecisionResult.AppNotEnabledForWorkspace,
   );
 });

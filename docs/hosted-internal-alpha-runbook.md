@@ -20,7 +20,11 @@ Platform owns auth, users, sessions, workspaces, roles, memberships, app entitle
 
 KQAG owns quote-generation behavior, app-specific profiles, pricing references, generated files, app runtime state, and app dashboard/history. This runbook does not move any KQAG app data responsibility into Platform.
 
+Platform local/internal alpha can proceed only with production-grade security expectations around provider-backed login, server-side sessions, role checks, app entitlements, one-time launch tokens, and privacy-safe audit events. That local/internal posture does not approve hosted execution.
+
 No hosted internal-alpha operator should treat this document as deployment approval. Actual hosted deployment execution still requires reviewed infra/operator approval outside this PR.
+
+SAQG/KQAG production readiness is separate from this Platform repository and is not claimed by this runbook. Hosted KQAG handoff, quote workflow readiness, app runtime data, and generated-artifact behavior need their own reviewed evidence outside this Platform PR.
 
 This PR does not add a session-management UI. Security/session management remains a known future product/admin surface, while the current minimum posture and gaps are documented in `docs/auth-session-security-contract.md`.
 

@@ -21,7 +21,7 @@ Related source docs:
 
 The local/internal UAT platform-admin foundation is mostly implemented/documented for a narrow internal-alpha review: provider-backed login, server-side Platform sessions, `/app`, `/app/admin`, owner/admin workspace member administration, KQAG entitlement toggling, audit/activity browsing, fail-closed launch checks, explicit local smoke guidance, and a browser-safe KQAG handoff path are documented and covered by tests.
 
-Go decision: proceed only for reviewed local/internal UAT using approved existing services and placeholders in docs. This is not a public launch and does not claim production readiness.
+Go decision: Platform local/internal alpha can proceed only for reviewed local/internal UAT using approved existing services, placeholders in docs, and production-grade security expectations. This is not a public launch and does not claim production readiness.
 
 ### Hosted internal-alpha readiness
 
@@ -30,6 +30,8 @@ Hosted execution is still blocked until operator approvals, real infra choices, 
 Go decision: no-go for actual hosted execution until the hosted operator decision record is approved outside the repo, reviewed hosted infrastructure exists, real hosted values are configured outside source control, manual migrations are explicitly approved if needed, and the hosted smoke checklist passes.
 
 Do not deploy until every required operator decision is approved outside repo and hosted smoke testing is complete. This checklist does not claim production readiness.
+
+SAQG/KQAG production readiness is separate from this Platform repository. Platform can prove its account, workspace, entitlement, audit, and launch-token boundary without claiming KQAG quote-workflow, runtime, hosted handoff, or production readiness.
 
 ## Product/admin surface
 
@@ -69,7 +71,7 @@ Do not deploy until every required operator decision is approved outside repo an
 | Checklist item | Current status | Evidence/source doc or source file | Go/no-go decision | Notes |
 | --- | --- | --- | --- | --- |
 | KQAG entitlement enable/disable for owner/admin | Implemented | `docs/internal-alpha-platform-contract.md`; `src/platform/workspace-admin-service.ts`; `tests/http-admin-routes.test.mjs` | Go for local/internal UAT | Platform manages entitlement state only. |
-| KQAG launch access decision | Implemented | `docs/kqag-integration-contract.md`; `src/access/decide-app-access.ts`; `tests/app-access.test.mjs` | Go for current roles | Owner/admin/member launch is allowed when workspace and entitlement are active; viewer remains denied. |
+| KQAG launch access decision | Implemented | `docs/kqag-integration-contract.md`; `src/access/decide-app-access.ts`; `tests/account-domain.test.mjs`; `tests/platform-app-access-service.test.mjs` | Go for current roles | Owner/admin/member launch is allowed when workspace and entitlement are active; viewer remains denied. Future apps inherit the blocked viewer launch default until an explicit read-only product policy is approved. |
 | Header-only one-time app launch token consume | Implemented | `docs/kqag-integration-contract.md`; `docs/auth-session-security-contract.md`; `src/platform/app-launch-token-consume-service.ts`; `tests/app-launch-token-consume-service.test.mjs` | Go for current contract | Consume is POST and token-consuming; it is not a read-only browser-session route. |
 | Hosted KQAG handoff/session strategy | Blocked until operator approval | `docs/hosted-internal-alpha-operator-decisions.md`; `docs/hosted-internal-alpha-runbook.md` | No-go for hosted execution | Cross-host session/cookie strategy must be approved and smoke-tested outside this PR. |
 
