@@ -23,8 +23,8 @@ The current priority is a minimal internal platform shell over the existing back
 - KQAG/SAQG quote workflow behavior and app-owned runtime data.
 - Customer portal behavior.
 - Public SaaS launch behavior.
-- Deployment, VPS, Coolify, DNS, TLS, or firewall setup in this initial contract PR.
-- Billing or credits implementation in this initial contract PR.
+- Deployment, VPS, Coolify, DNS, TLS, or firewall setup unless separately approved for a hosted execution phase.
+- Billing or credits implementation unless separately approved in a future phase.
 
 ## Current Implementation State
 
