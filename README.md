@@ -146,4 +146,5 @@ The platform provides KQAG with platform-issued identity and workspace context t
 - `docs/internal-platform-smoke-runbook.md`
 - `docs/hosted-internal-alpha-runbook.md`
 - `docs/hosted-internal-alpha-operator-decisions.md`
+- `docs/internal-alpha-go-no-go-checklist.md`
 - `docs/roadmap.md`
