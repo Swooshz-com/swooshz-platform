@@ -57,6 +57,16 @@ test("auth start returns provider redirect and stores only hashed state and nonc
   assertHttpAuthResponseIsSafe(response);
 });
 
+test("auth start requests provider account selection without exposing auth material", async () => {
+  const fixture = createAuthStartFixture();
+
+  const response = await handleAuthStartRequest(fixture.dependencies, { now });
+
+  assert.equal(response.status, 302);
+  assert.equal(fixture.oidcAuthorizationInputs[0].additionalParams.prompt, "select_account");
+  assertHttpAuthResponseIsSafe(response);
+});
+
 test("auth start errors are privacy-safe", async () => {
   for (const failure of ["stateFactory", "nonceFactory", "stateStore", "oidcAdapter"]) {
     const fixture = createAuthStartFixture({ fail: failure });
