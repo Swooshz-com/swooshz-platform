@@ -61,9 +61,9 @@ SAQG/KQAG production readiness is separate from this Platform repository. Platfo
 | --- | --- | --- | --- | --- |
 | Owner/admin workspace member listing | Implemented | `docs/internal-alpha-platform-contract.md`; `src/platform/workspace-admin-service.ts`; `tests/workspace-admin-service.test.mjs` | Go for local/internal UAT | Uses safe user and membership summaries. |
 | Add existing provider-backed user by email | Implemented | `docs/hosted-internal-alpha-runbook.md`; `src/platform/workspace-admin-service.ts`; `tests/http-admin-routes.test.mjs` | Go for internal-alpha fallback | Teammate must sign in once first; no invitation delivery occurs. |
-| Role change and membership disable guardrails | Implemented | `docs/internal-alpha-platform-contract.md`; `src/platform/workspace-admin-service.ts`; `tests/workspace-admin-service.test.mjs` | Go for local/internal UAT | Last-owner and self-change guardrails remain required. |
+| Role change and membership disable/reactivation guardrails | Implemented | `docs/internal-alpha-platform-contract.md`; `src/platform/workspace-admin-service.ts`; `tests/workspace-admin-service.test.mjs` | Go for local/internal UAT | Last-owner, self-change, and owner-reactivation guardrails remain required. |
 | Full invitation acceptance flow | Deferred | `docs/auth-session-security-contract.md`; `docs/internal-alpha-platform-contract.md` | No-go until separately approved | Email invitation delivery and acceptance are not added. |
-| Disabled existing membership reactivation | Deferred | `docs/hosted-internal-alpha-runbook.md`; `docs/internal-alpha-platform-contract.md` | No-go until separately approved | Existing disabled memberships are not reactivated by add-existing-user. |
+| Disabled non-owner membership reactivation | Implemented | `docs/hosted-internal-alpha-runbook.md`; `docs/internal-alpha-platform-contract.md`; `tests/workspace-admin-service.test.mjs` | Go for local/internal UAT | Add-existing-user still does not reactivate memberships; owners/admins use the explicit reactivation action. |
 | First-class `operator` role | Future | `docs/internal-alpha-platform-contract.md`; `docs/roadmap.md` | No-go until schema and policy PR | Quote operators remain mapped to `member` for internal alpha. |
 
 ## App entitlement/KQAG launch
@@ -79,7 +79,7 @@ SAQG/KQAG production readiness is separate from this Platform repository. Platfo
 
 | Checklist item | Current status | Evidence/source doc or source file | Go/no-go decision | Notes |
 | --- | --- | --- | --- | --- |
-| Privacy-minimized audit events for admin actions | Implemented | `docs/internal-alpha-platform-contract.md`; `src/platform/workspace-admin-service.ts`; `tests/workspace-admin-service.test.mjs` | Go for local/internal UAT | Covers membership add, role change, membership disable, and KQAG entitlement changes. |
+| Privacy-minimized audit events for admin actions | Implemented | `docs/internal-alpha-platform-contract.md`; `src/platform/workspace-admin-service.ts`; `tests/workspace-admin-service.test.mjs` | Go for local/internal UAT | Covers membership add, role change, membership disable, membership reactivation, and KQAG entitlement changes. |
 | Owner/admin activity browsing | Implemented | `docs/internal-alpha-platform-contract.md`; `src/http/handlers.ts`; `tests/http-admin-routes.test.mjs` | Go for local/internal UAT | Recent activity browsing is minimal and read-only. |
 | Audit export/filtering/retention | Deferred | `docs/internal-alpha-platform-contract.md`; `docs/roadmap.md` | No-go until future audit PR | Export, filtering, and retention workflow decisions remain future work. |
 
@@ -123,7 +123,6 @@ SAQG/KQAG production readiness is separate from this Platform repository. Platfo
 | Checklist item | Current status | Evidence/source doc or source file | Go/no-go decision | Notes |
 | --- | --- | --- | --- | --- |
 | Full invitation acceptance flow | Deferred | `docs/auth-session-security-contract.md`; `docs/internal-alpha-platform-contract.md` | No-go until separate PR | Add-existing-user remains the internal-alpha fallback after a teammate signs in once. |
-| Disabled existing membership reactivation | Deferred | `docs/internal-alpha-platform-contract.md`; `docs/hosted-internal-alpha-runbook.md` | No-go until approved | Current add-existing-user route does not reactivate disabled memberships. |
 | Audit export/filtering/retention | Deferred | `docs/internal-alpha-platform-contract.md`; `docs/roadmap.md` | No-go until separate audit PR | Current activity browsing is minimal. |
 | Security/session management UI | Deferred | `docs/auth-session-security-contract.md`; `docs/internal-alpha-platform-contract.md` | No-go until future product/admin surface | Includes account security and session review surfaces. |
 | Revoke-other-sessions | Deferred | `docs/auth-session-security-contract.md` | No-go until future security PR | Current logout revokes only the current session. |

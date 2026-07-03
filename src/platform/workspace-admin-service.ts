@@ -69,6 +69,11 @@ export interface WorkspaceMembershipDisableInput extends WorkspaceAdminInput {
   auditEventId: string;
 }
 
+export interface WorkspaceMembershipReactivateInput extends WorkspaceAdminInput {
+  membershipId: string;
+  auditEventId: string;
+}
+
 export interface WorkspaceExistingUserAddInput extends WorkspaceAdminInput {
   targetEmail: string;
   role: Role;
@@ -272,6 +277,62 @@ export async function disableWorkspaceMembership(
       metadata: {
         previousRole,
         previousStatus,
+        targetUserId: target.userId,
+      },
+    });
+
+    return updated;
+  });
+}
+
+export async function reactivateWorkspaceMembership(
+  repositories: PlatformRepositories,
+  input: WorkspaceMembershipReactivateInput,
+): Promise<Membership> {
+  return runWorkspaceAdminTransaction(repositories, async (transactionRepositories) => {
+    const context = await requireAdminContext(transactionRepositories, input);
+    requireAuditRepository(transactionRepositories);
+    const memberships = await transactionRepositories.memberships.listForWorkspace(
+      input.workspaceId,
+    );
+    const target = findTargetMembership(memberships, input.membershipId);
+    const previousRole = target.role;
+    const previousStatus = target.status;
+
+    if (target.userId === context.actor.id) {
+      throw adminError("self_change_not_allowed", "Administrators cannot reactivate themselves.");
+    }
+
+    if (previousRole === "owner") {
+      throw adminError("invalid_role", "Owner membership reactivation is not supported here.");
+    }
+
+    if (previousStatus !== "disabled") {
+      throw adminError("membership_conflict", "Workspace membership is not disabled.");
+    }
+
+    const updated = await transactionRepositories.memberships.updateStatus(
+      target.id,
+      "active",
+      input.now,
+    );
+
+    if (!updated) {
+      throw adminError("not_found", "Workspace membership was not found.");
+    }
+
+    await appendAuditEvent(transactionRepositories, {
+      id: input.auditEventId,
+      workspaceId: input.workspaceId,
+      actorUserId: context.actor.id,
+      eventType: "workspace.membership.reactivated",
+      targetType: "membership",
+      targetId: target.id,
+      createdAt: input.now,
+      metadata: {
+        previousRole,
+        previousStatus,
+        newStatus: "active",
         targetUserId: target.userId,
       },
     });

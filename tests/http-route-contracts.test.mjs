@@ -24,6 +24,7 @@ test("route manifest includes only approved initial platform routes", () => {
       "platform_workspace_member_add",
       "platform_workspace_member_role",
       "platform_workspace_member_disable",
+      "platform_workspace_member_reactivate",
       "platform_workspace_app_entitlements",
       "platform_workspace_kqag_entitlement_status",
       "platform_workspace_audit_events",
@@ -49,6 +50,7 @@ test("route manifest includes only approved initial platform routes", () => {
       "POST /api/platform/workspaces/:workspaceId/members/add",
       "POST /api/platform/workspaces/:workspaceId/members/:membershipId/role",
       "POST /api/platform/workspaces/:workspaceId/members/:membershipId/disable",
+      "POST /api/platform/workspaces/:workspaceId/members/:membershipId/reactivate",
       "GET /api/platform/workspaces/:workspaceId/app-entitlements",
       "POST /api/platform/workspaces/:workspaceId/app-entitlements/kqag/status",
       "GET /api/platform/workspaces/:workspaceId/audit-events",
@@ -79,6 +81,7 @@ test("state-changing browser-cookie routes require CSRF protection", () => {
       "platform_workspace_member_add",
       "platform_workspace_member_role",
       "platform_workspace_member_disable",
+      "platform_workspace_member_reactivate",
       "platform_workspace_kqag_entitlement_status",
       "platform_app_launch",
       "platform_kqag_launch_open",
@@ -218,6 +221,7 @@ test("workspace admin member routes are session-protected and contract-driven", 
   const add = getHttpRouteContract("platform_workspace_member_add");
   const role = getHttpRouteContract("platform_workspace_member_role");
   const disable = getHttpRouteContract("platform_workspace_member_disable");
+  const reactivate = getHttpRouteContract("platform_workspace_member_reactivate");
 
   assert.equal(list.method, "GET");
   assert.equal(list.path, "/api/platform/workspaces/:workspaceId/members");
@@ -256,6 +260,19 @@ test("workspace admin member routes are session-protected and contract-driven", 
   });
   assert.deepEqual(disable.requiredQuery, []);
   assert.equal(disable.handlerContract, "handleWorkspaceMembershipDisableRequest");
+
+  assert.equal(reactivate.method, "POST");
+  assert.equal(
+    reactivate.path,
+    "/api/platform/workspaces/:workspaceId/members/:membershipId/reactivate",
+  );
+  assert.equal(reactivate.browserSession, "required");
+  assert.deepEqual(reactivate.csrf, {
+    required: true,
+    strategy: "origin_referer_and_csrf_token",
+  });
+  assert.deepEqual(reactivate.requiredQuery, []);
+  assert.equal(reactivate.handlerContract, "handleWorkspaceMembershipReactivateRequest");
 });
 
 test("workspace admin app entitlement routes are KQAG-scoped and session-protected", () => {
@@ -340,7 +357,7 @@ test("route manifest does not include quote app storage or frontend dashboard wo
   const serialized = JSON.stringify(HTTP_ROUTE_CONTRACTS);
 
   assert.doesNotMatch(serialized, /quote|pricing|pdf|xlsx/i);
-  assert.doesNotMatch(serialized, /frontend|dashboard|react|next|vite/i);
+  assert.doesNotMatch(serialized, /frontend|dashboard|react(?:\.js)?\b|next|vite/i);
 });
 
 test("route contract module does not import DB frontend KQAG provider SDK or live server modules", async () => {

@@ -72,6 +72,7 @@ test("admin shell references protected admin APIs and CSRF-protected actions", (
   assert.match(html, /\/add\?email=/);
   assert.match(html, /\/role\?role=/);
   assert.match(html, /\/disable/);
+  assert.match(html, /\/reactivate/);
   assert.match(html, /\/app-entitlements/);
   assert.match(html, /\/audit-events\?limit=50/);
   assert.match(html, /\/kqag\/status\?status=/);
@@ -121,6 +122,7 @@ test("admin shell includes Activity section for safe audit browsing", () => {
   assert.match(html, /KQAG access enabled/);
   assert.match(html, /KQAG access disabled/);
   assert.match(html, /Member role changed/);
+  assert.match(html, /Member reactivated/);
   assert.match(html, /Action/);
   assert.match(html, /Subject/);
   assert.match(html, /Actor/);
@@ -192,7 +194,12 @@ test("admin shell limits usable controls to owner/admin workspace context", () =
   assert.doesNotMatch(html, /Workspace ID/);
   assert.match(html, /Workspace admin is available to workspace owners and admins only\./);
   assert.match(html, /select\.disabled = isSelf \|\| member\.status !== "active"/);
-  assert.match(html, /button\.disabled = isSelf \|\| member\.status !== "active"/);
+  assert.match(html, /button\.textContent = member\.status === "disabled" \? "Reactivate" : "Disable"/);
+  assert.match(html, /button\.disabled = !canAct \|\| !\["active", "disabled"\]\.includes\(member\.status\)/);
+  assert.match(html, /isProtectedOwner = member\.role === "owner"/);
+  assert.match(html, /"Member disabled\."/);
+  assert.match(html, /"Member reactivated\."/);
+  assert.doesNotMatch(html, /button\.disabled = isSelf \|\| member\.status !== "active"/);
 });
 
 test("admin shell keeps secret raw-auth and KQAG quote material out of static HTML", () => {

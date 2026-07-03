@@ -109,6 +109,7 @@ test("GET /app/admin renders the admin shell as no-store HTML without requiring 
   assert.match(response.body, /\/members/);
   assert.match(response.body, /\/role\?role=/);
   assert.match(response.body, /\/disable/);
+  assert.match(response.body, /\/reactivate/);
   assert.match(response.body, /\/app-entitlements/);
   assert.match(response.body, /\/audit-events\?limit=50/);
   assert.match(response.body, /\/kqag\/status\?status=/);

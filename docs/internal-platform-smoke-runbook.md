@@ -186,8 +186,8 @@ Use this internal-alpha fallback only for a teammate who has completed real OIDC
 3. Use the Add Existing User form with the placeholder email value the teammate used for login.
 4. For this check, set role to `member` for quote operators unless the teammate should administer the workspace.
 5. Submit the form and confirm the member appears in the team list with active membership status.
-6. Change a non-owner member role when appropriate, disable a non-owner membership when appropriate, and enable or disable the KQAG entitlement only for this local smoke workspace.
-7. Confirm the Activity section shows recent add-user, role-change, membership-disable, and entitlement-change audit events with event type, target type/id, actor user id, created timestamp, and safe metadata only.
+6. Change a non-owner member role when appropriate, disable a non-owner membership when appropriate, reactivate a disabled non-owner membership when appropriate, and enable or disable the KQAG entitlement only for this local smoke workspace.
+7. Confirm the Activity section shows recent add-user, role-change, membership-disable, membership-reactivation, and entitlement-change audit events with event type, target type/id, actor user id, created timestamp, and safe metadata only.
 8. If the form shows a generic failure, confirm the teammate completed real OIDC login, has an active provider-backed Platform user, is not already a workspace member, and that the browser request has a fresh CSRF token.
 
 Activity browsing is a minimal internal-alpha check only. Export, filtering, and retention workflows remain future scope.

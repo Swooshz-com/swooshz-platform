@@ -26,7 +26,7 @@ The local/internal UAT platform-admin foundation is mostly implemented/documente
 
 - Provider-backed generic OIDC login and Platform-owned server-side sessions are documented.
 - `/app` and `/app/admin` exist as minimal internal surfaces, not polished product UI.
-- Owner/admin flows can add existing provider-backed users by email after first sign-in, change roles, disable memberships, enable/disable KQAG entitlement, and browse recent activity.
+- Owner/admin flows can add existing provider-backed users by email after first sign-in, change roles, disable and reactivate non-owner memberships, enable/disable KQAG entitlement, and browse recent activity.
 - App launch checks fail closed across session, user, workspace, membership, entitlement, role, and app availability conditions.
 - The KQAG handoff path keeps the raw one-time launch token out of browser URLs and storage.
 - Local UAT references should use `127.0.0.1` where a local address is needed.
@@ -143,7 +143,7 @@ Hosted smoke is required after reviewed infrastructure exists and before broader
 - Auth start/callback completed without logging callback query details or provider material.
 - `/app` and `/app/admin` loaded for the approved owner/admin.
 - Add-existing-user worked only after teammate first sign-in.
-- Role change, membership disable, KQAG entitlement enable/disable, and audit/activity checks passed.
+- Role change, membership disable/reactivation, KQAG entitlement enable/disable, and audit/activity checks passed.
 - KQAG launch mode behaved as approved and did not expose raw launch tokens.
 - Logout and missing/expired/disabled session checks failed closed.
 - Member/viewer admin access was denied.

@@ -52,8 +52,9 @@ test("internal platform smoke runbook documents the full smoke sequence", async 
     "existing active provider-backed Platform user",
     "set role to `member` for quote operators",
     "no invitation email is sent",
+    "reactivate a disabled non-owner membership",
     "Activity section",
-    "add-user, role-change, membership-disable, and entitlement-change audit events",
+    "add-user, role-change, membership-disable, membership-reactivation, and entitlement-change audit events",
     "safe metadata only",
     "Export, filtering, and retention workflows remain future scope",
     "workspace appears",
@@ -150,7 +151,7 @@ test("runbook change does not add forbidden scope imports or scripts", async () 
   assert.doesNotMatch(scripts, /start:platform/i);
 
   const runbook = await readRunbook();
-  assert.doesNotMatch(runbook, /next\.js|vite|react|express|fastify|hono/i);
+  assert.doesNotMatch(runbook, /next\.js|vite|react(?:\.js)?\b|express|fastify|hono/i);
   assert.doesNotMatch(runbook, /clerk|auth0|supabase|stripe/i);
 });
 
