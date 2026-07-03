@@ -22,6 +22,7 @@ import {
   handleProtectedAppAccessRequest,
   handleSessionContextRequest,
   handleWorkspaceAppEntitlementsAdminRequest,
+  handleWorkspaceAuditEventsAdminRequest,
   handleWorkspaceKqagEntitlementStatusRequest,
   handleWorkspaceMemberAddRequest,
   handleWorkspaceMembersAdminRequest,
@@ -361,6 +362,18 @@ export async function handleNodePlatformHttpRequest(
     );
   }
 
+  if (route.id === "platform_workspace_audit_events") {
+    return toNodeResponse(
+      await handleWorkspaceAuditEventsAdminRequest(dependencies.repositories, {
+        headers,
+        workspaceId: requiredRouteParam(routeMatch, "workspaceId"),
+        limit: optionalNumericSearchParam(parsedUrl, "limit"),
+        now: dependencies.now(),
+        cookie: dependencies.cookie,
+      }),
+    );
+  }
+
   if (route.id === "platform_workspace_kqag_entitlement_status") {
     const status = parsedUrl.searchParams.get("status");
 
@@ -676,6 +689,16 @@ function requiredRouteParam(routeMatch: RouteMatch, name: string): string {
   }
 
   return value;
+}
+
+function optionalNumericSearchParam(parsedUrl: URL, name: string): number | undefined {
+  const value = parsedUrl.searchParams.get(name);
+
+  if (value === null || value.trim() === "") {
+    return undefined;
+  }
+
+  return Number(value);
 }
 
 function normalizeMethod(method: string | undefined): string {

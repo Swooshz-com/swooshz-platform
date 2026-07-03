@@ -457,6 +457,43 @@ test("Drizzle repository create, update, and append methods return mapped record
   });
 });
 
+test("Drizzle audit repository lists workspace events newest first with a safe limit", async () => {
+  const otherWorkspaceRow = {
+    ...auditEventRow,
+    id: "audit_other_workspace",
+    workspaceId: "workspace_other_example",
+    createdAt: new Date("2026-06-26T05:00:00.000Z"),
+  };
+  const olderAuditRow = {
+    ...auditEventRow,
+    id: "audit_older",
+    eventType: "workspace.membership.added",
+    targetType: "membership",
+    targetId: "membership_http_1",
+    createdAt: new Date("2026-06-26T03:00:00.000Z"),
+  };
+  const newerAuditRow = {
+    ...auditEventRow,
+    id: "audit_newer",
+    eventType: "workspace.app_entitlement.enabled",
+    targetType: "app_entitlement",
+    targetId: "entitlement_koncept_kqag",
+    createdAt: new Date("2026-06-26T04:00:00.000Z"),
+  };
+  const repositories = createDrizzlePlatformRepositories(
+    createFakeDrizzleDb({
+      selectRows: new Map([
+        [schema.auditEvents, [olderAuditRow, otherWorkspaceRow, newerAuditRow]],
+      ]),
+    }),
+  );
+
+  assert.deepEqual(
+    await repositories.auditEvents.listForWorkspace(workspaceRow.id, 1),
+    [mapAuditEventRow(newerAuditRow)],
+  );
+});
+
 test("Drizzle repositories expose a transaction runner for admin mutations", async () => {
   const fakeDb = createFakeDrizzleDb();
   let transactionCalled = false;

@@ -120,6 +120,7 @@ export interface AppEntitlementRepository {
 
 export interface AuditEventRepository {
   append(event: AuditEvent): Promise<AuditEvent>;
+  listForWorkspace(workspaceId: string, limit: number): Promise<readonly AuditEvent[]>;
 }
 
 export interface WorkspaceAdminTransactionRepository {

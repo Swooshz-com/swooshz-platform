@@ -27,6 +27,7 @@ import {
   changeWorkspaceMemberRole,
   disableWorkspaceMembership,
   listWorkspaceAppEntitlementsForAdmin,
+  listWorkspaceAuditEventsForAdmin,
   listWorkspaceMembersForAdmin,
   setWorkspaceAppEntitlementStatus,
   WorkspaceAdminServiceError,
@@ -135,6 +136,10 @@ export interface WorkspaceAdminHttpRequest {
   workspaceId: string;
   now: string;
   cookie?: BrowserSessionCookieConfig;
+}
+
+export interface WorkspaceAuditEventsAdminHttpRequest extends WorkspaceAdminHttpRequest {
+  limit?: number;
 }
 
 export interface WorkspaceMemberRoleChangeHttpRequest extends WorkspaceAdminHttpRequest {
@@ -664,6 +669,38 @@ export async function handleWorkspaceAppEntitlementsAdminRequest(
         outcome: "listed",
         workspaceId: result.workspaceId,
         entitlements: result.entitlements,
+      },
+    };
+  } catch (error) {
+    return workspaceAdminErrorResponse(error);
+  }
+}
+
+export async function handleWorkspaceAuditEventsAdminRequest(
+  repositories: PlatformRepositories,
+  request: WorkspaceAuditEventsAdminHttpRequest,
+): Promise<HttpResponseLike> {
+  const sessionId = extractSessionId(request.headers, request.cookie);
+
+  if (!sessionId) {
+    return workspaceAdminMissingSession();
+  }
+
+  try {
+    const result = await listWorkspaceAuditEventsForAdmin(repositories, {
+      sessionId,
+      workspaceId: request.workspaceId,
+      now: request.now,
+      limit: request.limit,
+    });
+
+    return {
+      status: 200,
+      headers: noStoreHeaders(),
+      body: {
+        outcome: "listed",
+        workspaceId: result.workspaceId,
+        events: result.events,
       },
     };
   } catch (error) {

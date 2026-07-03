@@ -294,6 +294,17 @@ export function createDrizzlePlatformRepositories(
         const rows = await db.insert(auditEvents).values(auditEventToValues(event)).returning();
         return mapOneRequired(rows[0], mapAuditEventRow);
       },
+      async listForWorkspace(workspaceId, limit) {
+        const rows = await db
+          .select()
+          .from(auditEvents)
+          .where(eq(auditEvents.workspaceId, workspaceId));
+        return rows
+          .map((row) => mapAuditEventRow(row as unknown as AuditEventRow))
+          .filter((event) => event.workspaceId === workspaceId)
+          .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+          .slice(0, limit);
+      },
     },
     workspaceAdminTransactions: transaction
       ? {
