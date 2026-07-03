@@ -35,6 +35,17 @@ test("app access contract documents generic Platform services and KQAG route bou
   assert.match(contract, /does not move app-owned runtime data into Platform/i);
 });
 
+test("app access contract non-goals match the current implemented platform surface", async () => {
+  const contract = await readContract();
+
+  assert.doesNotMatch(contract, /No frontend app launcher in this PR/i);
+  assert.doesNotMatch(contract, /No real auth provider integration in this PR/i);
+  assert.match(contract, /No polished product launcher or dashboard redesign in this contract/i);
+  assert.match(contract, /No fake login, hidden fallback auth, password auth, or 2FA in this contract/i);
+  assert.match(contract, /No hosted deployment execution or hosted approval from this contract/i);
+  assert.match(contract, /No KQAG code changes or KQAG-owned runtime data movement in this contract/i);
+});
+
 test("app access contract avoids private material and localhost examples", async () => {
   const contract = await readContract();
 
