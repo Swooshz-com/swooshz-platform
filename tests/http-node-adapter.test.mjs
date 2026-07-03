@@ -6,7 +6,7 @@ import test from "node:test";
 import {
   handleNodePlatformHttpRequest,
 } from "../dist/index.js";
-import { readAuthConfig } from "../dist/auth/index.js";
+import { AuthCallbackError, readAuthConfig } from "../dist/auth/index.js";
 import { createInMemoryPlatformRepositories } from "./helpers/in-memory-platform-repositories.mjs";
 
 const now = "2026-06-27T00:00:00.000Z";
@@ -756,7 +756,7 @@ test("auth callback route sets a browser session cookie on success", async () =>
   assertResponseIsPrivacySafe(response);
 });
 
-test("auth callback missing code or state returns safe error", async () => {
+test("auth callback missing code or state renders safe browser error page", async () => {
   const fixture = createAdapterFixture();
   const { response, body } = await request({
     method: "GET",
@@ -765,12 +765,34 @@ test("auth callback missing code or state returns safe error", async () => {
   });
 
   assert.equal(response.statusCode, 400);
-  assert.deepEqual(body, {
-    outcome: "error",
-    message: "Authentication callback could not be completed.",
-  });
+  assert.equal(response.headers["content-type"], "text/html; charset=utf-8");
+  assertNoStoreHeaders(response.headers);
+  assert.equal(response.headers["x-auth-failure"], "auth_callback_failed");
+  assert.match(body, /Access not approved/);
+  assert.match(body, /href="\/api\/platform\/auth\/start"/);
+  assert.doesNotMatch(body, /synthetic-auth-code|synthetic-browser-state-reference|provider-subject/i);
   assert.equal(response.headers["set-cookie"], undefined);
   assert.equal(fixture.calls.authTokenExchange, 0);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("auth callback unapproved provider account renders safe retry UI", async () => {
+  const fixture = createAdapterFixture({ authIdentityErrorCode: "email_not_allowed" });
+  const { response, body } = await request({
+    method: "GET",
+    url: `/api/platform/auth/callback?code=synthetic-auth-code&state=${authState}`,
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.headers["content-type"], "text/html; charset=utf-8");
+  assert.equal(response.headers["x-auth-failure"], "access_not_approved");
+  assert.match(body, /Access not approved/);
+  assert.match(body, /Try another Google account/);
+  assert.match(body, /href="\/api\/platform\/auth\/start"/);
+  assert.equal(response.headers["set-cookie"], undefined);
+  assert.doesNotMatch(body, /synthetic-auth-code|synthetic-browser-state-reference/);
+  assert.doesNotMatch(body, /email_not_allowed|AUTH_ALLOWED_EMAILS|provider-subject|raw-claim/i);
   assertResponseIsPrivacySafe(response);
 });
 
@@ -962,8 +984,16 @@ async function request({
 
   return {
     response,
-    body: JSON.parse(response.body),
+    body: parseResponseBody(response),
   };
+}
+
+function parseResponseBody(response) {
+  if (response.headers["content-type"] === "text/html; charset=utf-8") {
+    return response.body;
+  }
+
+  return JSON.parse(response.body);
 }
 
 async function rawRequest({
@@ -1185,6 +1215,13 @@ function createAdapterFixture(overrides = {}) {
       },
       platformIdentityResolver: {
         async resolveAuthenticatedIdentity(input) {
+          if (overrides.authIdentityErrorCode) {
+            throw new AuthCallbackError(
+              overrides.authIdentityErrorCode,
+              "Authentication callback could not be completed.",
+            );
+          }
+
           return {
             platformUserId: "user_owner_example",
             providerIdentityId: "provider_identity_auth_callback_1",

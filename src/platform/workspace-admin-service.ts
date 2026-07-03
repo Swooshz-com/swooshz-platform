@@ -107,6 +107,8 @@ export interface WorkspaceAuditEventSummary {
   eventId: string;
   workspaceId: string;
   actorUserId: string;
+  actorDisplayName: string | null;
+  actorEmail: string | null;
   eventType: string;
   targetType: string;
   targetId: string;
@@ -162,10 +164,13 @@ export async function listWorkspaceAuditEventsForAdmin(
       input.workspaceId,
       auditEventLimit(input.limit),
     );
+    const summaries = await Promise.all(
+      events.map((event) => toAuditEventSummary(repositories, event)),
+    );
 
     return {
       workspaceId: input.workspaceId,
-      events: events.map(toAuditEventSummary),
+      events: summaries,
     };
   });
 }
@@ -503,17 +508,29 @@ function toEntitlementSummary(
   };
 }
 
-function toAuditEventSummary(event: AuditEvent): WorkspaceAuditEventSummary {
+async function toAuditEventSummary(
+  repositories: PlatformRepositories,
+  event: AuditEvent,
+): Promise<WorkspaceAuditEventSummary> {
+  const actor = event.actorUserId ? await repositories.users.findById(event.actorUserId) : null;
+
   return {
     eventId: event.id,
     workspaceId: event.workspaceId ?? "",
     actorUserId: event.actorUserId ?? "",
+    actorDisplayName: safeUserLabel(actor?.displayName),
+    actorEmail: safeUserLabel(actor?.email),
     eventType: event.eventType,
     targetType: event.targetType ?? "",
     targetId: event.targetId ?? "",
     createdAt: event.createdAt,
     metadata: safeAuditMetadata(event.metadata),
   };
+}
+
+function safeUserLabel(value: string | null | undefined): string | null {
+  const normalized = value?.trim();
+  return normalized || null;
 }
 
 function findTargetMembership(

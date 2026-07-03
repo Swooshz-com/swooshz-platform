@@ -137,6 +137,8 @@ test("owner and admin can list recent workspace audit events safely", async () =
     assert.deepEqual(
       result.events.map((event) => ({
         eventId: event.eventId,
+        actorDisplayName: event.actorDisplayName,
+        actorEmail: event.actorEmail,
         eventType: event.eventType,
         targetType: event.targetType,
         targetId: event.targetId,
@@ -146,6 +148,8 @@ test("owner and admin can list recent workspace audit events safely", async () =
       [
         {
           eventId: "audit_new",
+          actorDisplayName: "Owner Example",
+          actorEmail: "owner@example.test",
           eventType: "workspace.app_entitlement.disabled",
           targetType: "app_entitlement",
           targetId: "entitlement_koncept_kqag",
@@ -159,6 +163,8 @@ test("owner and admin can list recent workspace audit events safely", async () =
         },
         {
           eventId: "audit_old",
+          actorDisplayName: "Owner Example",
+          actorEmail: "owner@example.test",
           eventType: "workspace.membership.role_changed",
           targetType: "membership",
           targetId: "membership_member_example",
@@ -173,6 +179,51 @@ test("owner and admin can list recent workspace audit events safely", async () =
     );
     assertAuditPrivacy(result);
   }
+});
+
+test("workspace audit events resolve actor labels safely and keep system fallback", async () => {
+  const { repositories, input } = adminFixture({
+    auditEvents: [
+      auditEvent({
+        id: "audit_actor",
+        actorUserId: "user_admin_example",
+        eventType: "workspace.app_entitlement.enabled",
+        targetType: "app_entitlement",
+      }),
+      auditEvent({
+        id: "audit_system",
+        actorUserId: null,
+        eventType: "workspace.membership.added",
+        createdAt: earlier,
+      }),
+    ],
+  });
+
+  const result = await listWorkspaceAuditEventsForAdmin(repositories, {
+    ...input,
+    limit: 10,
+  });
+
+  assert.deepEqual(
+    result.events.map((event) => ({
+      eventId: event.eventId,
+      actorDisplayName: event.actorDisplayName,
+      actorEmail: event.actorEmail,
+    })),
+    [
+      {
+        eventId: "audit_actor",
+        actorDisplayName: "Admin Example",
+        actorEmail: "admin@example.test",
+      },
+      {
+        eventId: "audit_system",
+        actorDisplayName: null,
+        actorEmail: null,
+      },
+    ],
+  );
+  assertAuditPrivacy(result);
 });
 
 test("owner and admin can add an existing active provider-backed user by email", async () => {
@@ -1068,8 +1119,10 @@ function assertAdminError(expectedCode) {
 }
 
 function assertAuditPrivacy(event) {
-  const serialized = JSON.stringify(event);
-  assert.doesNotMatch(serialized, /@example\.test/);
+  const serialized = JSON.stringify(event).replace(
+    /"actorEmail":"[^"]+"/g,
+    '"actorEmail":"[safe-actor-email]"',
+  );
   assert.doesNotMatch(serialized, /provider-token|raw-claim|oauth|cookie|secret/i);
   assert.doesNotMatch(serialized, /postgresql:\/\/private-host|select \*/i);
 }
