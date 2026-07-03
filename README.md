@@ -112,6 +112,8 @@ The internal smoke checklist is documented in `docs/internal-platform-smoke-runb
 
 The hosted internal-alpha runbook is documented in `docs/hosted-internal-alpha-runbook.md`. It covers hosted Platform/KQAG placeholders, the env checklist, manual migration/backup/rollback procedure, smoke checklist, and dry-run readiness check without deploying, provisioning, or exposing infrastructure. The readiness check is hardened for hosted review: it requires production mode, HTTPS browser/provider-facing URLs, origin-only allowed origins, callback path shape, KQAG handoff URL guardrails, value-safe output, and no migration/server/network imports.
 
+The hosted operator decision record is documented in `docs/hosted-internal-alpha-operator-decisions.md`. It lists the host/provider, TLS/proxy, process/container, database/backup/restore, migration/rollback, OIDC, secret, log, first owner/admin, add-existing-user, KQAG handoff, cross-host session/cookie, incident, and go/no-go approvals that must happen outside the repo before any actual hosted execution.
+
 External provider setup notes are documented in `docs/auth-provider-selection.md`, `docs/google-oidc-setup-runbook.md`, and `docs/workos-authkit-fit-notes.md`. Google OIDC is the first operational provider setup target for internal UAT. WorkOS/AuthKit remains documented as a likely future B2B/hosted-auth candidate, not runtime-wired. Platform-owned email/password auth, fake login, and active multi-provider login remain deferred.
 
 The next likely platform PR should keep provider configuration operational review separate from broadening browser routes. Polished dashboard work, actual hosted deployment execution, and KQAG app-data changes should still wait for separately approved phases.
@@ -140,4 +142,5 @@ The platform provides KQAG with platform-issued identity and workspace context t
 - `docs/workos-authkit-fit-notes.md`
 - `docs/internal-platform-smoke-runbook.md`
 - `docs/hosted-internal-alpha-runbook.md`
+- `docs/hosted-internal-alpha-operator-decisions.md`
 - `docs/roadmap.md`
