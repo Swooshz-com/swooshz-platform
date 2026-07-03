@@ -38,14 +38,25 @@ Role permission decides what an active workspace member can do.
 
 It answers: "Can this user's role launch or administer this app?"
 
-Initial launch permission can be simple:
+Default launch permission is intentionally least-privilege:
 
 - `owner`: can launch and manage app access.
 - `admin`: can launch and manage app access unless ownership-only.
 - `member`: can launch enabled apps.
-- `viewer`: can launch read-only app views only when the app supports them.
+- `viewer`: can see read-only workspace/app visibility in Platform only. It cannot administer the workspace and cannot launch operational products unless a future app-specific read-only launch contract is deliberately designed and tested.
 
-KQAG initially has no read-only mode, so `viewer` app launch may be blocked until a later app adapter defines what viewer means.
+KQAG initially has no read-only mode, so `viewer` app launch is blocked. Future apps inherit the same blocked viewer launch default until an explicit per-product read-only use case exists.
+
+## Role And Product Access Matrix
+
+| Role | Platform workspace visibility | `/app/admin` and admin APIs | Product launch default | KQAG/SAQG launch today |
+| --- | --- | --- | --- | --- |
+| `owner` | Yes, for active memberships. | Yes, including workspace control except owner-transfer flows that remain guarded/deferred. | Allowed when session, user, workspace, app status, and entitlement all allow. | Allowed when KQAG is `available` or `private_preview` and entitlement is `enabled` or `trial`. |
+| `admin` | Yes, for active memberships. | Yes, except ownership-only operations. | Allowed when session, user, workspace, app status, and entitlement all allow. | Allowed when KQAG is `available` or `private_preview` and entitlement is `enabled` or `trial`. |
+| `member` | Yes, for active memberships. | No. | Allowed when session, user, workspace, app status, and entitlement all allow. | Allowed when KQAG is `available` or `private_preview` and entitlement is `enabled` or `trial`. |
+| `viewer` | Yes, for active memberships. | No. | Blocked unless a future app-specific read-only launch policy is designed, implemented, and tested. | Blocked because KQAG has no read-only launch mode. |
+
+Only `available` and `private_preview` app statuses are launchable. Unknown, inactive, unavailable, private-disabled, and globally disabled app states fail closed as `app_not_available`. Only `enabled` and `trial` entitlement statuses are launchable; missing, `disabled`, and `suspended` entitlements fail closed as `app_not_enabled_for_workspace`.
 
 ### Billing Status
 
@@ -150,9 +161,13 @@ The platform app launch flow is:
 
 No app should infer workspace access from a display name, email domain, or local app setting.
 
+The service-level entitlement mutation contract is generic by `appKey` so future products can use the same Platform entitlement model. The current browser/admin HTTP route and UI control remain deliberately KQAG-scoped until another app has an approved product contract and route surface.
+
 ## Platform-To-App Boundary
 
-The exact technical mechanism is deferred, but it must preserve this contract:
+The current Platform-owned mechanism is a short-lived app launch token that is issued only after Platform access checks and consumed by an app backend through the header-only consume route. Browser-safe KQAG local UAT additionally uses a server-side handoff route that keeps the raw launch token out of browser URLs, cookies, storage, logs, screenshots, and UI responses.
+
+Any future app integration mechanism must preserve this contract:
 
 - The platform is the authority for user, workspace, membership, role, and app entitlement.
 - The app is the authority for app workflow state.
@@ -170,7 +185,7 @@ Possible future integration mechanisms:
 - Backend-to-backend session exchange.
 - Shared internal auth gateway.
 
-No mechanism is selected in this PR.
+The current launch-token mechanism does not move app-owned runtime data into Platform.
 
 ## Access Decision Matrix
 

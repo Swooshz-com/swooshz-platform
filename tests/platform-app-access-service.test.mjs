@@ -126,6 +126,47 @@ test("blocks KQAG for viewer through the service layer", async () => {
   assert.equal(decision.result, AccessDecisionResult.RoleNotPermitted);
 });
 
+test("blocks viewer launch for future apps unless a read-only policy exists", async () => {
+  const futureApp = {
+    id: "app_ops_console",
+    key: "ops_console",
+    name: "Ops Console",
+    status: "available",
+    launchUrl: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const futureEntitlement = {
+    id: "entitlement_ops_console",
+    workspaceId: "workspace_koncept_images",
+    appId: futureApp.id,
+    status: "enabled",
+    grantedByUserId: "user_owner_example",
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  for (const role of ["owner", "admin", "member"]) {
+    const decision = await decisionFor({
+      role,
+      appKey: futureApp.key,
+      apps: [futureApp],
+      appEntitlements: [futureEntitlement],
+    });
+
+    assert.equal(decision.result, AccessDecisionResult.Allowed);
+  }
+
+  const viewerDecision = await decisionFor({
+    role: "viewer",
+    appKey: futureApp.key,
+    apps: [futureApp],
+    appEntitlements: [futureEntitlement],
+  });
+
+  assert.equal(viewerDecision.result, AccessDecisionResult.RoleNotPermitted);
+});
+
 test("blocks missing session", async () => {
   const decision = await decisionFor({ sessionId: "session_missing_example" });
 
@@ -183,9 +224,15 @@ test("blocks missing and disabled app", async () => {
   assert.equal(disabledDecision.result, AccessDecisionResult.AppNotAvailable);
 });
 
-test("blocks missing and suspended entitlement", async () => {
+test("blocks missing disabled and suspended entitlement", async () => {
   const missingDecision = await decisionFor({ appEntitlements: [] });
   assert.equal(missingDecision.result, AccessDecisionResult.AppNotEnabledForWorkspace);
+
+  const disabledDecision = await decisionFor({ entitlement: { status: "disabled" } });
+  assert.equal(
+    disabledDecision.result,
+    AccessDecisionResult.AppNotEnabledForWorkspace,
+  );
 
   const suspendedDecision = await decisionFor({ entitlement: { status: "suspended" } });
   assert.equal(

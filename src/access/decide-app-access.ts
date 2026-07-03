@@ -77,17 +77,10 @@ const launchableEntitlementStatuses = new Set<EntitlementStatus>([
   EntitlementStatus.Trial,
 ]);
 
-const kqagLaunchRoles = new Set<Role>([
-  Role.Owner,
-  Role.Admin,
-  Role.Member,
-]);
-
 const defaultLaunchRoles = new Set<Role>([
   Role.Owner,
   Role.Admin,
   Role.Member,
-  Role.Viewer,
 ]);
 
 export function decideAppAccess(input: DecideAppAccessInput): AccessDecision {
@@ -138,7 +131,7 @@ export function decideAppAccess(input: DecideAppAccessInput): AccessDecision {
     return decision(AccessDecisionResult.AppNotEnabledForWorkspace);
   }
 
-  if (!roleCanLaunchApp(membership.role, app.key)) {
+  if (!roleCanLaunchApp(membership.role)) {
     return decision(AccessDecisionResult.RoleNotPermitted);
   }
 
@@ -165,10 +158,6 @@ function isSessionUsable(session: Session, now: string): boolean {
   return Date.parse(session.expiresAt) > Date.parse(now);
 }
 
-function roleCanLaunchApp(role: Role, appKey: string): boolean {
-  if (appKey === "kqag") {
-    return kqagLaunchRoles.has(role);
-  }
-
+function roleCanLaunchApp(role: Role): boolean {
   return defaultLaunchRoles.has(role);
 }

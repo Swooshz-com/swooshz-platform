@@ -44,6 +44,52 @@ test("viewer KQAG access is denied without creating a launch token", async () =>
   assertResponseIsPrivacySafe(result);
 });
 
+test("future app launch uses the same least-privilege role policy", async () => {
+  const futureApp = {
+    id: "app_ops_console",
+    key: "ops_console",
+    name: "Ops Console",
+    status: "available",
+    launchUrl: "https://apps.example.invalid/ops-console",
+  };
+
+  for (const role of ["owner", "admin", "member"]) {
+    const { dependencies, input, records } = launchFixture({
+      role,
+      app: futureApp,
+      entitlement: { id: "entitlement_ops_console", appId: futureApp.id },
+    });
+
+    const result = await createAppLaunchIntent(dependencies, {
+      ...input,
+      appKey: futureApp.key,
+    });
+
+    assert.equal(result.outcome, "created");
+    assert.equal(result.appKey, futureApp.key);
+    assert.equal(records.appLaunchTokens.length, 1);
+    assert.equal(records.appLaunchTokens[0].appId, futureApp.id);
+    assert.equal("launchToken" in records.appLaunchTokens[0], false);
+  }
+
+  const viewer = launchFixture({
+    role: "viewer",
+    app: futureApp,
+    entitlement: { id: "entitlement_ops_console", appId: futureApp.id },
+  });
+
+  const viewerResult = await createAppLaunchIntent(viewer.dependencies, {
+    ...viewer.input,
+    appKey: futureApp.key,
+  });
+
+  assert.equal(viewerResult.outcome, "denied");
+  assert.equal(viewerResult.reason, "app_access_denied");
+  assert.equal(viewerResult.decision.result, "role_not_permitted");
+  assert.equal(viewer.records.appLaunchTokens.length, 0);
+  assertResponseIsPrivacySafe(viewerResult);
+});
+
 test("allowed owner admin and member KQAG access creates one hash-only launch token record", async () => {
   for (const role of ["owner", "admin", "member"]) {
     const { dependencies, input, records } = launchFixture({
@@ -164,6 +210,16 @@ function launchFixture(overrides = {}) {
     createdAt: now,
     updatedAt: now,
   }));
+  const entitlement = {
+    id: "entitlement_koncept_kqag",
+    workspaceId: workspace.id,
+    appId: app.id,
+    status: "enabled",
+    grantedByUserId: "user_owner_example",
+    createdAt: now,
+    updatedAt: now,
+    ...overrides.entitlement,
+  };
   const records = {
     users: [user],
     providerIdentities: [],
@@ -171,17 +227,7 @@ function launchFixture(overrides = {}) {
     workspaces: [workspace],
     memberships,
     apps: [app],
-    appEntitlements: [
-      {
-        id: "entitlement_koncept_kqag",
-        workspaceId: workspace.id,
-        appId: app.id,
-        status: "enabled",
-        grantedByUserId: "user_owner_example",
-        createdAt: now,
-        updatedAt: now,
-      },
-    ],
+    appEntitlements: [entitlement],
     auditEvents: [],
     appLaunchTokens: [],
   };
