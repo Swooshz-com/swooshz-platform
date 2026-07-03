@@ -222,6 +222,9 @@ export async function handleAuthStartRequest(
       redirectUri: dependencies.authConfig.redirectUri,
       state,
       nonce,
+      additionalParams: {
+        prompt: "select_account",
+      },
     });
     authorizationUrl = authorization.url;
   } catch (error) {

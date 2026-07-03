@@ -4,15 +4,32 @@ export function renderLandingPage(): string {
     body: `
       <main class="landing">
         <section class="panel">
-          <p class="eyebrow">Internal platform shell</p>
+          <p class="eyebrow">Swooshz Platform internal access</p>
           <h1>Swooshz Platform</h1>
           <p class="lede">
-            Sign in to review your platform session, workspace access, and app
-            launch options.
+            Access requires an approved provider-backed account for your
+            workspace. No public signup is available.
           </p>
-          <a class="primary-action" href="/api/platform/auth/start">Sign in</a>
+          <p id="signedOutNotice" class="signed-out" hidden>
+            You are signed out of Swooshz Platform. Your Google account may
+            still be signed in.
+          </p>
+          <p class="helper">Use the approved Google account for your workspace.</p>
+          <div class="login-actions">
+            <a class="primary-action" href="/api/platform/auth/start">Continue with Google</a>
+            <a class="secondary-action" href="/app">Already signed in? Continue to app</a>
+          </div>
         </section>
       </main>
+      <script>
+        (() => {
+          const params = new URLSearchParams(window.location.search);
+          const notice = document.getElementById("signedOutNotice");
+          if (params.get("signedOut") === "1" && notice) {
+            notice.hidden = false;
+          }
+        })();
+      </script>
     `,
   });
 }
@@ -29,7 +46,7 @@ export function renderAppShellPage(): string {
           </div>
           <div class="topbar-actions">
             <a id="adminLink" class="secondary-action" href="/app/admin" hidden>Admin</a>
-            <button id="logoutButton" class="secondary-action" type="button" hidden>Log out</button>
+            <button id="logoutButton" class="secondary-action" type="button" hidden>Sign out of Swooshz Platform</button>
           </div>
         </header>
 
@@ -93,7 +110,7 @@ export function renderAppShellPage(): string {
             launchResult.hidden = true;
             status.innerHTML =
               '<span>No active platform session.</span> ' +
-              '<a href="/api/platform/auth/start">Sign in</a>';
+              '<a href="/api/platform/auth/start">Continue with Google</a>';
           }
 
           function renderAuthenticated(context) {
@@ -250,7 +267,7 @@ export function renderAppShellPage(): string {
                 }
               });
             } finally {
-              window.location.assign("/");
+              window.location.assign("/?signedOut=1");
             }
           }
 
@@ -300,7 +317,7 @@ export function renderAdminShellPage(): string {
           </div>
           <div class="topbar-actions">
             <a class="secondary-action" href="/app">App Access</a>
-            <button id="logoutButton" class="secondary-action" type="button" hidden>Log out</button>
+            <button id="logoutButton" class="secondary-action" type="button" hidden>Sign out of Swooshz Platform</button>
           </div>
         </header>
 
@@ -317,13 +334,20 @@ export function renderAdminShellPage(): string {
             <label>
               <strong>Role</strong>
               <select name="role" required>
-                <option value="member">member</option>
                 <option value="admin">admin</option>
+                <option value="member" selected>member</option>
                 <option value="viewer">viewer</option>
               </select>
             </label>
             <button class="primary-action compact" type="submit">Add</button>
           </form>
+        </section>
+        <section id="ownerTransfer" class="workspace" hidden>
+          <h2>Owner Transfer</h2>
+          <p class="empty">
+            Owner transfer is not available in internal alpha yet. Use a
+            reviewed operator process before hosted execution.
+          </p>
         </section>
         <section id="members" class="workspace" hidden></section>
         <section id="entitlements" class="workspace" hidden></section>
@@ -348,6 +372,7 @@ export function renderAdminShellPage(): string {
           const workspaceSummary = document.getElementById("workspaceSummary");
           const addMember = document.getElementById("addMember");
           const addMemberForm = document.getElementById("addMemberForm");
+          const ownerTransfer = document.getElementById("ownerTransfer");
           const members = document.getElementById("members");
           const entitlements = document.getElementById("entitlements");
           const activity = document.getElementById("activity");
@@ -432,6 +457,7 @@ export function renderAdminShellPage(): string {
 
               renderWorkspaceSummary(state.workspace);
               addMember.hidden = false;
+              ownerTransfer.hidden = false;
               renderMembers(membersPayload.members);
               renderEntitlements(entitlementsPayload.entitlements);
               renderActivity(activityPayload.events);
@@ -463,7 +489,7 @@ export function renderAdminShellPage(): string {
             hideAdminSections();
             status.innerHTML =
               '<span>No active platform session.</span> ' +
-              '<a href="/api/platform/auth/start">Sign in</a>';
+              '<a href="/api/platform/auth/start">Continue with Google</a>';
           }
 
           function renderForbidden() {
@@ -574,17 +600,17 @@ export function renderAdminShellPage(): string {
             }
 
             const table = document.createElement("table");
-            table.append(tableHead(["Event", "Target", "Actor", "Created", "Metadata"]));
+            table.append(tableHead(["Action", "Subject", "Actor", "Time", "Details"]));
             const body = document.createElement("tbody");
 
             for (const event of eventList) {
               const row = document.createElement("tr");
               row.append(
-                tableCell(event.eventType || ""),
-                tableCell(targetLabel(event)),
-                tableCell(event.actorUserId || ""),
-                tableCell(formatDate(event.createdAt)),
-                tableCell(metadataSummary(event.metadata))
+                tableCell(activityLabel(event)),
+                tableCell(subjectLabel(event)),
+                tableCell(actorLabel(event)),
+                timeCell(event.createdAt),
+                metadataCell(event.metadata)
               );
               body.append(row);
             }
@@ -724,7 +750,7 @@ export function renderAdminShellPage(): string {
                 }
               });
             } finally {
-              window.location.assign("/");
+              window.location.assign("/?signedOut=1");
             }
           }
 
@@ -762,15 +788,65 @@ export function renderAdminShellPage(): string {
               "/audit-events?limit=50";
           }
 
-          function targetLabel(event) {
-            const type = event.targetType || "target";
-            const id = event.targetId || "unknown";
-            return type + ": " + id;
+          function activityLabel(event) {
+            switch (event.eventType) {
+              case "workspace.app_entitlement.enabled":
+                return "KQAG access enabled";
+              case "workspace.app_entitlement.disabled":
+                return "KQAG access disabled";
+              case "workspace.membership.added":
+                return "Member added";
+              case "workspace.membership.disabled":
+                return "Member disabled";
+              case "workspace.membership.role_changed":
+                return "Member role changed";
+              default:
+                return "Workspace activity";
+            }
           }
 
-          function metadataSummary(metadata) {
+          function subjectLabel(event) {
+            switch (event.targetType) {
+              case "app_entitlement":
+                return "KQAG access";
+              case "membership":
+                return "Workspace member";
+              default:
+                return "Workspace item";
+            }
+          }
+
+          function actorLabel(event) {
+            return event.actorDisplayName || event.actorEmail || "Platform user";
+          }
+
+          function metadataCell(metadata) {
+            const cell = document.createElement("td");
+            const rows = metadataRows(metadata);
+
+            if (rows.length === 0) {
+              cell.textContent = "No details";
+              return cell;
+            }
+
+            const list = document.createElement("dl");
+            list.className = "metadata-list";
+
+            for (const row of rows) {
+              const term = document.createElement("dt");
+              const detail = document.createElement("dd");
+              term.textContent = row.label;
+              detail.textContent = row.value;
+              list.append(term, detail);
+            }
+
+            cell.append(list);
+            return cell;
+          }
+
+          function metadataRows(metadata) {
             if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
-              return "";
+              return [];
             }
 
             return Object.entries(metadata)
@@ -780,14 +856,42 @@ export function renderAdminShellPage(): string {
                 typeof value === "number" ||
                 typeof value === "boolean"
               )
-              .map(([key, value]) => key + "=" + String(value))
-              .join(", ");
+              .map(([key, value]) => ({
+                label: metadataLabel(key),
+                value: metadataValue(key, value)
+              }));
+          }
+
+          function metadataLabel(key) {
+            switch (key) {
+              case "previousRole":
+                return "Previous role";
+              case "newRole":
+                return "New role";
+              case "previousStatus":
+                return "Previous status";
+              case "newStatus":
+                return "New status";
+              case "appKey":
+                return "App";
+              default:
+                return key.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
+            }
+          }
+
+          function metadataValue(key, value) {
+            if (key === "appKey" && String(value).toLowerCase() === "kqag") {
+              return "KQAG";
+            }
+
+            return String(value ?? "Not available");
           }
 
           function hideAdminSections() {
             identity.hidden = true;
             workspaceSummary.hidden = true;
             addMember.hidden = true;
+            ownerTransfer.hidden = true;
             members.hidden = true;
             entitlements.hidden = true;
             activity.hidden = true;
@@ -837,12 +941,31 @@ export function renderAdminShellPage(): string {
             return cell;
           }
 
+          function timeCell(value) {
+            const cell = document.createElement("td");
+            const raw = value ? String(value) : "";
+            cell.title = raw;
+            cell.textContent = formatDate(value);
+            return cell;
+          }
+
           function formatDate(value) {
             if (!value) {
               return "Not available";
             }
 
-            return String(value);
+            const date = new Date(value);
+            if (Number.isNaN(date.getTime())) {
+              return String(value);
+            }
+
+            return date.toLocaleString(undefined, {
+              year: "numeric",
+              month: "short",
+              day: "2-digit",
+              hour: "2-digit",
+              minute: "2-digit"
+            });
           }
 
           function emptyMessage(message) {
@@ -977,13 +1100,29 @@ function htmlDocument({
 
     .lede,
     .status,
-    .empty {
+    .empty,
+    .helper {
       color: var(--muted);
     }
 
     .status,
     .identity {
       margin-bottom: 16px;
+    }
+
+    .signed-out {
+      margin-bottom: 16px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--danger-soft);
+    }
+
+    .login-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      justify-content: flex-end;
     }
 
     .identity {
@@ -1095,6 +1234,22 @@ function htmlDocument({
       grid-template-columns: minmax(220px, 1fr) minmax(140px, 180px) auto;
       gap: 12px;
       align-items: end;
+    }
+
+    .metadata-list {
+      display: grid;
+      grid-template-columns: max-content 1fr;
+      gap: 4px 10px;
+      margin: 0;
+    }
+
+    .metadata-list dt {
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .metadata-list dd {
+      margin: 0;
     }
 
     button:disabled,

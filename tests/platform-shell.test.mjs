@@ -16,6 +16,19 @@ test("landing page renders the platform name and login link", () => {
   assert.doesNotMatch(html, /SESSION_SECRET|DATABASE_URL|postgresql:\/\//i);
 });
 
+test("landing page uses real internal-alpha auth copy without public signup or demo language", () => {
+  const html = renderLandingPage();
+
+  assert.match(html, /Swooshz Platform internal access/);
+  assert.match(html, /approved provider-backed account/);
+  assert.match(html, /Continue with Google|Continue with approved provider/);
+  assert.match(html, /Use the approved Google account for your workspace/);
+  assert.match(html, /No public signup is available/);
+  assert.match(html, /href="\/app"/);
+  assert.doesNotMatch(html, /INTERNAL PLATFORM SHELL/);
+  assert.doesNotMatch(html, /fake|demo|sample|create public account|public signup available/i);
+});
+
 test("app shell references only existing browser JSON APIs", () => {
   const html = renderAppShellPage();
 
@@ -70,12 +83,22 @@ test("admin shell includes add-existing-user form with allowed non-owner roles",
   assert.match(html, /id="addMemberForm"/);
   assert.match(html, /name="email"/);
   assert.match(html, /name="role"/);
-  assert.match(html, /value="admin"/);
-  assert.match(html, /value="member"/);
-  assert.match(html, /value="viewer"/);
+  assert.match(
+    html,
+    /<select name="role" required>\s*<option value="admin">admin<\/option>\s*<option value="member" selected>member<\/option>\s*<option value="viewer">viewer<\/option>/,
+  );
   assert.doesNotMatch(html, /value="owner"/);
   assert.match(html, /addExistingMember/);
   assert.match(html, /await postAdminAction\(addMemberUrl/);
+});
+
+test("admin shell documents owner transfer as unavailable in internal alpha", () => {
+  const html = renderAdminShellPage();
+
+  assert.match(html, /id="ownerTransfer"/);
+  assert.match(html, /Owner transfer is not available in internal alpha yet\./);
+  assert.match(html, /reviewed operator process before hosted execution/);
+  assert.doesNotMatch(html, /transferOwner|owner-transfer-confirmation|\/owner-transfer/);
 });
 
 test("admin shell includes Activity section for safe audit browsing", () => {
@@ -85,12 +108,39 @@ test("admin shell includes Activity section for safe audit browsing", () => {
   assert.match(html, /sectionHeading\("Activity"\)/);
   assert.match(html, /renderActivity/);
   assert.match(html, /adminAuditEventsUrl/);
-  assert.match(html, /metadataSummary/);
-  assert.match(html, /Event/);
-  assert.match(html, /Target/);
+  assert.match(html, /activityLabel/);
+  assert.match(html, /metadataRows/);
+  assert.match(html, /KQAG access enabled/);
+  assert.match(html, /KQAG access disabled/);
+  assert.match(html, /Member role changed/);
+  assert.match(html, /Action/);
+  assert.match(html, /Subject/);
   assert.match(html, /Actor/);
-  assert.match(html, /Created/);
-  assert.match(html, /Metadata/);
+  assert.match(html, /Time/);
+  assert.match(html, /Details/);
+  assert.match(html, /Previous role/);
+  assert.match(html, /New status/);
+  assert.match(html, /metadataValue/);
+  assert.match(html, /return "KQAG"/);
+  assert.match(html, /Platform user/);
+  assert.match(html, /title = raw/);
+});
+
+test("platform shells explain logout scope and show signed-out Google account note", () => {
+  const appHtml = renderAppShellPage();
+  const adminHtml = renderAdminShellPage();
+  const landingHtml = renderLandingPage();
+
+  for (const html of [appHtml, adminHtml]) {
+    assert.match(html, /Sign out of Swooshz Platform/);
+    assert.match(html, /window\.location\.assign\("\/\?signedOut=1"\)/);
+  }
+
+  assert.match(
+    landingHtml,
+    /You are signed out of Swooshz Platform\.\s+Your Google account may\s+still be signed in\./,
+  );
+  assert.match(landingHtml, /URLSearchParams\(window\.location\.search\)/);
 });
 
 test("admin shell limits usable controls to owner/admin workspace context", () => {
