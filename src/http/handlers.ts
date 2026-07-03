@@ -609,7 +609,7 @@ export async function handleWorkspaceMemberAddRequest(
       },
     };
   } catch (error) {
-    return workspaceAdminErrorResponse(error);
+    return workspaceMemberAddErrorResponse(error);
   }
 }
 
@@ -850,6 +850,54 @@ function workspaceAdminErrorResponse(error: unknown): HttpResponseLike {
     },
   };
 }
+
+function workspaceMemberAddErrorResponse(error: unknown): HttpResponseLike {
+  if (error instanceof WorkspaceAdminServiceError) {
+    if (error.code === "not_authorized") {
+      return {
+        status: 403,
+        headers: noStoreHeaders(),
+        body: {
+          outcome: "denied",
+          reason: "not_authorized",
+        },
+      };
+    }
+
+    return {
+      status: workspaceAdminErrorStatus(error),
+      headers: noStoreHeaders(),
+      body: {
+        outcome: "error",
+        message: workspaceMemberAddErrorMessage(error),
+      },
+    };
+  }
+
+  return {
+    status: 500,
+    headers: noStoreHeaders(),
+    body: {
+      outcome: "error",
+      message: genericWorkspaceAdminMessage,
+    },
+  };
+}
+
+function workspaceMemberAddErrorMessage(error: WorkspaceAdminServiceError): string {
+  switch (error.code) {
+    case "not_found":
+      return "User could not be added. They must sign in once with an approved Google account before they can be added to this workspace.";
+    case "membership_conflict":
+      return "User is already a member of this workspace.";
+    case "invalid_role":
+      return "Selected role is not allowed.";
+    default:
+      return genericWorkspaceAdminMessage;
+  }
+}
+
+const genericWorkspaceAdminMessage = "Workspace admin action could not be completed.";
 
 function workspaceAdminErrorStatus(error: WorkspaceAdminServiceError): number {
   switch (error.code) {
