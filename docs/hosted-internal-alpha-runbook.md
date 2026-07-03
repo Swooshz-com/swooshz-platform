@@ -4,6 +4,8 @@ This runbook prepares Swooshz Platform for a reviewed hosted internal-alpha hand
 
 Before using this runbook for a real hosted execution window, review the operator decision record in `docs/hosted-internal-alpha-operator-decisions.md`. That record tracks the required out-of-repo hosting, approval, ownership, handoff, incident, and go/no-go decisions. This runbook does not approve deployment by itself.
 
+Also review the auth/session security contract in `docs/auth-session-security-contract.md`. That contract documents the implemented auth/session posture, the pre-alpha gap inventory, and the deferred security/session-management surfaces. This PR does not approve hosted deployment.
+
 Use placeholders in this repo and in shared notes:
 
 - Platform hosted base URL placeholder: `<hosted-platform-base-url>`.
@@ -19,6 +21,8 @@ Platform owns auth, users, sessions, workspaces, roles, memberships, app entitle
 KQAG owns quote-generation behavior, app-specific profiles, pricing references, generated files, app runtime state, and app dashboard/history. This runbook does not move any KQAG app data responsibility into Platform.
 
 No hosted internal-alpha operator should treat this document as deployment approval. Actual hosted deployment execution still requires reviewed infra/operator approval outside this PR.
+
+This PR does not add a session-management UI. Security/session management remains a known future product/admin surface, while the current minimum posture and gaps are documented in `docs/auth-session-security-contract.md`.
 
 ## Deployment Plan
 
