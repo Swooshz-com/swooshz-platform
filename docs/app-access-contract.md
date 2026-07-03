@@ -222,8 +222,8 @@ Future apps should not require:
 
 ## Non-Goals
 
-- No frontend app launcher in this PR.
-- No real auth provider integration in this PR.
-- No database migrations in this PR.
-- No billing or credits implementation in this PR.
-- No KQAG code changes in this PR.
+- No polished product launcher or dashboard redesign in this contract.
+- No fake login, hidden fallback auth, password auth, or 2FA in this contract.
+- No hosted deployment execution or hosted approval from this contract.
+- No billing or credits implementation in this contract.
+- No KQAG code changes or KQAG-owned runtime data movement in this contract.
