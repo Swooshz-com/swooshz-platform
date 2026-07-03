@@ -8,7 +8,7 @@ Use placeholders in this repo and in shared notes:
 - KQAG hosted base URL placeholder: `<hosted-kqag-base-url>`.
 - Google/OIDC hosted redirect URI placeholder: `<hosted-oidc-redirect-uri>`.
 
-The hosted redirect URI should resolve to the platform callback route without query parameters. Real domains, real staff addresses, database URLs, OAuth values, cookies, tokens, provider identity material, callback URLs with query parameters, and KQAG private app data do not belong in this repository, tickets, screenshots, or shared logs.
+The hosted redirect URI should resolve to the platform callback route, end with `/api/platform/auth/callback`, and avoid query parameters or fragments. Real domains, real staff addresses, database URLs, OAuth values, cookies, tokens, provider identity material, callback URLs with query parameters, and KQAG private app data do not belong in this repository, tickets, screenshots, or shared logs.
 
 ## Hosted Scope
 
@@ -25,7 +25,7 @@ No hosted internal-alpha operator should treat this document as deployment appro
 3. Configure the OIDC client outside the repo with `<hosted-oidc-redirect-uri>`.
 4. Store secrets and runtime env outside the repo in the hosting secret manager or process manager secret store.
 5. Build the platform application with `npm run build`.
-6. Run `npm run platform:readiness-check` as a dry-run env checklist before migration or server start.
+6. Run `npm run platform:readiness-check` as a dry-run env checklist before migration or server start. Hosted readiness requires `NODE_ENV=production`, HTTPS browser/provider-facing URLs, origin-only allowed origins, and the reviewed callback path shape.
 7. Take and verify a database backup before applying reviewed migrations.
 8. Apply reviewed migrations manually with `npm run db:migrate` only after setting `DATABASE_MIGRATIONS_CONFIRM=apply-reviewed-migrations`.
 9. Start the platform process through the reviewed process manager or container entrypoint that runs `npm run platform:start`.
@@ -53,8 +53,11 @@ The hosted platform must be served over HTTPS before internal-alpha browser test
 Operator checks:
 
 - `PLATFORM_PUBLIC_BASE_URL` uses the HTTPS platform placeholder value.
-- `PLATFORM_ALLOWED_ORIGINS` contains only the hosted Platform origin.
+- `PLATFORM_PUBLIC_BASE_URL` does not include query parameters or fragments.
+- `PLATFORM_ALLOWED_ORIGINS` contains only the hosted Platform origin, with no path, query, or fragment.
 - `PLATFORM_COOKIE_SECURE=true` in production.
+- OIDC issuer, authorization, token, JWKS, optional userinfo, and redirect URLs use HTTPS.
+- `AUTH_REDIRECT_URI` ends with `/api/platform/auth/callback` and has no query parameters or fragments.
 - The proxy preserves the original host/protocol values required by the reviewed hosting setup.
 - No wildcard CORS rule is added for KQAG.
 - KQAG handoff stays explicit through `PLATFORM_KQAG_LAUNCH_MODE` and `PLATFORM_KQAG_APP_BASE_URL`.
@@ -110,7 +113,7 @@ KQAG handoff rollback:
 
 1. Set `PLATFORM_KQAG_LAUNCH_MODE=manual` to stop browser handoff while keeping Platform access checks available.
 2. Confirm `/app` reports a safe launch failure rather than exposing tokens.
-3. Re-enable `server_handoff` only after the KQAG hosted base URL and cross-host session strategy are reviewed.
+3. Re-enable `server_handoff` only after the KQAG hosted base URL and cross-host session strategy are reviewed. The readiness checker validates the KQAG base URL shape only; cross-host session and cookie behavior remains an operator review and smoke-test item.
 
 ## Health Check Procedure
 
@@ -140,11 +143,11 @@ Stop and redact the log collection process if a log includes secret values, data
 
 | Env var | Purpose | Required | Safe example | Secret | Validation / failure behavior |
 | --- | --- | --- | --- | --- | --- |
-| `NODE_ENV` | Runtime mode for hosted config. | Required | `production` | No | Use `production`; unsupported values fail readiness. |
+| `NODE_ENV` | Runtime mode for hosted config. | Required | `production` | No | Hosted readiness requires `production`; development and test fail readiness. |
 | `PLATFORM_HTTP_HOST` | Host/interface the reviewed process binds. | Required | `<host-to-bind>` | No | Empty value fails readiness; hosting decides the real bind address. |
 | `PLATFORM_HTTP_PORT` | Port the reviewed process binds. | Required | `<port-to-bind>` | No | Must be an integer port; invalid values fail startup/readiness. |
-| `PLATFORM_PUBLIC_BASE_URL` | Public HTTPS Platform base URL. | Required | `<hosted-platform-base-url>` | No | Required in production; invalid URL fails startup/readiness. |
-| `PLATFORM_ALLOWED_ORIGINS` | Allowed browser origin list for CSRF/origin checks. | Required | `<hosted-platform-base-url>` | No | Required in production; invalid origin fails startup/readiness. |
+| `PLATFORM_PUBLIC_BASE_URL` | Public HTTPS Platform base URL. | Required | `<hosted-platform-base-url>` | No | Hosted readiness requires HTTPS and no query parameters or fragments. |
+| `PLATFORM_ALLOWED_ORIGINS` | Allowed browser origin list for CSRF/origin checks. | Required | `<hosted-platform-base-url>` | No | Hosted readiness requires HTTPS origins only: scheme, host, optional port, and no path, query, or fragment. |
 | `PLATFORM_COOKIE_SECURE` | Forces secure browser session cookies. | Required | `true` | No | Production requires `true`; false fails startup/readiness. |
 | `DATABASE_URL` | PostgreSQL connection string from the secret store. | Required | `<database-url-from-secret-store>` | Yes | Required for live DB connection and migrations; never printed by readiness. |
 | `DATABASE_SSL_MODE` | Optional DB SSL mode override. | Optional | `<require-or-disable-if-needed>` | No | When set, must be `require` or `disable`; invalid value fails readiness/startup. |
@@ -155,18 +158,18 @@ Stop and redact the log collection process if a log includes secret values, data
 | `APP_LAUNCH_TOKEN_HASH_SECRET` | HMAC secret for one-time app launch token hashes. | Required | `<strong-random-placeholder>` | Yes | Required for launch issue/consume; short/missing value fails startup/readiness. |
 | `PLATFORM_AUTH_PROVIDER_MODE` | Selects explicit auth provider runtime mode. | Required | `generic_oidc` | No | Hosted internal alpha uses `generic_oidc`; other values fail startup/readiness. |
 | `AUTH_PROVIDER_KEY` | Stable provider key for linked identities. | Required | `<provider-key>` | No | Must match the auth config parser rules; invalid values fail auth config. |
-| `AUTH_ISSUER_URL` | OIDC issuer URL. | Required | `<provider-issuer-url>` | No | Required for generic OIDC verifier; invalid URL fails startup/readiness. |
-| `AUTH_AUTHORIZATION_URL` | OIDC authorization endpoint. | Required | `<provider-authorization-url>` | No | Invalid URL fails auth config/readiness. |
-| `AUTH_TOKEN_URL` | OIDC token endpoint. | Required | `<provider-token-url>` | No | Invalid URL fails auth config/readiness; called only during auth callback. |
-| `AUTH_JWKS_URL` | OIDC JWKS endpoint. | Required | `<provider-jwks-url>` | No | Required for generic OIDC verifier; called only during token verification. |
-| `AUTH_USERINFO_URL` | Optional OIDC userinfo endpoint. | Optional | `<provider-userinfo-url-if-used>` | No | Invalid URL fails auth config/readiness when set. |
+| `AUTH_ISSUER_URL` | OIDC issuer URL. | Required | `<provider-issuer-url>` | No | Hosted readiness requires HTTPS; called only during explicit auth verification paths. |
+| `AUTH_AUTHORIZATION_URL` | OIDC authorization endpoint. | Required | `<provider-authorization-url>` | No | Hosted readiness requires HTTPS; called only during auth start. |
+| `AUTH_TOKEN_URL` | OIDC token endpoint. | Required | `<provider-token-url>` | No | Hosted readiness requires HTTPS; called only during auth callback. |
+| `AUTH_JWKS_URL` | OIDC JWKS endpoint. | Required | `<provider-jwks-url>` | No | Hosted readiness requires HTTPS; called only during token verification. |
+| `AUTH_USERINFO_URL` | Optional OIDC userinfo endpoint. | Optional | `<provider-userinfo-url-if-used>` | No | Hosted readiness requires HTTPS when set; called only after token verification succeeds. |
 | `AUTH_CLIENT_ID` | OIDC client id. | Required | `<oidc-client-id-placeholder>` | No | Missing value fails auth config/readiness. |
 | `AUTH_CLIENT_SECRET` | OIDC client secret. | Required | `<oidc-client-secret-placeholder>` | Yes | Missing value fails auth config/readiness; never print it. |
-| `AUTH_REDIRECT_URI` | Hosted callback URI configured with the provider. | Required | `<hosted-oidc-redirect-uri>` | No | Must exactly match provider config; do not include query parameters in docs. |
+| `AUTH_REDIRECT_URI` | Hosted callback URI configured with the provider. | Required | `<hosted-oidc-redirect-uri>` | No | Hosted readiness requires HTTPS, no query parameters or fragments, and a path ending in `/api/platform/auth/callback`. |
 | `AUTH_ALLOWED_EMAILS` | Exact allowlist for internal-alpha users. | Required | `<comma-separated-allowlisted-emails>` | No | Preferred for hosted alpha; malformed values fail auth config. Treat as private. |
 | `AUTH_ALLOWED_DOMAINS` | Optional reviewed domain allowlist. | Optional | `<comma-separated-allowed-domains-if-approved>` | No | Leave unset unless broad domain allow is reviewed; malformed values fail auth config. |
 | `PLATFORM_KQAG_LAUNCH_MODE` | Controls KQAG browser handoff behavior. | Required | `manual` or `server_handoff` | No | Unsupported value fails startup/readiness. Use `manual` until hosted handoff is reviewed. |
-| `PLATFORM_KQAG_APP_BASE_URL` | KQAG hosted base URL for browser handoff. | Required when server_handoff | `<hosted-kqag-base-url>` | No | Required only when `server_handoff`; invalid URL fails startup/readiness. |
+| `PLATFORM_KQAG_APP_BASE_URL` | KQAG hosted base URL for browser handoff. | Required when server_handoff | `<hosted-kqag-base-url>` | No | Omit when launch mode is `manual`; when `server_handoff`, hosted readiness requires HTTPS and no query parameters or fragments. |
 | `PLATFORM_SEED_CONFIRM` | Explicit first owner/admin bootstrap confirmation. | Required for bootstrap only | `seed-reviewed-internal-access` | No | Required only for `npm run platform:seed-internal-access`; unexpected value fails seed config. |
 | `PLATFORM_SEED_USER_EMAIL` | Already-authenticated owner/admin user for bootstrap. | Required for bootstrap only | `<hosted-owner-admin-email-after-login>` | No | Required only for seed; treat as private and do not commit real values. |
 | `PLATFORM_SEED_MEMBERSHIP_ROLE` | Bootstrap role for the existing user. | Optional | `owner` | No | When set, must be `owner`, `admin`, or `member`; `viewer` is rejected for KQAG launch. |
@@ -179,9 +182,9 @@ Run the dry-run checker after env injection and before manual migrations or serv
 npm run platform:readiness-check
 ```
 
-The checker reports only env names, categories, missing/invalid status, and safe guidance. It does not print values, connect to PostgreSQL, run migrations, start the server, call OIDC, call KQAG, read provider endpoints, or seed access.
+The checker reports only env names, categories, missing/invalid status, and safe guidance. It enforces hosted-only production mode, HTTPS browser/provider-facing URLs, origin-only `PLATFORM_ALLOWED_ORIGINS`, callback URL shape, and KQAG handoff base URL shape. It does not print values, connect to PostgreSQL, run migrations, start the server, call OIDC, call KQAG, read provider endpoints, or seed access.
 
-Passing readiness does not approve deployment. It only confirms the current shell has the required categories present for hosted internal-alpha review.
+Passing readiness does not approve deployment. It only confirms the current shell has the required categories and safe URL shapes present for hosted internal-alpha review.
 
 ## First Owner/Admin Bootstrap Sequence
 

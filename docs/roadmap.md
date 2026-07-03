@@ -96,7 +96,7 @@ Candidate deliverables:
 - External provider setup docs: `docs/auth-provider-selection.md`, `docs/google-oidc-setup-runbook.md`, and `docs/workos-authkit-fit-notes.md`.
 - Google OIDC as the first operational provider setup target for internal UAT against the existing generic OIDC runtime.
 - WorkOS/AuthKit documented as a future B2B/hosted-auth candidate requiring a provider-fit check before runtime wiring.
-- Hosted internal-alpha deployment runbook with Platform/KQAG placeholders, env checklist, manual migration/backup/rollback guidance, smoke checklist, and dry-run readiness check. Actual hosted deployment execution still requires reviewed infra/operator approval.
+- Hosted internal-alpha deployment runbook with Platform/KQAG placeholders, env checklist, manual migration/backup/rollback guidance, smoke checklist, and dry-run readiness check hardened for production mode, HTTPS browser/provider URLs, origin/callback shape, KQAG handoff guardrails, value-safe output, and no migration/server/network imports. Actual hosted deployment execution still requires reviewed infra/operator approval.
 - HTTP logout route hardening after real CSRF storage and browser wiring are separately approved.
 - Invitation acceptance path if compatible with selected auth provider.
 - Tests for session, token, and provider-error privacy behavior.

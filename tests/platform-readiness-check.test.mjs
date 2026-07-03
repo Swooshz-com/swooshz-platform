@@ -16,6 +16,15 @@ const privateValues = [
   "private-launch-secret-value-32-chars",
 ];
 
+const privateOutputProbeValues = [
+  ["postgres", "ql://private-user:private-pass@private-host/private-db"].join(""),
+  ["private-oauth-access-token-", "abcdefghijklmnopqrstuvwxyz"].join(""),
+  ["private-cookie-session-", "abcdefghijklmnopqrstuvwxyz"].join(""),
+  ["provider-subject-", "abcdefghijklmnopqrstuvwxyz"].join(""),
+  ["private.staff", "@example.invalid"].join(""),
+  ["https://platform.private.invalid/api/platform/auth/callback", "?code=private-code"].join(""),
+];
+
 test("platform readiness check package script exists", async () => {
   const packageJson = JSON.parse(await readFile("package.json", "utf8"));
 
@@ -38,6 +47,18 @@ test("readiness check passes for complete hosted internal-alpha env without prin
   assert.match(lines.join("\n"), /readiness_check=pass/);
   assert.match(lines.join("\n"), /manual_migrations=explicit/);
   assertNoPrivateMaterial(lines.join("\n"));
+});
+
+test("readiness check accepts multiple HTTPS origin entries with optional ports", () => {
+  const result = createPlatformReadinessReport({
+    ...completeEnv(),
+    PLATFORM_ALLOWED_ORIGINS: [
+      "https://platform.placeholder.invalid",
+      "https://platform.placeholder.invalid:8443",
+    ].join(","),
+  });
+
+  assert.equal(result.ok, true);
 });
 
 test("readiness check fails with safe missing and invalid env names only", () => {
@@ -68,6 +89,102 @@ test("readiness check fails with safe missing and invalid env names only", () =>
   assertNoPrivateMaterial(output);
 });
 
+test("hosted readiness requires production NODE_ENV", () => {
+  for (const mode of ["development", "test"]) {
+    const report = reportWithOverride({ NODE_ENV: mode });
+
+    assert.equal(report.ok, false);
+    assertInvalid(report, "NODE_ENV", "hosted_requires_production");
+  }
+});
+
+test("hosted browser and provider URLs must use https without echoing values", () => {
+  const httpsOnlyCases = [
+    ["PLATFORM_PUBLIC_BASE_URL", "http://platform.placeholder.invalid"],
+    ["PLATFORM_ALLOWED_ORIGINS", "http://platform.placeholder.invalid"],
+    ["AUTH_REDIRECT_URI", "http://platform.placeholder.invalid/api/platform/auth/callback"],
+    ["AUTH_ISSUER_URL", "http://issuer.placeholder.invalid"],
+    ["AUTH_AUTHORIZATION_URL", "http://issuer.placeholder.invalid/oauth2/authorize"],
+    ["AUTH_TOKEN_URL", "http://issuer.placeholder.invalid/oauth2/token"],
+    ["AUTH_JWKS_URL", "http://issuer.placeholder.invalid/.well-known/jwks.json"],
+    ["AUTH_USERINFO_URL", "http://issuer.placeholder.invalid/oauth2/userinfo"],
+    ["PLATFORM_KQAG_APP_BASE_URL", "http://kqag.placeholder.invalid"],
+  ];
+
+  for (const [name, value] of httpsOnlyCases) {
+    const lines = [];
+    const result = runPlatformReadinessCheck({
+      env: reportEnvWithOverride({ [name]: value }),
+      writeLine(line) {
+        lines.push(line);
+      },
+      writeError(line) {
+        lines.push(line);
+      },
+    });
+    const output = lines.join("\n");
+
+    assert.equal(result.ok, false);
+    assertInvalid(result, name, "must_be_https");
+    assert.match(output, new RegExp(`invalid env: ${name}`));
+    assert.doesNotMatch(output, new RegExp(escapeRegExp(value)));
+    assertNoPrivateMaterial(output);
+  }
+});
+
+test("hosted readiness rejects unsafe URL and origin shapes", () => {
+  const callbackBase = "https://platform.placeholder.invalid/api/platform/auth/callback";
+  const shapeCases = [
+    [
+      "PLATFORM_ALLOWED_ORIGINS",
+      "https://platform.placeholder.invalid/path",
+      "must_be_origin",
+    ],
+    [
+      "PLATFORM_ALLOWED_ORIGINS",
+      "https://platform.placeholder.invalid?debug=1",
+      "must_be_origin",
+    ],
+    [
+      "PLATFORM_ALLOWED_ORIGINS",
+      "https://platform.placeholder.invalid#fragment",
+      "must_be_origin",
+    ],
+    [
+      "PLATFORM_PUBLIC_BASE_URL",
+      "https://platform.placeholder.invalid?debug=1",
+      "query_or_fragment_not_allowed",
+    ],
+    [
+      "PLATFORM_PUBLIC_BASE_URL",
+      "https://platform.placeholder.invalid#fragment",
+      "query_or_fragment_not_allowed",
+    ],
+    [
+      "AUTH_REDIRECT_URI",
+      [callbackBase, "?code=private-code"].join(""),
+      "query_or_fragment_not_allowed",
+    ],
+    [
+      "AUTH_REDIRECT_URI",
+      [callbackBase, "#fragment"].join(""),
+      "query_or_fragment_not_allowed",
+    ],
+    [
+      "AUTH_REDIRECT_URI",
+      "https://platform.placeholder.invalid/api/platform/auth/wrong-callback",
+      "must_end_with_platform_auth_callback",
+    ],
+  ];
+
+  for (const [name, value, reason] of shapeCases) {
+    const report = reportWithOverride({ [name]: value });
+
+    assert.equal(report.ok, false);
+    assertInvalid(report, name, reason);
+  }
+});
+
 test("readiness report treats KQAG base URL as conditional on server handoff", () => {
   const manual = createPlatformReadinessReport({
     ...completeEnv(),
@@ -86,6 +203,51 @@ test("readiness report treats KQAG base URL as conditional on server handoff", (
     handoff.missingConditional.map((entry) => entry.name),
     ["PLATFORM_KQAG_APP_BASE_URL"],
   );
+});
+
+test("server handoff requires an HTTPS KQAG base URL without query or fragment", () => {
+  const http = reportWithOverride({
+    PLATFORM_KQAG_LAUNCH_MODE: "server_handoff",
+    PLATFORM_KQAG_APP_BASE_URL: "http://kqag.placeholder.invalid",
+  });
+  const query = reportWithOverride({
+    PLATFORM_KQAG_LAUNCH_MODE: "server_handoff",
+    PLATFORM_KQAG_APP_BASE_URL: "https://kqag.placeholder.invalid?debug=1",
+  });
+  const fragment = reportWithOverride({
+    PLATFORM_KQAG_LAUNCH_MODE: "server_handoff",
+    PLATFORM_KQAG_APP_BASE_URL: "https://kqag.placeholder.invalid#fragment",
+  });
+
+  assert.equal(http.ok, false);
+  assertInvalid(http, "PLATFORM_KQAG_APP_BASE_URL", "must_be_https");
+  assert.equal(query.ok, false);
+  assertInvalid(query, "PLATFORM_KQAG_APP_BASE_URL", "query_or_fragment_not_allowed");
+  assert.equal(fragment.ok, false);
+  assertInvalid(fragment, "PLATFORM_KQAG_APP_BASE_URL", "query_or_fragment_not_allowed");
+});
+
+test("readiness output never prints private-looking env values", () => {
+  const lines = [];
+  const result = runPlatformReadinessCheck({
+    env: reportEnvWithOverride({
+      DATABASE_URL: privateOutputProbeValues[0],
+      SESSION_SECRET: privateOutputProbeValues[1],
+      AUTH_CLIENT_SECRET: privateOutputProbeValues[2],
+      AUTH_ALLOWED_EMAILS: privateOutputProbeValues[4],
+      AUTH_REDIRECT_URI: privateOutputProbeValues[5],
+    }),
+    writeLine(line) {
+      lines.push(line);
+    },
+    writeError(line) {
+      lines.push(line);
+    },
+  });
+  const output = lines.join("\n");
+
+  assert.equal(result.ok, false);
+  assertNoPrivateMaterial(output);
 });
 
 test("readiness check reports optional bootstrap env without failing runtime readiness", () => {
@@ -145,8 +307,26 @@ function completeEnv() {
   };
 }
 
+function reportEnvWithOverride(overrides) {
+  return {
+    ...completeEnv(),
+    ...overrides,
+  };
+}
+
+function reportWithOverride(overrides) {
+  return createPlatformReadinessReport(reportEnvWithOverride(overrides));
+}
+
+function assertInvalid(report, name, reason) {
+  const entry = report.invalid.find((item) => item.name === name);
+
+  assert.ok(entry, `${name} should be invalid`);
+  assert.equal(entry.reason, reason);
+}
+
 function assertNoPrivateMaterial(output) {
-  for (const value of privateValues) {
+  for (const value of [...privateValues, ...privateOutputProbeValues]) {
     assert.doesNotMatch(output, new RegExp(escapeRegExp(value)));
   }
 

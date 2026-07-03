@@ -25,6 +25,11 @@ test("hosted internal alpha runbook covers deployment operations", async () => {
     "TLS",
     "reverse proxy",
     "Secrets And Env Checklist",
+    "Hosted readiness requires `NODE_ENV=production`",
+    "HTTPS browser/provider-facing URLs",
+    "origin-only allowed origins",
+    "`AUTH_REDIRECT_URI` ends with `/api/platform/auth/callback`",
+    "cross-host session and cookie behavior remains an operator review",
     "first owner/admin bootstrap",
     "add-existing-user",
     "KQAG entitlement",
@@ -121,7 +126,9 @@ test("hosted internal alpha docs are linked from repo docs", async () => {
 
   assert.match(readme, /docs\/hosted-internal-alpha-runbook\.md/);
   assert.match(roadmap, /hosted internal-alpha deployment runbook/i);
+  assert.match(roadmap, /readiness check hardened for production mode, HTTPS browser\/provider URLs/i);
   assert.match(contract, /hosted deployment runbook and smoke checklist are now documented/i);
+  assert.match(contract, /hardened hosted-readiness guardrails/i);
   assert.match(contract, /Actual hosted deployment execution still requires reviewed infra\/operator approval/i);
 });
 

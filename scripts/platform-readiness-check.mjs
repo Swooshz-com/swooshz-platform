@@ -9,7 +9,7 @@ const BOOTSTRAP_ONLY = "Required for bootstrap only";
 const KQAG_HANDOFF_ONLY = "Required when server_handoff";
 
 export const HOSTED_READINESS_ENV_CHECKS = [
-  required("PLATFORM_PUBLIC_BASE_URL", "public_runtime", validateHttpUrl),
+  required("PLATFORM_PUBLIC_BASE_URL", "public_runtime", validateHostedBaseUrl),
   required("NODE_ENV", "runtime_mode", validateNodeEnv),
   required("PLATFORM_HTTP_HOST", "public_runtime"),
   required("PLATFORM_HTTP_PORT", "public_runtime", validatePort),
@@ -24,21 +24,21 @@ export const HOSTED_READINESS_ENV_CHECKS = [
   required("APP_LAUNCH_TOKEN_HASH_SECRET", "app_launch", validateMinimumLength(32), { secret: true }),
   required("PLATFORM_AUTH_PROVIDER_MODE", "oidc", validateAuthProviderMode),
   required("AUTH_PROVIDER_KEY", "oidc"),
-  required("AUTH_ISSUER_URL", "oidc", validateHttpUrl),
-  required("AUTH_AUTHORIZATION_URL", "oidc", validateHttpUrl),
-  required("AUTH_TOKEN_URL", "oidc", validateHttpUrl),
-  required("AUTH_JWKS_URL", "oidc", validateHttpUrl),
-  optional("AUTH_USERINFO_URL", "oidc", validateHttpUrl),
+  required("AUTH_ISSUER_URL", "oidc", validateHttpsUrl),
+  required("AUTH_AUTHORIZATION_URL", "oidc", validateHttpsUrl),
+  required("AUTH_TOKEN_URL", "oidc", validateHttpsUrl),
+  required("AUTH_JWKS_URL", "oidc", validateHttpsUrl),
+  optional("AUTH_USERINFO_URL", "oidc", validateHttpsUrl),
   required("AUTH_CLIENT_ID", "oidc"),
   required("AUTH_CLIENT_SECRET", "oidc", validatePresent, { secret: true }),
-  required("AUTH_REDIRECT_URI", "oidc", validateHttpUrl),
+  required("AUTH_REDIRECT_URI", "oidc", validateHostedAuthRedirectUri),
   required("AUTH_ALLOWED_EMAILS", "oidc"),
   optional("AUTH_ALLOWED_DOMAINS", "oidc"),
   required("PLATFORM_KQAG_LAUNCH_MODE", "kqag_handoff", validateKqagLaunchMode),
   conditional(
     "PLATFORM_KQAG_APP_BASE_URL",
     "kqag_handoff",
-    validateHttpUrl,
+    validateHostedBaseUrl,
     (env) => readEnv(env, "PLATFORM_KQAG_LAUNCH_MODE") === "server_handoff",
   ),
   bootstrapOnly("PLATFORM_SEED_CONFIRM", "bootstrap", validateSeedConfirm),
@@ -182,15 +182,40 @@ function validateMinimumLength(length) {
   return (value) => value.length >= length ? ok() : invalid("too_short");
 }
 
-function validateHttpUrl(value) {
+function parseHttpsUrl(value) {
   try {
     const parsed = new URL(value);
-    return parsed.protocol === "http:" || parsed.protocol === "https:"
-      ? ok()
-      : invalid("invalid_url");
+    return parsed.protocol === "https:" ? { ok: true, parsed } : invalid("must_be_https");
   } catch {
     return invalid("invalid_url");
   }
+}
+
+function validateHttpsUrl(value) {
+  const result = parseHttpsUrl(value);
+
+  return result.ok ? ok() : result;
+}
+
+function validateHostedBaseUrl(value) {
+  const result = parseHttpsUrl(value);
+  if (!result.ok) {
+    return result;
+  }
+
+  return hasQueryOrFragment(result.parsed) ? invalid("query_or_fragment_not_allowed") : ok();
+}
+
+function validateHostedAuthRedirectUri(value) {
+  const result = validateHostedBaseUrl(value);
+  if (!result.ok) {
+    return result;
+  }
+
+  const parsed = new URL(value);
+  return parsed.pathname.endsWith("/api/platform/auth/callback")
+    ? ok()
+    : invalid("must_end_with_platform_auth_callback");
 }
 
 function validateAllowedOrigins(value) {
@@ -201,9 +226,13 @@ function validateAllowedOrigins(value) {
   }
 
   for (const origin of origins) {
-    const result = validateHttpUrl(origin);
+    const result = parseHttpsUrl(origin);
     if (!result.ok) {
       return result;
+    }
+
+    if (!isOriginShape(origin) || result.parsed.username || result.parsed.password) {
+      return invalid("must_be_origin");
     }
   }
 
@@ -211,9 +240,7 @@ function validateAllowedOrigins(value) {
 }
 
 function validateNodeEnv(value) {
-  return ["production", "development", "test"].includes(value)
-    ? ok()
-    : invalid("unsupported_runtime_mode");
+  return value === "production" ? ok() : invalid("hosted_requires_production");
 }
 
 function validatePort(value) {
@@ -257,6 +284,14 @@ function validateSeedConfirm(value) {
 
 function validateSeedRole(value) {
   return ["owner", "admin", "member"].includes(value) ? ok() : invalid("unsupported_role");
+}
+
+function hasQueryOrFragment(parsed) {
+  return parsed.search !== "" || parsed.hash !== "";
+}
+
+function isOriginShape(value) {
+  return /^https:\/\/[^/?#]+$/i.test(value);
 }
 
 function ok() {
