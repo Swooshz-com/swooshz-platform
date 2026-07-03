@@ -196,6 +196,8 @@ export async function changeWorkspaceMemberRole(
     const previousRole = target.role;
     const previousStatus = target.status;
 
+    assertOwnerMutationAllowed(context, target, input.role);
+
     if (previousRole === "owner" && input.role !== "owner" && activeOwnerCount(memberships) <= 1) {
       throw adminError("last_owner_required", "Workspace must keep at least one active owner.");
     }
@@ -248,6 +250,8 @@ export async function disableWorkspaceMembership(
     const previousRole = target.role;
     const previousStatus = target.status;
 
+    assertOwnerMutationAllowed(context, target);
+
     if (previousRole === "owner" && previousStatus === "active" && activeOwnerCount(memberships) <= 1) {
       throw adminError("last_owner_required", "Workspace must keep at least one active owner.");
     }
@@ -298,6 +302,8 @@ export async function reactivateWorkspaceMembership(
     const target = findTargetMembership(memberships, input.membershipId);
     const previousRole = target.role;
     const previousStatus = target.status;
+
+    assertOwnerMutationAllowed(context, target);
 
     if (target.userId === context.actor.id) {
       throw adminError("self_change_not_allowed", "Administrators cannot reactivate themselves.");
@@ -611,6 +617,19 @@ function activeOwnerCount(memberships: readonly Membership[]): number {
   return memberships.filter(
     (membership) => membership.role === "owner" && membership.status === "active",
   ).length;
+}
+
+function assertOwnerMutationAllowed(
+  context: AdminContext,
+  target: Membership,
+  nextRole?: Role,
+): void {
+  if (
+    context.actorMembership.role !== "owner" &&
+    (target.role === "owner" || nextRole === "owner")
+  ) {
+    throw adminError("not_authorized", "Only workspace owners can manage owner memberships.");
+  }
 }
 
 function assertValidRole(role: Role): void {

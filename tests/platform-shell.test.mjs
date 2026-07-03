@@ -193,7 +193,9 @@ test("admin shell limits usable controls to owner/admin workspace context", () =
   assert.match(html, /Workspace slug/);
   assert.doesNotMatch(html, /Workspace ID/);
   assert.match(html, /Workspace admin is available to workspace owners and admins only\./);
-  assert.match(html, /select\.disabled = isSelf \|\| member\.status !== "active"/);
+  assert.match(html, /actorIsOwner = state\.workspace\?\.membershipRole === "owner"/);
+  assert.match(html, /option\.disabled = role === "owner" && !actorIsOwner/);
+  assert.match(html, /member\.role === "owner" && !actorIsOwner/);
   assert.match(html, /button\.textContent = member\.status === "disabled" \? "Reactivate" : "Disable"/);
   assert.match(html, /button\.disabled = !canAct \|\| !\["active", "disabled"\]\.includes\(member\.status\)/);
   assert.match(html, /isProtectedOwner = member\.role === "owner"/);
