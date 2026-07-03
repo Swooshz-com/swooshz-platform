@@ -684,16 +684,19 @@ export function renderAdminShellPage(): string {
             const select = document.createElement("select");
             const roles = ["owner", "admin", "member", "viewer"];
             const isSelf = member.user?.id === state.context?.user?.userId;
+            const actorIsOwner = state.workspace?.membershipRole === "owner";
 
             for (const role of roles) {
               const option = document.createElement("option");
               option.value = role;
               option.textContent = role;
               option.selected = member.role === role;
+              option.disabled = role === "owner" && !actorIsOwner;
               select.append(option);
             }
 
-            select.disabled = isSelf || member.status !== "active";
+            select.disabled =
+              isSelf || member.status !== "active" || (member.role === "owner" && !actorIsOwner);
             select.addEventListener("change", () => {
               void changeMemberRole(member.membershipId, select.value);
             });

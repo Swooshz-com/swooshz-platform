@@ -761,6 +761,61 @@ test("last-owner and self-change guards surface safely through admin routes", as
   assertResponseIsPrivacySafe(selfChange.response);
 });
 
+test("admin cannot change owner memberships through admin routes", async () => {
+  for (const [name, url, expectedMembershipId, expectedField, expectedValue] of [
+    [
+      "demote owner",
+      "/api/platform/workspaces/workspace_koncept_images/members/membership_owner_example/role?role=admin",
+      "membership_owner_example",
+      "role",
+      "owner",
+    ],
+    [
+      "promote member to owner",
+      "/api/platform/workspaces/workspace_koncept_images/members/membership_member_example/role?role=owner",
+      "membership_member_example",
+      "role",
+      "member",
+    ],
+    [
+      "disable owner",
+      "/api/platform/workspaces/workspace_koncept_images/members/membership_owner_example/disable",
+      "membership_owner_example",
+      "status",
+      "active",
+    ],
+    [
+      "reactivate owner",
+      "/api/platform/workspaces/workspace_koncept_images/members/membership_owner_example/reactivate",
+      "membership_owner_example",
+      "status",
+      "active",
+    ],
+  ]) {
+    const fixture = createAdminRouteFixture();
+    const result = await request({
+      method: "POST",
+      url,
+      headers: secureSessionHeaders("admin"),
+      dependencies: fixture.dependencies,
+    });
+
+    assert.equal(result.response.statusCode, 403, name);
+    assert.deepEqual(result.body, {
+      outcome: "denied",
+      reason: "not_authorized",
+    });
+    assert.equal(
+      fixture.records.memberships.find((membership) => membership.id === expectedMembershipId)?.[
+        expectedField
+      ],
+      expectedValue,
+    );
+    assert.equal(fixture.records.auditEvents.length, 0);
+    assertResponseIsPrivacySafe(result.response);
+  }
+});
+
 test("reactivation route fails safely for missing target and audit failure", async () => {
   const missingFixture = createAdminRouteFixture();
   const missing = await request({

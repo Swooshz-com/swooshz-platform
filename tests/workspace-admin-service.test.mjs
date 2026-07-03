@@ -541,6 +541,87 @@ test("owner and admin can change a workspace member role and emit privacy-safe a
   }
 });
 
+test("admin cannot manage owner memberships or grant owner role", async () => {
+  for (const [name, action, assertUnchanged] of [
+    [
+      "demote owner",
+      (repositories, input) =>
+        changeWorkspaceMemberRole(repositories, {
+          ...input,
+          membershipId: "membership_owner_example",
+          role: "admin",
+          auditEventId: "audit_admin_demote_owner",
+        }),
+      (records) => {
+        assert.equal(
+          records.memberships.find((membership) => membership.id === "membership_owner_example")
+            ?.role,
+          "owner",
+        );
+      },
+    ],
+    [
+      "promote member to owner",
+      (repositories, input) =>
+        changeWorkspaceMemberRole(repositories, {
+          ...input,
+          membershipId: "membership_member_example",
+          role: "owner",
+          auditEventId: "audit_admin_promote_owner",
+        }),
+      (records) => {
+        assert.equal(
+          records.memberships.find((membership) => membership.id === "membership_member_example")
+            ?.role,
+          "member",
+        );
+      },
+    ],
+    [
+      "disable owner",
+      (repositories, input) =>
+        disableWorkspaceMembership(repositories, {
+          ...input,
+          membershipId: "membership_owner_example",
+          auditEventId: "audit_admin_disable_owner",
+        }),
+      (records) => {
+        assert.equal(
+          records.memberships.find((membership) => membership.id === "membership_owner_example")
+            ?.status,
+          "active",
+        );
+      },
+    ],
+    [
+      "reactivate owner",
+      (repositories, input) =>
+        reactivateWorkspaceMembership(repositories, {
+          ...input,
+          membershipId: "membership_owner_example",
+          auditEventId: "audit_admin_reactivate_owner",
+        }),
+      (records) => {
+        assert.equal(
+          records.memberships.find((membership) => membership.id === "membership_owner_example")
+            ?.status,
+          "active",
+        );
+      },
+    ],
+  ]) {
+    const { repositories, input, records } = adminFixture({ role: "admin" });
+
+    await assert.rejects(
+      () => action(repositories, input),
+      assertAdminError("not_authorized"),
+      name,
+    );
+    assertUnchanged(records);
+    assert.equal(records.auditEvents.length, 0);
+  }
+});
+
 test("last owner cannot be removed or demoted into an ownerless workspace", async () => {
   const onlyOwnerMemberships = baseMemberships().filter(
     (membership) => !["membership_admin_example"].includes(membership.id),
