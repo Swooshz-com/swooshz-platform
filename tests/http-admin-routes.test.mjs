@@ -411,6 +411,7 @@ test("state-changing admin routes validate Origin and CSRF before mutation", asy
     outcome: "denied",
     reason: "missing_origin",
   });
+  assert.equal(Object.hasOwn(addWithoutOrigin.body, "message"), false);
   assert.equal(addWithoutOriginFixture.calls.csrfValidate, 0);
   assert.equal(
     addWithoutOriginFixture.records.memberships.some(
@@ -474,14 +475,18 @@ test("owner and admin can add an existing provider-backed user through admin rou
   }
 });
 
-test("add existing user route returns generic safe failures without mutation", async () => {
-  for (const [name, overrides, query, expectedStatus] of [
-    ["missing target", {}, "email=missing%40example.test&role=member", 404],
+test("add existing user route returns safe operator guidance without mutation", async () => {
+  const guidance =
+    "User could not be added. They must sign in once with an approved Google account before they can be added to this workspace.";
+
+  for (const [name, overrides, query, expectedStatus, expectedMessage] of [
+    ["missing target", {}, "email=xPass%40hotmail.sg&role=member", 404, guidance],
     [
       "target without provider identity",
       { extraUsers: [existingProviderBackedUser()] },
       "email=existing.user%40example.test&role=member",
       404,
+      guidance,
     ],
     [
       "disabled target",
@@ -491,6 +496,7 @@ test("add existing user route returns generic safe failures without mutation", a
       },
       "email=existing.user%40example.test&role=member",
       404,
+      guidance,
     ],
     [
       "existing membership",
@@ -511,6 +517,7 @@ test("add existing user route returns generic safe failures without mutation", a
       },
       "email=existing.user%40example.test&role=member",
       409,
+      "User is already a member of this workspace.",
     ],
     [
       "invalid role",
@@ -520,6 +527,7 @@ test("add existing user route returns generic safe failures without mutation", a
       },
       "email=existing.user%40example.test&role=owner",
       400,
+      "Selected role is not allowed.",
     ],
   ]) {
     const fixture = createAdminRouteFixture(overrides);
@@ -534,8 +542,9 @@ test("add existing user route returns generic safe failures without mutation", a
     assert.equal(response.statusCode, expectedStatus, name);
     assert.deepEqual(body, {
       outcome: "error",
-      message: "Workspace admin action could not be completed.",
+      message: expectedMessage,
     });
+    assertAdminMessagePrivacySafe(body.message);
     assert.equal(
       fixture.records.memberships.some((membership) => membership.id === "membership_http_1"),
       false,
@@ -564,6 +573,7 @@ test("audit append failure through add existing user route rolls back membership
     outcome: "error",
     message: "Workspace admin action could not be completed.",
   });
+  assertAdminMessagePrivacySafe(body.message);
   assert.equal(
     fixture.records.memberships.some((membership) => membership.id === "membership_http_1"),
     false,
@@ -949,4 +959,12 @@ function assertResponseIsPrivacySafe(response) {
   assert.doesNotMatch(serialized, /postgresql:\/\/private-host|select \*|database exploded/i);
   assert.doesNotMatch(serialized, /provider_identity|providerSubject|raw-provider-claim/i);
   assert.doesNotMatch(serialized, /quote export|pricing reference|logo_data_url/i);
+}
+
+function assertAdminMessagePrivacySafe(message) {
+  assert.equal(typeof message, "string");
+  assert.doesNotMatch(message, /user_[a-z0-9_]+|workspace_[a-z0-9_]+|membership_[a-z0-9_]+/i);
+  assert.doesNotMatch(message, /provider|subject|raw claim|claim|oauth|state|nonce/i);
+  assert.doesNotMatch(message, /token|cookie|postgres|DATABASE_URL|AUTH_ALLOWED|allowlist/i);
+  assert.doesNotMatch(message, /stack|trace|quote|pricing|generated artifact|KQAG payload/i);
 }

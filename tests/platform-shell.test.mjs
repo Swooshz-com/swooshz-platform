@@ -95,6 +95,9 @@ test("admin shell includes add-existing-user form with allowed non-owner roles",
   assert.match(html, /addExistingMember/);
   assert.match(html, /User added to workspace\./);
   assert.match(html, /setAddMemberResult/);
+  assert.match(html, /safeAdminActionMessage/);
+  assert.match(html, /payload\.message/);
+  assert.match(html, /Workspace admin action could not be completed\./);
 });
 
 test("admin shell documents owner transfer as unavailable in internal alpha", () => {
