@@ -120,10 +120,36 @@ test("admin shell includes Activity section for safe audit browsing", () => {
   assert.match(html, /Details/);
   assert.match(html, /Previous role/);
   assert.match(html, /New status/);
-  assert.match(html, /metadataValue/);
-  assert.match(html, /return "KQAG"/);
+  assert.match(html, /normalizeAppKeyMetadata/);
+  assert.match(html, /value: "KQAG"/);
   assert.match(html, /Platform user/);
   assert.match(html, /title = raw/);
+});
+
+test("admin shell Activity metadata uses an explicit friendly allowlist", () => {
+  const html = renderAdminShellPage();
+
+  assert.match(html, /allowedMetadataRows/);
+  assert.match(html, /case "previousRole":\s*return \{ label: "Previous role", value: String\(value\) \}/);
+  assert.match(html, /case "newRole":\s*return \{ label: "New role", value: String\(value\) \}/);
+  assert.match(
+    html,
+    /case "previousStatus":\s*return \{ label: "Previous status", value: String\(value\) \}/,
+  );
+  assert.match(html, /case "newStatus":\s*return \{ label: "New status", value: String\(value\) \}/);
+  assert.match(html, /case "appKey":\s*return normalizeAppKeyMetadata\(value\)/);
+  assert.match(html, /label: "App", value: "KQAG"/);
+  assert.doesNotMatch(html, /return key\.replace/);
+  assert.doesNotMatch(html, /metadataLabel\(key\)/);
+  assert.doesNotMatch(html, /metadataValue\(key, value\)/);
+  assert.match(html, /default:\s*return null;/);
+  assert.doesNotMatch(html, /case "targetUserId"/);
+  assert.doesNotMatch(html, /case "appId"/);
+  assert.doesNotMatch(html, /case "membershipId"/);
+  assert.doesNotMatch(html, /case "workspaceId"/);
+  assert.doesNotMatch(html, /case "entitlementId"/);
+  assert.doesNotMatch(html, /case "source"/);
+  assert.doesNotMatch(html, /endsWith\("Id"\)/);
 });
 
 test("platform shells explain logout scope and show signed-out Google account note", () => {

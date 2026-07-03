@@ -849,42 +849,52 @@ export function renderAdminShellPage(): string {
               return [];
             }
 
-            return Object.entries(metadata)
-              .filter(([, value]) =>
-                value === null ||
-                typeof value === "string" ||
-                typeof value === "number" ||
-                typeof value === "boolean"
-              )
-              .map(([key, value]) => ({
-                label: metadataLabel(key),
-                value: metadataValue(key, value)
-              }));
+            const rows = [];
+
+            for (const [key, value] of Object.entries(metadata)) {
+              const row = allowedMetadataRows(key, value);
+              if (row) {
+                rows.push(row);
+              }
+            }
+
+            return rows;
           }
 
-          function metadataLabel(key) {
+          function allowedMetadataRows(key, value) {
+            if (!isSafeMetadataValue(value)) {
+              return null;
+            }
+
             switch (key) {
               case "previousRole":
-                return "Previous role";
+                return { label: "Previous role", value: String(value) };
               case "newRole":
-                return "New role";
+                return { label: "New role", value: String(value) };
               case "previousStatus":
-                return "Previous status";
+                return { label: "Previous status", value: String(value) };
               case "newStatus":
-                return "New status";
+                return { label: "New status", value: String(value) };
               case "appKey":
-                return "App";
+                return normalizeAppKeyMetadata(value);
               default:
-                return key.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
+                return null;
             }
           }
 
-          function metadataValue(key, value) {
-            if (key === "appKey" && String(value).toLowerCase() === "kqag") {
-              return "KQAG";
+          function normalizeAppKeyMetadata(value) {
+            if (String(value).toLowerCase() !== "kqag") {
+              return null;
             }
 
-            return String(value ?? "Not available");
+            return { label: "App", value: "KQAG" };
+          }
+
+          function isSafeMetadataValue(value) {
+            return value === null ||
+              typeof value === "string" ||
+              typeof value === "number" ||
+              typeof value === "boolean";
           }
 
           function hideAdminSections() {
