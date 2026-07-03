@@ -110,6 +110,8 @@ No Next.js, Vite, React, provider SDK, provider-specific account model, public s
 
 The internal smoke checklist is documented in `docs/internal-platform-smoke-runbook.md`. It covers the existing database/OIDC/runtime/seed/browser-launch path, keeps migrations explicit, and documents the local same-host KQAG handoff shape without putting launch tokens in browser URLs or storage.
 
+The hosted internal-alpha runbook is documented in `docs/hosted-internal-alpha-runbook.md`. It covers hosted Platform/KQAG placeholders, the env checklist, manual migration/backup/rollback procedure, smoke checklist, and dry-run readiness check without deploying, provisioning, or exposing infrastructure.
+
 External provider setup notes are documented in `docs/auth-provider-selection.md`, `docs/google-oidc-setup-runbook.md`, and `docs/workos-authkit-fit-notes.md`. Google OIDC is the first operational provider setup target for internal UAT. WorkOS/AuthKit remains documented as a likely future B2B/hosted-auth candidate, not runtime-wired. Platform-owned email/password auth, fake login, and active multi-provider login remain deferred.
 
 The next likely platform PR should keep provider configuration operational review separate from broadening browser routes. Polished dashboard work, deployment routing, and KQAG app-data changes should still wait for separately approved phases.
@@ -137,4 +139,5 @@ The platform provides KQAG with platform-issued identity and workspace context t
 - `docs/google-oidc-setup-runbook.md`
 - `docs/workos-authkit-fit-notes.md`
 - `docs/internal-platform-smoke-runbook.md`
+- `docs/hosted-internal-alpha-runbook.md`
 - `docs/roadmap.md`

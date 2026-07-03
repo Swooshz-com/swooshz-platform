@@ -6,7 +6,7 @@ This audit defines what Swooshz Platform must own before Koncept Images internal
 
 KQAG / SAQG local UAT has a usable platform launch path: Google-compatible generic OIDC can create a platform session, an operator can seed an already-authenticated user into the internal workspace, `/app` can show the user's workspace/app access, and the KQAG browser launch handoff can send a one-time launch token server-to-server for same-host local UAT.
 
-Before Koncept Images internal alpha, Platform still needs a complete team and access-management product surface. The current code supports platform-owned users, provider identities, sessions, workspaces, memberships, app records, app entitlements, hashed auth state, hashed CSRF tokens, hashed one-time app launch tokens, a local browser shell, protected owner/admin-only HTTP route foundations for workspace member and KQAG app-access administration, a minimal functional `/app/admin` browser surface, and minimal owner/admin audit/activity browsing for internal alpha administration. Owner/admin users can add an existing active provider-backed Platform user to the workspace by normalized email after that user has signed in once. It does not yet support full invitation delivery/acceptance, polished product UI, audit export/filtering/retention management, security/session management, or hosted internal-alpha operations.
+Before Koncept Images internal alpha, Platform still needs a complete team and access-management product surface. The current code supports platform-owned users, provider identities, sessions, workspaces, memberships, app records, app entitlements, hashed auth state, hashed CSRF tokens, hashed one-time app launch tokens, a local browser shell, protected owner/admin-only HTTP route foundations for workspace member and KQAG app-access administration, a minimal functional `/app/admin` browser surface, minimal owner/admin audit/activity browsing for internal alpha administration, and hosted internal-alpha runbook/readiness documentation. Owner/admin users can add an existing active provider-backed Platform user to the workspace by normalized email after that user has signed in once. It does not yet support full invitation delivery/acceptance, polished product UI, audit export/filtering/retention management, security/session management, or actual hosted internal-alpha deployment execution.
 
 The next PRs should therefore finish the remaining team/user management and operations gaps before Google Stitch or visual dashboard work. Stitch should consume an approved page inventory from this document and should not invent business logic or product scope.
 
@@ -27,7 +27,8 @@ The next PRs should therefore finish the remaining team/user management and oper
 | Seed scripts | `scripts/platform-seed-internal-access.mjs`, `src/platform/internal-access-seed-service.ts` | The seed CLI can grant owner/admin/member KQAG access to an existing active provider-backed platform user after explicit confirmation. It refuses email-only user precreation and users without provider identity records. |
 | DB migrations | `drizzle/migrations/*`, `src/db/schema.ts`, `scripts/db-migrate.mjs`, `src/db/client.ts` | Drizzle migrations are committed. `npm run db:migrate` builds first, requires `DATABASE_URL`, and requires `DATABASE_MIGRATIONS_CONFIRM=apply-reviewed-migrations`. Migrations are not automatic. |
 | Local UAT scripts/runbooks | `docs/internal-platform-smoke-runbook.md`, `docs/google-oidc-setup-runbook.md`, `scripts/platform-start.mjs` | Local UAT is documented around explicit env, migration, start, login, seed, `/app`, and same-host KQAG handoff. It uses placeholders and forbids secrets/private data in docs. |
-| Docs/runbooks | `README.md`, `docs/accounts-contract.md`, `docs/app-access-contract.md`, `docs/kqag-integration-contract.md`, `docs/adr/*.md`, `docs/internal-platform-smoke-runbook.md`, `docs/google-oidc-setup-runbook.md` | Existing docs establish platform ownership and local UAT flow. This audit adds the internal-alpha product contract and page inventory. |
+| Hosted alpha runbooks/tooling | `docs/hosted-internal-alpha-runbook.md`, `scripts/platform-readiness-check.mjs` | Hosted deployment runbook and smoke checklist are now documented with placeholders only, an env checklist, manual migration/backup/rollback guidance, and a dry-run readiness checker. Actual hosted deployment execution still requires reviewed infra/operator approval. |
+| Docs/runbooks | `README.md`, `docs/accounts-contract.md`, `docs/app-access-contract.md`, `docs/kqag-integration-contract.md`, `docs/adr/*.md`, `docs/internal-platform-smoke-runbook.md`, `docs/hosted-internal-alpha-runbook.md`, `docs/google-oidc-setup-runbook.md` | Existing docs establish platform ownership, local UAT flow, hosted internal-alpha operations guidance, and the internal-alpha product contract/page inventory. |
 | Tests | `tests/*.test.mjs` | Tests cover domain contracts, repositories, DB schema, auth callback/OIDC, HTTP handlers, CSRF, runtime config, launch tokens, launch handoff, seed CLI, platform start CLI, and smoke runbook text. Default `npm test` remains DB-free. |
 
 ### Current Product Shape
@@ -41,7 +42,7 @@ The platform currently behaves like a minimal internal shell plus backend contra
 - Owner/admin users can reach `/app/admin` from the app shell, review safe workspace/member/KQAG entitlement/activity state, add an existing active provider-backed Platform user by email, change member roles, disable memberships, and enable or disable the KQAG workspace entitlement through protected admin routes.
 - KQAG launch works through an explicitly configured local same-host server handoff.
 
-It is not yet a complete internal admin product. The minimal admin UI is functional internal-alpha scaffolding, not a polished dashboard. Full invitation delivery/acceptance, disabled existing membership reactivation, audit export/filtering/retention management, security/session management, hosted deployment operations, and account settings remain missing.
+It is not yet a complete internal admin product. The minimal admin UI is functional internal-alpha scaffolding, not a polished dashboard. Full invitation delivery/acceptance, disabled existing membership reactivation, audit export/filtering/retention management, security/session management, actual hosted deployment execution, and account settings remain missing.
 
 ## Internal Alpha Requirements
 
@@ -168,26 +169,26 @@ Remaining internal-alpha blockers after this foundation:
 - Full email invitation delivery/acceptance, if selected beyond the existing-provider-backed internal-alpha fallback.
 - Disabled existing membership reactivation, if approved.
 - Audit export/filtering/retention workflows.
-- Hosted internal-alpha deployment runbook and smoke checklist.
 - Product decision on whether `operator` remains mapped to `member` or becomes a first-class role.
+- Actual hosted deployment execution still requires reviewed infra/operator approval.
 
 ## Production And Deployment Readiness Audit
 
 | Hosted internal-alpha blocker | Current state | Required before hosted alpha |
 | --- | --- | --- |
-| Hosted HTTPS Platform URL | Local/runtime config supports public base URL; no hosted deployment runbook exists. | Choose host, HTTPS termination, process manager/container plan, and `PLATFORM_PUBLIC_BASE_URL`. |
-| Hosted HTTPS KQAG URL | Local UAT handoff supports same-host local shape only. | Define hosted KQAG launch/session handoff and cookie strategy before cross-host rollout. |
-| Google OAuth hosted redirect URI | Google runbook documents placeholder callback URL. | Add exact hosted callback URI in Google OAuth configuration outside the repo. |
-| Persistent shared Postgres | Code expects existing Postgres through `DATABASE_URL`; no provider is selected here. | Select managed/owner-hosted Postgres, credentials handling, SSL mode, access controls, backups, and restore test. |
-| Migration procedure | `npm run db:migrate` is explicit and confirmation-gated. | Write hosted migration runbook with review, backup, apply, smoke, and rollback/fix-forward steps. |
-| Backup/restore | Deferred in ADRs. | Define backup cadence, restore test, retention, and who can access backups. |
-| Rollback | Deferred. | Define app rollback, migration rollback/fix-forward, and KQAG handoff rollback. |
-| Health checks | `GET /healthz` exists. | Add hosted health check target, uptime monitor, and expected response policy. |
-| Process manager/container plan | `npm run platform:start` exists; no deployment wrapper. | Choose process manager/container, restart policy, env injection, log collection, and graceful stop handling. |
-| Logs/monitoring | Category diagnostics and startup summary exist; no hosted observability plan. | Add metadata-only logs, request ids, auth failure categories, launch outcome counts, error rate, and alert thresholds. |
-| Environment variable checklist | Local smoke runbook lists placeholders. | Create hosted alpha env checklist with secret owner, rotation plan, and no committed values. |
-| Seeding first owner/admin | Seed CLI can seed an existing provider-backed user. | Hosted operator must login first, then run seed for the exact allowlisted placeholder email value outside repo. |
-| Smoke checklist | Local smoke runbook exists. | Add hosted smoke checklist covering login, seed, `/app`, CSRF logout, KQAG launch, launch token non-exposure, and logs. |
+| Hosted HTTPS Platform URL | Local/runtime config supports public base URL; hosted placeholder is documented in `docs/hosted-internal-alpha-runbook.md`. | Choose real host, HTTPS termination, process manager/container plan, and `PLATFORM_PUBLIC_BASE_URL` outside the repo. |
+| Hosted HTTPS KQAG URL | Local UAT handoff supports same-host local shape; hosted KQAG placeholder and handoff caveat are documented. | Define hosted KQAG launch/session handoff and cookie strategy before cross-host rollout. |
+| Google OAuth hosted redirect URI | Google runbook and hosted runbook document placeholder callback URI shape. | Add exact hosted callback URI in Google OAuth configuration outside the repo. |
+| Persistent shared Postgres | Code expects existing Postgres through `DATABASE_URL`; hosted runbook documents PostgreSQL, backup, restore, and secret-store expectations. | Select managed/owner-hosted Postgres, credentials handling, SSL mode, access controls, backups, and restore test. |
+| Migration procedure | `npm run db:migrate` is explicit and confirmation-gated; hosted runbook documents manual review, backup, apply, smoke, and rollback/fix-forward steps. | Apply only after reviewed infra/operator approval. Migrations remain explicit/manual only, never startup-automatic. |
+| Backup/restore | Hosted runbook documents backup/restore operator checks. | Choose provider-specific cadence, restore target, retention, and access approvals outside the repo. |
+| Rollback | Hosted runbook documents app rollback, database restore/fix-forward posture, and KQAG handoff rollback to manual mode. | Approve operator-specific rollback targets outside the repo. |
+| Health checks | `GET /healthz` exists and hosted runbook documents its limited meaning. | Add hosted monitor target, expected response policy, and alerting outside the repo. |
+| Process manager/container plan | `npm run platform:start` exists; hosted runbook documents process manager/container expectations without adding deployment code. | Choose process manager/container, restart policy, env injection, log collection, and graceful stop handling outside the repo. |
+| Logs/monitoring | Category diagnostics and startup summary exist; hosted runbook documents privacy-safe log review. | Add request ids, launch outcome counts, error rate, alert thresholds, and retention policy outside the repo. |
+| Environment variable checklist | Hosted env checklist is documented with secret vs non-secret classification and placeholders only. | Populate real hosted values through the secret/process manager outside the repo. |
+| Seeding first owner/admin | Seed CLI can seed an existing provider-backed user; hosted runbook documents first login then seed sequence. | Hosted operator must login first, then run seed for the exact allowlisted private value outside repo notes. |
+| Smoke checklist | Hosted smoke checklist is documented for login, `/app`, `/app/admin`, add-existing-user, role/membership/KQAG entitlement changes, audit/activity, token privacy, logout, and fail-closed access. | Run after actual hosted deployment execution with reviewed infra/operator approval. |
 
 ## Platform And KQAG Boundary
 
@@ -230,7 +231,7 @@ Remaining internal-alpha blockers after this foundation:
 | App Access | Manage workspace entitlement to SAQG and future apps. | App key/name/status, entitlement status, who granted it if available, launch eligibility summary. | Grant/revoke/suspend SAQG access, view denied reason, future app enablement. | Owner/admin. | Minimal KQAG entitlement list and enable/disable controls are implemented in `/app/admin`; future app support remains contract-specific. |
 | Audit / Activity | Review security and access changes. | Recent workspace admin audit events: membership changes, entitlement changes, actor/target ids, timestamps, and safe metadata. | Browse recent events now; filter/export later; no mutation except retention workflow later. | Owner/admin; maybe owner-only for export. | Minimal Activity browsing is implemented in `/app/admin`; export/filtering/retention remains future scope. |
 | Security / Sessions | Review active sessions and security posture. | Current session, recent auth failure categories, session expiry, allowed auth provider. | Logout current session now; revoke other sessions later. | Current user for own session; owner/admin for workspace-wide security later. | Partial logout exists; management page is future production enhancement. |
-| Deployment / Health | Internal operator page or runbook-only status. | Health check, app/runtime version, KQAG handoff mode, non-secret config presence checks. | Run smoke checklist manually; no secret display. | Operator/owner/admin, or runbook-only. | Future; hosted runbook is blocker before hosted alpha, UI is not. |
+| Deployment / Health | Internal operator page or runbook-only status. | Health check, app/runtime version, KQAG handoff mode, non-secret config presence checks. | Run smoke checklist manually; no secret display. | Operator/owner/admin, or runbook-only. | Runbook is documented; a UI remains future and actual hosted execution still requires reviewed infra/operator approval. |
 | Billing / Credits | Reserve commercial concepts. | Placeholder only; no balances or payment provider ids. | None until billing is approved. | Owner later. | Future only; not an internal-alpha blocker. |
 
 ## Google Stitch Recommendation
@@ -245,8 +246,8 @@ Stitch output should be treated as UI reference only. It is not the source of tr
 
 1. Full email invitation delivery/acceptance, if needed for alpha beyond the existing-provider-backed fallback.
 2. Audit export/filtering/retention.
-3. Hosted internal-alpha deployment runbook.
-4. Platform security/readiness guard checks.
+3. Platform security/readiness guard checks beyond the documented dry-run readiness checker.
+4. Reviewed hosted internal-alpha deployment execution, after infra/operator approval.
 5. Google Stitch UI exploration based on approved IA and current functional admin surfaces.
 6. Implement Platform UI polish.
 7. Billing/credits later.
@@ -260,5 +261,5 @@ Stitch output should be treated as UI reference only. It is not the source of tr
 - Removed users fail closed for SAQG launch.
 - App launch remains token-hash, one-time, header-only, no-store, and server-side for browser handoff.
 - Audit events exist for team and app-access changes.
-- Hosted Platform, hosted KQAG, Google redirect URI, Postgres, migrations, backups, rollback, logs, health checks, env, seed, and smoke runbooks are approved.
+- Hosted Platform, hosted KQAG, Google redirect URI, Postgres, migrations, backups, rollback, logs, health checks, env, seed, and smoke runbooks are documented with placeholders and approved before execution.
 - Google Stitch starts only after this contract and IA are approved.
