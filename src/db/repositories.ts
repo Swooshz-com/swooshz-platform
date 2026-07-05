@@ -298,11 +298,16 @@ export function createDrizzlePlatformRepositories(
           .returning();
         return mapOneRequired(rows[0], mapWorkspaceMembershipApprovalRow);
       },
-      async updateStatus(id, status, timestamps) {
+      async updatePendingStatus(id, status, timestamps) {
         const rows = await db
           .update(workspaceMembershipApprovals)
           .set(workspaceMembershipApprovalStatusToValues(status, timestamps))
-          .where(eq(workspaceMembershipApprovals.id, id))
+          .where(
+            and(
+              eq(workspaceMembershipApprovals.id, id),
+              eq(workspaceMembershipApprovals.status, "pending"),
+            ),
+          )
           .returning();
         return mapOne(rows[0], mapWorkspaceMembershipApprovalRow);
       },

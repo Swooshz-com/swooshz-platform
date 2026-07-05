@@ -394,6 +394,41 @@ test("pending approval activation rolls back identity and membership state when 
   assert.deepEqual(deps.records.auditEvents, []);
 });
 
+test("pending approval activation fails closed when approval is concurrently revoked", async () => {
+  const deps = createResolverDependencies({
+    membershipApprovals: [pendingApproval()],
+    transitionApprovalStatusBeforeUpdate: "revoked",
+  });
+  const resolver = createPlatformIdentitySessionResolver(deps);
+
+  await assert.rejects(
+    () =>
+      resolver.resolveAuthenticatedIdentity({
+        identity: {
+          ...verifiedIdentity,
+          providerSubject: "pending-provider-subject-race",
+          verifiedEmail: "pending.user@example.test",
+        },
+        stateReference: createStateReference(),
+        now,
+        authPolicy: {
+          providerEmailAllowed: false,
+        },
+      }),
+    (error) => {
+      assert.equal(error instanceof AuthCallbackError, true);
+      assert.equal(error.code, "membership_approval_acceptance_failed");
+      return true;
+    },
+  );
+  assert.deepEqual(deps.records.users, []);
+  assert.deepEqual(deps.records.providerIdentities, []);
+  assert.deepEqual(deps.records.memberships, []);
+  assert.deepEqual(deps.records.sessions, []);
+  assert.deepEqual(deps.records.membershipApprovals, [pendingApproval()]);
+  assert.deepEqual(deps.records.auditEvents, []);
+});
+
 test("session creation uses deterministic id and expiry inputs", async () => {
   const deps = createResolverDependencies({
     users: [activeUser],
@@ -768,11 +803,19 @@ function createResolverDependencies(options = {}) {
         records.membershipApprovals.push(approval);
         return approval;
       },
-      async updateStatus(id, status, timestamps = {}) {
+      async updatePendingStatus(id, status, timestamps = {}) {
         const approval = records.membershipApprovals.find(
           (candidate) => candidate.id === id,
         );
         if (!approval) {
+          return null;
+        }
+
+        if (options.transitionApprovalStatusBeforeUpdate) {
+          approval.status = options.transitionApprovalStatusBeforeUpdate;
+        }
+
+        if (approval.status !== "pending") {
           return null;
         }
 

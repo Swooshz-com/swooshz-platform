@@ -139,7 +139,7 @@ export interface WorkspaceMembershipApprovalRepository {
   create(
     approval: WorkspaceMembershipApprovalRecord,
   ): Promise<WorkspaceMembershipApprovalRecord>;
-  updateStatus(
+  updatePendingStatus(
     id: string,
     status: WorkspaceMembershipApprovalStatus,
     timestamps: WorkspaceMembershipApprovalStatusTimestamps,

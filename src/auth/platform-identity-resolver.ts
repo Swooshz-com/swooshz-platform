@@ -362,7 +362,7 @@ async function acceptPendingApproval(
   };
 
   await memberships.create(membership);
-  const updated = await approvals.updateStatus(approval.id, "accepted", {
+  const updated = await approvals.updatePendingStatus(approval.id, "accepted", {
     updatedAt: input.now,
     acceptedAt: input.now,
     acceptedUserId: user.id,

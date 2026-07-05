@@ -1008,7 +1008,7 @@ function workspaceMemberAddErrorResponse(error: unknown): HttpResponseLike {
 function workspaceMemberAddErrorMessage(error: WorkspaceAdminServiceError): string {
   switch (error.code) {
     case "not_found":
-      return "User could not be added. They must sign in once with an approved Google account before they can be added to this workspace.";
+      return "Access request could not be recorded. Check the email and role, then try again.";
     case "approval_conflict":
       return "Pending approval already exists for this email.";
     case "membership_conflict":

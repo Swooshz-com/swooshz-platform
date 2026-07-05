@@ -327,6 +327,18 @@ test("Drizzle repository adapters return null for missing find results", async (
     ),
     null,
   );
+  assert.equal(
+    await repositories.membershipApprovals.updatePendingStatus(
+      "missing_approval",
+      "revoked",
+      {
+        updatedAt: updatedAt.toISOString(),
+        revokedAt: revokedAt.toISOString(),
+        revokedByUserId: userRow.id,
+      },
+    ),
+    null,
+  );
   assert.equal(await repositories.invitations.findById("missing_invitation"), null);
   assert.equal(await repositories.apps.findByKey("missing_app"), null);
   assert.equal(await repositories.apps.findById("missing_app"), null);
@@ -468,7 +480,7 @@ test("Drizzle repository create, update, and append methods return mapped record
     mapInvitationRow({ ...invitationRow, status: "accepted" }),
   );
   assert.deepEqual(
-    await repositories.membershipApprovals.updateStatus(
+    await repositories.membershipApprovals.updatePendingStatus(
       workspaceMembershipApprovalRow.id,
       "revoked",
       {
@@ -575,6 +587,19 @@ test("Drizzle repository create, update, and append methods return mapped record
     revokedAt,
     revokedByUserId: userRow.id,
   });
+  const approvalUpdateWhere = fakeDb.calls.find(
+    (call) =>
+      call.operation === "update.where" &&
+      call.table === schema.workspaceMembershipApprovals,
+  );
+  assert.ok(approvalUpdateWhere);
+  const approvalUpdateCondition = collectSqlConditionFacts(
+    approvalUpdateWhere.condition,
+  );
+  assert.ok(approvalUpdateCondition.columns.includes("id"));
+  assert.ok(approvalUpdateCondition.columns.includes("status"));
+  assert.ok(approvalUpdateCondition.params.includes(workspaceMembershipApprovalRow.id));
+  assert.ok(approvalUpdateCondition.params.includes("pending"));
   const entitlementUpdate = fakeDb.calls.find(
     (call) => call.operation === "update.set" && call.table === schema.appEntitlements,
   );
@@ -726,6 +751,35 @@ function assertTablesWereSelected(fakeDb, expectedTables) {
       .map((call) => call.table),
     expectedTables,
   );
+}
+
+function collectSqlConditionFacts(condition) {
+  const facts = {
+    columns: [],
+    params: [],
+  };
+
+  visitSqlConditionValue(condition, facts);
+
+  return facts;
+}
+
+function visitSqlConditionValue(value, facts) {
+  if (!value || typeof value !== "object") {
+    return;
+  }
+
+  if (typeof value.name === "string" && typeof value.columnType === "string") {
+    facts.columns.push(value.name);
+  }
+  if (value.constructor?.name === "Param") {
+    facts.params.push(value.value);
+  }
+  if (Array.isArray(value.queryChunks)) {
+    for (const chunk of value.queryChunks) {
+      visitSqlConditionValue(chunk, facts);
+    }
+  }
 }
 
 class FakeSelectResult {

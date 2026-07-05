@@ -431,6 +431,68 @@ test("owner and admin can revoke pending approvals without creating memberships"
   }
 });
 
+test("accepted approval cannot be revoked", async () => {
+  const { repositories, input, records } = adminFixture({
+    membershipApprovals: [
+      pendingApproval({
+        status: "accepted",
+        acceptedAt: now,
+        acceptedUserId: "user_pending_example",
+      }),
+    ],
+  });
+
+  await assert.rejects(
+    () =>
+      revokeWorkspaceMembershipApproval(repositories, {
+        ...input,
+        approvalId: "approval_pending_example",
+        auditEventId: "audit_revoke_accepted",
+      }),
+    assertAdminError("not_found"),
+  );
+
+  assert.deepEqual(records.membershipApprovals, [
+    pendingApproval({
+      status: "accepted",
+      acceptedAt: now,
+      acceptedUserId: "user_pending_example",
+    }),
+  ]);
+  assert.equal(records.auditEvents.length, 0);
+});
+
+test("approval revoke fails closed when pending approval becomes accepted before status write", async () => {
+  const { repositories, input, records } = adminFixture({
+    membershipApprovals: [pendingApproval()],
+  });
+  const updatePendingStatus =
+    repositories.membershipApprovals.updatePendingStatus.bind(
+      repositories.membershipApprovals,
+    );
+  repositories.membershipApprovals.updatePendingStatus = async (...args) => {
+    Object.assign(records.membershipApprovals[0], {
+      status: "accepted",
+      acceptedAt: now,
+      acceptedUserId: "user_pending_example",
+    });
+    return updatePendingStatus(...args);
+  };
+
+  await assert.rejects(
+    () =>
+      revokeWorkspaceMembershipApproval(repositories, {
+        ...input,
+        approvalId: "approval_pending_example",
+        auditEventId: "audit_revoke_stale_pending",
+      }),
+    assertAdminError("not_found"),
+  );
+
+  assert.deepEqual(records.membershipApprovals, [pendingApproval()]);
+  assert.equal(records.auditEvents.length, 0);
+});
+
 test("pending approvals do not grant app launch before provider-backed activation", async () => {
   const { repositories } = adminFixture({
     membershipApprovals: [pendingApproval()],
@@ -448,7 +510,10 @@ test("pending approvals do not grant app launch before provider-backed activatio
 
 test("member and viewer cannot manage workspace members or app access", async () => {
   for (const role of ["member", "viewer"]) {
-    const { repositories, input } = adminFixture({ role });
+    const { repositories, input, records } = adminFixture({
+      role,
+      membershipApprovals: [pendingApproval()],
+    });
 
     await assert.rejects(
       () => listWorkspaceMembersForAdmin(repositories, input),
@@ -498,6 +563,21 @@ test("member and viewer cannot manage workspace members or app access", async ()
       () => listWorkspaceAuditEventsForAdmin(repositories, input),
       assertAdminError("not_authorized"),
     );
+    await assert.rejects(
+      () => listWorkspaceMembershipApprovalsForAdmin(repositories, input),
+      assertAdminError("not_authorized"),
+    );
+    await assert.rejects(
+      () =>
+        revokeWorkspaceMembershipApproval(repositories, {
+          ...input,
+          approvalId: "approval_pending_example",
+          auditEventId: "audit_revoke_denied",
+        }),
+      assertAdminError("not_authorized"),
+    );
+    assert.deepEqual(records.membershipApprovals, [pendingApproval()]);
+    assert.equal(records.auditEvents.length, 0);
   }
 });
 
@@ -1319,6 +1399,50 @@ test("membership add rolls back when audit append fails", async () => {
     records.memberships.some((membership) => membership.id === "membership_add_append_failure"),
     false,
   );
+  assert.equal(records.auditEvents.length, 0);
+});
+
+test("pending approval creation rolls back when audit append fails", async () => {
+  const { repositories, input, records } = adminFixture({ failAuditAppend: true });
+
+  await assert.rejects(
+    () =>
+      addWorkspaceMemberByEmail(repositories, {
+        ...input,
+        targetEmail: "new.teammate@example.test",
+        role: "member",
+        membershipId: "membership_unused_approval_append_failure",
+        approvalId: "approval_append_failure",
+        auditEventId: "audit_approval_append_failure",
+      }),
+    assertAdminError("repository_failure"),
+  );
+
+  assert.deepEqual(records.membershipApprovals, []);
+  assert.equal(
+    records.memberships.some((membership) => membership.id === "membership_unused_approval_append_failure"),
+    false,
+  );
+  assert.equal(records.auditEvents.length, 0);
+});
+
+test("pending approval revocation rolls back when audit append fails", async () => {
+  const { repositories, input, records } = adminFixture({
+    membershipApprovals: [pendingApproval()],
+    failAuditAppend: true,
+  });
+
+  await assert.rejects(
+    () =>
+      revokeWorkspaceMembershipApproval(repositories, {
+        ...input,
+        approvalId: "approval_pending_example",
+        auditEventId: "audit_revoke_append_failure",
+      }),
+    assertAdminError("repository_failure"),
+  );
+
+  assert.deepEqual(records.membershipApprovals, [pendingApproval()]);
   assert.equal(records.auditEvents.length, 0);
 });
 

@@ -162,9 +162,9 @@ export function createInMemoryPlatformRepositories(records = {}) {
         membershipApprovals.push(approval);
         return approval;
       },
-      async updateStatus(id, status, timestamps = {}) {
+      async updatePendingStatus(id, status, timestamps = {}) {
         const approval = membershipApprovals.find((candidate) => candidate.id === id);
-        if (!approval) {
+        if (!approval || approval.status !== "pending") {
           return null;
         }
 

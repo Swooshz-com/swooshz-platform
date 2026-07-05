@@ -587,7 +587,7 @@ export async function revokeWorkspaceMembershipApproval(
     }
 
     const previousStatus = approval.status;
-    const updated = await approvals.updateStatus(approval.id, "revoked", {
+    const updated = await approvals.updatePendingStatus(approval.id, "revoked", {
       updatedAt: input.now,
       revokedAt: input.now,
       revokedByUserId: context.actor.id,
