@@ -22,6 +22,8 @@ test("route manifest includes only approved initial platform routes", () => {
       "platform_session_csrf",
       "platform_workspace_members",
       "platform_workspace_member_add",
+      "platform_workspace_member_approvals",
+      "platform_workspace_member_approval_revoke",
       "platform_workspace_member_role",
       "platform_workspace_member_disable",
       "platform_workspace_member_reactivate",
@@ -48,6 +50,8 @@ test("route manifest includes only approved initial platform routes", () => {
       "GET /api/platform/session/csrf",
       "GET /api/platform/workspaces/:workspaceId/members",
       "POST /api/platform/workspaces/:workspaceId/members/add",
+      "GET /api/platform/workspaces/:workspaceId/member-approvals",
+      "POST /api/platform/workspaces/:workspaceId/member-approvals/:approvalId/revoke",
       "POST /api/platform/workspaces/:workspaceId/members/:membershipId/role",
       "POST /api/platform/workspaces/:workspaceId/members/:membershipId/disable",
       "POST /api/platform/workspaces/:workspaceId/members/:membershipId/reactivate",
@@ -79,6 +83,7 @@ test("state-changing browser-cookie routes require CSRF protection", () => {
     stateChangingRoutes.map((route) => route.id),
     [
       "platform_workspace_member_add",
+      "platform_workspace_member_approval_revoke",
       "platform_workspace_member_role",
       "platform_workspace_member_disable",
       "platform_workspace_member_reactivate",
@@ -219,6 +224,8 @@ test("CSRF issuance route is GET-only, session-protected, and does not require C
 test("workspace admin member routes are session-protected and contract-driven", () => {
   const list = getHttpRouteContract("platform_workspace_members");
   const add = getHttpRouteContract("platform_workspace_member_add");
+  const approvalList = getHttpRouteContract("platform_workspace_member_approvals");
+  const approvalRevoke = getHttpRouteContract("platform_workspace_member_approval_revoke");
   const role = getHttpRouteContract("platform_workspace_member_role");
   const disable = getHttpRouteContract("platform_workspace_member_disable");
   const reactivate = getHttpRouteContract("platform_workspace_member_reactivate");
@@ -240,6 +247,39 @@ test("workspace admin member routes are session-protected and contract-driven", 
   assert.deepEqual(add.requiredQuery, ["email", "role"]);
   assert.equal(add.handlerContract, "handleWorkspaceMemberAddRequest");
   assert.equal(add.idempotent, false);
+
+  assert.equal(approvalList.method, "GET");
+  assert.equal(
+    approvalList.path,
+    "/api/platform/workspaces/:workspaceId/member-approvals",
+  );
+  assert.equal(approvalList.browserSession, "required");
+  assert.deepEqual(approvalList.csrf, {
+    required: false,
+    strategy: "none",
+  });
+  assert.deepEqual(approvalList.requiredQuery, []);
+  assert.equal(
+    approvalList.handlerContract,
+    "handleWorkspaceMembershipApprovalsAdminRequest",
+  );
+
+  assert.equal(approvalRevoke.method, "POST");
+  assert.equal(
+    approvalRevoke.path,
+    "/api/platform/workspaces/:workspaceId/member-approvals/:approvalId/revoke",
+  );
+  assert.equal(approvalRevoke.browserSession, "required");
+  assert.deepEqual(approvalRevoke.csrf, {
+    required: true,
+    strategy: "origin_referer_and_csrf_token",
+  });
+  assert.deepEqual(approvalRevoke.requiredQuery, []);
+  assert.equal(
+    approvalRevoke.handlerContract,
+    "handleWorkspaceMembershipApprovalRevokeRequest",
+  );
+  assert.equal(approvalRevoke.idempotent, false);
 
   assert.equal(role.method, "POST");
   assert.equal(role.path, "/api/platform/workspaces/:workspaceId/members/:membershipId/role");

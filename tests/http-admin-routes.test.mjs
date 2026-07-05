@@ -547,18 +547,89 @@ test("owner and admin can add an existing provider-backed user through admin rou
   }
 });
 
+test("owner and admin can create list and revoke pending approvals through admin routes", async () => {
+  for (const role of ["owner", "admin"]) {
+    const fixture = createAdminRouteFixture();
+
+    const created = await request({
+      method: "POST",
+      url: "/api/platform/workspaces/workspace_koncept_images/members/add?email=%20New.Teammate%40Example.Test%20&role=viewer",
+      headers: secureSessionHeaders(role),
+      dependencies: fixture.dependencies,
+    });
+    const listed = await request({
+      method: "GET",
+      url: "/api/platform/workspaces/workspace_koncept_images/member-approvals",
+      headers: sessionHeaders(role),
+      dependencies: fixture.dependencies,
+    });
+    const revoked = await request({
+      method: "POST",
+      url: "/api/platform/workspaces/workspace_koncept_images/member-approvals/approval_http_1/revoke",
+      headers: secureSessionHeaders(role),
+      dependencies: fixture.dependencies,
+    });
+
+    assert.equal(created.response.statusCode, 201);
+    assertNoStoreHeaders(created.response.headers);
+    assert.deepEqual(created.body, {
+      outcome: "pending_approval_created",
+      approval: {
+        approvalId: "approval_http_1",
+        workspaceId: "workspace_koncept_images",
+        email: "new.teammate@example.test",
+        role: "viewer",
+        status: "pending",
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+    assert.equal(
+      fixture.records.memberships.some((membership) =>
+        membership.id.startsWith("membership_http_"),
+      ),
+      false,
+    );
+    assert.deepEqual(listed.body, {
+      outcome: "listed",
+      workspaceId: "workspace_koncept_images",
+      approvals: [created.body.approval],
+    });
+    assert.equal(revoked.response.statusCode, 200);
+    assert.deepEqual(revoked.body, {
+      outcome: "revoked",
+      approval: {
+        ...created.body.approval,
+        status: "revoked",
+        updatedAt: now,
+        revokedAt: now,
+      },
+    });
+    assert.deepEqual(
+      fixture.records.auditEvents.map((event) => event.eventType),
+      [
+        "workspace.membership_approval.created",
+        "workspace.membership_approval.revoked",
+      ],
+    );
+    assert.equal(fixture.calls.csrfValidate, 2);
+    assertResponseIsPrivacySafe(created.response);
+    assertResponseIsPrivacySafe(listed.response);
+    assertResponseIsPrivacySafe(revoked.response);
+  }
+});
+
 test("add existing user route returns safe operator guidance without mutation", async () => {
   const guidance =
     "User could not be added. They must sign in once with an approved Google account before they can be added to this workspace.";
 
   for (const [name, overrides, query, expectedStatus, expectedMessage] of [
-    ["missing target", {}, "email=xPass%40hotmail.sg&role=member", 404, guidance],
     [
       "target without provider identity",
       { extraUsers: [existingProviderBackedUser()] },
       "email=existing.user%40example.test&role=member",
-      404,
-      guidance,
+      201,
+      "Pending approval created. The teammate can sign in with that Google account to activate access.",
     ],
     [
       "disabled target",
@@ -601,6 +672,20 @@ test("add existing user route returns safe operator guidance without mutation", 
       400,
       "Selected role is not allowed.",
     ],
+    [
+      "duplicate pending approval",
+      {
+        membershipApprovals: [
+          pendingApproval({
+            id: "approval_existing_pending",
+            email: "existing.user@example.test",
+          }),
+        ],
+      },
+      "email=existing.user%40example.test&role=member",
+      409,
+      "Pending approval already exists for this email.",
+    ],
   ]) {
     const fixture = createAdminRouteFixture(overrides);
 
@@ -612,16 +697,32 @@ test("add existing user route returns safe operator guidance without mutation", 
     });
 
     assert.equal(response.statusCode, expectedStatus, name);
-    assert.deepEqual(body, {
-      outcome: "error",
-      message: expectedMessage,
-    });
-    assertAdminMessagePrivacySafe(body.message);
-    assert.equal(
-      fixture.records.memberships.some((membership) => membership.id === "membership_http_1"),
-      false,
-    );
-    assert.equal(fixture.records.auditEvents.length, 0);
+    if (expectedStatus === 201) {
+      assert.deepEqual(body, {
+        outcome: "pending_approval_created",
+        approval: {
+          approvalId: "approval_http_1",
+          workspaceId: "workspace_koncept_images",
+          email: "existing.user@example.test",
+          role: "member",
+          status: "pending",
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      assert.equal(fixture.records.auditEvents.length, 1);
+    } else {
+      assert.deepEqual(body, {
+        outcome: "error",
+        message: expectedMessage,
+      });
+      assertAdminMessagePrivacySafe(body.message);
+      assert.equal(
+        fixture.records.memberships.some((membership) => membership.id === "membership_http_1"),
+        false,
+      );
+      assert.equal(fixture.records.auditEvents.length, 0);
+    }
     assertResponseIsPrivacySafe(response);
   }
 });
@@ -1020,6 +1121,7 @@ function createAdminRouteFixture(overrides = {}) {
       },
     ],
     memberships: [...memberships, ...(overrides.extraMemberships ?? [])],
+    membershipApprovals: overrides.membershipApprovals ?? [],
     apps: [app],
     appEntitlements:
       overrides.appEntitlements ??
@@ -1090,6 +1192,9 @@ function createAdminRouteFixture(overrides = {}) {
             ).length + 1
           }`;
         },
+        createApprovalId() {
+          return `approval_http_${records.membershipApprovals.length + 1}`;
+        },
       },
     },
   };
@@ -1134,6 +1239,24 @@ function auditEvent(overrides = {}) {
       previousStatus: "active",
       targetUserId: "user_member_example",
     },
+    ...overrides,
+  };
+}
+
+function pendingApproval(overrides = {}) {
+  return {
+    id: "approval_pending_example",
+    workspaceId: "workspace_koncept_images",
+    email: "pending.user@example.test",
+    role: "member",
+    status: "pending",
+    requestedByUserId: "user_owner_example",
+    createdAt: earlier,
+    updatedAt: earlier,
+    acceptedAt: null,
+    revokedAt: null,
+    acceptedUserId: null,
+    revokedByUserId: null,
     ...overrides,
   };
 }

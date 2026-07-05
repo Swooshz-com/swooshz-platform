@@ -32,6 +32,31 @@ export interface InvitationStatusTimestamps {
   revokedAt?: IsoTimestamp | null;
 }
 
+export type WorkspaceMembershipApprovalStatus = "pending" | "accepted" | "revoked";
+
+export interface WorkspaceMembershipApprovalRecord {
+  id: string;
+  workspaceId: string;
+  email: string;
+  role: Role;
+  status: WorkspaceMembershipApprovalStatus;
+  requestedByUserId: string;
+  createdAt: IsoTimestamp;
+  updatedAt: IsoTimestamp;
+  acceptedAt: IsoTimestamp | null;
+  revokedAt: IsoTimestamp | null;
+  acceptedUserId: string | null;
+  revokedByUserId: string | null;
+}
+
+export interface WorkspaceMembershipApprovalStatusTimestamps {
+  updatedAt: IsoTimestamp;
+  acceptedAt?: IsoTimestamp | null;
+  revokedAt?: IsoTimestamp | null;
+  acceptedUserId?: string | null;
+  revokedByUserId?: string | null;
+}
+
 export interface AppLaunchTokenRecord {
   id: string;
   sessionId: string;
@@ -99,6 +124,28 @@ export interface InvitationRepository {
   ): Promise<InvitationRecord | null>;
 }
 
+export interface WorkspaceMembershipApprovalRepository {
+  findById(id: string): Promise<WorkspaceMembershipApprovalRecord | null>;
+  findPendingForWorkspaceEmail(
+    workspaceId: string,
+    email: string,
+  ): Promise<WorkspaceMembershipApprovalRecord | null>;
+  listPendingForEmail(
+    email: string,
+  ): Promise<readonly WorkspaceMembershipApprovalRecord[]>;
+  listPendingForWorkspace(
+    workspaceId: string,
+  ): Promise<readonly WorkspaceMembershipApprovalRecord[]>;
+  create(
+    approval: WorkspaceMembershipApprovalRecord,
+  ): Promise<WorkspaceMembershipApprovalRecord>;
+  updateStatus(
+    id: string,
+    status: WorkspaceMembershipApprovalStatus,
+    timestamps: WorkspaceMembershipApprovalStatusTimestamps,
+  ): Promise<WorkspaceMembershipApprovalRecord | null>;
+}
+
 export interface AppRepository {
   findByKey(key: string): Promise<App | null>;
   findById(id: string): Promise<App | null>;
@@ -143,6 +190,7 @@ export interface PlatformRepositories {
   workspaces: WorkspaceRepository;
   memberships: MembershipRepository;
   invitations?: InvitationRepository;
+  membershipApprovals?: WorkspaceMembershipApprovalRepository;
   apps: AppRepository;
   appEntitlements: AppEntitlementRepository;
   auditEvents?: AuditEventRepository;

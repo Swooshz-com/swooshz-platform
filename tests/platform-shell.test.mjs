@@ -70,6 +70,8 @@ test("admin shell references protected admin APIs and CSRF-protected actions", (
   assert.match(html, /\/api\/platform\/workspaces\//);
   assert.match(html, /\/members/);
   assert.match(html, /\/add\?email=/);
+  assert.match(html, /\/member-approvals/);
+  assert.match(html, /\/revoke/);
   assert.match(html, /\/role\?role=/);
   assert.match(html, /\/disable/);
   assert.match(html, /\/reactivate/);
@@ -94,11 +96,26 @@ test("admin shell includes add-existing-user form with allowed non-owner roles",
   );
   assert.doesNotMatch(html, /value="owner"/);
   assert.match(html, /addExistingMember/);
-  assert.match(html, /User added to workspace\./);
+  assert.match(html, /Pending approval created\./);
+  assert.match(html, /Existing user added to workspace\./);
   assert.match(html, /setAddMemberResult/);
   assert.match(html, /safeAdminActionMessage/);
   assert.match(html, /payload\.message/);
   assert.match(html, /Workspace admin action could not be completed\./);
+});
+
+test("admin shell renders pending approvals with revoke controls", () => {
+  const html = renderAdminShellPage();
+
+  assert.match(html, /id="pendingApprovals"/);
+  assert.match(html, /sectionHeading\("Pending Approvals"\)/);
+  assert.match(html, /renderPendingApprovals/);
+  assert.match(html, /adminApprovalsUrl/);
+  assert.match(html, /approvalActionsCell/);
+  assert.match(html, /revokeApproval/);
+  assert.match(html, /"Approval revoked\."/);
+  assert.match(html, /Pending approvals/);
+  assert.doesNotMatch(html, /owner approval/i);
 });
 
 test("admin shell documents owner transfer as unavailable in internal alpha", () => {
@@ -122,6 +139,8 @@ test("admin shell includes Activity section for safe audit browsing", () => {
   assert.match(html, /KQAG access enabled/);
   assert.match(html, /KQAG access disabled/);
   assert.match(html, /Member role changed/);
+  assert.match(html, /Membership approval created/);
+  assert.match(html, /Membership approval revoked/);
   assert.match(html, /Member reactivated/);
   assert.match(html, /Action/);
   assert.match(html, /Subject/);

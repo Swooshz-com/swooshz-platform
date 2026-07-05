@@ -28,6 +28,8 @@ import {
   handleWorkspaceMemberAddRequest,
   handleWorkspaceMembersAdminRequest,
   handleWorkspaceMemberRoleChangeRequest,
+  handleWorkspaceMembershipApprovalRevokeRequest,
+  handleWorkspaceMembershipApprovalsAdminRequest,
   handleWorkspaceMembershipDisableRequest,
   handleWorkspaceMembershipReactivateRequest,
   type HttpRequestHeaders,
@@ -303,6 +305,47 @@ export async function handleNodePlatformHttpRequest(
         targetEmail,
         role,
         membershipId: createWorkspaceAdminMembershipId(dependencies),
+        approvalId: createWorkspaceAdminApprovalId(dependencies),
+        auditEventId: createWorkspaceAdminAuditEventId(dependencies),
+        now,
+        cookie: dependencies.cookie,
+      }),
+    );
+  }
+
+  if (route.id === "platform_workspace_member_approvals") {
+    return toNodeResponse(
+      await handleWorkspaceMembershipApprovalsAdminRequest(dependencies.repositories, {
+        headers,
+        workspaceId: requiredRouteParam(routeMatch, "workspaceId"),
+        now: dependencies.now(),
+        cookie: dependencies.cookie,
+      }),
+    );
+  }
+
+  if (route.id === "platform_workspace_member_approval_revoke") {
+    const now = dependencies.now();
+    const securityResult = await validateAdminRouteSecurity({
+      route,
+      headers,
+      now,
+      dependencies,
+    });
+
+    if (!securityResult.allowed) {
+      return securityFailureResponse(
+        securityResult.recommendedStatus,
+        securityResult.reason,
+        noStoreHeaders(),
+      );
+    }
+
+    return toNodeResponse(
+      await handleWorkspaceMembershipApprovalRevokeRequest(dependencies.repositories, {
+        headers,
+        workspaceId: requiredRouteParam(routeMatch, "workspaceId"),
+        approvalId: requiredRouteParam(routeMatch, "approvalId"),
         auditEventId: createWorkspaceAdminAuditEventId(dependencies),
         now,
         cookie: dependencies.cookie,
@@ -863,7 +906,16 @@ function createWorkspaceAdminMembershipId(
     createFallbackWorkspaceAdminId("membership");
 }
 
-function createFallbackWorkspaceAdminId(prefix: "audit" | "entitlement" | "membership"): string {
+function createWorkspaceAdminApprovalId(
+  dependencies: NodePlatformHttpAdapterDependencies,
+): string {
+  return dependencies.workspaceAdminIdFactory?.createApprovalId() ??
+    createFallbackWorkspaceAdminId("approval");
+}
+
+function createFallbackWorkspaceAdminId(
+  prefix: "approval" | "audit" | "entitlement" | "membership",
+): string {
   fallbackWorkspaceAdminIdSequence += 1;
   return `workspace_admin_${prefix}_${Date.now().toString(36)}_${fallbackWorkspaceAdminIdSequence}`;
 }
@@ -888,6 +940,8 @@ function safeAuthFailureHeader(category: AuthCallbackFailureCategory | null): st
     case "domain_not_allowed":
     case "verified_email_required":
     case "provider_identity_rejected":
+    case "onboarding_approval_required":
+    case "membership_approval_acceptance_failed":
       return "access_not_approved";
     default:
       return "auth_callback_failed";

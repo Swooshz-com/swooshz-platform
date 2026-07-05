@@ -16,7 +16,12 @@ import type {
   AppStatus,
   EntitlementStatus,
 } from "../apps/types.js";
-import type { InvitationRecord, ProviderIdentity } from "../platform/repositories.js";
+import type {
+  InvitationRecord,
+  ProviderIdentity,
+  WorkspaceMembershipApprovalRecord,
+  WorkspaceMembershipApprovalStatus,
+} from "../platform/repositories.js";
 import type { AppLaunchTokenRecord } from "../platform/repositories.js";
 import type { InvitationStatus } from "../accounts/types.js";
 import type { StoredAuthStateLifecycleRecord } from "../auth/auth-state-repositories.js";
@@ -74,6 +79,21 @@ export interface InvitationRow {
   expiresAt: TimestampValue;
   acceptedAt: TimestampValue | null;
   revokedAt: TimestampValue | null;
+}
+
+export interface WorkspaceMembershipApprovalRow {
+  id: string;
+  workspaceId: string;
+  email: string;
+  role: Role;
+  status: WorkspaceMembershipApprovalStatus;
+  requestedByUserId: string;
+  createdAt: TimestampValue;
+  updatedAt: TimestampValue;
+  acceptedAt: TimestampValue | null;
+  revokedAt: TimestampValue | null;
+  acceptedUserId: string | null;
+  revokedByUserId: string | null;
 }
 
 export interface SessionRow {
@@ -211,6 +231,25 @@ export function mapInvitationRow(row: InvitationRow): InvitationRecord {
     expiresAt: toIsoTimestamp(row.expiresAt),
     acceptedAt: toNullableIsoTimestamp(row.acceptedAt),
     revokedAt: toNullableIsoTimestamp(row.revokedAt),
+  };
+}
+
+export function mapWorkspaceMembershipApprovalRow(
+  row: WorkspaceMembershipApprovalRow,
+): WorkspaceMembershipApprovalRecord {
+  return {
+    id: row.id,
+    workspaceId: row.workspaceId,
+    email: row.email,
+    role: row.role,
+    status: row.status,
+    requestedByUserId: row.requestedByUserId,
+    createdAt: toIsoTimestamp(row.createdAt),
+    updatedAt: toIsoTimestamp(row.updatedAt),
+    acceptedAt: toNullableIsoTimestamp(row.acceptedAt),
+    revokedAt: toNullableIsoTimestamp(row.revokedAt),
+    acceptedUserId: row.acceptedUserId,
+    revokedByUserId: row.revokedByUserId,
   };
 }
 

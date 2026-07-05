@@ -83,6 +83,9 @@ test("internal-alpha go/no-go checklist separates local and hosted readiness dec
 test("internal-alpha go/no-go checklist lists required deferred items", async () => {
   const checklist = await readChecklist();
 
+  assert.match(checklist, /pending workspace approval onboarding/i);
+  assert.match(checklist, /real OIDC sign-in activates the pending approval/i);
+
   for (const item of deferredItems) {
     assert.match(checklist, new RegExp(escapeRegExp(item), "i"));
   }

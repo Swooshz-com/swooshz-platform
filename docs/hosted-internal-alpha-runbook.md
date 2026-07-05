@@ -176,7 +176,7 @@ Stop and redact the log collection process if a log includes secret values, data
 | `AUTH_CLIENT_ID` | OIDC client id. | Required | `<oidc-client-id-placeholder>` | No | Missing value fails auth config/readiness. |
 | `AUTH_CLIENT_SECRET` | OIDC client secret. | Required | `<oidc-client-secret-placeholder>` | Yes | Missing value fails auth config/readiness; never print it. |
 | `AUTH_REDIRECT_URI` | Hosted callback URI configured with the provider. | Required | `<hosted-oidc-redirect-uri>` | No | Hosted readiness requires HTTPS, no query parameters or fragments, and a path ending in `/api/platform/auth/callback`. |
-| `AUTH_ALLOWED_EMAILS` | Exact allowlist for internal-alpha users. | Required | `<comma-separated-allowlisted-emails>` | No | Preferred for hosted alpha; malformed values fail auth config. Treat as private. |
+| `AUTH_ALLOWED_EMAILS` | Bootstrap/emergency exact allowlist for internal-alpha users. | Required | `<comma-separated-allowlisted-emails>` | No | Required for first owner/admin and emergency guard. Day-to-day teammate onboarding can use pending workspace approvals; malformed values fail auth config. Treat as private. |
 | `AUTH_ALLOWED_DOMAINS` | Optional reviewed domain allowlist. | Optional | `<comma-separated-allowed-domains-if-approved>` | No | Leave unset unless broad domain allow is reviewed; malformed values fail auth config. |
 | `PLATFORM_KQAG_LAUNCH_MODE` | Controls KQAG browser handoff behavior. | Required | `manual` or `server_handoff` | No | Unsupported value fails startup/readiness. Use `manual` until hosted handoff is reviewed. |
 | `PLATFORM_KQAG_APP_BASE_URL` | KQAG hosted base URL for browser handoff. | Required when server_handoff | `<hosted-kqag-base-url>` | No | Omit when launch mode is `manual`; when `server_handoff`, hosted readiness requires HTTPS and no query parameters or fragments. |
@@ -200,7 +200,7 @@ Passing readiness does not approve deployment. It only confirms the current shel
 
 Use this sequence after hosted auth and migrations are reviewed:
 
-1. Confirm `AUTH_ALLOWED_EMAILS` contains the placeholder value that will become the first owner/admin address outside repo notes.
+1. Confirm `AUTH_ALLOWED_EMAILS` contains the placeholder value that will become the first owner/admin address outside repo notes. It may remain a bootstrap/emergency guard after pending workspace approvals are available.
 2. Start Platform through the reviewed hosted process.
 3. The first owner/admin signs in once through Platform so a real provider-backed Platform user exists.
 4. Stop if the user has not completed real OIDC login; the seed must not create users, provider identities, sessions, or fake login state.
@@ -211,20 +211,24 @@ Use this sequence after hosted auth and migrations are reviewed:
 9. Confirm `/app` shows the workspace and KQAG app access.
 10. Confirm `/app/admin` is reachable only for the owner/admin.
 
-## Add Existing User Sequence
+## Pending Workspace Approval Sequence
 
-Use this after a teammate signs in once through hosted Platform:
+Use this before a teammate signs in through hosted Platform:
 
-1. Teammate signs in once through OIDC and reaches the platform shell.
-2. Owner/admin opens `/app/admin`.
-3. Use add-existing-user with the teammate's placeholder address outside repo notes.
-4. Use `member` for quote operators unless the teammate needs workspace administration.
-5. Confirm the new active membership appears in the team list.
-6. Confirm the teammate can reach `/app` after refresh.
-7. Confirm member/viewer users are denied admin access to `/app/admin`.
-8. Confirm Activity shows the membership add event with safe metadata only.
+1. Owner/admin opens `/app/admin`.
+2. Create pending workspace approval before teammate sign-in with the teammate placeholder address and approved role outside repo notes.
+3. Use `member` for quote operators unless the teammate needs workspace administration.
+4. Confirm the Pending Approvals list shows the normalized placeholder address, role, and pending status.
+5. Confirm Activity shows `workspace.membership_approval.created` with safe metadata only.
+6. The teammate completes real OIDC sign-in with the matching normalized email.
+7. Confirm real OIDC sign-in activates the pending approval, creates an active membership, and removes it from the pending list.
+8. Confirm the teammate can reach `/app` after refresh only according to normal role and entitlement gates.
+9. Create a second pending approval in a reviewed smoke workspace and revoke it before sign-in.
+10. Confirm revoked approval does not activate on sign-in and Activity shows `workspace.membership_approval.revoked`.
+11. Confirm member/viewer users are denied admin access to `/app/admin`.
+12. Confirm no invitation email, invitation link, invitation token, fake provider identity, or public signup path is used.
 
-No invitation email is sent by this fallback. Add-existing-user does not reactivate disabled memberships; owners/admins must use the explicit Reactivate action for disabled non-owner memberships.
+Existing active provider-backed users are still added immediately by the same add route. Pending approvals do not reactivate disabled memberships; owners/admins must use the explicit Reactivate action for disabled non-owner memberships.
 
 ## KQAG Entitlement Check
 
@@ -240,7 +244,8 @@ No invitation email is sent by this fallback. Add-existing-user does not reactiv
 
 Confirm `/app/admin` Activity shows recent admin events for:
 
-- add-existing-user membership creation.
+- pending workspace approval creation, revocation, and acceptance.
+- existing provider-backed user membership creation.
 - role change.
 - membership disable.
 - membership reactivation.
@@ -259,7 +264,7 @@ Run this checklist after hosted startup and before broader internal-alpha use:
 5. Fetch login session context through the platform shell and confirm no provider tokens, cookies, or secrets are rendered.
 6. Visit `/app` and confirm the workspace/app access summary is present.
 7. Visit `/app/admin` as owner/admin and confirm the admin surface loads.
-8. Add existing user by email after teammate signs in once.
+8. Create pending workspace approval before teammate sign-in, then complete real OIDC sign-in and confirm activation.
 9. Change a non-owner member role and confirm last-owner/self-demotion guardrails still fail closed.
 10. Run membership disable on a non-owner membership and confirm the disabled user cannot launch KQAG.
 11. Run membership reactivation on the disabled non-owner membership and confirm access is restored only according to role, entitlement, and app-status gates.

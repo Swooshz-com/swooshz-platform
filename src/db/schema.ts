@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   index,
   jsonb,
@@ -15,6 +16,10 @@ export const workspaceStatusEnum = pgEnum("workspace_status", [
   "archived",
 ]);
 export const membershipStatusEnum = pgEnum("membership_status", ["active", "disabled"]);
+export const workspaceMembershipApprovalStatusEnum = pgEnum(
+  "workspace_membership_approval_status",
+  ["pending", "accepted", "revoked"],
+);
 export const roleEnum = pgEnum("role", ["owner", "admin", "member", "viewer"]);
 export const invitationStatusEnum = pgEnum("invitation_status", [
   "pending",
@@ -115,6 +120,45 @@ export const memberships = pgTable(
     uniqueIndex("memberships_workspace_user_unique").on(table.workspaceId, table.userId),
     index("memberships_user_id_idx").on(table.userId),
     index("memberships_workspace_status_idx").on(table.workspaceId, table.status),
+  ],
+);
+
+export const workspaceMembershipApprovals = pgTable(
+  "workspace_membership_approvals",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "restrict" }),
+    email: text("email").notNull(),
+    role: roleEnum("role").notNull(),
+    status: workspaceMembershipApprovalStatusEnum("status").notNull(),
+    requestedByUserId: text("requested_by_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    acceptedUserId: text("accepted_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    revokedByUserId: text("revoked_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+  },
+  (table) => [
+    uniqueIndex("workspace_membership_approvals_pending_unique")
+      .on(table.workspaceId, table.email)
+      .where(sql`${table.status} = 'pending'`),
+    index("workspace_membership_approvals_email_status_idx").on(table.email, table.status),
+    index("workspace_membership_approvals_workspace_status_idx").on(
+      table.workspaceId,
+      table.status,
+    ),
+    index("workspace_membership_approvals_requested_by_user_id_idx").on(
+      table.requestedByUserId,
+    ),
   ],
 );
 

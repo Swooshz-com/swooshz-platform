@@ -10,6 +10,8 @@ export type HttpRouteId =
   | "platform_session_csrf"
   | "platform_workspace_members"
   | "platform_workspace_member_add"
+  | "platform_workspace_member_approvals"
+  | "platform_workspace_member_approval_revoke"
   | "platform_workspace_member_role"
   | "platform_workspace_member_disable"
   | "platform_workspace_member_reactivate"
@@ -211,6 +213,36 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     },
     requiredQuery: ["email", "role"],
     handlerContract: "handleWorkspaceMemberAddRequest",
+    responseKind: "json",
+    idempotent: false,
+    implemented: true,
+  },
+  {
+    id: "platform_workspace_member_approvals",
+    method: "GET",
+    path: "/api/platform/workspaces/:workspaceId/member-approvals",
+    browserSession: "required",
+    csrf: {
+      required: false,
+      strategy: "none",
+    },
+    requiredQuery: [],
+    handlerContract: "handleWorkspaceMembershipApprovalsAdminRequest",
+    responseKind: "json",
+    idempotent: true,
+    implemented: true,
+  },
+  {
+    id: "platform_workspace_member_approval_revoke",
+    method: "POST",
+    path: "/api/platform/workspaces/:workspaceId/member-approvals/:approvalId/revoke",
+    browserSession: "required",
+    csrf: {
+      required: true,
+      strategy: "origin_referer_and_csrf_token",
+    },
+    requiredQuery: [],
+    handlerContract: "handleWorkspaceMembershipApprovalRevokeRequest",
     responseKind: "json",
     idempotent: false,
     implemented: true,

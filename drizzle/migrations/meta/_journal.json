@@ -29,6 +29,13 @@
       "when": 1782651725342,
       "tag": "0003_worthless_scourge",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1783253616083,
+      "tag": "0004_illegal_william_stryker",
+      "breakpoints": true
     }
   ]
 }

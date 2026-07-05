@@ -17,6 +17,9 @@ export function createSecureWorkspaceAdminIdFactory(
     createAuditEventId() {
       return `workspace_admin_audit_${randomId(byteLength)}`;
     },
+    createApprovalId() {
+      return `workspace_admin_approval_${randomId(byteLength)}`;
+    },
     createEntitlementId() {
       return `workspace_admin_entitlement_${randomId(byteLength)}`;
     },

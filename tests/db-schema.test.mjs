@@ -10,6 +10,7 @@ const expectedTableExports = [
   "providerIdentities",
   "workspaces",
   "memberships",
+  "workspaceMembershipApprovals",
   "invitations",
   "sessions",
   "csrfTokens",
@@ -30,6 +31,7 @@ test("database schema exports status enums used by persistence records", () => {
     "userStatusEnum",
     "workspaceStatusEnum",
     "membershipStatusEnum",
+    "workspaceMembershipApprovalStatusEnum",
     "roleEnum",
     "invitationStatusEnum",
     "appStatusEnum",
@@ -38,6 +40,36 @@ test("database schema exports status enums used by persistence records", () => {
   ]) {
     assert.ok(schema[enumName], `expected ${enumName} to be exported`);
   }
+});
+
+test("database schema and migrations include pending workspace membership approvals", async () => {
+  assert.ok(
+    schema.workspaceMembershipApprovals,
+    "expected workspaceMembershipApprovals table to be exported",
+  );
+
+  const migrationSql = await readMigrationSql();
+  const approvalMigrationSql = migrationSql
+    .split("--> statement-breakpoint")
+    .filter((statement) =>
+      /workspace_membership_approval/i.test(statement),
+    )
+    .join("\n");
+
+  assert.match(migrationSql, /CREATE TYPE "public"\."workspace_membership_approval_status"/);
+  assert.match(migrationSql, /CREATE TABLE "workspace_membership_approvals"/);
+  assert.match(migrationSql, /"workspace_id" text NOT NULL/);
+  assert.match(migrationSql, /"email" text NOT NULL/);
+  assert.match(migrationSql, /"role" "role" NOT NULL/);
+  assert.match(migrationSql, /"status" "workspace_membership_approval_status" NOT NULL/);
+  assert.match(migrationSql, /"requested_by_user_id" text NOT NULL/);
+  assert.match(migrationSql, /"accepted_user_id" text/);
+  assert.match(migrationSql, /"revoked_by_user_id" text/);
+  assert.match(migrationSql, /"workspace_membership_approvals_pending_unique"/);
+  assert.match(migrationSql, /WHERE .*"status" = 'pending'/);
+  assert.match(migrationSql, /"workspace_membership_approvals_email_status_idx"/);
+  assert.match(migrationSql, /"workspace_membership_approvals_workspace_status_idx"/);
+  assert.doesNotMatch(approvalMigrationSql, /approval_token|token_hash|expires_at/i);
 });
 
 test("database schema and migrations include csrf_tokens without raw token storage", async () => {

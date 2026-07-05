@@ -23,13 +23,15 @@ import {
   PlatformSessionContextServiceError,
 } from "../platform/session-context-service.js";
 import {
-  addExistingWorkspaceUserByEmail,
+  addWorkspaceMemberByEmail,
   changeWorkspaceMemberRole,
   disableWorkspaceMembership,
+  listWorkspaceMembershipApprovalsForAdmin,
   listWorkspaceAppEntitlementsForAdmin,
   listWorkspaceAuditEventsForAdmin,
   listWorkspaceMembersForAdmin,
   reactivateWorkspaceMembership,
+  revokeWorkspaceMembershipApproval,
   setWorkspaceAppEntitlementStatus,
   WorkspaceAdminServiceError,
 } from "../platform/workspace-admin-service.js";
@@ -153,6 +155,12 @@ export interface WorkspaceMemberAddHttpRequest extends WorkspaceAdminHttpRequest
   targetEmail: string;
   role: string;
   membershipId: string;
+  approvalId: string;
+  auditEventId: string;
+}
+
+export interface WorkspaceMembershipApprovalRevokeHttpRequest extends WorkspaceAdminHttpRequest {
+  approvalId: string;
   auditEventId: string;
 }
 
@@ -596,26 +604,101 @@ export async function handleWorkspaceMemberAddRequest(
   }
 
   try {
-    const membership = await addExistingWorkspaceUserByEmail(repositories, {
+    const result = await addWorkspaceMemberByEmail(repositories, {
       sessionId,
       workspaceId: request.workspaceId,
       now: request.now,
       targetEmail: request.targetEmail,
       role: request.role as Role,
       membershipId: request.membershipId,
+      approvalId: request.approvalId,
       auditEventId: request.auditEventId,
     });
+
+    if (result.outcome === "pending_approval_created") {
+      return {
+        status: 201,
+        headers: noStoreHeaders(),
+        body: {
+          outcome: "pending_approval_created",
+          approval: toWorkspaceMembershipApprovalHttpSummary(result.approval),
+        },
+      };
+    }
 
     return {
       status: 201,
       headers: noStoreHeaders(),
       body: {
         outcome: "created",
-        membership: toWorkspaceMembershipHttpSummary(membership),
+        membership: toWorkspaceMembershipHttpSummary(result.membership),
       },
     };
   } catch (error) {
     return workspaceMemberAddErrorResponse(error);
+  }
+}
+
+export async function handleWorkspaceMembershipApprovalsAdminRequest(
+  repositories: PlatformRepositories,
+  request: WorkspaceAdminHttpRequest,
+): Promise<HttpResponseLike> {
+  const sessionId = extractSessionId(request.headers, request.cookie);
+
+  if (!sessionId) {
+    return workspaceAdminMissingSession();
+  }
+
+  try {
+    const result = await listWorkspaceMembershipApprovalsForAdmin(repositories, {
+      sessionId,
+      workspaceId: request.workspaceId,
+      now: request.now,
+    });
+
+    return {
+      status: 200,
+      headers: noStoreHeaders(),
+      body: {
+        outcome: "listed",
+        workspaceId: result.workspaceId,
+        approvals: result.approvals.map(toWorkspaceMembershipApprovalHttpSummary),
+      },
+    };
+  } catch (error) {
+    return workspaceAdminErrorResponse(error);
+  }
+}
+
+export async function handleWorkspaceMembershipApprovalRevokeRequest(
+  repositories: PlatformRepositories,
+  request: WorkspaceMembershipApprovalRevokeHttpRequest,
+): Promise<HttpResponseLike> {
+  const sessionId = extractSessionId(request.headers, request.cookie);
+
+  if (!sessionId) {
+    return workspaceAdminMissingSession();
+  }
+
+  try {
+    const approval = await revokeWorkspaceMembershipApproval(repositories, {
+      sessionId,
+      workspaceId: request.workspaceId,
+      now: request.now,
+      approvalId: request.approvalId,
+      auditEventId: request.auditEventId,
+    });
+
+    return {
+      status: 200,
+      headers: noStoreHeaders(),
+      body: {
+        outcome: "revoked",
+        approval: toWorkspaceMembershipApprovalHttpSummary(approval),
+      },
+    };
+  } catch (error) {
+    return workspaceAdminErrorResponse(error);
   }
 }
 
@@ -926,6 +1009,8 @@ function workspaceMemberAddErrorMessage(error: WorkspaceAdminServiceError): stri
   switch (error.code) {
     case "not_found":
       return "User could not be added. They must sign in once with an approved Google account before they can be added to this workspace.";
+    case "approval_conflict":
+      return "Pending approval already exists for this email.";
     case "membership_conflict":
       return "User is already a member of this workspace.";
     case "invalid_role":
@@ -947,6 +1032,7 @@ function workspaceAdminErrorStatus(error: WorkspaceAdminServiceError): number {
     case "last_owner_required":
     case "self_change_not_allowed":
     case "membership_conflict":
+    case "approval_conflict":
       return 409;
     case "repository_failure":
       return 500;
@@ -970,6 +1056,28 @@ function toWorkspaceMembershipHttpSummary(membership: {
     role: membership.role,
     status: membership.status,
     updatedAt: membership.updatedAt,
+  };
+}
+
+function toWorkspaceMembershipApprovalHttpSummary(approval: {
+  id: string;
+  workspaceId: string;
+  email: string;
+  role: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  revokedAt?: string | null;
+}) {
+  return {
+    approvalId: approval.id,
+    workspaceId: approval.workspaceId,
+    email: approval.email,
+    role: approval.role,
+    status: approval.status,
+    createdAt: approval.createdAt,
+    updatedAt: approval.updatedAt,
+    ...(approval.revokedAt ? { revokedAt: approval.revokedAt } : {}),
   };
 }
 

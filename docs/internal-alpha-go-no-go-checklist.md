@@ -19,7 +19,7 @@ Related source docs:
 
 ### Local/internal UAT readiness
 
-The local/internal UAT platform-admin foundation is mostly implemented/documented for a narrow internal-alpha review: provider-backed login, server-side Platform sessions, `/app`, `/app/admin`, owner/admin workspace member administration, KQAG entitlement toggling, audit/activity browsing, fail-closed launch checks, explicit local smoke guidance, and a browser-safe KQAG handoff path are documented and covered by tests.
+The local/internal UAT platform-admin foundation is mostly implemented/documented for a narrow internal-alpha review: provider-backed login, server-side Platform sessions, `/app`, `/app/admin`, owner/admin workspace member administration, pending workspace approval onboarding, KQAG entitlement toggling, audit/activity browsing, fail-closed launch checks, explicit local smoke guidance, and a browser-safe KQAG handoff path are documented and covered by tests.
 
 Go decision: Platform local/internal alpha can proceed only for reviewed local/internal UAT using approved existing services, placeholders in docs, and production-grade security expectations. This is not a public launch and does not claim production readiness.
 
@@ -38,14 +38,14 @@ SAQG/KQAG production readiness is separate from this Platform repository. Platfo
 | Checklist item | Current status | Evidence/source doc or source file | Go/no-go decision | Notes |
 | --- | --- | --- | --- | --- |
 | Minimal `/app` shell for internal app access | Implemented | `README.md`; `docs/internal-alpha-platform-contract.md`; `src/http/platform-shell.ts`; `tests/platform-shell.test.mjs` | Go for local/internal UAT | Functional shell only; not a polished dashboard or marketing UI. |
-| Minimal `/app/admin` owner/admin surface | Implemented | `docs/internal-alpha-platform-contract.md`; `src/http/platform-shell.ts`; `tests/platform-shell.test.mjs`; `tests/http-admin-routes.test.mjs` | Go for local/internal UAT | Supports current member, entitlement, and activity workflows. |
+| Minimal `/app/admin` owner/admin surface | Implemented | `docs/internal-alpha-platform-contract.md`; `src/http/platform-shell.ts`; `tests/platform-shell.test.mjs`; `tests/http-admin-routes.test.mjs` | Go for local/internal UAT | Supports current member, pending approval, entitlement, and activity workflows. |
 | Google Stitch / UI polish | Deferred | `docs/internal-alpha-platform-contract.md`; `docs/roadmap.md` | No-go until separately approved | No Google Stitch or visual redesign is started by this checklist. |
 
 ## Auth/session security
 
 | Checklist item | Current status | Evidence/source doc or source file | Go/no-go decision | Notes |
 | --- | --- | --- | --- | --- |
-| Generic OIDC login and provider-backed user requirement | Implemented | `docs/auth-session-security-contract.md`; `src/http/auth-handlers.ts`; `src/auth/callback-service.ts`; `tests/auth-http-handlers.test.mjs` | Go for reviewed provider-backed UAT | Real provider configuration remains outside repo notes. |
+| Generic OIDC login and provider-backed user requirement | Implemented | `docs/auth-session-security-contract.md`; `src/http/auth-handlers.ts`; `src/auth/callback-service.ts`; `tests/auth-http-handlers.test.mjs` | Go for reviewed provider-backed UAT | Real provider configuration remains outside repo notes. Pending approvals still require real OIDC sign-in before membership activation. |
 | Server-side sessions, HttpOnly/SameSite cookies, and secure production cookie requirement | Implemented | `docs/auth-session-security-contract.md`; `src/http/session-cookie.ts`; `src/http/runtime-config.ts`; `tests/http-session-cookie.test.mjs` | Go for local/internal UAT; hosted go blocked on HTTPS config | Hosted production must use secure cookies over HTTPS. |
 | CSRF/origin protections for browser-cookie mutations | Implemented | `docs/auth-session-security-contract.md`; `src/http/request-security.ts`; `src/http/route-contracts.ts`; `tests/http-request-security.test.mjs` | Go for current protected routes | Preserve fail-closed behavior for future browser-cookie mutations. |
 | Password auth and 2FA | Deferred | `docs/auth-session-security-contract.md` | No-go for this PR | No password auth or 2FA is added. |
@@ -60,9 +60,9 @@ SAQG/KQAG production readiness is separate from this Platform repository. Platfo
 | Checklist item | Current status | Evidence/source doc or source file | Go/no-go decision | Notes |
 | --- | --- | --- | --- | --- |
 | Owner/admin workspace member listing | Implemented | `docs/internal-alpha-platform-contract.md`; `src/platform/workspace-admin-service.ts`; `tests/workspace-admin-service.test.mjs` | Go for local/internal UAT | Uses safe user and membership summaries. |
-| Add existing provider-backed user by email | Implemented | `docs/hosted-internal-alpha-runbook.md`; `src/platform/workspace-admin-service.ts`; `tests/http-admin-routes.test.mjs` | Go for internal-alpha fallback | Teammate must sign in once first; no invitation delivery occurs. |
+| Pending workspace approval onboarding | Implemented | `docs/hosted-internal-alpha-runbook.md`; `src/platform/workspace-admin-service.ts`; `tests/http-admin-routes.test.mjs`; `tests/auth-platform-identity-resolver.test.mjs` | Go for internal-alpha onboarding | Owner/admin can create a pending approval before sign-in; real OIDC sign-in activates the pending approval and creates membership through normal role and entitlement gates. Existing provider-backed users are still added immediately. No invitation delivery occurs. |
 | Role change and membership disable/reactivation guardrails | Implemented | `docs/internal-alpha-platform-contract.md`; `src/platform/workspace-admin-service.ts`; `tests/workspace-admin-service.test.mjs` | Go for local/internal UAT | Last-owner, self-change, and owner-reactivation guardrails remain required. |
-| Full invitation acceptance flow | Deferred | `docs/auth-session-security-contract.md`; `docs/internal-alpha-platform-contract.md` | No-go until separately approved | Email invitation delivery and acceptance are not added. |
+| Full invitation acceptance flow | Deferred | `docs/auth-session-security-contract.md`; `docs/internal-alpha-platform-contract.md` | No-go until separately approved | Email invitation delivery, links, tokens, and invitation acceptance are not added. |
 | Disabled non-owner membership reactivation | Implemented | `docs/hosted-internal-alpha-runbook.md`; `docs/internal-alpha-platform-contract.md`; `tests/workspace-admin-service.test.mjs` | Go for local/internal UAT | Add-existing-user still does not reactivate memberships; owners/admins use the explicit reactivation action. |
 | First-class `operator` role | Future | `docs/internal-alpha-platform-contract.md`; `docs/roadmap.md` | No-go until schema and policy PR | Quote operators remain mapped to `member` for internal alpha. |
 
@@ -79,7 +79,7 @@ SAQG/KQAG production readiness is separate from this Platform repository. Platfo
 
 | Checklist item | Current status | Evidence/source doc or source file | Go/no-go decision | Notes |
 | --- | --- | --- | --- | --- |
-| Privacy-minimized audit events for admin actions | Implemented | `docs/internal-alpha-platform-contract.md`; `src/platform/workspace-admin-service.ts`; `tests/workspace-admin-service.test.mjs` | Go for local/internal UAT | Covers membership add, role change, membership disable, membership reactivation, and KQAG entitlement changes. |
+| Privacy-minimized audit events for admin actions | Implemented | `docs/internal-alpha-platform-contract.md`; `src/platform/workspace-admin-service.ts`; `tests/workspace-admin-service.test.mjs`; `tests/auth-platform-identity-resolver.test.mjs` | Go for local/internal UAT | Covers membership add, membership approval create/revoke/accept, role change, membership disable, membership reactivation, and KQAG entitlement changes. |
 | Owner/admin activity browsing | Implemented | `docs/internal-alpha-platform-contract.md`; `src/http/handlers.ts`; `tests/http-admin-routes.test.mjs` | Go for local/internal UAT | Recent activity browsing is minimal and read-only. |
 | Audit export/filtering/retention | Deferred | `docs/internal-alpha-platform-contract.md`; `docs/roadmap.md` | No-go until future audit PR | Export, filtering, and retention workflow decisions remain future work. |
 
@@ -122,7 +122,7 @@ SAQG/KQAG production readiness is separate from this Platform repository. Platfo
 
 | Checklist item | Current status | Evidence/source doc or source file | Go/no-go decision | Notes |
 | --- | --- | --- | --- | --- |
-| Full invitation acceptance flow | Deferred | `docs/auth-session-security-contract.md`; `docs/internal-alpha-platform-contract.md` | No-go until separate PR | Add-existing-user remains the internal-alpha fallback after a teammate signs in once. |
+| Full invitation acceptance flow | Deferred | `docs/auth-session-security-contract.md`; `docs/internal-alpha-platform-contract.md` | No-go until separate PR | Pending workspace approval onboarding is implemented; email invitation delivery, links, tokens, and invitation acceptance remain separate future scope. |
 | Audit export/filtering/retention | Deferred | `docs/internal-alpha-platform-contract.md`; `docs/roadmap.md` | No-go until separate audit PR | Current activity browsing is minimal. |
 | Security/session management UI | Deferred | `docs/auth-session-security-contract.md`; `docs/internal-alpha-platform-contract.md` | No-go until future product/admin surface | Includes account security and session review surfaces. |
 | Revoke-other-sessions | Deferred | `docs/auth-session-security-contract.md` | No-go until future security PR | Current logout revokes only the current session. |

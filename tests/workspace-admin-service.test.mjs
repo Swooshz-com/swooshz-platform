@@ -6,13 +6,16 @@ import {
   AccessDecisionResult,
   WorkspaceAdminServiceError,
   addExistingWorkspaceUserByEmail,
+  addWorkspaceMemberByEmail,
   changeWorkspaceMemberRole,
   decidePlatformAppAccess,
   disableWorkspaceMembership,
+  listWorkspaceMembershipApprovalsForAdmin,
   listWorkspaceAppEntitlementsForAdmin,
   listWorkspaceAuditEventsForAdmin,
   listWorkspaceMembersForAdmin,
   reactivateWorkspaceMembership,
+  revokeWorkspaceMembershipApproval,
   setWorkspaceAppEntitlementStatus,
 } from "../dist/index.js";
 import { createInMemoryPlatformRepositories } from "./helpers/in-memory-platform-repositories.mjs";
@@ -276,6 +279,171 @@ test("owner and admin can add an existing active provider-backed user by email",
       assertAuditPrivacy(records.auditEvents.at(-1));
     }
   }
+});
+
+test("owner and admin can create and list pending approvals for unknown teammates", async () => {
+  for (const role of ["owner", "admin"]) {
+    const { repositories, input, records } = adminFixture({ role });
+
+    const result = await addWorkspaceMemberByEmail(repositories, {
+      ...input,
+      targetEmail: "  New.Teammate@Example.Test  ",
+      role: "member",
+      membershipId: `membership_unused_${role}`,
+      approvalId: `approval_new_teammate_${role}`,
+      auditEventId: `audit_approval_created_${role}`,
+    });
+
+    assert.equal(result.outcome, "pending_approval_created");
+    assert.deepEqual(result.approval, {
+      id: `approval_new_teammate_${role}`,
+      workspaceId: "workspace_koncept_images",
+      email: "new.teammate@example.test",
+      role: "member",
+      status: "pending",
+      requestedByUserId: `user_${role}_example`,
+      createdAt: now,
+      updatedAt: now,
+      acceptedAt: null,
+      revokedAt: null,
+      acceptedUserId: null,
+      revokedByUserId: null,
+    });
+    assert.equal(
+      records.memberships.some((membership) => membership.id === `membership_unused_${role}`),
+      false,
+    );
+    assert.deepEqual(records.auditEvents.at(-1), {
+      id: `audit_approval_created_${role}`,
+      workspaceId: "workspace_koncept_images",
+      actorUserId: `user_${role}_example`,
+      eventType: "workspace.membership_approval.created",
+      targetType: "membership_approval",
+      targetId: `approval_new_teammate_${role}`,
+      createdAt: now,
+      metadata: {
+        newRole: "member",
+        newStatus: "pending",
+        source: "invite_less_onboarding",
+      },
+    });
+    assertAuditPrivacy(records.auditEvents.at(-1));
+
+    const listed = await listWorkspaceMembershipApprovalsForAdmin(repositories, input);
+
+    assert.deepEqual(listed, {
+      workspaceId: "workspace_koncept_images",
+      approvals: [result.approval],
+    });
+  }
+});
+
+test("pending approval creation rejects duplicate email roles and unauthorized actors", async () => {
+  const duplicate = adminFixture({
+    membershipApprovals: [
+      pendingApproval({
+        id: "approval_existing_pending",
+        email: "new.teammate@example.test",
+      }),
+    ],
+  });
+
+  await assert.rejects(
+    () =>
+      addWorkspaceMemberByEmail(duplicate.repositories, {
+        ...duplicate.input,
+        targetEmail: "NEW.Teammate@example.test",
+        role: "admin",
+        membershipId: "membership_unused_duplicate",
+        approvalId: "approval_duplicate",
+        auditEventId: "audit_duplicate",
+      }),
+    assertAdminError("approval_conflict"),
+  );
+  assert.equal(duplicate.records.membershipApprovals.length, 1);
+  assert.equal(duplicate.records.auditEvents.length, 0);
+
+  for (const [name, role, targetRole, expectedCode] of [
+    ["member actor", "member", "member", "not_authorized"],
+    ["viewer actor", "viewer", "member", "not_authorized"],
+    ["owner target", "owner", "owner", "invalid_role"],
+    ["invalid target", "owner", "operator", "invalid_role"],
+  ]) {
+    const { repositories, input, records } = adminFixture({ role });
+
+    await assert.rejects(
+      () =>
+        addWorkspaceMemberByEmail(repositories, {
+          ...input,
+          targetEmail: "new.teammate@example.test",
+          role: targetRole,
+          membershipId: `membership_unused_${name.replaceAll(" ", "_")}`,
+          approvalId: `approval_rejected_${name.replaceAll(" ", "_")}`,
+          auditEventId: `audit_rejected_${name.replaceAll(" ", "_")}`,
+        }),
+      assertAdminError(expectedCode),
+      name,
+    );
+    assert.equal(records.membershipApprovals.length, 0);
+    assert.equal(records.auditEvents.length, 0);
+  }
+});
+
+test("owner and admin can revoke pending approvals without creating memberships", async () => {
+  for (const role of ["owner", "admin"]) {
+    const { repositories, input, records } = adminFixture({
+      role,
+      membershipApprovals: [pendingApproval()],
+    });
+
+    const result = await revokeWorkspaceMembershipApproval(repositories, {
+      ...input,
+      approvalId: "approval_pending_example",
+      auditEventId: `audit_approval_revoked_${role}`,
+    });
+
+    assert.deepEqual(result, {
+      ...pendingApproval(),
+      status: "revoked",
+      updatedAt: now,
+      revokedAt: now,
+      revokedByUserId: `user_${role}_example`,
+    });
+    assert.equal(
+      records.memberships.some((membership) => membership.userId === "user_pending_example"),
+      false,
+    );
+    assert.deepEqual(records.auditEvents.at(-1), {
+      id: `audit_approval_revoked_${role}`,
+      workspaceId: "workspace_koncept_images",
+      actorUserId: `user_${role}_example`,
+      eventType: "workspace.membership_approval.revoked",
+      targetType: "membership_approval",
+      targetId: "approval_pending_example",
+      createdAt: now,
+      metadata: {
+        previousStatus: "pending",
+        newStatus: "revoked",
+        newRole: "member",
+      },
+    });
+    assertAuditPrivacy(records.auditEvents.at(-1));
+  }
+});
+
+test("pending approvals do not grant app launch before provider-backed activation", async () => {
+  const { repositories } = adminFixture({
+    membershipApprovals: [pendingApproval()],
+  });
+
+  const accessDecision = await decidePlatformAppAccess(repositories, {
+    sessionId: "session_pending_example",
+    selectedWorkspaceId: "workspace_koncept_images",
+    appKey: "kqag",
+    now,
+  });
+
+  assert.equal(accessDecision.result, AccessDecisionResult.NotAuthenticated);
 });
 
 test("member and viewer cannot manage workspace members or app access", async () => {
@@ -1232,6 +1400,7 @@ function adminFixture(overrides = {}) {
     sessions: overrides.sessions ?? [session, memberSession],
     workspaces: overrides.workspaces ?? [workspace, otherWorkspace],
     memberships: [...memberships, ...(overrides.extraMemberships ?? [])],
+    membershipApprovals: overrides.membershipApprovals ?? [],
     apps: overrides.apps ?? [app],
     appEntitlements: overrides.appEntitlements ?? [entitlement],
     auditEvents: overrides.auditEvents ?? [],
@@ -1299,6 +1468,24 @@ function auditEvent(overrides = {}) {
       previousStatus: "active",
       targetUserId: "user_member_example",
     },
+    ...overrides,
+  };
+}
+
+function pendingApproval(overrides = {}) {
+  return {
+    id: "approval_pending_example",
+    workspaceId: "workspace_koncept_images",
+    email: "pending.user@example.test",
+    role: "member",
+    status: "pending",
+    requestedByUserId: "user_owner_example",
+    createdAt: earlier,
+    updatedAt: earlier,
+    acceptedAt: null,
+    revokedAt: null,
+    acceptedUserId: null,
+    revokedByUserId: null,
     ...overrides,
   };
 }

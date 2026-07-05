@@ -39,6 +39,11 @@ export interface AuthenticatedPlatformIdentityInput {
   identity: AuthProviderIdentity;
   stateReference: AuthStateReference;
   now: string;
+  authPolicy?: AuthenticatedPlatformIdentityPolicy;
+}
+
+export interface AuthenticatedPlatformIdentityPolicy {
+  providerEmailAllowed: boolean;
 }
 
 export interface AuthStateReference {
@@ -51,6 +56,7 @@ export interface AuthCallbackPlatformIdentityResolution {
   platformUserId: string;
   providerIdentityId: string;
   session: Session;
+  workspaceMembershipGranted?: boolean;
 }
 
 export interface AuthCallbackServiceResult {
@@ -60,7 +66,7 @@ export interface AuthCallbackServiceResult {
   session: Session;
   verifiedEmail: string | null;
   displayName: string | null;
-  workspaceMembershipGranted: false;
+  workspaceMembershipGranted: boolean;
   appAccessGranted: false;
 }
 
@@ -101,8 +107,7 @@ export async function handleAuthCallback(
     expectedNonceHash: storedState.nonceHash,
   });
   const identity = createAuthProviderIdentity(verifiedIdentity);
-
-  assertIdentityAllowed(identity, dependencies.authConfig);
+  const authPolicy = readIdentityAuthPolicy(identity, dependencies.authConfig);
 
   const resolution = await dependencies.platformIdentityResolver.resolveAuthenticatedIdentity({
     identity,
@@ -112,6 +117,7 @@ export async function handleAuthCallback(
       nonceHash: storedState.nonceHash,
     },
     now: input.now,
+    authPolicy,
   });
 
   return {
@@ -125,7 +131,7 @@ export async function handleAuthCallback(
     session: resolution.session,
     verifiedEmail: identity.verifiedEmail,
     displayName: identity.displayName,
-    workspaceMembershipGranted: false,
+    workspaceMembershipGranted: resolution.workspaceMembershipGranted === true,
     appAccessGranted: false,
   };
 }
@@ -155,12 +161,17 @@ function assertStoredStateUsable(
   }
 }
 
-function assertIdentityAllowed(identity: AuthProviderIdentity, config: AuthConfig): void {
+function readIdentityAuthPolicy(
+  identity: AuthProviderIdentity,
+  config: AuthConfig,
+): { providerEmailAllowed: boolean } {
   const hasEmailAllowlist = config.allowedEmails.length > 0;
   const hasDomainAllowlist = config.allowedDomains.length > 0;
 
   if (!hasEmailAllowlist && !hasDomainAllowlist) {
-    return;
+    return {
+      providerEmailAllowed: true,
+    };
   }
 
   if (!identity.verifiedEmail) {
@@ -170,19 +181,13 @@ function assertIdentityAllowed(identity: AuthProviderIdentity, config: AuthConfi
     );
   }
 
-  if (hasEmailAllowlist && !config.allowedEmails.includes(identity.verifiedEmail)) {
-    throw new AuthCallbackError(
-      "email_not_allowed",
-      "Verified provider email is not allowed for this authentication policy.",
-    );
-  }
-
   const emailDomain = identity.verifiedEmail.split("@").at(-1) ?? "";
+  const emailAllowed =
+    !hasEmailAllowlist || config.allowedEmails.includes(identity.verifiedEmail);
+  const domainAllowed =
+    !hasDomainAllowlist || config.allowedDomains.includes(emailDomain);
 
-  if (hasDomainAllowlist && !config.allowedDomains.includes(emailDomain)) {
-    throw new AuthCallbackError(
-      "domain_not_allowed",
-      "Verified provider email domain is not allowed for this authentication policy.",
-    );
-  }
+  return {
+    providerEmailAllowed: emailAllowed && domainAllowed,
+  };
 }
