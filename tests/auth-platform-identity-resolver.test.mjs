@@ -271,6 +271,94 @@ test("revoked or missing pending approval does not authorize non-allowlisted sig
   }
 });
 
+test("pending approval acceptance fails closed for unsafe approval and user state", async () => {
+  const existingPendingUser = {
+    ...activeUser,
+    id: "user_existing_pending",
+    email: "pending.user@example.test",
+  };
+  const existingPendingMembership = {
+    id: "membership_existing_pending",
+    workspaceId: "workspace_koncept_images",
+    userId: existingPendingUser.id,
+    role: "member",
+    status: "active",
+    createdAt: "2026-06-26T00:00:00.000Z",
+    updatedAt: "2026-06-26T00:00:00.000Z",
+  };
+
+  for (const [name, options] of [
+    [
+      "inactive workspace",
+      {
+        membershipApprovals: [pendingApproval()],
+        workspaces: [workspace({ status: "suspended" })],
+      },
+    ],
+    [
+      "invalid approval role",
+      {
+        membershipApprovals: [pendingApproval({ role: "owner" })],
+      },
+    ],
+    [
+      "inactive existing user",
+      {
+        users: [
+          {
+            ...disabledUser,
+            email: "pending.user@example.test",
+          },
+        ],
+        membershipApprovals: [pendingApproval()],
+      },
+    ],
+    [
+      "existing workspace membership",
+      {
+        users: [existingPendingUser],
+        memberships: [existingPendingMembership],
+        membershipApprovals: [pendingApproval()],
+      },
+    ],
+  ]) {
+    const deps = createResolverDependencies(options);
+    const resolver = createPlatformIdentitySessionResolver(deps);
+    const initialUsers = structuredClone(deps.records.users);
+    const initialMemberships = structuredClone(deps.records.memberships);
+    const initialApprovals = structuredClone(deps.records.membershipApprovals);
+
+    await assert.rejects(
+      () =>
+        resolver.resolveAuthenticatedIdentity({
+          identity: {
+            ...verifiedIdentity,
+            providerSubject: `pending-provider-subject-${name}`,
+            verifiedEmail: "pending.user@example.test",
+          },
+          stateReference: createStateReference(),
+          now,
+          authPolicy: {
+            providerEmailAllowed: false,
+          },
+        }),
+      (error) => {
+        assert.equal(error instanceof AuthCallbackError, true);
+        assert.equal(error.code, "membership_approval_acceptance_failed");
+        return true;
+      },
+      name,
+    );
+
+    assert.deepEqual(deps.records.users, initialUsers, name);
+    assert.deepEqual(deps.records.providerIdentities, [], name);
+    assert.deepEqual(deps.records.memberships, initialMemberships, name);
+    assert.deepEqual(deps.records.sessions, [], name);
+    assert.deepEqual(deps.records.membershipApprovals, initialApprovals, name);
+    assert.deepEqual(deps.records.auditEvents, [], name);
+  }
+});
+
 test("pending approval activation rolls back identity and membership state when audit fails", async () => {
   const deps = createResolverDependencies({
     membershipApprovals: [pendingApproval()],
@@ -541,17 +629,7 @@ function createResolverDependencies(options = {}) {
     users: [...(options.users ?? [])],
     providerIdentities: [...(options.providerIdentities ?? [])],
     sessions: [],
-    workspaces: [
-      {
-        id: "workspace_koncept_images",
-        slug: "koncept-images",
-        displayName: "Koncept Images",
-        status: "active",
-        createdAt: now,
-        updatedAt: now,
-      },
-      ...(options.workspaces ?? []),
-    ],
+    workspaces: options.workspaces ?? [workspace()],
     memberships: [...(options.memberships ?? [])],
     membershipApprovals: [...(options.membershipApprovals ?? [])],
     apps: [
@@ -846,6 +924,18 @@ function pendingApproval(overrides = {}) {
     revokedAt: null,
     acceptedUserId: null,
     revokedByUserId: null,
+    ...overrides,
+  };
+}
+
+function workspace(overrides = {}) {
+  return {
+    id: "workspace_koncept_images",
+    slug: "koncept-images",
+    displayName: "Koncept Images",
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
     ...overrides,
   };
 }
