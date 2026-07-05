@@ -1,6 +1,9 @@
 # Swooshz Platform — Design Direction and Page-by-Page UX Spec (Internal Alpha)
 
 Status: DRAFT for approval — design direction and UX concepts only, no production code.
+Revision 2026-07-05: Add member redesigned around the pending-approval membership
+model (the previous add-existing-user flow is bootstrap-only, not target UX);
+SEO/GEO product kept as an unconfirmed conceptual placeholder.
 Scope: two-product platform (KQAG / SAQG + SEO/GEO Content Automation).
 Grounded in: `docs/internal-alpha-platform-contract.md`, `docs/app-access-contract.md`,
 `docs/accounts-contract.md`, `docs/auth-session-security-contract.md`,
@@ -203,9 +206,9 @@ rigour to close the gap.
 7. **Errors are generic + reference code.** One category sentence; beneath it a mono
    chip `ref SWZ-XXXXXX` (per-incident, server-issued, never static) with a quiet
    Copy button. The error component has no slot for exception text.
-8. **No user enumeration.** Add-member outcome copy is identical on every path.
-   (A successful add necessarily reveals existence in the members table — documented,
-   accepted for internal alpha.)
+8. **No user enumeration.** The add-member outcome banner is identical on every
+   path. Membership state (active vs pending) is visible only to that workspace's
+   owners and admins in the Members table — documented, accepted for internal alpha.
 9. **Denial is a designed state**, not an error: full-contrast copy, no dead buttons,
    reason from the fixed enum only, naming who can fix it.
 10. **State-changing actions are forms with real buttons** (matching their
@@ -410,6 +413,12 @@ anywhere on Platform. Being white-label, Platform (internal-only) carries the in
 name even if clients see other brands. The reference product from the brief was
 treated as category context only; nothing here derives from it.
 
+This card is a **conceptual placeholder only**: `sgca` must not be minted as final,
+and it remains unconfirmed until vendor SSO/API/workspace/billing details are
+confirmed. Implementation must not register the app, create entitlements, or add any
+SEO integration until the product contract is approved — the design shows the second
+card to prove the system is n-ary, not to authorise integration work.
+
 **Entitlement rendering matrix (both cards, verbatim shared templates):**
 
 | State | Chip | Footer |
@@ -458,12 +467,33 @@ workspace-existence leak.
 display form, copyable) / Your role (`role: owner`).
 
 **02 Add member** (`#add-member`) — email input + role select (admin / member /
-viewer — owner never offered) + primary "Add to workspace" (CSRF POST). Helper
-(mandated, verbatim): "Teammate must sign in once first. No invitation delivery."
-Outcome banner identical on every path (existence-neutral): "Request submitted. If
-this teammate has signed in to Swooshz Platform before, they now appear in Members.
-If they haven't, ask them to sign in once, then add them again. No invitation email
-is sent." Server failure: generic sentence + `ref` chip.
+viewer — owner never offered) + primary "Add to workspace" (CSRF POST). Helper:
+"No invitation email is sent. Ask the teammate to sign in with the approved Google
+account."
+
+Flow (pending-approval membership model): the owner/admin enters email + role. If a
+provider-backed user with that normalised email already exists, Platform adds an
+active membership immediately. If the user has not signed in yet, Platform records a
+**pending workspace approval**; when the teammate later completes a real
+provider-backed sign-in with the same normalised email, Platform activates and links
+the membership. No fake users, no fake provider identities, no email delivery, no
+public signup. A pending approval grants no launch or admin access until activated.
+
+Outcome banner, identical on every path: "Access request recorded. If this account
+already exists, the membership is active now. If not, it will activate after the
+teammate signs in with the approved Google account." Server failure: generic
+sentence + `ref` chip.
+
+Members table: pending memberships render as ordinary rows with a mono `pending`
+status chip and no launch/admin effect; row actions on pending rows follow the
+pending-approval backend contract once it lands. The registry reports pending
+entries honestly rather than hiding them.
+
+> **Implementation dependency.** This Add member design assumes the pending-approval
+> backend lands before implementation. If it has not landed, implementation must
+> either wait or ship the current add-existing-user flow ("Teammate must sign in
+> once first. No invitation delivery.") strictly as a temporary bootstrap state — it
+> is not the target production UX and must not be presented as such.
 
 **03 Owner transfer** (`#owner-transfer`) — inert placeholder sub-block (Mineral
 fill, tag `OWNER TRANSFER`), mandated copy: "Owner transfer is not available in
@@ -524,6 +554,8 @@ Error: "Activity could not be loaded." + `ref` chip + quiet Retry.
 | CTA (mandated) | Continue with Google |
 | Login helper | Expecting access? Ask a workspace owner or admin to add your account. |
 | Post-logout notice (mandated) | You are signed out of Swooshz Platform. Your Google account may still be signed in. |
+| Add-member helper | No invitation email is sent. Ask the teammate to sign in with the approved Google account. |
+| Add-member outcome (all paths) | Access request recorded. If this account already exists, the membership is active now. If not, it will activate after the teammate signs in with the approved Google account. |
 | Launcher status line | signed in as {email} · {n} workspaces |
 | Workspace header | WS – {NAME} · role: {role} |
 | KQAG card | KQAG · private preview · "Generate quotes and manage quotation workflows." · [Launch KQAG] |
@@ -554,7 +586,7 @@ granted.
 | 6 | Product-capability copy in Platform empty states ("No quotes yet…") | Nonsense the moment a workspace has SEO but not KQAG; normalises product dashboards in the hub | Copy rule: Platform speaks only about access, never capability |
 | 7 | Per-product denial copy ("Your quoting trial has ended") | Copy drifts per app and leaks entitlement/business detail; a copy matrix nobody maintains | Denial UI renders exclusively from the fixed three-token enum, one template per token |
 | 8 | Admin IA assumes one app (singleton settings page, implicit `kqag` filters) | IA/routing rework mid-alpha; "the app" defaults ambiguously — the class of bug that produces access-control mistakes | "Design for N=2, ship with N=2": every surface and query keyed by `app_key`, rendered as a registry list; no default app anywhere |
-| 9 | Product #2 integrated with an ad-hoc identifier | Inconsistent keys fragment entitlement checks and audit queries; migration on security-relevant tables later | Reserve the key now (`sgca`, to confirm); keys 3–5 lowercase ASCII letters, immutable once written; only `display_name` may change |
+| 9 | Product #2 integrated with an ad-hoc identifier | Inconsistent keys fragment entitlement checks and audit queries; migration on security-relevant tables later | Agree the key before any integration (placeholder `sgca` — unconfirmed until the product contract is approved; do not mint as final); keys 3–5 lowercase ASCII letters, immutable once written; only `display_name` may change |
 | 10 | `private_preview` rendered as a bespoke KQAG-only badge | Each product lifecycle state needs new bespoke UI; status semantics diverge | One shared app-status chip driven solely by the registry enum, with a documented unknown-value fallback |
 
 Summary: the whole class collapses to one architectural habit plus three cheap rules —
@@ -567,33 +599,41 @@ one component contract, one grep — no process overhead.
 
 ## 9. Assumptions and open items to confirm
 
-1. **App key for the SEO product:** proposed placeholder `sgca` — must be confirmed
-   before it is minted anywhere (it propagates into record tags, ordering,
-   entitlement rows, denial templates and audit payloads, and is expensive to change
-   once alpha data exists).
-2. **Canonical display names:** "KQAG" vs "SAQG" for the quote product;
+1. **App key for the SEO product:** `sgca` is a placeholder only and must NOT be
+   minted as final. It remains unconfirmed until vendor SSO/API/workspace/billing
+   details are confirmed and the product contract is approved. It propagates into
+   record tags, ordering, entitlement rows, denial templates and audit payloads, and
+   is expensive to change once alpha data exists — so no registration, entitlements,
+   or SEO integration work until then; the second card in this spec is conceptual.
+2. **Pending-approval backend dependency:** the Add member design (§7.3-02) assumes
+   the pending-approval membership backend lands before implementation. Until it
+   lands, the current add-existing-user flow may ship only as a temporary bootstrap
+   state, never presented as the target production UX.
+3. **Canonical display names:** "KQAG" vs "SAQG" for the quote product;
    "SEO/GEO Content Automation" is a working name only. If a confirmed name is long,
    the button label shortens to "Launch" with the full accessible name retained.
-3. **SEO product app status:** assumed `private_preview` to match KQAG until
+4. **SEO product app status:** assumed `private_preview` to match KQAG until
    registered.
-4. **Reassurance clauses** assume the backend guarantees: failed sign-in writes no
+5. **Reassurance clauses** assume the backend guarantees: failed sign-in writes no
    user-visible state; entitlement toggles never touch product data; failed POSTs
    apply nothing. If any guarantee does not hold, drop the clause.
-5. **Legal footer:** no Privacy/Terms routes exist; the public footer is one
+6. **Legal footer:** no Privacy/Terms routes exist; the public footer is one
    plain-text line + contact until legal pages are added to the route contract.
-6. **Dark scheme:** out of scope by mandate; the Mineral/Verdigris relationship does
+7. **Dark scheme:** out of scope by mandate; the Mineral/Verdigris relationship does
    not invert trivially — a future dark theme is a re-derivation, not a token flip.
-7. The reference product linked in the brief was used as category context only: it
+8. The reference product linked in the brief was used as category context only: it
    was not visited during this work, and no branding, naming, layout or copy derives
    from it.
 
 ## 10. Next steps
 
-1. Confirm the four naming/status assumptions (§9.1–9.3) with the product owner.
-2. Approve the direction (or request changes) — the spec above is written so a coding
+1. Confirm the naming/status assumptions (§9.1, §9.3–9.4) with the product owner.
+2. Land the pending-approval membership backend before implementing Add member
+   (§7.3-02); until then the existing add-existing-user flow is bootstrap-only.
+3. Approve the direction (or request changes) — the spec above is written so a coding
    agent can implement it 1:1 against the existing `platform-shell.ts` baseline:
    token remap, two font families, one new container pattern, the inline confirm
    row (~30 lines of JS), and copy.
-3. Encode the scope guardrails (§8) as the registry file, the card-contract comment,
+4. Encode the scope guardrails (§8) as the registry file, the card-contract comment,
    and the CI grep at the same time as the restyle — they are cheapest before the
    second product exists.
