@@ -19,7 +19,6 @@ const requiredCategories = [
 
 const deferredItems = [
   "full invitation acceptance flow",
-  "disabled existing membership reactivation",
   "audit export/filtering/retention",
   "security/session management UI",
   "revoke-other-sessions",

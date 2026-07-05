@@ -136,8 +136,12 @@ export function renderAppShellPage(): string {
               workspace.membershipRole === "owner" || workspace.membershipRole === "admin"
             );
             if (adminWorkspace) {
-              adminLink.href =
-                "/app/admin?workspaceId=" + encodeURIComponent(adminWorkspace.workspaceId);
+              const adminWorkspaces = context.workspaces.filter((workspace) =>
+                workspace.membershipRole === "owner" || workspace.membershipRole === "admin"
+              );
+              adminLink.href = adminWorkspaces.length === 1
+                ? "/app/admin"
+                : "/app/admin?workspace=" + encodeURIComponent(adminWorkspace.workspaceSlug);
               adminLink.hidden = false;
             } else {
               adminLink.hidden = true;
@@ -326,6 +330,7 @@ export function renderAdminShellPage(): string {
         <section id="workspaceSummary" class="workspace" hidden></section>
         <section id="addMember" class="workspace" hidden>
           <h2>Add Existing User</h2>
+          <p id="addMemberResult" class="empty" role="status" hidden></p>
           <form id="addMemberForm" class="inline-form">
             <label>
               <strong>Email</strong>
@@ -364,13 +369,17 @@ export function renderAdminShellPage(): string {
           const state = {
             context: null,
             csrfToken: null,
-            workspace: null
+            workspace: null,
+            activityEvents: [],
+            activityPage: 0,
+            activityPageSize: 10
           };
 
           const status = document.getElementById("status");
           const identity = document.getElementById("identity");
           const workspaceSummary = document.getElementById("workspaceSummary");
           const addMember = document.getElementById("addMember");
+          const addMemberResult = document.getElementById("addMemberResult");
           const addMemberForm = document.getElementById("addMemberForm");
           const ownerTransfer = document.getElementById("ownerTransfer");
           const members = document.getElementById("members");
@@ -470,12 +479,17 @@ export function renderAdminShellPage(): string {
 
           function chooseWorkspace(context) {
             const params = new URLSearchParams(window.location.search);
+            const requestedSlug = params.get("workspace");
             const requested = params.get("workspaceId");
             const adminWorkspaces = Array.isArray(context.workspaces)
               ? context.workspaces.filter((workspace) =>
                   workspace.membershipRole === "owner" || workspace.membershipRole === "admin"
                 )
               : [];
+
+            if (requestedSlug) {
+              return adminWorkspaces.find((workspace) => workspace.workspaceSlug === requestedSlug) ?? null;
+            }
 
             if (requested) {
               return adminWorkspaces.find((workspace) => workspace.workspaceId === requested) ?? null;
@@ -511,7 +525,7 @@ export function renderAdminShellPage(): string {
             workspaceSummary.replaceChildren(
               sectionHeading("Workspace"),
               textBlock("Name", workspace.workspaceName),
-              textBlock("Workspace ID", workspace.workspaceId),
+              textBlock("Workspace slug", workspace.workspaceSlug),
               textBlock("Role", workspace.membershipRole)
             );
           }
@@ -528,6 +542,9 @@ export function renderAdminShellPage(): string {
             const table = document.createElement("table");
             table.append(tableHead(["Name", "Email", "Role", "Status", "Last login", "Actions"]));
             const body = document.createElement("tbody");
+            const activeOwnerCount = memberList.filter((member) =>
+              member.role === "owner" && member.status === "active"
+            ).length;
 
             for (const member of memberList) {
               const row = document.createElement("tr");
@@ -537,7 +554,7 @@ export function renderAdminShellPage(): string {
                 roleCell(member),
                 tableCell(member.status || ""),
                 tableCell(formatDate(member.user?.lastLoginAt)),
-                memberActionsCell(member)
+                memberActionsCell(member, activeOwnerCount)
               );
               body.append(row);
             }
@@ -592,18 +609,27 @@ export function renderAdminShellPage(): string {
 
           function renderActivity(eventList) {
             activity.hidden = false;
+            state.activityEvents = Array.isArray(eventList) ? eventList : [];
+            state.activityPage = 0;
+            renderActivityPage();
+          }
+
+          function renderActivityPage() {
             activity.replaceChildren(sectionHeading("Activity"));
 
-            if (!Array.isArray(eventList) || eventList.length === 0) {
+            const eventList = state.activityEvents;
+            if (eventList.length === 0) {
               activity.append(emptyMessage("No recent workspace activity is available."));
               return;
             }
 
+            const start = state.activityPage * state.activityPageSize;
+            const visibleEvents = eventList.slice(start, start + state.activityPageSize);
             const table = document.createElement("table");
             table.append(tableHead(["Action", "Subject", "Actor", "Time", "Details"]));
             const body = document.createElement("tbody");
 
-            for (const event of eventList) {
+            for (const event of visibleEvents) {
               const row = document.createElement("tr");
               row.append(
                 tableCell(activityLabel(event)),
@@ -617,6 +643,40 @@ export function renderAdminShellPage(): string {
 
             table.append(body);
             activity.append(table);
+            activity.append(activityPager(start, visibleEvents.length, eventList.length));
+          }
+
+          function activityPager(start, visibleCount, totalCount) {
+            const pager = document.createElement("div");
+            pager.className = "pager";
+            const summary = document.createElement("p");
+            summary.className = "empty";
+            summary.textContent =
+              "Showing " + String(start + 1) + "-" + String(start + visibleCount) +
+              " of " + String(totalCount) + " recent events";
+
+            const newer = document.createElement("button");
+            newer.type = "button";
+            newer.className = "secondary-action compact";
+            newer.textContent = "Newer";
+            newer.disabled = state.activityPage === 0;
+            newer.addEventListener("click", () => {
+              state.activityPage = Math.max(0, state.activityPage - 1);
+              renderActivityPage();
+            });
+
+            const older = document.createElement("button");
+            older.type = "button";
+            older.className = "secondary-action compact";
+            older.textContent = "Older";
+            older.disabled = start + visibleCount >= totalCount;
+            older.addEventListener("click", () => {
+              state.activityPage += 1;
+              renderActivityPage();
+            });
+
+            pager.append(summary, newer, older);
+            return pager;
           }
 
           function roleCell(member) {
@@ -624,16 +684,19 @@ export function renderAdminShellPage(): string {
             const select = document.createElement("select");
             const roles = ["owner", "admin", "member", "viewer"];
             const isSelf = member.user?.id === state.context?.user?.userId;
+            const actorIsOwner = state.workspace?.membershipRole === "owner";
 
             for (const role of roles) {
               const option = document.createElement("option");
               option.value = role;
               option.textContent = role;
               option.selected = member.role === role;
+              option.disabled = role === "owner" && !actorIsOwner;
               select.append(option);
             }
 
-            select.disabled = isSelf || member.status !== "active";
+            select.disabled =
+              isSelf || member.status !== "active" || (member.role === "owner" && !actorIsOwner);
             select.addEventListener("change", () => {
               void changeMemberRole(member.membershipId, select.value);
             });
@@ -641,15 +704,24 @@ export function renderAdminShellPage(): string {
             return cell;
           }
 
-          function memberActionsCell(member) {
+          function memberActionsCell(member, activeOwnerCount) {
             const cell = document.createElement("td");
             const button = document.createElement("button");
             const isSelf = member.user?.id === state.context?.user?.userId;
+            const isProtectedOwner = member.role === "owner";
+            const isLastActiveOwner =
+              member.role === "owner" && member.status === "active" && activeOwnerCount <= 1;
+            const canAct = !isSelf && !isProtectedOwner && !isLastActiveOwner;
             button.type = "button";
             button.className = "secondary-action compact";
-            button.textContent = "Disable";
-            button.disabled = isSelf || member.status !== "active";
+            button.textContent = member.status === "disabled" ? "Reactivate" : "Disable";
+            button.disabled = !canAct || !["active", "disabled"].includes(member.status);
             button.addEventListener("click", () => {
+              if (member.status === "disabled") {
+                void reactivateMember(member.membershipId);
+                return;
+              }
+
               void disableMember(member.membershipId);
             });
             cell.append(button);
@@ -665,7 +737,15 @@ export function renderAdminShellPage(): string {
 
           async function disableMember(membershipId) {
             await postAdminAction(
-              adminMemberUrl(state.workspace.workspaceId, membershipId) + "/disable"
+              adminMemberUrl(state.workspace.workspaceId, membershipId) + "/disable",
+              "Member disabled."
+            );
+          }
+
+          async function reactivateMember(membershipId) {
+            await postAdminAction(
+              adminMemberUrl(state.workspace.workspaceId, membershipId) + "/reactivate",
+              "Member reactivated."
             );
           }
 
@@ -687,12 +767,18 @@ export function renderAdminShellPage(): string {
               return;
             }
 
-            await postAdminAction(addMemberUrl(state.workspace.workspaceId, email, role));
-            addMemberForm.reset();
+            const result = await postAdminAction(
+              addMemberUrl(state.workspace.workspaceId, email, role),
+              "User added to workspace."
+            );
+            if (result) {
+              addMemberForm.reset();
+            }
           }
 
-          async function postAdminAction(url) {
+          async function postAdminAction(url, successMessage = "Workspace admin change saved.") {
             setStatus("Saving workspace admin change...");
+            setAddMemberResult("");
 
             try {
               const csrfToken = await getCsrfToken();
@@ -704,17 +790,45 @@ export function renderAdminShellPage(): string {
                   "x-csrf-token": csrfToken
                 }
               });
+              const payload = await readJson(response);
 
               if (!response.ok) {
-                setStatus("Workspace admin action could not be completed.");
+                const message = safeAdminActionMessage(payload);
+                setStatus(message);
+                setAddMemberResult(message);
                 await loadAdminData();
-                return;
+                return false;
               }
 
               await loadAdminData();
+              setStatus(successMessage);
+              setAddMemberResult(successMessage);
+              return true;
             } catch {
-              setStatus("Workspace admin action could not be completed.");
+              const message = "Workspace admin action could not be completed.";
+              setStatus(message);
+              setAddMemberResult(message);
+              return false;
             }
+          }
+
+          function safeAdminActionMessage(payload) {
+            if (payload && typeof payload.message === "string" && payload.message.trim()) {
+              return payload.message;
+            }
+
+            return "Workspace admin action could not be completed.";
+          }
+
+          function setAddMemberResult(message) {
+            if (!message) {
+              addMemberResult.hidden = true;
+              addMemberResult.textContent = "";
+              return;
+            }
+
+            addMemberResult.textContent = message;
+            addMemberResult.hidden = false;
           }
 
           async function getCsrfToken() {
@@ -798,6 +912,8 @@ export function renderAdminShellPage(): string {
                 return "Member added";
               case "workspace.membership.disabled":
                 return "Member disabled";
+              case "workspace.membership.reactivated":
+                return "Member reactivated";
               case "workspace.membership.role_changed":
                 return "Member role changed";
               default:
@@ -817,7 +933,8 @@ export function renderAdminShellPage(): string {
           }
 
           function actorLabel(event) {
-            return event.actorDisplayName || event.actorEmail || "Platform user";
+            return event.actorDisplayName || event.actorEmail ||
+              (event.actorUserId ? "Platform user" : "System");
           }
 
           function metadataCell(metadata) {
@@ -901,6 +1018,8 @@ export function renderAdminShellPage(): string {
             identity.hidden = true;
             workspaceSummary.hidden = true;
             addMember.hidden = true;
+            addMemberResult.hidden = true;
+            addMemberResult.textContent = "";
             ownerTransfer.hidden = true;
             members.hidden = true;
             entitlements.hidden = true;
@@ -986,6 +1105,28 @@ export function renderAdminShellPage(): string {
           }
         })();
       </script>
+    `,
+  });
+}
+
+export function renderAuthErrorPage(): string {
+  return htmlDocument({
+    title: "Swooshz Platform Access Not Approved",
+    body: `
+      <main class="landing">
+        <section class="panel">
+          <p class="eyebrow">Swooshz Platform internal access</p>
+          <h1>Access not approved</h1>
+          <p class="lede">
+            This account is not approved for Swooshz Platform. Use an approved
+            account or contact your workspace admin.
+          </p>
+          <div class="login-actions">
+            <a class="primary-action" href="/api/platform/auth/start">Try another Google account</a>
+            <a class="secondary-action" href="/">Back to sign in</a>
+          </div>
+        </section>
+      </main>
     `,
   });
 }
@@ -1262,6 +1403,18 @@ function htmlDocument({
       margin: 0;
     }
 
+    .pager {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .pager .empty {
+      margin-right: auto;
+    }
+
     button:disabled,
     select:disabled {
       cursor: not-allowed;
@@ -1331,6 +1484,7 @@ function htmlDocument({
       tr,
       th,
       td,
+      .pager,
       .inline-form {
         display: block;
         width: 100%;

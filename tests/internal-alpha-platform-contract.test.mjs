@@ -65,16 +65,18 @@ test("internal alpha platform contract documents the admin foundation status", a
   const contract = await readContract();
 
   assert.match(contract, /Owner\/admin service methods and protected HTTP routes can list workspace members/i);
-  assert.match(contract, /disable memberships/i);
+  assert.match(contract, /disable and reactivate non-owner memberships/i);
   assert.match(contract, /change roles/i);
   assert.match(contract, /list app entitlements, and enable\/disable KQAG app entitlement/i);
   assert.match(contract, /addExistingWorkspaceUserByEmail/i);
   assert.match(contract, /existing active provider-backed user by normalized email/i);
   assert.match(contract, /\/api\/platform\/workspaces\/:workspaceId\/members\/add\?email=<email>&role=<role>/i);
   assert.match(contract, /workspace\.membership\.added/i);
+  assert.match(contract, /reactivateWorkspaceMembership/i);
+  assert.match(contract, /workspace\.membership\.reactivated/i);
   assert.match(contract, /no invitation delivery/i);
   assert.match(contract, /Full email invitation delivery remains future scope/i);
-  assert.match(contract, /disabled existing membership reactivation remains future scope/i);
+  assert.match(contract, /disabled non-owner workspace membership/i);
   assert.match(contract, /listWorkspaceAuditEventsForAdmin/i);
   assert.match(contract, /\/api\/platform\/workspaces\/:workspaceId\/audit-events\?limit=<number>/i);
   assert.match(contract, /Activity section shows recent workspace audit events/i);

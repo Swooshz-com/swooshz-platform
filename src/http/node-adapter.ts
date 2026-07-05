@@ -8,6 +8,7 @@ import type { WorkspaceAdminIdFactory } from "../platform/workspace-admin-id.js"
 import {
   handleAuthCallbackRequest,
   handleAuthStartRequest,
+  type AuthCallbackFailureCategory,
   type AuthCallbackHttpDependencies,
   type AuthStartHttpDependencies,
 } from "./auth-handlers.js";
@@ -28,6 +29,7 @@ import {
   handleWorkspaceMembersAdminRequest,
   handleWorkspaceMemberRoleChangeRequest,
   handleWorkspaceMembershipDisableRequest,
+  handleWorkspaceMembershipReactivateRequest,
   type HttpRequestHeaders,
   type HttpResponseLike,
   type KqagBrowserLaunchDependencies,
@@ -40,6 +42,7 @@ import {
 } from "./route-contracts.js";
 import {
   renderAdminShellPage,
+  renderAuthErrorPage,
   renderAppShellPage,
   renderLandingPage,
 } from "./platform-shell.js";
@@ -168,8 +171,16 @@ export async function handleNodePlatformHttpRequest(
       return authCallbackFailureResponse(500);
     }
 
-    return toNodeResponse(
-      await handleAuthCallbackRequest(dependencies.authCallback, {
+    let failureCategory: AuthCallbackFailureCategory | null = null;
+    const callbackResponse = await handleAuthCallbackRequest(
+      {
+        ...dependencies.authCallback,
+        callbackFailureReporter(diagnostic) {
+          failureCategory = diagnostic.category;
+          dependencies.authCallback?.callbackFailureReporter?.(diagnostic);
+        },
+      },
+      {
         query: {
           code: optionalSearchParam(parsedUrl, "code"),
           state: optionalSearchParam(parsedUrl, "state"),
@@ -178,8 +189,21 @@ export async function handleNodePlatformHttpRequest(
         },
         now: dependencies.now(),
         cookie: dependencies.cookie,
-      }),
+      },
     );
+
+    if (callbackResponse.status !== 302) {
+      return htmlResponse(
+        callbackResponse.status,
+        renderAuthErrorPage(),
+        {
+          ...noStoreHeaders(),
+          "x-auth-failure": safeAuthFailureHeader(failureCategory),
+        },
+      );
+    }
+
+    return toNodeResponse(callbackResponse);
   }
 
   if (route.id === "platform_session_app_access") {
@@ -341,6 +365,35 @@ export async function handleNodePlatformHttpRequest(
 
     return toNodeResponse(
       await handleWorkspaceMembershipDisableRequest(dependencies.repositories, {
+        headers,
+        workspaceId: requiredRouteParam(routeMatch, "workspaceId"),
+        membershipId: requiredRouteParam(routeMatch, "membershipId"),
+        auditEventId: createWorkspaceAdminAuditEventId(dependencies),
+        now,
+        cookie: dependencies.cookie,
+      }),
+    );
+  }
+
+  if (route.id === "platform_workspace_member_reactivate") {
+    const now = dependencies.now();
+    const securityResult = await validateAdminRouteSecurity({
+      route,
+      headers,
+      now,
+      dependencies,
+    });
+
+    if (!securityResult.allowed) {
+      return securityFailureResponse(
+        securityResult.recommendedStatus,
+        securityResult.reason,
+        noStoreHeaders(),
+      );
+    }
+
+    return toNodeResponse(
+      await handleWorkspaceMembershipReactivateRequest(dependencies.repositories, {
         headers,
         workspaceId: requiredRouteParam(routeMatch, "workspaceId"),
         membershipId: requiredRouteParam(routeMatch, "membershipId"),
@@ -827,6 +880,18 @@ function authCallbackFailureResponse(status: 400 | 500): NodePlatformHttpRespons
     outcome: "error",
     message: "Authentication callback could not be completed.",
   });
+}
+
+function safeAuthFailureHeader(category: AuthCallbackFailureCategory | null): string {
+  switch (category) {
+    case "email_not_allowed":
+    case "domain_not_allowed":
+    case "verified_email_required":
+    case "provider_identity_rejected":
+      return "access_not_approved";
+    default:
+      return "auth_callback_failed";
+  }
 }
 
 function appLaunchFailureResponse(): NodePlatformHttpResponse {

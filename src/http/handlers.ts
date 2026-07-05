@@ -29,6 +29,7 @@ import {
   listWorkspaceAppEntitlementsForAdmin,
   listWorkspaceAuditEventsForAdmin,
   listWorkspaceMembersForAdmin,
+  reactivateWorkspaceMembership,
   setWorkspaceAppEntitlementStatus,
   WorkspaceAdminServiceError,
 } from "../platform/workspace-admin-service.js";
@@ -156,6 +157,11 @@ export interface WorkspaceMemberAddHttpRequest extends WorkspaceAdminHttpRequest
 }
 
 export interface WorkspaceMembershipDisableHttpRequest extends WorkspaceAdminHttpRequest {
+  membershipId: string;
+  auditEventId: string;
+}
+
+export interface WorkspaceMembershipReactivateHttpRequest extends WorkspaceAdminHttpRequest {
   membershipId: string;
   auditEventId: string;
 }
@@ -609,7 +615,7 @@ export async function handleWorkspaceMemberAddRequest(
       },
     };
   } catch (error) {
-    return workspaceAdminErrorResponse(error);
+    return workspaceMemberAddErrorResponse(error);
   }
 }
 
@@ -625,6 +631,38 @@ export async function handleWorkspaceMembershipDisableRequest(
 
   try {
     const membership = await disableWorkspaceMembership(repositories, {
+      sessionId,
+      workspaceId: request.workspaceId,
+      now: request.now,
+      membershipId: request.membershipId,
+      auditEventId: request.auditEventId,
+    });
+
+    return {
+      status: 200,
+      headers: noStoreHeaders(),
+      body: {
+        outcome: "updated",
+        membership: toWorkspaceMembershipHttpSummary(membership),
+      },
+    };
+  } catch (error) {
+    return workspaceAdminErrorResponse(error);
+  }
+}
+
+export async function handleWorkspaceMembershipReactivateRequest(
+  repositories: PlatformRepositories,
+  request: WorkspaceMembershipReactivateHttpRequest,
+): Promise<HttpResponseLike> {
+  const sessionId = extractSessionId(request.headers, request.cookie);
+
+  if (!sessionId) {
+    return workspaceAdminMissingSession();
+  }
+
+  try {
+    const membership = await reactivateWorkspaceMembership(repositories, {
       sessionId,
       workspaceId: request.workspaceId,
       now: request.now,
@@ -850,6 +888,54 @@ function workspaceAdminErrorResponse(error: unknown): HttpResponseLike {
     },
   };
 }
+
+function workspaceMemberAddErrorResponse(error: unknown): HttpResponseLike {
+  if (error instanceof WorkspaceAdminServiceError) {
+    if (error.code === "not_authorized") {
+      return {
+        status: 403,
+        headers: noStoreHeaders(),
+        body: {
+          outcome: "denied",
+          reason: "not_authorized",
+        },
+      };
+    }
+
+    return {
+      status: workspaceAdminErrorStatus(error),
+      headers: noStoreHeaders(),
+      body: {
+        outcome: "error",
+        message: workspaceMemberAddErrorMessage(error),
+      },
+    };
+  }
+
+  return {
+    status: 500,
+    headers: noStoreHeaders(),
+    body: {
+      outcome: "error",
+      message: genericWorkspaceAdminMessage,
+    },
+  };
+}
+
+function workspaceMemberAddErrorMessage(error: WorkspaceAdminServiceError): string {
+  switch (error.code) {
+    case "not_found":
+      return "User could not be added. They must sign in once with an approved Google account before they can be added to this workspace.";
+    case "membership_conflict":
+      return "User is already a member of this workspace.";
+    case "invalid_role":
+      return "Selected role is not allowed.";
+    default:
+      return genericWorkspaceAdminMessage;
+  }
+}
+
+const genericWorkspaceAdminMessage = "Workspace admin action could not be completed.";
 
 function workspaceAdminErrorStatus(error: WorkspaceAdminServiceError): number {
   switch (error.code) {

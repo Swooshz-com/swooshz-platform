@@ -24,11 +24,11 @@ Platform does not own KQAG quote data. KQAG owns quote generation, profiles, pri
 - Logout/session revocation behavior: logout is POST-only, CSRF/origin protected in the Node adapter, revokes the current session when present, and clears the browser session cookie.
 - Fail-closed session context behavior: the session context endpoint returns safe unauthenticated results for missing, expired, revoked, inactive-user, or missing-user cases.
 - CSRF token handling for browser state-changing routes: state-changing browser-cookie routes require Origin/Referer validation plus an `x-csrf-token` header; CSRF service stores only token hashes and lifecycle metadata.
-- Origin/Referer checks for state-changing admin routes: member add, role change, membership disable, and KQAG entitlement status mutation routes call the shared request-security helper before mutation.
+- Origin/Referer checks for state-changing admin routes: member add, role change, membership disable, membership reactivation, and KQAG entitlement status mutation routes call the shared request-security helper before mutation.
 - App-launch token properties: app launch tokens are one-time, hashed at rest, short-lived, consumed once, and accepted by consume only as a header-only raw token. The browser-safe KQAG launch path keeps no browser URL/storage token.
 - Read-only browser-session routes that do not require CSRF: session context, session app-access checks, workspace member listing, app-entitlement listing, and workspace audit browsing do not require CSRF because they are read-only no-store routes that do not mutate Platform records.
 - Header-token app launch consume route: `POST /api/platform/apps/launch/consume` does not require browser CSRF because it does not use the browser session cookie; it requires the raw one-time launch token in the request header and consumes it once.
-- Audit events for workspace/app-access admin actions: membership add, role change, membership disable, KQAG entitlement enable, and KQAG entitlement disable append privacy-minimized audit events through the workspace admin service.
+- Audit events for workspace/app-access admin actions: membership add, role change, membership disable, membership reactivation, KQAG entitlement enable, and KQAG entitlement disable append privacy-minimized audit events through the workspace admin service.
 
 ## Explicitly Deferred Items
 

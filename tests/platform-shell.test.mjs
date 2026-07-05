@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  renderAuthErrorPage,
   renderAdminShellPage,
   renderAppShellPage,
   renderLandingPage,
@@ -36,7 +37,9 @@ test("app shell references only existing browser JSON APIs", () => {
   assert.match(html, /\/api\/platform\/session\/csrf/);
   assert.match(html, /\/api\/platform\/apps\/launch\/open/);
   assert.match(html, /\/api\/platform\/logout/);
-  assert.match(html, /\/app\/admin\?workspaceId=/);
+  assert.match(html, /adminLink\.href = adminWorkspaces\.length === 1\s*\?\s*"\/app\/admin"/);
+  assert.match(html, /"\/app\/admin\?workspace=" \+ encodeURIComponent\(adminWorkspace\.workspaceSlug\)/);
+  assert.doesNotMatch(html, /"\/app\/admin\?workspaceId="/);
   assert.match(html, /id="adminLink"[^>]*hidden/);
 });
 
@@ -69,6 +72,7 @@ test("admin shell references protected admin APIs and CSRF-protected actions", (
   assert.match(html, /\/add\?email=/);
   assert.match(html, /\/role\?role=/);
   assert.match(html, /\/disable/);
+  assert.match(html, /\/reactivate/);
   assert.match(html, /\/app-entitlements/);
   assert.match(html, /\/audit-events\?limit=50/);
   assert.match(html, /\/kqag\/status\?status=/);
@@ -81,6 +85,7 @@ test("admin shell includes add-existing-user form with allowed non-owner roles",
   const html = renderAdminShellPage();
 
   assert.match(html, /id="addMemberForm"/);
+  assert.match(html, /id="addMemberResult"/);
   assert.match(html, /name="email"/);
   assert.match(html, /name="role"/);
   assert.match(
@@ -89,7 +94,11 @@ test("admin shell includes add-existing-user form with allowed non-owner roles",
   );
   assert.doesNotMatch(html, /value="owner"/);
   assert.match(html, /addExistingMember/);
-  assert.match(html, /await postAdminAction\(addMemberUrl/);
+  assert.match(html, /User added to workspace\./);
+  assert.match(html, /setAddMemberResult/);
+  assert.match(html, /safeAdminActionMessage/);
+  assert.match(html, /payload\.message/);
+  assert.match(html, /Workspace admin action could not be completed\./);
 });
 
 test("admin shell documents owner transfer as unavailable in internal alpha", () => {
@@ -113,16 +122,22 @@ test("admin shell includes Activity section for safe audit browsing", () => {
   assert.match(html, /KQAG access enabled/);
   assert.match(html, /KQAG access disabled/);
   assert.match(html, /Member role changed/);
+  assert.match(html, /Member reactivated/);
   assert.match(html, /Action/);
   assert.match(html, /Subject/);
   assert.match(html, /Actor/);
   assert.match(html, /Time/);
   assert.match(html, /Details/);
+  assert.match(html, /activityPageSize: 10/);
+  assert.match(html, /function activityPager/);
+  assert.match(html, /Older/);
+  assert.match(html, /Newer/);
   assert.match(html, /Previous role/);
   assert.match(html, /New status/);
   assert.match(html, /normalizeAppKeyMetadata/);
   assert.match(html, /value: "KQAG"/);
   assert.match(html, /Platform user/);
+  assert.match(html, /System/);
   assert.match(html, /title = raw/);
 });
 
@@ -173,9 +188,20 @@ test("admin shell limits usable controls to owner/admin workspace context", () =
   const html = renderAdminShellPage();
 
   assert.match(html, /membershipRole === "owner" \|\| workspace\.membershipRole === "admin"/);
+  assert.match(html, /params\.get\("workspace"\)/);
+  assert.match(html, /workspace\.workspaceSlug === requestedSlug/);
+  assert.match(html, /Workspace slug/);
+  assert.doesNotMatch(html, /Workspace ID/);
   assert.match(html, /Workspace admin is available to workspace owners and admins only\./);
-  assert.match(html, /select\.disabled = isSelf \|\| member\.status !== "active"/);
-  assert.match(html, /button\.disabled = isSelf \|\| member\.status !== "active"/);
+  assert.match(html, /actorIsOwner = state\.workspace\?\.membershipRole === "owner"/);
+  assert.match(html, /option\.disabled = role === "owner" && !actorIsOwner/);
+  assert.match(html, /member\.role === "owner" && !actorIsOwner/);
+  assert.match(html, /button\.textContent = member\.status === "disabled" \? "Reactivate" : "Disable"/);
+  assert.match(html, /button\.disabled = !canAct \|\| !\["active", "disabled"\]\.includes\(member\.status\)/);
+  assert.match(html, /isProtectedOwner = member\.role === "owner"/);
+  assert.match(html, /"Member disabled\."/);
+  assert.match(html, /"Member reactivated\."/);
+  assert.doesNotMatch(html, /button\.disabled = isSelf \|\| member\.status !== "active"/);
 });
 
 test("admin shell keeps secret raw-auth and KQAG quote material out of static HTML", () => {
@@ -187,6 +213,18 @@ test("admin shell keeps secret raw-auth and KQAG quote material out of static HT
   assert.doesNotMatch(html, /DATABASE_URL|postgresql:\/\/|private\.example/i);
   assert.doesNotMatch(html, /quote export|pricing|xlsx|quote session/i);
   assert.doesNotMatch(html, /localStorage|sessionStorage|clipboard/);
+});
+
+test("auth error page renders safe retry actions", () => {
+  const html = renderAuthErrorPage();
+
+  assert.match(html, /Access not approved/);
+  assert.match(html, /not approved for Swooshz Platform/);
+  assert.match(html, /href="\/api\/platform\/auth\/start"/);
+  assert.match(html, /Try another Google account/);
+  assert.match(html, /href="\/"/);
+  assert.doesNotMatch(html, /auth-code|raw-state|raw-nonce|provider-token|raw-claim/i);
+  assert.doesNotMatch(html, /cookie|DATABASE_URL|postgresql:\/\//i);
 });
 
 test("platform shell module does not import frontend frameworks provider SDKs DB KQAG or migrations", async () => {

@@ -510,14 +510,14 @@ test("runtime auth callback diagnostics expose only safe failure categories", as
     url: "/api/platform/auth/callback?code=synthetic-auth-code",
     headers: {},
   });
-  const body = JSON.parse(response.body);
 
   assert.equal(response.statusCode, 400);
-  assert.deepEqual(body, {
-    outcome: "error",
-    message: "Authentication callback could not be completed.",
-  });
+  assert.equal(response.headers["content-type"], "text/html; charset=utf-8");
+  assert.equal(response.headers["x-auth-failure"], "auth_callback_failed");
+  assert.match(response.body, /Access not approved/);
+  assert.match(response.body, /\/api\/platform\/auth\/start/);
   assert.deepEqual(diagnostics, [{ category: "missing_state" }]);
+  assert.doesNotMatch(response.body, /synthetic-auth-code|missing_state|provider-subject/i);
   assert.doesNotMatch(JSON.stringify(diagnostics), rawAuthPattern);
   assertResponseIsPrivacySafe(response);
 });

@@ -69,6 +69,11 @@ export interface WorkspaceMembershipDisableInput extends WorkspaceAdminInput {
   auditEventId: string;
 }
 
+export interface WorkspaceMembershipReactivateInput extends WorkspaceAdminInput {
+  membershipId: string;
+  auditEventId: string;
+}
+
 export interface WorkspaceExistingUserAddInput extends WorkspaceAdminInput {
   targetEmail: string;
   role: Role;
@@ -107,6 +112,8 @@ export interface WorkspaceAuditEventSummary {
   eventId: string;
   workspaceId: string;
   actorUserId: string;
+  actorDisplayName: string | null;
+  actorEmail: string | null;
   eventType: string;
   targetType: string;
   targetId: string;
@@ -162,10 +169,13 @@ export async function listWorkspaceAuditEventsForAdmin(
       input.workspaceId,
       auditEventLimit(input.limit),
     );
+    const summaries = await Promise.all(
+      events.map((event) => toAuditEventSummary(repositories, event)),
+    );
 
     return {
       workspaceId: input.workspaceId,
-      events: events.map(toAuditEventSummary),
+      events: summaries,
     };
   });
 }
@@ -185,6 +195,8 @@ export async function changeWorkspaceMemberRole(
     const target = findTargetMembership(memberships, input.membershipId);
     const previousRole = target.role;
     const previousStatus = target.status;
+
+    assertOwnerMutationAllowed(context, target, input.role);
 
     if (previousRole === "owner" && input.role !== "owner" && activeOwnerCount(memberships) <= 1) {
       throw adminError("last_owner_required", "Workspace must keep at least one active owner.");
@@ -238,6 +250,8 @@ export async function disableWorkspaceMembership(
     const previousRole = target.role;
     const previousStatus = target.status;
 
+    assertOwnerMutationAllowed(context, target);
+
     if (previousRole === "owner" && previousStatus === "active" && activeOwnerCount(memberships) <= 1) {
       throw adminError("last_owner_required", "Workspace must keep at least one active owner.");
     }
@@ -267,6 +281,64 @@ export async function disableWorkspaceMembership(
       metadata: {
         previousRole,
         previousStatus,
+        targetUserId: target.userId,
+      },
+    });
+
+    return updated;
+  });
+}
+
+export async function reactivateWorkspaceMembership(
+  repositories: PlatformRepositories,
+  input: WorkspaceMembershipReactivateInput,
+): Promise<Membership> {
+  return runWorkspaceAdminTransaction(repositories, async (transactionRepositories) => {
+    const context = await requireAdminContext(transactionRepositories, input);
+    requireAuditRepository(transactionRepositories);
+    const memberships = await transactionRepositories.memberships.listForWorkspace(
+      input.workspaceId,
+    );
+    const target = findTargetMembership(memberships, input.membershipId);
+    const previousRole = target.role;
+    const previousStatus = target.status;
+
+    assertOwnerMutationAllowed(context, target);
+
+    if (target.userId === context.actor.id) {
+      throw adminError("self_change_not_allowed", "Administrators cannot reactivate themselves.");
+    }
+
+    if (previousRole === "owner") {
+      throw adminError("invalid_role", "Owner membership reactivation is not supported here.");
+    }
+
+    if (previousStatus !== "disabled") {
+      throw adminError("membership_conflict", "Workspace membership is not disabled.");
+    }
+
+    const updated = await transactionRepositories.memberships.updateStatus(
+      target.id,
+      "active",
+      input.now,
+    );
+
+    if (!updated) {
+      throw adminError("not_found", "Workspace membership was not found.");
+    }
+
+    await appendAuditEvent(transactionRepositories, {
+      id: input.auditEventId,
+      workspaceId: input.workspaceId,
+      actorUserId: context.actor.id,
+      eventType: "workspace.membership.reactivated",
+      targetType: "membership",
+      targetId: target.id,
+      createdAt: input.now,
+      metadata: {
+        previousRole,
+        previousStatus,
+        newStatus: "active",
         targetUserId: target.userId,
       },
     });
@@ -384,8 +456,8 @@ export async function setWorkspaceAppEntitlementStatus(
     requireAuditRepository(transactionRepositories);
     const app = await transactionRepositories.apps.findByKey(input.appKey);
 
-    if (!app || app.key !== "kqag" || !["available", "private_preview"].includes(app.status)) {
-      throw adminError("not_found", "KQAG app was not found.");
+    if (!app || !["available", "private_preview"].includes(app.status)) {
+      throw adminError("not_found", "Workspace app was not found.");
     }
 
     const existing = await transactionRepositories.appEntitlements.findForWorkspaceApp(
@@ -503,17 +575,29 @@ function toEntitlementSummary(
   };
 }
 
-function toAuditEventSummary(event: AuditEvent): WorkspaceAuditEventSummary {
+async function toAuditEventSummary(
+  repositories: PlatformRepositories,
+  event: AuditEvent,
+): Promise<WorkspaceAuditEventSummary> {
+  const actor = event.actorUserId ? await repositories.users.findById(event.actorUserId) : null;
+
   return {
     eventId: event.id,
     workspaceId: event.workspaceId ?? "",
     actorUserId: event.actorUserId ?? "",
+    actorDisplayName: safeUserLabel(actor?.displayName),
+    actorEmail: safeUserLabel(actor?.email),
     eventType: event.eventType,
     targetType: event.targetType ?? "",
     targetId: event.targetId ?? "",
     createdAt: event.createdAt,
     metadata: safeAuditMetadata(event.metadata),
   };
+}
+
+function safeUserLabel(value: string | null | undefined): string | null {
+  const normalized = value?.trim();
+  return normalized || null;
 }
 
 function findTargetMembership(
@@ -533,6 +617,19 @@ function activeOwnerCount(memberships: readonly Membership[]): number {
   return memberships.filter(
     (membership) => membership.role === "owner" && membership.status === "active",
   ).length;
+}
+
+function assertOwnerMutationAllowed(
+  context: AdminContext,
+  target: Membership,
+  nextRole?: Role,
+): void {
+  if (
+    context.actorMembership.role !== "owner" &&
+    (target.role === "owner" || nextRole === "owner")
+  ) {
+    throw adminError("not_authorized", "Only workspace owners can manage owner memberships.");
+  }
 }
 
 function assertValidRole(role: Role): void {

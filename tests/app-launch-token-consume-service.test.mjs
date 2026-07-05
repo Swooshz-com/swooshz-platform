@@ -117,6 +117,64 @@ test("successful consume returns safe context and marks launch token consumed ex
   assert.equal(calls.consumeUnconsumed, 1);
 });
 
+test("future app consume re-check keeps viewer launch denied by default", async () => {
+  const futureApp = {
+    id: "app_ops_console",
+    key: "ops_console",
+    name: "Ops Console",
+    status: "available",
+    launchUrl: "https://apps.example.invalid/ops-console",
+    createdAt: now,
+    updatedAt: now,
+  };
+  const futureEntitlement = {
+    id: "entitlement_ops_console",
+    workspaceId: "workspace_koncept_images",
+    appId: futureApp.id,
+    status: "enabled",
+    grantedByUserId: "user_owner_example",
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  for (const role of ["owner", "admin", "member"]) {
+    const { dependencies, input, records } = consumeFixture({
+      role,
+      app: futureApp,
+      entitlement: futureEntitlement,
+      launchToken: {
+        appId: futureApp.id,
+      },
+      inputAppKey: futureApp.key,
+    });
+
+    const result = await consumeAppLaunchToken(dependencies, input);
+
+    assert.equal(result.outcome, "consumed");
+    assert.equal(result.app.appKey, futureApp.key);
+    assert.equal(records.appLaunchTokens[0].consumedAt, now);
+    assertResponseIsPrivacySafe(result);
+  }
+
+  const viewer = consumeFixture({
+    role: "viewer",
+    app: futureApp,
+    entitlement: futureEntitlement,
+    launchToken: {
+      appId: futureApp.id,
+    },
+    inputAppKey: futureApp.key,
+  });
+
+  const viewerResult = await consumeAppLaunchToken(viewer.dependencies, viewer.input);
+
+  assert.equal(viewerResult.outcome, "denied");
+  assert.equal(viewerResult.reason, "app_access_denied");
+  assert.equal(viewerResult.decision.result, "role_not_permitted");
+  assert.equal(viewer.records.appLaunchTokens[0].consumedAt, null);
+  assertResponseIsPrivacySafe(viewerResult);
+});
+
 test("consume race returns consumed failure without returning context", async () => {
   const { dependencies, input } = consumeFixture({ consumeReturnsNull: true });
 
@@ -171,6 +229,7 @@ function consumeFixture(overrides = {}) {
     launchUrl: null,
     createdAt: now,
     updatedAt: now,
+    ...overrides.app,
   };
   const role = overrides.role ?? "owner";
   const user = {
@@ -207,6 +266,7 @@ function consumeFixture(overrides = {}) {
     grantedByUserId: "user_owner_example",
     createdAt: now,
     updatedAt: now,
+    ...overrides.entitlement,
   };
   const launchToken = {
     id: "app_launch_token_1",
