@@ -1,6 +1,6 @@
 # Hosted Internal Alpha Runbook
 
-This runbook prepares Swooshz Platform for a reviewed hosted internal-alpha handoff. It is documentation, guardrails, and dry-run readiness tooling only. It does not deploy, provision, expose, sync, restart, or configure hosted infrastructure.
+This runbook prepares Swooshz Platform for a reviewed hosted internal-alpha handoff. It is documentation, guardrails, and readiness tooling only. It does not deploy, provision, expose, sync, restart, or configure hosted infrastructure. This PR is readiness only, not full production readiness.
 
 Before using this runbook for a real hosted execution window, review the operator briefing in `docs/hosted-internal-alpha-operator-briefing.md` and the operator decision record in `docs/hosted-internal-alpha-operator-decisions.md`. The briefing summarizes the human go/no-go context; the decision record tracks the required out-of-repo hosting, approval, ownership, handoff, incident, and go/no-go decisions. This runbook does not approve deployment by itself.
 
@@ -31,15 +31,17 @@ This PR does not add a session-management UI. Security/session management remain
 ## Deployment Plan
 
 1. Choose the reviewed host for `<hosted-platform-base-url>` and the reviewed KQAG host for `<hosted-kqag-base-url>`.
-2. Configure a PostgreSQL database service that Platform can reach through `DATABASE_URL`.
+2. Configure the reviewed Neon PostgreSQL database service outside the repo, using the non-secret target in the Neon Hosted Postgres Readiness section.
 3. Configure the OIDC client outside the repo with `<hosted-oidc-redirect-uri>`.
 4. Store secrets and runtime env outside the repo in the hosting secret manager or process manager secret store.
 5. Build the platform application with `npm run build`.
-6. Run `npm run platform:readiness-check` as a dry-run env checklist before migration or server start. Hosted readiness requires `NODE_ENV=production`, HTTPS browser/provider-facing URLs, origin-only allowed origins, and the reviewed callback path shape.
-7. Take and verify a database backup before applying reviewed migrations.
-8. Apply reviewed migrations manually with `npm run db:migrate` only after setting `DATABASE_MIGRATIONS_CONFIRM=apply-reviewed-migrations`.
-9. Start the platform process through the reviewed process manager or container entrypoint that runs `npm run platform:start`.
-10. Run the hosted smoke checklist before inviting broader internal-alpha use.
+6. Run `npm run platform:readiness-check` as a dry-run env checklist before migration or server start. Hosted readiness requires `NODE_ENV=production`, HTTPS browser/provider-facing URLs, origin-only allowed origins, the reviewed callback path shape, and a valid Postgres-shaped `DATABASE_URL`; it does not connect to the database.
+7. Optionally run `npm run platform:db-readiness-check` before migrations to verify that the configured database is reachable. A new or unmigrated database should report `schema_not_ready`, not `ready`.
+8. Take and verify a database backup before applying reviewed migrations.
+9. Apply reviewed migrations manually with `npm run db:migrate` only after setting `DATABASE_MIGRATIONS_CONFIRM=apply-reviewed-migrations`.
+10. Run `npm run platform:db-readiness-check` after migrations and require `ready` before hosted server start.
+11. Start the platform process through the reviewed process manager or container entrypoint that runs `npm run platform:start`.
+12. Run the hosted smoke checklist before inviting broader internal-alpha use.
 
 Migrations are never automatic on app startup. `npm run platform:start`, Node bootstrap creation, auth routes, app routes, seed commands, and readiness checks must not run migrations.
 
@@ -54,7 +56,7 @@ Recommended hosted operator checks:
 - Build artifacts are produced before process start.
 - Runtime env is injected by the host, not baked into source control.
 - Logs are collected from stdout/stderr without printing secret values.
-- Readiness checks are run as a dry-run command, not as a long-running service.
+- Env readiness is run as a dry-run command, and DB readiness is run as a one-off operator check. Neither runs as a long-running service.
 
 ## TLS And Reverse Proxy Notes
 
@@ -72,21 +74,50 @@ Operator checks:
 - No wildcard CORS rule is added for KQAG.
 - KQAG handoff stays explicit through `PLATFORM_KQAG_LAUNCH_MODE` and `PLATFORM_KQAG_APP_BASE_URL`.
 
+## Neon Hosted Postgres Readiness
+
+Recommended Neon target, for operator setup outside this repo:
+
+- Project: `swooshz-platform`.
+- Region: `Singapore / aws-ap-southeast-1`.
+- Database: `swooshz_platform`.
+- Role/user: `platform_app`.
+- Runtime connection: pooled `DATABASE_URL` from the host secret store.
+- Direct URL only if migration tooling genuinely needs it. The current repo does not add or require a direct-URL env alias; keep any direct connection value outside source control unless a future reviewed migration tooling change proves it is needed.
+
+The platform runtime app code uses `DATABASE_URL` as the pooled app connection. Do not add multiple database URL aliases for day-to-day runtime behavior. Do not commit `.env` files, connection strings, usernames with passwords, database hostnames with credentials, backup exports, table dumps, or provider console screenshots.
+
+The readiness path is split deliberately:
+
+- `npm run platform:readiness-check` validates hosted env shape only. It fails missing or malformed `DATABASE_URL` without printing the value and does not connect to Neon.
+- `npm run platform:db-readiness-check` builds the app, opens a PostgreSQL connection through `DATABASE_URL`, runs a basic reachability query, checks required platform tables, and checks the committed Drizzle migration journal against `drizzle.__drizzle_migrations`.
+- DB readiness can report `db_config_missing`, `db_config_invalid`, `db_unreachable`, `schema_not_ready`, or `ready`.
+- `db_config_missing` means the hosted process has no usable `DATABASE_URL`.
+- `db_unreachable` means a configured database could not be reached; the output must not include host, username, password, connection string, or low-level driver details.
+- `schema_not_ready` means the database is reachable but required platform tables or migration metadata are missing or behind the committed migration journal.
+- `ready` means the configured database is reachable and the required platform schema/migration state matches the committed code.
+
+Passing both readiness commands is still not hosted deployment approval. Operators must still approve backups, restore test, migration window, rollback owner, secrets, logs, OIDC, KQAG handoff, and go/no-go outside this repo.
+
 ## Migration Procedure
 
 1. Confirm the branch and migration files under review.
-2. Confirm no migration was added for this runbook-only PR.
-3. If a future reviewed PR adds migrations, review generated SQL before applying it.
-4. Take a database backup and confirm restore access before migration execution.
-5. Set the migration guard only for the manual migration command:
+2. Confirm the target database is the reviewed Neon database name `swooshz_platform` in project `swooshz-platform`, with runtime using the pooled `DATABASE_URL` secret value.
+3. Confirm no migration was added for this readiness-only PR.
+4. If a future reviewed PR adds migrations, review generated SQL before applying it.
+5. Run `npm run platform:readiness-check` and fix missing or malformed env before any database operation.
+6. Run `npm run platform:db-readiness-check` to confirm the database is reachable. For a new database before migrations, `schema_not_ready` is expected; `db_unreachable` blocks migration.
+7. Take a database backup and confirm restore access before migration execution.
+8. Set the migration guard only for the manual migration command:
 
 ```powershell
 $env:DATABASE_MIGRATIONS_CONFIRM="apply-reviewed-migrations"
 npm run db:migrate
 ```
 
-6. Remove the migration guard from the operator shell after the manual command if it is not needed for the next command.
-7. Run `/healthz`, auth, `/app`, `/app/admin`, KQAG entitlement, and audit/activity smoke checks.
+9. Remove the migration guard from the operator shell after the manual command if it is not needed for the next command.
+10. Run `npm run platform:db-readiness-check` again. It must report `ready` before server start.
+11. Run `/healthz`, auth, `/app`, `/app/admin`, KQAG entitlement, and audit/activity smoke checks after startup.
 
 Do not add startup hooks, package install hooks, deployment hooks, or background jobs that run migrations automatically.
 
@@ -159,8 +190,8 @@ Stop and redact the log collection process if a log includes secret values, data
 | `PLATFORM_PUBLIC_BASE_URL` | Public HTTPS Platform base URL. | Required | `<hosted-platform-base-url>` | No | Hosted readiness requires HTTPS and no query parameters or fragments. |
 | `PLATFORM_ALLOWED_ORIGINS` | Allowed browser origin list for CSRF/origin checks. | Required | `<hosted-platform-base-url>` | No | Hosted readiness requires HTTPS origins only: scheme, host, optional port, and no path, query, or fragment. |
 | `PLATFORM_COOKIE_SECURE` | Forces secure browser session cookies. | Required | `true` | No | Production requires `true`; false fails startup/readiness. |
-| `DATABASE_URL` | PostgreSQL connection string from the secret store. | Required | `<database-url-from-secret-store>` | Yes | Required for live DB connection and migrations; never printed by readiness. |
-| `DATABASE_SSL_MODE` | Optional DB SSL mode override. | Optional | `<require-or-disable-if-needed>` | No | When set, must be `require` or `disable`; invalid value fails readiness/startup. |
+| `DATABASE_URL` | Pooled PostgreSQL app connection string from the secret store. | Required | `<database-url-from-secret-store>` | Yes | Required for live DB connection and migrations; hosted readiness rejects missing or malformed Postgres URL shape and never prints the value. |
+| `DATABASE_SSL_MODE` | Optional DB SSL mode override. | Optional | `<require-or-disable-if-needed>` | No | When set, must be `require` or `disable`; invalid value fails readiness/startup. Use only when the hosted connection string or provider settings do not already enforce the intended SSL behavior. |
 | `DATABASE_MIGRATIONS_CONFIRM` | Manual migration confirmation guard. | Required for migrations only | `apply-reviewed-migrations` | No | Required only for `npm run db:migrate`; app startup never requires it. |
 | `SESSION_SECRET` | Session signing/encryption secret boundary. | Required | `<strong-random-placeholder>` | Yes | Must be strong and at least 32 characters; short/missing value fails readiness/auth config. |
 | `CSRF_TOKEN_HASH_SECRET` | HMAC secret for CSRF token hashes. | Required | `<strong-random-placeholder>` | Yes | Required by runtime secret config; short/missing value fails startup/readiness. |
@@ -192,9 +223,17 @@ Run the dry-run checker after env injection and before manual migrations or serv
 npm run platform:readiness-check
 ```
 
-The checker reports only env names, categories, missing/invalid status, and safe guidance. It enforces hosted-only production mode, HTTPS browser/provider-facing URLs, origin-only `PLATFORM_ALLOWED_ORIGINS`, callback URL shape, and KQAG handoff base URL shape. It does not print values, connect to PostgreSQL, run migrations, start the server, call OIDC, call KQAG, read provider endpoints, or seed access.
+The checker reports only env names, categories, missing/invalid status, and safe guidance. It enforces hosted-only production mode, HTTPS browser/provider-facing URLs, origin-only `PLATFORM_ALLOWED_ORIGINS`, callback URL shape, KQAG handoff base URL shape, and valid Postgres-shaped `DATABASE_URL`. It does not print values, connect to PostgreSQL, run migrations, start the server, call OIDC, call KQAG, read provider endpoints, or seed access.
 
 Passing readiness does not approve deployment. It only confirms the current shell has the required categories and safe URL shapes present for hosted internal-alpha review.
+
+Run the live DB readiness checker only when the operator intentionally wants to test the configured hosted database:
+
+```powershell
+npm run platform:db-readiness-check
+```
+
+This command uses `DATABASE_URL` to reach PostgreSQL, checks required Platform tables, and checks Drizzle migration metadata. It prints sanitized status only. It must not print the database URL, host, user, password, driver error details, table data, provider console values, or backup details. It exits non-zero for `db_config_missing`, `db_config_invalid`, `db_unreachable`, and `schema_not_ready`.
 
 ## First Owner/Admin Bootstrap Sequence
 
@@ -294,7 +333,8 @@ Use safe categories instead: auth failure category, route name, HTTP status clas
 Before actual hosted internal-alpha execution, operators still need reviewed decisions for:
 
 - hosting provider/process manager/container target.
-- PostgreSQL provider, backup cadence, restore test, and retention.
+- Coolify/VPS deployment target, if used, including process command, env injection, restart policy, logs, network exposure, and rollback owner.
+- Neon PostgreSQL provider target, backup cadence, restore test, and retention.
 - TLS/reverse proxy configuration.
 - OIDC client registration outside the repo.
 - hosted KQAG handoff and cross-host session/cookie strategy.

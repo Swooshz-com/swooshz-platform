@@ -7,6 +7,7 @@
     "build": "tsc -p tsconfig.json",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "npm run build && node scripts/db-migrate.mjs",
+    "platform:db-readiness-check": "npm run build && node scripts/platform-db-readiness-check.mjs",
     "platform:readiness-check": "node scripts/platform-readiness-check.mjs",
     "platform:start": "node scripts/platform-start.mjs",
     "platform:seed-internal-access": "node scripts/platform-seed-internal-access.mjs",

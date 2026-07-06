@@ -7,6 +7,22 @@ import type { PlatformRepositories } from "../platform/repositories.js";
 
 export const DATABASE_MIGRATIONS_CONFIRM_VALUE = "apply-reviewed-migrations";
 
+export type DatabaseConfigErrorCode =
+  | "missing_database_url"
+  | "invalid_database_url"
+  | "invalid_database_ssl_mode";
+
+export class DatabaseConfigError extends Error {
+  readonly code: DatabaseConfigErrorCode;
+  readonly publicMessage = "Database configuration is invalid.";
+
+  constructor(code: DatabaseConfigErrorCode) {
+    super(readDatabaseConfigErrorMessage(code));
+    this.name = "DatabaseConfigError";
+    this.code = code;
+  }
+}
+
 export interface DatabaseEnvironment {
   DATABASE_URL?: string;
   DATABASE_SSL_MODE?: string;
@@ -31,9 +47,10 @@ export function readDatabaseConfig(env: DatabaseEnvironment): DatabaseConfig {
   const databaseUrl = env.DATABASE_URL?.trim();
 
   if (!databaseUrl) {
-    throw new Error("DATABASE_URL is required for database connections.");
+    throw new DatabaseConfigError("missing_database_url");
   }
 
+  assertValidDatabaseUrl(databaseUrl);
   const sslMode = readDatabaseSslMode(env);
 
   return {
@@ -92,5 +109,32 @@ function readDatabaseSslMode(env: DatabaseEnvironment): DatabaseConfig["sslMode"
     return sslMode;
   }
 
-  throw new Error("DATABASE_SSL_MODE must be either 'disable' or 'require' when set.");
+  throw new DatabaseConfigError("invalid_database_ssl_mode");
+}
+
+function assertValidDatabaseUrl(value: string): void {
+  try {
+    const parsed = new URL(value);
+    const supportedProtocol =
+      parsed.protocol === "postgres:" || parsed.protocol === "postgresql:";
+    const hasHost = Boolean(parsed.hostname);
+    const hasDatabaseName = parsed.pathname.length > 1;
+
+    if (!supportedProtocol || !hasHost || !hasDatabaseName) {
+      throw new Error("invalid database url");
+    }
+  } catch {
+    throw new DatabaseConfigError("invalid_database_url");
+  }
+}
+
+function readDatabaseConfigErrorMessage(code: DatabaseConfigErrorCode): string {
+  switch (code) {
+    case "missing_database_url":
+      return "DATABASE_URL is required for database connections.";
+    case "invalid_database_url":
+      return "DATABASE_URL must be a valid Postgres connection string.";
+    case "invalid_database_ssl_mode":
+      return "DATABASE_SSL_MODE must be either 'disable' or 'require' when set.";
+  }
 }

@@ -8,7 +8,7 @@ import {
 } from "../scripts/platform-readiness-check.mjs";
 
 const privateValues = [
-  "<private-database-url-placeholder>",
+  ["postgres", "://private-user:private-pass@private-host.invalid:5432/swooshz_platform"].join(""),
   "private-session-secret-value-32-chars",
   "private-client-secret-value-32-chars",
   "private-csrf-secret-value-32-chars",
@@ -95,6 +95,33 @@ test("hosted readiness requires production NODE_ENV", () => {
 
     assert.equal(report.ok, false);
     assertInvalid(report, "NODE_ENV", "hosted_requires_production");
+  }
+});
+
+test("hosted readiness rejects malformed DATABASE_URL without echoing it", () => {
+  const malformedUrls = [
+    "not-a-postgres-url-with-private-pass",
+    ["https", "://private-user:private-pass@private-host.invalid/swooshz_platform"].join(""),
+  ];
+
+  for (const value of malformedUrls) {
+    const lines = [];
+    const result = runPlatformReadinessCheck({
+      env: reportEnvWithOverride({ DATABASE_URL: value }),
+      writeLine(line) {
+        lines.push(line);
+      },
+      writeError(line) {
+        lines.push(line);
+      },
+    });
+    const output = lines.join("\n");
+
+    assert.equal(result.ok, false);
+    assertInvalid(result, "DATABASE_URL", "invalid_database_url");
+    assert.match(output, /invalid secret env: DATABASE_URL/);
+    assert.doesNotMatch(output, new RegExp(escapeRegExp(value)));
+    assertNoPrivateMaterial(output);
   }
 });
 

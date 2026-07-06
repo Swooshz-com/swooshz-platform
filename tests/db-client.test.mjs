@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  DatabaseConfigError,
   DATABASE_MIGRATIONS_CONFIRM_VALUE,
   assertMigrationExecutionAllowed,
   createDatabasePool,
@@ -37,6 +38,30 @@ test("readDatabaseConfig accepts a synthetic DATABASE_URL without printing it", 
   assert.equal(config.databaseUrl, syntheticDatabaseUrl);
   assert.equal(config.sslMode, undefined);
   assert.deepEqual(Object.keys(config).sort(), ["databaseUrl"]);
+});
+
+test("readDatabaseConfig rejects malformed DATABASE_URL values without leaking them", () => {
+  for (const databaseUrl of [
+    "not-a-postgres-url-with-private-pass",
+    ["https", "://private-user:private-pass@db.example.invalid/swooshz_platform"].join(""),
+    ["postgres", "://private-user:private-pass@/swooshz_platform"].join(""),
+    ["postgres", "://private-user:private-pass@db.example.invalid"].join(""),
+  ]) {
+    assert.throws(
+      () =>
+        readDatabaseConfig({
+          DATABASE_URL: databaseUrl,
+        }),
+      (error) => {
+        assert.equal(error instanceof DatabaseConfigError, true);
+        assert.equal(error.code, "invalid_database_url");
+        assert.equal(error.publicMessage, "Database configuration is invalid.");
+        assert.doesNotMatch(error.message, /private-user|private-pass|db\.example\.invalid/);
+        assert.doesNotMatch(error.message, /not-a-postgres-url/);
+        return true;
+      },
+    );
+  }
 });
 
 test("readDatabaseConfig rejects unsupported SSL modes without leaking the URL", () => {
