@@ -15,6 +15,7 @@ import {
   listWorkspaceAuditEventsForAdmin,
   listWorkspaceMembersForAdmin,
   reactivateWorkspaceMembership,
+  removeWorkspaceMembership,
   revokeWorkspaceMembershipApproval,
   setWorkspaceAppEntitlementStatus,
 } from "../dist/index.js";
@@ -550,6 +551,15 @@ test("member and viewer cannot manage workspace members or app access", async ()
     );
     await assert.rejects(
       () =>
+        removeWorkspaceMembership(repositories, {
+          ...input,
+          membershipId: "membership_member_example",
+          auditEventId: "audit_remove_denied",
+        }),
+      assertAdminError("not_authorized"),
+    );
+    await assert.rejects(
+      () =>
         addExistingWorkspaceUserByEmail(repositories, {
           ...input,
           targetEmail: "existing.user@example.test",
@@ -619,6 +629,15 @@ test("missing disabled or expired admin context fails closed before mutation", a
           ...input,
           membershipId: "membership_member_example",
           auditEventId: "audit_disabled_context_reactivate",
+        }),
+      assertAdminError("not_authorized"),
+    );
+    await assert.rejects(
+      () =>
+        removeWorkspaceMembership(repositories, {
+          ...input,
+          membershipId: "membership_member_example",
+          auditEventId: "audit_disabled_context_remove",
         }),
       assertAdminError("not_authorized"),
     );
@@ -857,6 +876,23 @@ test("admin cannot manage owner memberships or grant owner role", async () => {
         );
       },
     ],
+    [
+      "remove owner",
+      (repositories, input) =>
+        removeWorkspaceMembership(repositories, {
+          ...input,
+          membershipId: "membership_owner_example",
+          auditEventId: "audit_admin_remove_owner",
+        }),
+      (records) => {
+        assert.equal(
+          records.memberships.some(
+            (membership) => membership.id === "membership_owner_example",
+          ),
+          true,
+        );
+      },
+    ],
   ]) {
     const { repositories, input, records } = adminFixture({ role: "admin" });
 
@@ -898,6 +934,15 @@ test("last owner cannot be removed or demoted into an ownerless workspace", asyn
       }),
     assertAdminError("last_owner_required"),
   );
+  await assert.rejects(
+    () =>
+      removeWorkspaceMembership(repositories, {
+        ...input,
+        membershipId: "membership_owner_example",
+        auditEventId: "audit_last_owner_remove",
+      }),
+    assertAdminError("last_owner_required"),
+  );
 });
 
 test("self-demotion and self-removal are guarded", async () => {
@@ -919,6 +964,15 @@ test("self-demotion and self-removal are guarded", async () => {
         ...input,
         membershipId: "membership_admin_example",
         auditEventId: "audit_self_remove",
+      }),
+    assertAdminError("self_change_not_allowed"),
+  );
+  await assert.rejects(
+    () =>
+      removeWorkspaceMembership(repositories, {
+        ...input,
+        membershipId: "membership_admin_example",
+        auditEventId: "audit_self_remove_membership",
       }),
     assertAdminError("self_change_not_allowed"),
   );
@@ -1018,7 +1072,197 @@ test("owner and admin can reactivate disabled non-owner membership", async () =>
       appKey: "kqag",
       now,
     });
-    assert.equal(allowedAfterReactivation.result, AccessDecisionResult.Allowed);
+  assert.equal(allowedAfterReactivation.result, AccessDecisionResult.Allowed);
+  }
+});
+
+test("owner and admin can remove active or disabled non-owner membership without deleting the user", async () => {
+  for (const role of ["owner", "admin"]) {
+    for (const status of ["active", "disabled"]) {
+      const { repositories, input, records } = adminFixture({
+        role,
+        memberships: baseMemberships().map((membership) =>
+          membership.id === "membership_member_example"
+            ? { ...membership, status }
+            : membership,
+        ),
+        extraMemberships: [
+          {
+            id: `membership_member_other_${role}_${status}`,
+            workspaceId: "workspace_other_example",
+            userId: "user_member_example",
+            role: "member",
+            status: "active",
+            createdAt: earlier,
+            updatedAt: earlier,
+          },
+        ],
+        extraProviderIdentities: [
+          {
+            id: `provider_identity_member_${role}_${status}`,
+            userId: "user_member_example",
+            providerKey: "example_oidc",
+            providerSubject: `provider-subject-member-${role}-${status}`,
+            createdAt: earlier,
+            updatedAt: earlier,
+          },
+        ],
+      });
+
+      const result = await removeWorkspaceMembership(repositories, {
+        ...input,
+        membershipId: "membership_member_example",
+        auditEventId: `audit_membership_removed_${role}_${status}`,
+      });
+
+      assert.deepEqual(result, {
+        id: "membership_member_example",
+        workspaceId: "workspace_koncept_images",
+        userId: "user_member_example",
+        role: "member",
+        status,
+        createdAt: now,
+        updatedAt: now,
+      });
+      assert.equal(
+        records.memberships.some((membership) => membership.id === "membership_member_example"),
+        false,
+      );
+      assert.equal(
+        records.memberships.some(
+          (membership) => membership.id === `membership_member_other_${role}_${status}`,
+        ),
+        true,
+      );
+      assert.equal(records.users.some((user) => user.id === "user_member_example"), true);
+      assert.equal(
+        records.providerIdentities.some(
+          (identity) => identity.userId === "user_member_example",
+        ),
+        true,
+      );
+      assert.equal(records.sessions.some((session) => session.id === "session_member_example"), true);
+      assert.deepEqual(records.auditEvents.at(-1), {
+        id: `audit_membership_removed_${role}_${status}`,
+        workspaceId: "workspace_koncept_images",
+        actorUserId: `user_${role}_example`,
+        eventType: "workspace.membership.removed",
+        targetType: "membership",
+        targetId: "membership_member_example",
+        createdAt: now,
+        metadata: {
+          previousRole: "member",
+          previousStatus: status,
+          targetUserId: "user_member_example",
+        },
+      });
+      assertAuditPrivacy(records.auditEvents.at(-1));
+
+      const accessDecision = await decidePlatformAppAccess(repositories, {
+        sessionId: "session_member_example",
+        selectedWorkspaceId: "workspace_koncept_images",
+        appKey: "kqag",
+        now,
+      });
+      assert.equal(accessDecision.result, AccessDecisionResult.MembershipRequired);
+    }
+  }
+});
+
+test("membership removal rejects unsafe targets without mutation", async () => {
+  for (const [name, overrides, membershipId, expectedCode] of [
+    ["missing membership", {}, "membership_missing_example", "not_found"],
+    [
+      "owner membership",
+      {
+        extraMemberships: [
+          {
+            id: "membership_second_owner_example",
+            workspaceId: "workspace_koncept_images",
+            userId: "user_viewer_example",
+            role: "owner",
+            status: "active",
+            createdAt: earlier,
+            updatedAt: earlier,
+          },
+        ],
+      },
+      "membership_second_owner_example",
+      "invalid_role",
+    ],
+  ]) {
+    const { repositories, input, records } = adminFixture(overrides);
+
+    await assert.rejects(
+      () =>
+        removeWorkspaceMembership(repositories, {
+          ...input,
+          membershipId,
+          auditEventId: `audit_remove_rejected_${name.replaceAll(" ", "_")}`,
+        }),
+      assertAdminError(expectedCode),
+    );
+    assert.equal(
+      records.memberships.some((membership) => membership.id === membershipId),
+      membershipId !== "membership_missing_example",
+    );
+    assert.equal(records.auditEvents.length, 0);
+  }
+});
+
+test("membership removal fails closed when the checked target changes before delete", async () => {
+  for (const [name, mutateMembership] of [
+    [
+      "role changes to owner",
+      (membership) => {
+        membership.role = "owner";
+      },
+    ],
+    [
+      "role changes to admin",
+      (membership) => {
+        membership.role = "admin";
+      },
+    ],
+    [
+      "workspace changes",
+      (membership) => {
+        membership.workspaceId = "workspace_other_example";
+      },
+    ],
+    [
+      "user changes",
+      (membership) => {
+        membership.userId = "user_viewer_example";
+      },
+    ],
+  ]) {
+    const { repositories, input, records } = adminFixture();
+
+    simulateConcurrentMembershipChangeBeforeRemoval(
+      repositories,
+      records,
+      "membership_member_example",
+      mutateMembership,
+    );
+
+    await assert.rejects(
+      () =>
+        removeWorkspaceMembership(repositories, {
+          ...input,
+          membershipId: "membership_member_example",
+          auditEventId: `audit_stale_remove_${name.replaceAll(" ", "_")}`,
+        }),
+      assertAdminError("not_found"),
+      name,
+    );
+
+    assert.equal(
+      records.memberships.some((membership) => membership.id === "membership_member_example"),
+      true,
+      name,
+    );
+    assert.equal(records.auditEvents.length, 0, name);
   }
 });
 
@@ -1402,6 +1646,26 @@ test("membership add rolls back when audit append fails", async () => {
   assert.equal(records.auditEvents.length, 0);
 });
 
+test("membership removal rolls back when audit append fails", async () => {
+  const { repositories, input, records } = adminFixture({ failAuditAppend: true });
+
+  await assert.rejects(
+    () =>
+      removeWorkspaceMembership(repositories, {
+        ...input,
+        membershipId: "membership_member_example",
+        auditEventId: "audit_remove_append_failure",
+      }),
+    assertAdminError("repository_failure"),
+  );
+
+  assert.equal(
+    records.memberships.some((membership) => membership.id === "membership_member_example"),
+    true,
+  );
+  assert.equal(records.auditEvents.length, 0);
+});
+
 test("pending approval creation rolls back when audit append fails", async () => {
   const { repositories, input, records } = adminFixture({ failAuditAppend: true });
 
@@ -1445,6 +1709,37 @@ test("pending approval revocation rolls back when audit append fails", async () 
   assert.deepEqual(records.membershipApprovals, [pendingApproval()]);
   assert.equal(records.auditEvents.length, 0);
 });
+
+function simulateConcurrentMembershipChangeBeforeRemoval(
+  repositories,
+  records,
+  membershipId,
+  mutateMembership,
+) {
+  const mutate = () => {
+    const membership = records.memberships.find((candidate) => candidate.id === membershipId);
+
+    if (membership) {
+      mutateMembership(membership);
+    }
+  };
+
+  if (typeof repositories.memberships.removeIfCurrentTarget === "function") {
+    const removeIfCurrentTarget =
+      repositories.memberships.removeIfCurrentTarget.bind(repositories.memberships);
+    repositories.memberships.removeIfCurrentTarget = async (...args) => {
+      mutate();
+      return removeIfCurrentTarget(...args);
+    };
+    return;
+  }
+
+  const remove = repositories.memberships.remove.bind(repositories.memberships);
+  repositories.memberships.remove = async (...args) => {
+    mutate();
+    return remove(...args);
+  };
+}
 
 function adminFixture(overrides = {}) {
   const workspace = {

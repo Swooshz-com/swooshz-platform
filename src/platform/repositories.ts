@@ -97,6 +97,11 @@ export interface WorkspaceRepository {
   create(workspace: Workspace): Promise<Workspace>;
 }
 
+export type MembershipRemovalTarget = Pick<
+  Membership,
+  "id" | "workspaceId" | "userId" | "role" | "status"
+>;
+
 export interface MembershipRepository {
   findForUserInWorkspace(userId: string, workspaceId: string): Promise<Membership | null>;
   listForUser(userId: string): Promise<readonly Membership[]>;
@@ -112,6 +117,7 @@ export interface MembershipRepository {
     status: MembershipStatus,
     updatedAt: IsoTimestamp,
   ): Promise<Membership | null>;
+  removeIfCurrentTarget(target: MembershipRemovalTarget): Promise<Membership | null>;
 }
 
 export interface InvitationRepository {

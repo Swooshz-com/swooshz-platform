@@ -31,6 +31,7 @@ import {
   handleWorkspaceMembershipApprovalRevokeRequest,
   handleWorkspaceMembershipApprovalsAdminRequest,
   handleWorkspaceMembershipDisableRequest,
+  handleWorkspaceMembershipRemoveRequest,
   handleWorkspaceMembershipReactivateRequest,
   type HttpRequestHeaders,
   type HttpResponseLike,
@@ -437,6 +438,35 @@ export async function handleNodePlatformHttpRequest(
 
     return toNodeResponse(
       await handleWorkspaceMembershipReactivateRequest(dependencies.repositories, {
+        headers,
+        workspaceId: requiredRouteParam(routeMatch, "workspaceId"),
+        membershipId: requiredRouteParam(routeMatch, "membershipId"),
+        auditEventId: createWorkspaceAdminAuditEventId(dependencies),
+        now,
+        cookie: dependencies.cookie,
+      }),
+    );
+  }
+
+  if (route.id === "platform_workspace_member_remove") {
+    const now = dependencies.now();
+    const securityResult = await validateAdminRouteSecurity({
+      route,
+      headers,
+      now,
+      dependencies,
+    });
+
+    if (!securityResult.allowed) {
+      return securityFailureResponse(
+        securityResult.recommendedStatus,
+        securityResult.reason,
+        noStoreHeaders(),
+      );
+    }
+
+    return toNodeResponse(
+      await handleWorkspaceMembershipRemoveRequest(dependencies.repositories, {
         headers,
         workspaceId: requiredRouteParam(routeMatch, "workspaceId"),
         membershipId: requiredRouteParam(routeMatch, "membershipId"),

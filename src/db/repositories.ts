@@ -84,6 +84,11 @@ export interface DrizzleDatabase {
       };
     };
   };
+  delete(table: Table): {
+    where(condition: Condition): {
+      returning(): Promise<readonly Row[]>;
+    };
+  };
   transaction?<T>(operation: (transactionDb: DrizzleDatabase) => Promise<T>): Promise<T>;
 }
 
@@ -214,6 +219,21 @@ export function createDrizzlePlatformRepositories(
           .update(memberships)
           .set({ status, updatedAt: toDate(updatedAt) })
           .where(eq(memberships.id, id))
+          .returning();
+        return mapOne(rows[0], mapMembershipRow);
+      },
+      async removeIfCurrentTarget(target) {
+        const rows = await db
+          .delete(memberships)
+          .where(
+            and(
+              eq(memberships.id, target.id),
+              eq(memberships.workspaceId, target.workspaceId),
+              eq(memberships.userId, target.userId),
+              eq(memberships.role, target.role),
+              eq(memberships.status, target.status),
+            ),
+          )
           .returning();
         return mapOne(rows[0], mapMembershipRow);
       },

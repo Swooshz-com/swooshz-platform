@@ -80,6 +80,11 @@ export interface WorkspaceMembershipReactivateInput extends WorkspaceAdminInput 
   auditEventId: string;
 }
 
+export interface WorkspaceMembershipRemoveInput extends WorkspaceAdminInput {
+  membershipId: string;
+  auditEventId: string;
+}
+
 export interface WorkspaceExistingUserAddInput extends WorkspaceAdminInput {
   targetEmail: string;
   role: Role;
@@ -374,6 +379,72 @@ export async function reactivateWorkspaceMembership(
     });
 
     return updated;
+  });
+}
+
+export async function removeWorkspaceMembership(
+  repositories: PlatformRepositories,
+  input: WorkspaceMembershipRemoveInput,
+): Promise<Membership> {
+  return runWorkspaceAdminTransaction(repositories, async (transactionRepositories) => {
+    const context = await requireAdminContext(transactionRepositories, input);
+    requireAuditRepository(transactionRepositories);
+    const memberships = await transactionRepositories.memberships.listForWorkspace(
+      input.workspaceId,
+    );
+    const target = findTargetMembership(memberships, input.membershipId);
+    const previousRole = target.role;
+    const previousStatus = target.status;
+
+    assertOwnerMutationAllowed(context, target);
+
+    if (
+      target.role === "owner" &&
+      target.status === "active" &&
+      activeOwnerCount(memberships) <= 1
+    ) {
+      throw adminError("last_owner_required", "Workspace must keep at least one active owner.");
+    }
+
+    if (target.userId === context.actor.id) {
+      throw adminError("self_change_not_allowed", "Administrators cannot remove themselves.");
+    }
+
+    if (target.role === "owner") {
+      throw adminError("invalid_role", "Owner membership removal is not supported here.");
+    }
+
+    const removalTarget = {
+      id: target.id,
+      workspaceId: target.workspaceId,
+      userId: target.userId,
+      role: target.role,
+      status: target.status,
+    };
+    const removed = await transactionRepositories.memberships.removeIfCurrentTarget(
+      removalTarget,
+    );
+
+    if (!removed) {
+      throw adminError("not_found", "Workspace membership was not found.");
+    }
+
+    await appendAuditEvent(transactionRepositories, {
+      id: input.auditEventId,
+      workspaceId: input.workspaceId,
+      actorUserId: context.actor.id,
+      eventType: "workspace.membership.removed",
+      targetType: "membership",
+      targetId: target.id,
+      createdAt: input.now,
+      metadata: {
+        previousRole,
+        previousStatus,
+        targetUserId: target.userId,
+      },
+    });
+
+    return removed;
   });
 }
 

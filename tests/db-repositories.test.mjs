@@ -386,7 +386,7 @@ test("Drizzle repository list methods return arrays", async () => {
   ]);
 });
 
-test("Drizzle repository create, update, and append methods return mapped records", async () => {
+test("Drizzle repository create, update, append, and remove methods return mapped records", async () => {
   const fakeDb = createFakeDrizzleDb({
     insertRows: new Map([
       [schema.users, [userRow]],
@@ -418,6 +418,7 @@ test("Drizzle repository create, update, and append methods return mapped record
       ],
       [schema.appEntitlements, [{ ...entitlementRow, status: "disabled", updatedAt }]],
     ]),
+    deleteRows: new Map([[schema.memberships, [membershipRow]]]),
   });
   const repositories = createDrizzlePlatformRepositories(fakeDb);
 
@@ -468,6 +469,10 @@ test("Drizzle repository create, update, and append methods return mapped record
       updatedAt.toISOString(),
     ),
     mapMembershipRow({ ...membershipRow, role: "admin", updatedAt }),
+  );
+  assert.deepEqual(
+    await repositories.memberships.removeIfCurrentTarget(mapMembershipRow(membershipRow)),
+    mapMembershipRow(membershipRow),
   );
   assert.deepEqual(
     await repositories.invitations.create(mapInvitationRow(invitationRow)),
@@ -575,6 +580,31 @@ test("Drizzle repository create, update, and append methods return mapped record
     status: "disabled",
     updatedAt,
   });
+  const membershipDeleteWhere = fakeDb.calls.find(
+    (call) => call.operation === "delete.where" && call.table === schema.memberships,
+  );
+  assert.ok(membershipDeleteWhere);
+  const membershipDeleteCondition = collectSqlConditionFacts(
+    membershipDeleteWhere.condition,
+  );
+  for (const column of ["id", "workspace_id", "user_id", "role", "status"]) {
+    assert.ok(
+      membershipDeleteCondition.columns.includes(column),
+      `delete condition should include ${column}`,
+    );
+  }
+  for (const value of [
+    membershipRow.id,
+    membershipRow.workspaceId,
+    membershipRow.userId,
+    membershipRow.role,
+    membershipRow.status,
+  ]) {
+    assert.ok(
+      membershipDeleteCondition.params.includes(value),
+      `delete condition should include ${value}`,
+    );
+  }
   const approvalUpdate = fakeDb.calls.find(
     (call) =>
       call.operation === "update.set" &&
@@ -689,7 +719,7 @@ test("pure domain and platform port modules do not import database adapter detai
   }
 });
 
-function createFakeDrizzleDb({ selectRows, insertRows, updateRows } = {}) {
+function createFakeDrizzleDb({ selectRows, insertRows, updateRows, deleteRows } = {}) {
   const calls = [];
 
   return {
@@ -736,6 +766,22 @@ function createFakeDrizzleDb({ selectRows, insertRows, updateRows } = {}) {
                   return Promise.resolve(updateRows?.get(table) ?? []);
                 },
               };
+            },
+          };
+        },
+      };
+    },
+    delete(table) {
+      calls.push({ operation: "delete", table });
+
+      return {
+        where(condition) {
+          calls.push({ operation: "delete.where", table, condition });
+
+          return {
+            returning() {
+              calls.push({ operation: "delete.returning", table });
+              return Promise.resolve(deleteRows?.get(table) ?? []);
             },
           };
         },

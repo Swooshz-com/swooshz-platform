@@ -114,6 +114,23 @@ export function createInMemoryPlatformRepositories(records = {}) {
         membership.updatedAt = updatedAt;
         return membership;
       },
+      async removeIfCurrentTarget(target) {
+        const index = memberships.findIndex(
+          (candidate) =>
+            candidate.id === target.id &&
+            candidate.workspaceId === target.workspaceId &&
+            candidate.userId === target.userId &&
+            candidate.role === target.role &&
+            candidate.status === target.status,
+        );
+
+        if (index === -1) {
+          return null;
+        }
+
+        const [membership] = memberships.splice(index, 1);
+        return membership;
+      },
     },
     invitations: {
       async findById(id) {
