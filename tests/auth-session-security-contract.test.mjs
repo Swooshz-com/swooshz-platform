@@ -7,6 +7,7 @@ const contractPath = "docs/auth-session-security-contract.md";
 const implementedBehaviors = [
   "Generic OIDC login path",
   "Provider-backed user requirement",
+  "active workspace membership",
   "Pending workspace approval activation",
   "Server-side session records",
   "HttpOnly/SameSite cookie usage",
@@ -115,13 +116,14 @@ test("auth/session security contract separates read-only CSRF exemptions from la
   assert.doesNotMatch(contract, /app launch consume[^.\n|]*idempotent/i);
 });
 
-test("auth/session security contract documents removed-member auth versus workspace access", async () => {
+test("auth/session security contract documents removed-member sign-in denial", async () => {
   const contract = await readContract();
 
-  assert.match(contract, /membership removal does not block Google auth/i);
+  assert.match(contract, /membership removal blocks new Platform sessions until re-added/i);
   assert.match(contract, /does not delete the platform user or provider identity/i);
   assert.match(contract, /revokes that user's active platform sessions/i);
-  assert.match(contract, /future sign-in can create a new session/i);
+  assert.match(contract, /prevents new Platform session creation/i);
+  assert.match(contract, /future sign-in is rejected until the user has another active workspace membership or a matching pending approval/i);
   assert.match(contract, /revokes workspace, admin, and app access through current membership checks/i);
   assert.match(contract, /stale selected workspace/i);
 });

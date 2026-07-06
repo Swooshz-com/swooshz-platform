@@ -383,6 +383,11 @@ test("bootstrap-created server can serve GET /api/platform/auth/start with injec
 
 test("bootstrap-created auth callback succeeds only through injected fake provider dependencies", async () => {
   const fixture = createBootstrapFixture({ withAuth: true });
+  seedExistingAuthMember(fixture.records, {
+    userId: "user_auth_bootstrap_1",
+    email: "bootstrap-owner@example.com",
+    providerSubject: "provider-subject-bootstrap",
+  });
   const bootstrap = createPlatformNodeBootstrap(fixture.input);
 
   await bootstrap.start();
@@ -497,6 +502,11 @@ test("bootstrap generic OIDC mode requires explicit opt-in and config", async ()
 
 test("bootstrap generic OIDC mode calls provider network only during callback", async () => {
   const fixture = createBootstrapFixture({ withGenericAuth: true });
+  seedExistingAuthMember(fixture.records, {
+    userId: "user_auth_bootstrap_1",
+    email: "generic@example.com",
+    providerSubject: "provider-subject-generic-bootstrap",
+  });
   const bootstrap = createPlatformNodeBootstrap(fixture.input);
 
   createPlatformNodeBootstrap(fixture.input);
@@ -920,6 +930,61 @@ function jsonResponse(status, body) {
       return body;
     },
   };
+}
+
+function seedExistingAuthMember(
+  records,
+  {
+    userId,
+    email,
+    providerSubject,
+    providerIdentityId = "provider_identity_auth_bootstrap_existing",
+    workspaceId = "workspace_auth_bootstrap",
+  },
+) {
+  records.users = [
+    {
+      id: userId,
+      email,
+      displayName: "Bootstrap Owner",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+      lastLoginAt: now,
+    },
+  ];
+  records.providerIdentities = [
+    {
+      id: providerIdentityId,
+      userId,
+      providerKey: "example-oidc",
+      providerSubject,
+      createdAt: now,
+      updatedAt: now,
+    },
+  ];
+  records.sessions = [];
+  records.workspaces = [
+    {
+      id: workspaceId,
+      slug: "auth-bootstrap",
+      displayName: "Auth Bootstrap",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    },
+  ];
+  records.memberships = [
+    {
+      id: "membership_auth_bootstrap",
+      workspaceId,
+      userId,
+      role: "owner",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    },
+  ];
 }
 
 function createFakeServer({ calls, dependencies, listenOutcome }) {
