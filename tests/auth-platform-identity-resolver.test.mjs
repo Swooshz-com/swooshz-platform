@@ -76,6 +76,33 @@ test("existing provider identity resolves existing active user and creates sessi
   assert.equal(Object.hasOwn(result, "appKey"), false);
 });
 
+test("fresh sign-in after workspace removal keeps auth but does not restore workspace access", async () => {
+  const deps = createResolverDependencies({
+    users: [activeUser],
+    providerIdentities: [existingProviderIdentity],
+    memberships: [],
+  });
+  const resolver = createPlatformIdentitySessionResolver(deps);
+
+  const result = await resolver.resolveAuthenticatedIdentity({
+    identity: verifiedIdentity,
+    stateReference: createStateReference(),
+    now,
+  });
+  const accessDecision = await decidePlatformAppAccess(deps.repositories, {
+    sessionId: result.session.id,
+    selectedWorkspaceId: "workspace_koncept_images",
+    appKey: "kqag",
+    now,
+  });
+
+  assert.equal(result.platformUserId, activeUser.id);
+  assert.equal(result.session.id, "session_auth_callback_1");
+  assert.equal(Object.hasOwn(result, "workspaceMembershipGranted"), false);
+  assert.equal(accessDecision.result, AccessDecisionResult.MembershipRequired);
+  assert.deepEqual(deps.records.memberships, []);
+});
+
 test("new provider identity creates user, links provider identity, and creates session", async () => {
   const deps = createResolverDependencies();
   const resolver = createPlatformIdentitySessionResolver(deps);

@@ -44,6 +44,21 @@ test("viewer KQAG access is denied without creating a launch token", async () =>
   assertResponseIsPrivacySafe(result);
 });
 
+test("removed member existing session cannot create a launch token for that workspace", async () => {
+  const { dependencies, input, records } = launchFixture({
+    role: "member",
+    memberships: [],
+  });
+
+  const result = await createAppLaunchIntent(dependencies, input);
+
+  assert.equal(result.outcome, "denied");
+  assert.equal(result.reason, "app_access_denied");
+  assert.equal(result.decision.result, "membership_required");
+  assert.equal(records.appLaunchTokens.length, 0);
+  assertResponseIsPrivacySafe(result);
+});
+
 test("future app launch uses the same least-privilege role policy", async () => {
   const futureApp = {
     id: "app_ops_console",
@@ -225,7 +240,7 @@ function launchFixture(overrides = {}) {
     providerIdentities: [],
     sessions: overrides.sessions ?? [session],
     workspaces: [workspace],
-    memberships,
+    memberships: overrides.memberships ?? memberships,
     apps: [app],
     appEntitlements: [entitlement],
     auditEvents: [],

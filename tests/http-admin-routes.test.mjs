@@ -168,6 +168,28 @@ test("member and viewer cannot list or mutate workspace admin routes", async () 
   }
 });
 
+test("removed admin existing session cannot list workspace admin data", async () => {
+  const fixture = createAdminRouteFixture({
+    memberships: baseMemberships().filter(
+      (membership) => membership.id !== "membership_admin_example",
+    ),
+  });
+
+  const { response, body } = await request({
+    method: "GET",
+    url: "/api/platform/workspaces/workspace_koncept_images/members",
+    headers: sessionHeaders("admin"),
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 403);
+  assert.deepEqual(body, {
+    outcome: "denied",
+    reason: "not_authorized",
+  });
+  assertResponseIsPrivacySafe(response);
+});
+
 test("missing expired revoked or disabled admin context fails closed", async () => {
   const cases = [
     [{}, 401, { outcome: "denied", reason: "missing_session" }],
@@ -228,6 +250,7 @@ test("missing expired revoked or disabled admin context fails closed", async () 
 test("owner and admin can list workspace audit events through admin route", async () => {
   for (const role of ["owner", "admin"]) {
     const fixture = createAdminRouteFixture({
+      extraUsers: [existingProviderBackedUser()],
       auditEvents: [
         auditEvent({
           id: "audit_old",
@@ -295,6 +318,7 @@ test("owner and admin can list workspace audit events through admin route", asyn
           eventType: "workspace.membership.reactivated",
           targetType: "membership",
           targetId: "membership_member_example",
+          targetLabel: "Member Example",
           createdAt: future,
           metadata: {
             previousRole: "member",
@@ -312,6 +336,7 @@ test("owner and admin can list workspace audit events through admin route", asyn
           eventType: "workspace.app_entitlement.enabled",
           targetType: "app_entitlement",
           targetId: "entitlement_koncept_kqag",
+          targetLabel: "KQAG access",
           createdAt: now,
           metadata: {
             appId: "app_kqag",
@@ -329,6 +354,7 @@ test("owner and admin can list workspace audit events through admin route", asyn
           eventType: "workspace.membership.added",
           targetType: "membership",
           targetId: "membership_http_1",
+          targetLabel: "Existing User",
           createdAt: earlier,
           metadata: {
             newRole: "member",

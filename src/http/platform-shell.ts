@@ -128,7 +128,7 @@ export function renderAppShellPage(): string {
 
             if (!Array.isArray(context.workspaces) || context.workspaces.length === 0) {
               adminLink.hidden = true;
-              workspaces.append(emptyMessage("No active workspaces are available."));
+              workspaces.append(emptyMessage("No workspace access is available for this account."));
               return;
             }
 
@@ -326,6 +326,10 @@ export function renderAdminShellPage(): string {
         </header>
 
         <section id="status" class="status" role="status">Loading platform session...</section>
+        <section id="adminActionStatus" class="action-status" role="status" hidden>
+          <span class="spinner" aria-hidden="true"></span>
+          <span id="adminActionStatusText"></span>
+        </section>
         <section id="identity" class="identity" hidden></section>
         <section id="workspaceSummary" class="workspace" hidden></section>
         <section id="addMember" class="workspace" hidden>
@@ -359,6 +363,29 @@ export function renderAdminShellPage(): string {
         <section id="entitlements" class="workspace" hidden></section>
         <section id="activity" class="workspace" hidden></section>
       </main>
+      <div id="adminActionModal" class="modal-backdrop" hidden>
+        <section
+          class="action-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="adminActionModalTitle"
+          aria-describedby="adminActionModalBody"
+        >
+          <h2 id="adminActionModalTitle">Remove member?</h2>
+          <p id="adminActionModalBody">
+            This removes workspace access for this member. Their platform account is not deleted.
+          </p>
+          <p id="adminActionModalLoading" class="modal-loading" role="status" hidden>
+            <span class="spinner" aria-hidden="true"></span>
+            <span id="adminActionModalLoadingText">Removing member...</span>
+          </p>
+          <p id="adminActionModalError" class="modal-error" role="alert" hidden></p>
+          <div class="modal-actions">
+            <button id="adminActionModalCancel" class="secondary-action compact" type="button">Cancel</button>
+            <button id="adminActionModalConfirm" class="primary-action compact" type="button">Remove member</button>
+          </div>
+        </section>
+      </div>
       <script>
         (() => {
           const endpoints = {
@@ -373,10 +400,13 @@ export function renderAdminShellPage(): string {
             workspace: null,
             activityEvents: [],
             activityPage: 0,
-            activityPageSize: 10
+            activityPageSize: 10,
+            modalAction: null
           };
 
           const status = document.getElementById("status");
+          const adminActionStatus = document.getElementById("adminActionStatus");
+          const adminActionStatusText = document.getElementById("adminActionStatusText");
           const identity = document.getElementById("identity");
           const workspaceSummary = document.getElementById("workspaceSummary");
           const addMember = document.getElementById("addMember");
@@ -388,12 +418,26 @@ export function renderAdminShellPage(): string {
           const entitlements = document.getElementById("entitlements");
           const activity = document.getElementById("activity");
           const logoutButton = document.getElementById("logoutButton");
+          const adminActionModal = document.getElementById("adminActionModal");
+          const modalTitle = document.getElementById("adminActionModalTitle");
+          const modalBody = document.getElementById("adminActionModalBody");
+          const modalLoading = document.getElementById("adminActionModalLoading");
+          const modalLoadingText = document.getElementById("adminActionModalLoadingText");
+          const modalError = document.getElementById("adminActionModalError");
+          const modalCancelButton = document.getElementById("adminActionModalCancel");
+          const modalConfirmButton = document.getElementById("adminActionModalConfirm");
 
           logoutButton.addEventListener("click", () => {
             void logout();
           });
           addMemberForm.addEventListener("submit", (event) => {
             void addExistingMember(event);
+          });
+          modalCancelButton.addEventListener("click", () => {
+            closeActionModal();
+          });
+          modalConfirmButton.addEventListener("click", () => {
+            void runModalAction();
           });
 
           void loadContext();
@@ -767,8 +811,10 @@ export function renderAdminShellPage(): string {
             menuButton.setAttribute("aria-haspopup", "true");
             menuButton.setAttribute("aria-expanded", "false");
             menuButton.addEventListener("click", () => {
-              menuPanel.hidden = !menuPanel.hidden;
-              menuButton.setAttribute("aria-expanded", menuPanel.hidden ? "false" : "true");
+              const shouldOpen = menuPanel.hidden;
+              closeAllActionMenus();
+              menuPanel.hidden = !shouldOpen;
+              menuButton.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
             });
 
             menuPanel.className = "action-menu-panel";
@@ -776,24 +822,21 @@ export function renderAdminShellPage(): string {
 
             if (member.status === "active") {
               menuPanel.append(actionButton("Disable", () => {
-                menuPanel.hidden = true;
-                menuButton.setAttribute("aria-expanded", "false");
+                closeAllActionMenus();
                 void disableMember(member.membershipId);
               }));
             }
 
             if (member.status === "disabled") {
               menuPanel.append(actionButton("Reactivate", () => {
-                menuPanel.hidden = true;
-                menuButton.setAttribute("aria-expanded", "false");
+                closeAllActionMenus();
                 void reactivateMember(member.membershipId);
               }));
             }
 
             if (["active", "disabled"].includes(member.status)) {
               menuPanel.append(actionButton("Remove", () => {
-                menuPanel.hidden = true;
-                menuButton.setAttribute("aria-expanded", "false");
+                closeAllActionMenus();
                 void removeMember(member.membershipId);
               }));
             }
@@ -801,6 +844,18 @@ export function renderAdminShellPage(): string {
             menu.append(menuButton, menuPanel);
             cell.append(menu);
             return cell;
+          }
+
+          function closeAllActionMenus() {
+            const panels = document.querySelectorAll(".action-menu-panel");
+            for (const panel of panels) {
+              panel.hidden = true;
+            }
+
+            const buttons = document.querySelectorAll(".action-menu button[aria-haspopup='true']");
+            for (const button of buttons) {
+              button.setAttribute("aria-expanded", "false");
+            }
           }
 
           function actionButton(label, onClick) {
@@ -829,46 +884,62 @@ export function renderAdminShellPage(): string {
           async function changeMemberRole(membershipId, role) {
             await postAdminAction(
               adminMemberUrl(state.workspace.workspaceId, membershipId) +
-                "/role?role=" + encodeURIComponent(role)
+                "/role?role=" + encodeURIComponent(role),
+              "Member role updated.",
+              { loadingMessage: "Saving workspace admin change..." }
             );
           }
 
           async function disableMember(membershipId) {
-            await postAdminAction(
-              adminMemberUrl(state.workspace.workspaceId, membershipId) + "/disable",
-              "Member disabled."
-            );
+            openActionModal({
+              title: "Disable member?",
+              body: "This disables workspace access for this member. Their platform account is not deleted.",
+              confirmLabel: "Disable member",
+              url: adminMemberUrl(state.workspace.workspaceId, membershipId) + "/disable",
+              successMessage: "Member disabled.",
+              loadingMessage: "Disabling member..."
+            });
           }
 
           async function reactivateMember(membershipId) {
-            await postAdminAction(
-              adminMemberUrl(state.workspace.workspaceId, membershipId) + "/reactivate",
-              "Member reactivated."
-            );
+            openActionModal({
+              title: "Reactivate member?",
+              body: "This restores workspace access for this member.",
+              confirmLabel: "Reactivate member",
+              url: adminMemberUrl(state.workspace.workspaceId, membershipId) + "/reactivate",
+              successMessage: "Member reactivated.",
+              loadingMessage: "Reactivating member..."
+            });
           }
 
           async function removeMember(membershipId) {
-            if (!window.confirm("Remove this member from the workspace?")) {
-              return;
-            }
-
-            await postAdminAction(
-              adminMemberUrl(state.workspace.workspaceId, membershipId) + "/remove",
-              "Member removed."
-            );
+            openActionModal({
+              title: "Remove member?",
+              body: "This removes workspace access for this member. Their platform account is not deleted.",
+              confirmLabel: "Remove member",
+              url: adminMemberUrl(state.workspace.workspaceId, membershipId) + "/remove",
+              successMessage: "Member removed.",
+              loadingMessage: "Removing member..."
+            });
           }
 
           async function revokeApproval(approvalId) {
-            await postAdminAction(
-              adminApprovalUrl(state.workspace.workspaceId, approvalId) + "/revoke",
-              "Approval revoked."
-            );
+            openActionModal({
+              title: "Revoke approval?",
+              body: "This removes the pending workspace access approval for this email.",
+              confirmLabel: "Revoke approval",
+              url: adminApprovalUrl(state.workspace.workspaceId, approvalId) + "/revoke",
+              successMessage: "Approval revoked.",
+              loadingMessage: "Revoking approval..."
+            });
           }
 
           async function updateEntitlement(nextStatus) {
             await postAdminAction(
               adminEntitlementsUrl(state.workspace.workspaceId) +
-                "/kqag/status?status=" + encodeURIComponent(nextStatus)
+                "/kqag/status?status=" + encodeURIComponent(nextStatus),
+              "Workspace admin change saved.",
+              { loadingMessage: "Updating app access..." }
             );
           }
 
@@ -885,15 +956,81 @@ export function renderAdminShellPage(): string {
 
             const result = await postAdminAction(
               addMemberUrl(state.workspace.workspaceId, email, role),
-              null
+              null,
+              { loadingMessage: "Adding workspace member..." }
             );
             if (result) {
               addMemberForm.reset();
             }
           }
 
-          async function postAdminAction(url, successMessage = "Workspace admin change saved.") {
-            setStatus("Saving workspace admin change...");
+          function openActionModal(action) {
+            state.modalAction = action;
+            modalTitle.textContent = action.title;
+            modalBody.textContent = action.body;
+            modalConfirmButton.textContent = action.confirmLabel;
+            modalError.hidden = true;
+            modalError.textContent = "";
+            setModalBusy(false, action.loadingMessage);
+            adminActionModal.hidden = false;
+            modalCancelButton.focus();
+          }
+
+          function closeActionModal() {
+            if (modalConfirmButton.disabled) {
+              return;
+            }
+
+            state.modalAction = null;
+            adminActionModal.hidden = true;
+            modalError.hidden = true;
+            modalError.textContent = "";
+            setModalBusy(false, "");
+          }
+
+          async function runModalAction() {
+            const action = state.modalAction;
+
+            if (!action) {
+              return;
+            }
+
+            setModalBusy(true, action.loadingMessage);
+            const success = await postAdminAction(action.url, action.successMessage, {
+              loadingMessage: action.loadingMessage
+            });
+
+            if (success) {
+              setModalBusy(false, "");
+              closeActionModal();
+              return;
+            }
+
+            setModalBusy(false, action.loadingMessage);
+            modalError.textContent = "Workspace admin action could not be completed.";
+            modalError.hidden = false;
+          }
+
+          function setModalBusy(isBusy, message) {
+            if (isBusy) {
+              modalConfirmButton.disabled = true;
+              modalCancelButton.disabled = true;
+            } else {
+              modalConfirmButton.disabled = false;
+              modalCancelButton.disabled = false;
+            }
+            modalLoading.hidden = !isBusy;
+            modalLoadingText.textContent = message || "";
+          }
+
+          async function postAdminAction(
+            url,
+            successMessage = "Workspace admin change saved.",
+            options = {}
+          ) {
+            const loadingMessage = options.loadingMessage || "Saving workspace admin change...";
+            setStatus(loadingMessage);
+            showActionStatus(loadingMessage, true);
             setAddMemberResult("");
 
             try {
@@ -911,6 +1048,7 @@ export function renderAdminShellPage(): string {
               if (!response.ok) {
                 const message = safeAdminActionMessage(payload);
                 setStatus(message);
+                showActionStatus(message, false);
                 setAddMemberResult(message);
                 await loadAdminData();
                 return false;
@@ -919,11 +1057,13 @@ export function renderAdminShellPage(): string {
               await loadAdminData();
               const message = successMessage || adminActionSuccessMessage(payload);
               setStatus(message);
+              showActionStatus(message, false);
               setAddMemberResult(message);
               return true;
             } catch {
               const message = "Workspace admin action could not be completed.";
               setStatus(message);
+              showActionStatus(message, false);
               setAddMemberResult(message);
               return false;
             }
@@ -962,6 +1102,19 @@ export function renderAdminShellPage(): string {
 
             addMemberResult.textContent = message;
             addMemberResult.hidden = false;
+          }
+
+          function showActionStatus(message, busy) {
+            if (!message) {
+              adminActionStatus.hidden = true;
+              adminActionStatusText.textContent = "";
+              adminActionStatus.querySelector(".spinner").hidden = true;
+              return;
+            }
+
+            adminActionStatus.hidden = false;
+            adminActionStatusText.textContent = message;
+            adminActionStatus.querySelector(".spinner").hidden = !busy;
           }
 
           async function getCsrfToken() {
@@ -1077,9 +1230,9 @@ export function renderAdminShellPage(): string {
               case "app_entitlement":
                 return "KQAG access";
               case "membership":
-                return "Workspace member";
+                return event.targetLabel || "Unknown user";
               case "membership_approval":
-                return "Pending approvals";
+                return event.targetLabel || "Unknown user";
               default:
                 return "Workspace item";
             }
@@ -1169,6 +1322,8 @@ export function renderAdminShellPage(): string {
 
           function hideAdminSections() {
             identity.hidden = true;
+            adminActionStatus.hidden = true;
+            adminActionStatusText.textContent = "";
             workspaceSummary.hidden = true;
             addMember.hidden = true;
             addMemberResult.hidden = true;
@@ -1597,6 +1752,74 @@ function htmlDocument({
     .action-menu-panel .secondary-action {
       width: 100%;
       min-height: 38px;
+    }
+
+    .action-status,
+    .modal-loading {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .action-status {
+      min-height: 44px;
+      margin-bottom: 16px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--muted);
+    }
+
+    .spinner {
+      width: 14px;
+      height: 14px;
+      border: 2px solid var(--line);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      flex: 0 0 auto;
+    }
+
+    .spinner[hidden] {
+      display: none;
+    }
+
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 10;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgb(24 33 43 / 42%);
+    }
+
+    .action-modal {
+      width: min(420px, 100%);
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      box-shadow: 0 18px 46px rgb(0 0 0 / 18%);
+    }
+
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .modal-error {
+      margin-top: 12px;
+      color: #991b1b;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
     }
 
     button:disabled,

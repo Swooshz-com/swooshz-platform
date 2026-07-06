@@ -85,6 +85,44 @@ test("active session returns safe user workspace and app context", async () => {
   assertResponseIsPrivacySafe(result);
 });
 
+test("removed member existing session clears stale selected workspace and keeps only remaining workspaces", async () => {
+  const { repositories } = sessionContextFixture({
+    omitMembershipIds: ["membership_owner_example"],
+  });
+
+  const result = await getPlatformSessionContext(repositories, {
+    sessionId: "session_owner_example",
+    now,
+    selectedWorkspaceId: "workspace_koncept_images",
+  });
+
+  assert.equal(result.outcome, "authenticated");
+  assert.equal(result.selectedWorkspaceId, null);
+  assert.deepEqual(
+    result.workspaces.map((workspace) => workspace.workspaceId),
+    ["workspace_viewer_team"],
+  );
+  assert.equal(result.workspaces[0].apps[0].access.result, AccessDecisionResult.RoleNotPermitted);
+  assertResponseIsPrivacySafe(result);
+});
+
+test("removed user with no active memberships sees safe empty workspace context", async () => {
+  const { repositories } = sessionContextFixture({
+    memberships: [],
+  });
+
+  const result = await getPlatformSessionContext(repositories, {
+    sessionId: "session_owner_example",
+    now,
+    selectedWorkspaceId: "workspace_koncept_images",
+  });
+
+  assert.equal(result.outcome, "authenticated");
+  assert.equal(result.selectedWorkspaceId, null);
+  assert.deepEqual(result.workspaces, []);
+  assertResponseIsPrivacySafe(result);
+});
+
 test("inactive or missing user returns safe unauthenticated result", async () => {
   const inactive = sessionContextFixture({ user: { status: "disabled" } });
   const missing = sessionContextFixture({ users: [] });
@@ -257,13 +295,16 @@ function sessionContextFixture(overrides = {}) {
     id: "entitlement_kqag_viewer",
     workspaceId: viewerWorkspace.id,
   };
+  const defaultMemberships = [membership, viewerMembership, disabledMembership].filter(
+    (candidate) => !(overrides.omitMembershipIds ?? []).includes(candidate.id),
+  );
   const records = {
     users: overrides.users ?? [user],
     sessions: overrides.sessions ?? [session],
-    workspaces: [workspace, viewerWorkspace, archivedWorkspace],
-    memberships: [membership, viewerMembership, disabledMembership],
+    workspaces: overrides.workspaces ?? [workspace, viewerWorkspace, archivedWorkspace],
+    memberships: overrides.memberships ?? defaultMemberships,
     apps: [app],
-    appEntitlements: [entitlement, viewerEntitlement],
+    appEntitlements: overrides.appEntitlements ?? [entitlement, viewerEntitlement],
   };
   const repositories = {
     sessions: {

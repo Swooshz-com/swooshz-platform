@@ -22,6 +22,7 @@ Platform does not own KQAG quote data. KQAG owns quote generation, profiles, pri
 - HttpOnly/SameSite cookie usage: session Set-Cookie helpers emit HttpOnly browser cookies with SameSite=Lax by default.
 - Secure cookie requirement for production: production runtime config requires secure browser cookies, and hosted readiness requires production-mode secure cookie configuration.
 - Session expiry behavior: session context, admin authorization, and launch checks reject missing, expired, revoked, or inactive-user sessions.
+- Membership removal does not block Google auth: removing a workspace member does not delete the platform user, provider identity, or global session. It revokes workspace, admin, and app access through current membership checks, and stale selected workspace state is cleared when session context is reloaded.
 - Logout/session revocation behavior: logout is POST-only, CSRF/origin protected in the Node adapter, revokes the current session when present, and clears the browser session cookie.
 - Fail-closed session context behavior: the session context endpoint returns safe unauthenticated results for missing, expired, revoked, inactive-user, or missing-user cases.
 - CSRF token handling for browser state-changing routes: state-changing browser-cookie routes require Origin/Referer validation plus an `x-csrf-token` header; CSRF service stores only token hashes and lifecycle metadata.

@@ -111,6 +111,74 @@ test("active unexpired disabled user denial is delegated to app-access service",
   assert.equal(result.decision.result, AccessDecisionResult.UserNotActive);
 });
 
+test("removed user with another workspace keeps access only to the remaining workspace", async () => {
+  const otherWorkspace = {
+    id: "workspace_other_example",
+    slug: "other-team",
+    displayName: "Other Team",
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
+  };
+  const { repositories, input } = protectedFixture({
+    role: "member",
+    workspaces: [
+      {
+        id: "workspace_koncept_images",
+        slug: "koncept-images-pte-ltd",
+        displayName: "Koncept Images Pte Ltd",
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+      },
+      otherWorkspace,
+    ],
+    memberships: [
+      {
+        id: "membership_member_other_example",
+        workspaceId: otherWorkspace.id,
+        userId: "user_member_example",
+        role: "member",
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+    appEntitlements: [
+      {
+        id: "entitlement_koncept_kqag",
+        workspaceId: "workspace_koncept_images",
+        appId: "app_kqag",
+        status: "enabled",
+        grantedByUserId: "user_owner_example",
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: "entitlement_other_kqag",
+        workspaceId: otherWorkspace.id,
+        appId: "app_kqag",
+        status: "enabled",
+        grantedByUserId: "user_owner_example",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+  });
+
+  const removedWorkspaceResult = await decideProtectedAppAccess(repositories, input);
+  const otherWorkspaceResult = await decideProtectedAppAccess(repositories, {
+    ...input,
+    selectedWorkspaceId: otherWorkspace.id,
+  });
+
+  assert.equal(removedWorkspaceResult.outcome, "denied");
+  assert.equal(removedWorkspaceResult.reason, "app_access_denied");
+  assert.equal(removedWorkspaceResult.decision.result, AccessDecisionResult.MembershipRequired);
+  assert.equal(otherWorkspaceResult.outcome, "allowed");
+  assert.equal(otherWorkspaceResult.workspaceId, otherWorkspace.id);
+});
+
 test("billing gate denial is delegated without creating launch tokens or grants", async () => {
   const { repositories, input, records, calls } = protectedFixture({
     billingGate: { blocked: true },

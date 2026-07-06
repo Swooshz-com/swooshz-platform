@@ -152,6 +152,7 @@ export interface WorkspaceAuditEventSummary {
   eventType: string;
   targetType: string;
   targetId: string;
+  targetLabel: string;
   createdAt: IsoTimestamp;
   metadata: Record<string, string | number | boolean | null>;
 }
@@ -848,6 +849,7 @@ async function toAuditEventSummary(
   event: AuditEvent,
 ): Promise<WorkspaceAuditEventSummary> {
   const actor = event.actorUserId ? await repositories.users.findById(event.actorUserId) : null;
+  const metadata = safeAuditMetadata(event.metadata);
 
   return {
     eventId: event.id,
@@ -858,14 +860,64 @@ async function toAuditEventSummary(
     eventType: event.eventType,
     targetType: event.targetType ?? "",
     targetId: event.targetId ?? "",
+    targetLabel: await readAuditTargetLabel(repositories, event, metadata),
     createdAt: event.createdAt,
-    metadata: safeAuditMetadata(event.metadata),
+    metadata,
   };
 }
 
 function safeUserLabel(value: string | null | undefined): string | null {
   const normalized = value?.trim();
   return normalized || null;
+}
+
+async function readAuditTargetLabel(
+  repositories: PlatformRepositories,
+  event: AuditEvent,
+  metadata: Record<string, string | number | boolean | null>,
+): Promise<string> {
+  switch (event.targetType) {
+    case "membership":
+      return readTargetUserLabel(repositories, metadata.targetUserId);
+    case "membership_approval":
+      return readMembershipApprovalTargetLabel(repositories, event, metadata);
+    case "app_entitlement":
+      return String(metadata.appKey).toLowerCase() === "kqag"
+        ? "KQAG access"
+        : "App entitlement";
+    default:
+      return "Workspace item";
+  }
+}
+
+async function readMembershipApprovalTargetLabel(
+  repositories: PlatformRepositories,
+  event: AuditEvent,
+  metadata: Record<string, string | number | boolean | null>,
+): Promise<string> {
+  if (event.targetId && repositories.membershipApprovals) {
+    const approval = await repositories.membershipApprovals.findById(event.targetId);
+    const email = normalizeEmail(approval?.email ?? "");
+
+    if (email) {
+      return email;
+    }
+  }
+
+  return readTargetUserLabel(repositories, metadata.targetUserId);
+}
+
+async function readTargetUserLabel(
+  repositories: PlatformRepositories,
+  targetUserId: string | number | boolean | null | undefined,
+): Promise<string> {
+  if (typeof targetUserId !== "string" || !targetUserId.trim()) {
+    return "Unknown user";
+  }
+
+  const user = await repositories.users.findById(targetUserId);
+
+  return safeUserLabel(user?.displayName) ?? safeUserLabel(user?.email) ?? "Unknown user";
 }
 
 function findTargetMembership(

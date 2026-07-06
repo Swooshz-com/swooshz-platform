@@ -159,6 +159,8 @@ Implemented browser/admin UI surface:
 - The Pending Approvals section lists pending approvals and lets owner/admin users revoke them through the CSRF-protected revoke route.
 - Role changes, membership disables, membership reactivations, membership removals, and KQAG entitlement toggles use the existing CSRF token route and send the required `x-csrf-token` header to the protected routes.
 - The Activity section shows recent workspace audit events with event type, target, actor user id, timestamp, and allowlisted safe metadata only, including membership approval create/revoke/accept events.
+- Activity rows must identify the affected user or pending email safely. Membership events resolve a safe display label from the target user when available and fall back to `Unknown user`; pending approval events show the normalized pending email from the approval record. Activity keeps privacy-minimized metadata and must not show raw provider claims, tokens, cookies, database URLs, stack traces, or KQAG private payloads.
+- State-changing admin actions use an internal modal and visible loading indicator instead of browser confirmation. The remove flow uses `Remove member?`, explains `This removes workspace access for this member. Their platform account is not deleted.`, disables modal buttons while pending, and shows safe success or failure copy.
 
 Operational notes:
 
