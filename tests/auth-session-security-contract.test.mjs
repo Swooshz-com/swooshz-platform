@@ -114,6 +114,15 @@ test("auth/session security contract separates read-only CSRF exemptions from la
   assert.doesNotMatch(contract, /app launch consume[^.\n|]*idempotent/i);
 });
 
+test("auth/session security contract documents removed-member auth versus workspace access", async () => {
+  const contract = await readContract();
+
+  assert.match(contract, /membership removal does not block Google auth/i);
+  assert.match(contract, /does not delete the platform user, provider identity, or global session/i);
+  assert.match(contract, /revokes workspace, admin, and app access through current membership checks/i);
+  assert.match(contract, /stale selected workspace/i);
+});
+
 test("auth/session security contract aligns runbooks and roadmap", async () => {
   const contract = await readContract();
   const platformContract = await readFile("docs/internal-alpha-platform-contract.md", "utf8");

@@ -43,6 +43,13 @@ test("app shell references only existing browser JSON APIs", () => {
   assert.match(html, /id="adminLink"[^>]*hidden/);
 });
 
+test("app shell shows a clear no-workspace-access state for authenticated users", () => {
+  const html = renderAppShellPage();
+
+  assert.match(html, /No workspace access is available for this account\./);
+  assert.doesNotMatch(html, /No active workspaces are available\./);
+});
+
 test("app shell keeps secret and raw-auth material out of static HTML", () => {
   const html = renderAppShellPage();
 
@@ -115,7 +122,7 @@ test("admin shell renders pending approvals with revoke controls", () => {
   assert.match(html, /approvalActionsCell/);
   assert.match(html, /revokeApproval/);
   assert.match(html, /"Approval revoked\."/);
-  assert.match(html, /Pending approvals/);
+  assert.match(html, /Pending Approvals/);
   assert.doesNotMatch(html, /owner approval/i);
 });
 
@@ -153,6 +160,8 @@ test("admin shell includes Activity section for safe audit browsing", () => {
   assert.match(html, /function activityPager/);
   assert.match(html, /Older/);
   assert.match(html, /Newer/);
+  assert.match(html, /event\.targetLabel/);
+  assert.match(html, /Unknown user/);
   assert.match(html, /Previous role/);
   assert.match(html, /New status/);
   assert.match(html, /normalizeAppKeyMetadata/);
@@ -186,6 +195,20 @@ test("admin shell Activity metadata uses an explicit friendly allowlist", () => 
   assert.doesNotMatch(html, /case "entitlementId"/);
   assert.doesNotMatch(html, /case "source"/);
   assert.doesNotMatch(html, /endsWith\("Id"\)/);
+});
+
+test("admin shell Activity subject identifies affected users and pending emails safely", () => {
+  const html = renderAdminShellPage();
+
+  assert.match(html, /function subjectLabel\(event\)/);
+  assert.match(html, /event\.targetLabel \|\| "Unknown user"/);
+  assert.match(html, /case "membership":\s*return event\.targetLabel \|\| "Unknown user";/);
+  assert.match(
+    html,
+    /case "membership_approval":\s*return event\.targetLabel \|\| "Unknown user";/,
+  );
+  assert.doesNotMatch(html, /targetUserId.*textContent/s);
+  assert.doesNotMatch(html, /providerSubject|rawClaims|oauthCode|rawProvider/i);
 });
 
 test("platform shells explain logout scope and show signed-out Google account note", () => {
@@ -224,22 +247,48 @@ test("admin shell limits usable controls to owner/admin workspace context", () =
   assert.doesNotMatch(html, /button\.disabled = isSelf \|\| member\.status !== "active"/);
 });
 
-test("admin shell renders member row actions as a compact Actions menu with removal confirmation", () => {
+test("admin shell renders member row actions as a compact Actions menu with internal action modal", () => {
   const html = renderAdminShellPage();
 
   assert.match(html, /function memberActionsCell\(member, activeOwnerCount\)/);
   assert.match(html, /menuButton\.textContent = "Actions"/);
+  assert.match(html, /closeAllActionMenus/);
   assert.match(html, /actionButton\("Disable"/);
   assert.match(html, /actionButton\("Reactivate"/);
   assert.match(html, /actionButton\("Remove"/);
   assert.match(html, /removeMember\(member\.membershipId\)/);
-  assert.match(html, /window\.confirm\("Remove this member from the workspace\?"\)/);
+  assert.match(html, /id="adminActionModal"/);
+  assert.match(html, /Remove member\?/);
+  assert.match(
+    html,
+    /This removes workspace access for this member\. Their platform account is not deleted\./,
+  );
+  assert.match(html, /Remove member/);
+  assert.match(html, /Cancel/);
+  assert.match(html, /Removing member\.\.\./);
+  assert.match(html, /modalConfirmButton\.disabled = true/);
+  assert.match(html, /modalCancelButton\.disabled = true/);
+  assert.doesNotMatch(html, /window\.confirm/);
   assert.match(html, /member\.status === "active"/);
   assert.match(html, /member\.status === "disabled"/);
   assert.match(html, /menuButton\.disabled = !canAct \|\| !\["active", "disabled"\]\.includes\(member\.status\)/);
   assert.match(html, /adminMemberUrl\(state\.workspace\.workspaceId, membershipId\) \+ "\/remove"/);
   assert.match(html, /case "workspace\.membership\.removed":\s*return "Member removed";/);
   assert.doesNotMatch(html, /button\.textContent = member\.status === "disabled" \? "Reactivate" : "Disable"/);
+});
+
+test("admin shell shows loading feedback for state-changing admin actions", () => {
+  const html = renderAdminShellPage();
+
+  assert.match(html, /id="adminActionStatus"/);
+  assert.match(html, /class="spinner"/);
+  assert.match(html, /Saving workspace admin change\.\.\./);
+  assert.match(html, /Disabling member\.\.\./);
+  assert.match(html, /Reactivating member\.\.\./);
+  assert.match(html, /Revoking approval\.\.\./);
+  assert.match(html, /Updating app access\.\.\./);
+  assert.match(html, /Adding workspace member\.\.\./);
+  assert.match(html, /showActionStatus\(loadingMessage, true\)/);
 });
 
 test("admin shell keeps secret raw-auth and KQAG quote material out of static HTML", () => {

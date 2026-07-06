@@ -99,6 +99,18 @@ test("internal alpha platform contract documents the admin foundation status", a
   assert.match(contract, /CSRF\/origin validation/i);
 });
 
+test("internal alpha platform contract requires affected-person Activity and internal action modal feedback", async () => {
+  const contract = await readContract();
+
+  assert.match(contract, /Activity rows must identify the affected user or pending email/i);
+  assert.match(contract, /Unknown user/i);
+  assert.match(contract, /privacy-minimized metadata/i);
+  assert.match(contract, /internal modal/i);
+  assert.match(contract, /Remove member\?/);
+  assert.match(contract, /This removes workspace access for this member\. Their platform account is not deleted\./);
+  assert.match(contract, /visible loading indicator/i);
+});
+
 test("internal alpha platform contract uses placeholders and avoids private material", async () => {
   const contract = await readContract();
 

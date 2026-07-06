@@ -147,6 +147,7 @@ test("owner and admin can list recent workspace audit events safely", async () =
         eventType: event.eventType,
         targetType: event.targetType,
         targetId: event.targetId,
+        targetLabel: event.targetLabel,
         createdAt: event.createdAt,
         metadata: event.metadata,
       })),
@@ -158,6 +159,7 @@ test("owner and admin can list recent workspace audit events safely", async () =
           eventType: "workspace.app_entitlement.disabled",
           targetType: "app_entitlement",
           targetId: "entitlement_koncept_kqag",
+          targetLabel: "KQAG access",
           createdAt: now,
           metadata: {
             appId: "app_kqag",
@@ -173,6 +175,7 @@ test("owner and admin can list recent workspace audit events safely", async () =
           eventType: "workspace.membership.role_changed",
           targetType: "membership",
           targetId: "membership_member_example",
+          targetLabel: "Member Example",
           createdAt: earlier,
           metadata: {
             previousRole: "viewer",
@@ -184,6 +187,194 @@ test("owner and admin can list recent workspace audit events safely", async () =
     );
     assertAuditPrivacy(result);
   }
+});
+
+test("workspace audit events identify affected users and pending emails safely", async () => {
+  const { repositories, input } = adminFixture({
+    auditEvents: [
+      auditEvent({
+        id: "audit_member_added",
+        eventType: "workspace.membership.added",
+        targetType: "membership",
+        targetId: "membership_member_example",
+        createdAt: future,
+        metadata: {
+          newRole: "member",
+          newStatus: "active",
+          source: "existing_provider_backed_user",
+          targetUserId: "user_member_example",
+        },
+      }),
+      auditEvent({
+        id: "audit_member_removed",
+        eventType: "workspace.membership.removed",
+        targetType: "membership",
+        targetId: "membership_member_example",
+        createdAt: now,
+        metadata: {
+          previousRole: "member",
+          previousStatus: "active",
+          targetUserId: "user_member_example",
+        },
+      }),
+      auditEvent({
+        id: "audit_member_disabled",
+        eventType: "workspace.membership.disabled",
+        targetType: "membership",
+        targetId: "membership_member_example",
+        createdAt: now,
+        metadata: {
+          previousRole: "member",
+          previousStatus: "active",
+          targetUserId: "user_member_example",
+        },
+      }),
+      auditEvent({
+        id: "audit_member_reactivated",
+        eventType: "workspace.membership.reactivated",
+        targetType: "membership",
+        targetId: "membership_member_example",
+        createdAt: now,
+        metadata: {
+          previousStatus: "disabled",
+          newStatus: "active",
+          targetUserId: "user_member_example",
+        },
+      }),
+      auditEvent({
+        id: "audit_member_role_changed",
+        eventType: "workspace.membership.role_changed",
+        targetType: "membership",
+        targetId: "membership_member_example",
+        createdAt: now,
+        metadata: {
+          previousRole: "viewer",
+          newRole: "member",
+          targetUserId: "user_member_example",
+        },
+      }),
+      auditEvent({
+        id: "audit_approval_created",
+        eventType: "workspace.membership_approval.created",
+        targetType: "membership_approval",
+        targetId: "approval_pending_example",
+        createdAt: now,
+        metadata: {
+          newRole: "member",
+          newStatus: "pending",
+          source: "invite_less_onboarding",
+        },
+      }),
+      auditEvent({
+        id: "audit_approval_revoked",
+        eventType: "workspace.membership_approval.revoked",
+        targetType: "membership_approval",
+        targetId: "approval_revoked_example",
+        createdAt: now,
+        metadata: {
+          previousStatus: "pending",
+          newStatus: "revoked",
+        },
+      }),
+      auditEvent({
+        id: "audit_approval_accepted",
+        eventType: "workspace.membership_approval.accepted",
+        targetType: "membership_approval",
+        targetId: "approval_accepted_example",
+        createdAt: now,
+        metadata: {
+          newRole: "member",
+          newStatus: "active",
+          source: "pending_approval",
+        },
+      }),
+      auditEvent({
+        id: "audit_missing_user",
+        eventType: "workspace.membership.removed",
+        targetType: "membership",
+        targetId: "membership_removed_missing",
+        createdAt: now,
+        metadata: {
+          previousRole: "member",
+          previousStatus: "active",
+          targetUserId: "user_missing_example",
+        },
+      }),
+      auditEvent({
+        id: "audit_known_user",
+        eventType: "workspace.membership.disabled",
+        targetType: "membership",
+        targetId: "membership_member_example",
+        createdAt: earlier,
+        metadata: {
+          previousRole: "member",
+          previousStatus: "active",
+          targetUserId: "user_member_example",
+        },
+      }),
+    ],
+    membershipApprovals: [
+      pendingApproval(),
+      pendingApproval({
+        id: "approval_revoked_example",
+        email: "Revoked.User@Example.Test",
+        status: "revoked",
+        revokedAt: now,
+        revokedByUserId: "user_owner_example",
+      }),
+      pendingApproval({
+        id: "approval_accepted_example",
+        email: "Accepted.User@Example.Test",
+        status: "accepted",
+        acceptedAt: now,
+        acceptedUserId: "user_member_example",
+      }),
+    ],
+  });
+
+  const result = await listWorkspaceAuditEventsForAdmin(repositories, {
+    ...input,
+    limit: 10,
+  });
+  const eventsById = Object.fromEntries(result.events.map((event) => [event.eventId, event]));
+
+  assert.deepEqual(
+    Object.fromEntries(
+      [
+        "audit_member_added",
+        "audit_member_removed",
+        "audit_member_disabled",
+        "audit_member_reactivated",
+        "audit_member_role_changed",
+        "audit_approval_created",
+        "audit_approval_revoked",
+        "audit_approval_accepted",
+        "audit_missing_user",
+      ].map((eventId) => [eventId, eventsById[eventId]?.targetLabel]),
+    ),
+    {
+      audit_member_added: "Member Example",
+      audit_member_removed: "Member Example",
+      audit_member_disabled: "Member Example",
+      audit_member_reactivated: "Member Example",
+      audit_member_role_changed: "Member Example",
+      audit_approval_created: "pending.user@example.test",
+      audit_approval_revoked: "revoked.user@example.test",
+      audit_approval_accepted: "accepted.user@example.test",
+      audit_missing_user: "Unknown user",
+    },
+  );
+  assert.deepEqual(eventsById.audit_approval_created.metadata, {
+    newRole: "member",
+    newStatus: "pending",
+    source: "invite_less_onboarding",
+  });
+  assert.deepEqual(eventsById.audit_missing_user.metadata, {
+    previousRole: "member",
+    previousStatus: "active",
+    targetUserId: "user_missing_example",
+  });
+  assertAuditPrivacy(result);
 });
 
 test("workspace audit events resolve actor labels safely and keep system fallback", async () => {
