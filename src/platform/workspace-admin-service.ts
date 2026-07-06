@@ -430,6 +430,8 @@ export async function removeWorkspaceMembership(
       throw adminError("not_found", "Workspace membership was not found.");
     }
 
+    await transactionRepositories.sessions.revokeActiveForUser(target.userId, input.now);
+
     await appendAuditEvent(transactionRepositories, {
       id: input.auditEventId,
       workspaceId: input.workspaceId,

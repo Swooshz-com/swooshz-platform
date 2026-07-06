@@ -89,6 +89,7 @@ export interface SessionRepository {
   findById(id: string): Promise<Session | null>;
   create(session: Session): Promise<Session>;
   revoke(id: string, revokedAt: IsoTimestamp): Promise<Session | null>;
+  revokeActiveForUser(userId: string, revokedAt: IsoTimestamp): Promise<readonly Session[]>;
 }
 
 export interface WorkspaceRepository {

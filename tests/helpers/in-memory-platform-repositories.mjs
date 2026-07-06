@@ -60,6 +60,17 @@ export function createInMemoryPlatformRepositories(records = {}) {
         session.revokedAt = revokedAt;
         return session;
       },
+      async revokeActiveForUser(userId, revokedAt) {
+        const revokedSessions = sessions.filter(
+          (session) => session.userId === userId && !session.revokedAt,
+        );
+
+        for (const session of revokedSessions) {
+          session.revokedAt = revokedAt;
+        }
+
+        return revokedSessions;
+      },
     },
     workspaces: {
       async findById(id) {

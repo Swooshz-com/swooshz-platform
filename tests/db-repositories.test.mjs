@@ -455,6 +455,10 @@ test("Drizzle repository create, update, append, and remove methods return mappe
     mapSessionRow(revokedSessionRow),
   );
   assert.deepEqual(
+    await repositories.sessions.revokeActiveForUser(userRow.id, updatedAt.toISOString()),
+    [mapSessionRow(revokedSessionRow)],
+  );
+  assert.deepEqual(
     await repositories.memberships.updateRole(
       membershipRow.id,
       "admin",
@@ -563,11 +567,20 @@ test("Drizzle repository create, update, append, and remove methods return mappe
   assert.ok(entitlementInsert);
   assert.equal(entitlementInsert.values.status, entitlementRow.status);
   assert.equal(entitlementInsert.values.grantedByUserId, entitlementRow.grantedByUserId);
-  const sessionUpdate = fakeDb.calls.find(
+  const sessionUpdates = fakeDb.calls.filter(
     (call) => call.operation === "update.set" && call.table === schema.sessions,
   );
-  assert.ok(sessionUpdate);
-  assert.deepEqual(Object.keys(sessionUpdate.values), ["revokedAt"]);
+  assert.equal(sessionUpdates.length, 2);
+  assert.deepEqual(Object.keys(sessionUpdates[0].values), ["revokedAt"]);
+  assert.deepEqual(Object.keys(sessionUpdates[1].values), ["revokedAt"]);
+  const sessionUpdateWhereConditions = fakeDb.calls
+    .filter((call) => call.operation === "update.where" && call.table === schema.sessions)
+    .map((call) => collectSqlConditionFacts(call.condition));
+  assert.ok(sessionUpdateWhereConditions[0].columns.includes("id"));
+  assert.ok(sessionUpdateWhereConditions[0].params.includes(sessionRow.id));
+  assert.ok(sessionUpdateWhereConditions[1].columns.includes("user_id"));
+  assert.ok(sessionUpdateWhereConditions[1].columns.includes("revoked_at"));
+  assert.ok(sessionUpdateWhereConditions[1].params.includes(userRow.id));
   const membershipUpdates = fakeDb.calls.filter(
     (call) => call.operation === "update.set" && call.table === schema.memberships,
   );

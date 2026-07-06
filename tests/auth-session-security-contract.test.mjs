@@ -12,6 +12,7 @@ const implementedBehaviors = [
   "HttpOnly/SameSite cookie usage",
   "Secure cookie requirement for production",
   "Session expiry behavior",
+  "Membership removal session revocation",
   "Logout/session revocation behavior",
   "Fail-closed session context behavior",
   "CSRF token handling for browser state-changing routes",
@@ -118,7 +119,9 @@ test("auth/session security contract documents removed-member auth versus worksp
   const contract = await readContract();
 
   assert.match(contract, /membership removal does not block Google auth/i);
-  assert.match(contract, /does not delete the platform user, provider identity, or global session/i);
+  assert.match(contract, /does not delete the platform user or provider identity/i);
+  assert.match(contract, /revokes that user's active platform sessions/i);
+  assert.match(contract, /future sign-in can create a new session/i);
   assert.match(contract, /revokes workspace, admin, and app access through current membership checks/i);
   assert.match(contract, /stale selected workspace/i);
 });
