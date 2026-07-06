@@ -1210,6 +1210,62 @@ test("membership removal rejects unsafe targets without mutation", async () => {
   }
 });
 
+test("membership removal fails closed when the checked target changes before delete", async () => {
+  for (const [name, mutateMembership] of [
+    [
+      "role changes to owner",
+      (membership) => {
+        membership.role = "owner";
+      },
+    ],
+    [
+      "role changes to admin",
+      (membership) => {
+        membership.role = "admin";
+      },
+    ],
+    [
+      "workspace changes",
+      (membership) => {
+        membership.workspaceId = "workspace_other_example";
+      },
+    ],
+    [
+      "user changes",
+      (membership) => {
+        membership.userId = "user_viewer_example";
+      },
+    ],
+  ]) {
+    const { repositories, input, records } = adminFixture();
+
+    simulateConcurrentMembershipChangeBeforeRemoval(
+      repositories,
+      records,
+      "membership_member_example",
+      mutateMembership,
+    );
+
+    await assert.rejects(
+      () =>
+        removeWorkspaceMembership(repositories, {
+          ...input,
+          membershipId: "membership_member_example",
+          auditEventId: `audit_stale_remove_${name.replaceAll(" ", "_")}`,
+        }),
+      assertAdminError("not_found"),
+      name,
+    );
+
+    assert.equal(
+      records.memberships.some((membership) => membership.id === "membership_member_example"),
+      true,
+      name,
+    );
+    assert.equal(records.auditEvents.length, 0, name);
+  }
+});
+
 test("membership reactivation rejects unsafe targets without mutation", async () => {
   for (const [name, overrides, membershipId, expectedCode] of [
     ["missing membership", {}, "membership_missing_example", "not_found"],
@@ -1653,6 +1709,37 @@ test("pending approval revocation rolls back when audit append fails", async () 
   assert.deepEqual(records.membershipApprovals, [pendingApproval()]);
   assert.equal(records.auditEvents.length, 0);
 });
+
+function simulateConcurrentMembershipChangeBeforeRemoval(
+  repositories,
+  records,
+  membershipId,
+  mutateMembership,
+) {
+  const mutate = () => {
+    const membership = records.memberships.find((candidate) => candidate.id === membershipId);
+
+    if (membership) {
+      mutateMembership(membership);
+    }
+  };
+
+  if (typeof repositories.memberships.removeIfCurrentTarget === "function") {
+    const removeIfCurrentTarget =
+      repositories.memberships.removeIfCurrentTarget.bind(repositories.memberships);
+    repositories.memberships.removeIfCurrentTarget = async (...args) => {
+      mutate();
+      return removeIfCurrentTarget(...args);
+    };
+    return;
+  }
+
+  const remove = repositories.memberships.remove.bind(repositories.memberships);
+  repositories.memberships.remove = async (...args) => {
+    mutate();
+    return remove(...args);
+  };
+}
 
 function adminFixture(overrides = {}) {
   const workspace = {

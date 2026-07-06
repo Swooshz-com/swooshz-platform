@@ -414,7 +414,16 @@ export async function removeWorkspaceMembership(
       throw adminError("invalid_role", "Owner membership removal is not supported here.");
     }
 
-    const removed = await transactionRepositories.memberships.remove(target.id);
+    const removalTarget = {
+      id: target.id,
+      workspaceId: target.workspaceId,
+      userId: target.userId,
+      role: target.role,
+      status: target.status,
+    };
+    const removed = await transactionRepositories.memberships.removeIfCurrentTarget(
+      removalTarget,
+    );
 
     if (!removed) {
       throw adminError("not_found", "Workspace membership was not found.");

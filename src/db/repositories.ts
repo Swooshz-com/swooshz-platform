@@ -222,10 +222,18 @@ export function createDrizzlePlatformRepositories(
           .returning();
         return mapOne(rows[0], mapMembershipRow);
       },
-      async remove(id) {
+      async removeIfCurrentTarget(target) {
         const rows = await db
           .delete(memberships)
-          .where(eq(memberships.id, id))
+          .where(
+            and(
+              eq(memberships.id, target.id),
+              eq(memberships.workspaceId, target.workspaceId),
+              eq(memberships.userId, target.userId),
+              eq(memberships.role, target.role),
+              eq(memberships.status, target.status),
+            ),
+          )
           .returning();
         return mapOne(rows[0], mapMembershipRow);
       },

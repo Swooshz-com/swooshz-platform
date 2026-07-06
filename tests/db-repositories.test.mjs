@@ -471,7 +471,7 @@ test("Drizzle repository create, update, append, and remove methods return mappe
     mapMembershipRow({ ...membershipRow, role: "admin", updatedAt }),
   );
   assert.deepEqual(
-    await repositories.memberships.remove(membershipRow.id),
+    await repositories.memberships.removeIfCurrentTarget(mapMembershipRow(membershipRow)),
     mapMembershipRow(membershipRow),
   );
   assert.deepEqual(
@@ -587,8 +587,24 @@ test("Drizzle repository create, update, append, and remove methods return mappe
   const membershipDeleteCondition = collectSqlConditionFacts(
     membershipDeleteWhere.condition,
   );
-  assert.ok(membershipDeleteCondition.columns.includes("id"));
-  assert.ok(membershipDeleteCondition.params.includes(membershipRow.id));
+  for (const column of ["id", "workspace_id", "user_id", "role", "status"]) {
+    assert.ok(
+      membershipDeleteCondition.columns.includes(column),
+      `delete condition should include ${column}`,
+    );
+  }
+  for (const value of [
+    membershipRow.id,
+    membershipRow.workspaceId,
+    membershipRow.userId,
+    membershipRow.role,
+    membershipRow.status,
+  ]) {
+    assert.ok(
+      membershipDeleteCondition.params.includes(value),
+      `delete condition should include ${value}`,
+    );
+  }
   const approvalUpdate = fakeDb.calls.find(
     (call) =>
       call.operation === "update.set" &&

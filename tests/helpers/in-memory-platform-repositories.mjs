@@ -114,8 +114,15 @@ export function createInMemoryPlatformRepositories(records = {}) {
         membership.updatedAt = updatedAt;
         return membership;
       },
-      async remove(id) {
-        const index = memberships.findIndex((candidate) => candidate.id === id);
+      async removeIfCurrentTarget(target) {
+        const index = memberships.findIndex(
+          (candidate) =>
+            candidate.id === target.id &&
+            candidate.workspaceId === target.workspaceId &&
+            candidate.userId === target.userId &&
+            candidate.role === target.role &&
+            candidate.status === target.status,
+        );
 
         if (index === -1) {
           return null;
