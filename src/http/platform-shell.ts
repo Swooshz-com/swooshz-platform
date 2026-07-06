@@ -354,6 +354,7 @@ export function renderAdminShellPage(): string {
             reviewed operator process before hosted execution.
           </p>
         </section>
+        <section id="pendingApprovals" class="workspace" hidden></section>
         <section id="members" class="workspace" hidden></section>
         <section id="entitlements" class="workspace" hidden></section>
         <section id="activity" class="workspace" hidden></section>
@@ -382,6 +383,7 @@ export function renderAdminShellPage(): string {
           const addMemberResult = document.getElementById("addMemberResult");
           const addMemberForm = document.getElementById("addMemberForm");
           const ownerTransfer = document.getElementById("ownerTransfer");
+          const pendingApprovals = document.getElementById("pendingApprovals");
           const members = document.getElementById("members");
           const entitlements = document.getElementById("entitlements");
           const activity = document.getElementById("activity");
@@ -434,8 +436,17 @@ export function renderAdminShellPage(): string {
             const workspaceId = state.workspace.workspaceId;
 
             try {
-              const [membersResponse, entitlementsResponse, activityResponse] = await Promise.all([
+              const [
+                membersResponse,
+                approvalsResponse,
+                entitlementsResponse,
+                activityResponse
+              ] = await Promise.all([
                 fetch(adminMembersUrl(workspaceId), {
+                  credentials: "same-origin",
+                  cache: "no-store"
+                }),
+                fetch(adminApprovalsUrl(workspaceId), {
                   credentials: "same-origin",
                   cache: "no-store"
                 }),
@@ -449,14 +460,17 @@ export function renderAdminShellPage(): string {
                 })
               ]);
               const membersPayload = await readJson(membersResponse);
+              const approvalsPayload = await readJson(approvalsResponse);
               const entitlementsPayload = await readJson(entitlementsResponse);
               const activityPayload = await readJson(activityResponse);
 
               if (
                 !membersResponse.ok ||
+                !approvalsResponse.ok ||
                 !entitlementsResponse.ok ||
                 !activityResponse.ok ||
                 membersPayload.outcome !== "listed" ||
+                approvalsPayload.outcome !== "listed" ||
                 entitlementsPayload.outcome !== "listed" ||
                 activityPayload.outcome !== "listed"
               ) {
@@ -467,6 +481,7 @@ export function renderAdminShellPage(): string {
               renderWorkspaceSummary(state.workspace);
               addMember.hidden = false;
               ownerTransfer.hidden = false;
+              renderPendingApprovals(approvalsPayload.approvals);
               renderMembers(membersPayload.members);
               renderEntitlements(entitlementsPayload.entitlements);
               renderActivity(activityPayload.events);
@@ -561,6 +576,35 @@ export function renderAdminShellPage(): string {
 
             table.append(body);
             members.append(table);
+          }
+
+          function renderPendingApprovals(approvalList) {
+            pendingApprovals.hidden = false;
+            pendingApprovals.replaceChildren(sectionHeading("Pending Approvals"));
+
+            if (!Array.isArray(approvalList) || approvalList.length === 0) {
+              pendingApprovals.append(emptyMessage("No pending approvals are available."));
+              return;
+            }
+
+            const table = document.createElement("table");
+            table.append(tableHead(["Email", "Role", "Status", "Created", "Actions"]));
+            const body = document.createElement("tbody");
+
+            for (const approval of approvalList) {
+              const row = document.createElement("tr");
+              row.append(
+                tableCell(approval.email || ""),
+                tableCell(approval.role || ""),
+                tableCell(approval.status || ""),
+                timeCell(approval.createdAt),
+                approvalActionsCell(approval)
+              );
+              body.append(row);
+            }
+
+            table.append(body);
+            pendingApprovals.append(table);
           }
 
           function renderEntitlements(entitlementList) {
@@ -728,6 +772,20 @@ export function renderAdminShellPage(): string {
             return cell;
           }
 
+          function approvalActionsCell(approval) {
+            const cell = document.createElement("td");
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "secondary-action compact";
+            button.textContent = "Revoke";
+            button.disabled = approval.status !== "pending";
+            button.addEventListener("click", () => {
+              void revokeApproval(approval.approvalId);
+            });
+            cell.append(button);
+            return cell;
+          }
+
           async function changeMemberRole(membershipId, role) {
             await postAdminAction(
               adminMemberUrl(state.workspace.workspaceId, membershipId) +
@@ -746,6 +804,13 @@ export function renderAdminShellPage(): string {
             await postAdminAction(
               adminMemberUrl(state.workspace.workspaceId, membershipId) + "/reactivate",
               "Member reactivated."
+            );
+          }
+
+          async function revokeApproval(approvalId) {
+            await postAdminAction(
+              adminApprovalUrl(state.workspace.workspaceId, approvalId) + "/revoke",
+              "Approval revoked."
             );
           }
 
@@ -769,7 +834,7 @@ export function renderAdminShellPage(): string {
 
             const result = await postAdminAction(
               addMemberUrl(state.workspace.workspaceId, email, role),
-              "User added to workspace."
+              null
             );
             if (result) {
               addMemberForm.reset();
@@ -801,8 +866,9 @@ export function renderAdminShellPage(): string {
               }
 
               await loadAdminData();
-              setStatus(successMessage);
-              setAddMemberResult(successMessage);
+              const message = successMessage || adminActionSuccessMessage(payload);
+              setStatus(message);
+              setAddMemberResult(message);
               return true;
             } catch {
               const message = "Workspace admin action could not be completed.";
@@ -810,6 +876,22 @@ export function renderAdminShellPage(): string {
               setAddMemberResult(message);
               return false;
             }
+          }
+
+          function adminActionSuccessMessage(payload) {
+            if (payload?.outcome === "pending_approval_created") {
+              return "Pending approval created.";
+            }
+
+            if (payload?.outcome === "created") {
+              return "Existing user added to workspace.";
+            }
+
+            if (payload?.outcome === "revoked") {
+              return "Approval revoked.";
+            }
+
+            return "Workspace admin change saved.";
           }
 
           function safeAdminActionMessage(payload) {
@@ -890,6 +972,16 @@ export function renderAdminShellPage(): string {
             return adminMembersUrl(workspaceId) + "/" + encodeURIComponent(membershipId);
           }
 
+          function adminApprovalsUrl(workspaceId) {
+            return "/api/platform/workspaces/" +
+              encodeURIComponent(workspaceId) +
+              "/member-approvals";
+          }
+
+          function adminApprovalUrl(workspaceId, approvalId) {
+            return adminApprovalsUrl(workspaceId) + "/" + encodeURIComponent(approvalId);
+          }
+
           function adminEntitlementsUrl(workspaceId) {
             return "/api/platform/workspaces/" +
               encodeURIComponent(workspaceId) +
@@ -916,6 +1008,12 @@ export function renderAdminShellPage(): string {
                 return "Member reactivated";
               case "workspace.membership.role_changed":
                 return "Member role changed";
+              case "workspace.membership_approval.created":
+                return "Membership approval created";
+              case "workspace.membership_approval.revoked":
+                return "Membership approval revoked";
+              case "workspace.membership_approval.accepted":
+                return "Membership approval accepted";
               default:
                 return "Workspace activity";
             }
@@ -927,6 +1025,8 @@ export function renderAdminShellPage(): string {
                 return "KQAG access";
               case "membership":
                 return "Workspace member";
+              case "membership_approval":
+                return "Pending approvals";
               default:
                 return "Workspace item";
             }
@@ -1021,11 +1121,13 @@ export function renderAdminShellPage(): string {
             addMemberResult.hidden = true;
             addMemberResult.textContent = "";
             ownerTransfer.hidden = true;
+            pendingApprovals.hidden = true;
             members.hidden = true;
             entitlements.hidden = true;
             activity.hidden = true;
             workspaceSummary.replaceChildren();
             addMemberForm.reset();
+            pendingApprovals.replaceChildren();
             members.replaceChildren();
             entitlements.replaceChildren();
             activity.replaceChildren();

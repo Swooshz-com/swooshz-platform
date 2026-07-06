@@ -222,6 +222,7 @@ function createAuthDependencies({
   const stateStore = createDrizzleAuthStateStore(db);
   const stateReferenceFactory = createAuthStateReferenceFactorySafely(secrets);
   const oidcAdapter = createOidcAdapterSafely(auth, stateReferenceFactory);
+  const workspaceAdminIdFactory = createSecureWorkspaceAdminIdFactory();
 
   return {
     authStart: {
@@ -245,15 +246,13 @@ function createAuthDependencies({
       stateStore,
       stateReferenceFactory,
       platformIdentityResolver: createPlatformIdentitySessionResolver({
-        repositories: {
-          users: repositories.users,
-          providerIdentities: repositories.providerIdentities!,
-          sessions: repositories.sessions,
-        },
+        repositories: repositories as Required<typeof repositories>,
         sessionDurationMs: auth.sessionDurationMs,
         sessionIdFactory: auth.sessionIdFactory,
         userIdFactory: auth.userIdFactory,
         providerIdentityIdFactory: auth.providerIdentityIdFactory,
+        membershipIdFactory: () => workspaceAdminIdFactory.createMembershipId(),
+        auditEventIdFactory: () => workspaceAdminIdFactory.createAuditEventId(),
       }),
       successRedirectPath: auth.successRedirectPath,
       callbackFailureReporter:

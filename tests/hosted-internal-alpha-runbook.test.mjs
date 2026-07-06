@@ -31,7 +31,7 @@ test("hosted internal alpha runbook covers deployment operations", async () => {
     "`AUTH_REDIRECT_URI` ends with `/api/platform/auth/callback`",
     "cross-host session and cookie behavior remains an operator review",
     "first owner/admin bootstrap",
-    "add-existing-user",
+    "pending workspace approval",
     "KQAG entitlement",
     "audit/activity verification",
   ];
@@ -102,7 +102,8 @@ test("hosted internal alpha smoke checklist covers fail-closed access and token 
     "login session context",
     "`/app`",
     "`/app/admin`",
-    "add existing user by email after teammate signs in once",
+    "create pending workspace approval before teammate sign-in",
+    "real OIDC sign-in activates the pending approval",
     "role change",
     "membership disable",
     "membership reactivation",

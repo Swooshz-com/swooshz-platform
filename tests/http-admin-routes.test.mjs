@@ -69,7 +69,9 @@ test("owner and admin can list workspace members through admin route", async () 
 
 test("member and viewer cannot list or mutate workspace admin routes", async () => {
   for (const role of ["member", "viewer"]) {
-    const fixture = createAdminRouteFixture();
+    const fixture = createAdminRouteFixture({
+      membershipApprovals: [pendingApproval()],
+    });
 
     const list = await request({
       method: "GET",
@@ -95,6 +97,18 @@ test("member and viewer cannot list or mutate workspace admin routes", async () 
       headers: secureSessionHeaders(role),
       dependencies: fixture.dependencies,
     });
+    const approvalList = await request({
+      method: "GET",
+      url: "/api/platform/workspaces/workspace_koncept_images/member-approvals",
+      headers: sessionHeaders(role),
+      dependencies: fixture.dependencies,
+    });
+    const approvalRevoke = await request({
+      method: "POST",
+      url: "/api/platform/workspaces/workspace_koncept_images/member-approvals/approval_pending_example/revoke",
+      headers: secureSessionHeaders(role),
+      dependencies: fixture.dependencies,
+    });
 
     assert.equal(list.response.statusCode, 403);
     assert.deepEqual(list.body, {
@@ -116,16 +130,29 @@ test("member and viewer cannot list or mutate workspace admin routes", async () 
       outcome: "denied",
       reason: "not_authorized",
     });
+    assert.equal(approvalList.response.statusCode, 403);
+    assert.deepEqual(approvalList.body, {
+      outcome: "denied",
+      reason: "not_authorized",
+    });
+    assert.equal(approvalRevoke.response.statusCode, 403);
+    assert.deepEqual(approvalRevoke.body, {
+      outcome: "denied",
+      reason: "not_authorized",
+    });
     assert.equal(
       fixture.records.memberships.find((membership) => membership.id === "membership_viewer_example")
         ?.role,
       "viewer",
     );
+    assert.deepEqual(fixture.records.membershipApprovals, [pendingApproval()]);
     assert.equal(fixture.records.auditEvents.length, 0);
     assertResponseIsPrivacySafe(list.response);
     assertResponseIsPrivacySafe(mutate.response);
     assertResponseIsPrivacySafe(reactivate.response);
     assertResponseIsPrivacySafe(add.response);
+    assertResponseIsPrivacySafe(approvalList.response);
+    assertResponseIsPrivacySafe(approvalRevoke.response);
   }
 });
 
@@ -432,6 +459,40 @@ test("state-changing admin routes validate Origin and CSRF before mutation", asy
     },
     dependencies: addWithoutOriginFixture.dependencies,
   });
+  const revokeWithoutOriginFixture = createAdminRouteFixture({
+    membershipApprovals: [pendingApproval()],
+  });
+  const revokeWithoutOrigin = await request({
+    method: "POST",
+    url: "/api/platform/workspaces/workspace_koncept_images/member-approvals/approval_pending_example/revoke",
+    headers: {
+      cookie: "swooshz_session=session_owner_example",
+      "x-csrf-token": validCsrfToken,
+    },
+    dependencies: revokeWithoutOriginFixture.dependencies,
+  });
+  const revokeWithoutCsrfFixture = createAdminRouteFixture({
+    membershipApprovals: [pendingApproval()],
+  });
+  const revokeWithoutCsrf = await request({
+    method: "POST",
+    url: "/api/platform/workspaces/workspace_koncept_images/member-approvals/approval_pending_example/revoke",
+    headers: {
+      origin: allowedOrigin,
+      cookie: "swooshz_session=session_owner_example",
+    },
+    dependencies: revokeWithoutCsrfFixture.dependencies,
+  });
+  const revokeInvalidCsrfFixture = createAdminRouteFixture({
+    membershipApprovals: [pendingApproval()],
+    csrfValid: false,
+  });
+  const revokeWithInvalidCsrf = await request({
+    method: "POST",
+    url: "/api/platform/workspaces/workspace_koncept_images/member-approvals/approval_pending_example/revoke",
+    headers: secureSessionHeaders("owner"),
+    dependencies: revokeInvalidCsrfFixture.dependencies,
+  });
 
   assert.equal(roleWithoutOrigin.response.statusCode, 403);
   assert.deepEqual(roleWithoutOrigin.body, {
@@ -492,6 +553,42 @@ test("state-changing admin routes validate Origin and CSRF before mutation", asy
     false,
   );
   assert.equal(addWithoutOriginFixture.records.auditEvents.length, 0);
+  assert.equal(revokeWithoutOrigin.response.statusCode, 403);
+  assert.deepEqual(revokeWithoutOrigin.body, {
+    outcome: "denied",
+    reason: "missing_origin",
+  });
+  assert.equal(Object.hasOwn(revokeWithoutOrigin.body, "message"), false);
+  assert.equal(revokeWithoutOriginFixture.calls.csrfValidate, 0);
+  assert.deepEqual(revokeWithoutOriginFixture.records.membershipApprovals, [
+    pendingApproval(),
+  ]);
+  assert.equal(revokeWithoutOriginFixture.records.auditEvents.length, 0);
+  assert.equal(revokeWithoutCsrf.response.statusCode, 403);
+  assert.deepEqual(revokeWithoutCsrf.body, {
+    outcome: "denied",
+    reason: "missing_csrf_token",
+  });
+  assert.equal(Object.hasOwn(revokeWithoutCsrf.body, "message"), false);
+  assert.equal(revokeWithoutCsrfFixture.calls.csrfValidate, 0);
+  assert.deepEqual(revokeWithoutCsrfFixture.records.membershipApprovals, [
+    pendingApproval(),
+  ]);
+  assert.equal(revokeWithoutCsrfFixture.records.auditEvents.length, 0);
+  assert.equal(revokeWithInvalidCsrf.response.statusCode, 403);
+  assert.deepEqual(revokeWithInvalidCsrf.body, {
+    outcome: "denied",
+    reason: "invalid_csrf_token",
+  });
+  assert.equal(Object.hasOwn(revokeWithInvalidCsrf.body, "message"), false);
+  assert.equal(revokeInvalidCsrfFixture.calls.csrfValidate, 1);
+  assert.deepEqual(revokeInvalidCsrfFixture.records.membershipApprovals, [
+    pendingApproval(),
+  ]);
+  assert.equal(revokeInvalidCsrfFixture.records.auditEvents.length, 0);
+  assertResponseIsPrivacySafe(revokeWithoutOrigin.response);
+  assertResponseIsPrivacySafe(revokeWithoutCsrf.response);
+  assertResponseIsPrivacySafe(revokeWithInvalidCsrf.response);
 });
 
 test("owner and admin can add an existing provider-backed user through admin route", async () => {
@@ -547,18 +644,89 @@ test("owner and admin can add an existing provider-backed user through admin rou
   }
 });
 
+test("owner and admin can create list and revoke pending approvals through admin routes", async () => {
+  for (const role of ["owner", "admin"]) {
+    const fixture = createAdminRouteFixture();
+
+    const created = await request({
+      method: "POST",
+      url: "/api/platform/workspaces/workspace_koncept_images/members/add?email=%20New.Teammate%40Example.Test%20&role=viewer",
+      headers: secureSessionHeaders(role),
+      dependencies: fixture.dependencies,
+    });
+    const listed = await request({
+      method: "GET",
+      url: "/api/platform/workspaces/workspace_koncept_images/member-approvals",
+      headers: sessionHeaders(role),
+      dependencies: fixture.dependencies,
+    });
+    const revoked = await request({
+      method: "POST",
+      url: "/api/platform/workspaces/workspace_koncept_images/member-approvals/approval_http_1/revoke",
+      headers: secureSessionHeaders(role),
+      dependencies: fixture.dependencies,
+    });
+
+    assert.equal(created.response.statusCode, 201);
+    assertNoStoreHeaders(created.response.headers);
+    assert.deepEqual(created.body, {
+      outcome: "pending_approval_created",
+      approval: {
+        approvalId: "approval_http_1",
+        workspaceId: "workspace_koncept_images",
+        email: "new.teammate@example.test",
+        role: "viewer",
+        status: "pending",
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+    assert.equal(
+      fixture.records.memberships.some((membership) =>
+        membership.id.startsWith("membership_http_"),
+      ),
+      false,
+    );
+    assert.deepEqual(listed.body, {
+      outcome: "listed",
+      workspaceId: "workspace_koncept_images",
+      approvals: [created.body.approval],
+    });
+    assert.equal(revoked.response.statusCode, 200);
+    assert.deepEqual(revoked.body, {
+      outcome: "revoked",
+      approval: {
+        ...created.body.approval,
+        status: "revoked",
+        updatedAt: now,
+        revokedAt: now,
+      },
+    });
+    assert.deepEqual(
+      fixture.records.auditEvents.map((event) => event.eventType),
+      [
+        "workspace.membership_approval.created",
+        "workspace.membership_approval.revoked",
+      ],
+    );
+    assert.equal(fixture.calls.csrfValidate, 2);
+    assertResponseIsPrivacySafe(created.response);
+    assertResponseIsPrivacySafe(listed.response);
+    assertResponseIsPrivacySafe(revoked.response);
+  }
+});
+
 test("add existing user route returns safe operator guidance without mutation", async () => {
   const guidance =
-    "User could not be added. They must sign in once with an approved Google account before they can be added to this workspace.";
+    "Access request could not be recorded. Check the email and role, then try again.";
 
   for (const [name, overrides, query, expectedStatus, expectedMessage] of [
-    ["missing target", {}, "email=xPass%40hotmail.sg&role=member", 404, guidance],
     [
       "target without provider identity",
       { extraUsers: [existingProviderBackedUser()] },
       "email=existing.user%40example.test&role=member",
-      404,
-      guidance,
+      201,
+      "Pending approval created. The teammate can sign in with that Google account to activate access.",
     ],
     [
       "disabled target",
@@ -601,6 +769,20 @@ test("add existing user route returns safe operator guidance without mutation", 
       400,
       "Selected role is not allowed.",
     ],
+    [
+      "duplicate pending approval",
+      {
+        membershipApprovals: [
+          pendingApproval({
+            id: "approval_existing_pending",
+            email: "existing.user@example.test",
+          }),
+        ],
+      },
+      "email=existing.user%40example.test&role=member",
+      409,
+      "Pending approval already exists for this email.",
+    ],
   ]) {
     const fixture = createAdminRouteFixture(overrides);
 
@@ -612,16 +794,32 @@ test("add existing user route returns safe operator guidance without mutation", 
     });
 
     assert.equal(response.statusCode, expectedStatus, name);
-    assert.deepEqual(body, {
-      outcome: "error",
-      message: expectedMessage,
-    });
-    assertAdminMessagePrivacySafe(body.message);
-    assert.equal(
-      fixture.records.memberships.some((membership) => membership.id === "membership_http_1"),
-      false,
-    );
-    assert.equal(fixture.records.auditEvents.length, 0);
+    if (expectedStatus === 201) {
+      assert.deepEqual(body, {
+        outcome: "pending_approval_created",
+        approval: {
+          approvalId: "approval_http_1",
+          workspaceId: "workspace_koncept_images",
+          email: "existing.user@example.test",
+          role: "member",
+          status: "pending",
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      assert.equal(fixture.records.auditEvents.length, 1);
+    } else {
+      assert.deepEqual(body, {
+        outcome: "error",
+        message: expectedMessage,
+      });
+      assertAdminMessagePrivacySafe(body.message);
+      assert.equal(
+        fixture.records.memberships.some((membership) => membership.id === "membership_http_1"),
+        false,
+      );
+      assert.equal(fixture.records.auditEvents.length, 0);
+    }
     assertResponseIsPrivacySafe(response);
   }
 });
@@ -650,6 +848,55 @@ test("audit append failure through add existing user route rolls back membership
     fixture.records.memberships.some((membership) => membership.id === "membership_http_1"),
     false,
   );
+  assert.equal(fixture.records.auditEvents.length, 0);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("audit append failure through pending approval create route rolls back approval creation", async () => {
+  const fixture = createAdminRouteFixture({ failAuditAppend: true });
+
+  const { response, body } = await request({
+    method: "POST",
+    url: "/api/platform/workspaces/workspace_koncept_images/members/add?email=new.teammate%40example.test&role=member",
+    headers: secureSessionHeaders("owner"),
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 500);
+  assert.deepEqual(body, {
+    outcome: "error",
+    message: "Workspace admin action could not be completed.",
+  });
+  assertAdminMessagePrivacySafe(body.message);
+  assert.deepEqual(fixture.records.membershipApprovals, []);
+  assert.equal(
+    fixture.records.memberships.some((membership) => membership.id === "membership_http_1"),
+    false,
+  );
+  assert.equal(fixture.records.auditEvents.length, 0);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("audit append failure through approval revoke route rolls back status change", async () => {
+  const fixture = createAdminRouteFixture({
+    membershipApprovals: [pendingApproval()],
+    failAuditAppend: true,
+  });
+
+  const { response, body } = await request({
+    method: "POST",
+    url: "/api/platform/workspaces/workspace_koncept_images/member-approvals/approval_pending_example/revoke",
+    headers: secureSessionHeaders("owner"),
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 500);
+  assert.deepEqual(body, {
+    outcome: "error",
+    message: "Workspace admin action could not be completed.",
+  });
+  assertAdminMessagePrivacySafe(body.message);
+  assert.deepEqual(fixture.records.membershipApprovals, [pendingApproval()]);
   assert.equal(fixture.records.auditEvents.length, 0);
   assertResponseIsPrivacySafe(response);
 });
@@ -1020,6 +1267,7 @@ function createAdminRouteFixture(overrides = {}) {
       },
     ],
     memberships: [...memberships, ...(overrides.extraMemberships ?? [])],
+    membershipApprovals: overrides.membershipApprovals ?? [],
     apps: [app],
     appEntitlements:
       overrides.appEntitlements ??
@@ -1090,6 +1338,9 @@ function createAdminRouteFixture(overrides = {}) {
             ).length + 1
           }`;
         },
+        createApprovalId() {
+          return `approval_http_${records.membershipApprovals.length + 1}`;
+        },
       },
     },
   };
@@ -1134,6 +1385,24 @@ function auditEvent(overrides = {}) {
       previousStatus: "active",
       targetUserId: "user_member_example",
     },
+    ...overrides,
+  };
+}
+
+function pendingApproval(overrides = {}) {
+  return {
+    id: "approval_pending_example",
+    workspaceId: "workspace_koncept_images",
+    email: "pending.user@example.test",
+    role: "member",
+    status: "pending",
+    requestedByUserId: "user_owner_example",
+    createdAt: earlier,
+    updatedAt: earlier,
+    acceptedAt: null,
+    revokedAt: null,
+    acceptedUserId: null,
+    revokedByUserId: null,
     ...overrides,
   };
 }

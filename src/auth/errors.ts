@@ -15,8 +15,10 @@ export type AuthCallbackErrorCode =
   | "provider_identity_rejected"
   | "email_not_allowed"
   | "domain_not_allowed"
+  | "onboarding_approval_required"
   | "verified_email_required"
   | "provider_identity_link_failed"
+  | "membership_approval_acceptance_failed"
   | "session_creation_failed"
   | "user_not_active"
   | "invalid_platform_identity_state";

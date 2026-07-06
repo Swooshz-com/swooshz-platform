@@ -5,6 +5,7 @@ export function createInMemoryPlatformRepositories(records = {}) {
   const workspaces = records.workspaces ?? [];
   const memberships = records.memberships ?? [];
   const invitations = records.invitations ?? [];
+  const membershipApprovals = records.membershipApprovals ?? [];
   const apps = records.apps ?? [];
   const appEntitlements = records.appEntitlements ?? [];
   const auditEvents = records.auditEvents ?? [];
@@ -132,6 +133,45 @@ export function createInMemoryPlatformRepositories(records = {}) {
         return invitation;
       },
     },
+    membershipApprovals: {
+      async findById(id) {
+        return membershipApprovals.find((approval) => approval.id === id) ?? null;
+      },
+      async findPendingForWorkspaceEmail(workspaceId, email) {
+        return (
+          membershipApprovals.find(
+            (approval) =>
+              approval.workspaceId === workspaceId &&
+              approval.email === email &&
+              approval.status === "pending",
+          ) ?? null
+        );
+      },
+      async listPendingForEmail(email) {
+        return membershipApprovals.filter(
+          (approval) => approval.email === email && approval.status === "pending",
+        );
+      },
+      async listPendingForWorkspace(workspaceId) {
+        return membershipApprovals.filter(
+          (approval) =>
+            approval.workspaceId === workspaceId && approval.status === "pending",
+        );
+      },
+      async create(approval) {
+        membershipApprovals.push(approval);
+        return approval;
+      },
+      async updatePendingStatus(id, status, timestamps = {}) {
+        const approval = membershipApprovals.find((candidate) => candidate.id === id);
+        if (!approval || approval.status !== "pending") {
+          return null;
+        }
+
+        Object.assign(approval, { status }, timestamps);
+        return approval;
+      },
+    },
     apps: {
       async findByKey(key) {
         return apps.find((app) => app.key === key) ?? null;
@@ -220,6 +260,7 @@ export function createInMemoryPlatformRepositories(records = {}) {
         workspaces,
         memberships,
         invitations,
+        membershipApprovals,
         apps,
         appEntitlements,
         auditEvents,
@@ -235,10 +276,11 @@ export function createInMemoryPlatformRepositories(records = {}) {
         restoreRecords(workspaces, snapshots[3]);
         restoreRecords(memberships, snapshots[4]);
         restoreRecords(invitations, snapshots[5]);
-        restoreRecords(apps, snapshots[6]);
-        restoreRecords(appEntitlements, snapshots[7]);
-        restoreRecords(auditEvents, snapshots[8]);
-        restoreRecords(appLaunchTokens, snapshots[9]);
+        restoreRecords(membershipApprovals, snapshots[6]);
+        restoreRecords(apps, snapshots[7]);
+        restoreRecords(appEntitlements, snapshots[8]);
+        restoreRecords(auditEvents, snapshots[9]);
+        restoreRecords(appLaunchTokens, snapshots[10]);
         throw error;
       }
     },

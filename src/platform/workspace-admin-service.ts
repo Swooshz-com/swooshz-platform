@@ -9,7 +9,12 @@ import type {
 } from "../accounts/types.js";
 import { normalizeEmail } from "../accounts/normalization.js";
 import type { App, AppEntitlement, EntitlementStatus } from "../apps/types.js";
-import type { AuditEventRepository, PlatformRepositories } from "./repositories.js";
+import type {
+  AuditEventRepository,
+  PlatformRepositories,
+  WorkspaceMembershipApprovalRecord,
+  WorkspaceMembershipApprovalRepository,
+} from "./repositories.js";
 
 export type WorkspaceAdminServiceErrorCode =
   | "not_authorized"
@@ -17,6 +22,7 @@ export type WorkspaceAdminServiceErrorCode =
   | "invalid_role"
   | "invalid_entitlement_status"
   | "membership_conflict"
+  | "approval_conflict"
   | "last_owner_required"
   | "self_change_not_allowed"
   | "repository_failure";
@@ -78,6 +84,30 @@ export interface WorkspaceExistingUserAddInput extends WorkspaceAdminInput {
   targetEmail: string;
   role: Role;
   membershipId: string;
+  auditEventId: string;
+}
+
+export interface WorkspaceMemberAddInput extends WorkspaceExistingUserAddInput {
+  approvalId: string;
+}
+
+export type WorkspaceMemberAddResult =
+  | {
+      outcome: "existing_user_added";
+      membership: Membership;
+    }
+  | {
+      outcome: "pending_approval_created";
+      approval: WorkspaceMembershipApprovalRecord;
+    };
+
+export interface WorkspaceMembershipApprovalsAdminResult {
+  workspaceId: string;
+  approvals: readonly WorkspaceMembershipApprovalRecord[];
+}
+
+export interface WorkspaceMembershipApprovalRevokeInput extends WorkspaceAdminInput {
+  approvalId: string;
   auditEventId: string;
 }
 
@@ -419,6 +449,173 @@ export async function addExistingWorkspaceUserByEmail(
   });
 }
 
+export async function addWorkspaceMemberByEmail(
+  repositories: PlatformRepositories,
+  input: WorkspaceMemberAddInput,
+): Promise<WorkspaceMemberAddResult> {
+  assertValidAddRole(input.role);
+
+  return runWorkspaceAdminTransaction(repositories, async (transactionRepositories) => {
+    const context = await requireAdminContext(transactionRepositories, input);
+    requireAuditRepository(transactionRepositories);
+    const approvals = requireApprovalRepository(transactionRepositories);
+    const targetEmail = normalizeEmail(input.targetEmail);
+
+    if (!targetEmail) {
+      throw adminError("not_found", "Target platform user was not found.");
+    }
+
+    const targetUser = await transactionRepositories.users.findByNormalizedEmail(targetEmail);
+
+    if (targetUser) {
+      const existingMembership =
+        await transactionRepositories.memberships.findForUserInWorkspace(
+          targetUser.id,
+          input.workspaceId,
+        );
+
+      if (existingMembership) {
+        throw adminError(
+          "membership_conflict",
+          "Target platform user already has a workspace membership.",
+        );
+      }
+
+      const providerIdentities = await requireProviderIdentityRepository(
+        transactionRepositories,
+      ).listForUser(targetUser.id);
+
+      if (targetUser.status === "active" && providerIdentities.length > 0) {
+        return {
+          outcome: "existing_user_added",
+          membership: await createActiveMembershipForExistingProviderUser(
+            transactionRepositories,
+            input,
+            context,
+            targetUser,
+          ),
+        };
+      }
+
+      if (targetUser.status !== "active") {
+        throw adminError("not_found", "Target platform user was not found.");
+      }
+    }
+
+    const existingApproval = await approvals.findPendingForWorkspaceEmail(
+      input.workspaceId,
+      targetEmail,
+    );
+
+    if (existingApproval) {
+      throw adminError(
+        "approval_conflict",
+        "A pending workspace membership approval already exists.",
+      );
+    }
+
+    const approval = await approvals.create({
+      id: input.approvalId,
+      workspaceId: input.workspaceId,
+      email: targetEmail,
+      role: input.role,
+      status: "pending",
+      requestedByUserId: context.actor.id,
+      createdAt: input.now,
+      updatedAt: input.now,
+      acceptedAt: null,
+      revokedAt: null,
+      acceptedUserId: null,
+      revokedByUserId: null,
+    });
+
+    await appendAuditEvent(transactionRepositories, {
+      id: input.auditEventId,
+      workspaceId: input.workspaceId,
+      actorUserId: context.actor.id,
+      eventType: "workspace.membership_approval.created",
+      targetType: "membership_approval",
+      targetId: approval.id,
+      createdAt: input.now,
+      metadata: {
+        newRole: input.role,
+        newStatus: "pending",
+        source: "invite_less_onboarding",
+      },
+    });
+
+    return {
+      outcome: "pending_approval_created",
+      approval,
+    };
+  });
+}
+
+export async function listWorkspaceMembershipApprovalsForAdmin(
+  repositories: PlatformRepositories,
+  input: WorkspaceAdminInput,
+): Promise<WorkspaceMembershipApprovalsAdminResult> {
+  return runSafely(async () => {
+    await requireAdminContext(repositories, input);
+    const approvals = await requireApprovalRepository(repositories).listPendingForWorkspace(
+      input.workspaceId,
+    );
+
+    return {
+      workspaceId: input.workspaceId,
+      approvals,
+    };
+  });
+}
+
+export async function revokeWorkspaceMembershipApproval(
+  repositories: PlatformRepositories,
+  input: WorkspaceMembershipApprovalRevokeInput,
+): Promise<WorkspaceMembershipApprovalRecord> {
+  return runWorkspaceAdminTransaction(repositories, async (transactionRepositories) => {
+    const context = await requireAdminContext(transactionRepositories, input);
+    requireAuditRepository(transactionRepositories);
+    const approvals = requireApprovalRepository(transactionRepositories);
+    const approval = await approvals.findById(input.approvalId);
+
+    if (!approval || approval.workspaceId !== input.workspaceId || approval.status !== "pending") {
+      throw adminError("not_found", "Workspace membership approval was not found.");
+    }
+
+    if (approval.role === "owner") {
+      throw adminError("invalid_role", "Owner membership approval is not supported.");
+    }
+
+    const previousStatus = approval.status;
+    const updated = await approvals.updatePendingStatus(approval.id, "revoked", {
+      updatedAt: input.now,
+      revokedAt: input.now,
+      revokedByUserId: context.actor.id,
+    });
+
+    if (!updated) {
+      throw adminError("not_found", "Workspace membership approval was not found.");
+    }
+
+    await appendAuditEvent(transactionRepositories, {
+      id: input.auditEventId,
+      workspaceId: input.workspaceId,
+      actorUserId: context.actor.id,
+      eventType: "workspace.membership_approval.revoked",
+      targetType: "membership_approval",
+      targetId: approval.id,
+      createdAt: input.now,
+      metadata: {
+        previousStatus,
+        newStatus: "revoked",
+        newRole: approval.role,
+      },
+    });
+
+    return updated;
+  });
+}
+
 export async function listWorkspaceAppEntitlementsForAdmin(
   repositories: PlatformRepositories,
   input: WorkspaceAdminInput,
@@ -720,6 +917,41 @@ async function appendAuditEvent(
   await requireAuditRepository(repositories).append(event);
 }
 
+async function createActiveMembershipForExistingProviderUser(
+  repositories: PlatformRepositories,
+  input: WorkspaceExistingUserAddInput,
+  context: AdminContext,
+  targetUser: User,
+): Promise<Membership> {
+  const membership = await repositories.memberships.create({
+    id: input.membershipId,
+    workspaceId: input.workspaceId,
+    userId: targetUser.id,
+    role: input.role,
+    status: "active",
+    createdAt: input.now,
+    updatedAt: input.now,
+  });
+
+  await appendAuditEvent(repositories, {
+    id: input.auditEventId,
+    workspaceId: input.workspaceId,
+    actorUserId: context.actor.id,
+    eventType: "workspace.membership.added",
+    targetType: "membership",
+    targetId: membership.id,
+    createdAt: input.now,
+    metadata: {
+      newRole: input.role,
+      newStatus: "active",
+      targetUserId: targetUser.id,
+      source: "existing_provider_backed_user",
+    },
+  });
+
+  return membership;
+}
+
 function requireAuditRepository(
   repositories: PlatformRepositories,
 ): AuditEventRepository {
@@ -738,6 +970,19 @@ function requireProviderIdentityRepository(
   }
 
   return repositories.providerIdentities;
+}
+
+function requireApprovalRepository(
+  repositories: PlatformRepositories,
+): WorkspaceMembershipApprovalRepository {
+  if (!repositories.membershipApprovals) {
+    throw adminError(
+      "repository_failure",
+      "Workspace membership approval repository is not configured.",
+    );
+  }
+
+  return repositories.membershipApprovals;
 }
 
 async function runWorkspaceAdminTransaction<T>(

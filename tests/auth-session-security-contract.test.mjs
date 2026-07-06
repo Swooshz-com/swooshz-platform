@@ -7,6 +7,7 @@ const contractPath = "docs/auth-session-security-contract.md";
 const implementedBehaviors = [
   "Generic OIDC login path",
   "Provider-backed user requirement",
+  "Pending workspace approval activation",
   "Server-side session records",
   "HttpOnly/SameSite cookie usage",
   "Secure cookie requirement for production",
@@ -23,6 +24,7 @@ const implementedBehaviors = [
   "Read-only browser-session routes that do not require CSRF",
   "Header-token app launch consume route",
   "Audit events for workspace/app-access admin actions",
+  "membership approval create/revoke/accept",
 ];
 
 const deferredItems = [
@@ -91,7 +93,7 @@ test("auth/session security contract separates read-only CSRF exemptions from la
 
   assert.match(
     contract,
-    /Read-only browser-session routes that do not require CSRF: session context, session app-access checks, workspace member listing, app-entitlement listing, and workspace audit browsing/i,
+    /Read-only browser-session routes that do not require CSRF: session context, session app-access checks, workspace member listing, pending approval listing, app-entitlement listing, and workspace audit browsing/i,
   );
   assert.match(
     contract,

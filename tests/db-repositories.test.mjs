@@ -12,6 +12,7 @@ import {
   mapProviderIdentityRow,
   mapSessionRow,
   mapUserRow,
+  mapWorkspaceMembershipApprovalRow,
   mapWorkspaceRow,
 } from "../dist/db/mappers.js";
 import { createDrizzlePlatformRepositories } from "../dist/db/repositories.js";
@@ -20,6 +21,7 @@ const createdAt = new Date("2026-06-26T00:00:00.000Z");
 const updatedAt = new Date("2026-06-26T01:00:00.000Z");
 const expiresAt = new Date("2026-06-27T00:00:00.000Z");
 const acceptedAt = new Date("2026-06-26T02:00:00.000Z");
+const revokedAt = new Date("2026-06-26T03:00:00.000Z");
 
 const userRow = {
   id: "user_owner_example",
@@ -71,6 +73,21 @@ const invitationRow = {
   expiresAt,
   acceptedAt,
   revokedAt: null,
+};
+
+const workspaceMembershipApprovalRow = {
+  id: "approval_teammate_example",
+  workspaceId: workspaceRow.id,
+  email: "teammate@example.com",
+  role: "viewer",
+  status: "pending",
+  requestedByUserId: userRow.id,
+  createdAt,
+  updatedAt,
+  acceptedAt: null,
+  revokedAt: null,
+  acceptedUserId: null,
+  revokedByUserId: null,
 };
 
 const sessionRow = {
@@ -187,6 +204,25 @@ test("maps provider identity, invitation, and audit rows without raw secrets", (
   });
 });
 
+test("maps workspace membership approval rows without token material", () => {
+  assert.deepEqual(mapWorkspaceMembershipApprovalRow(workspaceMembershipApprovalRow), {
+    id: workspaceMembershipApprovalRow.id,
+    workspaceId: workspaceMembershipApprovalRow.workspaceId,
+    email: workspaceMembershipApprovalRow.email,
+    role: workspaceMembershipApprovalRow.role,
+    status: workspaceMembershipApprovalRow.status,
+    requestedByUserId: workspaceMembershipApprovalRow.requestedByUserId,
+    createdAt: createdAt.toISOString(),
+    updatedAt: updatedAt.toISOString(),
+    acceptedAt: null,
+    revokedAt: null,
+    acceptedUserId: null,
+    revokedByUserId: null,
+  });
+  assert.equal("token" in mapWorkspaceMembershipApprovalRow(workspaceMembershipApprovalRow), false);
+  assert.equal("tokenHash" in mapWorkspaceMembershipApprovalRow(workspaceMembershipApprovalRow), false);
+});
+
 test("Drizzle repository adapters map find results and use expected tables", async () => {
   const fakeDb = createFakeDrizzleDb({
     selectRows: new Map([
@@ -195,6 +231,7 @@ test("Drizzle repository adapters map find results and use expected tables", asy
       [schema.sessions, [sessionRow]],
       [schema.workspaces, [workspaceRow]],
       [schema.memberships, [membershipRow]],
+      [schema.workspaceMembershipApprovals, [workspaceMembershipApprovalRow]],
       [schema.invitations, [invitationRow]],
       [schema.apps, [appRow]],
       [schema.appEntitlements, [entitlementRow]],
@@ -228,6 +265,17 @@ test("Drizzle repository adapters map find results and use expected tables", asy
     mapMembershipRow(membershipRow),
   );
   assert.deepEqual(
+    await repositories.membershipApprovals.findById(workspaceMembershipApprovalRow.id),
+    mapWorkspaceMembershipApprovalRow(workspaceMembershipApprovalRow),
+  );
+  assert.deepEqual(
+    await repositories.membershipApprovals.findPendingForWorkspaceEmail(
+      workspaceRow.id,
+      workspaceMembershipApprovalRow.email,
+    ),
+    mapWorkspaceMembershipApprovalRow(workspaceMembershipApprovalRow),
+  );
+  assert.deepEqual(
     await repositories.invitations.findById(invitationRow.id),
     mapInvitationRow(invitationRow),
   );
@@ -246,6 +294,8 @@ test("Drizzle repository adapters map find results and use expected tables", asy
     schema.workspaces,
     schema.workspaces,
     schema.memberships,
+    schema.workspaceMembershipApprovals,
+    schema.workspaceMembershipApprovals,
     schema.invitations,
     schema.apps,
     schema.apps,
@@ -269,6 +319,26 @@ test("Drizzle repository adapters return null for missing find results", async (
     await repositories.memberships.findForUserInWorkspace("missing_user", "missing_workspace"),
     null,
   );
+  assert.equal(await repositories.membershipApprovals.findById("missing_approval"), null);
+  assert.equal(
+    await repositories.membershipApprovals.findPendingForWorkspaceEmail(
+      "missing_workspace",
+      "missing@example.com",
+    ),
+    null,
+  );
+  assert.equal(
+    await repositories.membershipApprovals.updatePendingStatus(
+      "missing_approval",
+      "revoked",
+      {
+        updatedAt: updatedAt.toISOString(),
+        revokedAt: revokedAt.toISOString(),
+        revokedByUserId: userRow.id,
+      },
+    ),
+    null,
+  );
   assert.equal(await repositories.invitations.findById("missing_invitation"), null);
   assert.equal(await repositories.apps.findByKey("missing_app"), null);
   assert.equal(await repositories.apps.findById("missing_app"), null);
@@ -284,6 +354,7 @@ test("Drizzle repository list methods return arrays", async () => {
       selectRows: new Map([
         [schema.providerIdentities, [providerIdentityRow]],
         [schema.memberships, [membershipRow]],
+        [schema.workspaceMembershipApprovals, [workspaceMembershipApprovalRow]],
         [schema.apps, [appRow]],
         [schema.appEntitlements, [entitlementRow]],
       ]),
@@ -299,6 +370,16 @@ test("Drizzle repository list methods return arrays", async () => {
   assert.deepEqual(await repositories.memberships.listForWorkspace(workspaceRow.id), [
     mapMembershipRow(membershipRow),
   ]);
+  assert.deepEqual(
+    await repositories.membershipApprovals.listPendingForEmail(
+      workspaceMembershipApprovalRow.email,
+    ),
+    [mapWorkspaceMembershipApprovalRow(workspaceMembershipApprovalRow)],
+  );
+  assert.deepEqual(
+    await repositories.membershipApprovals.listPendingForWorkspace(workspaceRow.id),
+    [mapWorkspaceMembershipApprovalRow(workspaceMembershipApprovalRow)],
+  );
   assert.deepEqual(await repositories.apps.listAll(), [mapAppRow(appRow)]);
   assert.deepEqual(await repositories.appEntitlements.listForWorkspace(workspaceRow.id), [
     mapAppEntitlementRow(entitlementRow),
@@ -313,6 +394,7 @@ test("Drizzle repository create, update, and append methods return mapped record
       [schema.sessions, [sessionRow]],
       [schema.workspaces, [workspaceRow]],
       [schema.memberships, [membershipRow]],
+      [schema.workspaceMembershipApprovals, [workspaceMembershipApprovalRow]],
       [schema.invitations, [invitationRow]],
       [schema.apps, [appRow]],
       [schema.appEntitlements, [entitlementRow]],
@@ -322,6 +404,18 @@ test("Drizzle repository create, update, and append methods return mapped record
       [schema.invitations, [{ ...invitationRow, status: "accepted" }]],
       [schema.sessions, [revokedSessionRow]],
       [schema.memberships, [{ ...membershipRow, role: "admin", updatedAt }]],
+      [
+        schema.workspaceMembershipApprovals,
+        [
+          {
+            ...workspaceMembershipApprovalRow,
+            status: "revoked",
+            updatedAt,
+            revokedAt,
+            revokedByUserId: userRow.id,
+          },
+        ],
+      ],
       [schema.appEntitlements, [{ ...entitlementRow, status: "disabled", updatedAt }]],
     ]),
   });
@@ -343,6 +437,12 @@ test("Drizzle repository create, update, and append methods return mapped record
   assert.deepEqual(
     await repositories.memberships.create(mapMembershipRow(membershipRow)),
     mapMembershipRow(membershipRow),
+  );
+  assert.deepEqual(
+    await repositories.membershipApprovals.create(
+      mapWorkspaceMembershipApprovalRow(workspaceMembershipApprovalRow),
+    ),
+    mapWorkspaceMembershipApprovalRow(workspaceMembershipApprovalRow),
   );
   assert.deepEqual(await repositories.apps.create(mapAppRow(appRow)), mapAppRow(appRow));
   assert.deepEqual(
@@ -380,6 +480,24 @@ test("Drizzle repository create, update, and append methods return mapped record
     mapInvitationRow({ ...invitationRow, status: "accepted" }),
   );
   assert.deepEqual(
+    await repositories.membershipApprovals.updatePendingStatus(
+      workspaceMembershipApprovalRow.id,
+      "revoked",
+      {
+        updatedAt: updatedAt.toISOString(),
+        revokedAt: revokedAt.toISOString(),
+        revokedByUserId: userRow.id,
+      },
+    ),
+    mapWorkspaceMembershipApprovalRow({
+      ...workspaceMembershipApprovalRow,
+      status: "revoked",
+      updatedAt,
+      revokedAt,
+      revokedByUserId: userRow.id,
+    }),
+  );
+  assert.deepEqual(
     await repositories.auditEvents.append(mapAuditEventRow(auditEventRow)),
     mapAuditEventRow(auditEventRow),
   );
@@ -411,6 +529,11 @@ test("Drizzle repository create, update, and append methods return mapped record
   const membershipInsert = fakeDb.calls.find(
     (call) => call.operation === "insert.values" && call.table === schema.memberships,
   );
+  const approvalInsert = fakeDb.calls.find(
+    (call) =>
+      call.operation === "insert.values" &&
+      call.table === schema.workspaceMembershipApprovals,
+  );
   const appInsert = fakeDb.calls.find(
     (call) => call.operation === "insert.values" && call.table === schema.apps,
   );
@@ -423,6 +546,12 @@ test("Drizzle repository create, update, and append methods return mapped record
   assert.ok(membershipInsert);
   assert.equal(membershipInsert.values.role, membershipRow.role);
   assert.equal(membershipInsert.values.status, membershipRow.status);
+  assert.ok(approvalInsert);
+  assert.equal(approvalInsert.values.email, workspaceMembershipApprovalRow.email);
+  assert.equal(approvalInsert.values.role, workspaceMembershipApprovalRow.role);
+  assert.equal(approvalInsert.values.status, workspaceMembershipApprovalRow.status);
+  assert.equal("token" in approvalInsert.values, false);
+  assert.equal("tokenHash" in approvalInsert.values, false);
   assert.ok(appInsert);
   assert.equal(appInsert.values.key, appRow.key);
   assert.equal(appInsert.values.status, appRow.status);
@@ -446,6 +575,31 @@ test("Drizzle repository create, update, and append methods return mapped record
     status: "disabled",
     updatedAt,
   });
+  const approvalUpdate = fakeDb.calls.find(
+    (call) =>
+      call.operation === "update.set" &&
+      call.table === schema.workspaceMembershipApprovals,
+  );
+  assert.ok(approvalUpdate);
+  assert.deepEqual(approvalUpdate.values, {
+    status: "revoked",
+    updatedAt,
+    revokedAt,
+    revokedByUserId: userRow.id,
+  });
+  const approvalUpdateWhere = fakeDb.calls.find(
+    (call) =>
+      call.operation === "update.where" &&
+      call.table === schema.workspaceMembershipApprovals,
+  );
+  assert.ok(approvalUpdateWhere);
+  const approvalUpdateCondition = collectSqlConditionFacts(
+    approvalUpdateWhere.condition,
+  );
+  assert.ok(approvalUpdateCondition.columns.includes("id"));
+  assert.ok(approvalUpdateCondition.columns.includes("status"));
+  assert.ok(approvalUpdateCondition.params.includes(workspaceMembershipApprovalRow.id));
+  assert.ok(approvalUpdateCondition.params.includes("pending"));
   const entitlementUpdate = fakeDb.calls.find(
     (call) => call.operation === "update.set" && call.table === schema.appEntitlements,
   );
@@ -597,6 +751,35 @@ function assertTablesWereSelected(fakeDb, expectedTables) {
       .map((call) => call.table),
     expectedTables,
   );
+}
+
+function collectSqlConditionFacts(condition) {
+  const facts = {
+    columns: [],
+    params: [],
+  };
+
+  visitSqlConditionValue(condition, facts);
+
+  return facts;
+}
+
+function visitSqlConditionValue(value, facts) {
+  if (!value || typeof value !== "object") {
+    return;
+  }
+
+  if (typeof value.name === "string" && typeof value.columnType === "string") {
+    facts.columns.push(value.name);
+  }
+  if (value.constructor?.name === "Param") {
+    facts.params.push(value.value);
+  }
+  if (Array.isArray(value.queryChunks)) {
+    for (const chunk of value.queryChunks) {
+      visitSqlConditionValue(chunk, facts);
+    }
+  }
 }
 
 class FakeSelectResult {

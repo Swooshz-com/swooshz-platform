@@ -68,10 +68,16 @@ test("internal alpha platform contract documents the admin foundation status", a
   assert.match(contract, /disable and reactivate non-owner memberships/i);
   assert.match(contract, /change roles/i);
   assert.match(contract, /list app entitlements, and enable\/disable KQAG app entitlement/i);
-  assert.match(contract, /addExistingWorkspaceUserByEmail/i);
+  assert.match(contract, /addWorkspaceMemberByEmail/i);
+  assert.match(contract, /pending workspace membership approval/i);
   assert.match(contract, /existing active provider-backed user by normalized email/i);
   assert.match(contract, /\/api\/platform\/workspaces\/:workspaceId\/members\/add\?email=<email>&role=<role>/i);
+  assert.match(contract, /\/api\/platform\/workspaces\/:workspaceId\/member-approvals/i);
+  assert.match(contract, /\/api\/platform\/workspaces\/:workspaceId\/member-approvals\/:approvalId\/revoke/i);
   assert.match(contract, /workspace\.membership\.added/i);
+  assert.match(contract, /workspace\.membership_approval\.created/i);
+  assert.match(contract, /workspace\.membership_approval\.revoked/i);
+  assert.match(contract, /workspace\.membership_approval\.accepted/i);
   assert.match(contract, /reactivateWorkspaceMembership/i);
   assert.match(contract, /workspace\.membership\.reactivated/i);
   assert.match(contract, /no invitation delivery/i);
@@ -79,6 +85,7 @@ test("internal alpha platform contract documents the admin foundation status", a
   assert.match(contract, /disabled non-owner workspace membership/i);
   assert.match(contract, /listWorkspaceAuditEventsForAdmin/i);
   assert.match(contract, /\/api\/platform\/workspaces\/:workspaceId\/audit-events\?limit=<number>/i);
+  assert.match(contract, /Pending Approvals/i);
   assert.match(contract, /Activity section shows recent workspace audit events/i);
   assert.match(contract, /Minimal Activity browsing is implemented in `\/app\/admin`/i);
   assert.match(contract, /Audit export\/filtering\/retention workflows/i);
@@ -86,7 +93,7 @@ test("internal alpha platform contract documents the admin foundation status", a
   assert.match(contract, /required query parameters for mutation inputs/i);
   assert.match(contract, /route manifest marks adapter-wired routes as implemented/i);
   assert.match(contract, /same transaction\/unit-of-work/i);
-  assert.match(contract, /audit append failure cannot leave membership or entitlement state changed/i);
+  assert.match(contract, /audit append failure cannot leave membership, approval, or entitlement state changed/i);
   assert.match(contract, /Quote operators remain mapped to `member`/i);
   assert.match(contract, /No polished product UI exists yet/i);
   assert.match(contract, /CSRF\/origin validation/i);

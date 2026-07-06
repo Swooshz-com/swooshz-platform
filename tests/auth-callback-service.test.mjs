@@ -250,11 +250,54 @@ test("non-allowlisted email fails", async () => {
       }),
     (error) => {
       assert.equal(error instanceof AuthCallbackError, true);
-      assert.equal(error.code, "email_not_allowed");
+      assert.equal(error.code, "onboarding_approval_required");
       assert.doesNotMatch(error.message, /owner@example.com|other@example.com/);
       return true;
     },
   );
+});
+
+test("non-allowlisted email can continue to the resolver for pending approval checks", async () => {
+  const deps = createServiceDependencies({
+    authConfig: readAuthConfig({
+      ...baseEnv,
+      AUTH_ALLOWED_EMAILS: "owner@example.com",
+    }),
+    verifiedIdentity: {
+      providerKey: "example-oidc",
+      providerSubject: "pending-provider-subject",
+      verifiedEmail: "pending.user@example.test",
+      displayName: "Pending User",
+      metadata: { emailVerified: true },
+    },
+    allowDisallowedIdentityResolution: true,
+    platformIdentityResolution: {
+      platformUserId: "user_pending",
+      providerIdentityId: "provider_identity_pending",
+      session: {
+        id: "session_pending",
+        userId: "user_pending",
+        createdAt: now,
+        expiresAt: future,
+        lastSeenAt: now,
+        revokedAt: null,
+      },
+      workspaceMembershipGranted: true,
+    },
+  });
+
+  const result = await handleAuthCallback(deps, {
+    params: { code: "synthetic-auth-code", state: "synthetic-state" },
+    now,
+  });
+
+  assert.equal(result.outcome, "authenticated");
+  assert.equal(result.platformUserId, "user_pending");
+  assert.equal(result.workspaceMembershipGranted, true);
+  assert.deepEqual(deps.platformIdentityResolver.resolvedInputs[0].authPolicy, {
+    providerEmailAllowed: false,
+  });
+  assertServiceResultIsSafe(result);
 });
 
 test("allowlisted domain passes", async () => {
@@ -289,7 +332,7 @@ test("non-allowlisted domain fails", async () => {
       }),
     (error) => {
       assert.equal(error instanceof AuthCallbackError, true);
-      assert.equal(error.code, "domain_not_allowed");
+      assert.equal(error.code, "onboarding_approval_required");
       assert.doesNotMatch(error.message, /owner@example.com|team.example.com/);
       return true;
     },
@@ -448,7 +491,17 @@ function createServiceDependencies(options = {}) {
     resolvedInputs: [],
     async resolveAuthenticatedIdentity(input) {
       this.resolvedInputs.push(input);
-      return {
+      if (
+        input.authPolicy?.providerEmailAllowed === false &&
+        !options.allowDisallowedIdentityResolution
+      ) {
+        throw new AuthCallbackError(
+          "onboarding_approval_required",
+          "Workspace membership approval is required for this provider identity.",
+        );
+      }
+
+      return options.platformIdentityResolution ?? {
         platformUserId: "user_owner",
         providerIdentityId: "provider_identity_1",
         session: {

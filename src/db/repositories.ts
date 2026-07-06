@@ -10,6 +10,7 @@ import {
   providerIdentities,
   sessions,
   users,
+  workspaceMembershipApprovals,
   workspaces,
 } from "./schema.js";
 import {
@@ -22,6 +23,7 @@ import {
   mapProviderIdentityRow,
   mapSessionRow,
   mapUserRow,
+  mapWorkspaceMembershipApprovalRow,
   mapWorkspaceRow,
   toDate,
   type AppEntitlementRow,
@@ -33,6 +35,7 @@ import {
   type ProviderIdentityRow,
   type SessionRow,
   type UserRow,
+  type WorkspaceMembershipApprovalRow,
   type WorkspaceRow,
 } from "./mappers.js";
 import type {
@@ -50,6 +53,9 @@ import type {
   AppLaunchTokenRecord,
   PlatformRepositories,
   ProviderIdentity,
+  WorkspaceMembershipApprovalRecord,
+  WorkspaceMembershipApprovalStatus,
+  WorkspaceMembershipApprovalStatusTimestamps,
 } from "../platform/repositories.js";
 
 type Table = unknown;
@@ -230,6 +236,80 @@ export function createDrizzlePlatformRepositories(
           .where(eq(invitations.id, id))
           .returning();
         return mapOne(rows[0], mapInvitationRow);
+      },
+    },
+    membershipApprovals: {
+      async findById(id) {
+        return mapOne(
+          await selectOne(
+            db,
+            workspaceMembershipApprovals,
+            eq(workspaceMembershipApprovals.id, id),
+          ),
+          mapWorkspaceMembershipApprovalRow,
+        );
+      },
+      async findPendingForWorkspaceEmail(workspaceId, email) {
+        return mapOne(
+          await selectOne(
+            db,
+            workspaceMembershipApprovals,
+            and(
+              eq(workspaceMembershipApprovals.workspaceId, workspaceId),
+              eq(workspaceMembershipApprovals.email, email),
+              eq(workspaceMembershipApprovals.status, "pending"),
+            ),
+          ),
+          mapWorkspaceMembershipApprovalRow,
+        );
+      },
+      async listPendingForEmail(email) {
+        const rows = await db
+          .select()
+          .from(workspaceMembershipApprovals)
+          .where(
+            and(
+              eq(workspaceMembershipApprovals.email, email),
+              eq(workspaceMembershipApprovals.status, "pending"),
+            ),
+          );
+        return rows.map((row) =>
+          mapWorkspaceMembershipApprovalRow(row as unknown as WorkspaceMembershipApprovalRow),
+        );
+      },
+      async listPendingForWorkspace(workspaceId) {
+        const rows = await db
+          .select()
+          .from(workspaceMembershipApprovals)
+          .where(
+            and(
+              eq(workspaceMembershipApprovals.workspaceId, workspaceId),
+              eq(workspaceMembershipApprovals.status, "pending"),
+            ),
+          );
+        return rows.map((row) =>
+          mapWorkspaceMembershipApprovalRow(row as unknown as WorkspaceMembershipApprovalRow),
+        );
+      },
+      async create(approval) {
+        const rows = await db
+          .insert(workspaceMembershipApprovals)
+          .values(workspaceMembershipApprovalToValues(approval))
+          .returning();
+        return mapOneRequired(rows[0], mapWorkspaceMembershipApprovalRow);
+      },
+      async updatePendingStatus(id, status, timestamps) {
+        const rows = await db
+          .update(workspaceMembershipApprovals)
+          .set(workspaceMembershipApprovalStatusToValues(status, timestamps))
+          .where(
+            and(
+              eq(workspaceMembershipApprovals.id, id),
+              eq(workspaceMembershipApprovals.status, "pending"),
+            ),
+          )
+          .returning();
+        return mapOne(rows[0], mapWorkspaceMembershipApprovalRow);
       },
     },
     apps: {
@@ -482,6 +562,47 @@ function invitationStatusToValues(
       : {}),
     ...(timestamps?.revokedAt !== undefined
       ? { revokedAt: toDate(timestamps.revokedAt) }
+      : {}),
+  };
+}
+
+function workspaceMembershipApprovalToValues(
+  approval: WorkspaceMembershipApprovalRecord,
+): Row {
+  return {
+    id: approval.id,
+    workspaceId: approval.workspaceId,
+    email: approval.email,
+    role: approval.role,
+    status: approval.status,
+    requestedByUserId: approval.requestedByUserId,
+    createdAt: toDate(approval.createdAt),
+    updatedAt: toDate(approval.updatedAt),
+    acceptedAt: toDate(approval.acceptedAt),
+    revokedAt: toDate(approval.revokedAt),
+    acceptedUserId: approval.acceptedUserId,
+    revokedByUserId: approval.revokedByUserId,
+  };
+}
+
+function workspaceMembershipApprovalStatusToValues(
+  status: WorkspaceMembershipApprovalStatus,
+  timestamps: WorkspaceMembershipApprovalStatusTimestamps,
+): Row {
+  return {
+    status,
+    updatedAt: toDate(timestamps.updatedAt),
+    ...(timestamps.acceptedAt !== undefined
+      ? { acceptedAt: toDate(timestamps.acceptedAt) }
+      : {}),
+    ...(timestamps.revokedAt !== undefined
+      ? { revokedAt: toDate(timestamps.revokedAt) }
+      : {}),
+    ...(timestamps.acceptedUserId !== undefined
+      ? { acceptedUserId: timestamps.acceptedUserId }
+      : {}),
+    ...(timestamps.revokedByUserId !== undefined
+      ? { revokedByUserId: timestamps.revokedByUserId }
       : {}),
   };
 }
