@@ -16,7 +16,7 @@ Related docs:
 
 PR #55 readiness check only validates env shape and dry-run safety. It does not approve actual deployment.
 
-The readiness checker does not prove OIDC, database, KQAG, backups, rollback, logs, session cookies, or cross-host handoff work. Those require operator approval and smoke testing after reviewed hosted infrastructure exists.
+The dry-run readiness checker does not prove OIDC, database, KQAG, backups, rollback, logs, session cookies, or cross-host handoff work. The DB readiness checker can verify configured Postgres reachability plus required Platform schema/migration state, but it still does not approve hosted execution. Those require operator approval and smoke testing after reviewed hosted infrastructure exists.
 
 Passing `npm run platform:readiness-check` means only that required hosted env categories and safe URL shapes are present in the current shell. It remains a preflight checklist, not a launch authorization.
 
@@ -28,7 +28,7 @@ The auth/session security contract documents implemented auth/session behavior, 
 - KQAG host/provider choice: decide the reviewed KQAG hosting target outside this Platform PR.
 - TLS/reverse proxy approach: decide how HTTPS termination, forwarded host/protocol handling, and allowed origin expectations are reviewed.
 - Process manager/container approach: decide the approved runtime supervisor or container approach without adding deployment config in this PR.
-- PostgreSQL provider and backup/restore owner: decide the database provider, backup cadence, restore owner, and restore test process.
+- PostgreSQL provider and backup/restore owner: approve the recommended Neon target or a replacement provider, backup cadence, restore owner, and restore test process. Recommended non-secret target: project `swooshz-platform`, region `Singapore / aws-ap-southeast-1`, database `swooshz_platform`, role/user `platform_app`, pooled `DATABASE_URL` for runtime.
 - Migration approver and rollback approver: decide who approves manual migrations and who can approve rollback or fix-forward.
 - OIDC provider/client owner: decide who owns provider registration, client settings, and hosted auth configuration outside this repo.
 - Exact hosted redirect URI placeholder approval process: decide how `<hosted-oidc-redirect-uri>` becomes the reviewed hosted callback value outside repo notes.
@@ -51,7 +51,7 @@ Every row uses placeholders only. Fill actual owners, providers, domains, identi
 | KQAG host/provider choice | `<owner-or-approver-placeholder>` | `<approved-kqag-hosting-target-evidence>` | Platform handoff placeholders only; no KQAG repo change. | `<status-placeholder>` |
 | TLS/reverse proxy approach | `<owner-or-approver-placeholder>` | `<approved-tls-reverse-proxy-evidence>` | Hosted docs only; no proxy config. | `<status-placeholder>` |
 | Process manager/container approach | `<owner-or-approver-placeholder>` | `<approved-process-manager-or-container-evidence>` | Hosted docs only; no runtime supervisor config. | `<status-placeholder>` |
-| PostgreSQL provider and backup/restore owner | `<owner-or-approver-placeholder>` | `<approved-database-backup-restore-evidence>` | Hosted docs only; no DB connection or migration. | `<status-placeholder>` |
+| PostgreSQL provider and backup/restore owner | `<owner-or-approver-placeholder>` | `<approved-neon-target-backup-restore-evidence>` | Hosted docs and readiness checks only; no Neon creation, no secrets, no deployment. | `<status-placeholder>` |
 | Migration approver and rollback approver | `<owner-or-approver-placeholder>` | `<approved-migration-rollback-evidence>` | Migrations stay explicit/manual only. | `<status-placeholder>` |
 | OIDC provider/client owner | `<owner-or-approver-placeholder>` | `<approved-oidc-client-evidence>` | Hosted docs only; no provider calls. | `<status-placeholder>` |
 | Exact hosted redirect URI placeholder approval process | `<owner-or-approver-placeholder>` | `<approved-hosted-redirect-uri-process-evidence>` | Placeholder docs only; no real hosted URL. | `<status-placeholder>` |

@@ -198,6 +198,26 @@ test("database client creation failure is privacy-safe", async () => {
   );
 });
 
+test("bootstrap fails closed before listen when DATABASE_URL is malformed", async () => {
+  const fixture = createBootstrapFixture({
+    env: {
+      DATABASE_URL: [
+        "https",
+        "://private-user:private-pass@private-host.invalid/swooshz_platform",
+      ].join(""),
+    },
+  });
+  const bootstrap = createPlatformNodeBootstrap(fixture.input);
+
+  await assert.rejects(
+    () => bootstrap.start(),
+    assertPrivacySafeBootstrapError("database_client_failed"),
+  );
+  assert.equal(fixture.calls.databaseClientFactory, 0);
+  assert.equal(fixture.calls.listen, 0);
+  assert.equal(fixture.calls.serverFactory, 0);
+});
+
 test("bootstrap composes runtime dependencies with secure cookie origin and CSRF config", async () => {
   const fixture = createBootstrapFixture();
   const bootstrap = createPlatformNodeBootstrap(fixture.input);

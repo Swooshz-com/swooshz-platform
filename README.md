@@ -49,7 +49,7 @@ The repo also includes storage-agnostic repository and service ports for loading
 
 The first Drizzle-backed repository adapters now map database rows to plain platform/domain records behind those ports.
 
-ADR 0005 defines the database connection and migration execution workflow. The repo now has a lazy `pg`/Drizzle client boundary and explicit `npm run db:migrate` command. `DATABASE_URL` is required for live connection or migration execution, no populated `.env` is committed, migrations do not run automatically, and default CI plus `npm test` remain DB-free.
+ADR 0005 defines the database connection and migration execution workflow. The repo now has a lazy `pg`/Drizzle client boundary, explicit `npm run db:migrate` command, and separate `npm run platform:db-readiness-check` operator check for hosted Postgres reachability plus schema/migration state. `DATABASE_URL` is required for live connection or migration execution, no populated `.env` is committed, migrations do not run automatically, and default CI plus `npm test` remain DB-free.
 
 ADR 0006 selects the auth provider strategy: start with a provider-agnostic OIDC adapter boundary. The auth provider proves identity only; Swooshz Platform continues to own users, provider identities, platform sessions, workspace membership, invitations, audit events, app entitlements, and app access decisions. Provider-specific SDKs and vendor-coupled account logic remain out of scope.
 
@@ -110,7 +110,7 @@ No Next.js, Vite, React, provider SDK, provider-specific account model, public s
 
 The internal smoke checklist is documented in `docs/internal-platform-smoke-runbook.md`. It covers the existing database/OIDC/runtime/seed/browser-launch path, keeps migrations explicit, and documents the local same-host KQAG handoff shape without putting launch tokens in browser URLs or storage.
 
-The hosted internal-alpha runbook is documented in `docs/hosted-internal-alpha-runbook.md`. It covers hosted Platform/KQAG placeholders, the env checklist, manual migration/backup/rollback procedure, smoke checklist, and dry-run readiness check without deploying, provisioning, or exposing infrastructure. The readiness check is hardened for hosted review: it requires production mode, HTTPS browser/provider-facing URLs, origin-only allowed origins, callback path shape, KQAG handoff URL guardrails, value-safe output, and no migration/server/network imports.
+The hosted internal-alpha runbook is documented in `docs/hosted-internal-alpha-runbook.md`. It covers hosted Platform/KQAG placeholders, the Neon Postgres readiness target, the env checklist, manual migration/backup/rollback procedure, smoke checklist, dry-run env readiness, and one-off DB readiness check without deploying, provisioning, or exposing infrastructure. The env readiness check is hardened for hosted review: it requires production mode, HTTPS browser/provider-facing URLs, origin-only allowed origins, callback path shape, KQAG handoff URL guardrails, valid Postgres-shaped `DATABASE_URL`, value-safe output, and no migration/server/network imports.
 
 The hosted operator decision record is documented in `docs/hosted-internal-alpha-operator-decisions.md`. It lists the host/provider, TLS/proxy, process/container, database/backup/restore, migration/rollback, OIDC, secret, log, first owner/admin, add-existing-user, KQAG handoff, cross-host session/cookie, incident, and go/no-go approvals that must happen outside the repo before any actual hosted execution.
 

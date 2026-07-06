@@ -23,4 +23,6 @@ The pure domain core under `src/accounts`, `src/apps`, and `src/access` must rem
 
 `npm run db:migrate` is operator-controlled and requires `DATABASE_MIGRATIONS_CONFIRM=apply-reviewed-migrations`. It does not run during package install, app startup, default CI, or `npm test`.
 
+`npm run platform:db-readiness-check` is a separate operator check for hosted Postgres readiness. It builds the app, validates `DATABASE_URL`, opens a PostgreSQL connection, checks basic reachability, verifies required platform tables, and checks Drizzle migration metadata. It prints sanitized status only: no connection strings, credentials, hostnames with credentials, table data, or driver error details.
+
 Generated migrations remain reviewable artifacts and are applied only through the explicit migration command.

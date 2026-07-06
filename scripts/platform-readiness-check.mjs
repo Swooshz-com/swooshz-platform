@@ -15,7 +15,7 @@ export const HOSTED_READINESS_ENV_CHECKS = [
   required("PLATFORM_HTTP_PORT", "public_runtime", validatePort),
   required("PLATFORM_ALLOWED_ORIGINS", "allowed_origins", validateAllowedOrigins),
   required("PLATFORM_COOKIE_SECURE", "cookie_session", validateCookieSecure),
-  required("DATABASE_URL", "database", validatePresent, { secret: true }),
+  required("DATABASE_URL", "database", validateDatabaseUrl, { secret: true }),
   optional("DATABASE_SSL_MODE", "database", validateDatabaseSslMode),
   migrationOnly("DATABASE_MIGRATIONS_CONFIRM", "database", validateMigrationConfirm),
   required("SESSION_SECRET", "cookie_session", validateMinimumLength(32), { secret: true }),
@@ -264,6 +264,22 @@ function validateCookieSecure(value, env) {
 
 function validateDatabaseSslMode(value) {
   return ["disable", "require"].includes(value) ? ok() : invalid("must_be_disable_or_require");
+}
+
+function validateDatabaseUrl(value) {
+  try {
+    const parsed = new URL(value);
+    const supportedProtocol =
+      parsed.protocol === "postgres:" || parsed.protocol === "postgresql:";
+    const hasHost = Boolean(parsed.hostname);
+    const hasDatabaseName = parsed.pathname.length > 1;
+
+    return supportedProtocol && hasHost && hasDatabaseName
+      ? ok()
+      : invalid("invalid_database_url");
+  } catch {
+    return invalid("invalid_database_url");
+  }
 }
 
 function validateMigrationConfirm(value) {
