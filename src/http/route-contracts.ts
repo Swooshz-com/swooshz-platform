@@ -15,6 +15,7 @@ export type HttpRouteId =
   | "platform_workspace_member_role"
   | "platform_workspace_member_disable"
   | "platform_workspace_member_reactivate"
+  | "platform_workspace_member_remove"
   | "platform_workspace_app_entitlements"
   | "platform_workspace_kqag_entitlement_status"
   | "platform_workspace_audit_events"
@@ -288,6 +289,21 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     },
     requiredQuery: [],
     handlerContract: "handleWorkspaceMembershipReactivateRequest",
+    responseKind: "json",
+    idempotent: false,
+    implemented: true,
+  },
+  {
+    id: "platform_workspace_member_remove",
+    method: "POST",
+    path: "/api/platform/workspaces/:workspaceId/members/:membershipId/remove",
+    browserSession: "required",
+    csrf: {
+      required: true,
+      strategy: "origin_referer_and_csrf_token",
+    },
+    requiredQuery: [],
+    handlerContract: "handleWorkspaceMembershipRemoveRequest",
     responseKind: "json",
     idempotent: false,
     implemented: true,

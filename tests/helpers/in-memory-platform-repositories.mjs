@@ -114,6 +114,16 @@ export function createInMemoryPlatformRepositories(records = {}) {
         membership.updatedAt = updatedAt;
         return membership;
       },
+      async remove(id) {
+        const index = memberships.findIndex((candidate) => candidate.id === id);
+
+        if (index === -1) {
+          return null;
+        }
+
+        const [membership] = memberships.splice(index, 1);
+        return membership;
+      },
     },
     invitations: {
       async findById(id) {

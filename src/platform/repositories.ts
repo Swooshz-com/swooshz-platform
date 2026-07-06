@@ -112,6 +112,7 @@ export interface MembershipRepository {
     status: MembershipStatus,
     updatedAt: IsoTimestamp,
   ): Promise<Membership | null>;
+  remove(id: string): Promise<Membership | null>;
 }
 
 export interface InvitationRepository {

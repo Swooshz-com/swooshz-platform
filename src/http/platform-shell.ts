@@ -750,26 +750,66 @@ export function renderAdminShellPage(): string {
 
           function memberActionsCell(member, activeOwnerCount) {
             const cell = document.createElement("td");
-            const button = document.createElement("button");
+            const menu = document.createElement("div");
+            const menuButton = document.createElement("button");
+            const menuPanel = document.createElement("div");
             const isSelf = member.user?.id === state.context?.user?.userId;
             const isProtectedOwner = member.role === "owner";
             const isLastActiveOwner =
               member.role === "owner" && member.status === "active" && activeOwnerCount <= 1;
             const canAct = !isSelf && !isProtectedOwner && !isLastActiveOwner;
+
+            menu.className = "action-menu";
+            menuButton.type = "button";
+            menuButton.className = "secondary-action compact";
+            menuButton.textContent = "Actions";
+            menuButton.disabled = !canAct || !["active", "disabled"].includes(member.status);
+            menuButton.setAttribute("aria-haspopup", "true");
+            menuButton.setAttribute("aria-expanded", "false");
+            menuButton.addEventListener("click", () => {
+              menuPanel.hidden = !menuPanel.hidden;
+              menuButton.setAttribute("aria-expanded", menuPanel.hidden ? "false" : "true");
+            });
+
+            menuPanel.className = "action-menu-panel";
+            menuPanel.hidden = true;
+
+            if (member.status === "active") {
+              menuPanel.append(actionButton("Disable", () => {
+                menuPanel.hidden = true;
+                menuButton.setAttribute("aria-expanded", "false");
+                void disableMember(member.membershipId);
+              }));
+            }
+
+            if (member.status === "disabled") {
+              menuPanel.append(actionButton("Reactivate", () => {
+                menuPanel.hidden = true;
+                menuButton.setAttribute("aria-expanded", "false");
+                void reactivateMember(member.membershipId);
+              }));
+            }
+
+            if (["active", "disabled"].includes(member.status)) {
+              menuPanel.append(actionButton("Remove", () => {
+                menuPanel.hidden = true;
+                menuButton.setAttribute("aria-expanded", "false");
+                void removeMember(member.membershipId);
+              }));
+            }
+
+            menu.append(menuButton, menuPanel);
+            cell.append(menu);
+            return cell;
+          }
+
+          function actionButton(label, onClick) {
+            const button = document.createElement("button");
             button.type = "button";
             button.className = "secondary-action compact";
-            button.textContent = member.status === "disabled" ? "Reactivate" : "Disable";
-            button.disabled = !canAct || !["active", "disabled"].includes(member.status);
-            button.addEventListener("click", () => {
-              if (member.status === "disabled") {
-                void reactivateMember(member.membershipId);
-                return;
-              }
-
-              void disableMember(member.membershipId);
-            });
-            cell.append(button);
-            return cell;
+            button.textContent = label;
+            button.addEventListener("click", onClick);
+            return button;
           }
 
           function approvalActionsCell(approval) {
@@ -804,6 +844,17 @@ export function renderAdminShellPage(): string {
             await postAdminAction(
               adminMemberUrl(state.workspace.workspaceId, membershipId) + "/reactivate",
               "Member reactivated."
+            );
+          }
+
+          async function removeMember(membershipId) {
+            if (!window.confirm("Remove this member from the workspace?")) {
+              return;
+            }
+
+            await postAdminAction(
+              adminMemberUrl(state.workspace.workspaceId, membershipId) + "/remove",
+              "Member removed."
             );
           }
 
@@ -1006,6 +1057,8 @@ export function renderAdminShellPage(): string {
                 return "Member disabled";
               case "workspace.membership.reactivated":
                 return "Member reactivated";
+              case "workspace.membership.removed":
+                return "Member removed";
               case "workspace.membership.role_changed":
                 return "Member role changed";
               case "workspace.membership_approval.created":
@@ -1515,6 +1568,35 @@ function htmlDocument({
 
     .pager .empty {
       margin-right: auto;
+    }
+
+    .action-menu {
+      position: relative;
+      display: inline-flex;
+    }
+
+    .action-menu-panel {
+      position: absolute;
+      right: 0;
+      top: calc(100% + 6px);
+      z-index: 2;
+      display: grid;
+      gap: 6px;
+      min-width: 132px;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface);
+      box-shadow: 0 12px 24px rgb(0 0 0 / 12%);
+    }
+
+    .action-menu-panel[hidden] {
+      display: none;
+    }
+
+    .action-menu-panel .secondary-action {
+      width: 100%;
+      min-height: 38px;
     }
 
     button:disabled,

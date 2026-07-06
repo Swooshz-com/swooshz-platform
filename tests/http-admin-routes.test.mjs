@@ -91,6 +91,12 @@ test("member and viewer cannot list or mutate workspace admin routes", async () 
       headers: secureSessionHeaders(role),
       dependencies: fixture.dependencies,
     });
+    const remove = await request({
+      method: "POST",
+      url: "/api/platform/workspaces/workspace_koncept_images/members/membership_member_example/remove",
+      headers: secureSessionHeaders(role),
+      dependencies: fixture.dependencies,
+    });
     const add = await request({
       method: "POST",
       url: "/api/platform/workspaces/workspace_koncept_images/members/add?email=existing.user%40example.test&role=member",
@@ -125,6 +131,11 @@ test("member and viewer cannot list or mutate workspace admin routes", async () 
       outcome: "denied",
       reason: "not_authorized",
     });
+    assert.equal(remove.response.statusCode, 403);
+    assert.deepEqual(remove.body, {
+      outcome: "denied",
+      reason: "not_authorized",
+    });
     assert.equal(add.response.statusCode, 403);
     assert.deepEqual(add.body, {
       outcome: "denied",
@@ -150,6 +161,7 @@ test("member and viewer cannot list or mutate workspace admin routes", async () 
     assertResponseIsPrivacySafe(list.response);
     assertResponseIsPrivacySafe(mutate.response);
     assertResponseIsPrivacySafe(reactivate.response);
+    assertResponseIsPrivacySafe(remove.response);
     assertResponseIsPrivacySafe(add.response);
     assertResponseIsPrivacySafe(approvalList.response);
     assertResponseIsPrivacySafe(approvalRevoke.response);
@@ -591,6 +603,81 @@ test("state-changing admin routes validate Origin and CSRF before mutation", asy
   assertResponseIsPrivacySafe(revokeWithInvalidCsrf.response);
 });
 
+test("membership removal route validates Origin and CSRF before mutation", async () => {
+  const withoutOriginFixture = createAdminRouteFixture();
+  const withoutOrigin = await request({
+    method: "POST",
+    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_member_example/remove",
+    headers: {
+      cookie: "swooshz_session=session_owner_example",
+      "x-csrf-token": validCsrfToken,
+    },
+    dependencies: withoutOriginFixture.dependencies,
+  });
+  const withoutCsrfFixture = createAdminRouteFixture();
+  const withoutCsrf = await request({
+    method: "POST",
+    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_member_example/remove",
+    headers: {
+      origin: allowedOrigin,
+      cookie: "swooshz_session=session_owner_example",
+    },
+    dependencies: withoutCsrfFixture.dependencies,
+  });
+  const invalidCsrfFixture = createAdminRouteFixture({ csrfValid: false });
+  const invalidCsrf = await request({
+    method: "POST",
+    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_member_example/remove",
+    headers: secureSessionHeaders("owner"),
+    dependencies: invalidCsrfFixture.dependencies,
+  });
+
+  assert.equal(withoutOrigin.response.statusCode, 403);
+  assert.deepEqual(withoutOrigin.body, {
+    outcome: "denied",
+    reason: "missing_origin",
+  });
+  assert.equal(withoutOriginFixture.calls.csrfValidate, 0);
+  assert.equal(
+    withoutOriginFixture.records.memberships.some(
+      (membership) => membership.id === "membership_member_example",
+    ),
+    true,
+  );
+  assert.equal(withoutOriginFixture.records.auditEvents.length, 0);
+
+  assert.equal(withoutCsrf.response.statusCode, 403);
+  assert.deepEqual(withoutCsrf.body, {
+    outcome: "denied",
+    reason: "missing_csrf_token",
+  });
+  assert.equal(withoutCsrfFixture.calls.csrfValidate, 0);
+  assert.equal(
+    withoutCsrfFixture.records.memberships.some(
+      (membership) => membership.id === "membership_member_example",
+    ),
+    true,
+  );
+  assert.equal(withoutCsrfFixture.records.auditEvents.length, 0);
+
+  assert.equal(invalidCsrf.response.statusCode, 403);
+  assert.deepEqual(invalidCsrf.body, {
+    outcome: "denied",
+    reason: "invalid_csrf_token",
+  });
+  assert.equal(invalidCsrfFixture.calls.csrfValidate, 1);
+  assert.equal(
+    invalidCsrfFixture.records.memberships.some(
+      (membership) => membership.id === "membership_member_example",
+    ),
+    true,
+  );
+  assert.equal(invalidCsrfFixture.records.auditEvents.length, 0);
+  assertResponseIsPrivacySafe(withoutOrigin.response);
+  assertResponseIsPrivacySafe(withoutCsrf.response);
+  assertResponseIsPrivacySafe(invalidCsrf.response);
+});
+
 test("owner and admin can add an existing provider-backed user through admin route", async () => {
   for (const role of ["owner", "admin"]) {
     const fixture = createAdminRouteFixture({
@@ -964,6 +1051,50 @@ test("owner can change role disable and reactivate membership through admin rout
   assertResponseIsPrivacySafe(reactivate.response);
 });
 
+test("owner and admin can remove membership through admin route", async () => {
+  for (const role of ["owner", "admin"]) {
+    const fixture = createAdminRouteFixture({
+      memberships: baseMemberships().map((membership) =>
+        membership.id === "membership_member_example" && role === "admin"
+          ? { ...membership, status: "disabled" }
+          : membership,
+      ),
+    });
+
+    const removed = await request({
+      method: "POST",
+      url: "/api/platform/workspaces/workspace_koncept_images/members/membership_member_example/remove",
+      headers: secureSessionHeaders(role),
+      dependencies: fixture.dependencies,
+    });
+
+    assert.equal(removed.response.statusCode, 200);
+    assert.deepEqual(removed.body, {
+      outcome: "removed",
+      membership: {
+        membershipId: "membership_member_example",
+        userId: "user_member_example",
+        workspaceId: "workspace_koncept_images",
+        role: "member",
+        status: role === "admin" ? "disabled" : "active",
+        updatedAt: now,
+      },
+    });
+    assert.equal(
+      fixture.records.memberships.some(
+        (membership) => membership.id === "membership_member_example",
+      ),
+      false,
+    );
+    assert.deepEqual(
+      fixture.records.auditEvents.map((event) => event.eventType),
+      ["workspace.membership.removed"],
+    );
+    assert.equal(fixture.calls.csrfValidate, 1);
+    assertResponseIsPrivacySafe(removed.response);
+  }
+});
+
 test("last-owner and self-change guards surface safely through admin routes", async () => {
   const onlyOwnerFixture = createAdminRouteFixture({
     memberships: [
@@ -991,6 +1122,32 @@ test("last-owner and self-change guards surface safely through admin routes", as
     headers: secureSessionHeaders("admin"),
     dependencies: selfChangeFixture.dependencies,
   });
+  const selfRemoveFixture = createAdminRouteFixture();
+  const selfRemove = await request({
+    method: "POST",
+    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_admin_example/remove",
+    headers: secureSessionHeaders("admin"),
+    dependencies: selfRemoveFixture.dependencies,
+  });
+  const lastOwnerRemoveFixture = createAdminRouteFixture({
+    memberships: [
+      {
+        id: "membership_owner_example",
+        workspaceId: "workspace_koncept_images",
+        userId: "user_owner_example",
+        role: "owner",
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+  });
+  const lastOwnerRemove = await request({
+    method: "POST",
+    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_owner_example/remove",
+    headers: secureSessionHeaders("owner"),
+    dependencies: lastOwnerRemoveFixture.dependencies,
+  });
 
   assert.equal(lastOwner.response.statusCode, 409);
   assert.deepEqual(lastOwner.body, {
@@ -1002,10 +1159,24 @@ test("last-owner and self-change guards surface safely through admin routes", as
     outcome: "error",
     message: "Workspace admin action could not be completed.",
   });
+  assert.equal(selfRemove.response.statusCode, 409);
+  assert.deepEqual(selfRemove.body, {
+    outcome: "error",
+    message: "Workspace admin action could not be completed.",
+  });
+  assert.equal(lastOwnerRemove.response.statusCode, 409);
+  assert.deepEqual(lastOwnerRemove.body, {
+    outcome: "error",
+    message: "Workspace admin action could not be completed.",
+  });
   assert.equal(onlyOwnerFixture.records.auditEvents.length, 0);
   assert.equal(selfChangeFixture.records.auditEvents.length, 0);
+  assert.equal(selfRemoveFixture.records.auditEvents.length, 0);
+  assert.equal(lastOwnerRemoveFixture.records.auditEvents.length, 0);
   assertResponseIsPrivacySafe(lastOwner.response);
   assertResponseIsPrivacySafe(selfChange.response);
+  assertResponseIsPrivacySafe(selfRemove.response);
+  assertResponseIsPrivacySafe(lastOwnerRemove.response);
 });
 
 test("admin cannot change owner memberships through admin routes", async () => {
@@ -1034,6 +1205,13 @@ test("admin cannot change owner memberships through admin routes", async () => {
     [
       "reactivate owner",
       "/api/platform/workspaces/workspace_koncept_images/members/membership_owner_example/reactivate",
+      "membership_owner_example",
+      "status",
+      "active",
+    ],
+    [
+      "remove owner",
+      "/api/platform/workspaces/workspace_koncept_images/members/membership_owner_example/remove",
       "membership_owner_example",
       "status",
       "active",
@@ -1102,6 +1280,44 @@ test("reactivation route fails safely for missing target and audit failure", asy
       (membership) => membership.id === "membership_member_example",
     )?.status,
     "disabled",
+  );
+  assert.equal(auditFailureFixture.records.auditEvents.length, 0);
+  assertResponseIsPrivacySafe(missing.response);
+  assertResponseIsPrivacySafe(auditFailure.response);
+});
+
+test("membership removal route fails safely for missing target and audit failure", async () => {
+  const missingFixture = createAdminRouteFixture();
+  const missing = await request({
+    method: "POST",
+    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_missing_example/remove",
+    headers: secureSessionHeaders("owner"),
+    dependencies: missingFixture.dependencies,
+  });
+  const auditFailureFixture = createAdminRouteFixture({ failAuditAppend: true });
+  const auditFailure = await request({
+    method: "POST",
+    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_member_example/remove",
+    headers: secureSessionHeaders("owner"),
+    dependencies: auditFailureFixture.dependencies,
+  });
+
+  assert.equal(missing.response.statusCode, 404);
+  assert.deepEqual(missing.body, {
+    outcome: "error",
+    message: "Workspace admin action could not be completed.",
+  });
+  assert.equal(missingFixture.records.auditEvents.length, 0);
+  assert.equal(auditFailure.response.statusCode, 500);
+  assert.deepEqual(auditFailure.body, {
+    outcome: "error",
+    message: "Workspace admin action could not be completed.",
+  });
+  assert.equal(
+    auditFailureFixture.records.memberships.some(
+      (membership) => membership.id === "membership_member_example",
+    ),
+    true,
   );
   assert.equal(auditFailureFixture.records.auditEvents.length, 0);
   assertResponseIsPrivacySafe(missing.response);
