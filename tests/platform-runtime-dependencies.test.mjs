@@ -524,7 +524,48 @@ test("runtime auth callback diagnostics expose only safe failure categories", as
 
 test("runtime composition wires auth callback through injected provider adapter and session cookie path", async () => {
   const fixture = createRuntimeFixture();
-  fixture.records.users = [];
+  fixture.records.users = [
+    {
+      id: "user_auth_runtime_1",
+      email: "runtime-owner@example.com",
+      displayName: "Runtime Owner",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+      lastLoginAt: now,
+    },
+  ];
+  fixture.records.providerIdentities = [
+    {
+      id: "provider_identity_auth_runtime_existing",
+      userId: "user_auth_runtime_1",
+      providerKey: "example-oidc",
+      providerSubject: "provider-subject-runtime",
+      createdAt: now,
+      updatedAt: now,
+    },
+  ];
+  fixture.records.workspaces = [
+    {
+      id: "workspace_runtime",
+      slug: "runtime-workspace",
+      displayName: "Runtime Workspace",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    },
+  ];
+  fixture.records.memberships = [
+    {
+      id: "membership_runtime_owner",
+      workspaceId: "workspace_runtime",
+      userId: "user_auth_runtime_1",
+      role: "owner",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    },
+  ];
   fixture.records.sessions = [];
   const oidcAdapter = createNoNetworkOidcAdapter(fixture);
   const dependencies = createPlatformRuntimeDependencies({

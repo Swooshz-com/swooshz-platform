@@ -108,6 +108,7 @@ async function resolveAuthenticatedIdentity(
     }
 
     assertUserCanCreateSession(user);
+    await assertUserHasActiveWorkspaceMembership(dependencies, user.id);
 
     return {
       platformUserId: user.id,
@@ -125,18 +126,7 @@ async function resolveAuthenticatedIdentity(
     return pendingApprovalResolution;
   }
 
-  const user = await createUserForNewProviderIdentity(dependencies, input);
-  const linkedProviderIdentity = await createProviderIdentity(
-    dependencies,
-    user.id,
-    input,
-  );
-
-  return {
-    platformUserId: user.id,
-    providerIdentityId: linkedProviderIdentity.id,
-    session: await createSession(dependencies, user.id, input),
-  };
+  throw signInApprovalRequiredError();
 }
 
 async function resolvePendingApprovedIdentity(
@@ -550,6 +540,57 @@ function assertUserCanCreateSession(user: User): void {
       "Platform user cannot create a session.",
     );
   }
+}
+
+async function assertUserHasActiveWorkspaceMembership(
+  dependencies: PlatformIdentitySessionResolverDependencies,
+  userId: string,
+): Promise<void> {
+  const memberships = dependencies.repositories.memberships;
+  const workspaces = dependencies.repositories.workspaces;
+
+  if (!memberships || !workspaces) {
+    throw signInApprovalRequiredError();
+  }
+
+  let userMemberships: readonly Membership[];
+
+  try {
+    userMemberships = await memberships.listForUser(userId);
+  } catch {
+    throw new AuthCallbackError(
+      "provider_identity_link_failed",
+      "Authenticated provider identity could not be linked.",
+    );
+  }
+
+  for (const membership of userMemberships) {
+    if (membership.status !== MembershipStatus.Active) {
+      continue;
+    }
+
+    try {
+      const workspace = await workspaces.findById(membership.workspaceId);
+
+      if (workspace?.status === WorkspaceStatus.Active) {
+        return;
+      }
+    } catch {
+      throw new AuthCallbackError(
+        "provider_identity_link_failed",
+        "Authenticated provider identity could not be linked.",
+      );
+    }
+  }
+
+  throw signInApprovalRequiredError();
+}
+
+function signInApprovalRequiredError(): AuthCallbackError {
+  return new AuthCallbackError(
+    "onboarding_approval_required",
+    "Workspace membership approval is required for this provider identity.",
+  );
 }
 
 function membershipApprovalAcceptanceError(): AuthCallbackError {

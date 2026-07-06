@@ -52,6 +52,7 @@ test("existing provider identity resolves existing active user and creates sessi
   const deps = createResolverDependencies({
     users: [activeUser],
     providerIdentities: [existingProviderIdentity],
+    memberships: [activeMembership()],
   });
   const resolver = createPlatformIdentitySessionResolver(deps);
 
@@ -76,7 +77,7 @@ test("existing provider identity resolves existing active user and creates sessi
   assert.equal(Object.hasOwn(result, "appKey"), false);
 });
 
-test("fresh sign-in after workspace removal keeps auth but does not restore workspace access", async () => {
+test("fresh sign-in after workspace removal is rejected before session creation", async () => {
   const deps = createResolverDependencies({
     users: [activeUser],
     providerIdentities: [existingProviderIdentity],
@@ -84,64 +85,50 @@ test("fresh sign-in after workspace removal keeps auth but does not restore work
   });
   const resolver = createPlatformIdentitySessionResolver(deps);
 
-  const result = await resolver.resolveAuthenticatedIdentity({
-    identity: verifiedIdentity,
-    stateReference: createStateReference(),
-    now,
-  });
-  const accessDecision = await decidePlatformAppAccess(deps.repositories, {
-    sessionId: result.session.id,
-    selectedWorkspaceId: "workspace_koncept_images",
-    appKey: "kqag",
-    now,
-  });
+  await assert.rejects(
+    () =>
+      resolver.resolveAuthenticatedIdentity({
+        identity: verifiedIdentity,
+        stateReference: createStateReference(),
+        now,
+      }),
+    (error) => {
+      assert.equal(error instanceof AuthCallbackError, true);
+      assert.equal(error.code, "onboarding_approval_required");
+      return true;
+    },
+  );
 
-  assert.equal(result.platformUserId, activeUser.id);
-  assert.equal(result.session.id, "session_auth_callback_1");
-  assert.equal(Object.hasOwn(result, "workspaceMembershipGranted"), false);
-  assert.equal(accessDecision.result, AccessDecisionResult.MembershipRequired);
   assert.deepEqual(deps.records.memberships, []);
+  assert.deepEqual(deps.records.sessions, []);
 });
 
-test("new provider identity creates user, links provider identity, and creates session", async () => {
+test("new provider identity without pending approval is rejected before user creation", async () => {
   const deps = createResolverDependencies();
   const resolver = createPlatformIdentitySessionResolver(deps);
 
-  const result = await resolver.resolveAuthenticatedIdentity({
-    identity: {
-      ...verifiedIdentity,
-      providerSubject: "new-provider-subject",
-      verifiedEmail: "new-owner@example.com",
-      displayName: " New Owner ",
+  await assert.rejects(
+    () =>
+      resolver.resolveAuthenticatedIdentity({
+        identity: {
+          ...verifiedIdentity,
+          providerSubject: "new-provider-subject",
+          verifiedEmail: "new-owner@example.com",
+          displayName: " New Owner ",
+        },
+        stateReference: createStateReference(),
+        now,
+      }),
+    (error) => {
+      assert.equal(error instanceof AuthCallbackError, true);
+      assert.equal(error.code, "onboarding_approval_required");
+      return true;
     },
-    stateReference: createStateReference(),
-    now,
-  });
+  );
 
-  assert.equal(result.platformUserId, "user_auth_callback_1");
-  assert.equal(result.providerIdentityId, "provider_identity_auth_callback_1");
-  assert.deepEqual(deps.records.users, [
-    {
-      id: "user_auth_callback_1",
-      email: "new-owner@example.com",
-      displayName: "New Owner",
-      status: "active",
-      createdAt: now,
-      updatedAt: now,
-      lastLoginAt: now,
-    },
-  ]);
-  assert.deepEqual(deps.records.providerIdentities, [
-    {
-      id: "provider_identity_auth_callback_1",
-      userId: "user_auth_callback_1",
-      providerKey: "example-oidc",
-      providerSubject: "new-provider-subject",
-      createdAt: now,
-      updatedAt: now,
-    },
-  ]);
-  assert.equal(deps.records.sessions[0].id, "session_auth_callback_1");
+  assert.deepEqual(deps.records.users, []);
+  assert.deepEqual(deps.records.providerIdentities, []);
+  assert.deepEqual(deps.records.sessions, []);
 });
 
 test("pending approval activates only after real provider-backed sign-in with matching email", async () => {
@@ -460,6 +447,7 @@ test("session creation uses deterministic id and expiry inputs", async () => {
   const deps = createResolverDependencies({
     users: [activeUser],
     providerIdentities: [existingProviderIdentity],
+    memberships: [activeMembership()],
     sessionIdFactory: () => "session_deterministic",
   });
   const resolver = createPlatformIdentitySessionResolver(deps);
@@ -481,6 +469,7 @@ test("result includes safe session id and expiry but no raw token or secret mate
   const deps = createResolverDependencies({
     users: [activeUser],
     providerIdentities: [existingProviderIdentity],
+    memberships: [activeMembership()],
   });
   const resolver = createPlatformIdentitySessionResolver(deps);
 
@@ -517,7 +506,7 @@ test("provider identity is matched by provider key and subject, not email alone"
       }),
     (error) => {
       assert.equal(error instanceof AuthCallbackError, true);
-      assert.equal(error.code, "provider_identity_link_failed");
+      assert.equal(error.code, "onboarding_approval_required");
       assert.doesNotMatch(error.message, /owner@example.com|provider-subject-123/);
       return true;
     },
@@ -546,7 +535,7 @@ test("verified email alone cannot hijack a different provider subject", async ()
       }),
     (error) => {
       assert.equal(error instanceof AuthCallbackError, true);
-      assert.equal(error.code, "provider_identity_link_failed");
+      assert.equal(error.code, "onboarding_approval_required");
       assert.doesNotMatch(error.message, /owner@example.com|different-provider-subject/);
       return true;
     },
@@ -557,6 +546,7 @@ test("login session creation does not grant workspace membership or app access",
   const deps = createResolverDependencies({
     users: [activeUser],
     providerIdentities: [existingProviderIdentity],
+    memberships: [activeMembership()],
   });
   const resolver = createPlatformIdentitySessionResolver(deps);
 
@@ -637,6 +627,7 @@ test("user lookup by id errors become privacy-safe auth errors", async () => {
 test("user lookup by normalized email errors become privacy-safe auth errors", async () => {
   const deps = createResolverDependencies({
     failUserFindByNormalizedEmail: true,
+    membershipApprovals: [pendingApproval()],
   });
   const resolver = createPlatformIdentitySessionResolver(deps);
 
@@ -646,11 +637,12 @@ test("user lookup by normalized email errors become privacy-safe auth errors", a
         identity: {
           ...verifiedIdentity,
           providerSubject: "new-provider-subject",
+          verifiedEmail: "pending.user@example.test",
         },
         stateReference: createStateReference(),
         now,
       }),
-    assertPrivacySafeLookupError("provider_identity_link_failed"),
+    assertPrivacySafeLookupError("membership_approval_acceptance_failed"),
   );
 });
 
@@ -658,6 +650,7 @@ test("session repository errors become privacy-safe auth errors", async () => {
   const deps = createResolverDependencies({
     users: [activeUser],
     providerIdentities: [existingProviderIdentity],
+    memberships: [activeMembership()],
     failSessionCreate: true,
   });
   const resolver = createPlatformIdentitySessionResolver(deps);
@@ -994,6 +987,19 @@ function pendingApproval(overrides = {}) {
     revokedAt: null,
     acceptedUserId: null,
     revokedByUserId: null,
+    ...overrides,
+  };
+}
+
+function activeMembership(overrides = {}) {
+  return {
+    id: "membership_owner",
+    workspaceId: "workspace_koncept_images",
+    userId: activeUser.id,
+    role: "owner",
+    status: "active",
+    createdAt: "2026-06-26T00:00:00.000Z",
+    updatedAt: "2026-06-26T00:00:00.000Z",
     ...overrides,
   };
 }
