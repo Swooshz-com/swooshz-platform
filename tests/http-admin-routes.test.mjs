@@ -1112,6 +1112,16 @@ test("owner and admin can remove membership through admin route", async () => {
       ),
       false,
     );
+    assert.equal(
+      fixture.records.sessions.find((session) => session.id === "session_member_example")
+        ?.revokedAt,
+      now,
+    );
+    assert.equal(
+      fixture.records.sessions.find((session) => session.id === `session_${role}_example`)
+        ?.revokedAt,
+      null,
+    );
     assert.deepEqual(
       fixture.records.auditEvents.map((event) => event.eventType),
       ["workspace.membership.removed"],

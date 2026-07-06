@@ -155,6 +155,14 @@ export function createDrizzlePlatformRepositories(
           .returning();
         return mapOne(rows[0], mapSessionRow);
       },
+      async revokeActiveForUser(userId, revokedAt) {
+        const rows = await db
+          .update(sessions)
+          .set({ revokedAt: toDate(revokedAt) })
+          .where(and(eq(sessions.userId, userId), isNull(sessions.revokedAt)))
+          .returning();
+        return rows.map((row) => mapSessionRow(row as unknown as SessionRow));
+      },
     },
     workspaces: {
       async findById(id) {
