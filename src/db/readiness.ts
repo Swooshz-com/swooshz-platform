@@ -137,14 +137,17 @@ export async function createDatabaseReadinessReport(
     }
   }
 
+  let missingTables: string[] | undefined;
+
   try {
-    const missingTables = await readMissingRequiredTables(client, requiredTables);
+    missingTables = await readMissingRequiredTables(client, requiredTables);
+    checks.schema = missingTables.length === 0 ? "passed" : "failed";
+
     const migrationReady = await readMigrationReadiness(
       client,
       input.expectedMigrationState,
     );
 
-    checks.schema = missingTables.length === 0 ? "passed" : "failed";
     checks.migrations = migrationReady ? "passed" : "failed";
 
     if (checks.schema !== "passed" || checks.migrations !== "passed") {
@@ -164,7 +167,12 @@ export async function createDatabaseReadinessReport(
       expectedMigrationState: input.expectedMigrationState,
     });
   } catch {
-    checks.schema = "failed";
+    checks.schema =
+      typeof missingTables === "undefined"
+        ? "failed"
+        : missingTables.length === 0
+          ? "passed"
+          : "failed";
     checks.migrations =
       input.expectedMigrationState && checks.migrations === "not_checked"
         ? "failed"
@@ -173,6 +181,7 @@ export async function createDatabaseReadinessReport(
       status: "schema_not_ready",
       checks,
       requiredTables,
+      missingTables,
       expectedMigrationState: input.expectedMigrationState,
     });
   } finally {
@@ -206,7 +215,7 @@ export function formatDatabaseReadinessReport(
     `schema_state=${readinessReport.checks.schema}`,
   ];
 
-  if (readinessReport.requiredTables.length > 0) {
+  if (shouldReportRequiredTables(readinessReport)) {
     lines.push(
       `required_tables_present=${
         readinessReport.requiredTables.length - readinessReport.missingTables.length
@@ -226,6 +235,19 @@ export function formatDatabaseReadinessReport(
   }
 
   return lines;
+}
+
+function shouldReportRequiredTables(
+  readinessReport: DatabaseReadinessReport,
+): boolean {
+  if (readinessReport.requiredTables.length === 0) {
+    return false;
+  }
+
+  return (
+    readinessReport.checks.schema === "passed" ||
+    readinessReport.missingTables.length > 0
+  );
 }
 
 async function readMissingRequiredTables(

@@ -48,6 +48,7 @@ test("DB readiness reports missing config without creating a DB client", async (
   assert.equal(report.checks.reachability, "not_checked");
   assert.equal(report.checks.schema, "not_checked");
   assert.equal(factoryCalls, 0);
+  assertNoUncheckedTableState(formatDatabaseReadinessReport(report).join("\n"));
 });
 
 test("DB readiness reports invalid config without leaking the connection string", async () => {
@@ -90,6 +91,7 @@ test("DB readiness distinguishes unreachable databases and closes the client", a
   assert.equal(report.checks.reachability, "failed");
   assert.equal(report.checks.schema, "not_checked");
   assert.equal(fixture.calls.end, 1);
+  assertNoUncheckedTableState(output);
   assertNoPrivateMaterial(output);
 });
 
@@ -111,7 +113,33 @@ test("DB readiness reports schema not ready when platform tables are missing", a
   assert.equal(report.checks.reachability, "passed");
   assert.equal(report.checks.schema, "failed");
   assert.deepEqual(report.missingTables, ["sessions"]);
+  assert.match(output, /required_tables_present=12\/13/);
   assert.match(output, /missing_tables=sessions/);
+  assertNoPrivateMaterial(output);
+});
+
+test("DB readiness preserves missing tables when migration metadata is absent", async () => {
+  const fixture = createFakeReadinessClient({
+    existingTables: [],
+    failMigrationState: true,
+  });
+  const report = await createDatabaseReadinessReport({
+    env: { DATABASE_URL: privateDatabaseUrl },
+    expectedMigrationState,
+    clientFactory() {
+      return fixture.client;
+    },
+  });
+  const output = formatDatabaseReadinessReport(report).join("\n");
+
+  assert.equal(report.ok, false);
+  assert.equal(report.status, "schema_not_ready");
+  assert.equal(report.checks.reachability, "passed");
+  assert.equal(report.checks.schema, "failed");
+  assert.equal(report.checks.migrations, "failed");
+  assert.deepEqual(report.missingTables, [...REQUIRED_PLATFORM_TABLES]);
+  assert.match(output, /required_tables_present=0\/13/);
+  assert.match(output, /missing_tables=users,provider_identities/);
   assertNoPrivateMaterial(output);
 });
 
@@ -220,6 +248,10 @@ function createFakeReadinessClient(options = {}) {
       }
 
       if (/__drizzle_migrations/i.test(sql)) {
+        if (options.failMigrationState) {
+          throw new Error(privateErrorDetail);
+        }
+
         return {
           rows: [
             {
@@ -244,4 +276,9 @@ function assertNoPrivateMaterial(output) {
   assert.doesNotMatch(output, /private_user|private_pass|private-host/i);
   assert.doesNotMatch(output, /postgres:\/\/[^\\s>]+@/i);
   assert.doesNotMatch(output, /ECONNREFUSED/i);
+}
+
+function assertNoUncheckedTableState(output) {
+  assert.doesNotMatch(output, /required_tables_present=/);
+  assert.doesNotMatch(output, /missing_tables=/);
 }
