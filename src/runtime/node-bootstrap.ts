@@ -144,6 +144,11 @@ export function createPlatformNodeBootstrap(
       const authConfig = authEnabled
         ? readAuthConfigSafely(input.env, authProviderMode)
         : null;
+      assertProductionHostedUrlConfig({
+        runtimeConfig,
+        authConfig,
+        kqagBrowserLaunchBaseUrl: input.kqagBrowserLaunch?.baseUrl,
+      });
       assertGenericOidcRuntimeInput(input, authProviderMode);
       const databaseClient = createDatabaseClientSafely(input);
 
@@ -332,6 +337,60 @@ function assertGenericOidcRuntimeInput(
   authProviderMode: PlatformRuntimeAuthProviderMode | undefined,
 ): void {
   if (authProviderMode === "generic_oidc" && !input.genericOidcHttpClient) {
+    throw new PlatformNodeBootstrapError("invalid_config");
+  }
+}
+
+function assertProductionHostedUrlConfig(input: {
+  runtimeConfig: NodePlatformRuntimeConfig;
+  authConfig: AuthConfig | null;
+  kqagBrowserLaunchBaseUrl?: string;
+}): void {
+  if (input.runtimeConfig.nodeEnv !== "production") {
+    return;
+  }
+
+  const authConfig = input.authConfig;
+
+  if (authConfig) {
+    assertHttpsUrl(authConfig.authorizationUrl);
+    assertHttpsUrl(authConfig.tokenUrl);
+    assertHttpsUrl(authConfig.issuerUrl);
+    assertHttpsUrl(authConfig.jwksUrl);
+    assertHttpsUrl(authConfig.userinfoUrl);
+    assertHostedAuthRedirectUri(authConfig.redirectUri);
+  }
+
+  assertHttpsUrl(input.kqagBrowserLaunchBaseUrl);
+}
+
+function assertHttpsUrl(value: string | null | undefined): void {
+  if (!value) {
+    return;
+  }
+
+  try {
+    if (new URL(value).protocol !== "https:") {
+      throw new Error("URL must use HTTPS.");
+    }
+  } catch {
+    throw new PlatformNodeBootstrapError("invalid_config");
+  }
+}
+
+function assertHostedAuthRedirectUri(value: string): void {
+  try {
+    const parsed = new URL(value);
+
+    if (
+      parsed.protocol !== "https:" ||
+      parsed.search ||
+      parsed.hash ||
+      !parsed.pathname.endsWith("/api/platform/auth/callback")
+    ) {
+      throw new Error("Hosted auth redirect URI is invalid.");
+    }
+  } catch {
     throw new PlatformNodeBootstrapError("invalid_config");
   }
 }

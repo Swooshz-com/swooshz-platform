@@ -232,6 +232,7 @@ function readKqagLaunchMode(env) {
 
 function readKqagAppBaseUrl(env) {
   const value = env?.PLATFORM_KQAG_APP_BASE_URL?.trim();
+  const production = readEnvironment(env) === "production";
 
   if (!value) {
     throw new PlatformStartCliError("invalid_config");
@@ -242,6 +243,14 @@ function readKqagAppBaseUrl(env) {
 
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       throw new Error("unsupported protocol");
+    }
+
+    if (production && parsed.protocol !== "https:") {
+      throw new Error("hosted handoff URL must use HTTPS");
+    }
+
+    if (production && (parsed.search || parsed.hash)) {
+      throw new Error("hosted handoff URL must not include query or fragment");
     }
 
     parsed.search = "";

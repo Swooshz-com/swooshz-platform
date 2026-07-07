@@ -103,6 +103,30 @@ test("production rejects missing public base URL", () => {
   );
 });
 
+test("production rejects non-HTTPS public base URL", () => {
+  assertConfigError(
+    () => readNodePlatformRuntimeConfig({
+      NODE_ENV: "production",
+      PLATFORM_PUBLIC_BASE_URL: "http://platform.example.test",
+      PLATFORM_ALLOWED_ORIGINS: allowedOrigin,
+      PLATFORM_COOKIE_SECURE: "true",
+    }),
+    "invalid_public_base_url",
+  );
+});
+
+test("production rejects public base URL query or fragment", () => {
+  assertConfigError(
+    () => readNodePlatformRuntimeConfig({
+      NODE_ENV: "production",
+      PLATFORM_PUBLIC_BASE_URL: "https://platform.example.test?token=raw-secret",
+      PLATFORM_ALLOWED_ORIGINS: allowedOrigin,
+      PLATFORM_COOKIE_SECURE: "true",
+    }),
+    "invalid_public_base_url",
+  );
+});
+
 test("production rejects empty allowed origins", () => {
   assertConfigError(
     () => readNodePlatformRuntimeConfig({
@@ -115,11 +139,23 @@ test("production rejects empty allowed origins", () => {
   );
 });
 
+test("production rejects non-HTTPS allowed origins", () => {
+  assertConfigError(
+    () => readNodePlatformRuntimeConfig({
+      NODE_ENV: "production",
+      PLATFORM_PUBLIC_BASE_URL: publicBaseUrl,
+      PLATFORM_ALLOWED_ORIGINS: "http://platform.example.test",
+      PLATFORM_COOKIE_SECURE: "true",
+    }),
+    "invalid_allowed_origin",
+  );
+});
+
 test("config errors do not echo raw env values private URLs or secrets", () => {
   assertConfigError(
     () => readNodePlatformRuntimeConfig({
       NODE_ENV: "production",
-      PLATFORM_PUBLIC_BASE_URL: syntheticPrivateUrl,
+      PLATFORM_PUBLIC_BASE_URL: publicBaseUrl,
       PLATFORM_ALLOWED_ORIGINS: syntheticPrivateUrl,
       PLATFORM_COOKIE_SECURE: "false-raw-secret",
     }),

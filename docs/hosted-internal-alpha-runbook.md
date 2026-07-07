@@ -12,7 +12,7 @@ Use placeholders in this repo and in shared notes:
 - KQAG hosted base URL placeholder: `<hosted-kqag-base-url>`.
 - Google/OIDC hosted redirect URI placeholder: `<hosted-oidc-redirect-uri>`.
 
-The hosted redirect URI should resolve to the platform callback route, end with `/api/platform/auth/callback`, and avoid query parameters or fragments. Real domains, real staff addresses, database URLs, OAuth values, cookies, tokens, provider identity material, callback URLs with query parameters, and KQAG private app data do not belong in this repository, tickets, screenshots, or shared logs.
+The hosted redirect URI should resolve to the platform callback route, end with `/api/platform/auth/callback`, and avoid query parameters or fragments. Real configured domains, real staff addresses, database URLs, OAuth values, cookies, tokens, provider identity material, callback URLs with query parameters, and KQAG private app data do not belong in this repository, tickets, screenshots, or shared logs.
 
 ## Hosted Scope
 
@@ -57,6 +57,71 @@ Recommended hosted operator checks:
 - Runtime env is injected by the host, not baked into source control.
 - Logs are collected from stdout/stderr without printing secret values.
 - Env readiness is run as a dry-run command, and DB readiness is run as a one-off operator check. Neither runs as a long-running service.
+
+## Hostinger VPS And Coolify Deployment Readiness
+
+This section is a deployment-readiness checklist for a future Hostinger VPS plus Coolify execution window. It does not buy or create VPS resources, configure DNS, deploy the app, configure OAuth, run migrations, seed access, or approve hosted production readiness.
+
+Use placeholders only:
+
+- App domain placeholder: `<hosted-platform-base-url>`, with `app.swooshz.com` as the likely non-secret hostname candidate until operator approval records the final value outside this repo.
+- KQAG app placeholder: `<hosted-kqag-base-url>`.
+- OIDC callback placeholder: `<hosted-oidc-redirect-uri>`.
+
+Coolify app/service shape:
+
+- Create one Node app/service for Swooshz Platform from the reviewed repo branch or release reference.
+- Do not create a Coolify-managed database for Platform runtime; the runtime database is the already migrated Neon target, injected through pooled `DATABASE_URL`.
+- Build command: `npm run build`.
+- Start command: `npm run platform:start`.
+- Health check path: `/healthz`.
+- Do not add Coolify build hooks, deploy hooks, startup hooks, cron jobs, or sidecars that run `npm run db:migrate`, `npm run platform:seed-internal-access`, or product workflow commands.
+- Keep KQAG/SAQG runtime hosting and product workflow data outside this Platform service.
+
+Deploy-time env categories:
+
+| Category | Env names | Coolify handling | Notes |
+| --- | --- | --- | --- |
+| Non-secret operator choices | `NODE_ENV`, `PLATFORM_HTTP_HOST`, `PLATFORM_HTTP_PORT`, `PLATFORM_PUBLIC_BASE_URL`, `PLATFORM_ALLOWED_ORIGINS`, `PLATFORM_COOKIE_SECURE`, `DATABASE_SSL_MODE`, `PLATFORM_AUTH_PROVIDER_MODE`, `AUTH_PROVIDER_KEY`, `AUTH_ISSUER_URL`, `AUTH_AUTHORIZATION_URL`, `AUTH_TOKEN_URL`, `AUTH_JWKS_URL`, `AUTH_USERINFO_URL`, `AUTH_CLIENT_ID`, `AUTH_REDIRECT_URI`, `AUTH_ALLOWED_DOMAINS`, `PLATFORM_KQAG_LAUNCH_MODE`, `PLATFORM_KQAG_APP_BASE_URL` | Set as reviewed environment entries with placeholder values in repo notes. | Hosted runtime uses `NODE_ENV=production`, explicit origins only, HTTPS public/provider URLs, and `PLATFORM_COOKIE_SECURE=true`. Use `manual` KQAG launch mode until cross-host handoff is reviewed. |
+| Secret values | `DATABASE_URL`, `SESSION_SECRET`, `CSRF_TOKEN_HASH_SECRET`, `AUTH_STATE_HASH_SECRET`, `APP_LAUNCH_TOKEN_HASH_SECRET`, `AUTH_CLIENT_SECRET` | Inject through Coolify secret/env storage only. | Do not commit, print, screenshot, paste, or expose values in build logs, app logs, tickets, shell history, or PRs. |
+| Private allowlist values | `AUTH_ALLOWED_EMAILS` | Treat as private operational data, even though it is not a credential. | Keep real staff addresses outside the repo; use placeholders in docs and tickets. |
+| Migration-only values | `DATABASE_MIGRATIONS_CONFIRM` | Do not keep on the long-running Coolify app service. Set only for the reviewed one-off manual migration command when a future migration is approved. | The migrated Neon database should already return `ready` from `npm run platform:db-readiness-check` before app start. |
+| Bootstrap-only values | `PLATFORM_SEED_CONFIRM`, `PLATFORM_SEED_USER_EMAIL`, `PLATFORM_SEED_MEMBERSHIP_ROLE` | Do not keep on the long-running Coolify app service. Set only for a reviewed one-off bootstrap after real hosted auth creates the user. | These values must not become env-controlled business/admin state or a fake login path. |
+| Product handoff placeholders | `PLATFORM_KQAG_LAUNCH_MODE`, `PLATFORM_KQAG_APP_BASE_URL` | Keep placeholder-only until KQAG hosting and cross-host session/cookie behavior are approved. | Platform stores launch checks/tokens and entitlements only; product workflow/runtime data remains outside Platform. |
+
+Coolify readiness sequence:
+
+1. Confirm the repo branch or release reference includes the reviewed Neon migration evidence and this runbook.
+2. Configure Coolify env/secret entries using placeholders and secret injection only; do not commit `.env` files.
+3. Run `npm run platform:readiness-check` as a one-off preflight in the same env shape the app will use.
+4. Run `npm run platform:db-readiness-check` against the already migrated Neon database and require sanitized status `ready`.
+5. Confirm no migration command is configured in build, start, deploy, restart, health check, or scheduled jobs.
+6. Start the service with `npm run platform:start` only after readiness and operator decisions pass.
+
+Reverse proxy and TLS expectations:
+
+- Hostinger/Coolify must terminate TLS for the reviewed hosted Platform origin before browser testing.
+- `PLATFORM_PUBLIC_BASE_URL`, `PLATFORM_ALLOWED_ORIGINS`, provider URLs, hosted redirect URI, and KQAG handoff URL when used must be HTTPS in production.
+- Allowed origins must be explicit origins, not wildcard values and not URLs with path, query, or fragment.
+- Session cookies must be secure in production through `PLATFORM_COOKIE_SECURE=true`.
+- Database, provider, Coolify admin, VPS admin, and backup interfaces must not be exposed as public Platform routes.
+
+Hosted smoke checklist after deployment:
+
+1. Confirm Coolify health check reaches `GET /healthz` without rendering secrets.
+2. Confirm startup logs show only safe summary fields and category-only diagnostics.
+3. Confirm `npm run platform:db-readiness-check` still reports sanitized status `ready` from an operator shell when live DB recheck is intentionally run.
+4. Confirm auth start/callback shape only after hosted OAuth is configured outside this PR.
+5. Confirm `/app`, `/app/admin`, session logout, admin denial, entitlement denial, and audit/activity checks follow the Smoke Checklist below.
+6. Keep KQAG in `manual` mode unless hosted handoff and cross-host cookie/session behavior are approved and smoke tested.
+
+Rollback and fix-forward notes:
+
+- Prefer redeploying the previous reviewed app build for application rollback.
+- Prefer fix-forward for reviewed additive database migrations when practical.
+- Use database restore only after backup/restore owner approval and restore-target evidence are available outside this repo.
+- If KQAG handoff fails, switch back to `PLATFORM_KQAG_LAUNCH_MODE=manual` and keep Platform access checks available without exposing launch tokens.
+- Do not troubleshoot by pasting secrets, database hostnames with credentials, cookies, OAuth callback query values, provider console screenshots, backup exports, or table data into tickets or PRs.
 
 ## TLS And Reverse Proxy Notes
 
