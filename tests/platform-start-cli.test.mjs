@@ -100,6 +100,39 @@ test("KQAG server handoff mode fails safely before listen when fetch or base URL
   );
 });
 
+test("production KQAG server handoff requires HTTPS base URL before bootstrap", () => {
+  assert.throws(
+    () =>
+      createPlatformStartBootstrapInput({
+        env: createEnv({
+          NODE_ENV: "production",
+          PLATFORM_PUBLIC_BASE_URL: "https://platform.example.invalid",
+          PLATFORM_ALLOWED_ORIGINS: "https://platform.example.invalid",
+          PLATFORM_COOKIE_SECURE: "true",
+          AUTH_REDIRECT_URI: "https://platform.example.invalid/api/platform/auth/callback",
+          PLATFORM_KQAG_LAUNCH_MODE: "server_handoff",
+          PLATFORM_KQAG_APP_BASE_URL: "http://kqag.example.invalid",
+        }),
+      }),
+    assertPrivacySafeStartError("invalid_config"),
+  );
+  assert.throws(
+    () =>
+      createPlatformStartBootstrapInput({
+        env: createEnv({
+          NODE_ENV: "production",
+          PLATFORM_PUBLIC_BASE_URL: "https://platform.example.invalid",
+          PLATFORM_ALLOWED_ORIGINS: "https://platform.example.invalid",
+          PLATFORM_COOKIE_SECURE: "true",
+          AUTH_REDIRECT_URI: "https://platform.example.invalid/api/platform/auth/callback",
+          PLATFORM_KQAG_LAUNCH_MODE: "server_handoff",
+          PLATFORM_KQAG_APP_BASE_URL: "https://kqag.example.invalid?token=raw-secret",
+        }),
+      }),
+    assertPrivacySafeStartError("invalid_config"),
+  );
+});
+
 test("generic OIDC fetch HTTP client does not call fetch until invoked", async () => {
   const calls = [];
   const httpClient = createPlatformStartGenericOidcHttpClient({

@@ -22,6 +22,12 @@ test("hosted internal alpha runbook covers deployment operations", async () => {
     "log review",
     "process manager",
     "container",
+    "Hostinger VPS And Coolify Deployment Readiness",
+    "app.swooshz.com",
+    "Build command: `npm run build`",
+    "Start command: `npm run platform:start`",
+    "Health check path: `/healthz`",
+    "Do not add Coolify build hooks, deploy hooks, startup hooks",
     "TLS",
     "reverse proxy",
     "Secrets And Env Checklist",
@@ -108,6 +114,40 @@ test("hosted internal alpha runbook has an env checklist with safe examples and 
   assert.match(runbook, /<database-url-from-secret-store>/);
   assert.match(runbook, /<hosted-owner-admin-email-after-login>/);
   assert.match(runbook, /<comma-separated-allowlisted-emails>/);
+});
+
+test("hosted internal alpha runbook covers Hostinger Coolify readiness without deployment config", async () => {
+  const runbook = await readRunbook();
+  const requiredPhrases = [
+    "future Hostinger VPS plus Coolify execution window",
+    "does not buy or create VPS resources",
+    "does not buy or create VPS resources, configure DNS, deploy the app",
+    "already migrated Neon target",
+    "pooled `DATABASE_URL`",
+    "Deploy-time env categories",
+    "Non-secret operator choices",
+    "Secret values",
+    "Private allowlist values",
+    "Migration-only values",
+    "Bootstrap-only values",
+    "Product handoff placeholders",
+    "`PLATFORM_COOKIE_SECURE=true`",
+    "explicit origins, not wildcard values",
+    "one-off manual migration command",
+    "must not become env-controlled business/admin state",
+    "product workflow/runtime data remains outside Platform",
+    "sanitized status `ready`",
+    "Do not keep on the long-running Coolify app service",
+    "Prefer redeploying the previous reviewed app build",
+    "Use database restore only after backup/restore owner approval",
+  ];
+
+  for (const phrase of requiredPhrases) {
+    assert.match(runbook, new RegExp(escapeRegExp(phrase), "i"));
+  }
+
+  assert.doesNotMatch(runbook, /coolify\.ya?ml|docker-compose\.ya?ml|Dockerfile/i);
+  assert.doesNotMatch(runbook, /coolify deploy --|hostinger deploy --|dns record type/i);
 });
 
 test("hosted internal alpha smoke checklist covers fail-closed access and token privacy", async () => {

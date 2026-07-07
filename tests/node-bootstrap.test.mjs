@@ -218,6 +218,42 @@ test("bootstrap fails closed before listen when DATABASE_URL is malformed", asyn
   assert.equal(fixture.calls.serverFactory, 0);
 });
 
+test("production bootstrap rejects non-HTTPS provider URLs before DB or listen", async () => {
+  const fixture = createBootstrapFixture({
+    withGenericAuth: true,
+    env: {
+      AUTH_TOKEN_URL: "http://auth.example.invalid/oauth2/token",
+    },
+  });
+  const bootstrap = createPlatformNodeBootstrap(fixture.input);
+
+  await assert.rejects(
+    () => bootstrap.start(),
+    assertPrivacySafeBootstrapError("invalid_config"),
+  );
+  assert.equal(fixture.calls.databaseClientFactory, 0);
+  assert.equal(fixture.calls.serverFactory, 0);
+  assert.equal(fixture.calls.listen, 0);
+});
+
+test("production bootstrap rejects unsafe hosted auth callback shape before DB or listen", async () => {
+  const fixture = createBootstrapFixture({
+    withGenericAuth: true,
+    env: {
+      AUTH_REDIRECT_URI: "https://platform.example.invalid/api/platform/auth/callback?code=raw-secret",
+    },
+  });
+  const bootstrap = createPlatformNodeBootstrap(fixture.input);
+
+  await assert.rejects(
+    () => bootstrap.start(),
+    assertPrivacySafeBootstrapError("invalid_config"),
+  );
+  assert.equal(fixture.calls.databaseClientFactory, 0);
+  assert.equal(fixture.calls.serverFactory, 0);
+  assert.equal(fixture.calls.listen, 0);
+});
+
 test("bootstrap composes runtime dependencies with secure cookie origin and CSRF config", async () => {
   const fixture = createBootstrapFixture();
   const bootstrap = createPlatformNodeBootstrap(fixture.input);

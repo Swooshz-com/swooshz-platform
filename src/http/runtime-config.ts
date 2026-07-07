@@ -114,6 +114,10 @@ function readPublicBaseUrl(
     throw new NodePlatformRuntimeConfigError("invalid_public_base_url");
   }
 
+  if (options.production && !isHttpsUrlWithoutQueryOrFragment(raw)) {
+    throw new NodePlatformRuntimeConfigError("invalid_public_base_url");
+  }
+
   return raw;
 }
 
@@ -158,14 +162,20 @@ function readAllowedOrigins(
     throw new NodePlatformRuntimeConfigError("missing_allowed_origins");
   }
 
-  return origins.map((origin) => normalizeAllowedOrigin(origin));
+  return origins.map((origin) =>
+    normalizeAllowedOrigin(origin, options.production),
+  );
 }
 
-function normalizeAllowedOrigin(value: string): string {
+function normalizeAllowedOrigin(value: string, production: boolean): string {
   const origin = toOrigin(value, "invalid_allowed_origin");
   const withoutTrailingSlash = value.endsWith("/") ? value.slice(0, -1) : value;
 
   if (withoutTrailingSlash !== origin) {
+    throw new NodePlatformRuntimeConfigError("invalid_allowed_origin");
+  }
+
+  if (production && !isHttpsUrl(origin)) {
     throw new NodePlatformRuntimeConfigError("invalid_allowed_origin");
   }
 
@@ -193,6 +203,23 @@ function isSafeHttpUrl(value: string): boolean {
   try {
     const parsed = new URL(value);
     return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isHttpsUrl(value: string): boolean {
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isHttpsUrlWithoutQueryOrFragment(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" && !parsed.search && !parsed.hash;
   } catch {
     return false;
   }
