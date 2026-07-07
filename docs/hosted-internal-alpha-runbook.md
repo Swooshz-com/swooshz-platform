@@ -99,6 +99,18 @@ The readiness path is split deliberately:
 
 Passing both readiness commands is still not hosted deployment approval. Operators must still approve backups, restore test, migration window, rollback owner, secrets, logs, OIDC, KQAG handoff, and go/no-go outside this repo.
 
+## Sanitized Neon Migration Evidence
+
+Operator-provided sanitized evidence for the reviewed Neon target records the current migration readiness sequence:
+
+- Pre-migration DB readiness: `schema_not_ready`.
+- Migration command: guarded manual migration through `npm run db:migrate` with `DATABASE_MIGRATIONS_CONFIRM=apply-reviewed-migrations`.
+- Post-migration DB readiness: `ready`.
+
+This evidence records only readiness categories and the guarded command path. It does not include database URLs, hostnames, usernames with passwords, table data, provider console values, backup exports, screenshots, OAuth values, cookies, tokens, or private KQAG data.
+
+This evidence does not approve hosted deployment or full production readiness. Hosted execution still requires the remaining operator decisions, backup/restore evidence, OIDC configuration, hosted smoke evidence, KQAG handoff/session review, log/incident review, first owner/admin approval, and final go/no-go outside the repo.
+
 ## Migration Procedure
 
 1. Confirm the branch and migration files under review.
