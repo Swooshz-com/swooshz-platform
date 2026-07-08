@@ -398,19 +398,19 @@ test("existing app-access decision service remains separate", () => {
     memberships: [],
     apps: [],
     entitlements: [],
-    appKey: "kqag",
+    appKey: "sqag",
   });
 
   assert.equal(decision.result, "not_authenticated");
 });
 
-test("auth modules do not import DB, KQAG, frontend, or HTTP framework details", async () => {
+test("auth modules do not import DB, SQAG, frontend, or HTTP framework details", async () => {
   const authFiles = await listFiles("src/auth");
 
   for (const filePath of authFiles) {
     const contents = await readFile(filePath, "utf8");
 
-    assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?|kqag)/i);
+    assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?|sqag)/i);
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:react|next|vite|express|fastify|hono|node:http)/i);
     assert.doesNotMatch(contents, /src\/db|\.{1,2}\/db|\.{1,2}\/\.{1,2}\/db/i);
   }

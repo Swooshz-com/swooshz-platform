@@ -46,8 +46,8 @@ export type PlatformNodeBootstrapEnv =
   DatabaseEnvironment &
   AuthEnvironment & {
     PLATFORM_AUTH_PROVIDER_MODE?: string;
-    PLATFORM_KQAG_LAUNCH_MODE?: string;
-    PLATFORM_KQAG_APP_BASE_URL?: string;
+    PLATFORM_SQAG_LAUNCH_MODE?: string;
+    PLATFORM_SQAG_APP_BASE_URL?: string;
   };
 
 export interface PlatformBootstrapDatabaseClient {
@@ -94,7 +94,7 @@ export interface PlatformNodeBootstrapInput {
   appLaunchTokenIdFactory?: AppLaunchTokenIdFactory;
   appLaunchTokenByteLength?: number;
   appLaunchTokenTtlSeconds?: number;
-  kqagBrowserLaunch?: PlatformRuntimeDependencyInput["kqagBrowserLaunch"];
+  sqagBrowserLaunch?: PlatformRuntimeDependencyInput["sqagBrowserLaunch"];
 }
 
 export interface PlatformNodeBootstrapStartResult {
@@ -147,7 +147,7 @@ export function createPlatformNodeBootstrap(
       assertProductionHostedUrlConfig({
         runtimeConfig,
         authConfig,
-        kqagBrowserLaunchBaseUrl: input.kqagBrowserLaunch?.baseUrl,
+        sqagBrowserLaunchBaseUrl: input.sqagBrowserLaunch?.baseUrl,
       });
       assertGenericOidcRuntimeInput(input, authProviderMode);
       const databaseClient = createDatabaseClientSafely(input);
@@ -169,7 +169,7 @@ export function createPlatformNodeBootstrap(
             tokenByteLength: input.appLaunchTokenByteLength,
             ttlSeconds: input.appLaunchTokenTtlSeconds,
           },
-          kqagBrowserLaunch: input.kqagBrowserLaunch,
+          sqagBrowserLaunch: input.sqagBrowserLaunch,
           auth: authEnabled && authConfig
             ? createBootstrapAuthInput(
                 input,
@@ -344,7 +344,7 @@ function assertGenericOidcRuntimeInput(
 function assertProductionHostedUrlConfig(input: {
   runtimeConfig: NodePlatformRuntimeConfig;
   authConfig: AuthConfig | null;
-  kqagBrowserLaunchBaseUrl?: string;
+  sqagBrowserLaunchBaseUrl?: string;
 }): void {
   if (input.runtimeConfig.nodeEnv !== "production") {
     return;
@@ -361,7 +361,7 @@ function assertProductionHostedUrlConfig(input: {
     assertHostedAuthRedirectUri(authConfig.redirectUri);
   }
 
-  assertHttpsUrl(input.kqagBrowserLaunchBaseUrl);
+  assertHttpsUrl(input.sqagBrowserLaunchBaseUrl);
 }
 
 function assertHttpsUrl(value: string | null | undefined): void {

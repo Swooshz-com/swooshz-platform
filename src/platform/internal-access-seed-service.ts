@@ -112,7 +112,7 @@ export interface InternalAccessSeedResult {
   created: InternalAccessSeedCreatedFlags;
 }
 
-const defaultAppKey = "kqag";
+const defaultAppKey = "sqag";
 const defaultAppStatus = AppStatus.PrivatePreview;
 const defaultEntitlementStatus = EntitlementStatus.Enabled;
 const defaultMembershipRole = Role.Owner;

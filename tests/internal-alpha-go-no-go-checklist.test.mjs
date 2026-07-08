@@ -8,11 +8,11 @@ const requiredCategories = [
   "Product/admin surface",
   "Auth/session security",
   "Workspace/team management",
-  "App entitlement/KQAG launch",
+  "App entitlement/SQAG launch",
   "Audit/activity",
   "Hosted readiness",
   "Operator approvals",
-  "Platform/KQAG boundary",
+  "Platform/SQAG boundary",
   "Privacy/logging/secrets",
   "Known deferred items",
 ];
@@ -39,7 +39,7 @@ const linkedDocs = [
   "docs/hosted-internal-alpha-operator-briefing.md",
   "docs/auth-session-security-contract.md",
   "docs/internal-platform-smoke-runbook.md",
-  "docs/kqag-integration-contract.md",
+  "docs/sqag-integration-contract.md",
   "docs/roadmap.md",
 ];
 
@@ -74,7 +74,7 @@ test("internal-alpha go/no-go checklist separates local and hosted readiness dec
   assert.match(checklist, /### Hosted internal-alpha readiness/i);
   assert.match(
     checklist,
-    /hosted execution is still blocked until operator approvals, real infra choices, real OIDC config, hosted KQAG handoff\/session strategy, and smoke execution/i,
+    /hosted execution is still blocked until operator approvals, real infra choices, real OIDC config, hosted SQAG handoff\/session strategy, and smoke execution/i,
   );
   assert.match(checklist, /does not claim production readiness/i);
   assert.match(checklist, /Do not deploy until every required operator decision is approved outside repo and hosted smoke testing is complete/i);
@@ -91,13 +91,13 @@ test("internal-alpha go/no-go checklist lists required deferred items", async ()
   }
 });
 
-test("internal-alpha go/no-go checklist confirms Platform and KQAG boundaries", async () => {
+test("internal-alpha go/no-go checklist confirms Platform and SQAG boundaries", async () => {
   const checklist = await readChecklist();
 
   assert.match(checklist, /Platform owns auth, users, sessions, workspaces, roles, memberships, app entitlements, app launch checks, and audit events/i);
-  assert.match(checklist, /Platform does not own KQAG quote data/i);
-  assert.match(checklist, /KQAG owns quote generation, profiles, pricing references, quote sessions, generated artifacts, and quote dashboard\/history/i);
-  assert.match(checklist, /No KQAG app-data editing, KQAG profiles\/pricing, quote history, generated artifacts, or quote sessions move into Platform/i);
+  assert.match(checklist, /Platform does not own SQAG quote data/i);
+  assert.match(checklist, /SQAG owns quote generation, profiles, pricing references, quote sessions, generated artifacts, and quote dashboard\/history/i);
+  assert.match(checklist, /No SQAG app-data editing, SQAG profiles\/pricing, quote history, generated artifacts, or quote sessions move into Platform/i);
 });
 
 test("internal-alpha go/no-go checklist links source docs and is linked from repo docs", async () => {

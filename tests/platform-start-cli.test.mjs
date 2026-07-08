@@ -34,7 +34,7 @@ test("importing platform start CLI does not start server connect DB run migratio
     /if \(process\.argv\[1\] && import\.meta\.url === pathToFileURL\(process\.argv\[1\]\)\.href\) {\s+await main\(\);\s+}/,
   );
   assert.doesNotMatch(source, /db-migrate|platform-seed-internal-access|migrate\(/i);
-  assert.doesNotMatch(source, /saqg/i);
+  assert.doesNotMatch(source, /from\s+["'][^"']*sqag/i);
 });
 
 test("start CLI builds bootstrap input from existing env contracts", () => {
@@ -57,32 +57,32 @@ test("start CLI builds bootstrap input from existing env contracts", () => {
   assert.equal(calls.fetch, 0);
 });
 
-test("start CLI builds KQAG server handoff input only from explicit env", () => {
+test("start CLI builds SQAG server handoff input only from explicit env", () => {
   const env = createEnv({
-    PLATFORM_KQAG_LAUNCH_MODE: "server_handoff",
-    PLATFORM_KQAG_APP_BASE_URL: "http://127.0.0.1:8765",
+    PLATFORM_SQAG_LAUNCH_MODE: "server_handoff",
+    PLATFORM_SQAG_APP_BASE_URL: "http://127.0.0.1:8765",
   });
   const calls = { fetch: 0 };
   const input = createPlatformStartBootstrapInput({
     env,
     fetchImplementation: async () => {
       calls.fetch += 1;
-      throw new Error("KQAG fetch should not run during input creation");
+      throw new Error("SQAG fetch should not run during input creation");
     },
   });
 
-  assert.equal(input.kqagBrowserLaunch?.baseUrl, "http://127.0.0.1:8765/");
-  assert.equal(typeof input.kqagBrowserLaunch?.httpClient.post, "function");
+  assert.equal(input.sqagBrowserLaunch?.baseUrl, "http://127.0.0.1:8765/");
+  assert.equal(typeof input.sqagBrowserLaunch?.httpClient.post, "function");
   assert.equal(calls.fetch, 0);
 });
 
-test("KQAG server handoff mode fails safely before listen when fetch or base URL is missing", () => {
+test("SQAG server handoff mode fails safely before listen when fetch or base URL is missing", () => {
   assert.throws(
     () =>
       createPlatformStartBootstrapInput({
         env: createEnv({
-          PLATFORM_KQAG_LAUNCH_MODE: "server_handoff",
-          PLATFORM_KQAG_APP_BASE_URL: "http://127.0.0.1:8765",
+          PLATFORM_SQAG_LAUNCH_MODE: "server_handoff",
+          PLATFORM_SQAG_APP_BASE_URL: "http://127.0.0.1:8765",
         }),
         fetchImplementation: undefined,
       }),
@@ -92,15 +92,15 @@ test("KQAG server handoff mode fails safely before listen when fetch or base URL
     () =>
       createPlatformStartBootstrapInput({
         env: createEnv({
-          PLATFORM_KQAG_LAUNCH_MODE: "server_handoff",
-          PLATFORM_KQAG_APP_BASE_URL: "",
+          PLATFORM_SQAG_LAUNCH_MODE: "server_handoff",
+          PLATFORM_SQAG_APP_BASE_URL: "",
         }),
       }),
     assertPrivacySafeStartError("invalid_config"),
   );
 });
 
-test("production KQAG server handoff requires HTTPS base URL before bootstrap", () => {
+test("production SQAG server handoff requires HTTPS base URL before bootstrap", () => {
   assert.throws(
     () =>
       createPlatformStartBootstrapInput({
@@ -110,8 +110,8 @@ test("production KQAG server handoff requires HTTPS base URL before bootstrap", 
           PLATFORM_ALLOWED_ORIGINS: "https://platform.example.invalid",
           PLATFORM_COOKIE_SECURE: "true",
           AUTH_REDIRECT_URI: "https://platform.example.invalid/api/platform/auth/callback",
-          PLATFORM_KQAG_LAUNCH_MODE: "server_handoff",
-          PLATFORM_KQAG_APP_BASE_URL: "http://kqag.example.invalid",
+          PLATFORM_SQAG_LAUNCH_MODE: "server_handoff",
+          PLATFORM_SQAG_APP_BASE_URL: "http://sqag.example.invalid",
         }),
       }),
     assertPrivacySafeStartError("invalid_config"),
@@ -125,8 +125,8 @@ test("production KQAG server handoff requires HTTPS base URL before bootstrap", 
           PLATFORM_ALLOWED_ORIGINS: "https://platform.example.invalid",
           PLATFORM_COOKIE_SECURE: "true",
           AUTH_REDIRECT_URI: "https://platform.example.invalid/api/platform/auth/callback",
-          PLATFORM_KQAG_LAUNCH_MODE: "server_handoff",
-          PLATFORM_KQAG_APP_BASE_URL: "https://kqag.example.invalid?token=raw-secret",
+          PLATFORM_SQAG_LAUNCH_MODE: "server_handoff",
+          PLATFORM_SQAG_APP_BASE_URL: "https://sqag.example.invalid?token=raw-secret",
         }),
       }),
     assertPrivacySafeStartError("invalid_config"),
@@ -227,21 +227,21 @@ test("executePlatformStart does not call provider fetch during generic OIDC star
   assert.equal(calls.fetch, 0);
 });
 
-test("executePlatformStart does not call KQAG fetch during server handoff startup", async () => {
+test("executePlatformStart does not call SQAG fetch during server handoff startup", async () => {
   const calls = { fetch: 0, start: 0 };
 
   await executePlatformStart({
     env: createEnv({
-      PLATFORM_KQAG_LAUNCH_MODE: "server_handoff",
-      PLATFORM_KQAG_APP_BASE_URL: "http://127.0.0.1:8765",
+      PLATFORM_SQAG_LAUNCH_MODE: "server_handoff",
+      PLATFORM_SQAG_APP_BASE_URL: "http://127.0.0.1:8765",
     }),
     fetchImplementation: async () => {
       calls.fetch += 1;
-      throw new Error("KQAG fetch should not run during startup");
+      throw new Error("SQAG fetch should not run during startup");
     },
     createBootstrap(input) {
-      assert.equal(input.kqagBrowserLaunch?.baseUrl, "http://127.0.0.1:8765/");
-      assert.equal(typeof input.kqagBrowserLaunch?.httpClient.post, "function");
+      assert.equal(input.sqagBrowserLaunch?.baseUrl, "http://127.0.0.1:8765/");
+      assert.equal(typeof input.sqagBrowserLaunch?.httpClient.post, "function");
       return {
         async start() {
           calls.start += 1;
@@ -436,7 +436,7 @@ test("platform start CLI keeps runtime boundaries clean", async () => {
     const contents = await readFile(filePath, "utf8");
 
     assert.doesNotMatch(contents, /db-migrate|platform-seed-internal-access|drizzle-orm\/node-postgres\/migrator|migrate\(/i);
-    assert.doesNotMatch(contents, /from\s+["'][^"']*(?:kqag|saqg|clerk|auth0|supabase|stripe)/i);
+    assert.doesNotMatch(contents, /from\s+["'][^"']*(?:sqag|clerk|auth0|supabase|stripe)/i);
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:react|next|vite|express|fastify|hono)/i);
     assert.doesNotMatch(contents, /DATABASE_URL\s*=|CSRF_TOKEN_HASH_SECRET\s*=|AUTH_CLIENT_SECRET\s*=/);
   }

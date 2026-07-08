@@ -8,7 +8,7 @@ Accepted.
 
 Swooshz Platform now has account/app-access contracts, a pure account/app-access domain core, provider-agnostic auth/session strategy, persistence and migration ADRs, Drizzle/Postgres schema, repository/service ports, Drizzle repository adapters, a database connection and migration workflow ADR, and a lazy `pg`/Drizzle database client boundary.
 
-The repository still has no auth provider, no login/callback/logout routes, no auth SDK, no frontend, and no KQAG adapter. The next auth step should decide the provider strategy before any implementation couples platform sessions, users, provider identities, invitations, workspace memberships, or app access to a vendor-specific model.
+The repository still has no auth provider, no login/callback/logout routes, no auth SDK, no frontend, and no SQAG adapter. The next auth step should decide the provider strategy before any implementation couples platform sessions, users, provider identities, invitations, workspace memberships, or app access to a vendor-specific model.
 
 ADR 0002 already established that the auth provider proves identity only. The platform owns users, provider identities, platform sessions, workspace selection, memberships, invitations, app access decisions, app entitlements, and audit events.
 
@@ -27,7 +27,7 @@ The first implementation should support a generic OIDC provider contract with:
 - Provider key from environment.
 - Platform-owned session creation after provider identity is verified.
 
-The implementation now includes a provider-agnostic JWT/JWKS verifier behind the generic OIDC verifier interface. It performs real RS256 signature verification with JWKS, validates issuer, audience, expiry, not-before, issued-at, and subject claims, returns nonce for platform-side nonce hash comparison, and only trusts email when `email_verified === true`. It does not add provider SDKs, frontend login UI, KQAG launch/storage integration, app launch tokens, billing, deployment, migration execution, or fake-login shortcuts.
+The implementation now includes a provider-agnostic JWT/JWKS verifier behind the generic OIDC verifier interface. It performs real RS256 signature verification with JWKS, validates issuer, audience, expiry, not-before, issued-at, and subject claims, returns nonce for platform-side nonce hash comparison, and only trusts email when `email_verified === true`. It does not add provider SDKs, frontend login UI, SQAG launch/storage integration, app launch tokens, billing, deployment, migration execution, or fake-login shortcuts.
 
 Do not hard-couple the platform account model to Clerk, Auth0, Supabase Auth, or another provider SDK in the first implementation. A specific managed provider may still be used behind the generic OIDC contract if it fits the environment and security needs, but platform user, workspace, membership, invitation, session, app entitlement, and app access logic must remain provider-owned only at the identity-proof boundary.
 
@@ -50,9 +50,9 @@ After callback verification, Swooshz Platform owns:
 - App access decisions.
 - Audit events.
 
-The platform must not expose provider tokens, raw claims, raw OIDC responses, auth codes, access tokens, refresh tokens, ID tokens, or provider error payloads to KQAG or future apps.
+The platform must not expose provider tokens, raw claims, raw OIDC responses, auth codes, access tokens, refresh tokens, ID tokens, or provider error payloads to SQAG or future apps.
 
-KQAG should later receive only platform-scoped identity, workspace, membership role, app key, and launch context data through a future KQAG adapter. KQAG must not receive raw provider auth material.
+SQAG should later receive only platform-scoped identity, workspace, membership role, app key, and launch context data through a future SQAG adapter. SQAG must not receive raw provider auth material.
 
 ## Session Model
 
@@ -81,7 +81,7 @@ Provider identity records remain separate from:
 - App entitlements.
 - Audit event actor ids.
 
-Platform user ids remain the ids used by memberships, sessions, audit events, entitlements, app launch context, and KQAG launch context.
+Platform user ids remain the ids used by memberships, sessions, audit events, entitlements, app launch context, and SQAG launch context.
 
 ## Invitation And Allowlist Posture
 
@@ -271,14 +271,14 @@ Recommended next auth implementation sequence:
 7. Add a minimal protected app-access or launch-decision endpoint.
 8. Add frontend/login shell only after backend auth, session, and app-access boundaries are stable.
 
-KQAG adapter work should wait until platform auth/session/app-access endpoints can provide platform-scoped launch context without exposing provider auth material.
+SQAG adapter work should wait until platform auth/session/app-access endpoints can provide platform-scoped launch context without exposing provider auth material.
 
 Implementation status after later PRs:
 
 - The provider-agnostic OIDC contracts, auth start/callback routes, auth state storage, runtime wiring, and a generic OIDC adapter factory now exist.
 - The generic adapter can build authorization URLs and perform token/userinfo HTTP calls only inside explicit adapter methods with injected HTTP boundaries.
 - Live cryptographic JWT/JWKS verification now exists behind the explicit verifier interface, and the approved runtime can opt into the generic adapter with `PLATFORM_AUTH_PROVIDER_MODE=generic_oidc`, issuer/JWKS config, and an injected HTTP client. Provider/JWKS network calls remain limited to explicit route-time adapter verification through injected HTTP boundaries.
-- Provider SDKs, frontend login UI, KQAG launch/storage integration, app launch tokens, fake-login shortcuts, billing, deployment, and migration execution remain outside the auth-provider boundary.
+- Provider SDKs, frontend login UI, SQAG launch/storage integration, app launch tokens, fake-login shortcuts, billing, deployment, and migration execution remain outside the auth-provider boundary.
 
 ## Consequences
 
@@ -306,7 +306,7 @@ Tradeoffs:
 - Invitation acceptance UX.
 - Admin-created workspace flow.
 - Public signup, if ever approved.
-- KQAG launch-token or backend exchange protocol.
+- SQAG launch-token or backend exchange protocol.
 
 ## Explicit Non-Goals For The Original Decision PR
 
@@ -335,6 +335,6 @@ These non-goals describe the ADR/introduction PR scope. Later implementation PRs
 - No provider tokens.
 - No raw provider claims.
 - No billing, credits, Stripe, or customer portal.
-- No KQAG adapter.
-- No KQAG repository changes.
+- No SQAG adapter.
+- No SQAG repository changes.
 - No quote exports, pricing files, embedded logos, bank details, customer/company private data, or private app payloads.

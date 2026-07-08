@@ -884,8 +884,8 @@ async function readAuditTargetLabel(
     case "membership_approval":
       return readMembershipApprovalTargetLabel(repositories, event, metadata);
     case "app_entitlement":
-      return String(metadata.appKey).toLowerCase() === "kqag"
-        ? "KQAG access"
+      return String(metadata.appKey).toLowerCase() === "sqag"
+        ? "SQAG access"
         : "App entitlement";
     default:
       return "Workspace item";

@@ -112,7 +112,7 @@ test("GET /app/admin renders the admin shell as no-store HTML without requiring 
   assert.match(response.body, /\/reactivate/);
   assert.match(response.body, /\/app-entitlements/);
   assert.match(response.body, /\/audit-events\?limit=50/);
-  assert.match(response.body, /\/kqag\/status\?status=/);
+  assert.match(response.body, /\/sqag\/status\?status=/);
   assert.equal(fixture.calls.sessionsFindById, 0);
   assert.equal(fixture.calls.csrfValidate, 0);
   assertResponseIsPrivacySafe(response);
@@ -157,7 +157,7 @@ test("unknown route returns safe 404 JSON", async () => {
 test("wrong method for a known route returns safe 405 JSON", async () => {
   const { response, body } = await request({
     method: "POST",
-    url: "/api/platform/session/app-access?workspaceId=workspace_koncept_images&appKey=kqag",
+    url: "/api/platform/session/app-access?workspaceId=workspace_koncept_images&appKey=sqag",
   });
 
   assert.equal(response.statusCode, 405);
@@ -174,7 +174,7 @@ test("app-access route parses workspaceId appKey and session cookie correctly", 
   const fixture = createAdapterFixture();
   const { response, body } = await request({
     method: "GET",
-    url: "/api/platform/session/app-access?workspaceId=workspace_koncept_images&appKey=kqag",
+    url: "/api/platform/session/app-access?workspaceId=workspace_koncept_images&appKey=sqag",
     headers: {
       cookie: `swooshz_session=${sessionId}; unrelated=value`,
     },
@@ -184,7 +184,7 @@ test("app-access route parses workspaceId appKey and session cookie correctly", 
   assert.equal(response.statusCode, 200);
   assert.equal(body.outcome, "allowed");
   assert.equal(body.workspaceId, "workspace_koncept_images");
-  assert.equal(body.appKey, "kqag");
+  assert.equal(body.appKey, "sqag");
   assert.equal(fixture.calls.sessionsFindById, 2);
   assert.equal(fixture.calls.csrfValidate, 0);
   assert.equal(fixture.calls.sessionsRevoke, 0);
@@ -195,7 +195,7 @@ test("app-access route denies missing session safely through handler path", asyn
   const fixture = createAdapterFixture();
   const { response, body } = await request({
     method: "GET",
-    url: "/api/platform/session/app-access?workspaceId=workspace_koncept_images&appKey=kqag",
+    url: "/api/platform/session/app-access?workspaceId=workspace_koncept_images&appKey=sqag",
     dependencies: fixture.dependencies,
   });
 
@@ -215,7 +215,7 @@ test("app-access route does not require CSRF", async () => {
   });
   const { response, body } = await request({
     method: "GET",
-    url: "/api/platform/session/app-access?workspaceId=workspace_koncept_images&appKey=kqag",
+    url: "/api/platform/session/app-access?workspaceId=workspace_koncept_images&appKey=sqag",
     headers: {
       cookie: `swooshz_session=${sessionId}`,
     },
@@ -333,7 +333,7 @@ test("app launch route is POST-only and requires query inputs", async () => {
   const fixture = createAdapterFixture();
   const get = await request({
     method: "GET",
-    url: "/api/platform/apps/launch?workspaceId=workspace_koncept_images&appKey=kqag",
+    url: "/api/platform/apps/launch?workspaceId=workspace_koncept_images&appKey=sqag",
     headers: logoutHeaders(),
     dependencies: fixture.dependencies,
   });
@@ -367,7 +367,7 @@ test("app launch route validates Origin and CSRF before creating a token", async
   const fixture = createAdapterFixture();
   const { response, body } = await request({
     method: "POST",
-    url: "/api/platform/apps/launch?workspaceId=workspace_koncept_images&appKey=kqag",
+    url: "/api/platform/apps/launch?workspaceId=workspace_koncept_images&appKey=sqag",
     headers: {
       cookie: `swooshz_session=${sessionId}`,
       "x-csrf-token": validCsrfToken,
@@ -388,12 +388,12 @@ test("app launch route validates Origin and CSRF before creating a token", async
 
 test("app launch route creates a hash-only launch token after valid CSRF", async () => {
   const fixture = createAdapterFixture({
-    app: { launchUrl: "https://apps.example.invalid/kqag" },
+    app: { launchUrl: "https://apps.example.invalid/sqag" },
   });
 
   const { response, body } = await request({
     method: "POST",
-    url: "/api/platform/apps/launch?workspaceId=workspace_koncept_images&appKey=kqag",
+    url: "/api/platform/apps/launch?workspaceId=workspace_koncept_images&appKey=sqag",
     headers: logoutHeaders(),
     dependencies: fixture.dependencies,
   });
@@ -402,9 +402,9 @@ test("app launch route creates a hash-only launch token after valid CSRF", async
   assertNoStoreHeaders(response.headers);
   assert.deepEqual(body, {
     outcome: "launch_intent_created",
-    appKey: "kqag",
+    appKey: "sqag",
     workspaceId: "workspace_koncept_images",
-    launchUrl: "https://apps.example.invalid/kqag",
+    launchUrl: "https://apps.example.invalid/sqag",
     launchToken: rawLaunchToken,
     launchTokenExpiresAt,
   });
@@ -418,16 +418,16 @@ test("app launch route creates a hash-only launch token after valid CSRF", async
   assertResponseIsPrivacySafe(response);
 });
 
-test("KQAG browser launch handoff consumes token server-side and returns safe launch URL", async () => {
+test("SQAG browser launch handoff consumes token server-side and returns safe launch URL", async () => {
   const fixture = createAdapterFixture({
-    kqagLaunchHandoff: {
+    sqagLaunchHandoff: {
       baseUrl: "http://127.0.0.1:8765",
     },
   });
 
   const { response, body } = await request({
     method: "POST",
-    url: "/api/platform/apps/launch/open?workspaceId=workspace_koncept_images&appKey=kqag",
+    url: "/api/platform/apps/launch/open?workspaceId=workspace_koncept_images&appKey=sqag",
     headers: {
       ...logoutHeaders(),
       host: "127.0.0.1:4317",
@@ -437,17 +437,17 @@ test("KQAG browser launch handoff consumes token server-side and returns safe la
 
   assert.equal(response.statusCode, 200);
   assertNoStoreHeaders(response.headers);
-  assert.equal(response.headers["set-cookie"], "swooshz_quote_session=safe-kqag-session; Path=/; HttpOnly; SameSite=Lax");
+  assert.equal(response.headers["set-cookie"], "swooshz_quote_session=safe-sqag-session; Path=/; HttpOnly; SameSite=Lax");
   assert.deepEqual(body, {
     outcome: "launch_opened",
-    appKey: "kqag",
+    appKey: "sqag",
     workspaceId: "workspace_koncept_images",
     launchUrl: "http://127.0.0.1:8765/",
   });
   assert.equal(fixture.records.appLaunchTokens.length, 1);
   assert.equal(fixture.records.appLaunchTokens[0].tokenHash, launchTokenHash);
   assert.equal("launchToken" in fixture.records.appLaunchTokens[0], false);
-  assert.deepEqual(fixture.calls.kqagLaunchRequests, [
+  assert.deepEqual(fixture.calls.sqagLaunchRequests, [
     {
       url: "http://127.0.0.1:8765/api/platform/launch",
       method: "POST",
@@ -461,17 +461,17 @@ test("KQAG browser launch handoff consumes token server-side and returns safe la
   assertResponseIsPrivacySafe(response);
 });
 
-test("KQAG browser launch handoff fails safely without session access config or safe cookie host", async () => {
+test("SQAG browser launch handoff fails safely without session access config or safe cookie host", async () => {
   const missingSession = await request({
     method: "POST",
-    url: "/api/platform/apps/launch/open?workspaceId=workspace_koncept_images&appKey=kqag",
+    url: "/api/platform/apps/launch/open?workspaceId=workspace_koncept_images&appKey=sqag",
     headers: {
       origin: allowedOrigin,
       "x-csrf-token": validCsrfToken,
       host: "127.0.0.1:4317",
     },
     dependencies: createAdapterFixture({
-      kqagLaunchHandoff: {
+      sqagLaunchHandoff: {
         baseUrl: "http://127.0.0.1:8765",
       },
     }).dependencies,
@@ -479,7 +479,7 @@ test("KQAG browser launch handoff fails safely without session access config or 
   const missingConfigFixture = createAdapterFixture();
   const missingConfig = await request({
     method: "POST",
-    url: "/api/platform/apps/launch/open?workspaceId=workspace_koncept_images&appKey=kqag",
+    url: "/api/platform/apps/launch/open?workspaceId=workspace_koncept_images&appKey=sqag",
     headers: {
       ...logoutHeaders(),
       host: "127.0.0.1:4317",
@@ -487,13 +487,13 @@ test("KQAG browser launch handoff fails safely without session access config or 
     dependencies: missingConfigFixture.dependencies,
   });
   const unsafeHostFixture = createAdapterFixture({
-    kqagLaunchHandoff: {
+    sqagLaunchHandoff: {
       baseUrl: "http://localhost:8765",
     },
   });
   const unsafeHost = await request({
     method: "POST",
-    url: "/api/platform/apps/launch/open?workspaceId=workspace_koncept_images&appKey=kqag",
+    url: "/api/platform/apps/launch/open?workspaceId=workspace_koncept_images&appKey=sqag",
     headers: {
       ...logoutHeaders(),
       host: "127.0.0.1:4317",
@@ -511,26 +511,26 @@ test("KQAG browser launch handoff fails safely without session access config or 
   assertNoStoreHeaders(missingConfig.response.headers);
   assert.deepEqual(missingConfig.body, {
     outcome: "error",
-    message: "KQAG browser launch is not configured.",
+    message: "SQAG browser launch is not configured.",
   });
   assert.equal(unsafeHost.response.statusCode, 503);
   assertNoStoreHeaders(unsafeHost.response.headers);
   assert.deepEqual(unsafeHost.body, {
     outcome: "error",
-    message: "KQAG browser launch is not configured.",
+    message: "SQAG browser launch is not configured.",
   });
   assert.equal(missingConfigFixture.records.appLaunchTokens.length, 0);
   assert.equal(unsafeHostFixture.records.appLaunchTokens.length, 0);
-  assert.deepEqual(missingConfigFixture.calls.kqagLaunchRequests, []);
-  assert.deepEqual(unsafeHostFixture.calls.kqagLaunchRequests, []);
+  assert.deepEqual(missingConfigFixture.calls.sqagLaunchRequests, []);
+  assert.deepEqual(unsafeHostFixture.calls.sqagLaunchRequests, []);
   assertResponseIsPrivacySafe(missingSession.response);
   assertResponseIsPrivacySafe(missingConfig.response);
   assertResponseIsPrivacySafe(unsafeHost.response);
 });
 
-test("KQAG browser launch handoff fails closed for wrong app access denial and KQAG consume failure", async () => {
+test("SQAG browser launch handoff rejects non-SQAG keys and fails closed for consume failure", async () => {
   const wrongAppFixture = createAdapterFixture({
-    kqagLaunchHandoff: {
+    sqagLaunchHandoff: {
       baseUrl: "http://127.0.0.1:8765",
     },
   });
@@ -543,8 +543,22 @@ test("KQAG browser launch handoff fails closed for wrong app access denial and K
     },
     dependencies: wrongAppFixture.dependencies,
   });
+  const legacyKeyFixture = createAdapterFixture({
+    sqagLaunchHandoff: {
+      baseUrl: "http://127.0.0.1:8765",
+    },
+  });
+  const legacyKey = await request({
+    method: "POST",
+    url: `/api/platform/apps/launch/open?workspaceId=workspace_koncept_images&appKey=${"k"}qag`,
+    headers: {
+      ...logoutHeaders(),
+      host: "127.0.0.1:4317",
+    },
+    dependencies: legacyKeyFixture.dependencies,
+  });
   const consumeFailureFixture = createAdapterFixture({
-    kqagLaunchHandoff: {
+    sqagLaunchHandoff: {
       baseUrl: "http://127.0.0.1:8765",
       status: 502,
       body: { status: "blocked", errors: ["private provider payload"] },
@@ -552,7 +566,7 @@ test("KQAG browser launch handoff fails closed for wrong app access denial and K
   });
   const consumeFailure = await request({
     method: "POST",
-    url: "/api/platform/apps/launch/open?workspaceId=workspace_koncept_images&appKey=kqag",
+    url: "/api/platform/apps/launch/open?workspaceId=workspace_koncept_images&appKey=sqag",
     headers: {
       ...logoutHeaders(),
       host: "127.0.0.1:4317",
@@ -565,20 +579,27 @@ test("KQAG browser launch handoff fails closed for wrong app access denial and K
   assert.equal(wrongApp.body.outcome, "denied");
   assert.equal(wrongApp.body.reason, "app_access_denied");
   assert.equal(wrongAppFixture.records.appLaunchTokens.length, 0);
-  assert.deepEqual(wrongAppFixture.calls.kqagLaunchRequests, []);
+  assert.deepEqual(wrongAppFixture.calls.sqagLaunchRequests, []);
+  assert.equal(legacyKey.response.statusCode, 403);
+  assertNoStoreHeaders(legacyKey.response.headers);
+  assert.equal(legacyKey.body.outcome, "denied");
+  assert.equal(legacyKey.body.reason, "app_access_denied");
+  assert.equal(legacyKeyFixture.records.appLaunchTokens.length, 0);
+  assert.deepEqual(legacyKeyFixture.calls.sqagLaunchRequests, []);
   assert.equal(consumeFailure.response.statusCode, 502);
   assertNoStoreHeaders(consumeFailure.response.headers);
   assert.deepEqual(consumeFailure.body, {
     outcome: "error",
-    message: "KQAG browser launch could not be completed.",
+    message: "SQAG browser launch could not be completed.",
   });
   assert.equal(consumeFailureFixture.records.appLaunchTokens.length, 1);
   assert.equal(consumeFailureFixture.records.appLaunchTokens[0].tokenHash, launchTokenHash);
   assert.equal("launchToken" in consumeFailureFixture.records.appLaunchTokens[0], false);
-  assert.equal(consumeFailureFixture.calls.kqagLaunchRequests[0].token, rawLaunchToken);
+  assert.equal(consumeFailureFixture.calls.sqagLaunchRequests[0].token, rawLaunchToken);
   assert.doesNotMatch(JSON.stringify(consumeFailure.response), /private provider payload/);
   assert.doesNotMatch(JSON.stringify(consumeFailure.response), new RegExp(rawLaunchToken));
   assertResponseIsPrivacySafe(wrongApp.response);
+  assertResponseIsPrivacySafe(legacyKey.response);
   assertResponseIsPrivacySafe(consumeFailure.response);
 });
 
@@ -586,7 +607,7 @@ test("app launch consume route is POST-only and requires appKey", async () => {
   const fixture = createAdapterFixture({ withLaunchConsumeToken: true });
   const get = await request({
     method: "GET",
-    url: "/api/platform/apps/launch/consume?appKey=kqag",
+    url: "/api/platform/apps/launch/consume?appKey=sqag",
     headers: {
       "x-app-launch-token": rawLaunchToken,
     },
@@ -617,7 +638,7 @@ test("app launch consume route consumes token without browser cookie or CSRF", a
 
   const { response, body } = await request({
     method: "POST",
-    url: "/api/platform/apps/launch/consume?appKey=kqag",
+    url: "/api/platform/apps/launch/consume?appKey=sqag",
     headers: {
       "x-app-launch-token": rawLaunchToken,
     },
@@ -640,8 +661,8 @@ test("app launch consume route consumes token without browser cookie or CSRF", a
       workspaceName: "Koncept Images Pte Ltd",
     },
     app: {
-      appKey: "kqag",
-      appName: "KQAG / SAQG",
+      appKey: "sqag",
+      appName: "SQAG",
     },
     membershipRole: "owner",
     launchTokenExpiresAt,
@@ -651,16 +672,39 @@ test("app launch consume route consumes token without browser cookie or CSRF", a
   assertResponseIsPrivacySafe(response);
 });
 
+test("app launch consume route rejects legacy SQAG key without consuming token", async () => {
+  const fixture = createAdapterFixture({ withLaunchConsumeToken: true });
+
+  const { response, body } = await request({
+    method: "POST",
+    url: `/api/platform/apps/launch/consume?appKey=${"k"}qag`,
+    headers: {
+      "x-app-launch-token": rawLaunchToken,
+    },
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 401);
+  assertNoStoreHeaders(response.headers);
+  assert.deepEqual(body, {
+    outcome: "invalid",
+    reason: "app_mismatch",
+  });
+  assert.equal(fixture.records.appLaunchTokens[0].consumedAt, null);
+  assert.equal(fixture.calls.csrfValidate, 0);
+  assertResponseIsPrivacySafe(response);
+});
+
 test("app launch consume route rejects missing or replayed token safely", async () => {
   const fixture = createAdapterFixture({ withLaunchConsumeToken: true });
   const missing = await request({
     method: "POST",
-    url: "/api/platform/apps/launch/consume?appKey=kqag",
+    url: "/api/platform/apps/launch/consume?appKey=sqag",
     dependencies: fixture.dependencies,
   });
   const first = await request({
     method: "POST",
-    url: "/api/platform/apps/launch/consume?appKey=kqag",
+    url: "/api/platform/apps/launch/consume?appKey=sqag",
     headers: {
       "x-app-launch-token": rawLaunchToken,
     },
@@ -668,7 +712,7 @@ test("app launch consume route rejects missing or replayed token safely", async 
   });
   const replay = await request({
     method: "POST",
-    url: "/api/platform/apps/launch/consume?appKey=kqag",
+    url: "/api/platform/apps/launch/consume?appKey=sqag",
     headers: {
       "x-app-launch-token": rawLaunchToken,
     },
@@ -697,7 +741,7 @@ test("app launch consume route ignores launch tokens in query strings", async ()
   const fixture = createAdapterFixture({ withLaunchConsumeToken: true });
   const { response, body } = await request({
     method: "POST",
-    url: `/api/platform/apps/launch/consume?appKey=kqag&launchToken=${encodeURIComponent(rawLaunchToken)}`,
+    url: `/api/platform/apps/launch/consume?appKey=sqag&launchToken=${encodeURIComponent(rawLaunchToken)}`,
     dependencies: fixture.dependencies,
   });
 
@@ -962,11 +1006,11 @@ test("adapter-specific Node imports do not leak into domain platform auth or non
   }
 });
 
-test("Node HTTP adapter does not import frontend KQAG provider SDK framework live DB or migrations", async () => {
+test("Node HTTP adapter does not import frontend SQAG provider SDK framework live DB or migrations", async () => {
   const contents = await readFile("src/http/node-adapter.ts", "utf8");
 
   assert.doesNotMatch(contents, /from\s+["'][^"']*(?:react|next|vite|express|fastify|hono)/i);
-  assert.doesNotMatch(contents, /from\s+["'][^"']*(?:kqag|clerk|auth0|supabase)/i);
+  assert.doesNotMatch(contents, /from\s+["'][^"']*(?:sqag|clerk|auth0|supabase)/i);
   assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?)/i);
   assert.doesNotMatch(contents, /src\/db|\.{1,2}\/db|\.{1,2}\/\.{1,2}\/db/i);
 });
@@ -1059,9 +1103,9 @@ function createAdapterFixture(overrides = {}) {
     ],
     apps: [
       {
-        id: "app_kqag",
-        key: "kqag",
-        name: "KQAG / SAQG",
+        id: "app_sqag",
+        key: "sqag",
+        name: "SQAG",
         status: "private_preview",
         launchUrl: null,
         ...overrides.app,
@@ -1071,9 +1115,9 @@ function createAdapterFixture(overrides = {}) {
     ],
     appEntitlements: [
       {
-        id: "entitlement_koncept_kqag",
+        id: "entitlement_koncept_sqag",
         workspaceId: "workspace_koncept_images",
-        appId: "app_kqag",
+        appId: "app_sqag",
         status: "enabled",
         grantedByUserId: "user_owner_example",
         createdAt: now,
@@ -1091,7 +1135,7 @@ function createAdapterFixture(overrides = {}) {
       sessionId,
       userId: "user_owner_example",
       workspaceId: "workspace_koncept_images",
-      appId: "app_kqag",
+      appId: "app_sqag",
       tokenHash: launchTokenHash,
       createdAt: now,
       expiresAt: launchTokenExpiresAt,
@@ -1119,7 +1163,7 @@ function createAdapterFixture(overrides = {}) {
     },
   };
   const calls = instrumentRepositories(repositories);
-  calls.kqagLaunchRequests = [];
+  calls.sqagLaunchRequests = [];
   const dependencies = {
     repositories,
     now: () => now,
@@ -1268,23 +1312,23 @@ function createAdapterFixture(overrides = {}) {
       },
     },
   };
-  if (overrides.kqagLaunchHandoff) {
-    dependencies.kqagBrowserLaunch = {
-      baseUrl: overrides.kqagLaunchHandoff.baseUrl,
+  if (overrides.sqagLaunchHandoff) {
+    dependencies.sqagBrowserLaunch = {
+      baseUrl: overrides.sqagLaunchHandoff.baseUrl,
       httpClient: {
         async post(input) {
-          calls.kqagLaunchRequests.push({
+          calls.sqagLaunchRequests.push({
             url: input.url,
             method: "POST",
             token: input.headers["x-app-launch-token"],
           });
           assert.deepEqual(Object.keys(input.headers), ["x-app-launch-token"]);
           return {
-            status: overrides.kqagLaunchHandoff.status ?? 200,
+            status: overrides.sqagLaunchHandoff.status ?? 200,
             headers: {
-              "set-cookie": "swooshz_quote_session=safe-kqag-session; Path=/; HttpOnly; SameSite=Lax",
+              "set-cookie": "swooshz_quote_session=safe-sqag-session; Path=/; HttpOnly; SameSite=Lax",
             },
-            body: overrides.kqagLaunchHandoff.body ?? {
+            body: overrides.sqagLaunchHandoff.body ?? {
               status: "platform_session_created",
               redirect_url: "/",
             },

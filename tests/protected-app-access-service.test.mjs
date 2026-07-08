@@ -64,7 +64,7 @@ test("expired session denies safely using deterministic now", async () => {
   assert.equal(calls.appsFindByKey, 0);
 });
 
-test("active unexpired owner session delegates and allows KQAG access", async () => {
+test("active unexpired owner session delegates and allows SQAG access", async () => {
   const { repositories, input, calls } = protectedFixture({ role: "owner" });
 
   const result = await decideProtectedAppAccess(repositories, input);
@@ -73,7 +73,7 @@ test("active unexpired owner session delegates and allows KQAG access", async ()
   assert.equal(result.sessionId, "session_owner_example");
   assert.equal(result.userId, "user_owner_example");
   assert.equal(result.workspaceId, "workspace_koncept_images");
-  assert.equal(result.appKey, "kqag");
+  assert.equal(result.appKey, "sqag");
   assert.deepEqual(result.decision, {
     result: AccessDecisionResult.Allowed,
     allowed: true,
@@ -146,18 +146,18 @@ test("removed user with another workspace keeps access only to the remaining wor
     ],
     appEntitlements: [
       {
-        id: "entitlement_koncept_kqag",
+        id: "entitlement_koncept_sqag",
         workspaceId: "workspace_koncept_images",
-        appId: "app_kqag",
+        appId: "app_sqag",
         status: "enabled",
         grantedByUserId: "user_owner_example",
         createdAt: now,
         updatedAt: now,
       },
       {
-        id: "entitlement_other_kqag",
+        id: "entitlement_other_sqag",
         workspaceId: otherWorkspace.id,
-        appId: "app_kqag",
+        appId: "app_sqag",
         status: "enabled",
         grantedByUserId: "user_owner_example",
         createdAt: now,
@@ -200,7 +200,7 @@ test("billing gate denial is delegated without creating launch tokens or grants"
     "membership_viewer_example",
   ]);
   assert.deepEqual(records.appEntitlements.map((entitlement) => entitlement.id), [
-    "entitlement_koncept_kqag",
+    "entitlement_koncept_sqag",
   ]);
 });
 
@@ -237,10 +237,10 @@ test("protected app-access results do not expose tokens secrets provider materia
   assert.doesNotMatch(serialized, /postgresql:\/\/private-host|database exploded|select \*/i);
 });
 
-test("protected app-access service module does not import DB, HTTP, frontend, KQAG, provider SDK, or migrations", async () => {
+test("protected app-access service module does not import DB, HTTP, frontend, SQAG, provider SDK, or migrations", async () => {
   const contents = await readFile("src/platform/protected-app-access-service.ts", "utf8");
 
-  assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?|kqag)/i);
+  assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?|sqag)/i);
   assert.doesNotMatch(contents, /from\s+["'][^"']*(?:react|next|vite|express|fastify|hono|node:http)/i);
   assert.doesNotMatch(contents, /from\s+["'][^"']*(?:clerk|auth0|supabase)/i);
   assert.doesNotMatch(contents, /src\/db|\.{1,2}\/db|\.{1,2}\/\.{1,2}\/db/i);
@@ -277,9 +277,9 @@ function protectedFixture(overrides = {}) {
   };
 
   const app = {
-    id: "app_kqag",
-    key: "kqag",
-    name: "KQAG / SAQG",
+    id: "app_sqag",
+    key: "sqag",
+    name: "SQAG",
     status: "private_preview",
     launchUrl: null,
     createdAt: now,
@@ -325,7 +325,7 @@ function protectedFixture(overrides = {}) {
   }));
 
   const entitlement = {
-    id: "entitlement_koncept_kqag",
+    id: "entitlement_koncept_sqag",
     workspaceId: workspace.id,
     appId: app.id,
     status: "enabled",
@@ -355,7 +355,7 @@ function protectedFixture(overrides = {}) {
     input: {
       sessionId: overrides.sessionId ?? session.id,
       selectedWorkspaceId: overrides.selectedWorkspaceId ?? workspace.id,
-      appKey: overrides.appKey ?? "kqag",
+      appKey: overrides.appKey ?? "sqag",
       billingGate: overrides.billingGate,
       now: overrides.now ?? now,
     },

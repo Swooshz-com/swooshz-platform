@@ -2,6 +2,8 @@
 
 This runbook prepares Swooshz Platform for a reviewed hosted internal-alpha handoff. It is documentation, guardrails, and readiness tooling only. It does not deploy, provision, expose, sync, restart, or configure hosted infrastructure. This PR is readiness only, not full production readiness.
 
+SQAG-side PR #122 landed at merge commit `6f93180023636306fe10f0d6250ea2df71d486a0` and canonicalized SQAG launch payloads to `appKey=sqag`. Hosted Platform-to-SQAG smoke remains pending until the Platform-side app-key migration is merged and an operator runs the smoke deliberately; do not claim production readiness from this documentation alone.
+
 Before using this runbook for a real hosted execution window, review the operator briefing in `docs/hosted-internal-alpha-operator-briefing.md` and the operator decision record in `docs/hosted-internal-alpha-operator-decisions.md`. The briefing summarizes the human go/no-go context; the decision record tracks the required out-of-repo hosting, approval, ownership, handoff, incident, and go/no-go decisions. This runbook does not approve deployment by itself.
 
 Also review the auth/session security contract in `docs/auth-session-security-contract.md`. That contract documents the implemented auth/session posture, the pre-alpha gap inventory, and the deferred security/session-management surfaces. This PR does not approve hosted deployment.
@@ -9,28 +11,28 @@ Also review the auth/session security contract in `docs/auth-session-security-co
 Use placeholders in this repo and in shared notes:
 
 - Platform hosted base URL placeholder: `<hosted-platform-base-url>`.
-- KQAG hosted base URL placeholder: `<hosted-kqag-base-url>`.
+- SQAG hosted base URL placeholder: `<hosted-sqag-base-url>`.
 - Google/OIDC hosted redirect URI placeholder: `<hosted-oidc-redirect-uri>`.
 
-The hosted redirect URI should resolve to the platform callback route, end with `/api/platform/auth/callback`, and avoid query parameters or fragments. Real configured domains, real staff addresses, database URLs, OAuth values, cookies, tokens, provider identity material, callback URLs with query parameters, and KQAG private app data do not belong in this repository, tickets, screenshots, or shared logs.
+The hosted redirect URI should resolve to the platform callback route, end with `/api/platform/auth/callback`, and avoid query parameters or fragments. Real configured domains, real staff addresses, database URLs, OAuth values, cookies, tokens, provider identity material, callback URLs with query parameters, and SQAG private app data do not belong in this repository, tickets, screenshots, or shared logs.
 
 ## Hosted Scope
 
 Platform owns auth, users, sessions, workspaces, roles, memberships, app entitlements, app launch checks, and audit events.
 
-KQAG owns quote-generation behavior, app-specific profiles, pricing references, generated files, app runtime state, and app dashboard/history. This runbook does not move any KQAG app data responsibility into Platform.
+SQAG owns quote-generation behavior, app-specific profiles, pricing references, generated files, app runtime state, and app dashboard/history. This runbook does not move any SQAG app data responsibility into Platform.
 
 Platform local/internal alpha can proceed only with production-grade security expectations around provider-backed login, server-side sessions, role checks, app entitlements, one-time launch tokens, and privacy-safe audit events. That local/internal posture does not approve hosted execution.
 
 No hosted internal-alpha operator should treat this document as deployment approval. Actual hosted deployment execution still requires reviewed infra/operator approval outside this PR.
 
-SAQG/KQAG production readiness is separate from this Platform repository and is not claimed by this runbook. Hosted KQAG handoff, quote workflow readiness, app runtime data, and generated-artifact behavior need their own reviewed evidence outside this Platform PR.
+SQAG production readiness is separate from this Platform repository and is not claimed by this runbook. Hosted SQAG handoff, quote workflow readiness, app runtime data, and generated-artifact behavior need their own reviewed evidence outside this Platform PR.
 
 This PR does not add a session-management UI. Security/session management remains a known future product/admin surface, while the current minimum posture and gaps are documented in `docs/auth-session-security-contract.md`.
 
 ## Deployment Plan
 
-1. Choose the reviewed host for `<hosted-platform-base-url>` and the reviewed KQAG host for `<hosted-kqag-base-url>`.
+1. Choose the reviewed host for `<hosted-platform-base-url>` and the reviewed SQAG host for `<hosted-sqag-base-url>`.
 2. Configure the reviewed Neon PostgreSQL database service outside the repo, using the non-secret target in the Neon Hosted Postgres Readiness section.
 3. Configure the OIDC client outside the repo with `<hosted-oidc-redirect-uri>`.
 4. Store secrets and runtime env outside the repo in the hosting secret manager or process manager secret store.
@@ -65,7 +67,7 @@ This section is a deployment-readiness checklist for a future Hostinger VPS plus
 Use placeholders only:
 
 - App domain placeholder: `<hosted-platform-base-url>`, with `app.swooshz.com` as the likely non-secret hostname candidate until operator approval records the final value outside this repo.
-- KQAG app placeholder: `<hosted-kqag-base-url>`.
+- SQAG app placeholder: `<hosted-sqag-base-url>`.
 - OIDC callback placeholder: `<hosted-oidc-redirect-uri>`.
 
 Coolify app/service shape:
@@ -76,18 +78,18 @@ Coolify app/service shape:
 - Start command: `npm run platform:start`.
 - Health check path: `/healthz`.
 - Do not add Coolify build hooks, deploy hooks, startup hooks, cron jobs, or sidecars that run `npm run db:migrate`, `npm run platform:seed-internal-access`, or product workflow commands.
-- Keep KQAG/SAQG runtime hosting and product workflow data outside this Platform service.
+- Keep SQAG runtime hosting and product workflow data outside this Platform service.
 
 Deploy-time env categories:
 
 | Category | Env names | Coolify handling | Notes |
 | --- | --- | --- | --- |
-| Non-secret operator choices | `NODE_ENV`, `PLATFORM_HTTP_HOST`, `PLATFORM_HTTP_PORT`, `PLATFORM_PUBLIC_BASE_URL`, `PLATFORM_ALLOWED_ORIGINS`, `PLATFORM_COOKIE_SECURE`, `DATABASE_SSL_MODE`, `PLATFORM_AUTH_PROVIDER_MODE`, `AUTH_PROVIDER_KEY`, `AUTH_ISSUER_URL`, `AUTH_AUTHORIZATION_URL`, `AUTH_TOKEN_URL`, `AUTH_JWKS_URL`, `AUTH_USERINFO_URL`, `AUTH_CLIENT_ID`, `AUTH_REDIRECT_URI`, `AUTH_ALLOWED_DOMAINS`, `PLATFORM_KQAG_LAUNCH_MODE`, `PLATFORM_KQAG_APP_BASE_URL` | Set as reviewed environment entries with placeholder values in repo notes. | Hosted runtime uses `NODE_ENV=production`, explicit origins only, HTTPS public/provider URLs, and `PLATFORM_COOKIE_SECURE=true`. Use `manual` KQAG launch mode until cross-host handoff is reviewed. |
+| Non-secret operator choices | `NODE_ENV`, `PLATFORM_HTTP_HOST`, `PLATFORM_HTTP_PORT`, `PLATFORM_PUBLIC_BASE_URL`, `PLATFORM_ALLOWED_ORIGINS`, `PLATFORM_COOKIE_SECURE`, `DATABASE_SSL_MODE`, `PLATFORM_AUTH_PROVIDER_MODE`, `AUTH_PROVIDER_KEY`, `AUTH_ISSUER_URL`, `AUTH_AUTHORIZATION_URL`, `AUTH_TOKEN_URL`, `AUTH_JWKS_URL`, `AUTH_USERINFO_URL`, `AUTH_CLIENT_ID`, `AUTH_REDIRECT_URI`, `AUTH_ALLOWED_DOMAINS`, `PLATFORM_SQAG_LAUNCH_MODE`, `PLATFORM_SQAG_APP_BASE_URL` | Set as reviewed environment entries with placeholder values in repo notes. | Hosted runtime uses `NODE_ENV=production`, explicit origins only, HTTPS public/provider URLs, and `PLATFORM_COOKIE_SECURE=true`. Use `manual` SQAG launch mode until cross-host handoff is reviewed. |
 | Secret values | `DATABASE_URL`, `SESSION_SECRET`, `CSRF_TOKEN_HASH_SECRET`, `AUTH_STATE_HASH_SECRET`, `APP_LAUNCH_TOKEN_HASH_SECRET`, `AUTH_CLIENT_SECRET` | Inject through Coolify secret/env storage only. | Do not commit, print, screenshot, paste, or expose values in build logs, app logs, tickets, shell history, or PRs. |
 | Private allowlist values | `AUTH_ALLOWED_EMAILS` | Treat as private operational data, even though it is not a credential. | Keep real staff addresses outside the repo; use placeholders in docs and tickets. |
 | Migration-only values | `DATABASE_MIGRATIONS_CONFIRM` | Do not keep on the long-running Coolify app service. Set only for the reviewed one-off manual migration command when a future migration is approved. | The migrated Neon database should already return `ready` from `npm run platform:db-readiness-check` before app start. |
 | Bootstrap-only values | `PLATFORM_SEED_CONFIRM`, `PLATFORM_SEED_USER_EMAIL`, `PLATFORM_SEED_MEMBERSHIP_ROLE` | Do not keep on the long-running Coolify app service. Set only for a reviewed one-off bootstrap after real hosted auth creates the user. | These values must not become env-controlled business/admin state or a fake login path. |
-| Product handoff placeholders | `PLATFORM_KQAG_LAUNCH_MODE`, `PLATFORM_KQAG_APP_BASE_URL` | Keep placeholder-only until KQAG hosting and cross-host session/cookie behavior are approved. | Platform stores launch checks/tokens and entitlements only; product workflow/runtime data remains outside Platform. |
+| Product handoff placeholders | `PLATFORM_SQAG_LAUNCH_MODE`, `PLATFORM_SQAG_APP_BASE_URL` | Keep placeholder-only until SQAG hosting and cross-host session/cookie behavior are approved. | Platform stores launch checks/tokens and entitlements only; product workflow/runtime data remains outside Platform. |
 
 Coolify readiness sequence:
 
@@ -101,7 +103,7 @@ Coolify readiness sequence:
 Reverse proxy and TLS expectations:
 
 - Hostinger/Coolify must terminate TLS for the reviewed hosted Platform origin before browser testing.
-- `PLATFORM_PUBLIC_BASE_URL`, `PLATFORM_ALLOWED_ORIGINS`, provider URLs, hosted redirect URI, and KQAG handoff URL when used must be HTTPS in production.
+- `PLATFORM_PUBLIC_BASE_URL`, `PLATFORM_ALLOWED_ORIGINS`, provider URLs, hosted redirect URI, and SQAG handoff URL when used must be HTTPS in production.
 - Allowed origins must be explicit origins, not wildcard values and not URLs with path, query, or fragment.
 - Session cookies must be secure in production through `PLATFORM_COOKIE_SECURE=true`.
 - Database, provider, Coolify admin, VPS admin, and backup interfaces must not be exposed as public Platform routes.
@@ -113,14 +115,14 @@ Hosted smoke checklist after deployment:
 3. Confirm `npm run platform:db-readiness-check` still reports sanitized status `ready` from an operator shell when live DB recheck is intentionally run.
 4. Confirm auth start/callback shape only after hosted OAuth is configured outside this PR.
 5. Confirm `/app`, `/app/admin`, session logout, admin denial, entitlement denial, and audit/activity checks follow the Smoke Checklist below.
-6. Keep KQAG in `manual` mode unless hosted handoff and cross-host cookie/session behavior are approved and smoke tested.
+6. Keep SQAG in `manual` mode unless hosted handoff and cross-host cookie/session behavior are approved and smoke tested.
 
 Rollback and fix-forward notes:
 
 - Prefer redeploying the previous reviewed app build for application rollback.
 - Prefer fix-forward for reviewed additive database migrations when practical.
 - Use database restore only after backup/restore owner approval and restore-target evidence are available outside this repo.
-- If KQAG handoff fails, switch back to `PLATFORM_KQAG_LAUNCH_MODE=manual` and keep Platform access checks available without exposing launch tokens.
+- If SQAG handoff fails, switch back to `PLATFORM_SQAG_LAUNCH_MODE=manual` and keep Platform access checks available without exposing launch tokens.
 - Do not troubleshoot by pasting secrets, database hostnames with credentials, cookies, OAuth callback query values, provider console screenshots, backup exports, or table data into tickets or PRs.
 
 ## TLS And Reverse Proxy Notes
@@ -136,8 +138,8 @@ Operator checks:
 - OIDC issuer, authorization, token, JWKS, optional userinfo, and redirect URLs use HTTPS.
 - `AUTH_REDIRECT_URI` ends with `/api/platform/auth/callback` and has no query parameters or fragments.
 - The proxy preserves the original host/protocol values required by the reviewed hosting setup.
-- No wildcard CORS rule is added for KQAG.
-- KQAG handoff stays explicit through `PLATFORM_KQAG_LAUNCH_MODE` and `PLATFORM_KQAG_APP_BASE_URL`.
+- No wildcard CORS rule is added for SQAG.
+- SQAG handoff stays explicit through `PLATFORM_SQAG_LAUNCH_MODE` and `PLATFORM_SQAG_APP_BASE_URL`.
 
 ## Neon Hosted Postgres Readiness
 
@@ -162,7 +164,7 @@ The readiness path is split deliberately:
 - `schema_not_ready` means the database is reachable but required platform tables or migration metadata are missing or behind the committed migration journal.
 - `ready` means the configured database is reachable and the required platform schema/migration state matches the committed code.
 
-Passing both readiness commands is still not hosted deployment approval. Operators must still approve backups, restore test, migration window, rollback owner, secrets, logs, OIDC, KQAG handoff, and go/no-go outside this repo.
+Passing both readiness commands is still not hosted deployment approval. Operators must still approve backups, restore test, migration window, rollback owner, secrets, logs, OIDC, SQAG handoff, and go/no-go outside this repo.
 
 ## Sanitized Neon Migration Evidence
 
@@ -172,9 +174,9 @@ Operator-provided sanitized evidence for the reviewed Neon target records the cu
 - Migration command: guarded manual migration through `npm run db:migrate` with `DATABASE_MIGRATIONS_CONFIRM=apply-reviewed-migrations`.
 - Post-migration DB readiness: `ready`.
 
-This evidence records only readiness categories and the guarded command path. It does not include database URLs, hostnames, usernames with passwords, table data, provider console values, backup exports, screenshots, OAuth values, cookies, tokens, or private KQAG data.
+This evidence records only readiness categories and the guarded command path. It does not include database URLs, hostnames, usernames with passwords, table data, provider console values, backup exports, screenshots, OAuth values, cookies, tokens, or private SQAG data.
 
-This evidence does not approve hosted deployment or full production readiness. Hosted execution still requires the remaining operator decisions, backup/restore evidence, OIDC configuration, hosted smoke evidence, KQAG handoff/session review, log/incident review, first owner/admin approval, and final go/no-go outside the repo.
+This evidence does not approve hosted deployment or full production readiness. Hosted execution still requires the remaining operator decisions, backup/restore evidence, OIDC configuration, hosted smoke evidence, SQAG handoff/session review, log/incident review, first owner/admin approval, and final go/no-go outside the repo.
 
 ## Migration Procedure
 
@@ -194,7 +196,7 @@ npm run db:migrate
 
 9. Remove the migration guard from the operator shell after the manual command if it is not needed for the next command.
 10. Run `npm run platform:db-readiness-check` again. It must report `ready` before server start.
-11. Run `/healthz`, auth, `/app`, `/app/admin`, KQAG entitlement, and audit/activity smoke checks after startup.
+11. Run `/healthz`, auth, `/app`, `/app/admin`, SQAG entitlement, and audit/activity smoke checks after startup.
 
 Do not add startup hooks, package install hooks, deployment hooks, or background jobs that run migrations automatically.
 
@@ -208,7 +210,7 @@ Before the first hosted internal-alpha migration or seed operation:
 4. Confirm who can request backup access and who can approve restore.
 5. Confirm backup retention and deletion policy outside the repo.
 
-Do not paste database URLs, connection credentials, table dumps, private staff data, provider identity material, or KQAG private app data into this repo or shared tickets.
+Do not paste database URLs, connection credentials, table dumps, private staff data, provider identity material, or SQAG private app data into this repo or shared tickets.
 
 ## Rollback Procedure
 
@@ -219,7 +221,7 @@ Application rollback:
 1. Stop new traffic at the hosting layer if needed.
 2. Revert the process manager or container image to the last reviewed build.
 3. Restart through the same reviewed command path.
-4. Run `/healthz`, login, `/app`, `/app/admin`, KQAG entitlement, and audit/activity smoke checks.
+4. Run `/healthz`, login, `/app`, `/app/admin`, SQAG entitlement, and audit/activity smoke checks.
 
 Database rollback:
 
@@ -227,35 +229,35 @@ Database rollback:
 2. If restore is required, stop the platform process, restore from the approved backup, and rerun smoke checks before reopening access.
 3. Do not run ad hoc destructive SQL from this repo.
 
-KQAG handoff rollback:
+SQAG handoff rollback:
 
-1. Set `PLATFORM_KQAG_LAUNCH_MODE=manual` to stop browser handoff while keeping Platform access checks available.
+1. Set `PLATFORM_SQAG_LAUNCH_MODE=manual` to stop browser handoff while keeping Platform access checks available.
 2. Confirm `/app` reports a safe launch failure rather than exposing tokens.
-3. Re-enable `server_handoff` only after the KQAG hosted base URL and cross-host session strategy are reviewed. The readiness checker validates the KQAG base URL shape only; cross-host session and cookie behavior remains an operator review and smoke-test item.
+3. Re-enable `server_handoff` only after the SQAG hosted base URL and cross-host session strategy are reviewed. The readiness checker validates the SQAG base URL shape only; cross-host session and cookie behavior remains an operator review and smoke-test item.
 
 ## Health Check Procedure
 
-Use `GET /healthz` against `<hosted-platform-base-url>`. A healthy response means the HTTP adapter is reachable; it does not prove OIDC, database migrations, session cookies, admin authorization, KQAG handoff, or audit integrity by itself.
+Use `GET /healthz` against `<hosted-platform-base-url>`. A healthy response means the HTTP adapter is reachable; it does not prove OIDC, database migrations, session cookies, admin authorization, SQAG handoff, or audit integrity by itself.
 
 Minimum checks:
 
 - `GET /healthz` returns a successful HTTP response.
-- The response does not include secrets, database URLs, cookies, provider material, or KQAG private data.
+- The response does not include secrets, database URLs, cookies, provider material, or SQAG private data.
 - Health checks are rate-limited or scoped by the hosting layer if exposed beyond the internal operator network.
 
 ## Log Review Procedure
 
-Review logs after migration, startup, login, admin mutations, KQAG handoff, and logout.
+Review logs after migration, startup, login, admin mutations, SQAG handoff, and logout.
 
 Expected log shape:
 
 - Startup summary may include host, port, environment, and auth mode.
 - Auth diagnostics should be category-only.
 - Admin actions should be visible through audit/activity, not by logging private request details.
-- KQAG handoff should not log raw app launch tokens, token hashes, cookies, or browser storage values.
+- SQAG handoff should not log raw app launch tokens, token hashes, cookies, or browser storage values.
 - Database and provider failures should use safe categories, not raw connection or provider details.
 
-Stop and redact the log collection process if a log includes secret values, database connection values, cookies, OAuth values, unredacted provider identity material, real staff addresses, or KQAG private app data.
+Stop and redact the log collection process if a log includes secret values, database connection values, cookies, OAuth values, unredacted provider identity material, real staff addresses, or SQAG private app data.
 
 ## Secrets And Env Checklist
 
@@ -286,11 +288,11 @@ Stop and redact the log collection process if a log includes secret values, data
 | `AUTH_REDIRECT_URI` | Hosted callback URI configured with the provider. | Required | `<hosted-oidc-redirect-uri>` | No | Hosted readiness requires HTTPS, no query parameters or fragments, and a path ending in `/api/platform/auth/callback`. |
 | `AUTH_ALLOWED_EMAILS` | Bootstrap/emergency exact allowlist for internal-alpha users. | Required | `<comma-separated-allowlisted-emails>` | No | Required for first owner/admin and emergency guard. Day-to-day teammate onboarding can use pending workspace approvals; malformed values fail auth config. Treat as private. |
 | `AUTH_ALLOWED_DOMAINS` | Optional reviewed domain allowlist. | Optional | `<comma-separated-allowed-domains-if-approved>` | No | Leave unset unless broad domain allow is reviewed; malformed values fail auth config. |
-| `PLATFORM_KQAG_LAUNCH_MODE` | Controls KQAG browser handoff behavior. | Required | `manual` or `server_handoff` | No | Unsupported value fails startup/readiness. Use `manual` until hosted handoff is reviewed. |
-| `PLATFORM_KQAG_APP_BASE_URL` | KQAG hosted base URL for browser handoff. | Required when server_handoff | `<hosted-kqag-base-url>` | No | Omit when launch mode is `manual`; when `server_handoff`, hosted readiness requires HTTPS and no query parameters or fragments. |
+| `PLATFORM_SQAG_LAUNCH_MODE` | Controls SQAG browser handoff behavior. | Required | `manual` or `server_handoff` | No | Unsupported value fails startup/readiness. Use `manual` until hosted handoff is reviewed. |
+| `PLATFORM_SQAG_APP_BASE_URL` | SQAG hosted base URL for browser handoff. | Required when server_handoff | `<hosted-sqag-base-url>` | No | Omit when launch mode is `manual`; when `server_handoff`, hosted readiness requires HTTPS and no query parameters or fragments. |
 | `PLATFORM_SEED_CONFIRM` | Explicit first owner/admin bootstrap confirmation. | Required for bootstrap only | `seed-reviewed-internal-access` | No | Required only for `npm run platform:seed-internal-access`; unexpected value fails seed config. |
 | `PLATFORM_SEED_USER_EMAIL` | Already-authenticated owner/admin user for bootstrap. | Required for bootstrap only | `<hosted-owner-admin-email-after-login>` | No | Required only for seed; treat as private and do not commit real values. |
-| `PLATFORM_SEED_MEMBERSHIP_ROLE` | Bootstrap role for the existing user. | Optional | `owner` | No | When set, must be `owner`, `admin`, or `member`; `viewer` is rejected for KQAG launch. |
+| `PLATFORM_SEED_MEMBERSHIP_ROLE` | Bootstrap role for the existing user. | Optional | `owner` | No | When set, must be `owner`, `admin`, or `member`; `viewer` is rejected for SQAG launch. |
 
 ## Readiness Check
 
@@ -300,7 +302,7 @@ Run the dry-run checker after env injection and before manual migrations or serv
 npm run platform:readiness-check
 ```
 
-The checker reports only env names, categories, missing/invalid status, and safe guidance. It enforces hosted-only production mode, HTTPS browser/provider-facing URLs, origin-only `PLATFORM_ALLOWED_ORIGINS`, callback URL shape, KQAG handoff base URL shape, and valid Postgres-shaped `DATABASE_URL`. It does not print values, connect to PostgreSQL, run migrations, start the server, call OIDC, call KQAG, read provider endpoints, or seed access.
+The checker reports only env names, categories, missing/invalid status, and safe guidance. It enforces hosted-only production mode, HTTPS browser/provider-facing URLs, origin-only `PLATFORM_ALLOWED_ORIGINS`, callback URL shape, SQAG handoff base URL shape, and valid Postgres-shaped `DATABASE_URL`. It does not print values, connect to PostgreSQL, run migrations, start the server, call OIDC, call SQAG, read provider endpoints, or seed access.
 
 Passing readiness does not approve deployment. It only confirms the current shell has the required categories and safe URL shapes present for hosted internal-alpha review.
 
@@ -324,7 +326,7 @@ Use this sequence after hosted auth and migrations are reviewed:
 6. Set `PLATFORM_SEED_USER_EMAIL=<hosted-owner-admin-email-after-login>` outside the repo.
 7. Set `PLATFORM_SEED_MEMBERSHIP_ROLE=owner` for the first bootstrap unless a separate reviewed owner assignment exists.
 8. Run `npm run platform:seed-internal-access`.
-9. Confirm `/app` shows the workspace and KQAG app access.
+9. Confirm `/app` shows the workspace and SQAG app access.
 10. Confirm `/app/admin` is reachable only for the owner/admin.
 
 ## Pending Workspace Approval Sequence
@@ -346,15 +348,15 @@ Use this before a teammate signs in through hosted Platform:
 
 Existing active provider-backed users are still added immediately by the same add route. Pending approvals do not reactivate disabled memberships; owners/admins must use the explicit Reactivate action for disabled non-owner memberships.
 
-## KQAG Entitlement Check
+## SQAG Entitlement Check
 
 1. Owner/admin opens `/app/admin`.
-2. Confirm the KQAG entitlement row is present.
-3. Disable the KQAG entitlement in a reviewed smoke workspace.
-4. Confirm KQAG launch fails closed and does not create a browser-visible raw token.
+2. Confirm the SQAG entitlement row is present.
+3. Disable the SQAG entitlement in a reviewed smoke workspace.
+4. Confirm SQAG launch fails closed and does not create a browser-visible raw token.
 5. Re-enable the entitlement.
 6. Confirm owner/admin/member launch eligibility is restored.
-7. Confirm viewer launch remains denied while KQAG has no read-only mode.
+7. Confirm viewer launch remains denied while SQAG has no read-only mode.
 
 ## Audit/Activity Verification
 
@@ -365,9 +367,9 @@ Confirm `/app/admin` Activity shows recent admin events for:
 - role change.
 - membership disable.
 - membership reactivation.
-- KQAG entitlement enable/disable.
+- SQAG entitlement enable/disable.
 
-Audit/activity verification should show event type, target type/id, actor user id, timestamp, and allowlisted status/category metadata only. It must not display raw provider material, cookies, DB connection values, app launch tokens, or KQAG private app data.
+Audit/activity verification should show event type, target type/id, actor user id, timestamp, and allowlisted status/category metadata only. It must not display raw provider material, cookies, DB connection values, app launch tokens, or SQAG private app data.
 
 ## Smoke Checklist
 
@@ -382,11 +384,11 @@ Run this checklist after hosted startup and before broader internal-alpha use:
 7. Visit `/app/admin` as owner/admin and confirm the admin surface loads.
 8. Create pending workspace approval before teammate sign-in, then complete real OIDC sign-in and confirm activation.
 9. Change a non-owner member role and confirm last-owner/self-demotion guardrails still fail closed.
-10. Run membership disable on a non-owner membership and confirm the disabled user cannot launch KQAG.
+10. Run membership disable on a non-owner membership and confirm the disabled user cannot launch SQAG.
 11. Run membership reactivation on the disabled non-owner membership and confirm access is restored only according to role, entitlement, and app-status gates.
-12. Run KQAG entitlement enable/disable and confirm app access updates.
+12. Run SQAG entitlement enable/disable and confirm app access updates.
 13. Confirm audit/activity shows admin events for add-user, role-change, membership-disable, membership-reactivation, and entitlement-change actions.
-14. Launch KQAG through the browser-safe path and confirm no raw token in browser URL, storage, or logs.
+14. Launch SQAG through the browser-safe path and confirm no raw token in browser URL, storage, or logs.
 15. Logout through the platform route and confirm the browser session is cleared.
 16. Confirm denied member/viewer admin access for `/app/admin` and admin APIs.
 17. Confirm missing, expired, or disabled session fail closed behavior for `/app`, `/app/admin`, launch, and logout.
@@ -400,8 +402,8 @@ Do not paste:
 - database URLs, usernames, passwords, hostnames, backup dumps, or restore output.
 - OAuth values, authorization responses, callback URLs with query parameters, token responses, or provider identity material.
 - browser cookies, session ids, CSRF values, app launch tokens, token hashes, or storage contents.
-- raw request/response headers from auth, admin mutation, or KQAG handoff routes.
-- KQAG private app data or generated business outputs.
+- raw request/response headers from auth, admin mutation, or SQAG handoff routes.
+- SQAG private app data or generated business outputs.
 
 Use safe categories instead: auth failure category, route name, HTTP status class, event type, target type/id, actor user id, timestamp, and readiness category.
 
@@ -414,7 +416,7 @@ Before actual hosted internal-alpha execution, operators still need reviewed dec
 - Neon PostgreSQL provider target, backup cadence, restore test, and retention.
 - TLS/reverse proxy configuration.
 - OIDC client registration outside the repo.
-- hosted KQAG handoff and cross-host session/cookie strategy.
+- hosted SQAG handoff and cross-host session/cookie strategy.
 - log retention and incident review process.
 - first owner/admin identity outside repo notes.
 - any infrastructure change approval required by the operator team.

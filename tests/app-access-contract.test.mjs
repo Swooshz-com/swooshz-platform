@@ -12,7 +12,7 @@ test("app access contract documents role and product access matrix", async () =>
   assert.match(contract, /\| `admin` \| Yes, for active memberships\. \| Yes/i);
   assert.match(contract, /\| `member` \| Yes, for active memberships\. \| No\. \| Allowed/i);
   assert.match(contract, /\| `viewer` \| Yes, for active memberships\. \| No\. \| Blocked unless a future app-specific read-only launch policy/i);
-  assert.match(contract, /KQAG has no read-only launch mode/i);
+  assert.match(contract, /SQAG has no read-only launch mode/i);
   assert.match(contract, /Future apps inherit the same blocked viewer launch default/i);
 });
 
@@ -25,11 +25,11 @@ test("app access contract documents fail-closed app and entitlement states", asy
   assert.match(contract, /missing, `disabled`, and `suspended` entitlements fail closed/i);
 });
 
-test("app access contract documents generic Platform services and KQAG route boundary", async () => {
+test("app access contract documents generic Platform services and SQAG route boundary", async () => {
   const contract = await readContract();
 
   assert.match(contract, /service-level entitlement mutation contract is generic by `appKey`/i);
-  assert.match(contract, /current browser\/admin HTTP route and UI control remain deliberately KQAG-scoped/i);
+  assert.match(contract, /current browser\/admin HTTP route and UI control remain deliberately SQAG-scoped/i);
   assert.match(contract, /short-lived app launch token/i);
   assert.match(contract, /header-only consume route/i);
   assert.match(contract, /does not move app-owned runtime data into Platform/i);
@@ -43,7 +43,7 @@ test("app access contract non-goals match the current implemented platform surfa
   assert.match(contract, /No polished product launcher or dashboard redesign in this contract/i);
   assert.match(contract, /No fake login, hidden fallback auth, password auth, or 2FA in this contract/i);
   assert.match(contract, /No hosted deployment execution or hosted approval from this contract/i);
-  assert.match(contract, /No KQAG code changes or KQAG-owned runtime data movement in this contract/i);
+  assert.match(contract, /No SQAG code changes or SQAG-owned runtime data movement in this contract/i);
 });
 
 test("app access contract avoids private material and localhost examples", async () => {

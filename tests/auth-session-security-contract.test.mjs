@@ -154,13 +154,13 @@ test("auth/session security contract aligns runbooks and roadmap", async () => {
   assert.match(hostedRunbook, /This PR does not approve hosted deployment/i);
 });
 
-test("auth/session security contract confirms Platform and KQAG boundaries", async () => {
+test("auth/session security contract confirms Platform and SQAG boundaries", async () => {
   const contract = await readContract();
 
   assert.match(contract, /Platform owns auth, users, sessions, workspaces, roles, memberships, app entitlements, app launch checks, and audit events/i);
-  assert.match(contract, /Platform does not own KQAG quote data/i);
-  assert.match(contract, /KQAG owns quote generation, profiles, pricing references, quote sessions, generated artifacts, and quote dashboard\/history/i);
-  assert.match(contract, /No KQAG app-data editing, KQAG profiles\/pricing, quote history, generated artifacts, or quote sessions move into Platform/i);
+  assert.match(contract, /Platform does not own SQAG quote data/i);
+  assert.match(contract, /SQAG owns quote generation, profiles, pricing references, quote sessions, generated artifacts, and quote dashboard\/history/i);
+  assert.match(contract, /No SQAG app-data editing, SQAG profiles\/pricing, quote history, generated artifacts, or quote sessions move into Platform/i);
 });
 
 test("auth/session security contract avoids private material and real hosted values", async () => {

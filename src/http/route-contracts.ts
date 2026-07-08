@@ -17,10 +17,10 @@ export type HttpRouteId =
   | "platform_workspace_member_reactivate"
   | "platform_workspace_member_remove"
   | "platform_workspace_app_entitlements"
-  | "platform_workspace_kqag_entitlement_status"
+  | "platform_workspace_sqag_entitlement_status"
   | "platform_workspace_audit_events"
   | "platform_app_launch"
-  | "platform_kqag_launch_open"
+  | "platform_sqag_launch_open"
   | "platform_app_launch_consume"
   | "platform_logout";
 
@@ -324,16 +324,16 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     implemented: true,
   },
   {
-    id: "platform_workspace_kqag_entitlement_status",
+    id: "platform_workspace_sqag_entitlement_status",
     method: "POST",
-    path: "/api/platform/workspaces/:workspaceId/app-entitlements/kqag/status",
+    path: "/api/platform/workspaces/:workspaceId/app-entitlements/sqag/status",
     browserSession: "required",
     csrf: {
       required: true,
       strategy: "origin_referer_and_csrf_token",
     },
     requiredQuery: ["status"],
-    handlerContract: "handleWorkspaceKqagEntitlementStatusRequest",
+    handlerContract: "handleWorkspaceSqagEntitlementStatusRequest",
     responseKind: "json",
     idempotent: false,
     implemented: true,
@@ -369,7 +369,7 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     implemented: true,
   },
   {
-    id: "platform_kqag_launch_open",
+    id: "platform_sqag_launch_open",
     method: "POST",
     path: "/api/platform/apps/launch/open",
     browserSession: "required",
@@ -378,7 +378,7 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
       strategy: "origin_referer_and_csrf_token",
     },
     requiredQuery: ["workspaceId", "appKey"],
-    handlerContract: "handleKqagBrowserLaunchRequest",
+    handlerContract: "handleSqagBrowserLaunchRequest",
     responseKind: "json",
     idempotent: false,
     implemented: true,

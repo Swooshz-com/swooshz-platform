@@ -106,20 +106,20 @@ test("owner and admin can list recent workspace audit events safely", async () =
             oauthState: "raw-oauth-state",
             oauthNonce: "raw-oauth-nonce",
             databaseUrl: "postgresql://private-host",
-            quoteSession: "private-kqag-quote-session",
-            pricingReference: "private-kqag-pricing-reference",
-            generatedArtifact: "private-kqag-generated-artifact",
+            quoteSession: "private-sqag-quote-session",
+            pricingReference: "private-sqag-pricing-reference",
+            generatedArtifact: "private-sqag-generated-artifact",
           },
         }),
         auditEvent({
           id: "audit_new",
           eventType: "workspace.app_entitlement.disabled",
           targetType: "app_entitlement",
-          targetId: "entitlement_koncept_kqag",
+          targetId: "entitlement_koncept_sqag",
           createdAt: now,
           metadata: {
-            appId: "app_kqag",
-            appKey: "kqag",
+            appId: "app_sqag",
+            appKey: "sqag",
             previousStatus: "enabled",
             newStatus: "disabled",
             cookie: "raw-session-token",
@@ -158,12 +158,12 @@ test("owner and admin can list recent workspace audit events safely", async () =
           actorEmail: "owner@example.test",
           eventType: "workspace.app_entitlement.disabled",
           targetType: "app_entitlement",
-          targetId: "entitlement_koncept_kqag",
-          targetLabel: "KQAG access",
+          targetId: "entitlement_koncept_sqag",
+          targetLabel: "SQAG access",
           createdAt: now,
           metadata: {
-            appId: "app_kqag",
-            appKey: "kqag",
+            appId: "app_sqag",
+            appKey: "sqag",
             previousStatus: "enabled",
             newStatus: "disabled",
           },
@@ -693,7 +693,7 @@ test("pending approvals do not grant app launch before provider-backed activatio
   const accessDecision = await decidePlatformAppAccess(repositories, {
     sessionId: "session_pending_example",
     selectedWorkspaceId: "workspace_koncept_images",
-    appKey: "kqag",
+    appKey: "sqag",
     now,
   });
 
@@ -725,7 +725,7 @@ test("member and viewer cannot manage workspace members or app access", async ()
       () =>
         setWorkspaceAppEntitlementStatus(repositories, {
           ...input,
-          appKey: "kqag",
+          appKey: "sqag",
           status: "disabled",
           auditEventId: "audit_app_denied",
         }),
@@ -1170,7 +1170,7 @@ test("self-demotion and self-removal are guarded", async () => {
   assert.equal(records.auditEvents.length, 0);
 });
 
-test("owner and admin can disable membership and disabled user cannot launch SAQG", async () => {
+test("owner and admin can disable membership and disabled user cannot launch SQAG", async () => {
   const { repositories, input, records } = adminFixture({ role: "owner" });
 
   const result = await disableWorkspaceMembership(repositories, {
@@ -1204,7 +1204,7 @@ test("owner and admin can disable membership and disabled user cannot launch SAQ
   const accessDecision = await decidePlatformAppAccess(repositories, {
     sessionId: "session_member_example",
     selectedWorkspaceId: "workspace_koncept_images",
-    appKey: "kqag",
+    appKey: "sqag",
     now,
   });
   assert.equal(accessDecision.result, AccessDecisionResult.MembershipRequired);
@@ -1223,7 +1223,7 @@ test("owner and admin can reactivate disabled non-owner membership", async () =>
     const deniedWhileDisabled = await decidePlatformAppAccess(repositories, {
       sessionId: "session_member_example",
       selectedWorkspaceId: "workspace_koncept_images",
-      appKey: "kqag",
+      appKey: "sqag",
       now,
     });
     assert.equal(deniedWhileDisabled.result, AccessDecisionResult.MembershipRequired);
@@ -1260,7 +1260,7 @@ test("owner and admin can reactivate disabled non-owner membership", async () =>
     const allowedAfterReactivation = await decidePlatformAppAccess(repositories, {
       sessionId: "session_member_example",
       selectedWorkspaceId: "workspace_koncept_images",
-      appKey: "kqag",
+      appKey: "sqag",
       now,
     });
   assert.equal(allowedAfterReactivation.result, AccessDecisionResult.Allowed);
@@ -1352,7 +1352,7 @@ test("owner and admin can remove active or disabled non-owner membership without
       const accessDecision = await decidePlatformAppAccess(repositories, {
         sessionId: "session_member_example",
         selectedWorkspaceId: "workspace_koncept_images",
-        appKey: "kqag",
+        appKey: "sqag",
         now,
       });
       assert.equal(accessDecision.result, AccessDecisionResult.NotAuthenticated);
@@ -1592,16 +1592,16 @@ test("membership reactivation rejects unsafe targets without mutation", async ()
   }
 });
 
-test("owner and admin can list and enable or disable KQAG app entitlement", async () => {
+test("owner and admin can list and enable or disable SQAG app entitlement", async () => {
   const { repositories, input, records } = adminFixture({ role: "admin" });
 
   const before = await listWorkspaceAppEntitlementsForAdmin(repositories, input);
   assert.deepEqual(before.entitlements, [
     {
-      entitlementId: "entitlement_koncept_kqag",
-      appId: "app_kqag",
-      appKey: "kqag",
-      appName: "KQAG / SAQG",
+      entitlementId: "entitlement_koncept_sqag",
+      appId: "app_sqag",
+      appKey: "sqag",
+      appName: "SQAG",
       appStatus: "private_preview",
       status: "enabled",
       grantedByUserId: "user_owner_example",
@@ -1611,22 +1611,22 @@ test("owner and admin can list and enable or disable KQAG app entitlement", asyn
 
   const disabled = await setWorkspaceAppEntitlementStatus(repositories, {
     ...input,
-    appKey: "kqag",
+    appKey: "sqag",
     status: "disabled",
-    auditEventId: "audit_kqag_disabled",
+    auditEventId: "audit_sqag_disabled",
   });
   assert.equal(disabled.status, "disabled");
   assert.deepEqual(records.auditEvents.at(-1), {
-    id: "audit_kqag_disabled",
+    id: "audit_sqag_disabled",
     workspaceId: "workspace_koncept_images",
     actorUserId: "user_admin_example",
     eventType: "workspace.app_entitlement.disabled",
     targetType: "app_entitlement",
-    targetId: "entitlement_koncept_kqag",
+    targetId: "entitlement_koncept_sqag",
     createdAt: now,
     metadata: {
-      appId: "app_kqag",
-      appKey: "kqag",
+      appId: "app_sqag",
+      appKey: "sqag",
       previousStatus: "enabled",
       newStatus: "disabled",
     },
@@ -1635,9 +1635,9 @@ test("owner and admin can list and enable or disable KQAG app entitlement", asyn
 
   const enabled = await setWorkspaceAppEntitlementStatus(repositories, {
     ...input,
-    appKey: "kqag",
+    appKey: "sqag",
     status: "enabled",
-    auditEventId: "audit_kqag_enabled",
+    auditEventId: "audit_sqag_enabled",
   });
   assert.equal(enabled.status, "enabled");
   assert.equal(enabled.grantedByUserId, "user_admin_example");
@@ -1702,22 +1702,22 @@ test("owner and admin can manage future app entitlements through the generic ser
   }
 });
 
-test("owner can create a missing KQAG entitlement but cannot cross workspace boundaries", async () => {
+test("owner can create a missing SQAG entitlement but cannot cross workspace boundaries", async () => {
   const { repositories, input, records } = adminFixture({
     appEntitlements: [],
   });
 
   const created = await setWorkspaceAppEntitlementStatus(repositories, {
     ...input,
-    appKey: "kqag",
+    appKey: "sqag",
     status: "enabled",
-    entitlementId: "entitlement_new_kqag",
-    auditEventId: "audit_kqag_created",
+    entitlementId: "entitlement_new_sqag",
+    auditEventId: "audit_sqag_created",
   });
 
-  assert.equal(created.id, "entitlement_new_kqag");
+  assert.equal(created.id, "entitlement_new_sqag");
   assert.equal(created.workspaceId, "workspace_koncept_images");
-  assert.equal(created.appId, "app_kqag");
+  assert.equal(created.appId, "app_sqag");
   assert.equal(created.status, "enabled");
   assert.equal(records.appEntitlements.length, 1);
 
@@ -1742,7 +1742,7 @@ test("workspace admin service errors and source stay privacy-safe and boundary-c
   );
 
   const contents = await readFile("src/platform/workspace-admin-service.ts", "utf8");
-  assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?|kqag)/i);
+  assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?|sqag)/i);
   assert.doesNotMatch(contents, /from\s+["'][^"']*(?:react|next|vite|express|fastify|hono|node:http)/i);
   assert.doesNotMatch(contents, /from\s+["'][^"']*(?:clerk|auth0|supabase)/i);
   assert.doesNotMatch(contents, /src\/db|\.{1,2}\/db|\.{1,2}\/\.{1,2}\/db/i);
@@ -1766,7 +1766,7 @@ test("admin mutations require audit repository before changing state", async () 
     () =>
       setWorkspaceAppEntitlementStatus(repositories, {
         ...input,
-        appKey: "kqag",
+        appKey: "sqag",
         status: "disabled",
         auditEventId: "audit_missing_repo_app",
       }),
@@ -1863,16 +1863,16 @@ test("membership reactivation rolls back when audit append fails", async () => {
   assert.equal(records.auditEvents.length, 0);
 });
 
-test("KQAG entitlement disable rolls back when audit append fails", async () => {
+test("SQAG entitlement disable rolls back when audit append fails", async () => {
   const { repositories, input, records } = adminFixture({ failAuditAppend: true });
 
   await assert.rejects(
     () =>
       setWorkspaceAppEntitlementStatus(repositories, {
         ...input,
-        appKey: "kqag",
+        appKey: "sqag",
         status: "disabled",
-        auditEventId: "audit_kqag_disable_append_failure",
+        auditEventId: "audit_sqag_disable_append_failure",
       }),
     assertAdminError("repository_failure"),
   );
@@ -1881,7 +1881,7 @@ test("KQAG entitlement disable rolls back when audit append fails", async () => 
   assert.equal(records.auditEvents.length, 0);
 });
 
-test("missing KQAG entitlement creation rolls back when audit append fails", async () => {
+test("missing SQAG entitlement creation rolls back when audit append fails", async () => {
   const { repositories, input, records } = adminFixture({
     appEntitlements: [],
     failAuditAppend: true,
@@ -1891,10 +1891,10 @@ test("missing KQAG entitlement creation rolls back when audit append fails", asy
     () =>
       setWorkspaceAppEntitlementStatus(repositories, {
         ...input,
-        appKey: "kqag",
+        appKey: "sqag",
         status: "enabled",
-        entitlementId: "entitlement_new_kqag",
-        auditEventId: "audit_kqag_create_append_failure",
+        entitlementId: "entitlement_new_sqag",
+        auditEventId: "audit_sqag_create_append_failure",
       }),
     assertAdminError("repository_failure"),
   );
@@ -2047,9 +2047,9 @@ function adminFixture(overrides = {}) {
     updatedAt: now,
   };
   const app = {
-    id: "app_kqag",
-    key: "kqag",
-    name: "KQAG / SAQG",
+    id: "app_sqag",
+    key: "sqag",
+    name: "SQAG",
     status: "private_preview",
     launchUrl: null,
     createdAt: now,
@@ -2078,7 +2078,7 @@ function adminFixture(overrides = {}) {
   };
   const memberships = overrides.memberships ?? baseMemberships(overrides.actorMembership);
   const entitlement = {
-    id: "entitlement_koncept_kqag",
+    id: "entitlement_koncept_sqag",
     workspaceId: workspace.id,
     appId: app.id,
     status: "enabled",

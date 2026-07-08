@@ -302,7 +302,7 @@ test("bootstrap-created server can serve POST /api/platform/apps/launch with fak
   });
   const response = await fixture.lastServer.handle({
     method: "POST",
-    url: "/api/platform/apps/launch?workspaceId=workspace_koncept_images&appKey=kqag",
+    url: "/api/platform/apps/launch?workspaceId=workspace_koncept_images&appKey=sqag",
     headers: {
       origin: "https://platform.example.test",
       cookie: "swooshz_session=session_owner_example",
@@ -313,7 +313,7 @@ test("bootstrap-created server can serve POST /api/platform/apps/launch with fak
 
   assert.equal(response.statusCode, 201);
   assert.equal(body.outcome, "launch_intent_created");
-  assert.equal(body.appKey, "kqag");
+  assert.equal(body.appKey, "sqag");
   assert.equal(body.workspaceId, "workspace_koncept_images");
   assert.equal(body.launchUrl, null);
   assert.match(body.launchToken, /^[A-Za-z0-9_-]+$/);
@@ -343,7 +343,7 @@ test("bootstrap-created server can serve POST /api/platform/apps/launch/consume 
   });
   const launchResponse = await fixture.lastServer.handle({
     method: "POST",
-    url: "/api/platform/apps/launch?workspaceId=workspace_koncept_images&appKey=kqag",
+    url: "/api/platform/apps/launch?workspaceId=workspace_koncept_images&appKey=sqag",
     headers: {
       origin: "https://platform.example.test",
       cookie: "swooshz_session=session_owner_example",
@@ -354,7 +354,7 @@ test("bootstrap-created server can serve POST /api/platform/apps/launch/consume 
 
   const consumeResponse = await fixture.lastServer.handle({
     method: "POST",
-    url: "/api/platform/apps/launch/consume?appKey=kqag",
+    url: "/api/platform/apps/launch/consume?appKey=sqag",
     headers: {
       "x-app-launch-token": launchBody.launchToken,
     },
@@ -365,7 +365,7 @@ test("bootstrap-created server can serve POST /api/platform/apps/launch/consume 
   assert.equal(consumeBody.outcome, "consumed");
   assert.equal(consumeBody.user.userId, "user_owner_example");
   assert.equal(consumeBody.workspace.workspaceId, "workspace_koncept_images");
-  assert.equal(consumeBody.app.appKey, "kqag");
+  assert.equal(consumeBody.app.appKey, "sqag");
   assert.equal(consumeBody.membershipRole, "owner");
   assert.equal(fixture.records.appLaunchTokens[0].consumedAt.toISOString(), now);
   assert.doesNotMatch(JSON.stringify(consumeResponse), new RegExp(launchBody.launchToken));
@@ -666,7 +666,7 @@ test("bootstrap generic OIDC mode fails nonce mismatch and bad signature safely"
   }
 });
 
-test("bootstrap module does not import migrations frontend KQAG provider SDK or framework packages", async () => {
+test("bootstrap module does not import migrations frontend SQAG provider SDK or framework packages", async () => {
   const files = [
     "src/runtime/node-bootstrap.ts",
     "src/runtime/bootstrap-config.ts",
@@ -676,7 +676,7 @@ test("bootstrap module does not import migrations frontend KQAG provider SDK or 
     const contents = await readFile(filePath, "utf8");
 
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:react|next|vite|express|fastify|hono)/i);
-    assert.doesNotMatch(contents, /from\s+["'][^"']*(?:kqag|clerk|auth0|supabase)/i);
+    assert.doesNotMatch(contents, /from\s+["'][^"']*(?:sqag|clerk|auth0|supabase)/i);
     assert.doesNotMatch(contents, /migrate|migrations|db-migrate/i);
     assert.doesNotMatch(contents, /DATABASE_URL\s*=|CSRF_TOKEN_HASH_SECRET\s*=/);
   }
@@ -777,9 +777,9 @@ function createBootstrapFixture(options = {}) {
     apps: options.withAppAccessRecords
       ? [
           {
-            id: "app_kqag",
-            key: "kqag",
-            name: "KQAG / SAQG",
+            id: "app_sqag",
+            key: "sqag",
+            name: "SQAG",
             status: "private_preview",
             launchUrl: null,
             createdAt: now,
@@ -790,9 +790,9 @@ function createBootstrapFixture(options = {}) {
     appEntitlements: options.withAppAccessRecords
       ? [
           {
-            id: "entitlement_koncept_kqag",
+            id: "entitlement_koncept_sqag",
             workspaceId: "workspace_koncept_images",
-            appId: "app_kqag",
+            appId: "app_sqag",
             status: "enabled",
             grantedByUserId: "user_owner_example",
             createdAt: now,

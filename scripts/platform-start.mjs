@@ -23,7 +23,7 @@ export class PlatformStartCliError extends Error {
 export function createPlatformStartBootstrapInput(options = {}) {
   const { env, fetchImplementation } = options;
   const authMode = readAuthMode(env);
-  const kqagLaunchMode = readKqagLaunchMode(env);
+  const sqagLaunchMode = readSqagLaunchMode(env);
   const fetchForProvider =
     Object.hasOwn(options, "fetchImplementation")
       ? fetchImplementation
@@ -43,10 +43,10 @@ export function createPlatformStartBootstrapInput(options = {}) {
       createSecureAuthProviderIdentityIdFactory();
   }
 
-  if (kqagLaunchMode === "server_handoff") {
-    input.kqagBrowserLaunch = {
-      baseUrl: readKqagAppBaseUrl(env),
-      httpClient: createPlatformStartKqagBrowserLaunchHttpClient({
+  if (sqagLaunchMode === "server_handoff") {
+    input.sqagBrowserLaunch = {
+      baseUrl: readSqagAppBaseUrl(env),
+      httpClient: createPlatformStartSqagBrowserLaunchHttpClient({
         fetchImplementation: readFetchImplementation(fetchForProvider),
       }),
     };
@@ -80,9 +80,9 @@ export function createPlatformStartGenericOidcHttpClient(options = {}) {
   };
 }
 
-export function createPlatformStartKqagBrowserLaunchHttpClient(options = {}) {
+export function createPlatformStartSqagBrowserLaunchHttpClient(options = {}) {
   const { fetchImplementation } = options;
-  const fetchForKqag = readFetchImplementation(
+  const fetchForSqag = readFetchImplementation(
     Object.hasOwn(options, "fetchImplementation")
       ? fetchImplementation
       : globalThis.fetch,
@@ -90,7 +90,7 @@ export function createPlatformStartKqagBrowserLaunchHttpClient(options = {}) {
 
   return {
     async post(request) {
-      const response = await fetchForKqag(request.url, {
+      const response = await fetchForSqag(request.url, {
         method: "POST",
         headers: request.headers,
       });
@@ -220,8 +220,8 @@ function readAuthMode(env) {
   return mode || undefined;
 }
 
-function readKqagLaunchMode(env) {
-  const mode = env?.PLATFORM_KQAG_LAUNCH_MODE?.trim() || "manual";
+function readSqagLaunchMode(env) {
+  const mode = env?.PLATFORM_SQAG_LAUNCH_MODE?.trim() || "manual";
 
   if (mode === "manual" || mode === "server_handoff") {
     return mode;
@@ -230,8 +230,8 @@ function readKqagLaunchMode(env) {
   throw new PlatformStartCliError("invalid_config");
 }
 
-function readKqagAppBaseUrl(env) {
-  const value = env?.PLATFORM_KQAG_APP_BASE_URL?.trim();
+function readSqagAppBaseUrl(env) {
+  const value = env?.PLATFORM_SQAG_APP_BASE_URL?.trim();
   const production = readEnvironment(env) === "production";
 
   if (!value) {

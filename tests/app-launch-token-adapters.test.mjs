@@ -20,7 +20,7 @@ const appLaunchTokenRow = {
   sessionId: "session_owner_example",
   userId: "user_owner_example",
   workspaceId: "workspace_koncept_images",
-  appId: "app_kqag",
+  appId: "app_sqag",
   tokenHash,
   createdAt,
   expiresAt,
@@ -34,7 +34,7 @@ test("maps app launch token rows to hash-only storage records", () => {
     sessionId: "session_owner_example",
     userId: "user_owner_example",
     workspaceId: "workspace_koncept_images",
-    appId: "app_kqag",
+    appId: "app_sqag",
     tokenHash,
     createdAt: createdAt.toISOString(),
     expiresAt: expiresAt.toISOString(),
@@ -109,7 +109,7 @@ test("Drizzle app launch token repository returns null when consume loses replay
   assert.equal(consumed, null);
 });
 
-test("app launch token adapter modules do not import frontend KQAG provider SDK live DB clients or frameworks", async () => {
+test("app launch token adapter modules do not import frontend SQAG provider SDK live DB clients or frameworks", async () => {
   const files = [
     "src/platform/app-launch-token-crypto.ts",
     "src/db/app-launch-token-repository.ts",
@@ -119,7 +119,7 @@ test("app launch token adapter modules do not import frontend KQAG provider SDK 
     const contents = await readFile(filePath, "utf8");
 
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:react|next|vite|express|fastify|hono)/i);
-    assert.doesNotMatch(contents, /from\s+["'][^"']*(?:kqag|clerk|auth0|supabase)/i);
+    assert.doesNotMatch(contents, /from\s+["'][^"']*(?:sqag|clerk|auth0|supabase)/i);
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:pg|node-postgres)/i);
     assert.doesNotMatch(contents, /DATABASE_URL|AUTH_CLIENT_SECRET|SESSION_SECRET|CSRF_SECRET/);
   }

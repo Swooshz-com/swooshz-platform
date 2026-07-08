@@ -225,7 +225,7 @@ test("node:http imports stay only in Node adapter and server runtime modules", a
   }
 });
 
-test("runtime modules do not import frontend KQAG provider SDK framework live DB or migrations", async () => {
+test("runtime modules do not import frontend SQAG provider SDK framework live DB or migrations", async () => {
   const files = [
     "src/http/runtime-config.ts",
     "src/http/node-server.ts",
@@ -235,7 +235,7 @@ test("runtime modules do not import frontend KQAG provider SDK framework live DB
     const contents = await readFile(filePath, "utf8");
 
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:react|next|vite|express|fastify|hono)/i);
-    assert.doesNotMatch(contents, /from\s+["'][^"']*(?:kqag|clerk|auth0|supabase)/i);
+    assert.doesNotMatch(contents, /from\s+["'][^"']*(?:sqag|clerk|auth0|supabase)/i);
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?)/i);
     assert.doesNotMatch(contents, /src\/db|\.{1,2}\/db|\.{1,2}\/\.{1,2}\/db/i);
   }

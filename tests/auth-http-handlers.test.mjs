@@ -279,13 +279,13 @@ test("auth callback provider diagnostics report only a stable safe category", as
   assertHttpAuthDiagnosticIsSafe(diagnostics);
 });
 
-test("auth HTTP handler modules do not import DB frontend KQAG provider SDK or HTTP frameworks", async () => {
+test("auth HTTP handler modules do not import DB frontend SQAG provider SDK or HTTP frameworks", async () => {
   const httpFiles = ["src/http/auth-handlers.ts"];
 
   for (const filePath of httpFiles) {
     const contents = await readFile(filePath, "utf8");
 
-    assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?|kqag)/i);
+    assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?|sqag)/i);
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:react|next|vite|express|fastify|hono|node:http)/i);
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:clerk|auth0|supabase)/i);
     assert.doesNotMatch(contents, /fetch\(|XMLHttpRequest|https?:\/\//i);

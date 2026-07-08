@@ -182,7 +182,7 @@ test("repository failure becomes privacy-safe session context service error", as
 test("session context service module stays platform-only and framework-free", async () => {
   const contents = await readFile("src/platform/session-context-service.ts", "utf8");
 
-  assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?|kqag)/i);
+  assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?|sqag)/i);
   assert.doesNotMatch(contents, /from\s+["'][^"']*(?:react|next|vite|express|fastify|hono|node:http)/i);
   assert.doesNotMatch(contents, /from\s+["'][^"']*(?:clerk|auth0|supabase|stripe)/i);
 });
@@ -245,9 +245,9 @@ function sessionContextFixture(overrides = {}) {
     ...overrides.archivedWorkspace,
   };
   const app = {
-    id: "app_kqag",
-    key: "kqag",
-    name: "KQAG / SAQG",
+    id: "app_sqag",
+    key: "sqag",
+    name: "SQAG",
     status: "private_preview",
     launchUrl: null,
     createdAt: now,
@@ -282,7 +282,7 @@ function sessionContextFixture(overrides = {}) {
     ...overrides.disabledMembership,
   };
   const entitlement = {
-    id: "entitlement_kqag_owner",
+    id: "entitlement_sqag_owner",
     workspaceId: workspace.id,
     appId: app.id,
     status: "enabled",
@@ -292,7 +292,7 @@ function sessionContextFixture(overrides = {}) {
   };
   const viewerEntitlement = {
     ...entitlement,
-    id: "entitlement_kqag_viewer",
+    id: "entitlement_sqag_viewer",
     workspaceId: viewerWorkspace.id,
   };
   const defaultMemberships = [membership, viewerMembership, disabledMembership].filter(

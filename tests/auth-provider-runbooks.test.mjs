@@ -70,7 +70,7 @@ test("Google OIDC runbook covers setup, security posture, smoke flow, and troubl
   const requiredPhrases = [
     "Google proves identity through OIDC",
     "Swooshz Platform still owns users, sessions, workspaces, memberships, roles, app access, app entitlements, invitations, and app launch tokens",
-    "Google does not own workspace roles or KQAG access",
+    "Google does not own workspace roles or SQAG access",
     "Use External audience if personal Google accounts or Gmail accounts need to log in",
     "Use Internal audience only if testing is limited to Google Workspace organization accounts",
     "openid",
@@ -162,7 +162,7 @@ test("external auth docs state deferred runtime boundaries instead of adding imp
   assert.match(combined, /fake login/i);
   assert.match(combined, /active multi-provider runtime behavior/i);
   assert.match(combined, /provider SDKs/i);
-  assert.match(combined, /KQAG integration/i);
+  assert.match(combined, /SQAG integration/i);
   assert.match(combined, /deployment/i);
   assert.match(combined, /database provisioning/i);
   assert.match(combined, /migration automation/i);

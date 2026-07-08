@@ -339,7 +339,7 @@ test("generic OIDC adapter does not call userinfo when verifier fails", async ()
 test("generic OIDC adapter module keeps provider and app boundaries clean", async () => {
   const contents = await readFile("src/auth/generic-oidc-provider-adapter.ts", "utf8");
 
-  assert.doesNotMatch(contents, /from\s+["'][^"']*(?:kqag|react|next|vite|express|fastify|hono)/i);
+  assert.doesNotMatch(contents, /from\s+["'][^"']*(?:sqag|react|next|vite|express|fastify|hono)/i);
   assert.doesNotMatch(contents, /from\s+["'][^"']*(?:clerk|auth0|supabase|stripe)/i);
   assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?)/i);
   assert.doesNotMatch(contents, /DATABASE_URL|SESSION_SECRET|CSRF_TOKEN_HASH_SECRET|AUTH_STATE_HASH_SECRET/);

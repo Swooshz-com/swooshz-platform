@@ -22,9 +22,9 @@ function baseFixture(overrides = {}) {
   };
 
   const app = {
-    id: "app_kqag",
-    key: "kqag",
-    name: "KQAG / SAQG",
+    id: "app_sqag",
+    key: "sqag",
+    name: "SQAG",
     status: "private_preview",
     launchUrl: null,
     createdAt: now,
@@ -33,7 +33,7 @@ function baseFixture(overrides = {}) {
   };
 
   const entitlement = {
-    id: "entitlement_koncept_kqag",
+    id: "entitlement_koncept_sqag",
     workspaceId: workspace.id,
     appId: app.id,
     status: "enabled",
@@ -107,27 +107,27 @@ function resultFor(overrides = {}) {
 // Synthetic fixtures only. These values are not production seed data.
 test("normalizes email addresses deterministically", () => {
   assert.equal(normalizeEmail("  Owner@Example.COM  "), "owner@example.com");
-  assert.equal(normalizeEmail("ADMIN+KQAG@EXAMPLE.com"), "admin+kqag@example.com");
+  assert.equal(normalizeEmail("ADMIN+SQAG@EXAMPLE.com"), "admin+sqag@example.com");
 });
 
 test("normalizes workspace slugs to URL-safe lowercase values", () => {
   assert.equal(normalizeWorkspaceSlug("Koncept Images Pte Ltd"), "koncept-images-pte-ltd");
-  assert.equal(normalizeWorkspaceSlug("  Swooshz / KQAG Preview!  "), "swooshz-kqag-preview");
+  assert.equal(normalizeWorkspaceSlug("  Swooshz / SQAG Preview!  "), "swooshz-sqag-preview");
 });
 
-test("allows KQAG for owner role", () => {
+test("allows SQAG for owner role", () => {
   assert.equal(resultFor({ role: "owner" }).result, AccessDecisionResult.Allowed);
 });
 
-test("allows KQAG for admin role", () => {
+test("allows SQAG for admin role", () => {
   assert.equal(resultFor({ role: "admin" }).result, AccessDecisionResult.Allowed);
 });
 
-test("allows KQAG for member role", () => {
+test("allows SQAG for member role", () => {
   assert.equal(resultFor({ role: "member" }).result, AccessDecisionResult.Allowed);
 });
 
-test("blocks KQAG for viewer role until a viewer adapter exists", () => {
+test("blocks SQAG for viewer role until a viewer adapter exists", () => {
   assert.equal(resultFor({ role: "viewer" }).result, AccessDecisionResult.RoleNotPermitted);
 });
 

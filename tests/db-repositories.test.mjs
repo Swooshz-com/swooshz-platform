@@ -110,15 +110,15 @@ const auditEventRow = {
   actorUserId: userRow.id,
   eventType: "app.access.decided",
   targetType: "app",
-  targetId: "app_kqag",
+  targetId: "app_sqag",
   createdAt,
-  metadata: { appKey: "kqag", result: "allowed" },
+  metadata: { appKey: "sqag", result: "allowed" },
 };
 
 const appRow = {
-  id: "app_kqag",
-  key: "kqag",
-  name: "KQAG / SAQG",
+  id: "app_sqag",
+  key: "sqag",
+  name: "SQAG",
   status: "private_preview",
   launchUrl: null,
   createdAt,
@@ -126,7 +126,7 @@ const appRow = {
 };
 
 const entitlementRow = {
-  id: "entitlement_koncept_kqag",
+  id: "entitlement_koncept_sqag",
   workspaceId: workspaceRow.id,
   appId: appRow.id,
   status: "enabled",
@@ -674,7 +674,7 @@ test("Drizzle audit repository lists workspace events newest first with a safe l
     id: "audit_newer",
     eventType: "workspace.app_entitlement.enabled",
     targetType: "app_entitlement",
-    targetId: "entitlement_koncept_kqag",
+    targetId: "entitlement_koncept_sqag",
     createdAt: new Date("2026-06-26T04:00:00.000Z"),
   };
   const repositories = createDrizzlePlatformRepositories(

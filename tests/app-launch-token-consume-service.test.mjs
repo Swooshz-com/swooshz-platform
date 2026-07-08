@@ -23,7 +23,7 @@ test("missing or blank raw launch tokens fail safely without lookup", async () =
 
     const result = await consumeAppLaunchToken(dependencies, {
       rawLaunchToken: token,
-      appKey: "kqag",
+      appKey: "sqag",
       now,
     });
 
@@ -96,8 +96,8 @@ test("successful consume returns safe context and marks launch token consumed ex
       workspaceName: "Koncept Images Pte Ltd",
     },
     app: {
-      appKey: "kqag",
-      appName: "KQAG / SAQG",
+      appKey: "sqag",
+      appName: "SQAG",
     },
     membershipRole: "owner",
     launchTokenExpiresAt: future,
@@ -203,10 +203,10 @@ test("repository and hash failures become privacy-safe consume service errors", 
   }
 });
 
-test("consume service module does not import DB HTTP frontend KQAG provider SDK or migrations", async () => {
+test("consume service module does not import DB HTTP frontend SQAG provider SDK or migrations", async () => {
   const contents = await readFile("src/platform/app-launch-token-consume-service.ts", "utf8");
 
-  assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?|kqag)/i);
+  assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?|sqag)/i);
   assert.doesNotMatch(contents, /from\s+["'][^"']*(?:react|next|vite|express|fastify|hono|node:http)/i);
   assert.doesNotMatch(contents, /from\s+["'][^"']*(?:clerk|auth0|supabase)/i);
   assert.doesNotMatch(contents, /src\/db|\.{1,2}\/db|\.{1,2}\/\.{1,2}\/db/i);
@@ -222,9 +222,9 @@ function consumeFixture(overrides = {}) {
     updatedAt: now,
   };
   const app = {
-    id: "app_kqag",
-    key: "kqag",
-    name: "KQAG / SAQG",
+    id: "app_sqag",
+    key: "sqag",
+    name: "SQAG",
     status: "private_preview",
     launchUrl: null,
     createdAt: now,
@@ -259,7 +259,7 @@ function consumeFixture(overrides = {}) {
     updatedAt: now,
   };
   const entitlement = {
-    id: "entitlement_koncept_kqag",
+    id: "entitlement_koncept_sqag",
     workspaceId: workspace.id,
     appId: app.id,
     status: "enabled",
@@ -328,7 +328,7 @@ function consumeFixture(overrides = {}) {
     calls,
     input: {
       rawLaunchToken,
-      appKey: overrides.inputAppKey ?? "kqag",
+      appKey: overrides.inputAppKey ?? "sqag",
       now,
     },
     dependencies: {

@@ -23,8 +23,8 @@ test("internal access seed creates and reuses workspace app entitlement and memb
   assert.equal(first.outcome, "seeded");
   assert.equal(second.outcome, "seeded");
   assert.equal(first.workspace.id, "workspace_koncept_images_seed");
-  assert.equal(first.app.key, "kqag");
-  assert.equal(first.app.name, "SAQG / KQAG");
+  assert.equal(first.app.key, "sqag");
+  assert.equal(first.app.name, "SQAG");
   assert.equal(first.entitlement.status, "enabled");
   assert.equal(first.membership.role, "owner");
   assert.deepEqual(first.created, {
@@ -191,7 +191,7 @@ test("internal access seed refuses conflicting provider identity state safely", 
   assert.equal(fixture.writeCounts.providerIdentities, 0);
 });
 
-test("seeded KQAG access is allowed for owner admin member and viewer remains blocked", async () => {
+test("seeded SQAG access is allowed for owner admin member and viewer remains blocked", async () => {
   for (const role of ["owner", "admin", "member"]) {
     const fixture = createSeedFixture({
       users: [existingUser({ id: `user_${role}_existing`, email: `${role}@example.test` })],
@@ -216,7 +216,7 @@ test("seeded KQAG access is allowed for owner admin member and viewer remains bl
     const decision = await decidePlatformAppAccess(fixture.repositories, {
       sessionId: session.id,
       selectedWorkspaceId: result.workspace.id,
-      appKey: "kqag",
+      appKey: "sqag",
       now,
     });
 
@@ -249,7 +249,7 @@ test("seeded KQAG access is allowed for owner admin member and viewer remains bl
   const viewerDecision = await decidePlatformAppAccess(viewerFixture.repositories, {
     sessionId: "session_viewer_seed",
     selectedWorkspaceId: "workspace_koncept_images_seed",
-    appKey: "kqag",
+    appKey: "sqag",
     now,
   });
 
@@ -269,7 +269,7 @@ test("seeded KQAG access is allowed for owner admin member and viewer remains bl
   );
 });
 
-test("internal access seed modules do not import DB frontend KQAG provider SDK framework billing or migrations", async () => {
+test("internal access seed modules do not import DB frontend SQAG provider SDK framework billing or migrations", async () => {
   const platformFiles = [
     "src/platform/internal-access-seed-service.ts",
     "src/platform/repositories.ts",
@@ -278,7 +278,7 @@ test("internal access seed modules do not import DB frontend KQAG provider SDK f
   for (const filePath of platformFiles) {
     const contents = await readFile(filePath, "utf8");
 
-    assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?|kqag)/i);
+    assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?|sqag)/i);
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:react|next|vite|express|fastify|hono|node:http)/i);
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:clerk|auth0|supabase|stripe)/i);
     assert.doesNotMatch(contents, /DATABASE_URL|AUTH_CLIENT_SECRET|SESSION_SECRET/);
@@ -340,13 +340,13 @@ function baseSeed(overrides = {}) {
       displayName: "Koncept Images Pte Ltd",
     },
     app: {
-      id: "app_kqag",
-      key: "kqag",
-      name: "SAQG / KQAG",
+      id: "app_sqag",
+      key: "sqag",
+      name: "SQAG",
       status: "private_preview",
     },
     entitlement: {
-      id: "entitlement_koncept_kqag_seed",
+      id: "entitlement_koncept_sqag_seed",
       status: "enabled",
       grantedByUserId: null,
     },
@@ -513,9 +513,9 @@ function workspaceRecord() {
 
 function appRecord() {
   return {
-    id: "app_kqag",
-    key: "kqag",
-    name: "SAQG / KQAG",
+    id: "app_sqag",
+    key: "sqag",
+    name: "SQAG",
     status: "private_preview",
     launchUrl: null,
     createdAt: now,
@@ -525,9 +525,9 @@ function appRecord() {
 
 function entitlementRecord() {
   return {
-    id: "entitlement_koncept_kqag_seed",
+    id: "entitlement_koncept_sqag_seed",
     workspaceId: "workspace_koncept_images_seed",
-    appId: "app_kqag",
+    appId: "app_sqag",
     status: "enabled",
     grantedByUserId: null,
     createdAt: now,

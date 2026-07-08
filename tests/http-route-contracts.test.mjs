@@ -29,10 +29,10 @@ test("route manifest includes only approved initial platform routes", () => {
       "platform_workspace_member_reactivate",
       "platform_workspace_member_remove",
       "platform_workspace_app_entitlements",
-      "platform_workspace_kqag_entitlement_status",
+      "platform_workspace_sqag_entitlement_status",
       "platform_workspace_audit_events",
       "platform_app_launch",
-      "platform_kqag_launch_open",
+      "platform_sqag_launch_open",
       "platform_app_launch_consume",
       "platform_logout",
     ],
@@ -58,7 +58,7 @@ test("route manifest includes only approved initial platform routes", () => {
       "POST /api/platform/workspaces/:workspaceId/members/:membershipId/reactivate",
       "POST /api/platform/workspaces/:workspaceId/members/:membershipId/remove",
       "GET /api/platform/workspaces/:workspaceId/app-entitlements",
-      "POST /api/platform/workspaces/:workspaceId/app-entitlements/kqag/status",
+      "POST /api/platform/workspaces/:workspaceId/app-entitlements/sqag/status",
       "GET /api/platform/workspaces/:workspaceId/audit-events",
       "POST /api/platform/apps/launch",
       "POST /api/platform/apps/launch/open",
@@ -90,9 +90,9 @@ test("state-changing browser-cookie routes require CSRF protection", () => {
       "platform_workspace_member_disable",
       "platform_workspace_member_reactivate",
       "platform_workspace_member_remove",
-      "platform_workspace_kqag_entitlement_status",
+      "platform_workspace_sqag_entitlement_status",
       "platform_app_launch",
-      "platform_kqag_launch_open",
+      "platform_sqag_launch_open",
       "platform_logout",
     ],
   );
@@ -330,9 +330,9 @@ test("workspace admin member routes are session-protected and contract-driven", 
   assert.equal(remove.idempotent, false);
 });
 
-test("workspace admin app entitlement routes are KQAG-scoped and session-protected", () => {
+test("workspace admin app entitlement routes are SQAG-scoped and session-protected", () => {
   const list = getHttpRouteContract("platform_workspace_app_entitlements");
-  const status = getHttpRouteContract("platform_workspace_kqag_entitlement_status");
+  const status = getHttpRouteContract("platform_workspace_sqag_entitlement_status");
 
   assert.equal(list.method, "GET");
   assert.equal(list.path, "/api/platform/workspaces/:workspaceId/app-entitlements");
@@ -342,14 +342,14 @@ test("workspace admin app entitlement routes are KQAG-scoped and session-protect
   assert.equal(list.handlerContract, "handleWorkspaceAppEntitlementsAdminRequest");
 
   assert.equal(status.method, "POST");
-  assert.equal(status.path, "/api/platform/workspaces/:workspaceId/app-entitlements/kqag/status");
+  assert.equal(status.path, "/api/platform/workspaces/:workspaceId/app-entitlements/sqag/status");
   assert.equal(status.browserSession, "required");
   assert.deepEqual(status.csrf, {
     required: true,
     strategy: "origin_referer_and_csrf_token",
   });
   assert.deepEqual(status.requiredQuery, ["status"]);
-  assert.equal(status.handlerContract, "handleWorkspaceKqagEntitlementStatusRequest");
+  assert.equal(status.handlerContract, "handleWorkspaceSqagEntitlementStatusRequest");
   assert.equal(status.idempotent, false);
 });
 
@@ -382,8 +382,8 @@ test("app launch intent route is POST-only session-protected and CSRF-protected"
   assert.equal(route.idempotent, false);
 });
 
-test("KQAG launch open route is POST-only session-protected and CSRF-protected", () => {
-  const route = getHttpRouteContract("platform_kqag_launch_open");
+test("SQAG launch open route is POST-only session-protected and CSRF-protected", () => {
+  const route = getHttpRouteContract("platform_sqag_launch_open");
 
   assert.equal(route.method, "POST");
   assert.equal(route.path, "/api/platform/apps/launch/open");
@@ -391,7 +391,7 @@ test("KQAG launch open route is POST-only session-protected and CSRF-protected",
   assert.equal(route.csrf.required, true);
   assert.equal(route.csrf.strategy, "origin_referer_and_csrf_token");
   assert.deepEqual(route.requiredQuery, ["workspaceId", "appKey"]);
-  assert.equal(route.handlerContract, "handleKqagBrowserLaunchRequest");
+  assert.equal(route.handlerContract, "handleSqagBrowserLaunchRequest");
   assert.equal(route.idempotent, false);
 });
 
@@ -415,10 +415,10 @@ test("route manifest does not include quote app storage or frontend dashboard wo
   assert.doesNotMatch(serialized, /frontend|dashboard|react(?:\.js)?\b|next|vite/i);
 });
 
-test("route contract module does not import DB frontend KQAG provider SDK or live server modules", async () => {
+test("route contract module does not import DB frontend SQAG provider SDK or live server modules", async () => {
   const contents = await readFile("src/http/route-contracts.ts", "utf8");
 
-  assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?|kqag)/i);
+  assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?|sqag)/i);
   assert.doesNotMatch(contents, /from\s+["'][^"']*(?:react|next|vite|express|fastify|hono|node:http)/i);
   assert.doesNotMatch(contents, /from\s+["'][^"']*(?:clerk|auth0|supabase)/i);
   assert.doesNotMatch(contents, /src\/db|\.{1,2}\/db|\.{1,2}\/\.{1,2}\/db/i);

@@ -2,7 +2,7 @@
 
 This runbook configures Google as the first practical external OIDC provider for internal Swooshz Platform UAT. Google proves identity through OIDC. Swooshz Platform still owns users, sessions, workspaces, memberships, roles, app access, app entitlements, invitations, and app launch tokens.
 
-Google does not own workspace roles or KQAG access. We are not building our own email/password or 2FA system in this phase, and we are not adding fake login.
+Google does not own workspace roles or SQAG access. We are not building our own email/password or 2FA system in this phase, and we are not adding fake login.
 
 ## Google OAuth App Setup
 
@@ -100,4 +100,4 @@ Use this runbook together with `docs/internal-platform-smoke-runbook.md`.
 
 ## Out Of Scope
 
-This runbook does not add platform-owned email/password auth, fake login, active multi-provider runtime behavior, provider SDKs, deployment, database provisioning, migration automation, KQAG integration, app redirect integration into KQAG, billing, or Stripe.
+This runbook does not add platform-owned email/password auth, fake login, active multi-provider runtime behavior, provider SDKs, deployment, database provisioning, migration automation, SQAG integration, app redirect integration into SQAG, billing, or Stripe.

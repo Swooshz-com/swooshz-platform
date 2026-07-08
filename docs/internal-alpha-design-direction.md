@@ -4,10 +4,10 @@ Status: DRAFT for approval — design direction and UX concepts only, no product
 Revision 2026-07-05: Add member redesigned around the pending-approval membership
 model (the previous add-existing-user flow is bootstrap-only, not target UX);
 SEO/GEO product kept as an unconfirmed conceptual placeholder.
-Scope: two-product platform (KQAG / SAQG + SEO/GEO Content Automation).
+Scope: two-product platform (SQAG + SEO/GEO Content Automation).
 Grounded in: `docs/internal-alpha-platform-contract.md`, `docs/app-access-contract.md`,
 `docs/accounts-contract.md`, `docs/auth-session-security-contract.md`,
-`docs/kqag-integration-contract.md`, ADRs 0001–0007, and the shipped surface in
+`docs/sqag-integration-contract.md`, ADRs 0001–0007, and the shipped surface in
 `src/http/platform-shell.ts`.
 Date: 2026-07-05.
 
@@ -55,7 +55,7 @@ swooshz platform
 │       ├─ "Manage workspace" link (only if role in THIS workspace is owner/admin)
 │       │     → /app/admin?workspaceId=…
 │       └─ product card grid (registry order by app key):
-│           ├─ APP – KQAG   (quote automation)
+│           ├─ APP – SQAG   (quote automation)
 │           └─ APP – SGCA   (SEO/GEO Content Automation; placeholder key)
 │
 └─ /app/admin?workspaceId=…   WORKSPACE ADMIN (owner/admin of that workspace only)
@@ -79,7 +79,7 @@ IA rules (these resolve every issue raised by the adversarial IA review):
    one scrolling document with stable anchor ids. Anchors, not tabs (simpler
    keyboard/a11y story).
 3. **Registry order everywhere.** Launcher cards and the admin entitlement table sort
-   ascending by app key (`kqag` before `sgca`). No pinning, no recents, no featured
+   ascending by app key (`sqag` before `sgca`). No pinning, no recents, no featured
    slots. Launcher and admin must never disagree on order.
 4. **More products = more cards/rows, never more navigation.** The card grid and the
    entitlement table are n-ary from day one ("design for N=2, ship with N=2").
@@ -222,7 +222,7 @@ rigour to close the gap.
 
 Out of scope by mandate (do not design, do not tease): billing, credits, public
 signup, password auth, 2FA, broad fallback auth, marketplace, heavy analytics,
-invitation delivery, session-management UI, theme toggles, any KQAG or SEO-product
+invitation delivery, session-management UI, theme toggles, any SQAG or SEO-product
 workflow data inside Platform.
 
 ---
@@ -256,7 +256,7 @@ workflow data inside Platform.
   16px gap; two cards side by side ≥720px, stacked below. Footers bottom-anchored so
   Launch buttons align across cards. Equal-height rows.
 - **Admin Product access becomes a per-app table** (two rows now) instead of a
-  KQAG-shaped singleton — columns App / Status / Granted by / Updated / Action.
+  SQAG-shaped singleton — columns App / Status / Granted by / Updated / Action.
 - **Alpha strip multi-workspace variant** specified (above).
 - **Homepage positioning widens** to "platform of AI-powered business tools" with one
   quiet capability line naming both categories (§7.1). No product sections, feature
@@ -370,13 +370,13 @@ workspace groups → footer.
 **Card anatomy (identical for every product — a system rule, not a per-app design):**
 
 ```
-┌─ APP – KQAG ───────────────────────────┐   ┌─ APP – SGCA ───────────────────────────┐
-│ KQAG                   private preview │   │ SEO/GEO Content        private preview │
+┌─ APP – SQAG ───────────────────────────┐   ┌─ APP – SGCA ───────────────────────────┐
+│ SQAG                   private preview │   │ SEO/GEO Content        private preview │
 │ ● enabled                              │   │ Automation                             │
 │ Generate quotes and manage             │   │ ○ disabled                             │
 │ quotation workflows.                   │   │ Create, approve, and publish SEO and   │
 │                                        │   │ GEO content for search and AI          │
-│ [ Launch KQAG ]                        │   │ discovery.                             │
+│ [ Launch SQAG ]                        │   │ discovery.                             │
 └────────────────────────────────────────┘   │ Unavailable                            │
                                              │ SEO/GEO Content Automation is not      │
                                              │ enabled for this workspace. Ask a      │
@@ -395,10 +395,10 @@ workspace groups → footer.
    changes across states
 5. Bottom-anchored footer: primary Launch button OR `Unavailable` + one reason line
 
-**Card 1 — KQAG / SAQG (quote automation).** Key `kqag`, tag `APP – KQAG`, name
-"KQAG" (confirm whether SAQG is the canonical display string — anatomy unchanged
+**Card 1 — SQAG (quote automation).** Key `sqag`, tag `APP – SQAG`, name
+"SQAG" (confirm whether SQAG is the canonical display string — anatomy unchanged
 either way), description "Generate quotes and manage quotation workflows.", status
-chip `private preview`, button **Launch KQAG**. Hard boundary: zero KQAG runtime data
+chip `private preview`, button **Launch SQAG**. Hard boundary: zero SQAG runtime data
 on the card — no quote counts, recent quotes, file lists, or last-activity
 timestamps. The card is an access record; launch is a navigation handoff.
 
@@ -511,11 +511,11 @@ history but cannot use this workspace. Nothing is deleted." → [Disable member]
 
 **05 Product access** (`#app-access`) — context line: "Control which apps this
 workspace can launch. Changes apply to all workspace members immediately." Per-app
-table, registry order (two rows: `kqag`, `sgca`):
+table, registry order (two rows: `sqag`, `sgca`):
 
 | App | Status | Granted by | Updated | Action |
 |---|---|---|---|---|
-| `KQAG` KQAG `private preview` | `● enabled` | mono email or `platform operator` | `2026-07-03 14:12 SGT` | Disable |
+| `SQAG` SQAG `private preview` | `● enabled` | mono email or `platform operator` | `2026-07-03 14:12 SGT` | Disable |
 | `SGCA` SEO/GEO Content Automation `private preview` | `○ disabled` | — | — | **Enable** |
 
 - Enable confirm (neutral, Paper): "Enable {App} for this workspace? Owners, admins,
@@ -534,7 +534,7 @@ table, registry order (two rows: `kqag`, `sgca`):
   upgrade prompts anywhere.
 
 **06 Activity** (`#activity`) — caption `AUD – LAST 50 · newest first`. Table: Action
-(human copy first — "Member added", "KQAG access enabled" — with the raw event type
+(human copy first — "Member added", "SQAG access enabled" — with the raw event type
 `workspace.membership.added` beneath in mono 11px Slate) / Subject / Actor (system
 actions attributed to "Swooshz Platform") / Time (mono absolute + visible muted
 relative) / Details (allowlisted fragments only: previous/new role or status, app
@@ -558,7 +558,7 @@ Error: "Activity could not be loaded." + `ref` chip + quiet Retry.
 | Add-member outcome (all paths) | Access request recorded. If this account already exists, the membership is active now. If not, it will activate after the teammate signs in with the approved Google account. |
 | Launcher status line | signed in as {email} · {n} workspaces |
 | Workspace header | WS – {NAME} · role: {role} |
-| KQAG card | KQAG · private preview · "Generate quotes and manage quotation workflows." · [Launch KQAG] |
+| SQAG card | SQAG · private preview · "Generate quotes and manage quotation workflows." · [Launch SQAG] |
 | SEO card | SEO/GEO Content Automation · private preview · "Create, approve, and publish SEO and GEO content for search and AI discovery." · [Launch] |
 | Denied — role | Your role does not permit launching apps. Ask a workspace owner or admin about access. |
 | Denied — not enabled | {App} is not enabled for this workspace. Ask a workspace owner or admin about access. |
@@ -578,16 +578,16 @@ granted.
 
 | # | Risk | Consequence | Guardrail |
 |---|---|---|---|
-| 1 | Hardcoded product names/copy ("KQAG", "quote") scattered through shared components and audit copy | Adding product #2 becomes a string hunt; misses ship quote-flavoured copy on SEO surfaces; Platform silently becomes "the KQAG admin panel" | Single-source app registry `{app_key, display_name, app_status}` is the only place a product name may be literal; CI grep fails the build on product-name literals elsewhere |
+| 1 | Hardcoded product names/copy ("SQAG", "quote") scattered through shared components and audit copy | Adding product #2 becomes a string hunt; misses ship quote-flavoured copy on SEO surfaces; Platform silently becomes "the SQAG admin panel" | Single-source app registry `{app_key, display_name, app_status}` is the only place a product name may be literal; CI grep fails the build on product-name literals elsewhere |
 | 2 | Launcher cards grow product-runtime widgets (quote counts, article stats, site lists) | Platform starts fetching product data — a second data-security surface; every future product must build a bespoke widget to look "complete" | Freeze the card contract to six props: `app_key, display_name, app_status, entitlement_state, can_launch, denial_reason`; anything not derivable from access data belongs inside the product |
 | 3 | Entitlement UI shaped around one product ("Enable quoting") | Product #2 cannot be represented without redesign; data model gets bent to match the UI | Generic workspace-by-app matrix, four canonical states only, all copy templated on `{app_name}` |
-| 4 | Audit vocabulary coupled to product #1 (`kqag_access_granted`) | Two naming dialects in one log the day product #2 ships; renaming rewrites history | Event names are platform verbs (`app.launched`, `entitlement.changed`) with `app_key` as a structured field, never in the name |
-| 5 | Platform brand welds to KQAG (logo, palette, tone in Platform chrome) | The white-label SEO product forever looks like a bolt-on inside a quoting tool | Platform keeps its own neutral wordmark and palette; product identity appears only inside registry-supplied cards |
-| 6 | Product-capability copy in Platform empty states ("No quotes yet…") | Nonsense the moment a workspace has SEO but not KQAG; normalises product dashboards in the hub | Copy rule: Platform speaks only about access, never capability |
+| 4 | Audit vocabulary coupled to product #1 (`sqag_access_granted`) | Two naming dialects in one log the day product #2 ships; renaming rewrites history | Event names are platform verbs (`app.launched`, `entitlement.changed`) with `app_key` as a structured field, never in the name |
+| 5 | Platform brand welds to SQAG (logo, palette, tone in Platform chrome) | The white-label SEO product forever looks like a bolt-on inside a quoting tool | Platform keeps its own neutral wordmark and palette; product identity appears only inside registry-supplied cards |
+| 6 | Product-capability copy in Platform empty states ("No quotes yet…") | Nonsense the moment a workspace has SEO but not SQAG; normalises product dashboards in the hub | Copy rule: Platform speaks only about access, never capability |
 | 7 | Per-product denial copy ("Your quoting trial has ended") | Copy drifts per app and leaks entitlement/business detail; a copy matrix nobody maintains | Denial UI renders exclusively from the fixed three-token enum, one template per token |
-| 8 | Admin IA assumes one app (singleton settings page, implicit `kqag` filters) | IA/routing rework mid-alpha; "the app" defaults ambiguously — the class of bug that produces access-control mistakes | "Design for N=2, ship with N=2": every surface and query keyed by `app_key`, rendered as a registry list; no default app anywhere |
+| 8 | Admin IA assumes one app (singleton settings page, implicit `sqag` filters) | IA/routing rework mid-alpha; "the app" defaults ambiguously — the class of bug that produces access-control mistakes | "Design for N=2, ship with N=2": every surface and query keyed by `app_key`, rendered as a registry list; no default app anywhere |
 | 9 | Product #2 integrated with an ad-hoc identifier | Inconsistent keys fragment entitlement checks and audit queries; migration on security-relevant tables later | Agree the key before any integration (placeholder `sgca` — unconfirmed until the product contract is approved; do not mint as final); keys 3–5 lowercase ASCII letters, immutable once written; only `display_name` may change |
-| 10 | `private_preview` rendered as a bespoke KQAG-only badge | Each product lifecycle state needs new bespoke UI; status semantics diverge | One shared app-status chip driven solely by the registry enum, with a documented unknown-value fallback |
+| 10 | `private_preview` rendered as a bespoke SQAG-only badge | Each product lifecycle state needs new bespoke UI; status semantics diverge | One shared app-status chip driven solely by the registry enum, with a documented unknown-value fallback |
 
 Summary: the whole class collapses to one architectural habit plus three cheap rules —
 (1) a single app registry consumed everywhere via `app_key`, enforced by one CI grep;
@@ -609,10 +609,10 @@ one component contract, one grep — no process overhead.
    the pending-approval membership backend lands before implementation. Until it
    lands, the current add-existing-user flow may ship only as a temporary bootstrap
    state, never presented as the target production UX.
-3. **Canonical display names:** "KQAG" vs "SAQG" for the quote product;
+3. **Canonical display names:** "SQAG" vs "SQAG" for the quote product;
    "SEO/GEO Content Automation" is a working name only. If a confirmed name is long,
    the button label shortens to "Launch" with the full accessible name retained.
-4. **SEO product app status:** assumed `private_preview` to match KQAG until
+4. **SEO product app status:** assumed `private_preview` to match SQAG until
    registered.
 5. **Reassurance clauses** assume the backend guarantees: failed sign-in writes no
    user-visible state; entitlement toggles never touch product data; failed POSTs

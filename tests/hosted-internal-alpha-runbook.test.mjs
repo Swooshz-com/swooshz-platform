@@ -9,7 +9,7 @@ test("hosted internal alpha runbook covers deployment operations", async () => {
   const requiredPhrases = [
     "# Hosted Internal Alpha Runbook",
     "<hosted-platform-base-url>",
-    "<hosted-kqag-base-url>",
+    "<hosted-sqag-base-url>",
     "<hosted-oidc-redirect-uri>",
     "PostgreSQL",
     "npm run db:migrate",
@@ -56,7 +56,7 @@ test("hosted internal alpha runbook covers deployment operations", async () => {
     "This evidence does not approve hosted deployment or full production readiness",
     "first owner/admin bootstrap",
     "pending workspace approval",
-    "KQAG entitlement",
+    "SQAG entitlement",
     "audit/activity verification",
   ];
 
@@ -99,8 +99,8 @@ test("hosted internal alpha runbook has an env checklist with safe examples and 
     ["AUTH_REDIRECT_URI", "Required", "No"],
     ["AUTH_ALLOWED_EMAILS", "Required", "No"],
     ["AUTH_ALLOWED_DOMAINS", "Optional", "No"],
-    ["PLATFORM_KQAG_LAUNCH_MODE", "Required", "No"],
-    ["PLATFORM_KQAG_APP_BASE_URL", "Required when server_handoff", "No"],
+    ["PLATFORM_SQAG_LAUNCH_MODE", "Required", "No"],
+    ["PLATFORM_SQAG_APP_BASE_URL", "Required when server_handoff", "No"],
     ["PLATFORM_SEED_CONFIRM", "Required for bootstrap only", "No"],
     ["PLATFORM_SEED_USER_EMAIL", "Required for bootstrap only", "No"],
     ["PLATFORM_SEED_MEMBERSHIP_ROLE", "Optional", "No"],
@@ -165,7 +165,7 @@ test("hosted internal alpha smoke checklist covers fail-closed access and token 
     "role change",
     "membership disable",
     "membership reactivation",
-    "KQAG entitlement enable/disable",
+    "SQAG entitlement enable/disable",
     "audit/activity shows admin events",
     "no raw token in browser URL, storage, or logs",
     "logout",

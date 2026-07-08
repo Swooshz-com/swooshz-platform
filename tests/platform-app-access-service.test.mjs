@@ -22,9 +22,9 @@ function platformFixture(overrides = {}) {
   };
 
   const app = {
-    id: "app_kqag",
-    key: "kqag",
-    name: "KQAG / SAQG",
+    id: "app_sqag",
+    key: "sqag",
+    name: "SQAG",
     status: "private_preview",
     launchUrl: null,
     createdAt: now,
@@ -70,7 +70,7 @@ function platformFixture(overrides = {}) {
   }));
 
   const entitlement = {
-    id: "entitlement_koncept_kqag",
+    id: "entitlement_koncept_sqag",
     workspaceId: workspace.id,
     appId: app.id,
     status: "enabled",
@@ -99,7 +99,7 @@ function platformFixture(overrides = {}) {
         overrides.selectedWorkspaceId === undefined
           ? workspace.id
           : overrides.selectedWorkspaceId,
-      appKey: overrides.appKey ?? "kqag",
+      appKey: overrides.appKey ?? "sqag",
       billingGate: overrides.billingGate,
       now: overrides.now ?? now,
     },
@@ -112,7 +112,7 @@ async function decisionFor(overrides = {}) {
 }
 
 // Synthetic fixtures only. These values are not production seed data.
-test("allows KQAG for owner, admin, and member through repository-loaded records", async () => {
+test("allows SQAG for owner, admin, and member through repository-loaded records", async () => {
   for (const role of ["owner", "admin", "member"]) {
     const decision = await decisionFor({ role });
 
@@ -120,7 +120,7 @@ test("allows KQAG for owner, admin, and member through repository-loaded records
   }
 });
 
-test("blocks KQAG for viewer through the service layer", async () => {
+test("blocks SQAG for viewer through the service layer", async () => {
   const decision = await decisionFor({ role: "viewer" });
 
   assert.equal(decision.result, AccessDecisionResult.RoleNotPermitted);

@@ -36,6 +36,13 @@
       "when": 1783253616083,
       "tag": "0004_illegal_william_stryker",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1783479304000,
+      "tag": "0005_sqag_app_key_migration",
+      "breakpoints": true
     }
   ]
 }
