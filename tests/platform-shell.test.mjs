@@ -126,6 +126,20 @@ test("app shell renders portal launcher and fail-closed entitlement states with 
   assert.doesNotMatch(html, /upgrade your plan|billing|payment/i);
 });
 
+test("portal and admin shells format workspace roles without prominent Viewer copy", () => {
+  const appHtml = renderAppShellPage();
+  const adminHtml = renderAdminShellPage();
+
+  assert.match(appHtml, /textBlock\("Role", displayWorkspaceRole\(workspace\.membershipRole\)\)/);
+  assert.match(appHtml, /function displayWorkspaceRole\(role\)/);
+  assert.match(adminHtml, /textBlock\("Role", displayRole\(workspace\.membershipRole\)\)/);
+  assert.match(adminHtml, /tableCell\(displayStatus\(member\.status \|\| ""\), "Status"\)/);
+  assert.match(adminHtml, /tableCell\(displayRole\(approval\.role\), "Role"\)/);
+  assert.match(adminHtml, /tableCell\(displayStatus\(approval\.status\), "Status"\)/);
+  assert.doesNotMatch(appHtml + adminHtml, /textBlock\("Role", workspace\.membershipRole\)/);
+  assert.doesNotMatch(appHtml + adminHtml, /\bViewer\b/);
+});
+
 test("app shell normalizes SQAG display copy without changing app keys or launch endpoint", () => {
   const html = renderAppShellPage();
 
@@ -267,13 +281,13 @@ test("admin shell Activity metadata uses an explicit friendly allowlist", () => 
   const html = renderAdminShellPage();
 
   assert.match(html, /allowedMetadataRows/);
-  assert.match(html, /case "previousRole":\s*return \{ label: "Previous role", value: String\(value\) \}/);
-  assert.match(html, /case "newRole":\s*return \{ label: "New role", value: String\(value\) \}/);
+  assert.match(html, /case "previousRole":\s*return \{ label: "Previous role", value: displayRole\(value\) \}/);
+  assert.match(html, /case "newRole":\s*return \{ label: "New role", value: displayRole\(value\) \}/);
   assert.match(
     html,
-    /case "previousStatus":\s*return \{ label: "Previous status", value: String\(value\) \}/,
+    /case "previousStatus":\s*return \{ label: "Previous status", value: displayStatus\(value\) \}/,
   );
-  assert.match(html, /case "newStatus":\s*return \{ label: "New status", value: String\(value\) \}/);
+  assert.match(html, /case "newStatus":\s*return \{ label: "New status", value: displayStatus\(value\) \}/);
   assert.match(html, /case "appKey":\s*return normalizeAppKeyMetadata\(value\)/);
   assert.match(html, /label: "App", value: "Swooshz Quote Auto Generator"/);
   assert.doesNotMatch(html, /return key\.replace/);
@@ -343,7 +357,7 @@ test("admin shell limits usable controls to owner/admin workspace context", () =
 test("admin shell renders member row actions as a compact Actions menu with internal action modal", () => {
   const html = renderAdminShellPage();
 
-  assert.match(html, /function memberActionsCell\(member, activeOwnerCount\)/);
+  assert.match(html, /function memberActionsCell\(member, activeOwnerCount, label\)/);
   assert.match(html, /menuButton\.textContent = "Actions"/);
   assert.match(html, /closeAllActionMenus/);
   assert.match(html, /actionButton\("Disable Access"/);
@@ -394,6 +408,86 @@ test("admin shell does not render an enabled no-op workspace search control", ()
   assert.doesNotMatch(html, /Search workspace/);
 });
 
+test("platform topbar decorative icons are hidden non-controls without placeholder text", () => {
+  const appTopbar = extractTopbarActions(renderAppShellPage());
+  const adminTopbar = extractTopbarActions(renderAdminShellPage());
+
+  for (const topbar of [appTopbar, adminTopbar]) {
+    assert.match(topbar, /aria-hidden="true"/);
+    assert.match(topbar, /class="topbar-icon/);
+    assert.doesNotMatch(topbar, /<a\b|<button\b|role="button"/i);
+    assert.doesNotMatch(topbar, />\s*(bell|history|account)\s*</i);
+  }
+});
+
+test("future-only navigation controls render disabled instead of clickable links", () => {
+  const html = renderAdminShellPage() + renderLandingPage() + renderSolutionsPage();
+
+  assert.match(html, /<span aria-disabled="true">Help<\/span>/);
+  assert.match(html, /<span aria-disabled="true">Settings<\/span>/);
+  assert.match(html, /<span aria-disabled="true">Blog<\/span>/);
+  assert.match(html, /<span aria-disabled="true">About<\/span>/);
+  assert.match(html, /\.portal-nav span\[aria-disabled="true"\]/);
+  assert.match(html, /pointer-events: none/);
+  assert.doesNotMatch(html, /<a\b[^>]*>\s*(?:Help|Settings|Blog|About)\s*<\/a>/i);
+});
+
+test("admin shell modals support keyboard and backdrop dismissal with visible focus states", () => {
+  const html = renderAdminShellPage();
+
+  assert.match(html, /document\.addEventListener\("keydown"/);
+  assert.match(html, /event\.key === "Escape"/);
+  assert.match(html, /closeAddMemberModal\(\)/);
+  assert.match(html, /closeActionModal\(\)/);
+  assert.match(html, /addMember\.addEventListener\("click"/);
+  assert.match(html, /event\.target === addMember/);
+  assert.match(html, /adminActionModal\.addEventListener\("click"/);
+  assert.match(html, /event\.target === adminActionModal/);
+  assert.match(html, /:focus-visible/);
+});
+
+test("admin shell app access surface avoids raw implementation identifiers", () => {
+  const html = renderAdminShellPage();
+
+  assert.match(html, /sectionHeading\("App Access"\)/);
+  assert.match(html, /Workspace app availability and launch access controls\./);
+  assert.match(html, /displayEntitlementAppName/);
+  assert.match(html, /textBlock\("Workspace access"/);
+  assert.match(html, /Disable access/);
+  assert.match(html, /Allow launch/);
+  assert.doesNotMatch(html, /textBlock\("App key"/);
+  assert.doesNotMatch(html, /textBlock\("Granted by"/);
+  assert.doesNotMatch(html, /textBlock\("Entitlement"/);
+  assert.doesNotMatch(html, /grantedByUserId/);
+});
+
+test("admin shell mobile tables expose row labels without horizontal overflow", () => {
+  const html = renderAdminShellPage();
+
+  assert.match(html, /setCellLabel\(cell, label\)/);
+  assert.match(html, /memberIdentityCell\(member, "Member"\)/);
+  assert.match(html, /roleCell\(member, "Role"\)/);
+  assert.match(html, /metadataCell\(event\.metadata, "Details"\)/);
+  assert.match(html, /min-width: 220px/);
+  assert.match(html, /table-layout: auto/);
+  assert.doesNotMatch(html, /table-layout: fixed/);
+  assert.match(html, /\.admin-layout \.portal-sidebar/);
+  assert.match(html, /height: auto/);
+  assert.match(html, /td::before/);
+  assert.match(html, /content: attr\(data-label\)/);
+  assert.match(html, /overflow-wrap: anywhere/);
+});
+
+test("admin shell activity actors avoid raw ids and private actor emails", () => {
+  const html = renderAdminShellPage();
+
+  assert.match(html, /function actorLabel\(event\)/);
+  assert.match(html, /event\.actorDisplayName \|\|/);
+  assert.match(html, /"Platform user"/);
+  assert.match(html, /"System"/);
+  assert.doesNotMatch(html, /actorEmail/);
+});
+
 test("admin shell shows loading feedback for state-changing admin actions", () => {
   const html = renderAdminShellPage();
 
@@ -439,3 +533,9 @@ test("platform shell module does not import frontend frameworks provider SDKs DB
   assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?)/i);
   assert.doesNotMatch(contents, /node:http|src\/db|\.{1,2}\/db|\.{1,2}\/\.{1,2}\/db/i);
 });
+
+function extractTopbarActions(html) {
+  const match = html.match(/<div class="portal-topbar-actions" aria-hidden="true">[\s\S]*?<\/div>/);
+  assert.ok(match, "expected portal topbar actions container");
+  return match[0];
+}
