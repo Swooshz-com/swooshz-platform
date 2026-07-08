@@ -269,11 +269,11 @@ test("owner and admin can list workspace audit events through admin route", asyn
           id: "audit_new",
           eventType: "workspace.app_entitlement.enabled",
           targetType: "app_entitlement",
-          targetId: "entitlement_koncept_kqag",
+          targetId: "entitlement_koncept_sqag",
           createdAt: now,
           metadata: {
-            appId: "app_kqag",
-            appKey: "kqag",
+            appId: "app_sqag",
+            appKey: "sqag",
             previousStatus: "disabled",
             newStatus: "enabled",
             cookie: "raw-session-token",
@@ -335,12 +335,12 @@ test("owner and admin can list workspace audit events through admin route", asyn
           actorEmail: "owner@example.test",
           eventType: "workspace.app_entitlement.enabled",
           targetType: "app_entitlement",
-          targetId: "entitlement_koncept_kqag",
-          targetLabel: "KQAG access",
+          targetId: "entitlement_koncept_sqag",
+          targetLabel: "SQAG access",
           createdAt: now,
           metadata: {
-            appId: "app_kqag",
-            appKey: "kqag",
+            appId: "app_sqag",
+            appKey: "sqag",
             previousStatus: "disabled",
             newStatus: "enabled",
           },
@@ -480,7 +480,7 @@ test("state-changing admin routes validate Origin and CSRF before mutation", asy
   const invalidCsrf = createAdminRouteFixture({ csrfValid: false });
   const entitlementWithInvalidCsrf = await request({
     method: "POST",
-    url: "/api/platform/workspaces/workspace_koncept_images/app-entitlements/kqag/status?status=disabled",
+    url: "/api/platform/workspaces/workspace_koncept_images/app-entitlements/sqag/status?status=disabled",
     headers: secureSessionHeaders("owner"),
     dependencies: invalidCsrf.dependencies,
   });
@@ -1360,7 +1360,7 @@ test("membership removal route fails safely for missing target and audit failure
   assertResponseIsPrivacySafe(auditFailure.response);
 });
 
-test("owner can list and update KQAG app entitlement through admin routes", async () => {
+test("owner can list and update SQAG app entitlement through admin routes", async () => {
   const fixture = createAdminRouteFixture();
 
   const list = await request({
@@ -1371,13 +1371,13 @@ test("owner can list and update KQAG app entitlement through admin routes", asyn
   });
   const disabled = await request({
     method: "POST",
-    url: "/api/platform/workspaces/workspace_koncept_images/app-entitlements/kqag/status?status=disabled",
+    url: "/api/platform/workspaces/workspace_koncept_images/app-entitlements/sqag/status?status=disabled",
     headers: secureSessionHeaders("owner"),
     dependencies: fixture.dependencies,
   });
   const enabled = await request({
     method: "POST",
-    url: "/api/platform/workspaces/workspace_koncept_images/app-entitlements/kqag/status?status=enabled",
+    url: "/api/platform/workspaces/workspace_koncept_images/app-entitlements/sqag/status?status=enabled",
     headers: secureSessionHeaders("owner"),
     dependencies: fixture.dependencies,
   });
@@ -1386,10 +1386,10 @@ test("owner can list and update KQAG app entitlement through admin routes", asyn
   assert.equal(list.body.outcome, "listed");
   assert.deepEqual(list.body.entitlements, [
     {
-      entitlementId: "entitlement_koncept_kqag",
-      appId: "app_kqag",
-      appKey: "kqag",
-      appName: "KQAG / SAQG",
+      entitlementId: "entitlement_koncept_sqag",
+      appId: "app_sqag",
+      appKey: "sqag",
+      appName: "SQAG",
       appStatus: "private_preview",
       status: "enabled",
       grantedByUserId: "user_owner_example",
@@ -1409,7 +1409,7 @@ test("owner can list and update KQAG app entitlement through admin routes", asyn
   assertResponseIsPrivacySafe(enabled.response);
 });
 
-test("audit append failure through admin route rolls back missing KQAG entitlement creation", async () => {
+test("audit append failure through admin route rolls back missing SQAG entitlement creation", async () => {
   const fixture = createAdminRouteFixture({
     appEntitlements: [],
     failAuditAppend: true,
@@ -1417,7 +1417,7 @@ test("audit append failure through admin route rolls back missing KQAG entitleme
 
   const { response, body } = await request({
     method: "POST",
-    url: "/api/platform/workspaces/workspace_koncept_images/app-entitlements/kqag/status?status=enabled",
+    url: "/api/platform/workspaces/workspace_koncept_images/app-entitlements/sqag/status?status=enabled",
     headers: secureSessionHeaders("owner"),
     dependencies: fixture.dependencies,
   });
@@ -1477,9 +1477,9 @@ function createAdminRouteFixture(overrides = {}) {
         : {}),
     }));
   const app = {
-    id: "app_kqag",
-    key: "kqag",
-    name: "KQAG / SAQG",
+    id: "app_sqag",
+    key: "sqag",
+    name: "SQAG",
     status: "private_preview",
     launchUrl: null,
     createdAt: now,
@@ -1525,7 +1525,7 @@ function createAdminRouteFixture(overrides = {}) {
       overrides.appEntitlements ??
       [
         {
-          id: "entitlement_koncept_kqag",
+          id: "entitlement_koncept_sqag",
           workspaceId: "workspace_koncept_images",
           appId: app.id,
           status: "enabled",
@@ -1694,5 +1694,5 @@ function assertAdminMessagePrivacySafe(message) {
   assert.doesNotMatch(message, /user_[a-z0-9_]+|workspace_[a-z0-9_]+|membership_[a-z0-9_]+/i);
   assert.doesNotMatch(message, /provider|subject|raw claim|claim|oauth|state|nonce/i);
   assert.doesNotMatch(message, /token|cookie|postgres|DATABASE_URL|AUTH_ALLOWED|allowlist/i);
-  assert.doesNotMatch(message, /stack|trace|quote|pricing|generated artifact|KQAG payload/i);
+  assert.doesNotMatch(message, /stack|trace|quote|pricing|generated artifact|SQAG payload/i);
 }

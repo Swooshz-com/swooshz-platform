@@ -224,7 +224,7 @@ test("auth state crypto imports stay in dedicated crypto adapter modules", async
   }
 });
 
-test("auth state adapter modules do not import frontend KQAG provider SDK live DB or frameworks", async () => {
+test("auth state adapter modules do not import frontend SQAG provider SDK live DB or frameworks", async () => {
   const files = [
     "src/auth/auth-state-crypto.ts",
     "src/auth/auth-state-repositories.ts",
@@ -235,7 +235,7 @@ test("auth state adapter modules do not import frontend KQAG provider SDK live D
     const contents = await readFile(filePath, "utf8");
 
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:react|next|vite|express|fastify|hono)/i);
-    assert.doesNotMatch(contents, /from\s+["'][^"']*(?:kqag|clerk|auth0|supabase)/i);
+    assert.doesNotMatch(contents, /from\s+["'][^"']*(?:sqag|clerk|auth0|supabase)/i);
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:pg|node-postgres)/i);
     assert.doesNotMatch(contents, /DATABASE_URL|AUTH_CLIENT_SECRET|SESSION_SECRET/);
   }

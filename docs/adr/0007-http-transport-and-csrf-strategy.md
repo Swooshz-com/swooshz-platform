@@ -8,13 +8,13 @@ Accepted.
 
 Swooshz Platform now has provider-agnostic auth contracts, platform session persistence, storage-agnostic session revocation, a protected app-access decision service, and framework-agnostic browser session cookie plus plain-object HTTP handler contracts.
 
-The repository still has no real HTTP server, framework route wiring, CSRF middleware, frontend, KQAG adapter, live database usage, or app launch tokens. The next implementation step needs a clear route and CSRF posture before real browser-cookie endpoints are wired.
+The repository still has no real HTTP server, framework route wiring, CSRF middleware, frontend, SQAG adapter, live database usage, or app launch tokens. The next implementation step needs a clear route and CSRF posture before real browser-cookie endpoints are wired.
 
 ## Decision
 
 Keep the current code framework-agnostic for the next phase. Define route contracts now and add a real HTTP adapter only in a later PR.
 
-The first real route wiring should adapt the existing plain-object handlers to the selected server/framework boundary. It must not move platform account, session, app-access, or KQAG-launch decisions into framework route code.
+The first real route wiring should adapt the existing plain-object handlers to the selected server/framework boundary. It must not move platform account, session, app-access, or SQAG-launch decisions into framework route code.
 
 ## HTTP Transport And Framework Boundary
 
@@ -69,7 +69,7 @@ Auth callback:
 Safe GETs:
 
 - `GET /healthz` is unauthenticated and side-effect free.
-- `GET /api/platform/session/app-access` reads a browser session cookie and selected workspace/app query parameters. It must not mutate platform records, create launch tokens, or call KQAG.
+- `GET /api/platform/session/app-access` reads a browser session cookie and selected workspace/app query parameters. It must not mutate platform records, create launch tokens, or call SQAG.
 
 ## Initial Route Contract Map
 
@@ -89,7 +89,7 @@ Initial routes:
   - Calls the protected app-access handler contract.
   - Returns privacy-safe `200`, `401`, `403`, or `500` responses.
   - Does not mutate platform records.
-  - Does not create app launch tokens or call KQAG.
+  - Does not create app launch tokens or call SQAG.
 
 - `POST /api/platform/logout`
   - Reads browser session cookie if present.
@@ -104,7 +104,7 @@ Deferred routes:
 - `GET /api/auth/callback`.
 - Workspace selection endpoints.
 - Invitation acceptance endpoints.
-- KQAG app launch endpoint.
+- SQAG app launch endpoint.
 - Admin workspace, membership, invitation, app registry, and entitlement APIs.
 - Internal dashboards or frontend routes.
 
@@ -215,8 +215,8 @@ This ADR does not implement:
 - CSRF token generation, storage, or middleware.
 - App launch token.
 - Redirect URL generation.
-- KQAG adapter.
-- KQAG repo changes.
+- SQAG adapter.
+- SQAG repo changes.
 - Workspace selection UI.
 - Membership changes.
 - Entitlement changes.

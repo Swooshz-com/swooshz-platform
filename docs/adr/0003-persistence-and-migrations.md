@@ -15,7 +15,7 @@ The platform account model needs durable relational state for users, workspaces,
 - Persist platform account and app-access state durably and consistently.
 - Keep domain logic independent from database query details.
 - Support auditable changes to membership, invitation, session, and entitlement state.
-- Preserve the KQAG boundary by avoiding storage of quote workflow payloads in the platform database.
+- Preserve the SQAG boundary by avoiding storage of quote workflow payloads in the platform database.
 - Keep local development deterministic once a database is added.
 - Keep production/staging operations reviewable, reversible or forward-safe where practical, and explicit about destructive risk.
 
@@ -34,7 +34,7 @@ The platform database owns:
 - App entitlements.
 - Later billing or credit metadata if explicitly approved.
 
-KQAG owns quote workflow data until a later KQAG platform adapter phase explicitly changes runtime, session, or history storage boundaries.
+SQAG owns quote workflow data until a later SQAG platform adapter phase explicitly changes runtime, session, or history storage boundaries.
 
 The platform should not store raw quote exports, real pricing files, embedded logos, bank details, or app workflow payloads unless a later ADR explicitly approves that expanded storage scope.
 
@@ -88,7 +88,7 @@ This PR does not add migration files, a migration runner, database packages, or 
 
 ## Local Development Strategy
 
-Local development can later use a deterministic local database setup with documented reset and migration commands. The local setup should avoid secrets, private customer data, real payment data, provider tokens, and KQAG app payloads.
+Local development can later use a deterministic local database setup with documented reset and migration commands. The local setup should avoid secrets, private customer data, real payment data, provider tokens, and SQAG app payloads.
 
 Synthetic fixtures may be used for tests. They must be clearly identified as fixtures, not production seed data.
 
@@ -166,7 +166,7 @@ Suspended or disabled entitlement status should block app launch even for worksp
 
 Billing and credits remain reserved concepts. If approved later, they should have dedicated relational records such as billing customers, subscriptions, invoices, credit pools, credit transactions, and usage events.
 
-Payment provider ids, invoice metadata, credit balances, and usage records must not be added to users, memberships, or KQAG-owned workflow storage.
+Payment provider ids, invoice metadata, credit balances, and usage records must not be added to users, memberships, or SQAG-owned workflow storage.
 
 ## Backup And Retention Considerations
 
@@ -179,7 +179,7 @@ Backups must be treated as sensitive operational data and must not be committed 
 ## Privacy And Security Rules
 
 - Never commit secrets, populated `.env` files, provider tokens, private customer files, bank data, payment details, database dumps, or provider responses.
-- Do not store KQAG quote exports, real pricing files, embedded logos, bank details, or app workflow payloads in the platform database unless separately approved.
+- Do not store SQAG quote exports, real pricing files, embedded logos, bank details, or app workflow payloads in the platform database unless separately approved.
 - Keep provider identifiers separate from business profile fields.
 - Store invitation tokens hashed if token storage is implemented.
 - Keep sessions server-side and avoid exposing raw session data to browsers.
@@ -197,7 +197,7 @@ Backups must be treated as sensitive operational data and must not be committed 
 - Backup, retention, restoration, and deletion policy.
 - Session cookie details and CSRF strategy.
 - Provider identity matching edge cases.
-- KQAG runtime/history storage changes in the adapter phase.
+- SQAG runtime/history storage changes in the adapter phase.
 - Billing and credits persistence if approved.
 
 ## Explicit Non-Goals
@@ -219,4 +219,4 @@ Backups must be treated as sensitive operational data and must not be committed 
 - No deployment, VPS, Coolify, DNS, TLS, or firewall work.
 - No secrets.
 - No real customer, company, quote, pricing, logo, payment, or bank data.
-- No KQAG repository changes.
+- No SQAG repository changes.

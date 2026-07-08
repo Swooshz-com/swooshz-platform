@@ -677,7 +677,7 @@ export function renderAdminShellPage(): string {
               );
               row.append(detail);
 
-              if (entitlement.appKey === "kqag") {
+              if (entitlement.appKey === "sqag") {
                 const button = document.createElement("button");
                 button.type = "button";
                 button.className = "secondary-action compact";
@@ -937,7 +937,7 @@ export function renderAdminShellPage(): string {
           async function updateEntitlement(nextStatus) {
             await postAdminAction(
               adminEntitlementsUrl(state.workspace.workspaceId) +
-                "/kqag/status?status=" + encodeURIComponent(nextStatus),
+                "/sqag/status?status=" + encodeURIComponent(nextStatus),
               "Workspace admin change saved.",
               { loadingMessage: "Updating app access..." }
             );
@@ -1201,9 +1201,9 @@ export function renderAdminShellPage(): string {
           function activityLabel(event) {
             switch (event.eventType) {
               case "workspace.app_entitlement.enabled":
-                return "KQAG access enabled";
+                return "SQAG access enabled";
               case "workspace.app_entitlement.disabled":
-                return "KQAG access disabled";
+                return "SQAG access disabled";
               case "workspace.membership.added":
                 return "Member added";
               case "workspace.membership.disabled":
@@ -1228,7 +1228,7 @@ export function renderAdminShellPage(): string {
           function subjectLabel(event) {
             switch (event.targetType) {
               case "app_entitlement":
-                return "KQAG access";
+                return "SQAG access";
               case "membership":
                 return event.targetLabel || "Unknown user";
               case "membership_approval":
@@ -1306,11 +1306,11 @@ export function renderAdminShellPage(): string {
           }
 
           function normalizeAppKeyMetadata(value) {
-            if (String(value).toLowerCase() !== "kqag") {
+            if (String(value).toLowerCase() !== "sqag") {
               return null;
             }
 
-            return { label: "App", value: "KQAG" };
+            return { label: "App", value: "SQAG" };
           }
 
           function isSafeMetadataValue(value) {

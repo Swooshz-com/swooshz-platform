@@ -308,7 +308,7 @@ test("validator never returns raw token hash or storage errors", async () => {
   assertPrivacySafeSerialized(result);
 });
 
-test("CSRF lifecycle modules do not import frontend KQAG provider SDK framework live DB or migrations", async () => {
+test("CSRF lifecycle modules do not import frontend SQAG provider SDK framework live DB or migrations", async () => {
   const files = [
     "src/http/csrf-token-repositories.ts",
     "src/http/csrf-token-service.ts",
@@ -318,7 +318,7 @@ test("CSRF lifecycle modules do not import frontend KQAG provider SDK framework 
     const contents = await readFile(filePath, "utf8");
 
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:react|next|vite|express|fastify|hono)/i);
-    assert.doesNotMatch(contents, /from\s+["'][^"']*(?:kqag|clerk|auth0|supabase)/i);
+    assert.doesNotMatch(contents, /from\s+["'][^"']*(?:sqag|clerk|auth0|supabase)/i);
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?)/i);
     assert.doesNotMatch(contents, /src\/db|\.{1,2}\/db|\.{1,2}\/\.{1,2}\/db/i);
   }

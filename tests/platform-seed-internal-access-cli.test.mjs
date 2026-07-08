@@ -68,11 +68,40 @@ test("seed CLI config normalizes safe defaults without exposing private values",
     normalizedUserEmail: "owner@example.test",
     workspaceSlug: "koncept-images-pte-ltd",
     workspaceName: "Koncept Images Pte Ltd",
-    appKey: "kqag",
-    appName: "KQAG / SAQG",
+    appKey: "sqag",
+    appName: "SQAG",
     membershipRole: "owner",
     appLaunchUrl: null,
   });
+});
+
+test("seed CLI rejects app identity overrides before DB connection", async () => {
+  for (const override of [
+    { PLATFORM_SEED_APP_KEY: "kqag" },
+    { PLATFORM_SEED_APP_KEY: "sqag" },
+    { PLATFORM_SEED_APP_NAME: "SQAG" },
+  ]) {
+    let connected = false;
+
+    await assert.rejects(
+      () => executePlatformSeedInternalAccess({
+        env: {
+          DATABASE_URL: privateDatabasePlaceholder,
+          ...validEnv(),
+          ...override,
+        },
+        now: () => now,
+        createDatabaseRepositories() {
+          connected = true;
+          throw new Error("should not connect");
+        },
+        writeLine() {},
+      }),
+      assertSeedCliError("unsupported_app_identity_override"),
+    );
+
+    assert.equal(connected, false);
+  }
 });
 
 test("existing user with provider identity gets idempotent workspace app entitlement and membership", async () => {
@@ -89,8 +118,8 @@ test("existing user with provider identity gets idempotent workspace app entitle
   assert.equal(first.user.email, "owner@example.test");
   assert.equal(first.providerIdentity.id, "provider_identity_owner");
   assert.equal(first.workspace.slug, "koncept-images-pte-ltd");
-  assert.equal(first.app.key, "kqag");
-  assert.equal(first.app.name, "KQAG / SAQG");
+  assert.equal(first.app.key, "sqag");
+  assert.equal(first.app.name, "SQAG");
   assert.equal(first.membership.role, "owner");
   assert.deepEqual(first.created, {
     workspace: true,
@@ -154,7 +183,7 @@ test("seed rejects unavailable provider identity repository safely", async () =>
   assert.equal(fixture.records.workspaces.length, 0);
 });
 
-test("seed rejects viewer role for KQAG and permits owner admin member roles", async () => {
+test("seed rejects viewer role for SQAG and permits owner admin member roles", async () => {
   await assert.rejects(
     async () => {
       const config = readPlatformSeedInternalAccessConfig({
@@ -209,7 +238,7 @@ test("seed supports optional app launch URL without printing it in summary outpu
   const result = await executePlatformSeedInternalAccess({
     env: {
       ...validEnv(),
-      PLATFORM_SEED_APP_LAUNCH_URL: "https://apps.example.test/kqag",
+      PLATFORM_SEED_APP_LAUNCH_URL: "https://apps.example.test/sqag",
     },
     now: () => now,
     createDatabaseRepositories() {
@@ -220,10 +249,10 @@ test("seed supports optional app launch URL without printing it in summary outpu
     },
   });
 
-  assert.equal(result.app.launchUrl, "https://apps.example.test/kqag");
+  assert.equal(result.app.launchUrl, "https://apps.example.test/sqag");
   assert.equal(fixture.closed, true);
   assert.match(lines.join("\n"), /workspace=koncept-images-pte-ltd/);
-  assert.match(lines.join("\n"), /app=kqag/);
+  assert.match(lines.join("\n"), /app=sqag/);
   assert.match(lines.join("\n"), /user=owner@example\.test/);
   assert.match(lines.join("\n"), /role=owner/);
   assert.doesNotMatch(lines.join("\n"), /apps\.example\.test/);
@@ -240,7 +269,7 @@ test("seed CLI import and module boundaries are side-effect safe", async () => {
   );
   assert.doesNotMatch(script, /drizzle-orm\/node-postgres\/migrator|db-migrate|migrate\(/);
   assert.doesNotMatch(script, /from\s+["'][^"']*(?:react|next|vite|express|fastify|hono)/i);
-  assert.doesNotMatch(script, /from\s+["'][^"']*(?:kqag|clerk|auth0|supabase|stripe)/i);
+  assert.doesNotMatch(script, /from\s+["'][^"']*(?:sqag|clerk|auth0|supabase|stripe)/i);
   assert.doesNotMatch(script, /userinfo|jwks|token_endpoint|authorization_endpoint/i);
 });
 

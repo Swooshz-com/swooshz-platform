@@ -15,7 +15,7 @@ Current scope:
 - No committed `.env` or real `DATABASE_URL`.
 - No auth provider integration.
 - No frontend or backend routes.
-- No KQAG adapter or KQAG data storage.
+- No SQAG adapter or SQAG data storage.
 
 The pure domain core under `src/accounts`, `src/apps`, and `src/access` must remain storage-agnostic. Repository/service ports under `src/platform` also remain free of Drizzle and database implementation imports. Drizzle adapters under `src/db` map database rows to plain typed records before any domain access decision is made.
 

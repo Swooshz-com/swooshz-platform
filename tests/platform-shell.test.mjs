@@ -85,7 +85,7 @@ test("admin shell references protected admin APIs and CSRF-protected actions", (
   assert.match(html, /\/remove/);
   assert.match(html, /\/app-entitlements/);
   assert.match(html, /\/audit-events\?limit=50/);
-  assert.match(html, /\/kqag\/status\?status=/);
+  assert.match(html, /\/sqag\/status\?status=/);
   assert.match(html, /\/api\/platform\/logout/);
   assert.match(html, /method: "POST"/);
   assert.match(html, /"x-csrf-token": csrfToken/);
@@ -144,8 +144,8 @@ test("admin shell includes Activity section for safe audit browsing", () => {
   assert.match(html, /adminAuditEventsUrl/);
   assert.match(html, /activityLabel/);
   assert.match(html, /metadataRows/);
-  assert.match(html, /KQAG access enabled/);
-  assert.match(html, /KQAG access disabled/);
+  assert.match(html, /SQAG access enabled/);
+  assert.match(html, /SQAG access disabled/);
   assert.match(html, /Member role changed/);
   assert.match(html, /Member removed/);
   assert.match(html, /Membership approval created/);
@@ -165,7 +165,7 @@ test("admin shell includes Activity section for safe audit browsing", () => {
   assert.match(html, /Previous role/);
   assert.match(html, /New status/);
   assert.match(html, /normalizeAppKeyMetadata/);
-  assert.match(html, /value: "KQAG"/);
+  assert.match(html, /value: "SQAG"/);
   assert.match(html, /Platform user/);
   assert.match(html, /System/);
   assert.match(html, /title = raw/);
@@ -183,7 +183,7 @@ test("admin shell Activity metadata uses an explicit friendly allowlist", () => 
   );
   assert.match(html, /case "newStatus":\s*return \{ label: "New status", value: String\(value\) \}/);
   assert.match(html, /case "appKey":\s*return normalizeAppKeyMetadata\(value\)/);
-  assert.match(html, /label: "App", value: "KQAG"/);
+  assert.match(html, /label: "App", value: "SQAG"/);
   assert.doesNotMatch(html, /return key\.replace/);
   assert.doesNotMatch(html, /metadataLabel\(key\)/);
   assert.doesNotMatch(html, /metadataValue\(key, value\)/);
@@ -291,7 +291,7 @@ test("admin shell shows loading feedback for state-changing admin actions", () =
   assert.match(html, /showActionStatus\(loadingMessage, true\)/);
 });
 
-test("admin shell keeps secret raw-auth and KQAG quote material out of static HTML", () => {
+test("admin shell keeps secret raw-auth and SQAG quote material out of static HTML", () => {
   const html = renderAdminShellPage();
 
   assert.doesNotMatch(html, /swooshz_session=session_|session-secret/i);
@@ -314,11 +314,11 @@ test("auth error page renders safe retry actions", () => {
   assert.doesNotMatch(html, /cookie|DATABASE_URL|postgresql:\/\//i);
 });
 
-test("platform shell module does not import frontend frameworks provider SDKs DB KQAG or migrations", async () => {
+test("platform shell module does not import frontend frameworks provider SDKs DB SQAG or migrations", async () => {
   const contents = await readFile("src/http/platform-shell.ts", "utf8");
 
   assert.doesNotMatch(contents, /from\s+["'][^"']*(?:react|next|vite|express|fastify|hono)/i);
-  assert.doesNotMatch(contents, /from\s+["'][^"']*(?:kqag|clerk|auth0|supabase|stripe)/i);
+  assert.doesNotMatch(contents, /from\s+["'][^"']*(?:sqag|clerk|auth0|supabase|stripe)/i);
   assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?)/i);
   assert.doesNotMatch(contents, /node:http|src\/db|\.{1,2}\/db|\.{1,2}\/\.{1,2}\/db/i);
 });

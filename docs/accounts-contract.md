@@ -6,7 +6,7 @@ This document defines the platform account domain before implementation. The goa
 
 The platform owns users, workspaces, memberships, roles, invitations, sessions, audit events, app records, and app entitlements. Billing and credits are reserved concepts only in this phase.
 
-KQAG/SAQG and other apps own their app-specific workflow state. They must not create separate user, workspace, billing, or entitlement concepts.
+SQAG and other apps own their app-specific workflow state. They must not create separate user, workspace, billing, or entitlement concepts.
 
 ## Core Entities
 
@@ -222,8 +222,8 @@ An app is a platform-known product surface that can be enabled for workspaces.
 
 MVP fields:
 
-- `id`: stable app id, for example `kqag`.
-- `key`: stable slug, for example `kqag`.
+- `id`: stable app id, for example `sqag`.
+- `key`: stable slug, for example `sqag`.
 - `name`: user-visible app name.
 - `status`: `available`, `private_preview`, `disabled`.
 - `launch_url`: nullable future app launch URL.
@@ -283,7 +283,7 @@ Invariants:
 Internal workspace/app-access seed code is a platform-only backend contract. It may prepare:
 
 - An active internal workspace by stable slug.
-- The `kqag` app registry record.
+- The `sqag` app registry record.
 - An enabled or trial workspace entitlement for that app.
 - An active membership grant for an owner, admin, or member.
 
@@ -295,9 +295,9 @@ Identity-linking safety is required:
 - Creating a new user together with a provider identity is deferred until an explicit transactional identity seed boundary exists.
 - Provider-identity user creation must fail before any platform writes in this PR so it cannot leave behind a partial active user or identity record.
 - The seed must never create an email-only user intended for future provider linking. The auth resolver intentionally rejects linking a new provider identity to an existing email-only user to avoid account takeover, and seed code must preserve that behaviour.
-- Viewer grants must not be seeded for KQAG launch because the current app-access decision blocks KQAG viewer launch.
+- Viewer grants must not be seeded for SQAG launch because the current app-access decision blocks SQAG viewer launch.
 
-This contract does not add a fake-login shortcut, hardcoded production account, provider SDK, provider network call, migration execution path, frontend, KQAG adapter, app launch token, billing, deployment script, or live seed command.
+This contract does not add a fake-login shortcut, hardcoded production account, provider SDK, provider network call, migration execution path, frontend, SQAG adapter, app launch token, billing, deployment script, or live seed command.
 
 ### Billing / Credits Reserved Concepts
 
@@ -328,7 +328,7 @@ Invariants:
 
 - Do not put Stripe or payment provider ids on `User`, `Workspace`, `Membership`, or `App`.
 - Billing state may affect entitlement status later.
-- Credits must never live inside KQAG/SAQG.
+- Credits must never live inside SQAG.
 
 ## Access Decision Contract
 
@@ -390,15 +390,15 @@ Membership:
 
 App:
 
-- `id`: `app_kqag`
-- `key`: `kqag`
-- `name`: `KQAG / SAQG`
+- `id`: `app_sqag`
+- `key`: `sqag`
+- `name`: `SQAG`
 - `status`: `private_preview`
 
 App entitlement:
 
 - `workspace_id`: `workspace_koncept_images`
-- `app_id`: `app_kqag`
+- `app_id`: `app_sqag`
 - `status`: `enabled`
 
-Expected launch decision for `user_owner_example` in `workspace_koncept_images` launching `app_kqag`: `allowed`.
+Expected launch decision for `user_owner_example` in `workspace_koncept_images` launching `app_sqag`: `allowed`.

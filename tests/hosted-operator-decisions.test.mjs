@@ -6,7 +6,7 @@ const decisionRecordPath = "docs/hosted-internal-alpha-operator-decisions.md";
 
 const requiredDecisionItems = [
   "Platform host/provider choice",
-  "KQAG host/provider choice",
+  "SQAG host/provider choice",
   "TLS/reverse proxy approach",
   "Process manager/container approach",
   "PostgreSQL provider and backup/restore owner",
@@ -17,8 +17,8 @@ const requiredDecisionItems = [
   "Log retention/access owner",
   "First owner/admin identity approval outside repo",
   "Add-existing-user internal alpha process owner",
-  "KQAG handoff mode decision: `manual` first vs `server_handoff`",
-  "Cross-host KQAG session/cookie strategy decision before `server_handoff`",
+  "SQAG handoff mode decision: `manual` first vs `server_handoff`",
+  "Cross-host SQAG session/cookie strategy decision before `server_handoff`",
   "Incident contact/escalation path",
   "Go/no-go approver",
 ];
@@ -60,7 +60,7 @@ test("hosted operator decision record aligns the readiness gate and linked docs"
   assert.match(record, /does not approve actual deployment/i);
   assert.match(
     record,
-    /does not prove OIDC, database, KQAG, backups, rollback, logs, session cookies, or cross-host handoff work/i,
+    /does not prove OIDC, database, SQAG, backups, rollback, logs, session cookies, or cross-host handoff work/i,
   );
   assert.match(record, /require operator approval and smoke testing/i);
 
@@ -70,17 +70,17 @@ test("hosted operator decision record aligns the readiness gate and linked docs"
   assert.match(readme, /docs\/hosted-internal-alpha-operator-decisions\.md/);
 });
 
-test("hosted operator decision record confirms Platform and KQAG boundaries", async () => {
+test("hosted operator decision record confirms Platform and SQAG boundaries", async () => {
   const record = await readDecisionRecord();
 
-  assert.match(record, /Platform does not own KQAG quote data/i);
+  assert.match(record, /Platform does not own SQAG quote data/i);
   assert.match(
     record,
-    /KQAG deployment\/runtime\/data decisions remain outside this Platform PR except for Platform handoff placeholders/i,
+    /SQAG deployment\/runtime\/data decisions remain outside this Platform PR except for Platform handoff placeholders/i,
   );
   assert.match(
     record,
-    /No KQAG app-data editing, KQAG profiles\/pricing, quote history, generated artifacts, or quote sessions move into Platform/i,
+    /No SQAG app-data editing, SQAG profiles\/pricing, quote history, generated artifacts, or quote sessions move into Platform/i,
   );
 });
 

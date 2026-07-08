@@ -103,6 +103,21 @@ test("database schema and migrations include auth_states without raw state or no
   assert.doesNotMatch(migrationSql, /raw_state|raw_nonce|state_value|nonce_value/i);
 });
 
+test("database migrations include one-way SQAG app-key data migration", async () => {
+  const migrationSql = await readMigrationSql();
+  const appKeyMigrationSql = migrationSql
+    .split("--> statement-breakpoint")
+    .filter((statement) => /app_sqag|app_entitlements|app_launch_tokens/i.test(statement))
+    .join("\n");
+
+  assert.match(appKeyMigrationSql, /INSERT INTO "apps"/);
+  assert.match(appKeyMigrationSql, /'app_sqag'/);
+  assert.match(appKeyMigrationSql, /'sqag'/);
+  assert.match(appKeyMigrationSql, /UPDATE "app_entitlements"/);
+  assert.match(appKeyMigrationSql, /UPDATE "app_launch_tokens"/);
+  assert.match(migrationSql, /DELETE FROM "apps"\s+WHERE "key" = 'kqag'/);
+});
+
 test("pure domain modules do not import database implementation details", async () => {
   const domainFiles = [
     "src/accounts/types.ts",

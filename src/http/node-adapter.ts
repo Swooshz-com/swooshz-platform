@@ -18,13 +18,13 @@ import {
   handleCsrfTokenIssueRequest,
   handleAppLaunchTokenConsumeRequest,
   handleAppLaunchIntentRequest,
-  handleKqagBrowserLaunchRequest,
+  handleSqagBrowserLaunchRequest,
   handleLogoutRequest,
   handleProtectedAppAccessRequest,
   handleSessionContextRequest,
   handleWorkspaceAppEntitlementsAdminRequest,
   handleWorkspaceAuditEventsAdminRequest,
-  handleWorkspaceKqagEntitlementStatusRequest,
+  handleWorkspaceSqagEntitlementStatusRequest,
   handleWorkspaceMemberAddRequest,
   handleWorkspaceMembersAdminRequest,
   handleWorkspaceMemberRoleChangeRequest,
@@ -35,7 +35,7 @@ import {
   handleWorkspaceMembershipReactivateRequest,
   type HttpRequestHeaders,
   type HttpResponseLike,
-  type KqagBrowserLaunchDependencies,
+  type SqagBrowserLaunchDependencies,
 } from "./handlers.js";
 import type { HttpOriginValidationConfig } from "./origin-validation.js";
 import {
@@ -65,7 +65,7 @@ export interface NodePlatformHttpAdapterDependencies {
   authCallback?: AuthCallbackHttpDependencies;
   appLaunchIntent?: AppLaunchIntentDependencies;
   appLaunchTokenConsume?: AppLaunchTokenConsumeDependencies;
-  kqagBrowserLaunch?: KqagBrowserLaunchDependencies["kqag"];
+  sqagBrowserLaunch?: SqagBrowserLaunchDependencies["sqag"];
   billingGate?: BillingGate;
   workspaceAdminIdFactory?: WorkspaceAdminIdFactory;
 }
@@ -500,7 +500,7 @@ export async function handleNodePlatformHttpRequest(
     );
   }
 
-  if (route.id === "platform_workspace_kqag_entitlement_status") {
+  if (route.id === "platform_workspace_sqag_entitlement_status") {
     const status = parsedUrl.searchParams.get("status");
 
     if (!status) {
@@ -524,7 +524,7 @@ export async function handleNodePlatformHttpRequest(
     }
 
     return toNodeResponse(
-      await handleWorkspaceKqagEntitlementStatusRequest(dependencies.repositories, {
+      await handleWorkspaceSqagEntitlementStatusRequest(dependencies.repositories, {
         headers,
         workspaceId: requiredRouteParam(routeMatch, "workspaceId"),
         status,
@@ -588,7 +588,7 @@ export async function handleNodePlatformHttpRequest(
     );
   }
 
-  if (route.id === "platform_kqag_launch_open") {
+  if (route.id === "platform_sqag_launch_open") {
     const selectedWorkspaceId = parsedUrl.searchParams.get("workspaceId");
     const appKey = parsedUrl.searchParams.get("appKey");
 
@@ -621,7 +621,7 @@ export async function handleNodePlatformHttpRequest(
     }
 
     const securityResult = await validateHttpRequestSecurityForRoute({
-      route: getHttpRouteContract("platform_kqag_launch_open"),
+      route: getHttpRouteContract("platform_sqag_launch_open"),
       headers,
       sessionId,
       now,
@@ -639,17 +639,17 @@ export async function handleNodePlatformHttpRequest(
 
     if (
       !dependencies.appLaunchIntent ||
-      !dependencies.kqagBrowserLaunch ||
-      !isSafeSameHostKqagLaunch(headers, dependencies.kqagBrowserLaunch.baseUrl)
+      !dependencies.sqagBrowserLaunch ||
+      !isSafeSameHostSqagLaunch(headers, dependencies.sqagBrowserLaunch.baseUrl)
     ) {
-      return kqagLaunchNotConfiguredResponse();
+      return sqagLaunchNotConfiguredResponse();
     }
 
     return toNodeResponse(
-      await handleKqagBrowserLaunchRequest(
+      await handleSqagBrowserLaunchRequest(
         {
           appLaunchIntent: dependencies.appLaunchIntent,
-          kqag: dependencies.kqagBrowserLaunch,
+          sqag: dependencies.sqagBrowserLaunch,
         },
         {
           headers,
@@ -1000,12 +1000,12 @@ function appLaunchConsumeFailureResponse(): NodePlatformHttpResponse {
   );
 }
 
-function kqagLaunchNotConfiguredResponse(): NodePlatformHttpResponse {
+function sqagLaunchNotConfiguredResponse(): NodePlatformHttpResponse {
   return jsonResponse(
     503,
     {
       outcome: "error",
-      message: "KQAG browser launch is not configured.",
+      message: "SQAG browser launch is not configured.",
     },
     noStoreHeaders(),
   );
@@ -1067,7 +1067,7 @@ function htmlResponse(
   };
 }
 
-function isSafeSameHostKqagLaunch(
+function isSafeSameHostSqagLaunch(
   headers: HttpRequestHeaders,
   baseUrl: string,
 ): boolean {

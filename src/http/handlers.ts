@@ -108,7 +108,7 @@ export interface AppLaunchTokenConsumeHttpRequest {
   now: string;
 }
 
-export interface KqagBrowserLaunchHttpClient {
+export interface SqagBrowserLaunchHttpClient {
   post(input: {
     url: string;
     headers: HttpRequestHeaders;
@@ -119,15 +119,15 @@ export interface KqagBrowserLaunchHttpClient {
   }>;
 }
 
-export interface KqagBrowserLaunchDependencies {
+export interface SqagBrowserLaunchDependencies {
   appLaunchIntent: AppLaunchIntentDependencies;
-  kqag: {
+  sqag: {
     baseUrl: string;
-    httpClient: KqagBrowserLaunchHttpClient;
+    httpClient: SqagBrowserLaunchHttpClient;
   };
 }
 
-export interface KqagBrowserLaunchHttpRequest {
+export interface SqagBrowserLaunchHttpRequest {
   headers?: HttpRequestHeaders;
   selectedWorkspaceId: string;
   appKey: string;
@@ -180,7 +180,7 @@ export interface WorkspaceMembershipRemoveHttpRequest extends WorkspaceAdminHttp
   auditEventId: string;
 }
 
-export interface WorkspaceKqagEntitlementStatusHttpRequest extends WorkspaceAdminHttpRequest {
+export interface WorkspaceSqagEntitlementStatusHttpRequest extends WorkspaceAdminHttpRequest {
   status: string;
   auditEventId: string;
   entitlementId: string;
@@ -430,9 +430,9 @@ export async function handleAppLaunchTokenConsumeRequest(
   }
 }
 
-export async function handleKqagBrowserLaunchRequest(
-  dependencies: KqagBrowserLaunchDependencies,
-  request: KqagBrowserLaunchHttpRequest,
+export async function handleSqagBrowserLaunchRequest(
+  dependencies: SqagBrowserLaunchDependencies,
+  request: SqagBrowserLaunchHttpRequest,
 ): Promise<HttpResponseLike> {
   const sessionId = extractSessionId(request.headers, request.cookie);
 
@@ -451,7 +451,7 @@ export async function handleKqagBrowserLaunchRequest(
     };
   }
 
-  if (request.appKey !== "kqag") {
+  if (request.appKey !== "sqag") {
     return {
       status: 403,
       headers: noStoreHeaders(),
@@ -472,7 +472,7 @@ export async function handleKqagBrowserLaunchRequest(
       now: request.now,
     });
   } catch {
-    return kqagLaunchFailure();
+    return sqagLaunchFailure();
   }
 
   if (launch.outcome === "unauthenticated") {
@@ -491,33 +491,33 @@ export async function handleKqagBrowserLaunchRequest(
     };
   }
 
-  const baseUrl = parseKqagBaseUrl(dependencies.kqag.baseUrl);
+  const baseUrl = parseSqagBaseUrl(dependencies.sqag.baseUrl);
 
   if (!baseUrl) {
-    return kqagLaunchNotConfigured();
+    return sqagLaunchNotConfigured();
   }
 
-  let kqagResponse: Awaited<ReturnType<KqagBrowserLaunchHttpClient["post"]>>;
+  let sqagResponse: Awaited<ReturnType<SqagBrowserLaunchHttpClient["post"]>>;
 
   try {
-    kqagResponse = await dependencies.kqag.httpClient.post({
+    sqagResponse = await dependencies.sqag.httpClient.post({
       url: new URL("/api/platform/launch", baseUrl).toString(),
       headers: {
         "x-app-launch-token": launch.launchToken,
       },
     });
   } catch {
-    return kqagLaunchFailure();
+    return sqagLaunchFailure();
   }
 
-  if (kqagResponse.status < 200 || kqagResponse.status >= 300) {
-    return kqagLaunchFailure();
+  if (sqagResponse.status < 200 || sqagResponse.status >= 300) {
+    return sqagLaunchFailure();
   }
 
-  const setCookie = readHeader(kqagResponse.headers, "set-cookie");
+  const setCookie = readHeader(sqagResponse.headers, "set-cookie");
 
   if (!setCookie) {
-    return kqagLaunchFailure();
+    return sqagLaunchFailure();
   }
 
   return {
@@ -867,9 +867,9 @@ export async function handleWorkspaceAuditEventsAdminRequest(
   }
 }
 
-export async function handleWorkspaceKqagEntitlementStatusRequest(
+export async function handleWorkspaceSqagEntitlementStatusRequest(
   repositories: PlatformRepositories,
-  request: WorkspaceKqagEntitlementStatusHttpRequest,
+  request: WorkspaceSqagEntitlementStatusHttpRequest,
 ): Promise<HttpResponseLike> {
   const sessionId = extractSessionId(request.headers, request.cookie);
 
@@ -882,7 +882,7 @@ export async function handleWorkspaceKqagEntitlementStatusRequest(
       sessionId,
       workspaceId: request.workspaceId,
       now: request.now,
-      appKey: "kqag",
+      appKey: "sqag",
       status: request.status as Extract<EntitlementStatus, "enabled" | "disabled">,
       auditEventId: request.auditEventId,
       entitlementId: request.entitlementId,
@@ -897,7 +897,7 @@ export async function handleWorkspaceKqagEntitlementStatusRequest(
           entitlementId: entitlement.id,
           workspaceId: entitlement.workspaceId,
           appId: entitlement.appId,
-          appKey: "kqag",
+          appKey: "sqag",
           status: entitlement.status,
           grantedByUserId: entitlement.grantedByUserId,
           updatedAt: entitlement.updatedAt,
@@ -1287,29 +1287,29 @@ function appLaunchConsumeFailure() {
   };
 }
 
-function kqagLaunchFailure(): HttpResponseLike {
+function sqagLaunchFailure(): HttpResponseLike {
   return {
     status: 502,
     headers: noStoreHeaders(),
     body: {
       outcome: "error",
-      message: "KQAG browser launch could not be completed.",
+      message: "SQAG browser launch could not be completed.",
     },
   };
 }
 
-function kqagLaunchNotConfigured(): HttpResponseLike {
+function sqagLaunchNotConfigured(): HttpResponseLike {
   return {
     status: 503,
     headers: noStoreHeaders(),
     body: {
       outcome: "error",
-      message: "KQAG browser launch is not configured.",
+      message: "SQAG browser launch is not configured.",
     },
   };
 }
 
-function parseKqagBaseUrl(value: string): URL | null {
+function parseSqagBaseUrl(value: string): URL | null {
   try {
     const parsed = new URL(value);
 

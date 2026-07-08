@@ -69,7 +69,7 @@ test("readiness check fails with safe missing and invalid env names only", () =>
       DATABASE_URL: privateValues[0],
       SESSION_SECRET: "short",
       AUTH_CLIENT_SECRET: privateValues[2],
-      PLATFORM_KQAG_LAUNCH_MODE: "server_handoff",
+      PLATFORM_SQAG_LAUNCH_MODE: "server_handoff",
     },
     writeLine(line) {
       lines.push(line);
@@ -85,7 +85,7 @@ test("readiness check fails with safe missing and invalid env names only", () =>
   assert.match(output, /readiness_check=fail/);
   assert.match(output, /missing required env: PLATFORM_PUBLIC_BASE_URL/);
   assert.match(output, /invalid secret env: SESSION_SECRET/);
-  assert.match(output, /missing conditional env: PLATFORM_KQAG_APP_BASE_URL/);
+  assert.match(output, /missing conditional env: PLATFORM_SQAG_APP_BASE_URL/);
   assertNoPrivateMaterial(output);
 });
 
@@ -135,7 +135,7 @@ test("hosted browser and provider URLs must use https without echoing values", (
     ["AUTH_TOKEN_URL", "http://issuer.placeholder.invalid/oauth2/token"],
     ["AUTH_JWKS_URL", "http://issuer.placeholder.invalid/.well-known/jwks.json"],
     ["AUTH_USERINFO_URL", "http://issuer.placeholder.invalid/oauth2/userinfo"],
-    ["PLATFORM_KQAG_APP_BASE_URL", "http://kqag.placeholder.invalid"],
+    ["PLATFORM_SQAG_APP_BASE_URL", "http://sqag.placeholder.invalid"],
   ];
 
   for (const [name, value] of httpsOnlyCases) {
@@ -212,46 +212,46 @@ test("hosted readiness rejects unsafe URL and origin shapes", () => {
   }
 });
 
-test("readiness report treats KQAG base URL as conditional on server handoff", () => {
+test("readiness report treats SQAG base URL as conditional on server handoff", () => {
   const manual = createPlatformReadinessReport({
     ...completeEnv(),
-    PLATFORM_KQAG_LAUNCH_MODE: "manual",
-    PLATFORM_KQAG_APP_BASE_URL: "",
+    PLATFORM_SQAG_LAUNCH_MODE: "manual",
+    PLATFORM_SQAG_APP_BASE_URL: "",
   });
   const handoff = createPlatformReadinessReport({
     ...completeEnv(),
-    PLATFORM_KQAG_LAUNCH_MODE: "server_handoff",
-    PLATFORM_KQAG_APP_BASE_URL: "",
+    PLATFORM_SQAG_LAUNCH_MODE: "server_handoff",
+    PLATFORM_SQAG_APP_BASE_URL: "",
   });
 
   assert.equal(manual.ok, true);
   assert.equal(handoff.ok, false);
   assert.deepEqual(
     handoff.missingConditional.map((entry) => entry.name),
-    ["PLATFORM_KQAG_APP_BASE_URL"],
+    ["PLATFORM_SQAG_APP_BASE_URL"],
   );
 });
 
-test("server handoff requires an HTTPS KQAG base URL without query or fragment", () => {
+test("server handoff requires an HTTPS SQAG base URL without query or fragment", () => {
   const http = reportWithOverride({
-    PLATFORM_KQAG_LAUNCH_MODE: "server_handoff",
-    PLATFORM_KQAG_APP_BASE_URL: "http://kqag.placeholder.invalid",
+    PLATFORM_SQAG_LAUNCH_MODE: "server_handoff",
+    PLATFORM_SQAG_APP_BASE_URL: "http://sqag.placeholder.invalid",
   });
   const query = reportWithOverride({
-    PLATFORM_KQAG_LAUNCH_MODE: "server_handoff",
-    PLATFORM_KQAG_APP_BASE_URL: "https://kqag.placeholder.invalid?debug=1",
+    PLATFORM_SQAG_LAUNCH_MODE: "server_handoff",
+    PLATFORM_SQAG_APP_BASE_URL: "https://sqag.placeholder.invalid?debug=1",
   });
   const fragment = reportWithOverride({
-    PLATFORM_KQAG_LAUNCH_MODE: "server_handoff",
-    PLATFORM_KQAG_APP_BASE_URL: "https://kqag.placeholder.invalid#fragment",
+    PLATFORM_SQAG_LAUNCH_MODE: "server_handoff",
+    PLATFORM_SQAG_APP_BASE_URL: "https://sqag.placeholder.invalid#fragment",
   });
 
   assert.equal(http.ok, false);
-  assertInvalid(http, "PLATFORM_KQAG_APP_BASE_URL", "must_be_https");
+  assertInvalid(http, "PLATFORM_SQAG_APP_BASE_URL", "must_be_https");
   assert.equal(query.ok, false);
-  assertInvalid(query, "PLATFORM_KQAG_APP_BASE_URL", "query_or_fragment_not_allowed");
+  assertInvalid(query, "PLATFORM_SQAG_APP_BASE_URL", "query_or_fragment_not_allowed");
   assert.equal(fragment.ok, false);
-  assertInvalid(fragment, "PLATFORM_KQAG_APP_BASE_URL", "query_or_fragment_not_allowed");
+  assertInvalid(fragment, "PLATFORM_SQAG_APP_BASE_URL", "query_or_fragment_not_allowed");
 });
 
 test("readiness output never prints private-looking env values", () => {
@@ -326,8 +326,8 @@ function completeEnv() {
     AUTH_REDIRECT_URI: "https://platform.placeholder.invalid/api/platform/auth/callback",
     AUTH_ALLOWED_EMAILS: "<comma-separated-allowlisted-emails>",
     AUTH_ALLOWED_DOMAINS: "",
-    PLATFORM_KQAG_LAUNCH_MODE: "server_handoff",
-    PLATFORM_KQAG_APP_BASE_URL: "https://kqag.placeholder.invalid",
+    PLATFORM_SQAG_LAUNCH_MODE: "server_handoff",
+    PLATFORM_SQAG_APP_BASE_URL: "https://sqag.placeholder.invalid",
     PLATFORM_SEED_CONFIRM: "seed-reviewed-internal-access",
     PLATFORM_SEED_USER_EMAIL: "<hosted-owner-admin-email-after-login>",
     PLATFORM_SEED_MEMBERSHIP_ROLE: "owner",

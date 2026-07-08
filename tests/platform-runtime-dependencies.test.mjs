@@ -214,7 +214,7 @@ test("runtime composition wires app launch token issuer dependencies when enable
   });
   const response = await handleNodePlatformHttpRequest(dependencies, {
     method: "POST",
-    url: "/api/platform/apps/launch?workspaceId=workspace_koncept_images&appKey=kqag",
+    url: "/api/platform/apps/launch?workspaceId=workspace_koncept_images&appKey=sqag",
     headers: {
       origin: allowedOrigin,
       cookie: `swooshz_session=${sessionId}`,
@@ -225,7 +225,7 @@ test("runtime composition wires app launch token issuer dependencies when enable
 
   assert.equal(response.statusCode, 201);
   assert.equal(body.outcome, "launch_intent_created");
-  assert.equal(body.appKey, "kqag");
+  assert.equal(body.appKey, "sqag");
   assert.equal(body.workspaceId, "workspace_koncept_images");
   assert.equal(body.launchUrl, null);
   assert.match(body.launchToken, /^[A-Za-z0-9_-]+$/);
@@ -284,7 +284,7 @@ test("runtime composition wires app launch token consume dependencies when enabl
   });
   const issueResponse = await handleNodePlatformHttpRequest(dependencies, {
     method: "POST",
-    url: "/api/platform/apps/launch?workspaceId=workspace_koncept_images&appKey=kqag",
+    url: "/api/platform/apps/launch?workspaceId=workspace_koncept_images&appKey=sqag",
     headers: {
       origin: allowedOrigin,
       cookie: `swooshz_session=${sessionId}`,
@@ -295,7 +295,7 @@ test("runtime composition wires app launch token consume dependencies when enabl
 
   const consumeResponse = await handleNodePlatformHttpRequest(dependencies, {
     method: "POST",
-    url: "/api/platform/apps/launch/consume?appKey=kqag",
+    url: "/api/platform/apps/launch/consume?appKey=sqag",
     headers: {
       "x-app-launch-token": issueBody.launchToken,
     },
@@ -306,7 +306,7 @@ test("runtime composition wires app launch token consume dependencies when enabl
   assert.equal(consumeBody.outcome, "consumed");
   assert.equal(consumeBody.user.userId, userId);
   assert.equal(consumeBody.workspace.workspaceId, "workspace_koncept_images");
-  assert.equal(consumeBody.app.appKey, "kqag");
+  assert.equal(consumeBody.app.appKey, "sqag");
   assert.equal(consumeBody.membershipRole, "owner");
   assert.equal(fixture.records.appLaunchTokens[0].consumedAt.toISOString(), now);
   assert.doesNotMatch(JSON.stringify(consumeResponse), new RegExp(issueBody.launchToken));
@@ -758,7 +758,7 @@ test("runtime composition requires auth state hash secret when auth dependencies
   );
 });
 
-test("runtime composition modules do not import frontend KQAG provider SDK frameworks live DB clients or migrations", async () => {
+test("runtime composition modules do not import frontend SQAG provider SDK frameworks live DB clients or migrations", async () => {
   const files = [
     "src/runtime/platform-runtime-dependencies.ts",
     "src/runtime/runtime-secrets.ts",
@@ -768,7 +768,7 @@ test("runtime composition modules do not import frontend KQAG provider SDK frame
     const contents = await readFile(filePath, "utf8");
 
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:react|next|vite|express|fastify|hono)/i);
-    assert.doesNotMatch(contents, /from\s+["'][^"']*(?:kqag|clerk|auth0|supabase)/i);
+    assert.doesNotMatch(contents, /from\s+["'][^"']*(?:sqag|clerk|auth0|supabase)/i);
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:pg|node-postgres|migrations?)/i);
     assert.doesNotMatch(contents, /DATABASE_URL|AUTH_CLIENT_SECRET|SESSION_SECRET/);
   }
@@ -860,9 +860,9 @@ function createRuntimeFixture(options = {}) {
     apps: options.withAppAccessRecords
       ? [
           {
-            id: "app_kqag",
-            key: "kqag",
-            name: "KQAG / SAQG",
+            id: "app_sqag",
+            key: "sqag",
+            name: "SQAG",
             status: "private_preview",
             launchUrl: null,
             createdAt: now,
@@ -873,9 +873,9 @@ function createRuntimeFixture(options = {}) {
     appEntitlements: options.withAppAccessRecords
       ? [
           {
-            id: "entitlement_koncept_kqag",
+            id: "entitlement_koncept_sqag",
             workspaceId: "workspace_koncept_images",
-            appId: "app_kqag",
+            appId: "app_sqag",
             status: "enabled",
             grantedByUserId: userId,
             createdAt: now,

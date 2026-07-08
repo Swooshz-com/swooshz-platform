@@ -6,7 +6,7 @@ Accepted.
 
 ## Context
 
-Swooshz needs a platform that can own accounts, workspaces, app access, and eventually billing or credits across apps. KQAG/SAQG already exists as a quote-workflow-specific app and should remain focused on quoting.
+Swooshz needs a platform that can own accounts, workspaces, app access, and eventually billing or credits across apps. SQAG already exists as a quote-workflow-specific app and should remain focused on quoting.
 
 Without a clear account and app-access contract, the project is likely to fall into repeated frontend rewrites: login screens, dashboards, app shells, and workspace selectors can be designed many ways if the underlying product scope is unclear.
 
@@ -21,7 +21,7 @@ The first platform PRs should establish backend-ready contracts and architecture
 Positive:
 
 - Backend scaffolding can proceed from a clear model.
-- KQAG remains quote-workflow-specific.
+- SQAG remains quote-workflow-specific.
 - Future apps can be added through app records and entitlements instead of new account concepts.
 - Billing/credits have a reserved location without contaminating users or memberships.
 - Frontend work can be smaller and less likely to churn.
@@ -45,7 +45,7 @@ Tradeoffs:
 - No customer portal.
 - No deployment, VPS, Coolify, DNS, TLS, or firewall work.
 - No secrets.
-- No KQAG repo changes.
+- No SQAG repo changes.
 
 ## Follow-Up Decisions
 
@@ -53,5 +53,5 @@ Tradeoffs:
 - Database and migration strategy.
 - Session storage and revocation strategy.
 - App launch integration mechanism.
-- KQAG adapter contract details.
+- SQAG adapter contract details.
 - Billing/credits architecture if approved.

@@ -32,7 +32,7 @@ test("protected app-access handler returns 401 for missing cookie without readin
   const response = await handleProtectedAppAccessRequest(repositories, {
     headers: {},
     selectedWorkspaceId: "workspace_koncept_images",
-    appKey: "kqag",
+    appKey: "sqag",
     now,
   });
 
@@ -93,7 +93,7 @@ test("protected app-access handler returns 200 safe body for allowed access", as
     outcome: "allowed",
     userId: "user_owner_example",
     workspaceId: "workspace_koncept_images",
-    appKey: "kqag",
+    appKey: "sqag",
     decision: {
       result: "allowed",
       allowed: true,
@@ -417,7 +417,7 @@ test("app launch handler returns 401 for missing cookie without creating a token
   const response = await handleAppLaunchIntentRequest(launch.dependencies, {
     headers: {},
     selectedWorkspaceId: "workspace_koncept_images",
-    appKey: "kqag",
+    appKey: "sqag",
     now,
   });
 
@@ -439,7 +439,7 @@ test("app launch handler returns 400 for missing query fields without creating a
       cookie: "swooshz_session=session_owner_example",
     },
     selectedWorkspaceId: "",
-    appKey: "kqag",
+    appKey: "sqag",
     now,
   });
 
@@ -461,7 +461,7 @@ test("app launch handler denies access without creating a token", async () => {
       cookie: "swooshz_session=session_viewer_example",
     },
     selectedWorkspaceId: "workspace_koncept_images",
-    appKey: "kqag",
+    appKey: "sqag",
     now,
   });
 
@@ -475,7 +475,7 @@ test("app launch handler denies access without creating a token", async () => {
 
 test("app launch handler returns one raw launch token and stores only the hash", async () => {
   const { records } = httpFixture({
-    app: { launchUrl: "https://apps.example.invalid/kqag" },
+    app: { launchUrl: "https://apps.example.invalid/sqag" },
   });
   const launch = launchIssueFixture(records);
 
@@ -484,7 +484,7 @@ test("app launch handler returns one raw launch token and stores only the hash",
       cookie: "swooshz_session=session_owner_example",
     },
     selectedWorkspaceId: "workspace_koncept_images",
-    appKey: "kqag",
+    appKey: "sqag",
     now,
   });
 
@@ -492,9 +492,9 @@ test("app launch handler returns one raw launch token and stores only the hash",
   assertNoStoreHeaders(response.headers);
   assert.deepEqual(response.body, {
     outcome: "launch_intent_created",
-    appKey: "kqag",
+    appKey: "sqag",
     workspaceId: "workspace_koncept_images",
-    launchUrl: "https://apps.example.invalid/kqag",
+    launchUrl: "https://apps.example.invalid/sqag",
     launchToken: rawLaunchToken,
     launchTokenExpiresAt,
   });
@@ -514,7 +514,7 @@ test("app launch handler returns privacy-safe failure body", async () => {
       cookie: "swooshz_session=session_owner_example",
     },
     selectedWorkspaceId: "workspace_koncept_images",
-    appKey: "kqag",
+    appKey: "sqag",
     now,
   });
 
@@ -533,7 +533,7 @@ test("app launch consume handler requires token header and appKey safely", async
 
   const missingToken = await handleAppLaunchTokenConsumeRequest(consume.dependencies, {
     headers: {},
-    appKey: "kqag",
+    appKey: "sqag",
     now,
   });
   const missingAppKey = await handleAppLaunchTokenConsumeRequest(consume.dependencies, {
@@ -577,7 +577,7 @@ test("app launch consume handler denies invalid consumed and expired tokens safe
       headers: {
         "x-app-launch-token": rawLaunchToken,
       },
-      appKey: "kqag",
+      appKey: "sqag",
       now,
     });
 
@@ -599,7 +599,7 @@ test("app launch consume handler denies app access without consuming token", asy
     headers: {
       "x-app-launch-token": rawLaunchToken,
     },
-    appKey: "kqag",
+    appKey: "sqag",
     now,
   });
 
@@ -620,7 +620,7 @@ test("app launch consume handler returns safe launch context and consumes once",
       "x-app-launch-token": rawLaunchToken,
       cookie: "swooshz_session=raw-session-token-ignored",
     },
-    appKey: "kqag",
+    appKey: "sqag",
     now,
   });
 
@@ -640,8 +640,8 @@ test("app launch consume handler returns safe launch context and consumes once",
       workspaceName: "Koncept Images Pte Ltd",
     },
     app: {
-      appKey: "kqag",
-      appName: "KQAG / SAQG",
+      appKey: "sqag",
+      appName: "SQAG",
     },
     membershipRole: "owner",
     launchTokenExpiresAt,
@@ -661,7 +661,7 @@ test("app launch consume handler returns privacy-safe failure body", async () =>
     headers: {
       "x-app-launch-token": rawLaunchToken,
     },
-    appKey: "kqag",
+    appKey: "sqag",
     now,
   });
 
@@ -674,7 +674,7 @@ test("app launch consume handler returns privacy-safe failure body", async () =>
   assertResponseIsPrivacySafe(response);
 });
 
-test("HTTP modules do not import DB, frontend, KQAG, provider SDK, or live server modules", async () => {
+test("HTTP modules do not import DB, frontend, SQAG, provider SDK, or live server modules", async () => {
   const httpFiles = (await listFiles("src/http")).filter(
     (filePath) => ![
       "src/http/node-adapter.ts",
@@ -685,7 +685,7 @@ test("HTTP modules do not import DB, frontend, KQAG, provider SDK, or live serve
   for (const filePath of httpFiles) {
     const contents = await readFile(filePath, "utf8");
 
-    assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?|kqag)/i);
+    assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?|sqag)/i);
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:react|next|vite|express|fastify|hono|node:http)/i);
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:clerk|auth0|supabase)/i);
     assert.doesNotMatch(contents, /src\/db|\.{1,2}\/db|\.{1,2}\/\.{1,2}\/db/i);
@@ -722,9 +722,9 @@ function httpFixture(overrides = {}) {
     updatedAt: now,
   };
   const app = {
-    id: "app_kqag",
-    key: "kqag",
-    name: "KQAG / SAQG",
+    id: "app_sqag",
+    key: "sqag",
+    name: "SQAG",
     status: "private_preview",
     launchUrl: null,
     ...overrides.app,
@@ -766,7 +766,7 @@ function httpFixture(overrides = {}) {
     updatedAt: now,
   }));
   const entitlement = {
-    id: "entitlement_koncept_kqag",
+    id: "entitlement_koncept_sqag",
     workspaceId: workspace.id,
     appId: app.id,
     status: "enabled",
@@ -797,7 +797,7 @@ function requestWithCookie(sessionId) {
       cookie: `swooshz_session=${sessionId}`,
     },
     selectedWorkspaceId: "workspace_koncept_images",
-    appKey: "kqag",
+    appKey: "sqag",
     now,
   };
 }

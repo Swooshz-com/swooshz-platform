@@ -197,7 +197,7 @@ test("pending approval activates only after real provider-backed sign-in with ma
   const accessDecision = await decidePlatformAppAccess(deps.repositories, {
     sessionId: "session_auth_callback_1",
     selectedWorkspaceId: "workspace_koncept_images",
-    appKey: "kqag",
+    appKey: "sqag",
     now,
   });
   assert.equal(accessDecision.result, AccessDecisionResult.Allowed);
@@ -674,7 +674,7 @@ test("session repository errors become privacy-safe auth errors", async () => {
 test("auth platform identity resolver does not import DB client or HTTP framework details", async () => {
   const contents = await readFile("src/auth/platform-identity-resolver.ts", "utf8");
 
-  assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?|kqag)/i);
+  assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?|sqag)/i);
   assert.doesNotMatch(contents, /from\s+["'][^"']*(?:react|next|vite|express|fastify|hono|node:http)/i);
   assert.doesNotMatch(contents, /src\/db|\.{1,2}\/db|\.{1,2}\/\.{1,2}\/db/i);
 });
@@ -689,9 +689,9 @@ function createResolverDependencies(options = {}) {
     membershipApprovals: [...(options.membershipApprovals ?? [])],
     apps: [
       {
-        id: "app_kqag",
-        key: "kqag",
-        name: "KQAG / SAQG",
+        id: "app_sqag",
+        key: "sqag",
+        name: "SQAG",
         status: "private_preview",
         launchUrl: null,
         createdAt: now,
@@ -700,9 +700,9 @@ function createResolverDependencies(options = {}) {
     ],
     appEntitlements: [
       {
-        id: "entitlement_kqag",
+        id: "entitlement_sqag",
         workspaceId: "workspace_koncept_images",
-        appId: "app_kqag",
+        appId: "app_sqag",
         status: "enabled",
         grantedByUserId: "user_owner",
         createdAt: now,

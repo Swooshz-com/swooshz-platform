@@ -15,8 +15,8 @@ export const PLATFORM_SEED_CONFIRM_VALUE = "seed-reviewed-internal-access";
 
 const defaultWorkspaceSlug = "koncept-images-pte-ltd";
 const defaultWorkspaceName = "Koncept Images Pte Ltd";
-const defaultAppKey = "kqag";
-const defaultAppName = "KQAG / SAQG";
+const defaultAppKey = "sqag";
+const defaultAppName = "SQAG";
 const defaultMembershipRole = "owner";
 const allowedRoles = new Set(["owner", "admin", "member"]);
 
@@ -32,6 +32,10 @@ export class PlatformSeedInternalAccessError extends Error {
 export function readPlatformSeedInternalAccessConfig(env) {
   if (env.PLATFORM_SEED_CONFIRM !== PLATFORM_SEED_CONFIRM_VALUE) {
     throw new PlatformSeedInternalAccessError("missing_confirm");
+  }
+
+  if (readOptional(env.PLATFORM_SEED_APP_KEY) || readOptional(env.PLATFORM_SEED_APP_NAME)) {
+    throw new PlatformSeedInternalAccessError("unsupported_app_identity_override");
   }
 
   const rawEmail = env.PLATFORM_SEED_USER_EMAIL?.trim();
@@ -52,8 +56,8 @@ export function readPlatformSeedInternalAccessConfig(env) {
       readOptional(env.PLATFORM_SEED_WORKSPACE_SLUG) ?? defaultWorkspaceSlug,
     workspaceName:
       readOptional(env.PLATFORM_SEED_WORKSPACE_NAME) ?? defaultWorkspaceName,
-    appKey: readOptional(env.PLATFORM_SEED_APP_KEY) ?? defaultAppKey,
-    appName: readOptional(env.PLATFORM_SEED_APP_NAME) ?? defaultAppName,
+    appKey: defaultAppKey,
+    appName: defaultAppName,
     membershipRole: role,
     appLaunchUrl: readLaunchUrl(env.PLATFORM_SEED_APP_LAUNCH_URL),
   };
@@ -225,6 +229,8 @@ function readPublicMessage(code) {
       return "PLATFORM_SEED_USER_EMAIL is required.";
     case "unsupported_role":
       return "PLATFORM_SEED_MEMBERSHIP_ROLE must be owner, admin, or member.";
+    case "unsupported_app_identity_override":
+      return "PLATFORM_SEED_APP_KEY and PLATFORM_SEED_APP_NAME are not supported.";
     case "invalid_app_launch_url":
       return "PLATFORM_SEED_APP_LAUNCH_URL must be an HTTP(S) URL when set.";
     case "user_not_found":

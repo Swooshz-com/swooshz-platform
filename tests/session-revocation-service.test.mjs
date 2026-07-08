@@ -35,7 +35,7 @@ test("revokes active session without touching unrelated platform state", async (
   assert.equal(deps.records.sessions[0].lastSeenAt, earlier);
   assert.deepEqual(deps.records.providerIdentities, [{ id: "provider_identity_owner" }]);
   assert.deepEqual(deps.records.memberships, [{ id: "membership_owner" }]);
-  assert.deepEqual(deps.records.appEntitlements, [{ id: "entitlement_kqag" }]);
+  assert.deepEqual(deps.records.appEntitlements, [{ id: "entitlement_sqag" }]);
 });
 
 test("already revoked session is idempotent and does not overwrite revokedAt", async () => {
@@ -132,13 +132,13 @@ test("revocation result does not expose tokens secrets provider material or stor
   assert.doesNotMatch(serialized, /postgresql:\/\/private-host|database exploded/i);
 });
 
-test("auth session modules do not import DB, HTTP, frontend, KQAG, provider SDK, or migrations", async () => {
+test("auth session modules do not import DB, HTTP, frontend, SQAG, provider SDK, or migrations", async () => {
   const authFiles = await listFiles("src/auth");
 
   for (const filePath of authFiles) {
     const contents = await readFile(filePath, "utf8");
 
-    assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?|kqag)/i);
+    assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?|sqag)/i);
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:react|next|vite|express|fastify|hono|node:http)/i);
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:clerk|auth0|supabase)/i);
     assert.doesNotMatch(contents, /src\/db|\.{1,2}\/db|\.{1,2}\/\.{1,2}\/db/i);
@@ -165,7 +165,7 @@ function createSessionRevocationDependencies(options = {}) {
     sessions: [...(options.sessions ?? [createSession()])],
     providerIdentities: [{ id: "provider_identity_owner" }],
     memberships: [{ id: "membership_owner" }],
-    appEntitlements: [{ id: "entitlement_kqag" }],
+    appEntitlements: [{ id: "entitlement_sqag" }],
   };
   const revokeCalls = [];
 

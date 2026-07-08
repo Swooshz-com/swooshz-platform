@@ -8,7 +8,7 @@ Accepted.
 
 ADR 0003 selected Postgres-compatible relational persistence for platform account state. ADR 0004 selected Drizzle ORM and Drizzle Kit as the preferred TypeScript schema and migration tooling. Later implementation PRs added the first Drizzle schema, review-only migration artifacts, storage-agnostic repository/service ports, and Drizzle-backed repository adapters.
 
-The repository still has no real database client, no `pg` dependency, no database provisioning, no migration execution workflow, no auth provider, no backend HTTP routes, no frontend, and no KQAG adapter. The next persistence decision is how database connection code and migration execution should be introduced safely when the platform is ready to connect to a real Postgres-compatible database.
+The repository still has no real database client, no `pg` dependency, no database provisioning, no migration execution workflow, no auth provider, no backend HTTP routes, no frontend, and no SQAG adapter. The next persistence decision is how database connection code and migration execution should be introduced safely when the platform is ready to connect to a real Postgres-compatible database.
 
 This ADR defines that workflow before any live database connection exists.
 
@@ -53,7 +53,7 @@ Optional future variables may include:
 
 This ADR does not add a populated `.env`, `.env.example`, real host, port, username, password, domain, or credential. Any future examples must use synthetic placeholders only.
 
-Environment variables must not contain raw provider tokens, OIDC responses, auth codes, access tokens, refresh tokens, ID tokens, session secrets, raw invite tokens, payment details, customer data, KQAG runtime data, or private app payloads.
+Environment variables must not contain raw provider tokens, OIDC responses, auth codes, access tokens, refresh tokens, ID tokens, session secrets, raw invite tokens, payment details, customer data, SQAG runtime data, or private app payloads.
 
 ## Runtime Connection Boundary
 
@@ -107,7 +107,7 @@ Do not add Docker/Postgres provisioning in this PR. A future local development d
 Future local setup should:
 
 - Use synthetic data only.
-- Avoid real customer/company/bank/payment/KQAG data.
+- Avoid real customer/company/bank/payment/SQAG data.
 - Keep reset commands explicit.
 - Separate destructive local reset behavior from staging or production commands.
 - Avoid relying on local setup for normal unit tests.
@@ -151,10 +151,10 @@ Never commit:
 - Quote exports.
 - Pricing files.
 - Embedded logos or Base64 logo data.
-- KQAG runtime data.
+- SQAG runtime data.
 - Private app payloads.
 
-Invitation token storage, if implemented, must store token hashes only. Audit metadata must remain privacy-minimized. Platform persistence must not store KQAG quote workflow payloads unless a later ADR explicitly changes that boundary.
+Invitation token storage, if implemented, must store token hashes only. Audit metadata must remain privacy-minimized. Platform persistence must not store SQAG quote workflow payloads unless a later ADR explicitly changes that boundary.
 
 ## Consequences
 
@@ -187,7 +187,7 @@ Before adding real database connection or migration execution code:
 - Document destructive migration approval.
 - Keep default CI and `npm test` DB-free.
 - Add integration tests only in a clearly labelled DB-specific workflow.
-- Confirm no auth provider, frontend, billing, or KQAG adapter behavior is bundled into the DB wiring PR unless separately approved.
+- Confirm no auth provider, frontend, billing, or SQAG adapter behavior is bundled into the DB wiring PR unless separately approved.
 
 ## Deferred Decisions
 
@@ -200,7 +200,7 @@ Before adding real database connection or migration execution code:
 - Backup, retention, restore testing, and operational runbooks.
 - Auth provider selection.
 - Deployment environment and secret-management mechanism.
-- KQAG adapter runtime/session/history storage changes.
+- SQAG adapter runtime/session/history storage changes.
 
 ## Explicit Non-Goals
 
@@ -221,6 +221,6 @@ Before adding real database connection or migration execution code:
 - No HTTP server.
 - No Next.js, Vite, React, frontend shell, or UI.
 - No billing, credits, Stripe, or customer portal.
-- No KQAG adapter.
-- No KQAG repository changes.
+- No SQAG adapter.
+- No SQAG repository changes.
 - No quote exports, pricing files, embedded logos, bank details, customer/company private data, or private app payloads.

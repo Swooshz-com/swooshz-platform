@@ -225,4 +225,4 @@ Conclusion: consider later as a managed Postgres provider, but do not make the p
 - No deployment, VPS, Coolify, DNS, TLS, or firewall work.
 - No secrets.
 - No real customer, company, bank, quote, pricing, logo, or app workflow data.
-- No KQAG repository changes.
+- No SQAG repository changes.

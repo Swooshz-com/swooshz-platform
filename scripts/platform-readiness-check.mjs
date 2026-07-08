@@ -6,7 +6,7 @@ const REQUIRED = "Required";
 const OPTIONAL = "Optional";
 const MIGRATION_ONLY = "Required for migrations only";
 const BOOTSTRAP_ONLY = "Required for bootstrap only";
-const KQAG_HANDOFF_ONLY = "Required when server_handoff";
+const SQAG_HANDOFF_ONLY = "Required when server_handoff";
 
 export const HOSTED_READINESS_ENV_CHECKS = [
   required("PLATFORM_PUBLIC_BASE_URL", "public_runtime", validateHostedBaseUrl),
@@ -34,12 +34,12 @@ export const HOSTED_READINESS_ENV_CHECKS = [
   required("AUTH_REDIRECT_URI", "oidc", validateHostedAuthRedirectUri),
   required("AUTH_ALLOWED_EMAILS", "oidc"),
   optional("AUTH_ALLOWED_DOMAINS", "oidc"),
-  required("PLATFORM_KQAG_LAUNCH_MODE", "kqag_handoff", validateKqagLaunchMode),
+  required("PLATFORM_SQAG_LAUNCH_MODE", "sqag_handoff", validateSqagLaunchMode),
   conditional(
-    "PLATFORM_KQAG_APP_BASE_URL",
-    "kqag_handoff",
+    "PLATFORM_SQAG_APP_BASE_URL",
+    "sqag_handoff",
     validateHostedBaseUrl,
-    (env) => readEnv(env, "PLATFORM_KQAG_LAUNCH_MODE") === "server_handoff",
+    (env) => readEnv(env, "PLATFORM_SQAG_LAUNCH_MODE") === "server_handoff",
   ),
   bootstrapOnly("PLATFORM_SEED_CONFIRM", "bootstrap", validateSeedConfirm),
   bootstrapOnly("PLATFORM_SEED_USER_EMAIL", "bootstrap"),
@@ -110,7 +110,7 @@ function evaluateCheck(check, env) {
       return entry(check, "missing_required");
     }
 
-    if (check.required === KQAG_HANDOFF_ONLY && conditionApplies) {
+    if (check.required === SQAG_HANDOFF_ONLY && conditionApplies) {
       return entry(check, "missing_conditional");
     }
 
@@ -155,7 +155,7 @@ function bootstrapOnly(name, category, validate = validatePresent) {
 }
 
 function conditional(name, category, validate, condition) {
-  return check(name, category, KQAG_HANDOFF_ONLY, validate, { condition });
+  return check(name, category, SQAG_HANDOFF_ONLY, validate, { condition });
 }
 
 function check(name, category, required, validate, options = {}) {
@@ -290,7 +290,7 @@ function validateAuthProviderMode(value) {
   return value === "generic_oidc" ? ok() : invalid("must_be_generic_oidc");
 }
 
-function validateKqagLaunchMode(value) {
+function validateSqagLaunchMode(value) {
   return ["manual", "server_handoff"].includes(value) ? ok() : invalid("unsupported_mode");
 }
 

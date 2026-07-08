@@ -10,7 +10,7 @@ const requiredSections = [
   "Hosted internal-alpha no-go blockers",
   "Required operator approvals before execution",
   "Recommended hosted topology options",
-  "KQAG handoff/session strategy options",
+  "SQAG handoff/session strategy options",
   "Secret/config handling requirements",
   "Migration/backup/restore decision requirements",
   "Logging/privacy/incident handling requirements",
@@ -51,14 +51,14 @@ test("hosted operator briefing keeps hosted execution blocked and avoids product
   assert.doesNotMatch(briefing, /\b(?:is|are|now|fully)\s+production[- ]ready\b/i);
 });
 
-test("hosted operator briefing preserves Platform and KQAG ownership boundaries", async () => {
+test("hosted operator briefing preserves Platform and SQAG ownership boundaries", async () => {
   const briefing = await readBriefing();
 
   assert.match(briefing, /Platform handles identity, workspace, membership, entitlement, and launch checks/i);
-  assert.match(briefing, /KQAG owns quote\/session\/profile\/pricing\/generated-artifact data/i);
-  assert.match(briefing, /hosted KQAG handoff\/session\/cookie decision must be approved and smoke-tested/i);
-  assert.match(briefing, /Do not move KQAG quote data into Platform/i);
-  assert.match(briefing, /KQAG owns quote generation, profiles, pricing references, quote sessions\/history\/dashboard, generated artifacts, and runtime\/app data/i);
+  assert.match(briefing, /SQAG owns quote\/session\/profile\/pricing\/generated-artifact data/i);
+  assert.match(briefing, /hosted SQAG handoff\/session\/cookie decision must be approved and smoke-tested/i);
+  assert.match(briefing, /Do not move SQAG quote data into Platform/i);
+  assert.match(briefing, /SQAG owns quote generation, profiles, pricing references, quote sessions\/history\/dashboard, generated artifacts, and runtime\/app data/i);
 });
 
 test("hosted operator briefing is cross-linked from readiness docs", async () => {

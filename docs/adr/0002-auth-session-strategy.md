@@ -6,7 +6,7 @@ Accepted.
 
 ## Context
 
-Swooshz Platform now has a documented account, workspace, app-access, and KQAG boundary plus an executable TypeScript domain core. The next platform step needs an auth/session strategy before login routes, provider callbacks, persistence, or frontend work begin.
+Swooshz Platform now has a documented account, workspace, app-access, and SQAG boundary plus an executable TypeScript domain core. The next platform step needs an auth/session strategy before login routes, provider callbacks, persistence, or frontend work begin.
 
 The platform should avoid choosing an auth vendor before the provider requirements, current pricing, operational tradeoffs, and persistence boundary are reviewed. A premature provider choice would risk coupling account, membership, workspace selection, and app launch behavior to vendor-specific concepts.
 
@@ -14,7 +14,7 @@ The platform should avoid choosing an auth vendor before the provider requiremen
 
 Swooshz Platform owns users, workspace memberships, workspace selection, platform sessions, app entitlements, audit events, and app launch decisions.
 
-An auth provider, when selected later, proves user identity only. The provider must not become the source of truth for Swooshz workspace membership, roles, app entitlements, billing, or KQAG access.
+An auth provider, when selected later, proves user identity only. The provider must not become the source of truth for Swooshz workspace membership, roles, app entitlements, billing, or SQAG access.
 
 After provider authentication succeeds, the platform should create and own its own platform session. Browser-facing session representation should use secure, HttpOnly, SameSite cookies when implementation begins.
 
@@ -48,7 +48,7 @@ Provider identifiers should be stored separately from business profile fields. P
 
 Platform users remain Swooshz-owned account records. Normalized email is used for sign-in matching and invitations, but email domain or display name must not grant app access.
 
-Provider subject identifiers can help link a provider identity to a platform user, but they must not replace platform user ids in memberships, app entitlements, audit events, or KQAG launch context.
+Provider subject identifiers can help link a provider identity to a platform user, but they must not replace platform user ids in memberships, app entitlements, audit events, or SQAG launch context.
 
 Disabled users cannot start new sessions or launch apps even if the provider says the identity is valid.
 
@@ -81,11 +81,11 @@ The launch context should include only the minimum app boundary data:
 
 Apps must not receive billing secrets, provider tokens, raw provider claims, unrelated workspace memberships, or platform session secrets.
 
-## KQAG Integration Implications
+## SQAG Integration Implications
 
-KQAG/SAQG remains a quote-workflow app and must not own Swooshz users, workspaces, memberships, app entitlements, billing, credits, or platform sessions.
+SQAG remains a quote-workflow app and must not own Swooshz users, workspaces, memberships, app entitlements, billing, credits, or platform sessions.
 
-When the KQAG adapter is implemented, KQAG should accept platform-scoped identity and workspace context from Swooshz Platform. KQAG must not receive auth provider tokens or raw provider claims. Viewer behavior remains blocked until a future KQAG adapter defines read-only behavior.
+When the SQAG adapter is implemented, SQAG should accept platform-scoped identity and workspace context from Swooshz Platform. SQAG must not receive auth provider tokens or raw provider claims. Viewer behavior remains blocked until a future SQAG adapter defines read-only behavior.
 
 ## Privacy And Security Rules
 
@@ -106,7 +106,7 @@ When the KQAG adapter is implemented, KQAG should accept platform-scoped identit
 - MFA requirements and provider-specific assurance levels.
 - Invitation acceptance UX and provider handoff.
 - Launch-token or backend exchange mechanism for apps.
-- KQAG adapter protocol details.
+- SQAG adapter protocol details.
 - Database and migration format.
 - Billing or credit gates if approved later.
 
@@ -123,4 +123,4 @@ When the KQAG adapter is implemented, KQAG should accept platform-scoped identit
 - No customer portal.
 - No deployment, VPS, Coolify, DNS, TLS, or firewall work.
 - No secrets.
-- No KQAG repository changes.
+- No SQAG repository changes.

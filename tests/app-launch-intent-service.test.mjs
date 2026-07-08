@@ -32,7 +32,7 @@ test("missing revoked and expired sessions are unauthenticated and create no lau
   }
 });
 
-test("viewer KQAG access is denied without creating a launch token", async () => {
+test("viewer SQAG access is denied without creating a launch token", async () => {
   const { dependencies, input, records } = launchFixture({ role: "viewer" });
 
   const result = await createAppLaunchIntent(dependencies, input);
@@ -105,20 +105,20 @@ test("future app launch uses the same least-privilege role policy", async () => 
   assertResponseIsPrivacySafe(viewerResult);
 });
 
-test("allowed owner admin and member KQAG access creates one hash-only launch token record", async () => {
+test("allowed owner admin and member SQAG access creates one hash-only launch token record", async () => {
   for (const role of ["owner", "admin", "member"]) {
     const { dependencies, input, records } = launchFixture({
       role,
-      app: { launchUrl: "https://apps.example.invalid/kqag" },
+      app: { launchUrl: "https://apps.example.invalid/sqag" },
     });
 
     const result = await createAppLaunchIntent(dependencies, input);
 
     assert.deepEqual(result, {
       outcome: "created",
-      appKey: "kqag",
+      appKey: "sqag",
       workspaceId: "workspace_koncept_images",
-      appLaunchUrl: "https://apps.example.invalid/kqag",
+      appLaunchUrl: "https://apps.example.invalid/sqag",
       launchToken: rawLaunchToken,
       launchTokenExpiresAt: "2026-06-27T00:05:00.000Z",
     });
@@ -128,7 +128,7 @@ test("allowed owner admin and member KQAG access creates one hash-only launch to
       sessionId: `session_${role}_example`,
       userId: `user_${role}_example`,
       workspaceId: "workspace_koncept_images",
-      appId: "app_kqag",
+      appId: "app_sqag",
       tokenHash: launchTokenHash,
       createdAt: now,
       expiresAt: "2026-06-27T00:05:00.000Z",
@@ -163,10 +163,10 @@ test("launch intent service does not create users sessions memberships entitleme
   assert.equal(calls.auditEventsAppend, 0);
 });
 
-test("launch intent service module does not import DB HTTP frontend KQAG provider SDK or migrations", async () => {
+test("launch intent service module does not import DB HTTP frontend SQAG provider SDK or migrations", async () => {
   const contents = await readFile("src/platform/app-launch-intent-service.ts", "utf8");
 
-  assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?|kqag)/i);
+  assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?|sqag)/i);
   assert.doesNotMatch(contents, /from\s+["'][^"']*(?:react|next|vite|express|fastify|hono|node:http)/i);
   assert.doesNotMatch(contents, /from\s+["'][^"']*(?:clerk|auth0|supabase)/i);
   assert.doesNotMatch(contents, /src\/db|\.{1,2}\/db|\.{1,2}\/\.{1,2}\/db/i);
@@ -182,9 +182,9 @@ function launchFixture(overrides = {}) {
     updatedAt: now,
   };
   const app = {
-    id: "app_kqag",
-    key: "kqag",
-    name: "KQAG / SAQG",
+    id: "app_sqag",
+    key: "sqag",
+    name: "SQAG",
     status: "private_preview",
     launchUrl: null,
     ...overrides.app,
@@ -226,7 +226,7 @@ function launchFixture(overrides = {}) {
     updatedAt: now,
   }));
   const entitlement = {
-    id: "entitlement_koncept_kqag",
+    id: "entitlement_koncept_sqag",
     workspaceId: workspace.id,
     appId: app.id,
     status: "enabled",
@@ -265,7 +265,7 @@ function launchFixture(overrides = {}) {
     input: {
       sessionId: overrides.sessionId ?? session.id,
       selectedWorkspaceId: workspace.id,
-      appKey: "kqag",
+      appKey: "sqag",
       now,
     },
     dependencies: {

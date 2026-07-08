@@ -15,7 +15,7 @@ test("internal alpha platform contract covers required audit sections", async ()
     "## User And Team Management Gap Audit",
     "## Security Findings",
     "## Production And Deployment Readiness Audit",
-    "## Platform And KQAG Boundary",
+    "## Platform And SQAG Boundary",
     "## Admin Foundation Runbook",
     "## UI And IA Requirements Before Google Stitch",
     "## Google Stitch Recommendation",
@@ -57,8 +57,8 @@ test("internal alpha platform contract preserves Stitch and implementation bound
   assert.match(contract, /UI reference only/i);
   assert.match(contract, /not the source of truth for business logic/i);
   assert.match(contract, /does not approve UI implementation/i);
-  assert.match(contract, /does not approve.*KQAG repository changes/i);
-  assert.match(contract, /No KQAG app data responsibilities move into Platform/i);
+  assert.match(contract, /does not approve.*SQAG repository changes/i);
+  assert.match(contract, /No SQAG app data responsibilities move into Platform/i);
 });
 
 test("internal alpha platform contract documents the admin foundation status", async () => {
@@ -67,7 +67,7 @@ test("internal alpha platform contract documents the admin foundation status", a
   assert.match(contract, /Owner\/admin service methods and protected HTTP routes can list workspace members/i);
   assert.match(contract, /disable and reactivate non-owner memberships/i);
   assert.match(contract, /change roles/i);
-  assert.match(contract, /list app entitlements, and enable\/disable KQAG app entitlement/i);
+  assert.match(contract, /list app entitlements, and enable\/disable SQAG app entitlement/i);
   assert.match(contract, /addWorkspaceMemberByEmail/i);
   assert.match(contract, /pending workspace membership approval/i);
   assert.match(contract, /existing active provider-backed user by normalized email/i);

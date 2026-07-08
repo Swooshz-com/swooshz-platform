@@ -40,7 +40,7 @@ test("allowed Origin passes with normalized trailing slash config", () => {
 test("allowed Referer passes when Origin is missing", () => {
   const result = validateHttpRequestOrigin({
     headers: {
-      Referer: `${allowedOrigin}/workspace?tab=apps#kqag`,
+      Referer: `${allowedOrigin}/workspace?tab=apps#sqag`,
     },
     config: {
       allowedOrigins: [allowedOrigin],
@@ -396,7 +396,7 @@ test("all non-GET browser-cookie routes require CSRF in the manifest", () => {
   }
 });
 
-test("HTTP security modules do not import DB frontend KQAG provider SDK or live server modules", async () => {
+test("HTTP security modules do not import DB frontend SQAG provider SDK or live server modules", async () => {
   const files = [
     "src/http/origin-validation.ts",
     "src/http/csrf.ts",
@@ -406,7 +406,7 @@ test("HTTP security modules do not import DB frontend KQAG provider SDK or live 
   for (const filePath of files) {
     const contents = await readFile(filePath, "utf8");
 
-    assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?|kqag)/i);
+    assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?|sqag)/i);
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:react|next|vite|express|fastify|hono|node:http)/i);
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:clerk|auth0|supabase)/i);
     assert.doesNotMatch(contents, /src\/db|\.{1,2}\/db|\.{1,2}\/\.{1,2}\/db/i);

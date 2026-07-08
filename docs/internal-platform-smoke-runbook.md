@@ -2,6 +2,8 @@
 
 This runbook verifies the current internal Swooshz Platform flow using already-approved platform services and routes. It is an operator checklist, not a product feature, deployment guide, or database provisioning guide.
 
+SQAG-side PR #122 landed at merge commit `6f93180023636306fe10f0d6250ea2df71d486a0` and requires Platform launch and consume payloads to use `appKey=sqag`. Live Platform-to-SQAG smoke remains pending until the Platform-side SQAG app-key migration is merged; this runbook must not be used to claim production readiness before that operator smoke is actually performed.
+
 ## Existing Services Assumption
 
 The platform uses an existing Postgres-compatible database service through `DATABASE_URL`. This repo does not create or host its own database service, does not provision a database service, and does not run migrations automatically.
@@ -28,7 +30,7 @@ npm test
 
 Use placeholders only in local notes and shared docs. Do not paste real secrets, database credentials, staff emails, provider tokens, auth codes, provider subjects, callback payloads, or production domains.
 
-Use `127.0.0.1` consistently for local browser UAT examples and operator notes. Do not mix alternate loopback hostnames with `127.0.0.1` in the same local session, because browser cookies and same-host KQAG handoff checks are host-sensitive.
+Use `127.0.0.1` consistently for local browser UAT examples and operator notes. Do not mix alternate loopback hostnames with `127.0.0.1` in the same local session, because browser cookies and same-host SQAG handoff checks are host-sensitive.
 
 Database:
 
@@ -88,24 +90,27 @@ PLATFORM_SEED_CONFIRM=seed-reviewed-internal-access
 PLATFORM_SEED_USER_EMAIL=<email-used-for-login>
 PLATFORM_SEED_WORKSPACE_SLUG=<optional-workspace-slug>
 PLATFORM_SEED_WORKSPACE_NAME=<optional-workspace-name>
-PLATFORM_SEED_APP_KEY=<optional-app-key>
-PLATFORM_SEED_APP_NAME=<optional-app-name>
 PLATFORM_SEED_MEMBERSHIP_ROLE=<optional-owner-admin-or-member>
 PLATFORM_SEED_APP_LAUNCH_URL=<optional-app-launch-url>
 ```
 
-KQAG browser launch handoff, for same-host local UAT only:
+The seed always targets the canonical SQAG app identity: app key `sqag`, app
+name `SQAG`. `PLATFORM_SEED_APP_KEY` and `PLATFORM_SEED_APP_NAME` are not
+supported bootstrap inputs; setting either one fails closed before any database
+connection.
+
+SQAG browser launch handoff, for same-host local UAT only:
 
 ```text
-PLATFORM_KQAG_LAUNCH_MODE=server_handoff
-PLATFORM_KQAG_APP_BASE_URL=<kqag-local-base-url>
+PLATFORM_SQAG_LAUNCH_MODE=server_handoff
+PLATFORM_SQAG_APP_BASE_URL=<sqag-local-base-url>
 ```
 
-Leave `PLATFORM_KQAG_LAUNCH_MODE` unset or set it to `manual` to keep the
-safe default: the Platform shell will not complete a browser handoff to KQAG.
-`server_handoff` is intended for local UAT where Platform and KQAG are visited
+Leave `PLATFORM_SQAG_LAUNCH_MODE` unset or set it to `manual` to keep the
+safe default: the Platform shell will not complete a browser handoff to SQAG.
+`server_handoff` is intended for local UAT where Platform and SQAG are visited
 through the same browser cookie host, for example the same `127.0.0.1` host on
-different ports. If the configured KQAG URL uses a different host from the
+different ports. If the configured SQAG URL uses a different host from the
 Platform request host, the handoff fails closed instead of forwarding cookies
 across an unsafe boundary.
 
@@ -128,13 +133,13 @@ Start the existing Node runtime through the explicit operator CLI:
 npm run platform:start
 ```
 
-The start CLI calls the existing Node bootstrap/runtime boundary and then listens on the configured host and port. It uses the already-configured database service through the existing DB boundary, but it does not run migrations, does not provision a database service, does not seed access, does not create users or platform records by itself, does not issue or consume app launch tokens on startup, and does not call KQAG.
+The start CLI calls the existing Node bootstrap/runtime boundary and then listens on the configured host and port. It uses the already-configured database service through the existing DB boundary, but it does not run migrations, does not provision a database service, does not seed access, does not create users or platform records by itself, does not issue or consume app launch tokens on startup, and does not call SQAG.
 
 When `PLATFORM_AUTH_PROVIDER_MODE=generic_oidc` is configured, the CLI injects the generic OIDC HTTP client boundary required by runtime composition. It does not call provider token, JWKS, or userinfo endpoints during startup; provider HTTP happens only when an auth route is deliberately invoked.
 
-When `PLATFORM_KQAG_LAUNCH_MODE=server_handoff` is configured, the CLI injects
-the KQAG server-side HTTP boundary required by the browser launch route. It does not call KQAG during startup; KQAG HTTP happens only when an authenticated
-browser deliberately opens KQAG from `/app`.
+When `PLATFORM_SQAG_LAUNCH_MODE=server_handoff` is configured, the CLI injects
+the SQAG server-side HTTP boundary required by the browser launch route. It does not call SQAG during startup; SQAG HTTP happens only when an authenticated
+browser deliberately opens SQAG from `/app`.
 
 ### E. Login Once
 
@@ -155,7 +160,9 @@ $env:PLATFORM_SEED_USER_EMAIL="<email-used-for-login>"
 npm run platform:seed-internal-access
 ```
 
-Optional workspace and app overrides use the `PLATFORM_SEED_WORKSPACE_*` and `PLATFORM_SEED_APP_*` env names listed above.
+Optional workspace overrides use the `PLATFORM_SEED_WORKSPACE_*` env names
+listed above. `PLATFORM_SEED_APP_LAUNCH_URL` may set a launch URL, but the app
+key and app name are fixed to canonical SQAG.
 
 The seed requires the user already exists and has a provider identity. It does not create users, provider identities, or sessions. It seeds workspace, app registry, entitlement, and membership records only.
 
@@ -163,16 +170,16 @@ The seed requires the user already exists and has a provider identity. It does n
 
 1. Refresh `/app`.
 2. Confirm the workspace appears.
-3. Confirm the KQAG/SAQG app appears.
+3. Confirm the SQAG app appears.
 4. Confirm the launch button appears only when access is allowed.
-5. Click the KQAG launch button.
-6. Confirm the browser reaches `<kqag-local-base-url>/` without any launch
+5. Click the SQAG launch button.
+6. Confirm the browser reaches `<sqag-local-base-url>/` without any launch
    token in the URL.
-7. Confirm the KQAG session loads under the Platform workspace context.
+7. Confirm the SQAG session loads under the Platform workspace context.
 
 The browser launch route creates the Platform launch token server-side, forwards
-it to KQAG only in the `x-app-launch-token` header, copies KQAG's session cookie
-back to the same browser cookie host, and returns only the safe KQAG launch URL.
+it to SQAG only in the `x-app-launch-token` header, copies SQAG's session cookie
+back to the same browser cookie host, and returns only the safe SQAG launch URL.
 The raw launch token must never appear in URL query parameters, URL fragments,
 browser local/session storage, cookies, logs, screenshots, docs, telemetry, or
 test snapshots.
@@ -186,7 +193,7 @@ Use this internal-alpha fallback only for a teammate who has completed real OIDC
 3. Use the Add Existing User form with the placeholder email value the teammate used for login.
 4. For this check, set role to `member` for quote operators unless the teammate should administer the workspace.
 5. Submit the form and confirm the member appears in the team list with active membership status.
-6. Change a non-owner member role when appropriate, disable a non-owner membership when appropriate, reactivate a disabled non-owner membership when appropriate, and enable or disable the KQAG entitlement only for this local smoke workspace.
+6. Change a non-owner member role when appropriate, disable a non-owner membership when appropriate, reactivate a disabled non-owner membership when appropriate, and enable or disable the SQAG entitlement only for this local smoke workspace.
 7. Confirm the Activity section shows recent add-user, role-change, membership-disable, membership-reactivation, and entitlement-change audit events with event type, target type/id, actor user id, created timestamp, and safe metadata only.
 8. If the form shows a generic failure, confirm the teammate completed real OIDC login, has an active provider-backed Platform user, is not already a workspace member, and that the browser request has a fresh CSRF token.
 
@@ -208,7 +215,7 @@ Invoke-RestMethod -Method Post `
 
 The raw token belongs in `x-app-launch-token`, not in the query string. It is one-time, short-lived, and should not be stored.
 
-For KQAG-side storage and generated XLSX artifact validation, see the KQAG
+For SQAG-side storage and generated XLSX artifact validation, see the SQAG
 runbook `docs/platform-uat-smoke-runbook.md`.
 
 ## Troubleshooting
@@ -225,15 +232,15 @@ runbook `docs/platform-uat-smoke-runbook.md`.
 - `launch denied`: verify the workspace entitlement, membership role, app key, and session are active.
 - `CSRF/origin failure`: fetch a fresh CSRF token through the browser shell and confirm the request origin matches configured allowed origins.
 - `consumed/expired launch token`: create a new launch intent; launch tokens are one-time and short-lived.
-- `KQAG browser launch is not configured`: set `PLATFORM_KQAG_LAUNCH_MODE=server_handoff` and `PLATFORM_KQAG_APP_BASE_URL=<kqag-local-base-url>`, and confirm Platform and KQAG use the same browser cookie host.
-- `KQAG browser launch could not be completed`: confirm KQAG is running in `KQAG_PLATFORM_LAUNCH_MODE=platform`, accepts `POST /api/platform/launch`, and can consume Platform launch tokens through the header-only contract.
+- `SQAG browser launch is not configured`: set `PLATFORM_SQAG_LAUNCH_MODE=server_handoff` and `PLATFORM_SQAG_APP_BASE_URL=<sqag-local-base-url>`, and confirm Platform and SQAG use the same browser cookie host.
+- `SQAG browser launch could not be completed`: confirm SQAG is running in `SQAG_PLATFORM_LAUNCH_MODE=platform`, accepts `POST /api/platform/launch`, and can consume Platform launch tokens through the header-only contract.
 
 ## Out Of Scope
 
 This runbook covers the internal smoke path only.
 
 - no fake login
-- no KQAG-owned auth
+- no SQAG-owned auth
 - no broad app proxy or open proxy
 - no database provisioning
 - no automatic migration execution

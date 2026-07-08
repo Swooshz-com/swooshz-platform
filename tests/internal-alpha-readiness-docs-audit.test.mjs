@@ -8,7 +8,7 @@ const readinessDocPaths = [
   "docs/internal-alpha-go-no-go-checklist.md",
   "docs/auth-session-security-contract.md",
   "docs/internal-platform-smoke-runbook.md",
-  "docs/kqag-integration-contract.md",
+  "docs/sqag-integration-contract.md",
   "docs/hosted-internal-alpha-runbook.md",
   "docs/hosted-internal-alpha-operator-decisions.md",
   "docs/hosted-internal-alpha-operator-briefing.md",
