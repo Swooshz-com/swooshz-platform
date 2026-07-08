@@ -568,75 +568,126 @@ export function renderAdminShellPage(): string {
   return htmlDocument({
     title: "Swooshz Platform Admin",
     body: `
-      <main class="shell">
-        <header class="topbar">
-          <div>
-            <p class="eyebrow">Swooshz Platform</p>
-            <h1>Workspace Admin</h1>
+      <div class="portal-layout admin-layout">
+        <aside class="portal-sidebar">
+          <div class="portal-brand">
+            <span class="brand-mark" aria-hidden="true">S</span>
+            <div>
+              <h1>Swooshz Platform</h1>
+              <p>Enterprise Workspace</p>
+            </div>
           </div>
-          <div class="topbar-actions">
-            <a class="secondary-action" href="/app">App Access</a>
-            <button id="logoutButton" class="secondary-action" type="button" hidden>Sign out of Swooshz Platform</button>
+          <a class="primary-action sidebar-launch" href="/app">Launch Apps</a>
+          <nav class="portal-nav" aria-label="Workspace admin navigation">
+            <a href="/app">Home</a>
+            <a href="/app">Apps</a>
+            <a class="portal-nav-active" href="/app/admin">Members</a>
+            <a href="#activity">Activity</a>
+            <span aria-disabled="true">Help</span>
+            <span aria-disabled="true">Settings</span>
+          </nav>
+          <button id="logoutButton" class="sidebar-logout" type="button" hidden>Sign out of Swooshz Platform</button>
+        </aside>
+        <main class="portal-main">
+          <header class="portal-topbar">
+            <div class="portal-topbar-actions" aria-hidden="true">
+              <span class="topbar-icon"></span>
+              <span class="topbar-icon topbar-icon-history"></span>
+              <span class="topbar-icon topbar-icon-account"></span>
+            </div>
+          </header>
+          <section class="portal-canvas admin-canvas">
+            <div class="admin-page-header">
+              <div class="portal-heading">
+                <h2>Workspace Members</h2>
+                <p>Manage access and roles for your workspace.</p>
+              </div>
+              <button id="openAddMemberButton" class="primary-action compact" type="button" hidden>Add Member</button>
+            </div>
+            <section id="status" class="status" role="status">Loading platform session...</section>
+            <section id="adminActionStatus" class="action-status" role="status" hidden>
+              <span class="spinner" aria-hidden="true"></span>
+              <span id="adminActionStatusText"></span>
+            </section>
+            <section id="identity" class="identity admin-summary-grid" hidden></section>
+            <section id="workspaceSummary" class="workspace admin-summary" hidden></section>
+            <section id="ownerTransfer" class="workspace admin-surface" hidden>
+              <h2>Owner Transfer</h2>
+              <p class="empty">
+                Owner transfer is not available in internal alpha yet. Use a
+                reviewed operator process before hosted execution.
+              </p>
+            </section>
+            <section id="members" class="workspace admin-surface" data-admin-section="members" hidden></section>
+            <section id="pendingApprovals" class="workspace admin-surface" data-admin-section="pending-approvals" hidden></section>
+            <section id="activity" class="workspace admin-surface" data-admin-section="activity" hidden></section>
+            <section id="entitlements" class="workspace admin-surface" data-admin-section="app-access" hidden></section>
+          </section>
+        </main>
+      </div>
+      <div id="addMemberModal" class="modal-backdrop" hidden>
+        <section
+          class="action-modal add-member-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="addMemberModalTitle"
+          aria-describedby="addMemberModalBody"
+        >
+          <div class="modal-header">
+            <h2 id="addMemberModalTitle">Add Member</h2>
+            <button id="closeAddMemberModalButton" class="modal-close" type="button" aria-label="Close add member form">&times;</button>
           </div>
-        </header>
-
-        <section id="status" class="status" role="status">Loading platform session...</section>
-        <section id="adminActionStatus" class="action-status" role="status" hidden>
-          <span class="spinner" aria-hidden="true"></span>
-          <span id="adminActionStatusText"></span>
+          <div class="modal-body">
+            <p id="addMemberModalBody" class="empty">
+              Create a pending workspace access approval or add an existing
+              provider-backed user. Access activates through the existing
+              provider-backed sign-in flow.
+            </p>
+            <p id="addMemberResult" class="empty" role="status" hidden></p>
+            <form id="addMemberForm" class="field-stack">
+              <label>
+                <strong>Email address</strong>
+                <input name="email" type="email" autocomplete="email" placeholder="workspace.user@example.com" required>
+              </label>
+              <label>
+                <strong>Workspace role</strong>
+                <select name="role" required>
+                  <option value="admin">Admin</option>
+                  <option value="member" selected>Member</option>
+                </select>
+              </label>
+              <div class="modal-actions">
+                <button id="cancelAddMemberModalButton" class="secondary-action compact" type="button">Cancel</button>
+                <button class="primary-action compact" type="submit">Add member</button>
+              </div>
+            </form>
+          </div>
         </section>
-        <section id="identity" class="identity" hidden></section>
-        <section id="workspaceSummary" class="workspace" hidden></section>
-        <section id="addMember" class="workspace" hidden>
-          <h2>Add Existing User</h2>
-          <p id="addMemberResult" class="empty" role="status" hidden></p>
-          <form id="addMemberForm" class="inline-form">
-            <label>
-              <strong>Email</strong>
-              <input name="email" type="email" autocomplete="email" required>
-            </label>
-            <label>
-              <strong>Role</strong>
-              <select name="role" required>
-                <option value="admin">admin</option>
-                <option value="member" selected>member</option>
-                <option value="viewer">viewer</option>
-              </select>
-            </label>
-            <button class="primary-action compact" type="submit">Add</button>
-          </form>
-        </section>
-        <section id="ownerTransfer" class="workspace" hidden>
-          <h2>Owner Transfer</h2>
-          <p class="empty">
-            Owner transfer is not available in internal alpha yet. Use a
-            reviewed operator process before hosted execution.
-          </p>
-        </section>
-        <section id="pendingApprovals" class="workspace" hidden></section>
-        <section id="members" class="workspace" hidden></section>
-        <section id="entitlements" class="workspace" hidden></section>
-        <section id="activity" class="workspace" hidden></section>
-      </main>
+      </div>
       <div id="adminActionModal" class="modal-backdrop" hidden>
         <section
-          class="action-modal"
+          class="action-modal member-action-modal"
           role="dialog"
           aria-modal="true"
           aria-labelledby="adminActionModalTitle"
           aria-describedby="adminActionModalBody"
         >
-          <h2 id="adminActionModalTitle">Remove member?</h2>
-          <p id="adminActionModalBody">
-            This removes workspace access for this member. Their platform account is not deleted.
-          </p>
-          <p id="adminActionModalLoading" class="modal-loading" role="status" hidden>
-            <span class="spinner" aria-hidden="true"></span>
-            <span id="adminActionModalLoadingText">Removing member...</span>
-          </p>
-          <p id="adminActionModalError" class="modal-error" role="alert" hidden></p>
-          <div class="modal-actions">
-            <button id="adminActionModalCancel" class="secondary-action compact" type="button">Cancel</button>
+          <div class="modal-header">
+            <h2 id="adminActionModalTitle">Remove member?</h2>
+            <button id="adminActionModalCancel" class="modal-close" type="button" aria-label="Cancel member action">&times;</button>
+          </div>
+          <div class="modal-body">
+            <p id="adminActionModalBody">
+              This removes workspace access for this member. Their platform account is not deleted.
+            </p>
+            <p id="adminActionModalLoading" class="modal-loading" role="status" hidden>
+              <span class="spinner" aria-hidden="true"></span>
+              <span id="adminActionModalLoadingText">Removing member...</span>
+            </p>
+            <p id="adminActionModalError" class="modal-error" role="alert" hidden></p>
+          </div>
+          <div class="modal-actions modal-footer">
+            <button id="adminActionModalDismiss" class="secondary-action compact" type="button">Cancel</button>
             <button id="adminActionModalConfirm" class="primary-action compact" type="button">Remove member</button>
           </div>
         </section>
@@ -664,7 +715,10 @@ export function renderAdminShellPage(): string {
           const adminActionStatusText = document.getElementById("adminActionStatusText");
           const identity = document.getElementById("identity");
           const workspaceSummary = document.getElementById("workspaceSummary");
-          const addMember = document.getElementById("addMember");
+          const addMember = document.getElementById("addMemberModal");
+          const openAddMemberButton = document.getElementById("openAddMemberButton");
+          const closeAddMemberModalButton = document.getElementById("closeAddMemberModalButton");
+          const cancelAddMemberModalButton = document.getElementById("cancelAddMemberModalButton");
           const addMemberResult = document.getElementById("addMemberResult");
           const addMemberForm = document.getElementById("addMemberForm");
           const ownerTransfer = document.getElementById("ownerTransfer");
@@ -680,6 +734,7 @@ export function renderAdminShellPage(): string {
           const modalLoadingText = document.getElementById("adminActionModalLoadingText");
           const modalError = document.getElementById("adminActionModalError");
           const modalCancelButton = document.getElementById("adminActionModalCancel");
+          const modalDismissButton = document.getElementById("adminActionModalDismiss");
           const modalConfirmButton = document.getElementById("adminActionModalConfirm");
 
           logoutButton.addEventListener("click", () => {
@@ -688,7 +743,19 @@ export function renderAdminShellPage(): string {
           addMemberForm.addEventListener("submit", (event) => {
             void addExistingMember(event);
           });
+          openAddMemberButton.addEventListener("click", () => {
+            openAddMemberModal();
+          });
+          closeAddMemberModalButton.addEventListener("click", () => {
+            closeAddMemberModal();
+          });
+          cancelAddMemberModalButton.addEventListener("click", () => {
+            closeAddMemberModal();
+          });
           modalCancelButton.addEventListener("click", () => {
+            closeActionModal();
+          });
+          modalDismissButton.addEventListener("click", () => {
             closeActionModal();
           });
           modalConfirmButton.addEventListener("click", () => {
@@ -778,7 +845,7 @@ export function renderAdminShellPage(): string {
               }
 
               renderWorkspaceSummary(state.workspace);
-              addMember.hidden = false;
+              openAddMemberButton.hidden = false;
               ownerTransfer.hidden = false;
               renderPendingApprovals(approvalsPayload.approvals);
               renderMembers(membersPayload.members);
@@ -846,7 +913,10 @@ export function renderAdminShellPage(): string {
 
           function renderMembers(memberList) {
             members.hidden = false;
-            members.replaceChildren(sectionHeading("Team Members"));
+            members.replaceChildren(
+              sectionHeading("Workspace Members"),
+              sectionDescription("Current workspace access and supported roles.")
+            );
 
             if (!Array.isArray(memberList) || memberList.length === 0) {
               members.append(emptyMessage("No workspace members are available."));
@@ -854,7 +924,7 @@ export function renderAdminShellPage(): string {
             }
 
             const table = document.createElement("table");
-            table.append(tableHead(["Name", "Email", "Role", "Status", "Last login", "Actions"]));
+            table.append(tableHead(["Member", "Role", "Status", "Last active", "Actions"]));
             const body = document.createElement("tbody");
             const activeOwnerCount = memberList.filter((member) =>
               member.role === "owner" && member.status === "active"
@@ -863,8 +933,7 @@ export function renderAdminShellPage(): string {
             for (const member of memberList) {
               const row = document.createElement("tr");
               row.append(
-                tableCell(member.user?.displayName || ""),
-                tableCell(member.user?.email || ""),
+                memberIdentityCell(member),
                 roleCell(member),
                 tableCell(member.status || ""),
                 tableCell(formatDate(member.user?.lastLoginAt)),
@@ -879,7 +948,10 @@ export function renderAdminShellPage(): string {
 
           function renderPendingApprovals(approvalList) {
             pendingApprovals.hidden = false;
-            pendingApprovals.replaceChildren(sectionHeading("Pending Approvals"));
+            pendingApprovals.replaceChildren(
+              sectionHeading("Pending Approvals"),
+              sectionDescription("Review pending workspace access approvals. No email delivery is implied by this list.")
+            );
 
             if (!Array.isArray(approvalList) || approvalList.length === 0) {
               pendingApprovals.append(emptyMessage("No pending approvals are available."));
@@ -887,7 +959,7 @@ export function renderAdminShellPage(): string {
             }
 
             const table = document.createElement("table");
-            table.append(tableHead(["Email", "Role", "Status", "Created", "Actions"]));
+            table.append(tableHead(["Requester", "Role", "Status", "Created", "Actions"]));
             const body = document.createElement("tbody");
 
             for (const approval of approvalList) {
@@ -958,7 +1030,10 @@ export function renderAdminShellPage(): string {
           }
 
           function renderActivityPage() {
-            activity.replaceChildren(sectionHeading("Activity"));
+            activity.replaceChildren(
+              sectionHeading("Audit Log"),
+              sectionDescription("Safe workspace activity labels without internal identifiers or provider metadata.")
+            );
 
             const eventList = state.activityEvents;
             if (eventList.length === 0) {
@@ -1025,15 +1100,15 @@ export function renderAdminShellPage(): string {
           function roleCell(member) {
             const cell = document.createElement("td");
             const select = document.createElement("select");
-            const roles = ["owner", "admin", "member", "viewer"];
+            const roles = ["owner", "admin", "member"];
             const isSelf = member.user?.id === state.context?.user?.userId;
             const actorIsOwner = state.workspace?.membershipRole === "owner";
 
             for (const role of roles) {
               const option = document.createElement("option");
               option.value = role;
-              option.textContent = role;
-              option.selected = member.role === role;
+              option.textContent = displayRole(role);
+              option.selected = member.role === role || (!roles.includes(member.role) && role === "member");
               option.disabled = role === "owner" && !actorIsOwner;
               select.append(option);
             }
@@ -1076,7 +1151,7 @@ export function renderAdminShellPage(): string {
             menuPanel.hidden = true;
 
             if (member.status === "active") {
-              menuPanel.append(actionButton("Disable", () => {
+              menuPanel.append(actionButton("Disable Access", () => {
                 closeAllActionMenus();
                 void disableMember(member.membershipId);
               }));
@@ -1090,7 +1165,7 @@ export function renderAdminShellPage(): string {
             }
 
             if (["active", "disabled"].includes(member.status)) {
-              menuPanel.append(actionButton("Remove", () => {
+              menuPanel.append(actionButton("Remove from Workspace", () => {
                 closeAllActionMenus();
                 void removeMember(member.membershipId);
               }));
@@ -1216,6 +1291,7 @@ export function renderAdminShellPage(): string {
             );
             if (result) {
               addMemberForm.reset();
+              closeAddMemberModal();
             }
           }
 
@@ -1229,6 +1305,17 @@ export function renderAdminShellPage(): string {
             setModalBusy(false, action.loadingMessage);
             adminActionModal.hidden = false;
             modalCancelButton.focus();
+          }
+
+          function openAddMemberModal() {
+            setAddMemberResult("");
+            addMember.hidden = false;
+            addMemberForm.querySelector("input[name='email']").focus();
+          }
+
+          function closeAddMemberModal() {
+            addMember.hidden = true;
+            setAddMemberResult("");
           }
 
           function closeActionModal() {
@@ -1270,9 +1357,11 @@ export function renderAdminShellPage(): string {
             if (isBusy) {
               modalConfirmButton.disabled = true;
               modalCancelButton.disabled = true;
+              modalDismissButton.disabled = true;
             } else {
               modalConfirmButton.disabled = false;
               modalCancelButton.disabled = false;
+              modalDismissButton.disabled = false;
             }
             modalLoading.hidden = !isBusy;
             modalLoadingText.textContent = message || "";
@@ -1456,25 +1545,25 @@ export function renderAdminShellPage(): string {
           function activityLabel(event) {
             switch (event.eventType) {
               case "workspace.app_entitlement.enabled":
-                return "SQAG access enabled";
+                return "App launch allowed";
               case "workspace.app_entitlement.disabled":
-                return "SQAG access disabled";
+                return "App launch denied";
               case "workspace.membership.added":
                 return "Member added";
               case "workspace.membership.disabled":
-                return "Member disabled";
+                return "Member removed";
               case "workspace.membership.reactivated":
-                return "Member reactivated";
+                return "Member added";
               case "workspace.membership.removed":
                 return "Member removed";
               case "workspace.membership.role_changed":
-                return "Member role changed";
+                return "Role changed";
               case "workspace.membership_approval.created":
-                return "Membership approval created";
+                return "Login blocked for unapproved user";
               case "workspace.membership_approval.revoked":
-                return "Membership approval revoked";
+                return "Login blocked for unapproved user";
               case "workspace.membership_approval.accepted":
-                return "Membership approval accepted";
+                return "Member added";
               default:
                 return "Workspace activity";
             }
@@ -1565,7 +1654,7 @@ export function renderAdminShellPage(): string {
               return null;
             }
 
-            return { label: "App", value: "SQAG" };
+            return { label: "App", value: "Swooshz Quote Auto Generator" };
           }
 
           function isSafeMetadataValue(value) {
@@ -1580,6 +1669,7 @@ export function renderAdminShellPage(): string {
             adminActionStatus.hidden = true;
             adminActionStatusText.textContent = "";
             workspaceSummary.hidden = true;
+            openAddMemberButton.hidden = true;
             addMember.hidden = true;
             addMemberResult.hidden = true;
             addMemberResult.textContent = "";
@@ -1604,6 +1694,52 @@ export function renderAdminShellPage(): string {
             const heading = document.createElement("h2");
             heading.textContent = value;
             return heading;
+          }
+
+          function sectionDescription(value) {
+            const description = document.createElement("p");
+            description.className = "empty section-description";
+            description.textContent = value;
+            return description;
+          }
+
+          function memberIdentityCell(member) {
+            const cell = document.createElement("td");
+            const block = document.createElement("div");
+            block.className = "member-identity";
+            const avatar = document.createElement("span");
+            avatar.className = "member-avatar";
+            avatar.textContent = initials(member.user?.displayName || member.user?.email || "Member");
+            const copy = document.createElement("span");
+            const name = document.createElement("strong");
+            const email = document.createElement("span");
+            name.textContent = member.user?.displayName || "Workspace member";
+            email.textContent = member.user?.email || "";
+            copy.append(name, email);
+            block.append(avatar, copy);
+            cell.append(block);
+            return cell;
+          }
+
+          function initials(value) {
+            return String(value || "M")
+              .trim()
+              .split(/\\s+/)
+              .slice(0, 2)
+              .map((part) => part[0] || "")
+              .join("")
+              .toUpperCase() || "M";
+          }
+
+          function displayRole(role) {
+            switch (role) {
+              case "owner":
+                return "Owner";
+              case "admin":
+                return "Admin";
+              default:
+                return "Member";
+            }
           }
 
           function textBlock(label, value) {
@@ -1637,8 +1773,6 @@ export function renderAdminShellPage(): string {
 
           function timeCell(value) {
             const cell = document.createElement("td");
-            const raw = value ? String(value) : "";
-            cell.title = raw;
             cell.textContent = formatDate(value);
             return cell;
           }
@@ -2653,6 +2787,102 @@ function htmlDocument({
       color: var(--muted);
     }
 
+    .admin-layout .portal-sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+    }
+
+    .admin-layout .portal-topbar {
+      justify-content: flex-end;
+    }
+
+    .admin-canvas {
+      width: min(1240px, calc(100% - 64px));
+      gap: 18px;
+    }
+
+    .admin-page-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 24px;
+      margin-bottom: 4px;
+    }
+
+    .topbar-icon {
+      display: inline-block;
+      width: 22px;
+      height: 22px;
+      border: 2px solid var(--primary);
+      border-radius: 999px;
+      vertical-align: middle;
+    }
+
+    .topbar-icon-history {
+      border-style: dashed;
+    }
+
+    .topbar-icon-account {
+      position: relative;
+    }
+
+    .topbar-icon-account::after {
+      position: absolute;
+      left: 4px;
+      right: 4px;
+      bottom: 3px;
+      height: 6px;
+      border-top: 2px solid var(--primary);
+      border-radius: 999px 999px 0 0;
+      content: "";
+    }
+
+    .admin-summary-grid {
+      margin-bottom: 0;
+    }
+
+    .admin-summary,
+    .admin-surface {
+      padding: 22px;
+    }
+
+    .admin-surface h2,
+    .admin-summary h2 {
+      margin: 0 0 6px;
+      color: var(--primary);
+      font-size: 24px;
+      line-height: 1.25;
+    }
+
+    .section-description {
+      margin-bottom: 18px;
+    }
+
+    .member-identity {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .member-identity strong {
+      color: var(--primary);
+      font-size: 15px;
+      text-transform: none;
+    }
+
+    .member-avatar {
+      display: grid;
+      place-items: center;
+      width: 44px;
+      height: 44px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--secondary);
+      color: #ffffff;
+      font-weight: 700;
+    }
+
     .spinner {
       width: 14px;
       height: 14px;
@@ -2679,18 +2909,72 @@ function htmlDocument({
 
     .action-modal {
       width: min(420px, 100%);
-      padding: 22px;
       border: 1px solid var(--line);
       border-radius: 8px;
       background: var(--surface);
       box-shadow: 0 18px 46px rgb(0 0 0 / 18%);
+      overflow: hidden;
+    }
+
+    .add-member-modal {
+      width: min(560px, 100%);
+    }
+
+    .modal-header,
+    .modal-body,
+    .modal-footer {
+      padding: 20px 24px;
+    }
+
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .modal-header h2 {
+      margin: 0;
+      color: var(--primary);
+      font-size: 24px;
+      line-height: 1.25;
+    }
+
+    .modal-body {
+      display: grid;
+      gap: 16px;
+    }
+
+    .modal-close {
+      width: 36px;
+      min-height: 36px;
+      border: 0;
+      background: transparent;
+      color: var(--ink);
+      cursor: pointer;
+      font-size: 20px;
+    }
+
+    .field-stack {
+      display: grid;
+      gap: 16px;
+    }
+
+    .field-stack label {
+      display: grid;
+      gap: 8px;
     }
 
     .modal-actions {
       display: flex;
       justify-content: flex-end;
       gap: 10px;
-      margin-top: 18px;
+    }
+
+    .modal-footer {
+      border-top: 1px solid var(--line);
+      background: var(--surface-container-low);
     }
 
     .modal-error {
@@ -2826,6 +3110,7 @@ function htmlDocument({
       .portal-sidebar {
         position: static;
         min-height: auto;
+        height: auto;
         border-right: 0;
         border-bottom: 1px solid var(--line);
       }
@@ -2851,6 +3136,24 @@ function htmlDocument({
       .portal-canvas {
         padding: 28px 16px 40px;
         overflow: hidden;
+      }
+
+      .admin-canvas {
+        width: 100%;
+      }
+
+      .admin-page-header {
+        display: grid;
+        gap: 16px;
+      }
+
+      .admin-summary,
+      .admin-surface {
+        padding: 18px;
+      }
+
+      .member-identity {
+        align-items: flex-start;
       }
 
       .portal-heading h2 {
@@ -2923,6 +3226,16 @@ function htmlDocument({
       .primary-action,
       .secondary-action {
         width: 100%;
+      }
+
+      .modal-actions {
+        display: grid;
+      }
+
+      .modal-header,
+      .modal-body,
+      .modal-footer {
+        padding: 18px;
       }
     }
   </style>
