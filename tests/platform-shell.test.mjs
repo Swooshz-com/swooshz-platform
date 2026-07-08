@@ -378,13 +378,20 @@ test("admin shell uses Stitch portal layout for workspace management surfaces", 
   assert.match(html, /class="portal-sidebar"/);
   assert.match(html, /Workspace Members/);
   assert.match(html, /Manage access and roles for your workspace/);
-  assert.match(html, /Search workspace/);
   assert.match(html, /Members/);
   assert.match(html, /Activity/);
   assert.match(html, /Add Member/);
   assert.match(html, /data-admin-section="members"/);
   assert.match(html, /data-admin-section="pending-approvals"/);
   assert.match(html, /data-admin-section="activity"/);
+});
+
+test("admin shell does not render an enabled no-op workspace search control", () => {
+  const html = renderAdminShellPage();
+  const enabledSearchInput = /<input\b(?=[^>]*\btype="search"\b)(?![^>]*\bdisabled\b)[^>]*>/i;
+
+  assert.doesNotMatch(html, enabledSearchInput);
+  assert.doesNotMatch(html, /Search workspace/);
 });
 
 test("admin shell shows loading feedback for state-changing admin actions", () => {

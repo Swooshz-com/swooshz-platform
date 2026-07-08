@@ -590,10 +590,6 @@ export function renderAdminShellPage(): string {
         </aside>
         <main class="portal-main">
           <header class="portal-topbar">
-            <label class="admin-search">
-              <span class="search-icon" aria-hidden="true"></span>
-              <input type="search" placeholder="Search workspace..." aria-label="Search workspace">
-            </label>
             <div class="portal-topbar-actions" aria-hidden="true">
               <span class="topbar-icon"></span>
               <span class="topbar-icon topbar-icon-history"></span>
@@ -2797,6 +2793,10 @@ function htmlDocument({
       height: 100vh;
     }
 
+    .admin-layout .portal-topbar {
+      justify-content: flex-end;
+    }
+
     .admin-canvas {
       width: min(1240px, calc(100% - 64px));
       gap: 18px;
@@ -2808,48 +2808,6 @@ function htmlDocument({
       justify-content: space-between;
       gap: 24px;
       margin-bottom: 4px;
-    }
-
-    .admin-search {
-      width: min(560px, 100%);
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      min-height: 48px;
-      padding: 0 14px;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      background: var(--surface-container-low);
-      color: var(--muted);
-    }
-
-    .admin-search input {
-      min-height: 44px;
-      padding: 0;
-      border: 0;
-      background: transparent;
-      outline: none;
-    }
-
-    .search-icon {
-      position: relative;
-      width: 16px;
-      height: 16px;
-      border: 2px solid currentColor;
-      border-radius: 999px;
-      flex: 0 0 auto;
-    }
-
-    .search-icon::after {
-      position: absolute;
-      right: -5px;
-      bottom: -4px;
-      width: 7px;
-      height: 2px;
-      background: currentColor;
-      border-radius: 999px;
-      content: "";
-      transform: rotate(45deg);
     }
 
     .topbar-icon {
@@ -3187,10 +3145,6 @@ function htmlDocument({
       .admin-page-header {
         display: grid;
         gap: 16px;
-      }
-
-      .admin-search {
-        width: 100%;
       }
 
       .admin-summary,
