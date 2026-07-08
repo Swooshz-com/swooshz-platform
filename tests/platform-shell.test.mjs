@@ -77,6 +77,7 @@ test("implemented frontend slice excludes forbidden copy and unapproved business
     renderSolutionsPage(),
     renderLoginPage(),
     renderAppShellPage(),
+    renderAdminShellPage(),
     renderAuthErrorPage(),
   ];
 
@@ -180,14 +181,19 @@ test("admin shell includes add-existing-user form with allowed non-owner roles",
   const html = renderAdminShellPage();
 
   assert.match(html, /id="addMemberForm"/);
+  assert.match(html, /id="addMemberModal"/);
+  assert.match(html, /id="openAddMemberButton"/);
   assert.match(html, /id="addMemberResult"/);
   assert.match(html, /name="email"/);
   assert.match(html, /name="role"/);
-  assert.match(
-    html,
-    /<select name="role" required>\s*<option value="admin">admin<\/option>\s*<option value="member" selected>member<\/option>\s*<option value="viewer">viewer<\/option>/,
-  );
+  assert.match(html, /Create a pending workspace access approval/);
+  assert.match(html, /provider-backed sign-in flow/);
+  assert.match(html, /button[^>]*type="submit"[^>]*>\s*Add member\s*<\/button>/);
+  assert.match(html, /<option value="admin">Admin<\/option>/);
+  assert.match(html, /<option value="member" selected>Member<\/option>/);
   assert.doesNotMatch(html, /value="owner"/);
+  assert.doesNotMatch(html, /value="viewer"|>viewer<|>Viewer</);
+  assert.doesNotMatch(html, /email invitation|send invite|Invite a new member/i);
   assert.match(html, /addExistingMember/);
   assert.match(html, /Pending approval created\./);
   assert.match(html, /Existing user added to workspace\./);
@@ -202,6 +208,8 @@ test("admin shell renders pending approvals with revoke controls", () => {
 
   assert.match(html, /id="pendingApprovals"/);
   assert.match(html, /sectionHeading\("Pending Approvals"\)/);
+  assert.match(html, /Review pending workspace access approvals/);
+  assert.match(html, /No email delivery is implied/);
   assert.match(html, /renderPendingApprovals/);
   assert.match(html, /adminApprovalsUrl/);
   assert.match(html, /approvalActionsCell/);
@@ -224,18 +232,17 @@ test("admin shell includes Activity section for safe audit browsing", () => {
   const html = renderAdminShellPage();
 
   assert.match(html, /id="activity"/);
-  assert.match(html, /sectionHeading\("Activity"\)/);
+  assert.match(html, /sectionHeading\("Audit Log"\)/);
   assert.match(html, /renderActivity/);
   assert.match(html, /adminAuditEventsUrl/);
   assert.match(html, /activityLabel/);
   assert.match(html, /metadataRows/);
-  assert.match(html, /SQAG access enabled/);
-  assert.match(html, /SQAG access disabled/);
-  assert.match(html, /Member role changed/);
+  assert.match(html, /App launch allowed/);
+  assert.match(html, /App launch denied/);
+  assert.match(html, /Role changed/);
   assert.match(html, /Member removed/);
-  assert.match(html, /Membership approval created/);
-  assert.match(html, /Membership approval revoked/);
-  assert.match(html, /Member reactivated/);
+  assert.match(html, /Login blocked for unapproved user/);
+  assert.doesNotMatch(html, /SQAG access enabled|SQAG access disabled|Membership approval/i);
   assert.match(html, /Action/);
   assert.match(html, /Subject/);
   assert.match(html, /Actor/);
@@ -250,10 +257,10 @@ test("admin shell includes Activity section for safe audit browsing", () => {
   assert.match(html, /Previous role/);
   assert.match(html, /New status/);
   assert.match(html, /normalizeAppKeyMetadata/);
-  assert.match(html, /value: "SQAG"/);
+  assert.match(html, /value: "Swooshz Quote Auto Generator"/);
   assert.match(html, /Platform user/);
   assert.match(html, /System/);
-  assert.match(html, /title = raw/);
+  assert.doesNotMatch(html, /title = raw/);
 });
 
 test("admin shell Activity metadata uses an explicit friendly allowlist", () => {
@@ -268,7 +275,7 @@ test("admin shell Activity metadata uses an explicit friendly allowlist", () => 
   );
   assert.match(html, /case "newStatus":\s*return \{ label: "New status", value: String\(value\) \}/);
   assert.match(html, /case "appKey":\s*return normalizeAppKeyMetadata\(value\)/);
-  assert.match(html, /label: "App", value: "SQAG"/);
+  assert.match(html, /label: "App", value: "Swooshz Quote Auto Generator"/);
   assert.doesNotMatch(html, /return key\.replace/);
   assert.doesNotMatch(html, /metadataLabel\(key\)/);
   assert.doesNotMatch(html, /metadataValue\(key, value\)/);
@@ -329,6 +336,7 @@ test("admin shell limits usable controls to owner/admin workspace context", () =
   assert.match(html, /"Member disabled\."/);
   assert.match(html, /"Member reactivated\."/);
   assert.match(html, /"Member removed\."/);
+  assert.doesNotMatch(html, /\bviewer\b/i);
   assert.doesNotMatch(html, /button\.disabled = isSelf \|\| member\.status !== "active"/);
 });
 
@@ -338,9 +346,9 @@ test("admin shell renders member row actions as a compact Actions menu with inte
   assert.match(html, /function memberActionsCell\(member, activeOwnerCount\)/);
   assert.match(html, /menuButton\.textContent = "Actions"/);
   assert.match(html, /closeAllActionMenus/);
-  assert.match(html, /actionButton\("Disable"/);
+  assert.match(html, /actionButton\("Disable Access"/);
   assert.match(html, /actionButton\("Reactivate"/);
-  assert.match(html, /actionButton\("Remove"/);
+  assert.match(html, /actionButton\("Remove from Workspace"/);
   assert.match(html, /removeMember\(member\.membershipId\)/);
   assert.match(html, /id="adminActionModal"/);
   assert.match(html, /Remove member\?/);
@@ -353,6 +361,7 @@ test("admin shell renders member row actions as a compact Actions menu with inte
   assert.match(html, /Removing member\.\.\./);
   assert.match(html, /modalConfirmButton\.disabled = true/);
   assert.match(html, /modalCancelButton\.disabled = true/);
+  assert.doesNotMatch(html, /Permanent action|associated projects and data|data loss|product records/i);
   assert.doesNotMatch(html, /window\.confirm/);
   assert.match(html, /member\.status === "active"/);
   assert.match(html, /member\.status === "disabled"/);
@@ -360,6 +369,22 @@ test("admin shell renders member row actions as a compact Actions menu with inte
   assert.match(html, /adminMemberUrl\(state\.workspace\.workspaceId, membershipId\) \+ "\/remove"/);
   assert.match(html, /case "workspace\.membership\.removed":\s*return "Member removed";/);
   assert.doesNotMatch(html, /button\.textContent = member\.status === "disabled" \? "Reactivate" : "Disable"/);
+});
+
+test("admin shell uses Stitch portal layout for workspace management surfaces", () => {
+  const html = renderAdminShellPage();
+
+  assert.match(html, /class="portal-layout admin-layout"/);
+  assert.match(html, /class="portal-sidebar"/);
+  assert.match(html, /Workspace Members/);
+  assert.match(html, /Manage access and roles for your workspace/);
+  assert.match(html, /Search workspace/);
+  assert.match(html, /Members/);
+  assert.match(html, /Activity/);
+  assert.match(html, /Add Member/);
+  assert.match(html, /data-admin-section="members"/);
+  assert.match(html, /data-admin-section="pending-approvals"/);
+  assert.match(html, /data-admin-section="activity"/);
 });
 
 test("admin shell shows loading feedback for state-changing admin actions", () => {
@@ -383,7 +408,7 @@ test("admin shell keeps secret raw-auth and SQAG quote material out of static HT
   assert.doesNotMatch(html, /CSRF_TOKEN_HASH_SECRET|csrf-secret/i);
   assert.doesNotMatch(html, /auth-code|raw-state|raw-nonce|provider-token|raw-claim/i);
   assert.doesNotMatch(html, /DATABASE_URL|postgresql:\/\/|private\.example/i);
-  assert.doesNotMatch(html, /quote export|pricing|xlsx|quote session/i);
+  assert.doesNotMatch(html, /quote export|pricing|xlsx|quote session|raw id|commit hash/i);
   assert.doesNotMatch(html, /localStorage|sessionStorage|clipboard/);
 });
 
