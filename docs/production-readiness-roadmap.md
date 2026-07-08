@@ -24,7 +24,7 @@ Non-goals for this roadmap update:
 | Status | Count / notes |
 | --- | --- |
 | Done | Gate 0 foundation items with merged-code, merged-doc, and local-test evidence are checked below. |
-| In progress | Hosted readiness documentation, env checks, DB readiness tooling, admin/member flows, audit/activity, and launch-token contracts exist, but hosted smoke evidence is not recorded. |
+| In progress | Hosted readiness documentation, env checks, DB readiness tooling, repo-side CI/container readiness, admin/member flows, audit/activity, and launch-token contracts exist, but hosted smoke evidence is not recorded. |
 | Frontend visual freeze candidate | A 34-screen Stitch visual/layout freeze candidate exists and is recorded in `docs/frontend-stitch-visual-freeze-parity-plan.md`; frontend implementation, production copy, screenshot parity, and hosted visual evidence remain unchecked. |
 | Blocked until VPS/shared hosting foundation | Gate 1 and Platform hosted deployment execution are blocked until the shared Hostinger/Coolify foundation exists. That foundation is shared across Platform, SQAG, and SKR; it must not become Platform-only. |
 | Blocked until SQAG/SKR hosting readiness | Shared VPS purchase/use is intentionally waiting for SQAG and SKR to reach hosting readiness; Platform must not assume the VPS already exists. |
@@ -36,6 +36,7 @@ Non-goals for this roadmap update:
 - Draft legal/compliance docs and launch governance placeholders: privacy policy, terms, data retention policy, account/member removal policy, vendor/subprocessor notes, and final go/no-go owner.
 - Turn backup/restore expectations into an operator-owned evidence template that records only sanitized backup id, restore target, timestamp, owner, and pass/fail status.
 - Complete the frontend design readiness gate in `docs/frontend-design-readiness.md` and the Stitch parity plan in `docs/frontend-stitch-visual-freeze-parity-plan.md` before broad public website, Blog/resources, portal, customer admin, or internal admin/content admin implementation. Do not tick frontend work complete without implemented UI, canonical copy corrections, deterministic tests, screenshot parity evidence, and later hosted evidence after deployment is separately approved.
+- Review repo-side CI/container readiness in `docs/ci-cd/CURRENT_CICD_STATUS.md` and `docs/coolify-deployment-readiness.md`; keep it separate from hosted deployment evidence.
 - Keep SQAG/SKR hosting-readiness work separate from Platform. Do not purchase or configure the shared VPS from this Platform roadmap alone.
 - Update this roadmap immediately after any relevant merged PR or blocker, using the rules below.
 
@@ -92,6 +93,8 @@ Gate status: completed only for the specific items below. This gate does not app
   Evidence: PR #78 `5662901` ("Add Hostinger Coolify deployment readiness"); `docs/hosted-internal-alpha-runbook.md` documents future Hostinger/Coolify app shape, build command `npm run build`, start command `npm run platform:start`, health check `/healthz`, env/secret categories, and no migration/seed hooks.
 - [x] Production fail-closed hosted URL validation.
   Evidence: hosted readiness docs and `scripts/platform-readiness-check.mjs` require production mode, HTTPS browser/provider-facing URLs, origin-only allowed origins, callback path shape, valid Postgres-shaped `DATABASE_URL`, secure cookies, and safe output; covered by `tests/platform-readiness-check.test.mjs` and `tests/hosted-internal-alpha-runbook.test.mjs`.
+- [x] Repo-side CI and container readiness.
+  Evidence: this readiness PR adds `.github/workflows/ci.yml` gates for secret scan, dependency install, `npm run typecheck`, `npm run build`, `npm test`, and Docker image build without push/deploy; adds `Dockerfile`, `.dockerignore`, `.gitleaks.toml`, `docs/ci-cd/CURRENT_CICD_STATUS.md`, and `docs/coolify-deployment-readiness.md`; covered by `tests/ci-container-readiness.test.mjs`.
 
 ## Gate 1: Hostinger/Coolify Shared Hosting Foundation Gate
 

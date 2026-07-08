@@ -15,6 +15,8 @@ const readinessDocPaths = [
   "docs/production-readiness-roadmap.md",
   "docs/frontend-design-readiness.md",
   "docs/frontend-stitch-visual-freeze-parity-plan.md",
+  "docs/coolify-deployment-readiness.md",
+  "docs/ci-cd/CURRENT_CICD_STATUS.md",
   "docs/roadmap.md",
 ];
 
