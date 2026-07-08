@@ -2,7 +2,7 @@
 
 SQAG is the first app integration target for Swooshz Platform. This contract defines the platform-owned launch boundary now that SQAG can consume platform launch context server-side. The current platform code implements the launch-token issue and consume endpoints plus a narrow browser-safe SQAG handoff route. SQAG quote workflow storage and app behavior remain owned by the SQAG repository.
 
-SQAG-side PR #122 landed at merge commit `6f93180023636306fe10f0d6250ea2df71d486a0` and made `sqag` the canonical app key. SQAG now rejects non-`sqag` launch payloads fail-closed. This Platform migration aligns the Platform registry, entitlement, launch, consume, seed, docs, and admin surfaces to `appKey=sqag`; live Platform-to-SQAG smoke remains pending until this Platform change is merged and deliberately exercised by an operator.
+SQAG-side PR #122 landed at merge commit `6f93180023636306fe10f0d6250ea2df71d486a0` and made `sqag` the canonical app key. Platform PR #79 landed at merge commit `c65bf67078031921f5b4ce73f03455804eb2fd07` and aligned the Platform registry, entitlement, launch, consume, seed, docs, and admin surfaces to `appKey=sqag`. SQAG now rejects non-`sqag` launch payloads fail-closed. Live Platform-to-SQAG smoke remains pending until an operator deliberately runs the hosted/live smoke; the local synthetic readiness check does not claim production readiness.
 
 ## Boundary Summary
 
@@ -247,6 +247,19 @@ PLATFORM_SQAG_APP_BASE_URL=<sqag-local-base-url>
 ```
 
 The platform start CLI validates the configured SQAG base URL before listening and does not call SQAG during startup. The browser-safe handoff requires Platform and SQAG to be reachable on the same browser cookie host for local UAT. Different ports on `127.0.0.1` are acceptable for this local shape; mixing `localhost` and `127.0.0.1` is intentionally rejected.
+
+Before any operator-hosted smoke, run the DB-free synthetic preflight:
+
+```powershell
+npm run platform:sqag-smoke-readiness
+```
+
+That command exercises the existing deterministic launch/open, consume,
+seed/bootstrap, contract-doc, and app-key migration tests. It uses no real
+OAuth provider, hosted database, hosted SQAG instance, Coolify, Hostinger, or
+secret values. Passing it only confirms local synthetic readiness; live
+Platform-to-SQAG smoke remains pending until an operator-approved hosted/live
+run succeeds.
 
 ### Phase 5: Platform Frontend Shell
 
