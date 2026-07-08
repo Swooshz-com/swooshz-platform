@@ -2,17 +2,191 @@ export function renderLandingPage(): string {
   return htmlDocument({
     title: "Swooshz Platform",
     body: `
-      <main class="landing">
-        <section class="panel">
-          <p class="eyebrow">Swooshz Platform internal access</p>
-          <h1>Swooshz Platform</h1>
-          <p class="lede">
-            Access requires an approved provider-backed account for your
-            workspace. No public signup is available.
-          </p>
+      ${publicNav("home")}
+      <main class="public-page">
+        <section class="public-hero">
+          <div class="hero-copy">
+            <h1>The workspace platform for launching trusted business apps</h1>
+            <p class="lede">
+              Coordinate approved workspace access, app entitlements, and
+              separate product launches from one controlled Platform shell.
+            </p>
+            <div class="button-row">
+              <a class="primary-action" href="/login">Access entry</a>
+              <a class="secondary-action" href="/solutions">View solutions</a>
+            </div>
+          </div>
+          <div class="architecture-card" aria-label="Platform launch architecture preview">
+            <div class="architecture-bar">
+              <span>Swooshz Platform</span>
+              <span>Access control</span>
+            </div>
+            <div class="architecture-grid">
+              <span>Provider identity</span>
+              <span>Workspace membership</span>
+              <span>App entitlement</span>
+              <span>Launch token</span>
+              <span>Separate app handoff</span>
+              <span>Audit event</span>
+            </div>
+          </div>
+        </section>
+        <section class="public-band">
+          <div class="section-heading">
+            <h2>Core Modules</h2>
+            <p>Purpose-built access surfaces for specialized operational requirements.</p>
+          </div>
+          <div class="module-grid">
+            <article class="module-card module-card-wide">
+              <div class="card-title-row">
+                <h3>Swooshz Quote Auto Generator</h3>
+                <span class="icon-mark" aria-hidden="true">doc</span>
+              </div>
+              <p>
+                Swooshz Quote Auto Generator is a separate app launched from
+                Platform after workspace access and entitlement checks pass.
+              </p>
+              <div class="mini-workflow" aria-label="Launch boundary">
+                <span>Platform access</span>
+                <span>Entitlement check</span>
+                <span>Separate app launch</span>
+              </div>
+            </article>
+            <div class="module-stack">
+              <article class="module-card muted-card">
+                <div class="card-title-row">
+                  <h3>SEO / GEO / Seozilla</h3>
+                  <span class="status-pill">Coming soon</span>
+                </div>
+                <p>Vendor workflow pending. Unavailable until confirmed.</p>
+              </article>
+              <article class="module-card muted-card">
+                <div class="card-title-row">
+                  <h3>Platform workspace controls</h3>
+                  <span class="status-pill">Available</span>
+                </div>
+                <p>Memberships, roles, entitlements, launch checks, and audit activity.</p>
+              </article>
+            </div>
+          </div>
+        </section>
+        <section class="process-section">
+          <div class="section-heading centered">
+            <h2>Standardized Execution</h2>
+            <p>A controlled three-step path for launching approved workspace apps.</p>
+          </div>
+          <div class="process-grid">
+            <article>
+              <span>01</span>
+              <h3>Workspace approval</h3>
+              <p>Provider-backed users must belong to an approved workspace.</p>
+            </article>
+            <article>
+              <span>02</span>
+              <h3>Entitlement check</h3>
+              <p>Platform verifies the selected app is available for that workspace.</p>
+            </article>
+            <article>
+              <span>03</span>
+              <h3>Separate app launch</h3>
+              <p>Launch opens the product app without embedding product workflow data.</p>
+            </article>
+          </div>
+        </section>
+      </main>
+      ${publicFooter()}
+    `,
+  });
+}
+
+export function renderSolutionsPage(): string {
+  return htmlDocument({
+    title: "Swooshz Platform Solutions",
+    body: `
+      ${publicNav("solutions")}
+      <main class="public-page">
+        <section class="solutions-hero">
+          <div class="hero-copy">
+            <p class="utility-label">Institutional utility</p>
+            <h1>Swooshz Quote Auto Generator</h1>
+            <p class="lede">
+              A separate product app launched from Platform for approved
+              workspaces with active access and entitlement checks.
+            </p>
+            <div class="button-row">
+              <a class="primary-action" href="/login">Access entry</a>
+            </div>
+          </div>
+          <div class="product-preview" aria-label="Swooshz Quote Auto Generator launch preview">
+            <div class="preview-window-bar">
+              <span>Quote generator preview</span>
+              <span aria-hidden="true">...</span>
+            </div>
+            <div class="preview-empty">
+              <span class="icon-mark large" aria-hidden="true">doc</span>
+              <p>Swooshz Quote Auto Generator opens as a separate app after Platform launch checks.</p>
+            </div>
+          </div>
+        </section>
+        <section class="public-band">
+          <div class="section-heading">
+            <h2>Core Platform Capabilities</h2>
+            <p>Engineered for controlled access, clear ownership boundaries, and auditability.</p>
+          </div>
+          <div class="capability-grid">
+            <article class="module-card module-card-wide">
+              <span class="icon-mark" aria-hidden="true">shield</span>
+              <h3>Access Management</h3>
+              <p>
+                Platform owns provider identities, sessions, workspace
+                memberships, roles, and app launch eligibility.
+              </p>
+              <div class="role-rail" aria-label="Visible workspace roles">
+                <span>Owner</span>
+                <span>Admin</span>
+                <span>Member</span>
+                <span>Pending</span>
+              </div>
+            </article>
+            <article class="module-card">
+              <span class="icon-mark" aria-hidden="true">nodes</span>
+              <h3>Workspace Entitlements</h3>
+              <p>
+                App availability is controlled at the workspace boundary and
+                fails closed when access is unavailable.
+              </p>
+            </article>
+            <article class="module-card unavailable-card">
+              <span class="icon-mark large" aria-hidden="true">geo</span>
+              <h3>SEO / GEO / Seozilla</h3>
+              <p>Vendor workflow pending. Unavailable until confirmed.</p>
+              <span class="status-pill">Coming soon</span>
+            </article>
+          </div>
+        </section>
+      </main>
+      ${publicFooter()}
+    `,
+  });
+}
+
+export function renderLoginPage(): string {
+  return htmlDocument({
+    title: "Swooshz Platform Access",
+    body: `
+      <main class="login-canvas">
+        <section class="access-panel">
+          <div class="access-heading">
+            <h1>Swooshz</h1>
+            <p>Secure Access Portal</p>
+          </div>
           <p id="signedOutNotice" class="signed-out" hidden>
             You are signed out of Swooshz Platform. Your Google account may
             still be signed in.
+          </p>
+          <p class="lede">
+            Access requires an approved provider-backed account for your
+            workspace. No public signup is available.
           </p>
           <p class="helper">Use the approved Google account for your workspace.</p>
           <div class="login-actions">
@@ -20,7 +194,9 @@ export function renderLandingPage(): string {
             <a class="secondary-action" href="/app">Already signed in? Continue to app</a>
           </div>
         </section>
+        <div class="login-lines" aria-hidden="true"></div>
       </main>
+      ${publicFooter()}
       <script>
         (() => {
           const params = new URLSearchParams(window.location.search);
@@ -38,23 +214,46 @@ export function renderAppShellPage(): string {
   return htmlDocument({
     title: "Swooshz Platform App",
     body: `
-      <main class="shell">
-        <header class="topbar">
-          <div>
-            <p class="eyebrow">Swooshz Platform</p>
-            <h1>App Access</h1>
+      <div class="portal-layout">
+        <aside class="portal-sidebar">
+          <div class="portal-brand">
+            <span class="brand-mark" aria-hidden="true">apps</span>
+            <div>
+              <h1>Swooshz Platform</h1>
+              <p>Enterprise Workspace</p>
+            </div>
           </div>
-          <div class="topbar-actions">
-            <a id="adminLink" class="secondary-action" href="/app/admin" hidden>Admin</a>
-            <button id="logoutButton" class="secondary-action" type="button" hidden>Sign out of Swooshz Platform</button>
-          </div>
-        </header>
-
-        <section id="status" class="status" role="status">Loading platform session...</section>
-        <section id="identity" class="identity" hidden></section>
-        <section id="workspaces" class="workspace-list" aria-live="polite"></section>
-        <section id="launchResult" class="handoff" hidden></section>
-      </main>
+          <button class="primary-action sidebar-launch" type="button" disabled>Launch Apps</button>
+          <nav class="portal-nav" aria-label="Workspace navigation">
+            <a class="portal-nav-active" href="/app">Home</a>
+            <a href="/app">Apps</a>
+            <a id="adminLink" href="/app/admin" hidden>Admin</a>
+            <span aria-disabled="true">Members</span>
+            <span aria-disabled="true">Activity</span>
+          </nav>
+          <button id="logoutButton" class="sidebar-logout" type="button" hidden>Sign out of Swooshz Platform</button>
+        </aside>
+        <main class="portal-main">
+          <header class="portal-topbar">
+            <p>Platform</p>
+            <div class="portal-topbar-actions" aria-hidden="true">
+              <span>bell</span>
+              <span>history</span>
+              <span>account</span>
+            </div>
+          </header>
+          <section class="portal-canvas">
+            <div class="portal-heading">
+              <h2>App Launcher</h2>
+              <p>Select a workspace app to begin.</p>
+            </div>
+            <section id="status" class="status" role="status">Loading platform session...</section>
+            <section id="identity" class="identity" hidden></section>
+            <section id="workspaces" class="workspace-list" aria-live="polite"></section>
+            <section id="launchResult" class="handoff" hidden></section>
+          </section>
+        </main>
+      </div>
       <script>
         (() => {
           const endpoints = {
@@ -186,8 +385,8 @@ export function renderAppShellPage(): string {
 
             const detail = document.createElement("div");
             detail.append(
-              textBlock("App", app.appName || app.appKey),
-              textBlock("Access", app.access?.message || app.access?.result || "Unavailable")
+              textBlock("App", displayAppName(app)),
+              textBlock("Access", app.access?.allowed === true ? "Access available." : "Unavailable.")
             );
             row.append(detail);
 
@@ -200,9 +399,65 @@ export function renderAppShellPage(): string {
                 void launchApp(workspace.workspaceId, app.appKey);
               });
               row.append(button);
+            } else {
+              row.append(renderUnavailableApp(app));
             }
 
             return row;
+          }
+
+          function renderUnavailableApp(app) {
+            const node = document.createElement("div");
+            node.className = "unavailable-state";
+
+            const title = document.createElement("strong");
+            title.textContent = "Product unavailable";
+            const message = document.createElement("span");
+            message.textContent = unavailableAccessMessage(app);
+
+            const actions = document.createElement("div");
+            actions.className = "unavailable-actions";
+            const returnLink = document.createElement("a");
+            returnLink.className = "secondary-action compact";
+            returnLink.href = "/app";
+            returnLink.textContent = "Return to apps";
+            const contact = document.createElement("span");
+            contact.className = "contact-admin";
+            contact.textContent = "Contact workspace admin";
+            actions.append(returnLink, contact);
+
+            node.append(title, message, actions);
+            return node;
+          }
+
+          function displayAppName(app) {
+            const key = String(app.appKey || "").toLowerCase();
+            const name = String(app.appName || "");
+
+            if (key === "sqag" || name.toLowerCase() === "sqag") {
+              return "Swooshz Quote Auto Generator";
+            }
+
+            return name || app.appKey || "Workspace app";
+          }
+
+          function accessMessage(app) {
+            if (app.access?.allowed === true) {
+              return "Access available.";
+            }
+
+            return app.access?.message ||
+              "This workspace access or entitlement is not available for this product.";
+          }
+
+          function unavailableAccessMessage(app) {
+            const message = String(app.access?.message || "");
+
+            if (message.toLowerCase().includes("vendor workflow pending")) {
+              return "Vendor workflow pending.";
+            }
+
+            return "Access unavailable.";
           }
 
           async function launchApp(workspaceId, appKey) {
@@ -271,7 +526,7 @@ export function renderAppShellPage(): string {
                 }
               });
             } finally {
-              window.location.assign("/?signedOut=1");
+              window.location.assign("/login?signedOut=1");
             }
           }
 
@@ -1150,7 +1405,7 @@ export function renderAdminShellPage(): string {
                 }
               });
             } finally {
-              window.location.assign("/?signedOut=1");
+              window.location.assign("/login?signedOut=1");
             }
           }
 
@@ -1441,6 +1696,39 @@ export function renderAuthErrorPage(): string {
   });
 }
 
+function publicNav(active: "home" | "solutions"): string {
+  return `
+    <header class="public-nav">
+      <a class="public-brand" href="/">Swooshz</a>
+      <nav aria-label="Public navigation">
+        <a class="${active === "home" ? "active" : ""}" href="/">Home</a>
+        <a class="${active === "solutions" ? "active" : ""}" href="/solutions">Solutions</a>
+        <span aria-disabled="true">Blog</span>
+        <span aria-disabled="true">About</span>
+      </nav>
+      <div class="public-actions">
+        <a class="text-action" href="/login">Login</a>
+        <a class="primary-action compact" href="/login">Access entry</a>
+      </div>
+    </header>
+  `;
+}
+
+function publicFooter(): string {
+  return `
+    <footer class="public-footer">
+      <strong>Swooshz</strong>
+      <nav aria-label="Footer navigation">
+        <span>Privacy</span>
+        <span>Terms</span>
+        <span>Security</span>
+        <span>Status</span>
+      </nav>
+      <p>&copy; Swooshz. Content to be finalised before launch.</p>
+    </footer>
+  `;
+}
+
 function htmlDocument({
   title,
   body,
@@ -1462,9 +1750,13 @@ function htmlDocument({
       --ink: #18212b;
       --muted: #5d6b78;
       --line: #d7dde3;
+      --primary: #000000;
+      --secondary: #0051d5;
       --accent: #0f766e;
       --accent-strong: #115e59;
       --danger-soft: #fef3c7;
+      --surface-container-low: #f2f4f6;
+      --surface-container-high: #e6e8ea;
     }
 
     * {
@@ -1483,6 +1775,596 @@ function htmlDocument({
     a,
     button {
       font: inherit;
+    }
+
+    .public-nav,
+    .public-footer {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      padding: 20px 28px;
+      border-color: var(--line);
+      background: var(--surface);
+    }
+
+    .public-nav {
+      min-height: 72px;
+      border-bottom: 1px solid var(--line);
+      position: sticky;
+      top: 0;
+      z-index: 5;
+    }
+
+    .public-brand,
+    .public-footer strong {
+      color: var(--primary);
+      font-size: 24px;
+      font-weight: 700;
+      text-decoration: none;
+      letter-spacing: 0;
+    }
+
+    .public-nav nav,
+    .public-actions,
+    .public-footer nav,
+    .button-row {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+    }
+
+    .public-nav nav a,
+    .public-nav nav span,
+    .text-action,
+    .public-footer span,
+    .public-footer p {
+      color: var(--ink);
+      font-size: 15px;
+      text-decoration: none;
+    }
+
+    .public-nav nav span,
+    .public-footer span,
+    .public-footer p {
+      color: var(--muted);
+    }
+
+    .public-nav nav a.active {
+      color: var(--secondary);
+      border-bottom: 2px solid var(--secondary);
+      padding-bottom: 8px;
+      font-weight: 700;
+    }
+
+    .public-page {
+      background: var(--bg);
+    }
+
+    .public-hero,
+    .solutions-hero,
+    .public-band,
+    .process-section {
+      width: min(1280px, calc(100% - 48px));
+      margin: 0 auto;
+    }
+
+    .public-hero,
+    .solutions-hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(360px, 0.92fr);
+      gap: 56px;
+      align-items: center;
+      min-height: 520px;
+      padding: 64px 0;
+    }
+
+    .solutions-hero {
+      border-bottom: 1px solid var(--line);
+      background-image: radial-gradient(circle at 2px 2px, #dfe4e8 1px, transparent 0);
+      background-size: 32px 32px;
+    }
+
+    .hero-copy {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 20px;
+    }
+
+    .hero-copy h1 {
+      max-width: 640px;
+      margin: 0;
+      color: var(--primary);
+      font-size: 48px;
+      line-height: 1.12;
+      letter-spacing: 0;
+    }
+
+    .utility-label {
+      margin: 0;
+      color: var(--secondary);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    .architecture-card,
+    .product-preview {
+      min-height: 360px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      box-shadow: 0 12px 28px rgb(24 33 43 / 8%);
+    }
+
+    .architecture-bar,
+    .preview-window-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .architecture-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      padding-top: 24px;
+    }
+
+    .architecture-grid span,
+    .mini-workflow span,
+    .role-rail span {
+      min-height: 42px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--bg);
+      color: var(--ink);
+      font-size: 13px;
+      text-align: center;
+    }
+
+    .preview-empty {
+      min-height: 280px;
+      display: grid;
+      place-items: center;
+      align-content: center;
+      gap: 16px;
+      margin-top: 16px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface-container-low, #f2f4f6);
+      text-align: center;
+    }
+
+    .preview-empty p {
+      max-width: 360px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .public-band,
+    .process-section {
+      padding: 64px 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .section-heading {
+      display: grid;
+      gap: 8px;
+      margin-bottom: 28px;
+    }
+
+    .section-heading.centered {
+      justify-items: center;
+      text-align: center;
+    }
+
+    .section-heading h2 {
+      margin: 0;
+      color: var(--primary);
+      font-size: 32px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    .section-heading p,
+    .module-card p,
+    .process-grid p {
+      color: var(--muted);
+    }
+
+    .module-grid,
+    .capability-grid {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 16px;
+    }
+
+    .capability-grid {
+      grid-template-columns: 2fr 1fr;
+    }
+
+    .module-card {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      min-height: 220px;
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+
+    .module-card h3 {
+      margin: 0;
+      color: var(--primary);
+      font-size: 24px;
+      line-height: 1.25;
+    }
+
+    .module-card p {
+      margin: 0;
+      font-size: 16px;
+    }
+
+    .module-card-wide {
+      grid-column: span 1;
+    }
+
+    .module-stack {
+      display: grid;
+      gap: 16px;
+    }
+
+    .muted-card,
+    .unavailable-card {
+      background: #fbfcfd;
+    }
+
+    .unavailable-card {
+      grid-column: 1 / -1;
+      align-items: center;
+      min-height: 210px;
+      text-align: center;
+    }
+
+    .card-title-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: max-content;
+      min-height: 28px;
+      padding: 4px 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface-container-high, #e6e8ea);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    .mini-workflow,
+    .role-rail,
+    .process-grid {
+      display: grid;
+      gap: 14px;
+    }
+
+    .mini-workflow {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      margin-top: auto;
+    }
+
+    .role-rail {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin-top: auto;
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--bg);
+    }
+
+    .process-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      margin-top: 36px;
+      text-align: center;
+    }
+
+    .process-grid article {
+      display: grid;
+      justify-items: center;
+      gap: 12px;
+    }
+
+    .process-grid span {
+      display: grid;
+      place-items: center;
+      width: 58px;
+      height: 58px;
+      border: 1px solid var(--ink);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--primary);
+      font-size: 24px;
+      font-weight: 700;
+    }
+
+    .process-grid article:last-child span {
+      background: var(--primary);
+      color: #ffffff;
+    }
+
+    .public-footer {
+      border-top: 1px solid var(--line);
+    }
+
+    .public-footer p {
+      margin: 0;
+      text-align: right;
+    }
+
+    .login-canvas {
+      position: relative;
+      min-height: calc(100vh - 76px);
+      display: grid;
+      place-items: center;
+      padding: 40px 24px;
+      overflow: hidden;
+    }
+
+    .access-panel {
+      position: relative;
+      z-index: 1;
+      width: min(560px, 100%);
+      display: grid;
+      gap: 20px;
+      padding: 48px 42px;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      text-align: center;
+    }
+
+    .access-heading {
+      display: grid;
+      gap: 8px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .access-heading h1,
+    .access-heading p {
+      margin: 0;
+    }
+
+    .login-lines::before,
+    .login-lines::after {
+      content: "";
+      position: fixed;
+      width: 52vw;
+      height: 52vh;
+      border: 1px solid var(--line);
+      opacity: 0.36;
+      transform: rotate(10deg);
+    }
+
+    .login-lines::before {
+      top: -18vh;
+      right: 4vw;
+    }
+
+    .login-lines::after {
+      left: -12vw;
+      bottom: -16vh;
+    }
+
+    .portal-layout {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 320px minmax(0, 1fr);
+      background: var(--bg);
+    }
+
+    .portal-sidebar {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+      padding: 28px 20px;
+      border-right: 1px solid var(--line);
+      background: var(--surface);
+    }
+
+    .portal-brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .portal-brand h1,
+    .portal-brand p,
+    .portal-topbar p,
+    .portal-heading h2,
+    .portal-heading p {
+      margin: 0;
+    }
+
+    .portal-brand h1 {
+      color: var(--primary);
+      font-size: 26px;
+      line-height: 1.15;
+    }
+
+    .portal-brand p {
+      color: var(--ink);
+      font-size: 13px;
+      letter-spacing: 0;
+    }
+
+    .brand-mark,
+    .icon-mark {
+      display: inline-grid;
+      place-items: center;
+      min-width: 42px;
+      min-height: 42px;
+      border-radius: 6px;
+      background: var(--primary);
+      color: #ffffff;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .icon-mark {
+      border: 1px solid var(--line);
+      background: var(--surface-container-high, #e6e8ea);
+      color: var(--primary);
+    }
+
+    .icon-mark.large {
+      min-width: 58px;
+      min-height: 58px;
+    }
+
+    .sidebar-launch {
+      width: 100%;
+    }
+
+    .portal-nav {
+      display: grid;
+      gap: 8px;
+    }
+
+    .portal-nav a,
+    .portal-nav span,
+    .sidebar-logout {
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      padding: 0 18px;
+      border: 0;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--ink);
+      font-weight: 700;
+      text-decoration: none;
+    }
+
+    .portal-nav span {
+      color: var(--muted);
+    }
+
+    .portal-nav .portal-nav-active {
+      border-right: 4px solid var(--primary);
+      background: var(--secondary);
+      color: #ffffff;
+    }
+
+    .sidebar-logout {
+      margin-top: auto;
+      border-top: 1px solid var(--line);
+      border-radius: 0;
+      cursor: pointer;
+    }
+
+    .portal-main {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .portal-topbar {
+      min-height: 80px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 0 32px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface);
+    }
+
+    .portal-topbar p {
+      color: var(--primary);
+      font-size: 24px;
+    }
+
+    .portal-topbar-actions {
+      display: flex;
+      gap: 18px;
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+    }
+
+    .portal-canvas {
+      width: min(1180px, calc(100% - 64px));
+      display: grid;
+      gap: 20px;
+      margin: 0 auto;
+      padding: 44px 0 56px;
+    }
+
+    .portal-heading h2 {
+      color: var(--primary);
+      font-size: 40px;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    .portal-heading p {
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .unavailable-state {
+      display: grid;
+      gap: 8px;
+      min-width: min(420px, 100%);
+      color: var(--ink);
+    }
+
+    .unavailable-state strong {
+      color: var(--muted);
+    }
+
+    .unavailable-state span {
+      overflow-wrap: anywhere;
+    }
+
+    .unavailable-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 12px;
+      margin-top: 2px;
+    }
+
+    .contact-admin {
+      color: var(--ink);
+      font-size: 14px;
     }
 
     .landing,
@@ -1843,12 +2725,12 @@ function htmlDocument({
     }
 
     .primary-action {
-      background: var(--accent);
+      background: var(--primary);
       color: #ffffff;
     }
 
     .primary-action:hover {
-      background: var(--accent-strong);
+      background: var(--secondary);
     }
 
     .landing .primary-action {
@@ -1877,6 +2759,135 @@ function htmlDocument({
     }
 
     @media (max-width: 640px) {
+      .public-nav,
+      .public-footer {
+        align-items: stretch;
+        flex-direction: column;
+        padding: 18px 20px;
+      }
+
+      .public-nav {
+        position: static;
+      }
+
+      .public-nav nav,
+      .public-actions,
+      .public-footer nav,
+      .button-row {
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+
+      .public-hero,
+      .solutions-hero,
+      .public-band,
+      .process-section {
+        width: min(100% - 32px, 1280px);
+      }
+
+      .public-hero,
+      .solutions-hero {
+        grid-template-columns: 1fr;
+        min-height: auto;
+        padding: 36px 0;
+      }
+
+      .hero-copy h1 {
+        font-size: 36px;
+        line-height: 1.16;
+      }
+
+      .architecture-card,
+      .product-preview {
+        min-height: auto;
+      }
+
+      .architecture-grid,
+      .module-grid,
+      .capability-grid,
+      .mini-workflow,
+      .role-rail,
+      .process-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .public-footer p {
+        text-align: left;
+      }
+
+      .access-panel {
+        padding: 32px 24px;
+      }
+
+      .portal-layout {
+        display: block;
+      }
+
+      .portal-sidebar {
+        position: static;
+        min-height: auto;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .portal-nav {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .portal-main,
+      .portal-canvas {
+        width: 100%;
+      }
+
+      .portal-topbar {
+        min-height: 64px;
+        padding: 0 20px;
+      }
+
+      .portal-topbar-actions {
+        display: none;
+      }
+
+      .portal-canvas {
+        padding: 28px 16px 40px;
+        overflow: hidden;
+      }
+
+      .portal-heading h2 {
+        font-size: 34px;
+      }
+
+      .identity {
+        grid-template-columns: 1fr;
+      }
+
+      .workspace,
+      .workspace-list,
+      .apps,
+      .app-row,
+      .app-row > div,
+      .unavailable-state {
+        min-width: 0;
+        width: 100%;
+      }
+
+      .app-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .workspace span,
+      .app-row span {
+        max-width: calc(100vw - 104px);
+        overflow-wrap: anywhere;
+        white-space: normal;
+      }
+
+      .unavailable-actions {
+        display: grid;
+        width: 100%;
+      }
+
       .topbar,
       .topbar-actions,
       .workspace-header,

@@ -1,5 +1,7 @@
 export type HttpRouteId =
   | "platform_landing_page"
+  | "platform_solutions_page"
+  | "platform_login_page"
   | "platform_app_shell"
   | "platform_admin_shell"
   | "healthz"
@@ -64,6 +66,36 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     },
     requiredQuery: [],
     handlerContract: "renderLandingPage",
+    responseKind: "html",
+    idempotent: true,
+    implemented: true,
+  },
+  {
+    id: "platform_solutions_page",
+    method: "GET",
+    path: "/solutions",
+    browserSession: "none",
+    csrf: {
+      required: false,
+      strategy: "none",
+    },
+    requiredQuery: [],
+    handlerContract: "renderSolutionsPage",
+    responseKind: "html",
+    idempotent: true,
+    implemented: true,
+  },
+  {
+    id: "platform_login_page",
+    method: "GET",
+    path: "/login",
+    browserSession: "none",
+    csrf: {
+      required: false,
+      strategy: "none",
+    },
+    requiredQuery: [],
+    handlerContract: "renderLoginPage",
     responseKind: "html",
     idempotent: true,
     implemented: true,

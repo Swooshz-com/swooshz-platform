@@ -7,27 +7,88 @@ import {
   renderAdminShellPage,
   renderAppShellPage,
   renderLandingPage,
+  renderLoginPage,
+  renderSolutionsPage,
 } from "../dist/index.js";
 
-test("landing page renders the platform name and login link", () => {
+const forbiddenFrontendCopy = [
+  /upgrade your plan/i,
+  /\bbilling\b/i,
+  /\bpayment\b/i,
+  /Split-Pane Auto Generator/i,
+  /Structured Query/i,
+  /data lake/i,
+  /\bvector\b/i,
+  /\b2026-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\b/,
+];
+
+test("landing page renders the public Stitch parity homepage with canonical product copy", () => {
   const html = renderLandingPage();
 
   assert.match(html, /Swooshz Platform/);
-  assert.match(html, /\/api\/platform\/auth\/start/);
+  assert.match(html, /workspace platform for launching trusted business apps/i);
+  assert.match(html, /Swooshz Quote Auto Generator/);
+  assert.match(html, /separate app launched from\s+Platform/i);
+  assert.match(html, /SEO \/ GEO \/ Seozilla/);
+  assert.match(html, /Vendor workflow pending|Coming soon|Unavailable until confirmed/i);
+  assert.match(html, /href="\/solutions"/);
+  assert.match(html, /href="\/login"/);
+  assert.doesNotMatch(html, /\/request-access/);
   assert.doesNotMatch(html, /SESSION_SECRET|DATABASE_URL|postgresql:\/\//i);
 });
 
-test("landing page uses real internal-alpha auth copy without public signup or demo language", () => {
-  const html = renderLandingPage();
+test("login page preserves provider-backed auth start without public signup or password auth", () => {
+  const html = renderLoginPage();
 
-  assert.match(html, /Swooshz Platform internal access/);
+  assert.match(html, /Secure Access Portal/);
   assert.match(html, /approved provider-backed account/);
+  assert.match(html, /href="\/api\/platform\/auth\/start"/);
   assert.match(html, /Continue with Google|Continue with approved provider/);
   assert.match(html, /Use the approved Google account for your workspace/);
   assert.match(html, /No public signup is available/);
   assert.match(html, /href="\/app"/);
+  assert.doesNotMatch(html, /<form/i);
+  assert.doesNotMatch(html, /type="password"|Forgot\?|Sign In/i);
+  assert.doesNotMatch(html, /\/request-access/);
   assert.doesNotMatch(html, /INTERNAL PLATFORM SHELL/);
   assert.doesNotMatch(html, /fake|demo|sample|create public account|public signup available/i);
+});
+
+test("solutions page separates Platform SQAG and unavailable vendor-pending products", () => {
+  const html = renderSolutionsPage();
+
+  assert.match(html, /Swooshz Quote Auto Generator/);
+  assert.match(html, /separate product app launched from Platform/i);
+  assert.match(html, /Access Management/);
+  assert.match(html, /Workspace Entitlements/);
+  assert.match(html, /Owner/);
+  assert.match(html, /Admin/);
+  assert.match(html, /Member/);
+  assert.match(html, /Pending/);
+  assert.match(html, /SEO \/ GEO \/ Seozilla/);
+  assert.match(html, /Vendor workflow pending/);
+  assert.match(html, /Unavailable until confirmed/);
+  assert.doesNotMatch(html, /SKR/);
+});
+
+test("implemented frontend slice excludes forbidden copy and unapproved business flows", () => {
+  const pages = [
+    renderLandingPage(),
+    renderSolutionsPage(),
+    renderLoginPage(),
+    renderAppShellPage(),
+    renderAuthErrorPage(),
+  ];
+
+  for (const html of pages) {
+    for (const forbidden of forbiddenFrontendCopy) {
+      assert.doesNotMatch(html, forbidden);
+    }
+
+    assert.doesNotMatch(html, /checkout|pricing file|quote history|quote session|case study/i);
+    assert.doesNotMatch(html, /(?:\d{1,3}\.){3}\d{1,3}/);
+    assert.doesNotMatch(html, /[a-f0-9]{40}/i);
+  }
 });
 
 test("app shell references only existing browser JSON APIs", () => {
@@ -48,6 +109,30 @@ test("app shell shows a clear no-workspace-access state for authenticated users"
 
   assert.match(html, /No workspace access is available for this account\./);
   assert.doesNotMatch(html, /No active workspaces are available\./);
+});
+
+test("app shell renders portal launcher and fail-closed entitlement states with safe copy", () => {
+  const html = renderAppShellPage();
+
+  assert.match(html, /App Launcher/);
+  assert.match(html, /Swooshz Quote Auto Generator/);
+  assert.match(html, /Launch Apps/);
+  assert.match(html, /Contact workspace admin/);
+  assert.match(html, /Return to apps/);
+  assert.match(html, /Product unavailable/);
+  assert.match(html, /Access unavailable/);
+  assert.match(html, /app\.access\?\.allowed === true/);
+  assert.doesNotMatch(html, /upgrade your plan|billing|payment/i);
+});
+
+test("app shell normalizes SQAG display copy without changing app keys or launch endpoint", () => {
+  const html = renderAppShellPage();
+
+  assert.match(html, /displayAppName\(app\)/);
+  assert.match(html, /"&appKey=" \+ encodeURIComponent\(appKey\)/);
+  assert.match(html, /return "Swooshz Quote Auto Generator"/);
+  assert.match(html, /endpoints\.launch \+/);
+  assert.doesNotMatch(html, /Split-Pane Auto Generator|Structured Query/i);
 });
 
 test("app shell keeps secret and raw-auth material out of static HTML", () => {
@@ -214,18 +299,18 @@ test("admin shell Activity subject identifies affected users and pending emails 
 test("platform shells explain logout scope and show signed-out Google account note", () => {
   const appHtml = renderAppShellPage();
   const adminHtml = renderAdminShellPage();
-  const landingHtml = renderLandingPage();
+  const loginHtml = renderLoginPage();
 
   for (const html of [appHtml, adminHtml]) {
     assert.match(html, /Sign out of Swooshz Platform/);
-    assert.match(html, /window\.location\.assign\("\/\?signedOut=1"\)/);
+    assert.match(html, /window\.location\.assign\("\/login\?signedOut=1"\)/);
   }
 
   assert.match(
-    landingHtml,
+    loginHtml,
     /You are signed out of Swooshz Platform\.\s+Your Google account may\s+still be signed in\./,
   );
-  assert.match(landingHtml, /URLSearchParams\(window\.location\.search\)/);
+  assert.match(loginHtml, /URLSearchParams\(window\.location\.search\)/);
 });
 
 test("admin shell limits usable controls to owner/admin workspace context", () => {
