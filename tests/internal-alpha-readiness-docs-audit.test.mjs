@@ -14,6 +14,7 @@ const readinessDocPaths = [
   "docs/hosted-internal-alpha-operator-briefing.md",
   "docs/production-readiness-roadmap.md",
   "docs/frontend-design-readiness.md",
+  "docs/frontend-stitch-visual-freeze-parity-plan.md",
   "docs/roadmap.md",
 ];
 
