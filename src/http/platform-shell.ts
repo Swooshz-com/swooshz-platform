@@ -237,9 +237,9 @@ export function renderAppShellPage(): string {
           <header class="portal-topbar">
             <p>Platform</p>
             <div class="portal-topbar-actions" aria-hidden="true">
-              <span>bell</span>
-              <span>history</span>
-              <span>account</span>
+              <span class="topbar-icon"></span>
+              <span class="topbar-icon topbar-icon-history"></span>
+              <span class="topbar-icon topbar-icon-account"></span>
             </div>
           </header>
           <section class="portal-canvas">
@@ -359,7 +359,7 @@ export function renderAppShellPage(): string {
             header.className = "workspace-header";
             header.append(
               textBlock("Workspace", workspace.workspaceName || workspace.workspaceId),
-              textBlock("Role", workspace.membershipRole || "member")
+              textBlock("Role", displayWorkspaceRole(workspace.membershipRole))
             );
             section.append(header);
 
@@ -439,6 +439,17 @@ export function renderAppShellPage(): string {
             }
 
             return name || app.appKey || "Workspace app";
+          }
+
+          function displayWorkspaceRole(role) {
+            switch (role) {
+              case "owner":
+                return "Owner";
+              case "admin":
+                return "Admin";
+              default:
+                return "Member";
+            }
           }
 
           function accessMessage(app) {
@@ -761,6 +772,27 @@ export function renderAdminShellPage(): string {
           modalConfirmButton.addEventListener("click", () => {
             void runModalAction();
           });
+          addMember.addEventListener("click", (event) => {
+            if (event.target === addMember) {
+              closeAddMemberModal();
+            }
+          });
+          adminActionModal.addEventListener("click", (event) => {
+            if (event.target === adminActionModal) {
+              closeActionModal();
+            }
+          });
+          document.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+              closeAllActionMenus();
+              if (!addMember.hidden) {
+                closeAddMemberModal();
+              }
+              if (!adminActionModal.hidden) {
+                closeActionModal();
+              }
+            }
+          });
 
           void loadContext();
 
@@ -907,7 +939,7 @@ export function renderAdminShellPage(): string {
               sectionHeading("Workspace"),
               textBlock("Name", workspace.workspaceName),
               textBlock("Workspace slug", workspace.workspaceSlug),
-              textBlock("Role", workspace.membershipRole)
+              textBlock("Role", displayRole(workspace.membershipRole))
             );
           }
 
@@ -933,11 +965,11 @@ export function renderAdminShellPage(): string {
             for (const member of memberList) {
               const row = document.createElement("tr");
               row.append(
-                memberIdentityCell(member),
-                roleCell(member),
-                tableCell(member.status || ""),
-                tableCell(formatDate(member.user?.lastLoginAt)),
-                memberActionsCell(member, activeOwnerCount)
+                memberIdentityCell(member, "Member"),
+                roleCell(member, "Role"),
+                tableCell(displayStatus(member.status || ""), "Status"),
+                timeCell(member.user?.lastLoginAt, "Last active"),
+                memberActionsCell(member, activeOwnerCount, "Actions")
               );
               body.append(row);
             }
@@ -965,11 +997,11 @@ export function renderAdminShellPage(): string {
             for (const approval of approvalList) {
               const row = document.createElement("tr");
               row.append(
-                tableCell(approval.email || ""),
-                tableCell(approval.role || ""),
-                tableCell(approval.status || ""),
-                timeCell(approval.createdAt),
-                approvalActionsCell(approval)
+                tableCell(approval.email || "", "Requester"),
+                tableCell(displayRole(approval.role), "Role"),
+                tableCell(displayStatus(approval.status), "Status"),
+                timeCell(approval.createdAt, "Created"),
+                approvalActionsCell(approval, "Actions")
               );
               body.append(row);
             }
@@ -980,7 +1012,10 @@ export function renderAdminShellPage(): string {
 
           function renderEntitlements(entitlementList) {
             entitlements.hidden = false;
-            entitlements.replaceChildren(sectionHeading("App Access"));
+            entitlements.replaceChildren(
+              sectionHeading("App Access"),
+              sectionDescription("Workspace app availability and launch access controls.")
+            );
 
             if (!Array.isArray(entitlementList) || entitlementList.length === 0) {
               entitlements.append(emptyMessage("No app entitlements are configured."));
@@ -995,11 +1030,9 @@ export function renderAdminShellPage(): string {
               row.className = "app-row";
               const detail = document.createElement("div");
               detail.append(
-                textBlock("App", entitlement.appName || entitlement.appKey),
-                textBlock("App key", entitlement.appKey),
-                textBlock("App status", entitlement.appStatus),
-                textBlock("Entitlement", entitlement.status),
-                textBlock("Granted by", entitlement.grantedByUserId || "Not available"),
+                textBlock("App", displayEntitlementAppName(entitlement)),
+                textBlock("App status", displayEntitlementStatus(entitlement.appStatus)),
+                textBlock("Workspace access", displayAccessStatus(entitlement.status)),
                 textBlock("Updated", formatDate(entitlement.updatedAt))
               );
               row.append(detail);
@@ -1009,7 +1042,7 @@ export function renderAdminShellPage(): string {
                 button.type = "button";
                 button.className = "secondary-action compact";
                 const nextStatus = entitlement.status === "enabled" ? "disabled" : "enabled";
-                button.textContent = nextStatus === "enabled" ? "Enable" : "Disable";
+                button.textContent = nextStatus === "enabled" ? "Allow launch" : "Disable access";
                 button.addEventListener("click", () => {
                   void updateEntitlement(nextStatus);
                 });
@@ -1050,11 +1083,11 @@ export function renderAdminShellPage(): string {
             for (const event of visibleEvents) {
               const row = document.createElement("tr");
               row.append(
-                tableCell(activityLabel(event)),
-                tableCell(subjectLabel(event)),
-                tableCell(actorLabel(event)),
-                timeCell(event.createdAt),
-                metadataCell(event.metadata)
+                tableCell(activityLabel(event), "Action"),
+                tableCell(subjectLabel(event), "Subject"),
+                tableCell(actorLabel(event), "Actor"),
+                timeCell(event.createdAt, "Time"),
+                metadataCell(event.metadata, "Details")
               );
               body.append(row);
             }
@@ -1097,8 +1130,9 @@ export function renderAdminShellPage(): string {
             return pager;
           }
 
-          function roleCell(member) {
+          function roleCell(member, label) {
             const cell = document.createElement("td");
+            setCellLabel(cell, label);
             const select = document.createElement("select");
             const roles = ["owner", "admin", "member"];
             const isSelf = member.user?.id === state.context?.user?.userId;
@@ -1122,8 +1156,9 @@ export function renderAdminShellPage(): string {
             return cell;
           }
 
-          function memberActionsCell(member, activeOwnerCount) {
+          function memberActionsCell(member, activeOwnerCount, label) {
             const cell = document.createElement("td");
+            setCellLabel(cell, label);
             const menu = document.createElement("div");
             const menuButton = document.createElement("button");
             const menuPanel = document.createElement("div");
@@ -1197,8 +1232,9 @@ export function renderAdminShellPage(): string {
             return button;
           }
 
-          function approvalActionsCell(approval) {
+          function approvalActionsCell(approval, label) {
             const cell = document.createElement("td");
+            setCellLabel(cell, label);
             const button = document.createElement("button");
             button.type = "button";
             button.className = "secondary-action compact";
@@ -1316,6 +1352,9 @@ export function renderAdminShellPage(): string {
           function closeAddMemberModal() {
             addMember.hidden = true;
             setAddMemberResult("");
+            if (!openAddMemberButton.hidden) {
+              openAddMemberButton.focus();
+            }
           }
 
           function closeActionModal() {
@@ -1583,12 +1622,13 @@ export function renderAdminShellPage(): string {
           }
 
           function actorLabel(event) {
-            return event.actorDisplayName || event.actorEmail ||
+            return event.actorDisplayName ||
               (event.actorUserId ? "Platform user" : "System");
           }
 
-          function metadataCell(metadata) {
+          function metadataCell(metadata, label) {
             const cell = document.createElement("td");
+            setCellLabel(cell, label);
             const rows = metadataRows(metadata);
 
             if (rows.length === 0) {
@@ -1635,13 +1675,13 @@ export function renderAdminShellPage(): string {
 
             switch (key) {
               case "previousRole":
-                return { label: "Previous role", value: String(value) };
+                return { label: "Previous role", value: displayRole(value) };
               case "newRole":
-                return { label: "New role", value: String(value) };
+                return { label: "New role", value: displayRole(value) };
               case "previousStatus":
-                return { label: "Previous status", value: String(value) };
+                return { label: "Previous status", value: displayStatus(value) };
               case "newStatus":
-                return { label: "New status", value: String(value) };
+                return { label: "New status", value: displayStatus(value) };
               case "appKey":
                 return normalizeAppKeyMetadata(value);
               default:
@@ -1703,8 +1743,9 @@ export function renderAdminShellPage(): string {
             return description;
           }
 
-          function memberIdentityCell(member) {
+          function memberIdentityCell(member, label) {
             const cell = document.createElement("td");
+            setCellLabel(cell, label);
             const block = document.createElement("div");
             block.className = "member-identity";
             const avatar = document.createElement("span");
@@ -1742,6 +1783,48 @@ export function renderAdminShellPage(): string {
             }
           }
 
+          function displayStatus(status) {
+            switch (status) {
+              case "active":
+                return "Active";
+              case "disabled":
+                return "Disabled";
+              case "pending":
+                return "Pending";
+              case "enabled":
+                return "Enabled";
+              default:
+                return status ? String(status) : "Not available";
+            }
+          }
+
+          function displayEntitlementAppName(entitlement) {
+            const key = String(entitlement.appKey || "").toLowerCase();
+            const name = String(entitlement.appName || "");
+
+            if (key === "sqag" || name.toLowerCase() === "sqag") {
+              return "Swooshz Quote Auto Generator";
+            }
+
+            return name || "Workspace app";
+          }
+
+          function displayEntitlementStatus(status) {
+            if (status === "active") {
+              return "Available";
+            }
+
+            if (!status) {
+              return "Not available";
+            }
+
+            return String(status);
+          }
+
+          function displayAccessStatus(status) {
+            return status === "enabled" ? "Allowed" : "Unavailable";
+          }
+
           function textBlock(label, value) {
             const block = document.createElement("p");
             const strong = document.createElement("strong");
@@ -1765,16 +1848,24 @@ export function renderAdminShellPage(): string {
             return head;
           }
 
-          function tableCell(value) {
+          function tableCell(value, label) {
             const cell = document.createElement("td");
+            setCellLabel(cell, label);
             cell.textContent = value ?? "";
             return cell;
           }
 
-          function timeCell(value) {
+          function timeCell(value, label) {
             const cell = document.createElement("td");
+            setCellLabel(cell, label);
             cell.textContent = formatDate(value);
             return cell;
+          }
+
+          function setCellLabel(cell, label) {
+            if (label) {
+              cell.setAttribute("data-label", label);
+            }
           }
 
           function formatDate(value) {
@@ -1909,6 +2000,14 @@ function htmlDocument({
     a,
     button {
       font: inherit;
+    }
+
+    a:focus-visible,
+    button:focus-visible,
+    input:focus-visible,
+    select:focus-visible {
+      outline: 3px solid rgb(0 81 213 / 42%);
+      outline-offset: 2px;
     }
 
     .public-nav,
@@ -2410,6 +2509,12 @@ function htmlDocument({
       color: var(--muted);
     }
 
+    .portal-nav span[aria-disabled="true"] {
+      cursor: default;
+      opacity: 0.62;
+      pointer-events: none;
+    }
+
     .portal-nav .portal-nav-active {
       border-right: 4px solid var(--primary);
       background: var(--secondary);
@@ -2664,7 +2769,7 @@ function htmlDocument({
     table {
       width: 100%;
       border-collapse: collapse;
-      table-layout: fixed;
+      table-layout: auto;
     }
 
     th,
@@ -2863,6 +2968,7 @@ function htmlDocument({
       display: flex;
       align-items: center;
       gap: 14px;
+      min-width: 220px;
     }
 
     .member-identity strong {
@@ -3115,6 +3221,12 @@ function htmlDocument({
         border-bottom: 1px solid var(--line);
       }
 
+      .admin-layout .portal-sidebar {
+        position: static;
+        min-height: auto;
+        height: auto;
+      }
+
       .portal-nav {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
@@ -3213,6 +3325,31 @@ function htmlDocument({
 
       th {
         display: none;
+      }
+
+      td {
+        min-height: 56px;
+        padding: 12px 0;
+      }
+
+      td::before {
+        display: block;
+        margin-bottom: 4px;
+        color: var(--muted);
+        content: attr(data-label);
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+
+      .action-menu,
+      .action-menu-panel {
+        position: static;
+        width: 100%;
+      }
+
+      .action-menu-panel {
+        margin-top: 8px;
       }
 
       .panel {
