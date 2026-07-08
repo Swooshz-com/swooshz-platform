@@ -66,7 +66,51 @@ test("GET / renders the framework-free landing page as no-store HTML", async () 
   assert.equal(response.headers["content-type"], "text/html; charset=utf-8");
   assertNoStoreHeaders(response.headers);
   assert.match(response.body, /Swooshz Platform/);
+  assert.match(response.body, /\/login/);
+  assert.match(response.body, /\/solutions/);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("GET /solutions renders the public products page as no-store HTML", async () => {
+  const fixture = createAdapterFixture({
+    csrfThrows: true,
+  });
+  const { response } = await rawRequest({
+    method: "GET",
+    url: "/solutions",
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers["content-type"], "text/html; charset=utf-8");
+  assertNoStoreHeaders(response.headers);
+  assert.match(response.body, /Swooshz Quote Auto Generator/);
+  assert.match(response.body, /Vendor workflow pending/);
+  assert.match(response.body, /Unavailable until confirmed/);
+  assert.equal(fixture.calls.sessionsFindById, 0);
+  assert.equal(fixture.calls.csrfValidate, 0);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("GET /login renders provider-backed access entry as no-store HTML", async () => {
+  const fixture = createAdapterFixture({
+    csrfThrows: true,
+  });
+  const { response } = await rawRequest({
+    method: "GET",
+    url: "/login?signedOut=1",
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers["content-type"], "text/html; charset=utf-8");
+  assertNoStoreHeaders(response.headers);
+  assert.match(response.body, /Secure Access Portal/);
   assert.match(response.body, /\/api\/platform\/auth\/start/);
+  assert.match(response.body, /No public signup is available/);
+  assert.doesNotMatch(response.body, /type="password"|Forgot\?/);
+  assert.equal(fixture.calls.sessionsFindById, 0);
+  assert.equal(fixture.calls.csrfValidate, 0);
   assertResponseIsPrivacySafe(response);
 });
 

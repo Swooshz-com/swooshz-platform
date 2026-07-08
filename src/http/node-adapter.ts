@@ -48,6 +48,8 @@ import {
   renderAuthErrorPage,
   renderAppShellPage,
   renderLandingPage,
+  renderLoginPage,
+  renderSolutionsPage,
 } from "./platform-shell.js";
 import type { BrowserSessionCookieConfig } from "./session-cookie.js";
 import { extractBrowserSessionIdFromCookieHeader } from "./session-cookie.js";
@@ -140,6 +142,14 @@ export async function handleNodePlatformHttpRequest(
 
   if (route.id === "platform_landing_page") {
     return htmlResponse(200, renderLandingPage(), noStoreHeaders());
+  }
+
+  if (route.id === "platform_solutions_page") {
+    return htmlResponse(200, renderSolutionsPage(), noStoreHeaders());
+  }
+
+  if (route.id === "platform_login_page") {
+    return htmlResponse(200, renderLoginPage(), noStoreHeaders());
   }
 
   if (route.id === "platform_app_shell") {

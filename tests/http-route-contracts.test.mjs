@@ -12,6 +12,8 @@ test("route manifest includes only approved initial platform routes", () => {
     HTTP_ROUTE_CONTRACTS.map((route) => route.id),
     [
       "platform_landing_page",
+      "platform_solutions_page",
+      "platform_login_page",
       "platform_app_shell",
       "platform_admin_shell",
       "healthz",
@@ -41,6 +43,8 @@ test("route manifest includes only approved initial platform routes", () => {
     HTTP_ROUTE_CONTRACTS.map((route) => `${route.method} ${route.path}`),
     [
       "GET /",
+      "GET /solutions",
+      "GET /login",
       "GET /app",
       "GET /app/admin",
       "GET /healthz",
@@ -107,11 +111,13 @@ test("state-changing browser-cookie routes require CSRF protection", () => {
 
 test("browser page routes are GET-only HTML without CSRF or required browser session", () => {
   const landing = getHttpRouteContract("platform_landing_page");
+  const solutions = getHttpRouteContract("platform_solutions_page");
+  const login = getHttpRouteContract("platform_login_page");
   const appShell = getHttpRouteContract("platform_app_shell");
   const adminShell = getHttpRouteContract("platform_admin_shell");
 
   assert.deepEqual(
-    [landing, appShell, adminShell].map((route) => ({
+    [landing, solutions, login, appShell, adminShell].map((route) => ({
       method: route.method,
       browserSession: route.browserSession,
       csrf: route.csrf,
@@ -144,10 +150,30 @@ test("browser page routes are GET-only HTML without CSRF or required browser ses
         requiredQuery: [],
         idempotent: true,
       },
+      {
+        method: "GET",
+        browserSession: "none",
+        csrf: { required: false, strategy: "none" },
+        responseKind: "html",
+        requiredQuery: [],
+        idempotent: true,
+      },
+      {
+        method: "GET",
+        browserSession: "none",
+        csrf: { required: false, strategy: "none" },
+        responseKind: "html",
+        requiredQuery: [],
+        idempotent: true,
+      },
     ],
   );
   assert.equal(landing.path, "/");
   assert.equal(landing.handlerContract, "renderLandingPage");
+  assert.equal(solutions.path, "/solutions");
+  assert.equal(solutions.handlerContract, "renderSolutionsPage");
+  assert.equal(login.path, "/login");
+  assert.equal(login.handlerContract, "renderLoginPage");
   assert.equal(appShell.path, "/app");
   assert.equal(appShell.handlerContract, "renderAppShellPage");
   assert.equal(adminShell.path, "/app/admin");
