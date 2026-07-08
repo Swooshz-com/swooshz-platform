@@ -4,6 +4,27 @@ This runbook verifies the current internal Swooshz Platform flow using already-a
 
 SQAG-side PR #122 landed at merge commit `6f93180023636306fe10f0d6250ea2df71d486a0` and requires Platform launch and consume payloads to use `appKey=sqag`. Platform PR #79 landed at merge commit `c65bf67078031921f5b4ce73f03455804eb2fd07` and migrated Platform-owned SQAG registry, entitlement, launch/open, consume, seed/bootstrap, docs, tests, and admin surfaces to the canonical app key. Live Platform-to-SQAG smoke remains pending until an operator deliberately runs the hosted/live smoke; this runbook must not be used to claim production readiness before that operator smoke is actually performed.
 
+## Sanitized Local Smoke Evidence
+
+Operator-provided sanitized evidence for the local-only Platform-to-SQAG smoke on 2026-07-08 records:
+
+- Platform local main SHA checked: `58efef2dd2a80e9d9452678f0c397fc55212bdfd`.
+- SQAG local main SHA checked: `6f93180023636306fe10f0d6250ea2df71d486a0`.
+- `synthetic_gate_passed=true`.
+- `local_real_smoke_ran=true`.
+- `sqag_launch_success=true`.
+- `kqag_rejected=true`.
+- `token_header_only=true`.
+- `browser_token_exposed=false`.
+- `sqag_safe_context_established=true`.
+- `hosted_platform_sqag_smoke_passed=false`.
+- `production_ready=false`.
+- Platform and SQAG local smoke processes were stopped after the run.
+- Local smoke ports `127.0.0.1:4317` and `127.0.0.1:8765` were no longer listening after cleanup.
+- No repo code changes were made during the smoke.
+
+This evidence is local-only smoke evidence. It does not record hosted smoke evidence, does not approve hosted execution, and does not claim production readiness. Hosted Platform-to-SQAG smoke remains pending.
+
 ## Existing Services Assumption
 
 The platform uses an existing Postgres-compatible database service through `DATABASE_URL`. This repo does not create or host its own database service, does not provision a database service, and does not run migrations automatically.
