@@ -4,7 +4,7 @@ Production readiness is not yet approved.
 
 Goal: prod-ready, not just MVP. This roadmap is a living launch checklist for Swooshz Platform. Codex must update it gate-by-gate as PRs merge, blockers change, or operator evidence is reviewed.
 
-This checklist covers Platform readiness only. Platform owns auth, provider identities, sessions, workspaces, roles/memberships, app registry, entitlements, launch checks/tokens, audit/activity events, hosted runbooks/operator decisions, and future billing/credits when approved. Platform must not own product workflow/runtime data. SQAG, SKR, and KQAG hosted readiness stay separate unless a future task explicitly scopes them.
+This checklist covers Platform readiness only. Platform owns auth, provider identities, sessions, workspaces, roles/memberships, app registry, entitlements, launch checks/tokens, audit/activity events, hosted runbooks/operator decisions, and future billing/credits when approved. Platform must not own product workflow/runtime data. Swooshz Quote Auto Generator and SKR hosted readiness stay separate unless a future task explicitly scopes them.
 
 Non-goals for this roadmap update:
 
@@ -14,7 +14,7 @@ Non-goals for this roadmap update:
 - No secrets or private values.
 - No request for the user to paste secrets.
 - No SEO/GEO/Seozilla integration.
-- No hosted KQAG/SQAG launch integration.
+- No hosted Swooshz Quote Auto Generator launch integration.
 - No local/demo/fallback business-state behavior.
 - No product workflow/runtime data in Platform.
 - No production-readiness approval claim.
@@ -25,6 +25,7 @@ Non-goals for this roadmap update:
 | --- | --- |
 | Done | Gate 0 foundation items with merged-code, merged-doc, and local-test evidence are checked below. |
 | In progress | Hosted readiness documentation, env checks, DB readiness tooling, admin/member flows, audit/activity, and launch-token contracts exist, but hosted smoke evidence is not recorded. |
+| Frontend visual freeze candidate | A 34-screen Stitch visual/layout freeze candidate exists and is recorded in `docs/frontend-stitch-visual-freeze-parity-plan.md`; frontend implementation, production copy, screenshot parity, and hosted visual evidence remain unchecked. |
 | Blocked until VPS/shared hosting foundation | Gate 1 and Platform hosted deployment execution are blocked until the shared Hostinger/Coolify foundation exists. That foundation is shared across Platform, SQAG, and SKR; it must not become Platform-only. |
 | Blocked until SQAG/SKR hosting readiness | Shared VPS purchase/use is intentionally waiting for SQAG and SKR to reach hosting readiness; Platform must not assume the VPS already exists. |
 | Can be worked before VPS | Security hardening review, backup/restore procedure detail, monitoring/incident decisions, legal/compliance drafts, session-management planning, rate-limit review, and roadmap updates can continue without live hosting. |
@@ -34,7 +35,7 @@ Non-goals for this roadmap update:
 - Review and refine security hardening items that do not need live hosting: CSRF smoke plan, rate limiting posture, session expiry/rotation posture, security headers, dependency/security audit cadence, and secret rotation plan.
 - Draft legal/compliance docs and launch governance placeholders: privacy policy, terms, data retention policy, account/member removal policy, vendor/subprocessor notes, and final go/no-go owner.
 - Turn backup/restore expectations into an operator-owned evidence template that records only sanitized backup id, restore target, timestamp, owner, and pass/fail status.
-- Complete the frontend design readiness gate in `docs/frontend-design-readiness.md` before broad public website, Blog/resources, portal, customer admin, or internal admin/content admin implementation. Do not tick frontend work complete without approved Stitch evidence or implementation/test/screenshot evidence.
+- Complete the frontend design readiness gate in `docs/frontend-design-readiness.md` and the Stitch parity plan in `docs/frontend-stitch-visual-freeze-parity-plan.md` before broad public website, Blog/resources, portal, customer admin, or internal admin/content admin implementation. Do not tick frontend work complete without implemented UI, canonical copy corrections, deterministic tests, screenshot parity evidence, and later hosted evidence after deployment is separately approved.
 - Keep SQAG/SKR hosting-readiness work separate from Platform. Do not purchase or configure the shared VPS from this Platform roadmap alone.
 - Update this roadmap immediately after any relevant merged PR or blocker, using the rules below.
 
@@ -48,8 +49,28 @@ Non-goals for this roadmap update:
 - Codex must not paste or request secrets.
 - Codex must treat local success as useful local evidence only; local success is not hosted evidence.
 - Codex must treat docs-only readiness as planning evidence only; docs-only readiness is not deployed evidence.
+- Codex must not treat the Stitch visual freeze candidate as frontend implementation or hosted visual evidence.
 - Codex must distinguish Platform, SQAG, and SKR responsibilities.
 - Codex must not use screenshots, logs, PRs, or docs to store real domains, private staff identities, OAuth values, cookies, tokens, database URLs, provider console values, backup exports, table data, or product runtime data.
+
+## Frontend Visual Freeze And Implementation Gate
+
+Gate status: planning only. The 34-screen Stitch visual freeze candidate exists and is approved as visual/layout reference only. Raw Stitch copy is not production copy, and canonical copy override rules must be applied before screenshot parity is judged.
+
+Hosted OAuth/provider configuration remains unchecked, and the existing hosted Platform deployment, hosted Swooshz Quote Auto Generator deployment, live Platform-to-Swooshz Quote Auto Generator smoke, monitoring/logging/alerting, backup/restore, and final go/no-go gates remain unchecked.
+
+- [ ] Frontend implementation complete.
+  Blocker: Broad frontend implementation is not part of this planning PR.
+  Next action: After this parity plan merges, open a scoped implementation PR that preserves existing auth, member, session, entitlement, audit, and Swooshz Quote Auto Generator launch logic.
+  Evidence required: Implemented routes/components, deterministic tests, screenshot parity review against all 34 screens, and confirmation that canonical copy overrides were applied.
+- [ ] Hosted visual evidence complete.
+  Blocker: No reviewed hosted Platform deployment exists.
+  Next action: After hosted deployment is separately approved and completed, capture sanitized hosted visual evidence for implemented public and portal surfaces.
+  Evidence required: Sanitized hosted screenshots or visual smoke notes with no private paths, private identities, secrets, cookies, tokens, provider values, table exports, or product runtime data.
+- [ ] Production copy approved.
+  Blocker: Raw Stitch copy is not production copy.
+  Next action: Review public site, Blog/resources, access, member, entitlement, audit, and product-copy strings against `docs/frontend-stitch-visual-freeze-parity-plan.md`.
+  Evidence required: Approved copy review showing Swooshz Quote Auto Generator naming, SEO/GEO/Seozilla pending status, safe entitlement wording, role vocabulary, safe audit events, and draft Blog/resources boundaries.
 
 ## Gate 0: Current Foundation Already Completed
 
@@ -278,9 +299,9 @@ Gate status: partially implemented locally, not hosted-verified. Security harden
   Next action: Review exposed ports after Hostinger/Coolify foundation exists.
   Evidence required: Sanitized firewall/port review.
 
-## Gate 7: KQAG/SQAG Launch Handoff Gate
+## Gate 7: Swooshz Quote Auto Generator Launch Handoff Gate
 
-Gate status: blocked until SQAG/SKR readiness and hosted KQAG/SQAG decisions are separately scoped. This KQAG/SQAG launch handoff gate must not turn Platform into product runtime storage.
+Gate status: blocked until Swooshz Quote Auto Generator and SKR readiness and hosted Swooshz Quote Auto Generator decisions are separately scoped. This Swooshz Quote Auto Generator launch handoff gate must not turn Platform into product runtime storage.
 
 - [ ] SQAG is a separate app, not the same app as Platform.
   Blocker: SQAG hosted architecture evidence is outside this repo and not yet recorded.
@@ -291,7 +312,7 @@ Gate status: blocked until SQAG/SKR readiness and hosted KQAG/SQAG decisions are
   Next action: Track SQAG/SKR readiness outside this Platform roadmap and reference only sanitized status here later.
   Evidence required: Sanitized SQAG/SKR hosting-readiness completion note.
 - [ ] Cross-host session/cookie strategy reviewed.
-  Blocker: Hosted Platform and hosted KQAG/SQAG hosts are not approved.
+  Blocker: Hosted Platform and hosted Swooshz Quote Auto Generator hosts are not approved.
   Next action: Review cross-host cookie/session strategy before enabling server handoff.
   Evidence required: Approved strategy and hosted smoke result with no cookie values.
 - [ ] Platform entitlement and launch-token flow smoke tested.
@@ -302,7 +323,7 @@ Gate status: blocked until SQAG/SKR readiness and hosted KQAG/SQAG decisions are
   Blocker: Hosted product integration is not scoped.
   Next action: During any integration PR, review that Platform stores only account/access/launch state and product app stores workflow/runtime data.
   Evidence required: Code review or test evidence from the relevant integration PR.
-- [ ] KQAG/SQAG stays manual mode until reviewed.
+- [ ] Swooshz Quote Auto Generator stays manual mode until reviewed.
   Blocker: Cross-host handoff/session strategy is not approved.
   Next action: Keep hosted product launch mode manual until the handoff is reviewed and smoke-tested.
   Evidence required: Sanitized hosted env/config review showing manual mode or approved handoff mode.

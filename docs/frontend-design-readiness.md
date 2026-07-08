@@ -8,6 +8,8 @@ Platform owns auth, provider identities, sessions, workspaces, roles/memberships
 
 SQAG is a separate product app launched from Platform, not embedded in Platform. SKR is a separate website/app and must not be mixed into Swooshz Platform. SEO/GEO/Seozilla integration is not confirmed; it remains design/planning only until explicitly approved.
 
+The latest Stitch design pack contains 34 required screens and is approved as the visual/layout freeze candidate only. Raw Stitch copy is not production copy. The canonical parity, copy override, and screenshot acceptance rules live in `docs/frontend-stitch-visual-freeze-parity-plan.md`.
+
 ## Current Frontend Surface Reviewed
 
 Reviewed source and tests:
@@ -35,10 +37,11 @@ The target Swooshz Platform frontend includes these surfaces. This list is a pla
 Google Stitch is the approved design reference source before broad frontend implementation.
 
 - Codex must not freestyle a broad visual redesign.
-- Codex must port approved Stitch designs only after user approval.
-- Codex must preserve existing auth, membership, DB, entitlement, launch, and audit logic while porting approved UI.
-- Codex must compare implementation screenshots against approved Stitch screenshots until parity is acceptable.
-- Codex must keep current route, auth, session, CSRF/origin, membership, entitlement, launch-token, and audit behavior intact unless a separate implementation task explicitly changes them.
+- Codex must port approved Stitch designs only after user approval and only in a scoped frontend implementation PR.
+- Codex must apply the canonical copy corrections in `docs/frontend-stitch-visual-freeze-parity-plan.md` before screenshot parity is judged.
+- Codex must preserve existing auth, provider identity, membership, DB, entitlement, CSRF/origin, session, audit, and SQAG launch logic while porting approved UI.
+- Codex must compare implementation screenshots against approved Stitch screenshots until parity is acceptable, after copy overrides are applied.
+- Codex must keep current route, auth, session, CSRF/origin, membership, entitlement, launch-token, SQAG launch, and audit behavior intact unless a separate implementation task explicitly changes them.
 - Codex must not introduce fake backend flows, fake signup, fake product runtime data, ecommerce, checkout, booking, payment, or product workflow screens.
 - Codex must not include secrets, private customer data, raw IDs, cookies, tokens, provider console values, private staff identities, screenshots with private data, table exports, or backup exports in design assets/docs.
 - Codex must keep SQAG as a separate app launch from Platform, and must not mix SKR into Swooshz Platform.
@@ -182,7 +185,7 @@ Evidence limits:
 - Do not configure real OAuth values.
 - Do not add secrets.
 - Do not ask the user to paste secrets.
-- Do not integrate hosted KQAG/SQAG launch.
+- Do not integrate hosted SQAG launch.
 - Do not integrate SEO/GEO/Seozilla.
 - Do not reintroduce local/demo/fallback business-state behavior.
 - Do not claim production readiness.
