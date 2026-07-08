@@ -13,6 +13,7 @@ const readinessDocPaths = [
   "docs/hosted-internal-alpha-operator-decisions.md",
   "docs/hosted-internal-alpha-operator-briefing.md",
   "docs/production-readiness-roadmap.md",
+  "docs/frontend-design-readiness.md",
   "docs/roadmap.md",
 ];
 
