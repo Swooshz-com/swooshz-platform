@@ -72,6 +72,38 @@ test("internal platform smoke runbook documents the full smoke sequence", async 
   }
 });
 
+test("internal platform smoke runbook records sanitized local-only SQAG smoke evidence", async () => {
+  const runbook = await readRunbook();
+  const requiredPhrases = [
+    "Sanitized Local Smoke Evidence",
+    "Operator-provided sanitized evidence",
+    "local-only Platform-to-SQAG smoke",
+    "Platform local main SHA checked: `58efef2dd2a80e9d9452678f0c397fc55212bdfd`",
+    "SQAG local main SHA checked: `6f93180023636306fe10f0d6250ea2df71d486a0`",
+    "`synthetic_gate_passed=true`",
+    "`local_real_smoke_ran=true`",
+    "`sqag_launch_success=true`",
+    "`kqag_rejected=true`",
+    "`token_header_only=true`",
+    "`browser_token_exposed=false`",
+    "`sqag_safe_context_established=true`",
+    "`hosted_platform_sqag_smoke_passed=false`",
+    "`production_ready=false`",
+    "local smoke processes were stopped",
+    "127.0.0.1:4317",
+    "127.0.0.1:8765",
+    "No repo code changes were made during the smoke",
+    "does not record hosted smoke evidence",
+    "does not approve hosted execution",
+    "does not claim production readiness",
+    "Hosted Platform-to-SQAG smoke remains pending",
+  ];
+
+  for (const phrase of requiredPhrases) {
+    assert.match(runbook, new RegExp(escapeRegExp(phrase)));
+  }
+});
+
 test("internal platform smoke runbook documents the explicit start CLI", async () => {
   const runbook = await readRunbook();
   const packageJson = JSON.parse(await readFile("package.json", "utf8"));
