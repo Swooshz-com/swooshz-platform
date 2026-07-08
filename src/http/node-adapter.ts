@@ -45,10 +45,13 @@ import {
 } from "./route-contracts.js";
 import {
   renderAdminShellPage,
+  renderAboutPage,
   renderAuthErrorPage,
   renderAppShellPage,
+  renderContactPage,
   renderLandingPage,
   renderLoginPage,
+  renderRequestAccessPage,
   renderSolutionsPage,
 } from "./platform-shell.js";
 import type { BrowserSessionCookieConfig } from "./session-cookie.js";
@@ -146,6 +149,18 @@ export async function handleNodePlatformHttpRequest(
 
   if (route.id === "platform_solutions_page") {
     return htmlResponse(200, renderSolutionsPage(), noStoreHeaders());
+  }
+
+  if (route.id === "platform_about_page") {
+    return htmlResponse(200, renderAboutPage(), noStoreHeaders());
+  }
+
+  if (route.id === "platform_contact_page") {
+    return htmlResponse(200, renderContactPage(), noStoreHeaders());
+  }
+
+  if (route.id === "platform_request_access_page") {
+    return htmlResponse(200, renderRequestAccessPage(), noStoreHeaders());
   }
 
   if (route.id === "platform_login_page") {

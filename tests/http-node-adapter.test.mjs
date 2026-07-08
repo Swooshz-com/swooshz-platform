@@ -92,6 +92,70 @@ test("GET /solutions renders the public products page as no-store HTML", async (
   assertResponseIsPrivacySafe(response);
 });
 
+test("GET /about renders the safe public about page as no-store HTML", async () => {
+  const fixture = createAdapterFixture({
+    csrfThrows: true,
+  });
+  const { response } = await rawRequest({
+    method: "GET",
+    url: "/about",
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers["content-type"], "text/html; charset=utf-8");
+  assertNoStoreHeaders(response.headers);
+  assert.match(response.body, /About Swooshz/);
+  assert.match(response.body, /Swooshz Quote Auto Generator/);
+  assert.match(response.body, /Vendor workflow pending|Unavailable until confirmed/);
+  assert.equal(fixture.calls.sessionsFindById, 0);
+  assert.equal(fixture.calls.csrfValidate, 0);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("GET /contact renders the safe public access enquiry page as no-store HTML", async () => {
+  const fixture = createAdapterFixture({
+    csrfThrows: true,
+  });
+  const { response } = await rawRequest({
+    method: "GET",
+    url: "/contact",
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers["content-type"], "text/html; charset=utf-8");
+  assertNoStoreHeaders(response.headers);
+  assert.match(response.body, /Access enquiry/);
+  assert.match(response.body, /Do not send secrets/i);
+  assert.doesNotMatch(response.body, /<form|<input|<textarea|Submit Inquiry/i);
+  assert.equal(fixture.calls.sessionsFindById, 0);
+  assert.equal(fixture.calls.csrfValidate, 0);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("GET /request-access renders the safe public request access state as no-store HTML", async () => {
+  const fixture = createAdapterFixture({
+    csrfThrows: true,
+  });
+  const { response } = await rawRequest({
+    method: "GET",
+    url: "/request-access",
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers["content-type"], "text/html; charset=utf-8");
+  assertNoStoreHeaders(response.headers);
+  assert.match(response.body, /Request Access/);
+  assert.match(response.body, /No public signup is available/);
+  assert.match(response.body, /This page does not create an account/);
+  assert.doesNotMatch(response.body, /<form|<input|<textarea|Submit Request/i);
+  assert.equal(fixture.calls.sessionsFindById, 0);
+  assert.equal(fixture.calls.csrfValidate, 0);
+  assertResponseIsPrivacySafe(response);
+});
+
 test("GET /login renders provider-backed access entry as no-store HTML", async () => {
   const fixture = createAdapterFixture({
     csrfThrows: true,

@@ -13,6 +13,9 @@ test("route manifest includes only approved initial platform routes", () => {
     [
       "platform_landing_page",
       "platform_solutions_page",
+      "platform_about_page",
+      "platform_contact_page",
+      "platform_request_access_page",
       "platform_login_page",
       "platform_app_shell",
       "platform_admin_shell",
@@ -44,6 +47,9 @@ test("route manifest includes only approved initial platform routes", () => {
     [
       "GET /",
       "GET /solutions",
+      "GET /about",
+      "GET /contact",
+      "GET /request-access",
       "GET /login",
       "GET /app",
       "GET /app/admin",
@@ -112,12 +118,15 @@ test("state-changing browser-cookie routes require CSRF protection", () => {
 test("browser page routes are GET-only HTML without CSRF or required browser session", () => {
   const landing = getHttpRouteContract("platform_landing_page");
   const solutions = getHttpRouteContract("platform_solutions_page");
+  const about = getHttpRouteContract("platform_about_page");
+  const contact = getHttpRouteContract("platform_contact_page");
+  const requestAccess = getHttpRouteContract("platform_request_access_page");
   const login = getHttpRouteContract("platform_login_page");
   const appShell = getHttpRouteContract("platform_app_shell");
   const adminShell = getHttpRouteContract("platform_admin_shell");
 
   assert.deepEqual(
-    [landing, solutions, login, appShell, adminShell].map((route) => ({
+    [landing, solutions, about, contact, requestAccess, login, appShell, adminShell].map((route) => ({
       method: route.method,
       browserSession: route.browserSession,
       csrf: route.csrf,
@@ -166,12 +175,42 @@ test("browser page routes are GET-only HTML without CSRF or required browser ses
         requiredQuery: [],
         idempotent: true,
       },
+      {
+        method: "GET",
+        browserSession: "none",
+        csrf: { required: false, strategy: "none" },
+        responseKind: "html",
+        requiredQuery: [],
+        idempotent: true,
+      },
+      {
+        method: "GET",
+        browserSession: "none",
+        csrf: { required: false, strategy: "none" },
+        responseKind: "html",
+        requiredQuery: [],
+        idempotent: true,
+      },
+      {
+        method: "GET",
+        browserSession: "none",
+        csrf: { required: false, strategy: "none" },
+        responseKind: "html",
+        requiredQuery: [],
+        idempotent: true,
+      },
     ],
   );
   assert.equal(landing.path, "/");
   assert.equal(landing.handlerContract, "renderLandingPage");
   assert.equal(solutions.path, "/solutions");
   assert.equal(solutions.handlerContract, "renderSolutionsPage");
+  assert.equal(about.path, "/about");
+  assert.equal(about.handlerContract, "renderAboutPage");
+  assert.equal(contact.path, "/contact");
+  assert.equal(contact.handlerContract, "renderContactPage");
+  assert.equal(requestAccess.path, "/request-access");
+  assert.equal(requestAccess.handlerContract, "renderRequestAccessPage");
   assert.equal(login.path, "/login");
   assert.equal(login.handlerContract, "renderLoginPage");
   assert.equal(appShell.path, "/app");
