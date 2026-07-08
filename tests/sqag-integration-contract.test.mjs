@@ -27,6 +27,7 @@ test("SQAG integration contract documents current platform launch handoff", asyn
   const doc = await readFile(contractPath, "utf8");
   const requiredPhrases = [
     "current platform code implements the launch-token issue and consume endpoints plus a narrow browser-safe SQAG handoff route",
+    "Platform PR #79 landed at merge commit `c65bf67078031921f5b4ce73f03455804eb2fd07`",
     "Browser user signs in to Swooshz Platform through OIDC",
     "Swooshz Platform owns the browser session, platform user, workspace membership, membership role, app entitlement, and app access decision",
     "POST /api/platform/apps/launch?workspaceId=<platform-workspace-id>&appKey=sqag",
@@ -46,6 +47,8 @@ test("SQAG integration contract documents current platform launch handoff", asyn
     "returns only safe user/workspace/app context",
     "PLATFORM_SQAG_LAUNCH_MODE=server_handoff",
     "PLATFORM_SQAG_APP_BASE_URL=<sqag-local-base-url>",
+    "npm run platform:sqag-smoke-readiness",
+    "Passing it only confirms local synthetic readiness",
     "The browser-safe launch response does not include the raw launch token",
     "does not call SQAG during startup",
   ];

@@ -24,6 +24,7 @@ test("hosted internal alpha runbook covers deployment operations", async () => {
     "container",
     "Hostinger VPS And Coolify Deployment Readiness",
     "app.swooshz.com",
+    "Platform PR #79 landed at merge commit `c65bf67078031921f5b4ce73f03455804eb2fd07`",
     "Build command: `npm run build`",
     "Start command: `npm run platform:start`",
     "Health check path: `/healthz`",

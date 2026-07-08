@@ -2,7 +2,7 @@
 
 This runbook verifies the current internal Swooshz Platform flow using already-approved platform services and routes. It is an operator checklist, not a product feature, deployment guide, or database provisioning guide.
 
-SQAG-side PR #122 landed at merge commit `6f93180023636306fe10f0d6250ea2df71d486a0` and requires Platform launch and consume payloads to use `appKey=sqag`. Live Platform-to-SQAG smoke remains pending until the Platform-side SQAG app-key migration is merged; this runbook must not be used to claim production readiness before that operator smoke is actually performed.
+SQAG-side PR #122 landed at merge commit `6f93180023636306fe10f0d6250ea2df71d486a0` and requires Platform launch and consume payloads to use `appKey=sqag`. Platform PR #79 landed at merge commit `c65bf67078031921f5b4ce73f03455804eb2fd07` and migrated Platform-owned SQAG registry, entitlement, launch/open, consume, seed/bootstrap, docs, tests, and admin surfaces to the canonical app key. Live Platform-to-SQAG smoke remains pending until an operator deliberately runs the hosted/live smoke; this runbook must not be used to claim production readiness before that operator smoke is actually performed.
 
 ## Existing Services Assumption
 
@@ -24,7 +24,14 @@ Run the DB-free local validation first:
 npm run build
 npm run typecheck
 npm test
+npm run platform:sqag-smoke-readiness
 ```
+
+The synthetic SQAG smoke readiness command runs deterministic launch/open,
+consume, seed/bootstrap, contract-doc, and app-key migration tests without real
+OAuth, hosted database, hosted SQAG, Coolify, Hostinger, or secrets. Its output
+is sanitized booleans, counts, status, and blocker identifiers only. Passing it
+does not claim the live Platform-to-SQAG smoke or production readiness.
 
 ### B. Configure Env
 

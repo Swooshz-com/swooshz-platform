@@ -23,6 +23,7 @@ test("internal platform smoke runbook documents the full smoke sequence", async 
     "npm run build",
     "npm run typecheck",
     "npm test",
+    "npm run platform:sqag-smoke-readiness",
     "DATABASE_SSL_MODE",
     "PLATFORM_HTTP_HOST",
     "PLATFORM_PUBLIC_BASE_URL",
@@ -42,6 +43,8 @@ test("internal platform smoke runbook documents the full smoke sequence", async 
     "PLATFORM_SEED_USER_EMAIL=<email-used-for-login>",
     "PLATFORM_SQAG_LAUNCH_MODE=server_handoff",
     "PLATFORM_SQAG_APP_BASE_URL=<sqag-local-base-url>",
+    "sanitized booleans, counts, status, and blocker identifiers only",
+    "does not claim the live Platform-to-SQAG smoke or production readiness",
     "Visit `/`",
     "redirects to `/app`",
     "npm run platform:seed-internal-access",
@@ -147,7 +150,11 @@ test("runbook change does not add forbidden scope imports or scripts", async () 
   const packageJson = JSON.parse(await readFile("package.json", "utf8"));
   const scripts = JSON.stringify(packageJson.scripts);
 
-  assert.doesNotMatch(scripts, /deploy|provision|docker|stripe|sqag/i);
+  assert.doesNotMatch(scripts, /deploy|provision|docker|stripe/i);
+  assert.equal(
+    packageJson.scripts["platform:sqag-smoke-readiness"],
+    "npm run build && node scripts/verify-platform-sqag-smoke-readiness.mjs",
+  );
   assert.doesNotMatch(scripts, /start:platform/i);
 
   const runbook = await readRunbook();

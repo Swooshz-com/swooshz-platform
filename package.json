@@ -10,6 +10,7 @@
     "platform:db-readiness-check": "npm run build && node scripts/platform-db-readiness-check.mjs",
     "platform:readiness-check": "node scripts/platform-readiness-check.mjs",
     "platform:start": "node scripts/platform-start.mjs",
+    "platform:sqag-smoke-readiness": "npm run build && node scripts/verify-platform-sqag-smoke-readiness.mjs",
     "platform:seed-internal-access": "node scripts/platform-seed-internal-access.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "npm run build && node --test tests/*.test.mjs"
