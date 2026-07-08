@@ -145,7 +145,7 @@ Future deployment rules:
 - Staging/internal-alpha can be considered first, but only after the shared Hostinger/Coolify foundation exists.
 - Secrets are referenced by name only and stored in GitHub Environments or Coolify, never in repo files.
 - Prefer short-lived credentials or pull-from-Git in Coolify over long-lived deploy tokens when the operator platform supports it.
-- Any deployment workflow must wait for CI, secret scanning, tests, build, and container build to pass.
+- Any deployment workflow must wait for CI repository guardrails, tests, build, and container build to pass.
 
 Secret names for a future GitHub-to-host deployment design, if one is approved later:
 

@@ -94,7 +94,7 @@ Gate status: completed only for the specific items below. This gate does not app
 - [x] Production fail-closed hosted URL validation.
   Evidence: hosted readiness docs and `scripts/platform-readiness-check.mjs` require production mode, HTTPS browser/provider-facing URLs, origin-only allowed origins, callback path shape, valid Postgres-shaped `DATABASE_URL`, secure cookies, and safe output; covered by `tests/platform-readiness-check.test.mjs` and `tests/hosted-internal-alpha-runbook.test.mjs`.
 - [x] Repo-side CI and container readiness.
-  Evidence: this readiness PR adds `.github/workflows/ci.yml` gates for secret scan, dependency install, `npm run typecheck`, `npm run build`, `npm test`, and Docker image build without push/deploy; adds `Dockerfile`, `.dockerignore`, `.gitleaks.toml`, `docs/ci-cd/CURRENT_CICD_STATUS.md`, and `docs/coolify-deployment-readiness.md`; covered by `tests/ci-container-readiness.test.mjs`.
+  Evidence: this readiness PR adds `.github/workflows/ci.yml` gates for deterministic repository guardrails, dependency install, `npm run typecheck`, `npm run build`, `npm test`, and Docker image build without push/deploy; adds `Dockerfile`, `.dockerignore`, `docs/ci-cd/CURRENT_CICD_STATUS.md`, and `docs/coolify-deployment-readiness.md`; covered by `tests/ci-container-readiness.test.mjs`.
 
 ## Gate 1: Hostinger/Coolify Shared Hosting Foundation Gate
 

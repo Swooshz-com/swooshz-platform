@@ -15,10 +15,10 @@ Production readiness is not approved. This status document records repo-side CI/
 
 ## Checks That Run
 
-Security gate:
+Repository guardrail gate:
 
-- Checkout with full history for scanning.
-- Gitleaks secret scan.
+- Deterministic CI/container readiness test with `node --test tests/ci-container-readiness.test.mjs`.
+- Checks workflow coverage, container documentation, placeholder-only deployment docs, and hosted-evidence boundaries.
 
 Validation gate:
 
@@ -45,7 +45,7 @@ Production deployment must require manual approval and must not run blindly on e
 
 ## Required Secrets By Name Only
 
-Current CI requires no repository secrets beyond GitHub's automatic `GITHUB_TOKEN` used by the secret scan action.
+Current CI requires no repository secrets.
 
 Runtime secrets for a future hosted Platform deployment:
 
@@ -96,7 +96,7 @@ Do not paste secret values into chat, docs, PRs, logs, screenshots, or committed
 - For local validation, run `npm run typecheck`, `npm run build`, and `npm test`.
 - For local container build validation, run `docker build --pull --tag swooshz-platform:local .`.
 - For local container smoke, run `docker run --rm --env-file <local-placeholder-env-file> --publish 3000:3000 swooshz-platform:local`, then request `GET /healthz`.
-- If Gitleaks fails, inspect only the file path and finding category in GitHub Actions. Do not print or copy secret values. Rotate any exposed real secret before continuing.
+- If repository guardrails fail, inspect only the failing assertion and file path. Do not print or copy secret values. Rotate any exposed real secret before continuing.
 
 ## Privacy-Safe Observability Baseline
 

@@ -5,20 +5,19 @@ import test from "node:test";
 const workflowPath = ".github/workflows/ci.yml";
 const dockerfilePath = "Dockerfile";
 const dockerignorePath = ".dockerignore";
-const gitleaksPath = ".gitleaks.toml";
 const coolifyDocPath = "docs/coolify-deployment-readiness.md";
 const cicdStatusPath = "docs/ci-cd/CURRENT_CICD_STATUS.md";
 const roadmapPath = "docs/production-readiness-roadmap.md";
 
-test("CI workflow runs security, install, typecheck, build, test, and container build without deploy", async () => {
+test("CI workflow runs guardrails, install, typecheck, build, test, and container build without deploy", async () => {
   const workflow = await readFile(workflowPath, "utf8");
 
   const requiredPhrases = [
     "workflow_dispatch:",
     "permissions:",
     "contents: read",
-    "Secret scan",
-    "gitleaks/gitleaks-action@v2",
+    "Repository guardrails",
+    "node --test tests/ci-container-readiness.test.mjs",
     "npm ci",
     "npm run typecheck",
     "npm run build",
@@ -30,9 +29,10 @@ test("CI workflow runs security, install, typecheck, build, test, and container 
     assert.match(workflow, new RegExp(escapeRegExp(phrase), "i"));
   }
 
-  assert.match(workflow, /needs:\s*security/i);
+  assert.match(workflow, /needs:\s*guardrails/i);
   assert.doesNotMatch(workflow, /deploy|kubectl|coolify.*webhook|ssh |scp |rsync |docker push|gh release/i);
-  assert.doesNotMatch(workflow, /\$\{\{\s*secrets\.(?!GITHUB_TOKEN\b)[A-Z0-9_]+\s*\}\}/i);
+  assert.doesNotMatch(workflow, /\$\{\{\s*secrets\.[A-Z0-9_]+\s*\}\}/i);
+  assert.doesNotMatch(workflow, /gitleaks-action|GITLEAKS_LICENSE/i);
 });
 
 test("Dockerfile defines a production-safe runtime image and healthcheck", async () => {
@@ -85,16 +85,6 @@ test(".dockerignore excludes secrets local files logs caches and private design 
   }
 });
 
-test("Gitleaks allowlist is narrow and placeholder-only", async () => {
-  const config = await readFile(gitleaksPath, "utf8");
-
-  assert.match(config, /documented synthetic placeholders/i);
-  assert.match(config, /example_user:example_pass/);
-  assert.match(config, /private-user:private-pass/);
-  assert.doesNotMatch(config, /allowlist.*paths\s*=\s*\[\s*'''tests\/\*\*/is);
-  assert.doesNotMatch(config, /sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}/);
-});
-
 test("Coolify readiness doc keeps deployment planning disabled and placeholder-only", async () => {
   const doc = await readFile(coolifyDocPath, "utf8");
 
@@ -135,14 +125,14 @@ test("CI/CD status doc records current checks and disabled deployment state", as
     "# Current CI/CD Status",
     "Deployment status: disabled/planning-only",
     "pull requests, pushes to `main`, and manual `workflow_dispatch`",
-    "Gitleaks secret scan",
+    "Repository guardrails",
     "`npm ci`",
     "`npm run typecheck`",
     "`npm run build`",
     "`npm test`",
     "`docker build --pull --tag swooshz-platform:ci .`",
     "built but not pushed or deployed",
-    "Current CI requires no repository secrets beyond GitHub's automatic `GITHUB_TOKEN`",
+    "Current CI requires no repository secrets",
     "staging/internal-alpha",
     "production",
     "Production deployment must require manual approval",

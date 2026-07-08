@@ -1,9 +1,0 @@
-[allowlist]
-description = "Allow only documented synthetic placeholders used by privacy tests."
-regexes = [
-  '''postgres://example_user:example_pass@db\.example\.invalid:5432/swooshz_platform''',
-  '''postgresql://private-host''',
-  '''private-user:private-pass''',
-  '''raw-session-token''',
-  '''raw-csrf-token''',
-]
