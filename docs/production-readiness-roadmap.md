@@ -34,6 +34,7 @@ Non-goals for this roadmap update:
 - Review and refine security hardening items that do not need live hosting: CSRF smoke plan, rate limiting posture, session expiry/rotation posture, security headers, dependency/security audit cadence, and secret rotation plan.
 - Draft legal/compliance docs and launch governance placeholders: privacy policy, terms, data retention policy, account/member removal policy, vendor/subprocessor notes, and final go/no-go owner.
 - Turn backup/restore expectations into an operator-owned evidence template that records only sanitized backup id, restore target, timestamp, owner, and pass/fail status.
+- Complete the frontend design readiness gate in `docs/frontend-design-readiness.md` before broad public website, Blog/resources, portal, customer admin, or internal admin/content admin implementation. Do not tick frontend work complete without approved Stitch evidence or implementation/test/screenshot evidence.
 - Keep SQAG/SKR hosting-readiness work separate from Platform. Do not purchase or configure the shared VPS from this Platform roadmap alone.
 - Update this roadmap immediately after any relevant merged PR or blocker, using the rules below.
 
