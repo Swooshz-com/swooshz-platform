@@ -538,7 +538,7 @@ test("app launch route validates Origin and CSRF before creating a token", async
   assertResponseIsPrivacySafe(response);
 });
 
-test("app launch route creates a hash-only launch token after valid CSRF", async () => {
+test("app launch route disables direct browser raw-token responses after valid CSRF", async () => {
   const fixture = createAdapterFixture({
     app: { launchUrl: "https://apps.example.invalid/sqag" },
   });
@@ -550,22 +550,17 @@ test("app launch route creates a hash-only launch token after valid CSRF", async
     dependencies: fixture.dependencies,
   });
 
-  assert.equal(response.statusCode, 201);
+  assert.equal(response.statusCode, 410);
   assertNoStoreHeaders(response.headers);
   assert.deepEqual(body, {
-    outcome: "launch_intent_created",
-    appKey: "sqag",
-    workspaceId: "workspace_koncept_images",
-    launchUrl: "https://apps.example.invalid/sqag",
-    launchToken: rawLaunchToken,
-    launchTokenExpiresAt,
+    outcome: "error",
+    message: "Direct launch token responses are disabled. Use the server-side launch handoff.",
   });
-  assert.deepEqual(fixture.calls.order.slice(0, 2), ["csrf", "sessionsFindById"]);
+  assert.deepEqual(fixture.calls.order.slice(0, 2), ["csrf"]);
   assert.equal(fixture.calls.csrfValidate, 1);
-  assert.equal(fixture.records.appLaunchTokens.length, 1);
-  assert.equal(fixture.records.appLaunchTokens[0].tokenHash, launchTokenHash);
-  assert.equal("launchToken" in fixture.records.appLaunchTokens[0], false);
+  assert.equal(fixture.records.appLaunchTokens.length, 0);
   assert.doesNotMatch(JSON.stringify(fixture.records.appLaunchTokens), new RegExp(rawLaunchToken));
+  assert.doesNotMatch(JSON.stringify(response), new RegExp(rawLaunchToken));
   assert.doesNotMatch(JSON.stringify(response), new RegExp(launchTokenHash));
   assertResponseIsPrivacySafe(response);
 });

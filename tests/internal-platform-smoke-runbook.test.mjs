@@ -166,7 +166,8 @@ test("internal platform smoke runbook uses placeholders and avoids private mater
   assert.match(runbook, /<strong-random-placeholder>/);
   assert.match(runbook, /<email-used-for-login>/);
   assert.match(runbook, /<sqag-local-base-url>/);
-  assert.match(runbook, /<launch-token-from-immediate-handoff>/);
+  assert.match(runbook, /not from any browser response/i);
+  assert.match(runbook, /<one-time-header-only-launch-token>/);
 });
 
 test("README and roadmap link the internal smoke runbook", async () => {

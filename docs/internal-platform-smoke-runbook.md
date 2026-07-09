@@ -235,13 +235,14 @@ Do not paste real staff emails, private provider identity values, provider paylo
 ### I. Optional Consume API Check
 
 Use the lower-level consume route only when debugging the Platform consume
-contract directly. A one-time token belongs only in the header accepted by the
-app-side consume route:
+contract directly. A one-time token for this check must come only from a
+controlled app-backend/header-only test path, not from any browser response. The
+token belongs only in the header accepted by the app-side consume route:
 
 ```powershell
 Invoke-RestMethod -Method Post `
   -Uri "<platform-base-url>/api/platform/apps/launch/consume?appKey=<app-key>" `
-  -Headers @{ "x-app-launch-token" = "<launch-token-from-immediate-handoff>" }
+  -Headers @{ "x-app-launch-token" = "<one-time-header-only-launch-token>" }
 ```
 
 The raw token belongs in `x-app-launch-token`, not in the query string. It is one-time, short-lived, and should not be stored.

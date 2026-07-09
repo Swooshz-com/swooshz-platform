@@ -5,6 +5,7 @@ import test from "node:test";
 
 import * as schema from "../dist/db/schema.js";
 import {
+  createAppLaunchIntent,
   createPlatformRuntimeDependencies,
   handleNodePlatformHttpRequest,
   PlatformRuntimeSecretConfigError,
@@ -223,23 +224,12 @@ test("runtime composition wires app launch token issuer dependencies when enable
   });
   const body = JSON.parse(response.body);
 
-  assert.equal(response.statusCode, 201);
-  assert.equal(body.outcome, "launch_intent_created");
-  assert.equal(body.appKey, "sqag");
-  assert.equal(body.workspaceId, "workspace_koncept_images");
-  assert.equal(body.launchUrl, null);
-  assert.match(body.launchToken, /^[A-Za-z0-9_-]+$/);
-  assert.equal(body.launchTokenExpiresAt, "2026-06-27T00:05:00.000Z");
-  assert.equal(fixture.records.appLaunchTokens.length, 1);
-  assert.match(
-    fixture.records.appLaunchTokens[0].tokenHash,
-    /^app-launch:v1:hmac-sha256:/,
-  );
-  assert.equal("launchToken" in fixture.records.appLaunchTokens[0], false);
-  assert.doesNotMatch(
-    JSON.stringify(fixture.records.appLaunchTokens),
-    new RegExp(body.launchToken),
-  );
+  assert.equal(response.statusCode, 410);
+  assert.deepEqual(body, {
+    outcome: "error",
+    message: "Direct launch token responses are disabled. Use the server-side launch handoff.",
+  });
+  assert.equal(fixture.records.appLaunchTokens.length, 0);
   assertResponseIsPrivacySafe(response);
 });
 
@@ -276,28 +266,19 @@ test("runtime composition wires app launch token consume dependencies when enabl
   assert.equal(fixture.calls.listen, 0);
   assert.equal(fixture.calls.migrate, 0);
 
-  const issued = await issueCsrfTokenForSession(dependencies.csrfTokenIssuer, {
+  const issue = await createAppLaunchIntent(dependencies.appLaunchIntent, {
     sessionId,
+    selectedWorkspaceId: "workspace_koncept_images",
+    appKey: "sqag",
     now,
-    ttlSeconds: 900,
-    purpose: "browser_session",
   });
-  const issueResponse = await handleNodePlatformHttpRequest(dependencies, {
-    method: "POST",
-    url: "/api/platform/apps/launch?workspaceId=workspace_koncept_images&appKey=sqag",
-    headers: {
-      origin: allowedOrigin,
-      cookie: `swooshz_session=${sessionId}`,
-      "x-csrf-token": issued.csrfToken,
-    },
-  });
-  const issueBody = JSON.parse(issueResponse.body);
+  assert.equal(issue.outcome, "created");
 
   const consumeResponse = await handleNodePlatformHttpRequest(dependencies, {
     method: "POST",
     url: "/api/platform/apps/launch/consume?appKey=sqag",
     headers: {
-      "x-app-launch-token": issueBody.launchToken,
+      "x-app-launch-token": issue.launchToken,
     },
   });
   const consumeBody = JSON.parse(consumeResponse.body);
@@ -309,7 +290,7 @@ test("runtime composition wires app launch token consume dependencies when enabl
   assert.equal(consumeBody.app.appKey, "sqag");
   assert.equal(consumeBody.membershipRole, "owner");
   assert.equal(fixture.records.appLaunchTokens[0].consumedAt.toISOString(), now);
-  assert.doesNotMatch(JSON.stringify(consumeResponse), new RegExp(issueBody.launchToken));
+  assert.doesNotMatch(JSON.stringify(consumeResponse), new RegExp(issue.launchToken));
   assertResponseIsPrivacySafe(consumeResponse);
 });
 
