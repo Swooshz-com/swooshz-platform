@@ -253,9 +253,10 @@ test("seed supports optional app launch URL without printing it in summary outpu
   assert.equal(fixture.closed, true);
   assert.match(lines.join("\n"), /workspace=koncept-images-pte-ltd/);
   assert.match(lines.join("\n"), /app=sqag/);
-  assert.match(lines.join("\n"), /user=owner@example\.test/);
+  assert.match(lines.join("\n"), /user=existing_provider_backed_user/);
   assert.match(lines.join("\n"), /role=owner/);
   assert.doesNotMatch(lines.join("\n"), /apps\.example\.test/);
+  assert.doesNotMatch(lines.join("\n"), /owner@example\.test/);
   assertOutputPrivacySafe(lines.join("\n"));
 });
 

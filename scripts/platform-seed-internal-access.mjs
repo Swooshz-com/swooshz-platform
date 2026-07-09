@@ -136,7 +136,7 @@ export function formatSeedSummary(config, result) {
     `workspaceName=${config.workspaceName}`,
     `app=${config.appKey}`,
     `appName=${config.appName}`,
-    `user=${config.normalizedUserEmail}`,
+    "user=existing_provider_backed_user",
     `role=${config.membershipRole}`,
   ].join(" ");
 }
