@@ -452,7 +452,7 @@ test("app launch handler returns 400 for missing query fields without creating a
   assert.equal(records.appLaunchTokens.length, 0);
 });
 
-test("app launch handler denies access without creating a token", async () => {
+test("app launch handler disables direct responses before app-access token creation", async () => {
   const { records } = httpFixture({ role: "viewer" });
   const launch = launchIssueFixture(records);
 
@@ -465,15 +465,17 @@ test("app launch handler denies access without creating a token", async () => {
     now,
   });
 
-  assert.equal(response.status, 403);
+  assert.equal(response.status, 410);
   assertNoStoreHeaders(response.headers);
-  assert.equal(response.body.outcome, "denied");
-  assert.equal(response.body.reason, "app_access_denied");
+  assert.deepEqual(response.body, {
+    outcome: "error",
+    message: "Direct launch token responses are disabled. Use the server-side launch handoff.",
+  });
   assert.equal(records.appLaunchTokens.length, 0);
   assertResponseIsPrivacySafe(response);
 });
 
-test("app launch handler returns one raw launch token and stores only the hash", async () => {
+test("app launch handler disables direct browser raw-token responses", async () => {
   const { records } = httpFixture({
     app: { launchUrl: "https://apps.example.invalid/sqag" },
   });
@@ -488,24 +490,19 @@ test("app launch handler returns one raw launch token and stores only the hash",
     now,
   });
 
-  assert.equal(response.status, 201);
+  assert.equal(response.status, 410);
   assertNoStoreHeaders(response.headers);
   assert.deepEqual(response.body, {
-    outcome: "launch_intent_created",
-    appKey: "sqag",
-    workspaceId: "workspace_koncept_images",
-    launchUrl: "https://apps.example.invalid/sqag",
-    launchToken: rawLaunchToken,
-    launchTokenExpiresAt,
+    outcome: "error",
+    message: "Direct launch token responses are disabled. Use the server-side launch handoff.",
   });
-  assert.equal(records.appLaunchTokens.length, 1);
-  assert.equal(records.appLaunchTokens[0].tokenHash, launchTokenHash);
-  assert.equal("launchToken" in records.appLaunchTokens[0], false);
+  assert.equal(records.appLaunchTokens.length, 0);
   assert.doesNotMatch(JSON.stringify(records.appLaunchTokens), new RegExp(rawLaunchToken));
+  assert.doesNotMatch(JSON.stringify(response), new RegExp(rawLaunchToken));
   assert.doesNotMatch(JSON.stringify(response), new RegExp(launchTokenHash));
 });
 
-test("app launch handler returns privacy-safe failure body", async () => {
+test("app launch handler does not touch launch-token storage when direct responses are disabled", async () => {
   const { records } = httpFixture();
   const launch = launchIssueFixture(records, { failCreate: true });
 
@@ -518,12 +515,13 @@ test("app launch handler returns privacy-safe failure body", async () => {
     now,
   });
 
-  assert.equal(response.status, 500);
+  assert.equal(response.status, 410);
   assertNoStoreHeaders(response.headers);
   assert.deepEqual(response.body, {
     outcome: "error",
-    message: "App launch intent could not be created.",
+    message: "Direct launch token responses are disabled. Use the server-side launch handoff.",
   });
+  assert.equal(records.appLaunchTokens.length, 0);
   assertResponseIsPrivacySafe(response);
 });
 

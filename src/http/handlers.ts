@@ -4,7 +4,6 @@ import {
   type SessionRevocationServiceDependencies,
 } from "../auth/session-revocation-service.js";
 import {
-  AppLaunchIntentServiceError,
   createAppLaunchIntent,
   type AppLaunchIntentDependencies,
 } from "../platform/app-launch-intent-service.js";
@@ -335,49 +334,14 @@ export async function handleAppLaunchIntentRequest(
     };
   }
 
-  try {
-    const result = await createAppLaunchIntent(dependencies, {
-      sessionId,
-      selectedWorkspaceId: request.selectedWorkspaceId,
-      appKey: request.appKey,
-      now: request.now,
-    });
-
-    if (result.outcome === "created") {
-      return {
-        status: 201,
-        headers: noStoreHeaders(),
-        body: {
-          outcome: "launch_intent_created",
-          appKey: result.appKey,
-          workspaceId: result.workspaceId,
-          launchUrl: result.appLaunchUrl,
-          launchToken: result.launchToken,
-          launchTokenExpiresAt: result.launchTokenExpiresAt,
-        },
-      };
-    }
-
-    if (result.outcome === "unauthenticated") {
-      return appLaunchUnauthenticated(result.reason);
-    }
-
-    return {
-      status: 403,
-      headers: noStoreHeaders(),
-      body: {
-        outcome: "denied",
-        reason: "app_access_denied",
-        decision: result.decision,
-      },
-    };
-  } catch (error) {
-    if (error instanceof AppLaunchIntentServiceError) {
-      return appLaunchFailure();
-    }
-
-    return appLaunchFailure();
-  }
+  return {
+    status: 410,
+    headers: noStoreHeaders(),
+    body: {
+      outcome: "error",
+      message: "Direct launch token responses are disabled. Use the server-side launch handoff.",
+    },
+  };
 }
 
 export async function handleAppLaunchTokenConsumeRequest(
@@ -1250,17 +1214,6 @@ function sessionContextFailure() {
     body: {
       outcome: "error",
       message: "Session context could not be loaded.",
-    },
-  };
-}
-
-function appLaunchFailure() {
-  return {
-    status: 500,
-    headers: noStoreHeaders(),
-    body: {
-      outcome: "error",
-      message: "App launch intent could not be created.",
     },
   };
 }

@@ -49,33 +49,25 @@ The platform-side handoff contract is now explicit:
 
 1. Browser user signs in to Swooshz Platform through OIDC.
 2. Swooshz Platform owns the browser session, platform user, workspace membership, membership role, app entitlement, and app access decision.
-3. A browser launch intent can call the low-level diagnostic route `POST /api/platform/apps/launch?workspaceId=<platform-workspace-id>&appKey=sqag`.
-4. The launch intent route requires an active browser session cookie plus Origin/Referer and CSRF validation.
-5. Platform re-checks app access before minting a launch token.
-6. Platform stores only a versioned hash of the launch token plus lifecycle metadata.
-7. The raw launch token is returned once only in the immediate no-store response from the low-level diagnostic route.
-8. The raw launch token must not be placed in URL query parameters, browser storage, logs, docs, screenshots, committed files, or app telemetry.
-9. The browser-safe SQAG handoff route is `POST /api/platform/apps/launch/open?workspaceId=<platform-workspace-id>&appKey=sqag`.
-10. The browser-safe handoff route also requires an active browser session cookie plus Origin/Referer and CSRF validation.
-11. In browser-safe handoff mode, Platform creates the launch intent internally, sends the raw launch token only in the server-side `x-app-launch-token` header to SQAG, receives SQAG's session cookie response, and returns only a safe launch URL to the browser.
-12. The browser-safe handoff response must not include the raw launch token, token hash, provider tokens, provider claims, auth code, state, nonce, database URL, or platform session secret.
-13. SQAG must send any raw launch token only in the `x-app-launch-token` header to `POST /api/platform/apps/launch/consume?appKey=sqag`.
-14. The consume route requires no browser cookie and no CSRF token because the raw launch token is the credential.
-15. Platform hashes the submitted token before lookup, rejects missing, invalid, expired, consumed, revoked, and app-mismatched tokens safely, re-checks app access, consumes the token once, and returns only safe user/workspace/app context.
-16. The consume response is the only platform-owned context SQAG should use to create its own adapter-side runtime/session boundary.
+3. The direct browser launch-token route `POST /api/platform/apps/launch?workspaceId=<platform-workspace-id>&appKey=sqag` is disabled for raw-token delivery and must not mint or return a raw token to the browser.
+4. The browser-safe SQAG handoff route is `POST /api/platform/apps/launch/open?workspaceId=<platform-workspace-id>&appKey=sqag`.
+5. The browser-safe handoff route requires an active browser session cookie plus Origin/Referer and CSRF validation.
+6. In browser-safe handoff mode, Platform creates the launch intent internally, stores only a versioned hash of the launch token plus lifecycle metadata, sends the raw launch token only in the server-side `x-app-launch-token` header to SQAG, receives SQAG's session cookie response, and returns only a safe launch URL to the browser.
+7. The browser-safe handoff response must not include the raw launch token, token hash, provider tokens, provider claims, auth code, state, nonce, database URL, or platform session secret.
+8. The raw launch token must not be placed in browser response bodies, URL query parameters, browser storage, cookies, logs, docs, screenshots, committed files, or app telemetry.
+9. SQAG must send any raw launch token only in the `x-app-launch-token` header to `POST /api/platform/apps/launch/consume?appKey=sqag`.
+10. The consume route requires no browser cookie and no CSRF token because the raw launch token is the credential.
+11. Platform hashes the submitted token before lookup, rejects missing, invalid, expired, consumed, revoked, and app-mismatched tokens safely, re-checks app access, consumes the token once, and returns only safe user/workspace/app context.
+12. The consume response is the only platform-owned context SQAG should use to create its own adapter-side runtime/session boundary.
 
 The old pre-namespace app key is not whitelisted, is not an alias, and must not be accepted by launch/open or consume flows.
 
-Safe launch intent response shape:
+Disabled direct launch-token response shape:
 
 ```json
 {
-  "outcome": "launch_intent_created",
-  "appKey": "sqag",
-  "workspaceId": "<platform-workspace-id>",
-  "launchUrl": "<optional-sqag-launch-url-or-null>",
-  "launchToken": "<one-time-raw-launch-token-returned-once>",
-  "launchTokenExpiresAt": "<iso-expiry>"
+  "outcome": "error",
+  "message": "Direct launch token responses are disabled. Use the server-side launch handoff."
 }
 ```
 

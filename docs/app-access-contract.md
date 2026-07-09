@@ -119,11 +119,11 @@ The session context response is informational. It does not launch apps, mint app
 
 ## App Launch Intent Endpoint
 
-`POST /api/platform/apps/launch?workspaceId=...&appKey=...` creates a platform launch intent for an active browser session. It is a state-changing browser-cookie route, so it requires Origin/Referer validation and a CSRF token before the handler can create a launch token.
+`POST /api/platform/apps/launch?workspaceId=...&appKey=...` is disabled for direct browser raw-token delivery. It is a state-changing browser-cookie route, so it still requires Origin/Referer validation and a CSRF token before returning the safe disabled response.
 
-The endpoint re-checks the same protected app access rules used by session app-access decisions. Missing, revoked, or expired platform sessions are unauthenticated. Denied app access, including SQAG viewer access while no read-only SQAG mode exists, does not create a token.
+The endpoint does not create a launch token and does not expose raw token material in browser response bodies. Browser launch should use the SQAG browser launch open endpoint below, which creates and forwards the token server-side.
 
-Allowed access creates one short-lived launch token record. The database stores only a versioned HMAC token hash plus session, user, workspace, app, expiry, consumed, and revoked metadata. The raw launch token/reference is returned only once in the immediate no-store response with the app key, workspace id, optional app launch URL, and expiry. This low-level route exists for service-contract diagnostics and must not put raw tokens in URLs, browser storage, cookies, logs, screenshots, docs, or telemetry.
+The database stores only a versioned HMAC token hash plus session, user, workspace, app, expiry, consumed, and revoked metadata for launch tokens created by the server-side handoff path. Raw launch tokens must not be put in browser response bodies, URLs, browser storage, cookies, logs, screenshots, docs, or telemetry.
 
 ## SQAG Browser Launch Open Endpoint
 

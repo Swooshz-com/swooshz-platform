@@ -10,6 +10,7 @@ import test from "node:test";
 import { getTableName } from "drizzle-orm";
 
 import {
+  createAppLaunchIntent,
   createPlatformNodeBootstrap,
   PlatformNodeBootstrapError,
 } from "../dist/index.js";
@@ -287,7 +288,7 @@ test("bootstrap start wires app launch dependencies without issuing tokens", asy
   assert.equal(fixture.calls.migrations, 0);
 });
 
-test("bootstrap-created server can serve POST /api/platform/apps/launch with fake local dependencies", async () => {
+test("bootstrap-created server disables direct browser launch-token responses", async () => {
   const fixture = createBootstrapFixture({ withAppAccessRecords: true });
   const bootstrap = createPlatformNodeBootstrap(fixture.input);
 
@@ -311,20 +312,12 @@ test("bootstrap-created server can serve POST /api/platform/apps/launch with fak
   });
   const body = JSON.parse(response.body);
 
-  assert.equal(response.statusCode, 201);
-  assert.equal(body.outcome, "launch_intent_created");
-  assert.equal(body.appKey, "sqag");
-  assert.equal(body.workspaceId, "workspace_koncept_images");
-  assert.equal(body.launchUrl, null);
-  assert.match(body.launchToken, /^[A-Za-z0-9_-]+$/);
-  assert.equal(body.launchTokenExpiresAt, "2026-06-27T00:05:00.000Z");
-  assert.equal(fixture.records.appLaunchTokens.length, 1);
-  assert.match(fixture.records.appLaunchTokens[0].tokenHash, /^app-launch:v1:hmac-sha256:/);
-  assert.equal("launchToken" in fixture.records.appLaunchTokens[0], false);
-  assert.doesNotMatch(
-    JSON.stringify(fixture.records.appLaunchTokens),
-    new RegExp(body.launchToken),
-  );
+  assert.equal(response.statusCode, 410);
+  assert.deepEqual(body, {
+    outcome: "error",
+    message: "Direct launch token responses are disabled. Use the server-side launch handoff.",
+  });
+  assert.equal(fixture.records.appLaunchTokens.length, 0);
   assertResponseIsPrivacySafe(response);
 });
 
@@ -333,30 +326,20 @@ test("bootstrap-created server can serve POST /api/platform/apps/launch/consume 
   const bootstrap = createPlatformNodeBootstrap(fixture.input);
 
   await bootstrap.start();
-  const { issueCsrfTokenForSession } = await import("../dist/index.js");
   const dependencies = fixture.calls.serverDependencies[0];
-  const issued = await issueCsrfTokenForSession(dependencies.csrfTokenIssuer, {
+  const launch = await createAppLaunchIntent(dependencies.appLaunchIntent, {
     sessionId: "session_owner_example",
+    selectedWorkspaceId: "workspace_koncept_images",
+    appKey: "sqag",
     now,
-    ttlSeconds: 900,
-    purpose: "browser_session",
   });
-  const launchResponse = await fixture.lastServer.handle({
-    method: "POST",
-    url: "/api/platform/apps/launch?workspaceId=workspace_koncept_images&appKey=sqag",
-    headers: {
-      origin: "https://platform.example.test",
-      cookie: "swooshz_session=session_owner_example",
-      "x-csrf-token": issued.csrfToken,
-    },
-  });
-  const launchBody = JSON.parse(launchResponse.body);
+  assert.equal(launch.outcome, "created");
 
   const consumeResponse = await fixture.lastServer.handle({
     method: "POST",
     url: "/api/platform/apps/launch/consume?appKey=sqag",
     headers: {
-      "x-app-launch-token": launchBody.launchToken,
+      "x-app-launch-token": launch.launchToken,
     },
   });
   const consumeBody = JSON.parse(consumeResponse.body);
@@ -368,7 +351,7 @@ test("bootstrap-created server can serve POST /api/platform/apps/launch/consume 
   assert.equal(consumeBody.app.appKey, "sqag");
   assert.equal(consumeBody.membershipRole, "owner");
   assert.equal(fixture.records.appLaunchTokens[0].consumedAt.toISOString(), now);
-  assert.doesNotMatch(JSON.stringify(consumeResponse), new RegExp(launchBody.launchToken));
+  assert.doesNotMatch(JSON.stringify(consumeResponse), new RegExp(launch.launchToken));
   assertResponseIsPrivacySafe(consumeResponse);
 });
 
