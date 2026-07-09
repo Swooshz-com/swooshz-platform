@@ -170,6 +170,219 @@ export function renderSolutionsPage(): string {
   });
 }
 
+export function renderResourcesPage(): string {
+  return htmlDocument({
+    title: "Swooshz Platform Resources",
+    body: `
+      ${publicNav("resources")}
+      <main class="public-page resources-page">
+        <section class="resources-hero">
+          <div>
+            <p class="utility-label">Resources</p>
+            <h1>Insights & Resources</h1>
+            <p class="lede">
+              Content pending editorial review. These public placeholders outline
+              Platform access concepts without publishing customer examples,
+              production metrics, or product workflow records.
+            </p>
+          </div>
+          <aside class="resource-note" aria-labelledby="resource-note-heading">
+            <h2 id="resource-note-heading">Content safety</h2>
+            <p>
+              Static resources describe Platform boundaries only. No public
+              comments, signup forms, public forms, or intake flow is enabled.
+            </p>
+          </aside>
+        </section>
+
+        <section class="resources-band" aria-labelledby="resource-topics-heading">
+          <div class="section-heading">
+            <h2 id="resource-topics-heading">Topic Areas</h2>
+            <p>Non-interactive labels for the current placeholder editorial scope.</p>
+          </div>
+          <div class="topic-rail" aria-label="Resource topics">
+            <span aria-current="true">All topics</span>
+            <span>Platform access</span>
+            <span>Provider-backed entry</span>
+            <span>Product boundaries</span>
+          </div>
+        </section>
+
+        <section class="resources-band" aria-labelledby="resource-list-heading">
+          <div class="section-heading">
+            <h2 id="resource-list-heading">Public Resource Placeholders</h2>
+            <p>Only the first article route is implemented in this slice.</p>
+          </div>
+          <div class="resource-grid">
+            <article class="resource-card resource-card-featured">
+              <div class="resource-visual resource-visual-primary" aria-hidden="true">
+                <span>Launch boundary</span>
+              </div>
+              <div class="resource-card-body">
+                <span class="resource-kicker">Platform access</span>
+                <h3>
+                  <a href="/resources/platform-launch-boundaries">
+                    How Swooshz Platform launches workspace apps safely
+                  </a>
+                </h3>
+                <p>
+                  A placeholder overview of workspace approval, provider-backed
+                  access, entitlement checks, and separate app launch boundaries.
+                </p>
+                <a class="text-link" href="/resources/platform-launch-boundaries">Read article</a>
+              </div>
+            </article>
+
+            <article class="resource-card">
+              <div class="resource-visual" aria-hidden="true">
+                <span>Access model</span>
+              </div>
+              <div class="resource-card-body">
+                <span class="resource-kicker">Access</span>
+                <h3>Provider-backed access matters</h3>
+                <p>
+                  Placeholder content for explaining why Platform access starts
+                  with approved provider-backed accounts.
+                </p>
+                <span class="status-pill">Placeholder only</span>
+              </div>
+            </article>
+
+            <article class="resource-card">
+              <div class="resource-visual" aria-hidden="true">
+                <span>Workspace prep</span>
+              </div>
+              <div class="resource-card-body">
+                <span class="resource-kicker">Workspace readiness</span>
+                <h3>Preparing workspace access before launch</h3>
+                <p>
+                  Placeholder content for reviewing memberships, roles, and app
+                  access before a workspace app is launched.
+                </p>
+                <span class="status-pill">Placeholder only</span>
+              </div>
+            </article>
+
+            <article class="resource-card">
+              <div class="resource-visual" aria-hidden="true">
+                <span>Separate app</span>
+              </div>
+              <div class="resource-card-body">
+                <span class="resource-kicker">Product boundary</span>
+                <h3>Keeping product workflow data outside Platform</h3>
+                <p>
+                  Placeholder content for explaining that Swooshz Quote Auto
+                  Generator is a separate app launched from Platform.
+                </p>
+                <span class="status-pill">Placeholder only</span>
+              </div>
+            </article>
+          </div>
+        </section>
+      </main>
+      ${publicFooter()}
+    `,
+  });
+}
+
+export function renderResourceArticlePage(): string {
+  return htmlDocument({
+    title: "How Swooshz Platform Launches Workspace Apps Safely",
+    body: `
+      ${publicNav("resources")}
+      <main class="public-page article-page">
+        <article class="article-shell">
+          <header class="article-hero">
+            <p class="utility-label">Platform access</p>
+            <h1>How Swooshz Platform launches workspace apps safely</h1>
+            <p class="lede">
+              Article template pending editorial approval. This static page
+              records safe placeholder structure without personal bylines,
+              publication dates, customer examples, or production examples.
+            </p>
+            <div class="article-meta" aria-label="Article status">
+              <span>Placeholder article</span>
+              <span>Review required before launch</span>
+            </div>
+          </header>
+
+          <div class="article-visual" aria-hidden="true">
+            <div>
+              <span>Approved workspace</span>
+              <span>Provider-backed access</span>
+              <span>Entitlement check</span>
+              <span>Separate app launch</span>
+            </div>
+          </div>
+
+          <div class="article-layout">
+            <div class="article-body">
+              <section>
+                <h2>Access starts with the workspace</h2>
+                <p>
+                  Swooshz Platform is responsible for the access surface around
+                  workspace apps. It checks the signed-in account, the selected
+                  workspace, the user's role, and the app entitlement before a
+                  launch path is available.
+                </p>
+              </section>
+
+              <section>
+                <h2>Provider-backed access</h2>
+                <p>
+                  Public access is not self-service in this slice. Users arrive
+                  through an approved provider-backed account that belongs to an
+                  approved workspace, then Platform evaluates whether the
+                  requested app can be launched.
+                </p>
+              </section>
+
+              <aside class="article-callout">
+                <strong>Boundary note</strong>
+                <p>
+                  Swooshz Quote Auto Generator is a separate app launched from
+                  Platform. Its product workflow data stays outside Platform.
+                </p>
+              </aside>
+
+              <section>
+                <h2>Separate product launch</h2>
+                <p>
+                  Platform launches workspace apps through access and entitlement
+                  checks. It does not embed Swooshz Quote Auto Generator product
+                  workflows, runtime records, generated artifacts, or private
+                  product state in the public website.
+                </p>
+              </section>
+
+              <section>
+                <h2>Unavailable product areas</h2>
+                <p>
+                  SEO / GEO / Seozilla remains unavailable until confirmed.
+                  Any vendor workflow is pending and outside this public
+                  resources slice.
+                </p>
+              </section>
+            </div>
+
+            <aside class="article-sidebar" aria-labelledby="article-sidebar-heading">
+              <h2 id="article-sidebar-heading">Template guardrails</h2>
+              <ul>
+                <li>No public signup or public forms.</li>
+                <li>No customer examples or performance claims.</li>
+                <li>No code snippets or production integration instructions.</li>
+                <li>No product workflow records inside Platform.</li>
+              </ul>
+              <a class="secondary-action" href="/resources">Back to resources</a>
+            </aside>
+          </div>
+        </article>
+      </main>
+      ${publicFooter()}
+    `,
+  });
+}
+
 export function renderAboutPage(): string {
   return htmlDocument({
     title: "About Swooshz",
@@ -2111,14 +2324,14 @@ export function renderAuthErrorPage(): string {
   });
 }
 
-function publicNav(active: "home" | "solutions" | "about" | "contact" | "requestAccess"): string {
+function publicNav(active: "home" | "solutions" | "resources" | "about" | "contact" | "requestAccess"): string {
   return `
     <header class="public-nav">
       <a class="public-brand" href="/">Swooshz</a>
       <nav aria-label="Public navigation">
         <a class="${active === "home" ? "active" : ""}" href="/">Home</a>
         <a class="${active === "solutions" ? "active" : ""}" href="/solutions">Solutions</a>
-        <span aria-disabled="true">Blog</span>
+        <a class="${active === "resources" ? "active" : ""}" href="/resources">Resources</a>
         <a class="${active === "about" ? "active" : ""}" href="/about">About</a>
         <a class="${active === "contact" ? "active" : ""}" href="/contact">Contact</a>
       </nav>
@@ -2135,6 +2348,7 @@ function publicFooter(): string {
     <footer class="public-footer">
       <strong>Swooshz</strong>
       <nav aria-label="Footer navigation">
+        <a href="/resources">Resources</a>
         <a href="/about">About</a>
         <a href="/contact">Contact</a>
         <a href="/request-access">Request Access</a>
@@ -2402,6 +2616,302 @@ function htmlDocument({
     .process-section {
       padding: 64px 0;
       border-top: 1px solid var(--line);
+    }
+
+    .resources-page,
+    .article-page {
+      background: var(--bg);
+    }
+
+    .resources-hero,
+    .resources-band,
+    .article-shell {
+      width: min(1280px, calc(100% - 48px));
+      margin: 0 auto;
+    }
+
+    .resources-hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.3fr) minmax(280px, 0.55fr);
+      gap: 48px;
+      align-items: end;
+      padding: 72px 0 54px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .resources-hero h1,
+    .article-hero h1 {
+      margin: 0;
+      color: var(--primary);
+      font-size: 54px;
+      line-height: 1.08;
+      letter-spacing: 0;
+    }
+
+    .resource-note {
+      display: grid;
+      gap: 10px;
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+
+    .resource-note h2,
+    .resource-note p {
+      margin: 0;
+    }
+
+    .resource-note h2 {
+      color: var(--primary);
+      font-size: 20px;
+    }
+
+    .resource-note p {
+      color: var(--muted);
+    }
+
+    .resources-band {
+      padding: 36px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .topic-rail {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .topic-rail span {
+      display: inline-flex;
+      align-items: center;
+      min-height: 38px;
+      padding: 0 16px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--surface);
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .topic-rail span[aria-current="true"] {
+      border-color: var(--primary);
+      background: var(--primary);
+      color: #ffffff;
+    }
+
+    .resource-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 24px;
+    }
+
+    .resource-card {
+      display: grid;
+      grid-template-rows: 220px 1fr;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+      overflow: hidden;
+    }
+
+    .resource-card-featured {
+      grid-column: span 2;
+    }
+
+    .resource-visual,
+    .article-visual {
+      position: relative;
+      display: grid;
+      place-items: center;
+      min-height: 220px;
+      border-bottom: 1px solid var(--line);
+      background:
+        linear-gradient(135deg, rgb(255 255 255 / 72%), rgb(230 232 234 / 70%)),
+        repeating-linear-gradient(135deg, transparent 0 18px, rgb(0 98 255 / 10%) 18px 19px),
+        repeating-linear-gradient(45deg, transparent 0 30px, rgb(24 33 43 / 8%) 30px 31px);
+    }
+
+    .resource-visual-primary {
+      background:
+        linear-gradient(135deg, rgb(255 255 255 / 76%), rgb(230 232 234 / 76%)),
+        linear-gradient(90deg, rgb(0 98 255 / 20%), transparent),
+        repeating-linear-gradient(135deg, transparent 0 18px, rgb(0 98 255 / 10%) 18px 19px),
+        repeating-linear-gradient(45deg, transparent 0 30px, rgb(24 33 43 / 8%) 30px 31px);
+    }
+
+    .resource-visual span,
+    .article-visual span {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 36px;
+      padding: 0 12px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: rgb(255 255 255 / 84%);
+      color: var(--primary);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .resource-card-body {
+      display: grid;
+      gap: 12px;
+      align-content: start;
+      padding: 24px;
+    }
+
+    .resource-kicker {
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    .resource-card h3,
+    .resource-card p {
+      margin: 0;
+    }
+
+    .resource-card h3,
+    .resource-card h3 a {
+      color: var(--primary);
+      font-size: 24px;
+      line-height: 1.25;
+      text-decoration: none;
+    }
+
+    .resource-card p {
+      color: var(--muted);
+      font-size: 16px;
+    }
+
+    .text-link {
+      color: var(--primary);
+      font-weight: 700;
+      text-decoration: none;
+    }
+
+    .text-link::after {
+      content: " ->";
+    }
+
+    .article-shell {
+      padding: 56px 0 72px;
+    }
+
+    .article-hero {
+      width: min(760px, 100%);
+      display: grid;
+      gap: 18px;
+      margin: 0 auto;
+      padding-bottom: 28px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .article-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .article-meta span {
+      display: inline-flex;
+      align-items: center;
+      min-height: 34px;
+      padding: 0 12px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .article-visual {
+      width: min(900px, 100%);
+      min-height: 300px;
+      margin: 32px auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .article-visual div {
+      width: min(620px, calc(100% - 48px));
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .article-layout {
+      width: min(980px, 100%);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 280px;
+      gap: 44px;
+      margin: 0 auto;
+      align-items: start;
+    }
+
+    .article-body {
+      display: grid;
+      gap: 28px;
+    }
+
+    .article-body section,
+    .article-callout,
+    .article-sidebar {
+      display: grid;
+      gap: 12px;
+    }
+
+    .article-body h2,
+    .article-sidebar h2 {
+      margin: 0;
+      color: var(--primary);
+      font-size: 28px;
+      line-height: 1.2;
+    }
+
+    .article-body p,
+    .article-sidebar li {
+      margin: 0;
+      color: var(--ink);
+      font-size: 17px;
+      line-height: 1.7;
+    }
+
+    .article-callout,
+    .article-sidebar {
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+
+    .article-callout {
+      border-left: 4px solid var(--accent);
+    }
+
+    .article-callout strong {
+      color: var(--primary);
+      font-size: 14px;
+    }
+
+    .article-sidebar {
+      position: sticky;
+      top: 96px;
+    }
+
+    .article-sidebar ul {
+      display: grid;
+      gap: 10px;
+      margin: 0;
+      padding-left: 20px;
     }
 
     .public-split-page,
@@ -3502,6 +4012,9 @@ function htmlDocument({
       .solutions-hero,
       .public-band,
       .process-section,
+      .resources-hero,
+      .resources-band,
+      .article-shell,
       .public-split-page,
       .access-state-panel {
         width: min(100% - 32px, 1280px);
@@ -3509,6 +4022,7 @@ function htmlDocument({
 
       .public-hero,
       .solutions-hero,
+      .resources-hero,
       .public-split-page {
         grid-template-columns: 1fr;
         min-height: auto;
@@ -3533,6 +4047,54 @@ function htmlDocument({
       .hero-copy h1 {
         font-size: 36px;
         line-height: 1.16;
+      }
+
+      .resources-hero h1,
+      .article-hero h1 {
+        font-size: 38px;
+        line-height: 1.12;
+      }
+
+      .resources-band,
+      .article-shell {
+        padding: 32px 0;
+      }
+
+      .topic-rail {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        padding-bottom: 2px;
+      }
+
+      .topic-rail span {
+        flex: 0 0 auto;
+      }
+
+      .resource-grid,
+      .article-layout,
+      .article-visual div {
+        grid-template-columns: 1fr;
+      }
+
+      .resource-card,
+      .resource-card-featured {
+        grid-column: auto;
+      }
+
+      .resource-card {
+        grid-template-rows: 180px 1fr;
+      }
+
+      .resource-visual {
+        min-height: 180px;
+      }
+
+      .article-visual {
+        min-height: 240px;
+      }
+
+      .article-sidebar {
+        position: static;
       }
 
       .architecture-card,

@@ -10,6 +10,8 @@ import {
   renderContactPage,
   renderLandingPage,
   renderLoginPage,
+  renderResourceArticlePage,
+  renderResourcesPage,
   renderRequestAccessPage,
   renderSolutionsPage,
 } from "../dist/index.js";
@@ -24,6 +26,12 @@ const forbiddenFrontendCopy = [
   /\bvector\b/i,
   /\b2026-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\b/,
 ];
+const fakeDateCopy =
+  /\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?|20\d{2})\b/;
+
+function withoutSharedStyle(html) {
+  return html.replace(/<style>[\s\S]*?<\/style>/g, "");
+}
 
 test("landing page renders the public Stitch parity homepage with canonical product copy", () => {
   const html = renderLandingPage();
@@ -118,20 +126,68 @@ test("request access page is a public information state without signup or delive
   assert.doesNotMatch(html, /invite sent|email invitation|confirmation email|support ticket|CRM/i);
 });
 
-test("public navigation links implemented pages and leaves blog disabled", () => {
-  const html = renderLandingPage() + renderAboutPage() + renderContactPage() + renderRequestAccessPage();
+test("resources page renders safe placeholder listing content", () => {
+  const html = withoutSharedStyle(renderResourcesPage());
+
+  assert.match(html, /Insights & Resources|Resources/);
+  assert.match(html, /Content pending editorial review/i);
+  assert.match(html, /How Swooshz Platform launches workspace apps safely/);
+  assert.match(html, /Provider-backed access matters/);
+  assert.match(html, /Keeping product workflow data outside Platform/);
+  assert.match(html, /Swooshz Quote Auto\s+Generator/);
+  assert.match(html, /separate app launched from\s+Platform/i);
+  assert.match(html, /href="\/resources\/platform-launch-boundaries"/);
+  assert.doesNotMatch(html, /<form|<input|<textarea|newsletter|subscribe|email capture/i);
+  assert.doesNotMatch(html, /by\s+[A-Z][a-z]+|author|team member|workspace member/i);
+  assert.doesNotMatch(html, fakeDateCopy);
+  assert.doesNotMatch(html, /case study|testimonial|customer story|\bROI\b|\d+%/i);
+  assert.doesNotMatch(html, /CMS|content admin|editor dashboard|publish workflow/i);
+  assert.doesNotMatch(html, /SKR|\bSQAG\b|Split-Pane|Structured Query|data lake|vector/i);
+});
+
+test("resource article page renders safe article template without fake metadata", () => {
+  const html = withoutSharedStyle(renderResourceArticlePage());
+
+  assert.match(html, /How Swooshz Platform launches workspace apps safely/);
+  assert.match(html, /Article template pending editorial approval/i);
+  assert.match(html, /Provider-backed access/);
+  assert.match(html, /Swooshz Quote Auto\s+Generator/);
+  assert.match(html, /separate app launched from\s+Platform/i);
+  assert.match(html, /product workflow data stays outside Platform/i);
+  assert.match(html, /SEO \/ GEO \/ Seozilla/);
+  assert.match(html, /unavailable until confirmed|vendor workflow pending/i);
+  assert.match(html, /href="\/resources"/);
+  assert.doesNotMatch(html, /<form|<input|<textarea|newsletter|subscribe|email capture/i);
+  assert.doesNotMatch(html, /by\s+[A-Z][a-z]+|author|team member|workspace member/i);
+  assert.doesNotMatch(html, fakeDateCopy);
+  assert.doesNotMatch(html, /case study|testimonial|customer story|\bROI\b|\d+%|performance metric/i);
+  assert.doesNotMatch(html, /<pre|<code|curl|api key|Authorization:/i);
+  assert.doesNotMatch(html, /CMS|content admin|editor dashboard|publish workflow/i);
+  assert.doesNotMatch(html, /SKR|\bSQAG\b|Split-Pane|Structured Query|data lake|vector/i);
+});
+
+test("public navigation links implemented pages and resources route", () => {
+  const html =
+    renderLandingPage() +
+    renderAboutPage() +
+    renderContactPage() +
+    renderRequestAccessPage() +
+    renderResourcesPage() +
+    renderResourceArticlePage();
 
   assert.match(html, /href="\/about"/);
   assert.match(html, /href="\/contact"/);
+  assert.match(html, /href="\/resources"/);
   assert.match(html, /href="\/request-access"/);
-  assert.match(html, /<span aria-disabled="true">Blog<\/span>/);
-  assert.doesNotMatch(html, /<a\b[^>]*>\s*Blog\s*<\/a>/i);
+  assert.doesNotMatch(html, /<span aria-disabled="true">(?:Blog|Resources)<\/span>/);
 });
 
 test("implemented frontend slice excludes forbidden copy and unapproved business flows", () => {
   const pages = [
     renderLandingPage(),
     renderSolutionsPage(),
+    renderResourcesPage(),
+    renderResourceArticlePage(),
     renderAboutPage(),
     renderContactPage(),
     renderRequestAccessPage(),
@@ -147,6 +203,7 @@ test("implemented frontend slice excludes forbidden copy and unapproved business
     }
 
     assert.doesNotMatch(html, /checkout|pricing file|quote history|quote session|case study/i);
+    assert.doesNotMatch(html, /newsletter|subscribe|email capture|CMS|content admin/i);
     assert.doesNotMatch(html, /(?:\d{1,3}\.){3}\d{1,3}/);
     assert.doesNotMatch(html, /[a-f0-9]{40}/i);
   }
@@ -485,11 +542,11 @@ test("future-only navigation controls render disabled instead of clickable links
 
   assert.match(html, /<span aria-disabled="true">Help<\/span>/);
   assert.match(html, /<span aria-disabled="true">Settings<\/span>/);
-  assert.match(html, /<span aria-disabled="true">Blog<\/span>/);
   assert.match(html, /\.portal-nav span\[aria-disabled="true"\]/);
   assert.match(html, /pointer-events: none/);
   assert.match(html, /<a class="" href="\/about">About<\/a>/);
-  assert.doesNotMatch(html, /<a\b[^>]*>\s*(?:Help|Settings|Blog)\s*<\/a>/i);
+  assert.match(html, /<a class="" href="\/resources">Resources<\/a>/);
+  assert.doesNotMatch(html, /<a\b[^>]*>\s*(?:Help|Settings)\s*<\/a>/i);
 });
 
 test("admin shell modals support keyboard and backdrop dismissal with visible focus states", () => {

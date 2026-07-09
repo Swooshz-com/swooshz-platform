@@ -51,6 +51,8 @@ import {
   renderContactPage,
   renderLandingPage,
   renderLoginPage,
+  renderResourceArticlePage,
+  renderResourcesPage,
   renderRequestAccessPage,
   renderSolutionsPage,
 } from "./platform-shell.js";
@@ -149,6 +151,14 @@ export async function handleNodePlatformHttpRequest(
 
   if (route.id === "platform_solutions_page") {
     return htmlResponse(200, renderSolutionsPage(), noStoreHeaders());
+  }
+
+  if (route.id === "platform_resources_page") {
+    return htmlResponse(200, renderResourcesPage(), noStoreHeaders());
+  }
+
+  if (route.id === "platform_resource_article_page") {
+    return htmlResponse(200, renderResourceArticlePage(), noStoreHeaders());
   }
 
   if (route.id === "platform_about_page") {

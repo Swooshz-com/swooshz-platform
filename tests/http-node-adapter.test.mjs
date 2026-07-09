@@ -92,6 +92,50 @@ test("GET /solutions renders the public products page as no-store HTML", async (
   assertResponseIsPrivacySafe(response);
 });
 
+test("GET /resources renders the safe public resources page as no-store HTML", async () => {
+  const fixture = createAdapterFixture({
+    csrfThrows: true,
+  });
+  const { response } = await rawRequest({
+    method: "GET",
+    url: "/resources",
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers["content-type"], "text/html; charset=utf-8");
+  assertNoStoreHeaders(response.headers);
+  assert.match(response.body, /Insights & Resources|Resources/);
+  assert.match(response.body, /Content pending editorial review/i);
+  assert.match(response.body, /href="\/resources\/platform-launch-boundaries"/);
+  assert.doesNotMatch(response.body, /<form|<input|<textarea|newsletter|subscribe/i);
+  assert.equal(fixture.calls.sessionsFindById, 0);
+  assert.equal(fixture.calls.csrfValidate, 0);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("GET /resources/platform-launch-boundaries renders the safe article page as no-store HTML", async () => {
+  const fixture = createAdapterFixture({
+    csrfThrows: true,
+  });
+  const { response } = await rawRequest({
+    method: "GET",
+    url: "/resources/platform-launch-boundaries",
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers["content-type"], "text/html; charset=utf-8");
+  assertNoStoreHeaders(response.headers);
+  assert.match(response.body, /How Swooshz Platform launches workspace apps safely/);
+  assert.match(response.body, /Article template pending editorial approval/i);
+  assert.match(response.body, /Swooshz Quote Auto Generator/);
+  assert.doesNotMatch(response.body, /<form|<input|<textarea|newsletter|subscribe|<pre|<code/i);
+  assert.equal(fixture.calls.sessionsFindById, 0);
+  assert.equal(fixture.calls.csrfValidate, 0);
+  assertResponseIsPrivacySafe(response);
+});
+
 test("GET /about renders the safe public about page as no-store HTML", async () => {
   const fixture = createAdapterFixture({
     csrfThrows: true,
