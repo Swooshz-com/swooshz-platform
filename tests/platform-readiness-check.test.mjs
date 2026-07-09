@@ -282,12 +282,16 @@ test("readiness check reports optional bootstrap env without failing runtime rea
     ...completeEnv(),
     PLATFORM_SEED_CONFIRM: "",
     PLATFORM_SEED_USER_EMAIL: "",
+    PLATFORM_SEED_WORKSPACE_SLUG: "",
+    PLATFORM_SEED_WORKSPACE_NAME: "",
     PLATFORM_SEED_MEMBERSHIP_ROLE: "",
   });
 
   assert.equal(report.ok, true);
   assert.ok(report.missingOptional.some((entry) => entry.name === "PLATFORM_SEED_CONFIRM"));
   assert.ok(report.missingOptional.some((entry) => entry.name === "PLATFORM_SEED_USER_EMAIL"));
+  assert.ok(report.missingOptional.some((entry) => entry.name === "PLATFORM_SEED_WORKSPACE_SLUG"));
+  assert.ok(report.missingOptional.some((entry) => entry.name === "PLATFORM_SEED_WORKSPACE_NAME"));
 });
 
 test("readiness script stays dry-run and does not import migration server or network code", async () => {
@@ -330,6 +334,8 @@ function completeEnv() {
     PLATFORM_SQAG_APP_BASE_URL: "https://sqag.placeholder.invalid",
     PLATFORM_SEED_CONFIRM: "seed-reviewed-internal-access",
     PLATFORM_SEED_USER_EMAIL: "<hosted-owner-admin-email-after-login>",
+    PLATFORM_SEED_WORKSPACE_SLUG: "<reviewed-workspace-slug>",
+    PLATFORM_SEED_WORKSPACE_NAME: "<reviewed-workspace-name>",
     PLATFORM_SEED_MEMBERSHIP_ROLE: "owner",
   };
 }

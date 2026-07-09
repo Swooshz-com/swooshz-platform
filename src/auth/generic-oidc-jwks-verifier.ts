@@ -250,9 +250,7 @@ function assertClaims(
     throw createProviderFailure("OIDC issuer did not match.");
   }
 
-  if (!audienceIncludesClientId(claims.aud, input.clientId)) {
-    throw createProviderFailure("OIDC audience did not match.");
-  }
+  assertAudienceAndAuthorizedParty(claims, input.clientId);
 
   if (!subject) {
     throw createProviderFailure("OIDC subject was missing.");
@@ -273,16 +271,31 @@ function readNowSeconds(now: string): number {
   return Math.floor(nowMs / 1000);
 }
 
-function audienceIncludesClientId(audience: unknown, clientId: string): boolean {
+function assertAudienceAndAuthorizedParty(
+  claims: Record<string, unknown>,
+  clientId: string,
+): void {
+  const audience = claims.aud;
+
   if (typeof audience === "string") {
-    return audience === clientId;
+    if (audience !== clientId) {
+      throw createProviderFailure("OIDC audience did not match.");
+    }
+
+    return;
   }
 
-  if (Array.isArray(audience)) {
-    return audience.includes(clientId);
+  if (!Array.isArray(audience) || !audience.every((item) => typeof item === "string")) {
+    throw createProviderFailure("OIDC audience did not match.");
   }
 
-  return false;
+  if (!audience.includes(clientId)) {
+    throw createProviderFailure("OIDC audience did not match.");
+  }
+
+  if (audience.length > 1 && readString(claims.azp) !== clientId) {
+    throw createProviderFailure("OIDC authorized party did not match.");
+  }
 }
 
 function assertExpiration(

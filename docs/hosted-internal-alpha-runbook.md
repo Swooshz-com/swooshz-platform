@@ -88,7 +88,7 @@ Deploy-time env categories:
 | Secret values | `DATABASE_URL`, `SESSION_SECRET`, `CSRF_TOKEN_HASH_SECRET`, `AUTH_STATE_HASH_SECRET`, `APP_LAUNCH_TOKEN_HASH_SECRET`, `AUTH_CLIENT_SECRET` | Inject through Coolify secret/env storage only. | Do not commit, print, screenshot, paste, or expose values in build logs, app logs, tickets, shell history, or PRs. |
 | Private allowlist values | `AUTH_ALLOWED_EMAILS` | Treat as private operational data, even though it is not a credential. | Keep real staff addresses outside the repo; use placeholders in docs and tickets. |
 | Migration-only values | `DATABASE_MIGRATIONS_CONFIRM` | Do not keep on the long-running Coolify app service. Set only for the reviewed one-off manual migration command when a future migration is approved. | The migrated Neon database should already return `ready` from `npm run platform:db-readiness-check` before app start. |
-| Bootstrap-only values | `PLATFORM_SEED_CONFIRM`, `PLATFORM_SEED_USER_EMAIL`, `PLATFORM_SEED_MEMBERSHIP_ROLE` | Do not keep on the long-running Coolify app service. Set only for a reviewed one-off bootstrap after real hosted auth creates the user. | These values must not become env-controlled business/admin state or a fake login path. |
+| Bootstrap-only values | `PLATFORM_SEED_CONFIRM`, `PLATFORM_SEED_USER_EMAIL`, `PLATFORM_SEED_WORKSPACE_SLUG`, `PLATFORM_SEED_WORKSPACE_NAME`, `PLATFORM_SEED_MEMBERSHIP_ROLE` | Do not keep on the long-running Coolify app service. Set only for a reviewed one-off bootstrap after real hosted auth creates the user. | These values must not become env-controlled business/admin state, default production data, or a fake login path. |
 | Product handoff placeholders | `PLATFORM_SQAG_LAUNCH_MODE`, `PLATFORM_SQAG_APP_BASE_URL` | Keep placeholder-only until SQAG hosting and cross-host session/cookie behavior are approved. | Platform stores launch checks/tokens and entitlements only; product workflow/runtime data remains outside Platform. |
 
 Coolify readiness sequence:
@@ -292,6 +292,8 @@ Stop and redact the log collection process if a log includes secret values, data
 | `PLATFORM_SQAG_APP_BASE_URL` | SQAG hosted base URL for browser handoff. | Required when server_handoff | `<hosted-sqag-base-url>` | No | Omit when launch mode is `manual`; when `server_handoff`, hosted readiness requires HTTPS and no query parameters or fragments. |
 | `PLATFORM_SEED_CONFIRM` | Explicit first owner/admin bootstrap confirmation. | Required for bootstrap only | `seed-reviewed-internal-access` | No | Required only for `npm run platform:seed-internal-access`; unexpected value fails seed config. |
 | `PLATFORM_SEED_USER_EMAIL` | Already-authenticated owner/admin user for bootstrap. | Required for bootstrap only | `<hosted-owner-admin-email-after-login>` | No | Required only for seed; treat as private and do not commit real values. |
+| `PLATFORM_SEED_WORKSPACE_SLUG` | Reviewed bootstrap workspace slug. | Required for bootstrap only | `<reviewed-workspace-slug>` | No | Required only for seed; no default workspace is created when missing. |
+| `PLATFORM_SEED_WORKSPACE_NAME` | Reviewed bootstrap workspace display name. | Required for bootstrap only | `<reviewed-workspace-name>` | No | Required only for seed; do not use placeholders as real hosted data. |
 | `PLATFORM_SEED_MEMBERSHIP_ROLE` | Bootstrap role for the existing user. | Optional | `owner` | No | When set, must be `owner`, `admin`, or `member`; `viewer` is rejected for SQAG launch. |
 
 ## Readiness Check
@@ -324,10 +326,11 @@ Use this sequence after hosted auth and migrations are reviewed:
 4. Stop if the user has not completed real OIDC login; the seed must not create users, provider identities, sessions, or fake login state.
 5. In the operator shell, set `PLATFORM_SEED_CONFIRM=seed-reviewed-internal-access`.
 6. Set `PLATFORM_SEED_USER_EMAIL=<hosted-owner-admin-email-after-login>` outside the repo.
-7. Set `PLATFORM_SEED_MEMBERSHIP_ROLE=owner` for the first bootstrap unless a separate reviewed owner assignment exists.
-8. Run `npm run platform:seed-internal-access`.
-9. Confirm `/app` shows the workspace and SQAG app access.
-10. Confirm `/app/admin` is reachable only for the owner/admin.
+7. Set `PLATFORM_SEED_WORKSPACE_SLUG=<reviewed-workspace-slug>` and `PLATFORM_SEED_WORKSPACE_NAME=<reviewed-workspace-name>` outside the repo.
+8. Set `PLATFORM_SEED_MEMBERSHIP_ROLE=owner` for the first bootstrap unless a separate reviewed owner assignment exists.
+9. Run `npm run platform:seed-internal-access`.
+10. Confirm `/app` shows the workspace and SQAG app access.
+11. Confirm `/app/admin` is reachable only for the owner/admin.
 
 ## Pending Workspace Approval Sequence
 

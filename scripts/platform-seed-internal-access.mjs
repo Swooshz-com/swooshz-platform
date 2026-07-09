@@ -13,8 +13,6 @@ import {
 
 export const PLATFORM_SEED_CONFIRM_VALUE = "seed-reviewed-internal-access";
 
-const defaultWorkspaceSlug = "koncept-images-pte-ltd";
-const defaultWorkspaceName = "Koncept Images Pte Ltd";
 const defaultAppKey = "sqag";
 const defaultAppName = "SQAG";
 const defaultMembershipRole = "owner";
@@ -38,6 +36,13 @@ export function readPlatformSeedInternalAccessConfig(env) {
     throw new PlatformSeedInternalAccessError("unsupported_app_identity_override");
   }
 
+  const workspaceSlug = readOptional(env.PLATFORM_SEED_WORKSPACE_SLUG);
+  const workspaceName = readOptional(env.PLATFORM_SEED_WORKSPACE_NAME);
+
+  if (!workspaceSlug || !workspaceName) {
+    throw new PlatformSeedInternalAccessError("missing_workspace_identity");
+  }
+
   const rawEmail = env.PLATFORM_SEED_USER_EMAIL?.trim();
 
   if (!rawEmail) {
@@ -52,10 +57,8 @@ export function readPlatformSeedInternalAccessConfig(env) {
 
   return {
     normalizedUserEmail: normalizeEmail(rawEmail),
-    workspaceSlug:
-      readOptional(env.PLATFORM_SEED_WORKSPACE_SLUG) ?? defaultWorkspaceSlug,
-    workspaceName:
-      readOptional(env.PLATFORM_SEED_WORKSPACE_NAME) ?? defaultWorkspaceName,
+    workspaceSlug,
+    workspaceName,
     appKey: defaultAppKey,
     appName: defaultAppName,
     membershipRole: role,
@@ -132,10 +135,8 @@ export function formatSeedSummary(config, result) {
   return [
     "Internal platform access seed completed.",
     `outcome=${readCreatedSummary(result.created)}`,
-    `workspace=${config.workspaceSlug}`,
-    `workspaceName=${config.workspaceName}`,
+    "workspace=configured",
     `app=${config.appKey}`,
-    `appName=${config.appName}`,
     "user=existing_provider_backed_user",
     `role=${config.membershipRole}`,
   ].join(" ");
@@ -227,6 +228,8 @@ function readPublicMessage(code) {
       return `PLATFORM_SEED_CONFIRM must be set to ${PLATFORM_SEED_CONFIRM_VALUE}.`;
     case "missing_user_email":
       return "PLATFORM_SEED_USER_EMAIL is required.";
+    case "missing_workspace_identity":
+      return "PLATFORM_SEED_WORKSPACE_SLUG and PLATFORM_SEED_WORKSPACE_NAME are required.";
     case "unsupported_role":
       return "PLATFORM_SEED_MEMBERSHIP_ROLE must be owner, admin, or member.";
     case "unsupported_app_identity_override":
