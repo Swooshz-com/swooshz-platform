@@ -288,18 +288,26 @@ async function assertApprovalsCanBeAccepted(
   }
 
   for (const approval of approvals) {
-    if (
-      approval.status !== "pending" ||
-      approval.revokedAt ||
-      approval.acceptedAt ||
-      !["admin", "member", "viewer"].includes(approval.role)
-    ) {
+    if (approval.status !== "pending" || approval.revokedAt || approval.acceptedAt) {
       throw membershipApprovalAcceptanceError();
     }
 
     const workspace = await workspaces.findById(approval.workspaceId);
 
     if (!workspace || workspace.status !== WorkspaceStatus.Active) {
+      throw membershipApprovalAcceptanceError();
+    }
+
+    const workspaceMemberships = await memberships.listForWorkspace(approval.workspaceId);
+    const firstOwnerBootstrap =
+      approval.role === "owner" &&
+      approval.requestedByUserId === null &&
+      workspaceMemberships.length === 0;
+
+    if (
+      !firstOwnerBootstrap &&
+      !["admin", "member", "viewer"].includes(approval.role)
+    ) {
       throw membershipApprovalAcceptanceError();
     }
 

@@ -7,6 +7,7 @@ import {
 } from "../dist/db/client.js";
 import {
   InternalAccessSeedError,
+  ensureFirstOwnerBootstrapApproval,
   ensureInternalWorkspaceAppAccess,
   normalizeEmail,
 } from "../dist/index.js";
@@ -17,6 +18,7 @@ const defaultAppKey = "sqag";
 const defaultAppName = "SQAG";
 const defaultMembershipRole = "owner";
 const allowedRoles = new Set(["owner", "admin", "member"]);
+const FIRST_OWNER_BOOTSTRAP_MODE = "first-owner-pending-approval";
 
 export class PlatformSeedInternalAccessError extends Error {
   constructor(code) {
@@ -55,7 +57,18 @@ export function readPlatformSeedInternalAccessConfig(env) {
     throw new PlatformSeedInternalAccessError("unsupported_role");
   }
 
+  const bootstrapMode = readOptional(env.PLATFORM_SEED_BOOTSTRAP_MODE);
+
+  if (bootstrapMode && bootstrapMode !== FIRST_OWNER_BOOTSTRAP_MODE) {
+    throw new PlatformSeedInternalAccessError("unsupported_bootstrap_mode");
+  }
+
+  if (bootstrapMode === FIRST_OWNER_BOOTSTRAP_MODE && role !== "owner") {
+    throw new PlatformSeedInternalAccessError("first_owner_requires_owner_role");
+  }
+
   return {
+    bootstrapMode: bootstrapMode ?? "existing-provider-backed-user",
     normalizedUserEmail: normalizeEmail(rawEmail),
     workspaceSlug,
     workspaceName,
@@ -64,6 +77,25 @@ export function readPlatformSeedInternalAccessConfig(env) {
     membershipRole: role,
     appLaunchUrl: readLaunchUrl(env.PLATFORM_SEED_APP_LAUNCH_URL),
   };
+}
+
+export async function seedFirstOwnerBootstrapApproval(
+  repositories,
+  config,
+  now,
+) {
+  try {
+    return await ensureFirstOwnerBootstrapApproval(
+      repositories,
+      buildFirstOwnerBootstrapInput(config, now),
+    );
+  } catch (error) {
+    if (error instanceof InternalAccessSeedError) {
+      throw new PlatformSeedInternalAccessError("seed_failed");
+    }
+
+    throw new PlatformSeedInternalAccessError("seed_failed");
+  }
 }
 
 export async function seedInternalAccessForExistingUser(
@@ -119,6 +151,16 @@ export async function executePlatformSeedInternalAccess({
   const client = createRepositories(env);
 
   try {
+    if (config.bootstrapMode === FIRST_OWNER_BOOTSTRAP_MODE) {
+      const result = await seedFirstOwnerBootstrapApproval(
+        client.repositories,
+        config,
+        now(),
+      );
+      writeLine(formatFirstOwnerBootstrapSummary(config, result));
+      return result;
+    }
+
     const result = await seedInternalAccessForExistingUser(
       client.repositories,
       config,
@@ -129,6 +171,18 @@ export async function executePlatformSeedInternalAccess({
   } finally {
     await client.pool?.end?.();
   }
+}
+
+export function formatFirstOwnerBootstrapSummary(config, result) {
+  return [
+    "Internal platform first-owner bootstrap prepared.",
+    "first_owner_bootstrap=pending_approval",
+    `outcome=${readCreatedSummary(result.created)}`,
+    "workspace=configured",
+    `app=${config.appKey}`,
+    "user=created_by_real_oidc_sign_in",
+    `role=${config.membershipRole}`,
+  ].join(" ");
 }
 
 export function formatSeedSummary(config, result) {
@@ -174,6 +228,37 @@ function buildSeedInput(config, userId, now) {
       mode: "existing",
       userId,
       normalizedEmail: config.normalizedUserEmail,
+    },
+  };
+}
+
+function buildFirstOwnerBootstrapInput(config, now) {
+  const workspaceKey = safeIdentifier(config.workspaceSlug);
+  const appKey = safeIdentifier(config.appKey);
+
+  return {
+    now,
+    workspace: {
+      id: `workspace_${workspaceKey}_seed`,
+      slug: config.workspaceSlug,
+      displayName: config.workspaceName,
+    },
+    app: {
+      id: `app_${appKey}`,
+      key: config.appKey,
+      name: config.appName,
+      status: "private_preview",
+      launchUrl: config.appLaunchUrl,
+    },
+    entitlement: {
+      id: `entitlement_${workspaceKey}_${appKey}_seed`,
+      status: "enabled",
+      grantedByUserId: null,
+    },
+    approval: {
+      id: `approval_${workspaceKey}_${appKey}_first_owner_seed`,
+      email: config.normalizedUserEmail,
+      role: "owner",
     },
   };
 }
@@ -232,6 +317,10 @@ function readPublicMessage(code) {
       return "PLATFORM_SEED_WORKSPACE_SLUG and PLATFORM_SEED_WORKSPACE_NAME are required.";
     case "unsupported_role":
       return "PLATFORM_SEED_MEMBERSHIP_ROLE must be owner, admin, or member.";
+    case "unsupported_bootstrap_mode":
+      return "PLATFORM_SEED_BOOTSTRAP_MODE is not supported.";
+    case "first_owner_requires_owner_role":
+      return "First-owner bootstrap requires PLATFORM_SEED_MEMBERSHIP_ROLE to be owner when set.";
     case "unsupported_app_identity_override":
       return "PLATFORM_SEED_APP_KEY and PLATFORM_SEED_APP_NAME are not supported.";
     case "invalid_app_launch_url":

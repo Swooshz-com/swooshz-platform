@@ -17,6 +17,7 @@ import {
 import type {
   PlatformRepositories,
   ProviderIdentity,
+  WorkspaceMembershipApprovalRecord,
 } from "./repositories.js";
 
 export type InternalAccessSeedErrorCode =
@@ -24,6 +25,7 @@ export type InternalAccessSeedErrorCode =
   | "app_conflict"
   | "entitlement_conflict"
   | "membership_conflict"
+  | "approval_conflict"
   | "role_not_seedable"
   | "user_not_found"
   | "user_conflict"
@@ -112,6 +114,34 @@ export interface InternalAccessSeedResult {
   created: InternalAccessSeedCreatedFlags;
 }
 
+export interface FirstOwnerBootstrapApprovalSeedInput {
+  now: string;
+  workspace: InternalWorkspaceSeedInput;
+  app: InternalAppSeedInput;
+  entitlement: InternalEntitlementSeedInput;
+  approval: {
+    id: string;
+    email: string;
+    role?: Role;
+  };
+}
+
+export interface FirstOwnerBootstrapApprovalCreatedFlags {
+  workspace: boolean;
+  app: boolean;
+  entitlement: boolean;
+  approval: boolean;
+}
+
+export interface FirstOwnerBootstrapApprovalSeedResult {
+  outcome: "first_owner_bootstrap_pending";
+  workspace: Workspace;
+  app: App;
+  entitlement: AppEntitlement;
+  approval: WorkspaceMembershipApprovalRecord;
+  created: FirstOwnerBootstrapApprovalCreatedFlags;
+}
+
 const defaultAppKey = "sqag";
 const defaultAppStatus = AppStatus.PrivatePreview;
 const defaultEntitlementStatus = EntitlementStatus.Enabled;
@@ -131,6 +161,136 @@ export async function ensureInternalWorkspaceAppAccess(
 
     throw new InternalAccessSeedError("repository_failure");
   }
+}
+
+export async function ensureFirstOwnerBootstrapApproval(
+  repositories: PlatformRepositories,
+  input: FirstOwnerBootstrapApprovalSeedInput,
+): Promise<FirstOwnerBootstrapApprovalSeedResult> {
+  try {
+    return await runSeedTransaction(repositories, (transactionRepositories) =>
+      ensureFirstOwnerBootstrapApprovalSafely(transactionRepositories, input),
+    );
+  } catch (error) {
+    if (error instanceof InternalAccessSeedError) {
+      throw error;
+    }
+
+    throw new InternalAccessSeedError("repository_failure");
+  }
+}
+
+async function ensureFirstOwnerBootstrapApprovalSafely(
+  repositories: PlatformRepositories,
+  input: FirstOwnerBootstrapApprovalSeedInput,
+): Promise<FirstOwnerBootstrapApprovalSeedResult> {
+  const created: FirstOwnerBootstrapApprovalCreatedFlags = {
+    workspace: false,
+    app: false,
+    entitlement: false,
+    approval: false,
+  };
+  const role = input.approval.role ?? Role.Owner;
+  const email = normalizeEmail(input.approval.email);
+
+  if (role !== Role.Owner || !email) {
+    throw new InternalAccessSeedError("role_not_seedable");
+  }
+
+  if (!repositories.membershipApprovals) {
+    throw new InternalAccessSeedError("repository_failure");
+  }
+
+  const workspace = await ensureWorkspace(repositories, input, created);
+  const memberships = await repositories.memberships.listForWorkspace(workspace.id);
+
+  if (memberships.length > 0) {
+    throw new InternalAccessSeedError("membership_conflict");
+  }
+
+  const app = await ensureApp(repositories, input, created);
+  const entitlement = await ensureEntitlement(
+    repositories,
+    input,
+    workspace,
+    app,
+    created,
+  );
+  const approval = await ensureFirstOwnerApproval(
+    repositories,
+    input,
+    workspace,
+    email,
+    created,
+  );
+
+  return {
+    outcome: "first_owner_bootstrap_pending",
+    workspace,
+    app,
+    entitlement,
+    approval,
+    created,
+  };
+}
+
+async function ensureFirstOwnerApproval(
+  repositories: PlatformRepositories,
+  input: FirstOwnerBootstrapApprovalSeedInput,
+  workspace: Workspace,
+  email: string,
+  created: FirstOwnerBootstrapApprovalCreatedFlags,
+): Promise<WorkspaceMembershipApprovalRecord> {
+  const approvals = repositories.membershipApprovals;
+
+  if (!approvals) {
+    throw new InternalAccessSeedError("repository_failure");
+  }
+
+  const existing = await approvals.findPendingForWorkspaceEmail(workspace.id, email);
+
+  if (existing) {
+    if (
+      existing.role !== Role.Owner ||
+      existing.requestedByUserId !== null ||
+      existing.acceptedAt ||
+      existing.revokedAt ||
+      existing.acceptedUserId ||
+      existing.revokedByUserId
+    ) {
+      throw new InternalAccessSeedError("approval_conflict");
+    }
+
+    return existing;
+  }
+
+  const pendingWorkspaceApprovals =
+    await approvals.listPendingForWorkspace(workspace.id);
+  const conflictingBootstrapApproval = pendingWorkspaceApprovals.find(
+    (approval) =>
+      approval.id === input.approval.id ||
+      (approval.role === Role.Owner && approval.requestedByUserId === null),
+  );
+
+  if (conflictingBootstrapApproval) {
+    throw new InternalAccessSeedError("approval_conflict");
+  }
+
+  created.approval = true;
+  return approvals.create({
+    id: input.approval.id,
+    workspaceId: workspace.id,
+    email,
+    role: Role.Owner,
+    status: "pending",
+    requestedByUserId: null,
+    createdAt: input.now,
+    updatedAt: input.now,
+    acceptedAt: null,
+    revokedAt: null,
+    acceptedUserId: null,
+    revokedByUserId: null,
+  });
 }
 
 async function ensureInternalWorkspaceAppAccessSafely(
@@ -184,10 +344,21 @@ async function ensureInternalWorkspaceAppAccessSafely(
   };
 }
 
+async function runSeedTransaction<T>(
+  repositories: PlatformRepositories,
+  operation: (repositories: PlatformRepositories) => Promise<T>,
+): Promise<T> {
+  if (!repositories.workspaceAdminTransactions) {
+    return operation(repositories);
+  }
+
+  return repositories.workspaceAdminTransactions.run(operation);
+}
+
 async function ensureWorkspace(
   repositories: PlatformRepositories,
-  input: InternalAccessSeedInput,
-  created: InternalAccessSeedCreatedFlags,
+  input: Pick<InternalAccessSeedInput, "now" | "workspace">,
+  created: { workspace: boolean },
 ): Promise<Workspace> {
   const existing = await repositories.workspaces.findBySlug(input.workspace.slug);
 
@@ -216,8 +387,8 @@ async function ensureWorkspace(
 
 async function ensureApp(
   repositories: PlatformRepositories,
-  input: InternalAccessSeedInput,
-  created: InternalAccessSeedCreatedFlags,
+  input: Pick<InternalAccessSeedInput, "now" | "app">,
+  created: { app: boolean },
 ): Promise<App> {
   const key = input.app.key ?? defaultAppKey;
   const status = input.app.status ?? defaultAppStatus;
@@ -251,10 +422,10 @@ async function ensureApp(
 
 async function ensureEntitlement(
   repositories: PlatformRepositories,
-  input: InternalAccessSeedInput,
+  input: Pick<InternalAccessSeedInput, "now" | "entitlement">,
   workspace: Workspace,
   app: App,
-  created: InternalAccessSeedCreatedFlags,
+  created: { entitlement: boolean },
 ): Promise<AppEntitlement> {
   const status = input.entitlement.status ?? defaultEntitlementStatus;
   const grantedByUserId = input.entitlement.grantedByUserId ?? null;

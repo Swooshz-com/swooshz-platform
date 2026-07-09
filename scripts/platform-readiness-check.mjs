@@ -45,6 +45,7 @@ export const HOSTED_READINESS_ENV_CHECKS = [
   bootstrapOnly("PLATFORM_SEED_USER_EMAIL", "bootstrap"),
   bootstrapOnly("PLATFORM_SEED_WORKSPACE_SLUG", "bootstrap"),
   bootstrapOnly("PLATFORM_SEED_WORKSPACE_NAME", "bootstrap"),
+  optional("PLATFORM_SEED_BOOTSTRAP_MODE", "bootstrap", validateSeedBootstrapMode),
   optional("PLATFORM_SEED_MEMBERSHIP_ROLE", "bootstrap", validateSeedRole),
 ];
 
@@ -298,6 +299,12 @@ function validateSqagLaunchMode(value) {
 
 function validateSeedConfirm(value) {
   return value === "seed-reviewed-internal-access" ? ok() : invalid("unexpected_confirmation");
+}
+
+function validateSeedBootstrapMode(value) {
+  return value === "first-owner-pending-approval"
+    ? ok()
+    : invalid("unsupported_seed_bootstrap_mode");
 }
 
 function validateSeedRole(value) {

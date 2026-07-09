@@ -104,6 +104,7 @@ test("hosted internal alpha runbook has an env checklist with safe examples and 
     ["PLATFORM_SQAG_APP_BASE_URL", "Required when server_handoff", "No"],
     ["PLATFORM_SEED_CONFIRM", "Required for bootstrap only", "No"],
     ["PLATFORM_SEED_USER_EMAIL", "Required for bootstrap only", "No"],
+    ["PLATFORM_SEED_BOOTSTRAP_MODE", "Optional bootstrap only", "No"],
     ["PLATFORM_SEED_MEMBERSHIP_ROLE", "Optional", "No"],
   ];
 

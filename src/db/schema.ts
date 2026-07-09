@@ -133,9 +133,9 @@ export const workspaceMembershipApprovals = pgTable(
     email: text("email").notNull(),
     role: roleEnum("role").notNull(),
     status: workspaceMembershipApprovalStatusEnum("status").notNull(),
-    requestedByUserId: text("requested_by_user_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "restrict" }),
+    requestedByUserId: text("requested_by_user_id").references(() => users.id, {
+      onDelete: "restrict",
+    }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     acceptedAt: timestamp("accepted_at", { withTimezone: true }),

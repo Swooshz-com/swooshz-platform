@@ -286,15 +286,16 @@ Stop and redact the log collection process if a log includes secret values, data
 | `AUTH_CLIENT_ID` | OIDC client id. | Required | `<oidc-client-id-placeholder>` | No | Missing value fails auth config/readiness. |
 | `AUTH_CLIENT_SECRET` | OIDC client secret. | Required | `<oidc-client-secret-placeholder>` | Yes | Missing value fails auth config/readiness; never print it. |
 | `AUTH_REDIRECT_URI` | Hosted callback URI configured with the provider. | Required | `<hosted-oidc-redirect-uri>` | No | Hosted readiness requires HTTPS, no query parameters or fragments, and a path ending in `/api/platform/auth/callback`. |
-| `AUTH_ALLOWED_EMAILS` | Bootstrap/emergency exact allowlist for internal-alpha users. | Required | `<comma-separated-allowlisted-emails>` | No | Required for first owner/admin and emergency guard. Day-to-day teammate onboarding can use pending workspace approvals; malformed values fail auth config. Treat as private. |
+| `AUTH_ALLOWED_EMAILS` | Bootstrap/emergency exact allowlist for internal-alpha users. | Required | `<comma-separated-allowlisted-emails>` | No | Provider-entry filter only. It does not create a Platform user, workspace, membership, or first owner by itself. Day-to-day teammate onboarding can use pending workspace approvals; malformed values fail auth config. Treat as private. |
 | `AUTH_ALLOWED_DOMAINS` | Optional reviewed domain allowlist. | Optional | `<comma-separated-allowed-domains-if-approved>` | No | Leave unset unless broad domain allow is reviewed; malformed values fail auth config. |
 | `PLATFORM_SQAG_LAUNCH_MODE` | Controls SQAG browser handoff behavior. | Required | `manual` or `server_handoff` | No | Unsupported value fails startup/readiness. Use `manual` until hosted handoff is reviewed. |
 | `PLATFORM_SQAG_APP_BASE_URL` | SQAG hosted base URL for browser handoff. | Required when server_handoff | `<hosted-sqag-base-url>` | No | Omit when launch mode is `manual`; when `server_handoff`, hosted readiness requires HTTPS and no query parameters or fragments. |
 | `PLATFORM_SEED_CONFIRM` | Explicit first owner/admin bootstrap confirmation. | Required for bootstrap only | `seed-reviewed-internal-access` | No | Required only for `npm run platform:seed-internal-access`; unexpected value fails seed config. |
-| `PLATFORM_SEED_USER_EMAIL` | Already-authenticated owner/admin user for bootstrap. | Required for bootstrap only | `<hosted-owner-admin-email-after-login>` | No | Required only for seed; treat as private and do not commit real values. |
+| `PLATFORM_SEED_USER_EMAIL` | Reviewed owner/admin email for bootstrap. | Required for bootstrap only | `<hosted-owner-admin-email-after-login>` | No | Required only for seed; treat as private and do not commit real values. In first-owner mode this is the email that will complete real OIDC after the pending approval is prepared. |
 | `PLATFORM_SEED_WORKSPACE_SLUG` | Reviewed bootstrap workspace slug. | Required for bootstrap only | `<reviewed-workspace-slug>` | No | Required only for seed; no default workspace is created when missing. |
 | `PLATFORM_SEED_WORKSPACE_NAME` | Reviewed bootstrap workspace display name. | Required for bootstrap only | `<reviewed-workspace-name>` | No | Required only for seed; do not use placeholders as real hosted data. |
-| `PLATFORM_SEED_MEMBERSHIP_ROLE` | Bootstrap role for the existing user. | Optional | `owner` | No | When set, must be `owner`, `admin`, or `member`; `viewer` is rejected for SQAG launch. |
+| `PLATFORM_SEED_BOOTSTRAP_MODE` | Explicit first-owner pending approval mode. | Optional bootstrap only | `first-owner-pending-approval` | No | Required for fresh hosted DB first-owner bootstrap before any Platform user exists. When omitted, the seed expects an existing provider-backed user. |
+| `PLATFORM_SEED_MEMBERSHIP_ROLE` | Bootstrap role. | Optional | `owner` | No | First-owner pending approval mode requires `owner` when set. Existing-user seeding allows `owner`, `admin`, or `member`; `viewer` is rejected for SQAG launch. |
 
 ## Readiness Check
 
@@ -318,19 +319,21 @@ This command uses `DATABASE_URL` to reach PostgreSQL, checks required Platform t
 
 ## First Owner/Admin Bootstrap Sequence
 
-Use this sequence after hosted auth and migrations are reviewed:
+Use this sequence after hosted auth, migrations, and the reviewed first owner/admin email are approved:
 
-1. Confirm `AUTH_ALLOWED_EMAILS` contains the placeholder value that will become the first owner/admin address outside repo notes. It may remain a bootstrap/emergency guard after pending workspace approvals are available.
-2. Start Platform through the reviewed hosted process.
-3. The first owner/admin signs in once through Platform so a real provider-backed Platform user exists.
-4. Stop if the user has not completed real OIDC login; the seed must not create users, provider identities, sessions, or fake login state.
-5. In the operator shell, set `PLATFORM_SEED_CONFIRM=seed-reviewed-internal-access`.
-6. Set `PLATFORM_SEED_USER_EMAIL=<hosted-owner-admin-email-after-login>` outside the repo.
-7. Set `PLATFORM_SEED_WORKSPACE_SLUG=<reviewed-workspace-slug>` and `PLATFORM_SEED_WORKSPACE_NAME=<reviewed-workspace-name>` outside the repo.
-8. Set `PLATFORM_SEED_MEMBERSHIP_ROLE=owner` for the first bootstrap unless a separate reviewed owner assignment exists.
-9. Run `npm run platform:seed-internal-access`.
-10. Confirm `/app` shows the workspace and SQAG app access.
-11. Confirm `/app/admin` is reachable only for the owner/admin.
+1. Confirm `AUTH_ALLOWED_EMAILS` contains the private reviewed first-owner email outside repo notes. This only allows the provider entry path; it does not create Platform ownership or workspace records.
+2. In the operator shell, set `PLATFORM_SEED_CONFIRM=seed-reviewed-internal-access`.
+3. Set `PLATFORM_SEED_BOOTSTRAP_MODE=first-owner-pending-approval`.
+4. Set `PLATFORM_SEED_USER_EMAIL=<hosted-owner-admin-email-after-login>` outside the repo.
+5. Set `PLATFORM_SEED_WORKSPACE_SLUG=<reviewed-workspace-slug>` and `PLATFORM_SEED_WORKSPACE_NAME=<reviewed-workspace-name>` outside the repo.
+6. Leave `PLATFORM_SEED_MEMBERSHIP_ROLE` unset or set it to `owner`.
+7. Run `npm run platform:seed-internal-access`.
+8. Confirm the safe seed output says first-owner bootstrap is pending and does not print the email, workspace slug/name, database values, provider values, launch URLs, tokens, cookies, or secrets.
+9. Start Platform through the reviewed hosted process.
+10. The reviewed first owner/admin signs in once through Platform with real OIDC.
+11. Stop if real OIDC sign-in does not complete; the seed must not create users, provider identities, sessions, or fake login state.
+12. Confirm `/app` shows the workspace and SQAG app access.
+13. Confirm `/app/admin` is reachable only for the owner/admin.
 
 ## Pending Workspace Approval Sequence
 
