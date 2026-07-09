@@ -25,7 +25,7 @@ Non-goals for this roadmap update:
 | --- | --- |
 | Done | Gate 0 foundation items with merged-code, merged-doc, and local-test evidence are checked below. |
 | In progress | Hosted readiness documentation, env checks, DB readiness tooling, repo-side CI/container readiness, admin/member flows, audit/activity, and launch-token contracts exist, but hosted smoke evidence is not recorded. |
-| Frontend visual freeze candidate | A 34-screen Stitch visual/layout freeze candidate exists and is recorded in `docs/frontend-stitch-visual-freeze-parity-plan.md`; frontend implementation, production copy, screenshot parity, and hosted visual evidence remain unchecked. |
+| Frontend visual freeze candidate | A 34-screen Stitch visual/layout freeze candidate exists and is recorded in `docs/frontend-stitch-visual-freeze-parity-plan.md`; scoped public, portal, workspace-admin, access-information, and resources slices are locally implemented after PRs #86-#90, but full frontend launch clearance, production copy, consolidated screenshot parity, and hosted visual evidence remain unchecked. |
 | Blocked until VPS/shared hosting foundation | Gate 1 and Platform hosted deployment execution are blocked until the shared Hostinger/Coolify foundation exists. That foundation is shared across Platform, SQAG, and SKR; it must not become Platform-only. |
 | Blocked until SQAG/SKR hosting readiness | Shared VPS purchase/use is intentionally waiting for SQAG and SKR to reach hosting readiness; Platform must not assume the VPS already exists. |
 | Can be worked before VPS | Security hardening review, backup/restore procedure detail, monitoring/incident decisions, legal/compliance drafts, session-management planning, rate-limit review, and roadmap updates can continue without live hosting. |
@@ -35,7 +35,7 @@ Non-goals for this roadmap update:
 - Review and refine security hardening items that do not need live hosting: CSRF smoke plan, rate limiting posture, session expiry/rotation posture, security headers, dependency/security audit cadence, and secret rotation plan.
 - Draft legal/compliance docs and launch governance placeholders: privacy policy, terms, data retention policy, account/member removal policy, vendor/subprocessor notes, and final go/no-go owner.
 - Turn backup/restore expectations into an operator-owned evidence template that records only sanitized backup id, restore target, timestamp, owner, and pass/fail status.
-- Complete the frontend design readiness gate in `docs/frontend-design-readiness.md` and the Stitch parity plan in `docs/frontend-stitch-visual-freeze-parity-plan.md` before broad public website, Blog/resources, portal, customer admin, or internal admin/content admin implementation. Do not tick frontend work complete without implemented UI, canonical copy corrections, deterministic tests, screenshot parity evidence, and later hosted evidence after deployment is separately approved.
+- Keep the frontend design readiness gate in `docs/frontend-design-readiness.md`, the Stitch parity plan in `docs/frontend-stitch-visual-freeze-parity-plan.md`, and the current audit in `docs/frontend-readiness-audit.md` aligned before any further public website, Blog/resources, portal, customer admin, or internal admin/content admin implementation. Do not tick frontend work complete without implemented UI, canonical copy corrections, deterministic tests, screenshot parity evidence, and later hosted evidence after deployment is separately approved.
 - Review repo-side CI/container readiness in `docs/ci-cd/CURRENT_CICD_STATUS.md` and `docs/coolify-deployment-readiness.md`; keep it separate from hosted deployment evidence.
 - Keep SQAG/SKR hosting-readiness work separate from Platform. Do not purchase or configure the shared VPS from this Platform roadmap alone.
 - Update this roadmap immediately after any relevant merged PR or blocker, using the rules below.
@@ -56,14 +56,14 @@ Non-goals for this roadmap update:
 
 ## Frontend Visual Freeze And Implementation Gate
 
-Gate status: planning only. The 34-screen Stitch visual freeze candidate exists and is approved as visual/layout reference only. Raw Stitch copy is not production copy, and canonical copy override rules must be applied before screenshot parity is judged.
+Gate status: partially implemented locally, not hosted-verified. The 34-screen Stitch visual freeze candidate exists and is approved as visual/layout reference only. Raw Stitch copy is not production copy, and canonical copy override rules must be applied before screenshot parity is judged. PRs #86-#90 implemented the currently scoped public, portal, workspace-admin, access-information, and resources slices locally, but this does not approve hosted visual evidence, production copy, or final frontend launch clearance.
 
 Hosted OAuth/provider configuration remains unchecked, and the existing hosted Platform deployment, hosted Swooshz Quote Auto Generator deployment, live Platform-to-Swooshz Quote Auto Generator smoke, monitoring/logging/alerting, backup/restore, and final go/no-go gates remain unchecked.
 
 - [ ] Frontend implementation complete.
-  Blocker: Broad frontend implementation is not part of this planning PR.
-  Next action: After this parity plan merges, open a scoped implementation PR that preserves existing auth, member, session, entitlement, audit, and Swooshz Quote Auto Generator launch logic.
-  Evidence required: Implemented routes/components, deterministic tests, screenshot parity review against all 34 screens, and confirmation that canonical copy overrides were applied.
+  Blocker: Scoped slices are locally implemented, but production copy, full consolidated parity review, hosted evidence, access-status nuance, and future internal admin/content admin decisions remain incomplete or out of scope.
+  Next action: Treat `docs/frontend-readiness-audit.md` as the current local frontend audit. Do not add new Platform frontend features unless a clear copy, accessibility, or safety blocker is found; otherwise return to SQAG/SKR hosting readiness and shared-hosting prerequisites.
+  Evidence required: Implemented routes/components, deterministic tests, screenshot parity review against all approved scopes, production copy approval, hosted visual review after deployment is separately approved, and confirmation that canonical copy overrides were applied.
 - [ ] Hosted visual evidence complete.
   Blocker: No reviewed hosted Platform deployment exists.
   Next action: After hosted deployment is separately approved and completed, capture sanitized hosted visual evidence for implemented public and portal surfaces.

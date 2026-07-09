@@ -407,6 +407,7 @@ test("admin shell Activity metadata uses an explicit friendly allowlist", () => 
   assert.match(html, /case "newStatus":\s*return \{ label: "New status", value: displayStatus\(value\) \}/);
   assert.match(html, /case "appKey":\s*return normalizeAppKeyMetadata\(value\)/);
   assert.match(html, /label: "App", value: "Swooshz Quote Auto Generator"/);
+  assert.match(html, /case "app_entitlement":\s*return "Swooshz Quote Auto Generator access";/);
   assert.doesNotMatch(html, /return key\.replace/);
   assert.doesNotMatch(html, /metadataLabel\(key\)/);
   assert.doesNotMatch(html, /metadataValue\(key, value\)/);
