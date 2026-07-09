@@ -2014,7 +2014,7 @@ export function renderAdminShellPage(): string {
           function subjectLabel(event) {
             switch (event.targetType) {
               case "app_entitlement":
-                return "SQAG access";
+                return "Swooshz Quote Auto Generator access";
               case "membership":
                 return event.targetLabel || "Unknown user";
               case "membership_approval":

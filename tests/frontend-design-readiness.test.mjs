@@ -150,6 +150,8 @@ test("production roadmap keeps frontend implementation and hosted visual evidenc
 
   assert.match(roadmap, /34-screen Stitch visual\/layout freeze candidate exists/i);
   assert.match(roadmap, /visual\/layout reference only/i);
+  assert.match(roadmap, /scoped public, portal, workspace-admin, access-information, and resources slices are locally implemented after PRs #86-#90/i);
+  assert.match(roadmap, /full frontend launch clearance, production copy, consolidated screenshot parity, and hosted visual evidence remain unchecked/i);
   assert.match(roadmap, /Raw Stitch copy is not production copy/i);
   assert.match(roadmap, /- \[ \] Frontend implementation complete/i);
   assert.match(roadmap, /- \[ \] Hosted visual evidence complete/i);
