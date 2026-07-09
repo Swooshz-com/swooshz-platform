@@ -170,6 +170,196 @@ export function renderSolutionsPage(): string {
   });
 }
 
+export function renderAboutPage(): string {
+  return htmlDocument({
+    title: "About Swooshz",
+    body: `
+      ${publicNav("about")}
+      <main class="public-page">
+        <section class="public-hero public-hero-centered">
+          <div class="hero-copy">
+            <p class="utility-label">About Swooshz</p>
+            <h1>Reliable access surfaces for controlled workspace apps</h1>
+            <p class="lede">
+              Swooshz Platform focuses on workspace access, provider-backed
+              accounts, roles, entitlements, and safe app launch boundaries.
+            </p>
+            <div class="button-row">
+              <a class="primary-action" href="/request-access">Request access information</a>
+              <a class="secondary-action" href="/contact">Contact</a>
+            </div>
+          </div>
+          <div class="architecture-card about-architecture" aria-label="Swooshz Platform operating model">
+            <div class="architecture-bar">
+              <span>Platform boundary</span>
+              <span>Access first</span>
+            </div>
+            <div class="architecture-grid architecture-grid-stacked">
+              <span>Provider-backed account</span>
+              <span>Approved workspace</span>
+              <span>Workspace role</span>
+              <span>App entitlement</span>
+              <span>Launch check</span>
+              <span>Audit activity</span>
+            </div>
+          </div>
+        </section>
+        <section class="public-band">
+          <div class="section-heading">
+            <h2>Core Principles</h2>
+            <p>Public information pages use safe copy and preserve product ownership boundaries.</p>
+          </div>
+          <div class="capability-grid three-up-grid">
+            <article class="module-card">
+              <span class="icon-mark" aria-hidden="true">grid</span>
+              <h3>Functional clarity</h3>
+              <p>
+                Platform explains what it owns: access entry, workspaces,
+                memberships, app entitlements, launch checks, and audit labels.
+              </p>
+            </article>
+            <article class="module-card">
+              <span class="icon-mark" aria-hidden="true">shield</span>
+              <h3>Operational transparency</h3>
+              <p>
+                Access requires an approved workspace and provider-backed
+                account before workspace apps can be launched.
+              </p>
+            </article>
+            <article class="module-card">
+              <span class="icon-mark" aria-hidden="true">lock</span>
+              <h3>Technical rigor</h3>
+              <p>
+                Swooshz Quote Auto Generator remains a separate app launched
+                from Platform, without product workflow data embedded here.
+              </p>
+            </article>
+          </div>
+        </section>
+        <section class="public-band">
+          <div class="section-heading">
+            <h2>Product Boundaries</h2>
+            <p>Only confirmed Platform and access surfaces are described as available.</p>
+          </div>
+          <div class="module-grid">
+            <article class="module-card module-card-wide">
+              <div class="card-title-row">
+                <h3>Swooshz Quote Auto Generator</h3>
+                <span class="status-pill">Separate app</span>
+              </div>
+              <p>
+                Swooshz Quote Auto Generator is launched separately after
+                Platform access and entitlement checks pass.
+              </p>
+            </article>
+            <article class="module-card muted-card">
+              <div class="card-title-row">
+                <h3>SEO / GEO / Seozilla</h3>
+                <span class="status-pill">Vendor workflow pending</span>
+              </div>
+              <p>Unavailable until confirmed. No integration is live in this Platform slice.</p>
+            </article>
+          </div>
+        </section>
+      </main>
+      ${publicFooter()}
+    `,
+  });
+}
+
+export function renderContactPage(): string {
+  return htmlDocument({
+    title: "Contact Swooshz",
+    body: `
+      ${publicNav("contact")}
+      <main class="public-page">
+        <section class="public-split-page">
+          <article class="public-info-panel">
+            <p class="utility-label">Access enquiry</p>
+            <h1>Contact Swooshz</h1>
+            <p class="lede">
+              Use your existing Swooshz or workspace sponsor channel for access
+              questions, workspace approval, and provider-backed account setup.
+            </p>
+            <div class="button-row">
+              <a class="primary-action" href="/request-access">Review access requirements</a>
+              <a class="secondary-action" href="/login">Access entry</a>
+            </div>
+          </article>
+          <aside class="public-info-panel muted-panel" aria-labelledby="contact-guidance-heading">
+            <h2 id="contact-guidance-heading">Contact guidance</h2>
+            <div class="guidance-list">
+              <p>
+                Do not send secrets, cookies, provider tokens, private customer
+                data, or Swooshz Quote Auto Generator product records through a
+                public enquiry channel.
+              </p>
+              <p>
+                This page is informational only. It does not submit messages,
+                create accounts, or connect a backend intake flow.
+              </p>
+              <p>
+                If your workspace already approved access, continue through the
+                provider-backed access entry.
+              </p>
+            </div>
+          </aside>
+        </section>
+      </main>
+      ${publicFooter()}
+    `,
+  });
+}
+
+export function renderRequestAccessPage(): string {
+  return htmlDocument({
+    title: "Request Access - Swooshz Platform",
+    body: `
+      ${publicNav("requestAccess")}
+      <main class="public-page request-access-page">
+        <section class="access-state-panel">
+          <p class="utility-label">Workspace access</p>
+          <h1>Request Access</h1>
+          <p class="lede">
+            Access to Swooshz Platform requires an approved workspace,
+            a provider-backed account, and the right workspace role.
+          </p>
+          <div class="access-requirement-grid" aria-label="Access requirements">
+            <article>
+              <span>01</span>
+              <h2>Workspace approval</h2>
+              <p>Your organization or workspace sponsor must approve Platform access.</p>
+            </article>
+            <article>
+              <span>02</span>
+              <h2>Provider-backed account</h2>
+              <p>Use the approved provider account assigned to your workspace.</p>
+            </article>
+            <article>
+              <span>03</span>
+              <h2>Role and app access</h2>
+              <p>Workspace roles and entitlements control which apps can launch.</p>
+            </article>
+          </div>
+          <div class="notice-card">
+            <h2>No public signup is available</h2>
+            <p>
+              This page does not create an account, send a request, or grant
+              workspace access. Use your existing Swooshz or workspace sponsor
+              channel to ask for access review.
+            </p>
+          </div>
+          <div class="button-row centered-actions">
+            <a class="primary-action" href="/login">Go to access entry</a>
+            <a class="secondary-action" href="/contact">Contact guidance</a>
+          </div>
+        </section>
+      </main>
+      ${publicFooter()}
+    `,
+  });
+}
+
 export function renderLoginPage(): string {
   return htmlDocument({
     title: "Swooshz Platform Access",
@@ -1921,7 +2111,7 @@ export function renderAuthErrorPage(): string {
   });
 }
 
-function publicNav(active: "home" | "solutions"): string {
+function publicNav(active: "home" | "solutions" | "about" | "contact" | "requestAccess"): string {
   return `
     <header class="public-nav">
       <a class="public-brand" href="/">Swooshz</a>
@@ -1929,11 +2119,12 @@ function publicNav(active: "home" | "solutions"): string {
         <a class="${active === "home" ? "active" : ""}" href="/">Home</a>
         <a class="${active === "solutions" ? "active" : ""}" href="/solutions">Solutions</a>
         <span aria-disabled="true">Blog</span>
-        <span aria-disabled="true">About</span>
+        <a class="${active === "about" ? "active" : ""}" href="/about">About</a>
+        <a class="${active === "contact" ? "active" : ""}" href="/contact">Contact</a>
       </nav>
       <div class="public-actions">
         <a class="text-action" href="/login">Login</a>
-        <a class="primary-action compact" href="/login">Access entry</a>
+        <a class="primary-action compact ${active === "requestAccess" ? "active" : ""}" href="/request-access">Request Access</a>
       </div>
     </header>
   `;
@@ -1944,6 +2135,9 @@ function publicFooter(): string {
     <footer class="public-footer">
       <strong>Swooshz</strong>
       <nav aria-label="Footer navigation">
+        <a href="/about">About</a>
+        <a href="/contact">Contact</a>
+        <a href="/request-access">Request Access</a>
         <span>Privacy</span>
         <span>Terms</span>
         <span>Security</span>
@@ -2051,6 +2245,7 @@ function htmlDocument({
     .public-nav nav a,
     .public-nav nav span,
     .text-action,
+    .public-footer a,
     .public-footer span,
     .public-footer p {
       color: var(--ink);
@@ -2059,9 +2254,14 @@ function htmlDocument({
     }
 
     .public-nav nav span,
+    .public-footer a,
     .public-footer span,
     .public-footer p {
       color: var(--muted);
+    }
+
+    .public-footer a:hover {
+      color: var(--secondary);
     }
 
     .public-nav nav a.active {
@@ -2091,6 +2291,10 @@ function htmlDocument({
       align-items: center;
       min-height: 520px;
       padding: 64px 0;
+    }
+
+    .public-hero-centered {
+      min-height: 500px;
     }
 
     .solutions-hero {
@@ -2154,6 +2358,10 @@ function htmlDocument({
       padding-top: 24px;
     }
 
+    .architecture-grid-stacked {
+      grid-template-columns: 1fr;
+    }
+
     .architecture-grid span,
     .mini-workflow span,
     .role-rail span {
@@ -2196,6 +2404,124 @@ function htmlDocument({
       border-top: 1px solid var(--line);
     }
 
+    .public-split-page,
+    .access-state-panel {
+      width: min(1280px, calc(100% - 48px));
+      margin: 0 auto;
+      padding: 80px 0;
+    }
+
+    .public-split-page {
+      display: grid;
+      grid-template-columns: minmax(0, 0.95fr) minmax(320px, 0.78fr);
+      gap: 64px;
+      align-items: stretch;
+      min-height: calc(100vh - 158px);
+    }
+
+    .public-info-panel,
+    .access-state-panel {
+      display: grid;
+      gap: 22px;
+      align-content: start;
+      padding: 42px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+
+    .public-info-panel h1,
+    .access-state-panel h1 {
+      margin: 0;
+      color: var(--primary);
+      font-size: 48px;
+      line-height: 1.12;
+      letter-spacing: 0;
+    }
+
+    .public-info-panel h2,
+    .access-state-panel h2 {
+      margin: 0;
+      color: var(--primary);
+      font-size: 24px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    .muted-panel {
+      background:
+        linear-gradient(135deg, rgb(255 255 255 / 92%), rgb(242 244 246 / 88%)),
+        radial-gradient(circle at 2px 2px, #dfe4e8 1px, transparent 0);
+      background-size: auto, 28px 28px;
+    }
+
+    .guidance-list {
+      display: grid;
+      gap: 18px;
+      color: var(--muted);
+      font-size: 16px;
+    }
+
+    .guidance-list p,
+    .notice-card p,
+    .access-requirement-grid p {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .request-access-page {
+      min-height: calc(100vh - 158px);
+      display: grid;
+      align-items: start;
+      background-image: radial-gradient(circle at 1px 1px, #dfe4e8 1px, transparent 0);
+      background-size: 24px 24px;
+    }
+
+    .access-state-panel {
+      width: min(920px, calc(100% - 48px));
+      justify-items: center;
+      text-align: center;
+    }
+
+    .access-state-panel .lede {
+      max-width: 720px;
+    }
+
+    .access-requirement-grid {
+      width: 100%;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      text-align: left;
+    }
+
+    .access-requirement-grid article,
+    .notice-card {
+      display: grid;
+      gap: 10px;
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fbfcfd;
+    }
+
+    .access-requirement-grid span {
+      color: var(--secondary);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .notice-card {
+      width: 100%;
+      text-align: left;
+      border-color: var(--secondary);
+      background: #f7faff;
+    }
+
+    .centered-actions {
+      justify-content: center;
+    }
+
     .section-heading {
       display: grid;
       gap: 8px;
@@ -2230,6 +2556,10 @@ function htmlDocument({
 
     .capability-grid {
       grid-template-columns: 2fr 1fr;
+    }
+
+    .three-up-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 
     .module-card {
@@ -3171,15 +3501,33 @@ function htmlDocument({
       .public-hero,
       .solutions-hero,
       .public-band,
-      .process-section {
+      .process-section,
+      .public-split-page,
+      .access-state-panel {
         width: min(100% - 32px, 1280px);
       }
 
       .public-hero,
-      .solutions-hero {
+      .solutions-hero,
+      .public-split-page {
         grid-template-columns: 1fr;
         min-height: auto;
         padding: 36px 0;
+      }
+
+      .public-split-page {
+        gap: 18px;
+      }
+
+      .public-info-panel,
+      .access-state-panel {
+        padding: 28px 22px;
+      }
+
+      .public-info-panel h1,
+      .access-state-panel h1 {
+        font-size: 36px;
+        line-height: 1.16;
       }
 
       .hero-copy h1 {
@@ -3195,6 +3543,8 @@ function htmlDocument({
       .architecture-grid,
       .module-grid,
       .capability-grid,
+      .three-up-grid,
+      .access-requirement-grid,
       .mini-workflow,
       .role-rail,
       .process-grid {

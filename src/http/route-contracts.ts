@@ -1,6 +1,9 @@
 export type HttpRouteId =
   | "platform_landing_page"
   | "platform_solutions_page"
+  | "platform_about_page"
+  | "platform_contact_page"
+  | "platform_request_access_page"
   | "platform_login_page"
   | "platform_app_shell"
   | "platform_admin_shell"
@@ -81,6 +84,51 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     },
     requiredQuery: [],
     handlerContract: "renderSolutionsPage",
+    responseKind: "html",
+    idempotent: true,
+    implemented: true,
+  },
+  {
+    id: "platform_about_page",
+    method: "GET",
+    path: "/about",
+    browserSession: "none",
+    csrf: {
+      required: false,
+      strategy: "none",
+    },
+    requiredQuery: [],
+    handlerContract: "renderAboutPage",
+    responseKind: "html",
+    idempotent: true,
+    implemented: true,
+  },
+  {
+    id: "platform_contact_page",
+    method: "GET",
+    path: "/contact",
+    browserSession: "none",
+    csrf: {
+      required: false,
+      strategy: "none",
+    },
+    requiredQuery: [],
+    handlerContract: "renderContactPage",
+    responseKind: "html",
+    idempotent: true,
+    implemented: true,
+  },
+  {
+    id: "platform_request_access_page",
+    method: "GET",
+    path: "/request-access",
+    browserSession: "none",
+    csrf: {
+      required: false,
+      strategy: "none",
+    },
+    requiredQuery: [],
+    handlerContract: "renderRequestAccessPage",
     responseKind: "html",
     idempotent: true,
     implemented: true,

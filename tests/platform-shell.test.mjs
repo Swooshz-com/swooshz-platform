@@ -6,8 +6,11 @@ import {
   renderAuthErrorPage,
   renderAdminShellPage,
   renderAppShellPage,
+  renderAboutPage,
+  renderContactPage,
   renderLandingPage,
   renderLoginPage,
+  renderRequestAccessPage,
   renderSolutionsPage,
 } from "../dist/index.js";
 
@@ -33,7 +36,7 @@ test("landing page renders the public Stitch parity homepage with canonical prod
   assert.match(html, /Vendor workflow pending|Coming soon|Unavailable until confirmed/i);
   assert.match(html, /href="\/solutions"/);
   assert.match(html, /href="\/login"/);
-  assert.doesNotMatch(html, /\/request-access/);
+  assert.match(html, /href="\/request-access"/);
   assert.doesNotMatch(html, /SESSION_SECRET|DATABASE_URL|postgresql:\/\//i);
 });
 
@@ -49,7 +52,7 @@ test("login page preserves provider-backed auth start without public signup or p
   assert.match(html, /href="\/app"/);
   assert.doesNotMatch(html, /<form/i);
   assert.doesNotMatch(html, /type="password"|Forgot\?|Sign In/i);
-  assert.doesNotMatch(html, /\/request-access/);
+  assert.match(html, /href="\/request-access"/);
   assert.doesNotMatch(html, /INTERNAL PLATFORM SHELL/);
   assert.doesNotMatch(html, /fake|demo|sample|create public account|public signup available/i);
 });
@@ -71,10 +74,67 @@ test("solutions page separates Platform SQAG and unavailable vendor-pending prod
   assert.doesNotMatch(html, /SKR/);
 });
 
+test("about page renders safe public company and platform boundary copy", () => {
+  const html = renderAboutPage();
+
+  assert.match(html, /About Swooshz/);
+  assert.match(html, /workspace access/i);
+  assert.match(html, /provider-backed\s+accounts/i);
+  assert.match(html, /Swooshz Quote Auto Generator/);
+  assert.match(html, /separate app launched\s+from Platform/i);
+  assert.match(html, /SEO \/ GEO \/ Seozilla/);
+  assert.match(html, /Vendor workflow pending|Unavailable until confirmed/i);
+  assert.match(html, /href="\/contact"/);
+  assert.match(html, /href="\/request-access"/);
+  assert.doesNotMatch(html, /founder|team member|case study|founded in|headquarters/i);
+  assert.doesNotMatch(html, /SKR/);
+});
+
+test("contact page renders safe access enquiry copy without fake intake flow", () => {
+  const html = renderContactPage();
+
+  assert.match(html, /Contact/);
+  assert.match(html, /Access enquiry/);
+  assert.match(html, /Use your existing Swooshz or workspace sponsor channel/i);
+  assert.match(html, /Do not send secrets/i);
+  assert.match(html, /href="\/request-access"/);
+  assert.doesNotMatch(html, /<form|<input|<textarea|Submit Inquiry|send message/i);
+  assert.doesNotMatch(html, /@gmail\.com|@outlook\.com|@example\.com|\+\d|street|avenue|road/i);
+  assert.doesNotMatch(html, /ticket|CRM|automated|workflow created|we will email/i);
+});
+
+test("request access page is a public information state without signup or delivery claims", () => {
+  const html = renderRequestAccessPage();
+
+  assert.match(html, /Request Access/);
+  assert.match(html, /approved workspace/i);
+  assert.match(html, /provider-backed account/i);
+  assert.match(html, /This page does not create an account/i);
+  assert.match(html, /No public signup is available/i);
+  assert.match(html, /href="\/login"/);
+  assert.match(html, /href="\/contact"/);
+  assert.doesNotMatch(html, /<form|<input|<textarea|Submit Request|Select an option/i);
+  assert.doesNotMatch(html, /free email providers? (?:will be )?automatically rejected/i);
+  assert.doesNotMatch(html, /invite sent|email invitation|confirmation email|support ticket|CRM/i);
+});
+
+test("public navigation links implemented pages and leaves blog disabled", () => {
+  const html = renderLandingPage() + renderAboutPage() + renderContactPage() + renderRequestAccessPage();
+
+  assert.match(html, /href="\/about"/);
+  assert.match(html, /href="\/contact"/);
+  assert.match(html, /href="\/request-access"/);
+  assert.match(html, /<span aria-disabled="true">Blog<\/span>/);
+  assert.doesNotMatch(html, /<a\b[^>]*>\s*Blog\s*<\/a>/i);
+});
+
 test("implemented frontend slice excludes forbidden copy and unapproved business flows", () => {
   const pages = [
     renderLandingPage(),
     renderSolutionsPage(),
+    renderAboutPage(),
+    renderContactPage(),
+    renderRequestAccessPage(),
     renderLoginPage(),
     renderAppShellPage(),
     renderAdminShellPage(),
@@ -426,10 +486,10 @@ test("future-only navigation controls render disabled instead of clickable links
   assert.match(html, /<span aria-disabled="true">Help<\/span>/);
   assert.match(html, /<span aria-disabled="true">Settings<\/span>/);
   assert.match(html, /<span aria-disabled="true">Blog<\/span>/);
-  assert.match(html, /<span aria-disabled="true">About<\/span>/);
   assert.match(html, /\.portal-nav span\[aria-disabled="true"\]/);
   assert.match(html, /pointer-events: none/);
-  assert.doesNotMatch(html, /<a\b[^>]*>\s*(?:Help|Settings|Blog|About)\s*<\/a>/i);
+  assert.match(html, /<a class="" href="\/about">About<\/a>/);
+  assert.doesNotMatch(html, /<a\b[^>]*>\s*(?:Help|Settings|Blog)\s*<\/a>/i);
 });
 
 test("admin shell modals support keyboard and backdrop dismissal with visible focus states", () => {
