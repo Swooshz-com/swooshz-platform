@@ -99,7 +99,11 @@ test("member and viewer cannot list or mutate workspace admin routes", async () 
     });
     const add = await request({
       method: "POST",
-      url: "/api/platform/workspaces/workspace_koncept_images/members/add?email=existing.user%40example.test&role=member",
+      url: "/api/platform/workspaces/workspace_koncept_images/members/add",
+      body: JSON.stringify({
+        email: "existing.user@example.test",
+        role: "member",
+      }),
       headers: secureSessionHeaders(role),
       dependencies: fixture.dependencies,
     });
@@ -490,7 +494,11 @@ test("state-changing admin routes validate Origin and CSRF before mutation", asy
   });
   const addWithoutOrigin = await request({
     method: "POST",
-    url: "/api/platform/workspaces/workspace_koncept_images/members/add?email=existing.user%40example.test&role=member",
+    url: "/api/platform/workspaces/workspace_koncept_images/members/add",
+    body: JSON.stringify({
+      email: "existing.user@example.test",
+      role: "member",
+    }),
     headers: {
       cookie: "swooshz_session=session_owner_example",
       "x-csrf-token": validCsrfToken,
@@ -713,7 +721,11 @@ test("owner and admin can add an existing provider-backed user through admin rou
 
     const { response, body } = await request({
       method: "POST",
-      url: "/api/platform/workspaces/workspace_koncept_images/members/add?email=%20Existing.User%40Example.Test%20&role=member",
+      url: "/api/platform/workspaces/workspace_koncept_images/members/add",
+      body: JSON.stringify({
+        email: " Existing.User@Example.Test ",
+        role: "member",
+      }),
       headers: secureSessionHeaders(role),
       dependencies: fixture.dependencies,
     });
@@ -757,13 +769,67 @@ test("owner and admin can add an existing provider-backed user through admin rou
   }
 });
 
+test("add member route reads reviewed mutation inputs from JSON body only", async () => {
+  const queryFixture = createAdminRouteFixture({
+    extraUsers: [existingProviderBackedUser()],
+    providerBackedUserIds: ["user_existing_example"],
+  });
+  const queryOnly = await request({
+    method: "POST",
+    url: "/api/platform/workspaces/workspace_koncept_images/members/add?email=existing.user%40example.test&role=member",
+    headers: secureSessionHeaders("owner"),
+    dependencies: queryFixture.dependencies,
+  });
+  const bodyFixture = createAdminRouteFixture({
+    extraUsers: [existingProviderBackedUser()],
+    providerBackedUserIds: ["user_existing_example"],
+  });
+  const bodyRequest = await request({
+    method: "POST",
+    url: "/api/platform/workspaces/workspace_koncept_images/members/add",
+    body: JSON.stringify({
+      email: "existing.user@example.test",
+      role: "member",
+    }),
+    headers: secureSessionHeaders("owner"),
+    dependencies: bodyFixture.dependencies,
+  });
+
+  assert.equal(queryOnly.response.statusCode, 400);
+  assert.deepEqual(queryOnly.body, {
+    outcome: "error",
+    message: "Required request body fields are missing.",
+  });
+  assert.equal(
+    queryFixture.records.memberships.some(
+      (membership) => membership.userId === "user_existing_example",
+    ),
+    false,
+  );
+  assert.equal(queryFixture.records.auditEvents.length, 0);
+  assert.equal(bodyRequest.response.statusCode, 201);
+  assert.equal(bodyRequest.body.outcome, "created");
+  assert.equal(
+    bodyFixture.records.memberships.some(
+      (membership) => membership.userId === "user_existing_example",
+    ),
+    true,
+  );
+  assertResponseIsPrivacySafe(queryOnly.response);
+  assertResponseIsPrivacySafe(bodyRequest.response);
+});
+
 test("owner and admin can create list and revoke pending approvals through admin routes", async () => {
   for (const role of ["owner", "admin"]) {
     const fixture = createAdminRouteFixture();
 
     const created = await request({
       method: "POST",
-      url: "/api/platform/workspaces/workspace_koncept_images/members/add?email=%20New.Teammate%40Example.Test%20&role=viewer",
+      url: "/api/platform/workspaces/workspace_koncept_images/members/add",
+      body: JSON.stringify({
+        email: " New.Teammate@Example.Test ",
+        role: "viewer",
+      }),
       headers: secureSessionHeaders(role),
       dependencies: fixture.dependencies,
     });
@@ -833,11 +899,11 @@ test("add existing user route returns safe operator guidance without mutation", 
   const guidance =
     "Access request could not be recorded. Check the email and role, then try again.";
 
-  for (const [name, overrides, query, expectedStatus, expectedMessage] of [
+  for (const [name, overrides, bodyInput, expectedStatus, expectedMessage] of [
     [
       "target without provider identity",
       { extraUsers: [existingProviderBackedUser()] },
-      "email=existing.user%40example.test&role=member",
+      { email: "existing.user@example.test", role: "member" },
       201,
       "Pending approval created. The teammate can sign in with that Google account to activate access.",
     ],
@@ -847,7 +913,7 @@ test("add existing user route returns safe operator guidance without mutation", 
         extraUsers: [existingProviderBackedUser({ status: "disabled" })],
         providerBackedUserIds: ["user_existing_example"],
       },
-      "email=existing.user%40example.test&role=member",
+      { email: "existing.user@example.test", role: "member" },
       404,
       guidance,
     ],
@@ -868,7 +934,7 @@ test("add existing user route returns safe operator guidance without mutation", 
           },
         ],
       },
-      "email=existing.user%40example.test&role=member",
+      { email: "existing.user@example.test", role: "member" },
       409,
       "User is already a member of this workspace.",
     ],
@@ -878,7 +944,7 @@ test("add existing user route returns safe operator guidance without mutation", 
         extraUsers: [existingProviderBackedUser()],
         providerBackedUserIds: ["user_existing_example"],
       },
-      "email=existing.user%40example.test&role=owner",
+      { email: "existing.user@example.test", role: "owner" },
       400,
       "Selected role is not allowed.",
     ],
@@ -892,7 +958,7 @@ test("add existing user route returns safe operator guidance without mutation", 
           }),
         ],
       },
-      "email=existing.user%40example.test&role=member",
+      { email: "existing.user@example.test", role: "member" },
       409,
       "Pending approval already exists for this email.",
     ],
@@ -901,7 +967,8 @@ test("add existing user route returns safe operator guidance without mutation", 
 
     const { response, body } = await request({
       method: "POST",
-      url: `/api/platform/workspaces/workspace_koncept_images/members/add?${query}`,
+      url: "/api/platform/workspaces/workspace_koncept_images/members/add",
+      body: JSON.stringify(bodyInput),
       headers: secureSessionHeaders("owner"),
       dependencies: fixture.dependencies,
     });
@@ -946,7 +1013,11 @@ test("audit append failure through add existing user route rolls back membership
 
   const { response, body } = await request({
     method: "POST",
-    url: "/api/platform/workspaces/workspace_koncept_images/members/add?email=existing.user%40example.test&role=member",
+    url: "/api/platform/workspaces/workspace_koncept_images/members/add",
+    body: JSON.stringify({
+      email: "existing.user@example.test",
+      role: "member",
+    }),
     headers: secureSessionHeaders("owner"),
     dependencies: fixture.dependencies,
   });
@@ -970,7 +1041,11 @@ test("audit append failure through pending approval create route rolls back appr
 
   const { response, body } = await request({
     method: "POST",
-    url: "/api/platform/workspaces/workspace_koncept_images/members/add?email=new.teammate%40example.test&role=member",
+    url: "/api/platform/workspaces/workspace_koncept_images/members/add",
+    body: JSON.stringify({
+      email: "new.teammate@example.test",
+      role: "member",
+    }),
     headers: secureSessionHeaders("owner"),
     dependencies: fixture.dependencies,
   });
@@ -1435,12 +1510,14 @@ test("audit append failure through admin route rolls back missing SQAG entitleme
 async function request({
   method,
   url,
+  body,
   headers = {},
   dependencies = createAdminRouteFixture().dependencies,
 }) {
   const response = await handleNodePlatformHttpRequest(dependencies, {
     method,
     url,
+    body,
     headers,
   });
 

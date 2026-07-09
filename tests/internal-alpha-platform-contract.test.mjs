@@ -37,7 +37,7 @@ test("internal alpha platform contract classifies team and app access gaps", asy
     "App access grant/revoke",
     "Invited/pending users",
     "Fail-closed access if role/app access is missing",
-    "Blocker before internal alpha",
+    "Needs hosted smoke evidence before internal alpha",
     "Future production enhancement",
     "Implemented",
     "Partial",
@@ -71,7 +71,7 @@ test("internal alpha platform contract documents the admin foundation status", a
   assert.match(contract, /addWorkspaceMemberByEmail/i);
   assert.match(contract, /pending workspace membership approval/i);
   assert.match(contract, /existing active provider-backed user by normalized email/i);
-  assert.match(contract, /\/api\/platform\/workspaces\/:workspaceId\/members\/add\?email=<email>&role=<role>/i);
+  assert.match(contract, /\/api\/platform\/workspaces\/:workspaceId\/members\/add`?: reads `email` and `role` from the JSON request body/i);
   assert.match(contract, /\/api\/platform\/workspaces\/:workspaceId\/member-approvals/i);
   assert.match(contract, /\/api\/platform\/workspaces\/:workspaceId\/member-approvals\/:approvalId\/revoke/i);
   assert.match(contract, /workspace\.membership\.added/i);
@@ -90,7 +90,7 @@ test("internal alpha platform contract documents the admin foundation status", a
   assert.match(contract, /Minimal Activity browsing is implemented in `\/app\/admin`/i);
   assert.match(contract, /Audit export\/filtering\/retention workflows/i);
   assert.match(contract, /Protected admin HTTP routes can list workspace members/i);
-  assert.match(contract, /required query parameters for mutation inputs/i);
+  assert.match(contract, /add-member mutation reads teammate email and role from a JSON request body/i);
   assert.match(contract, /route manifest marks adapter-wired routes as implemented/i);
   assert.match(contract, /same transaction\/unit-of-work/i);
   assert.match(contract, /audit append failure cannot leave membership, approval, or entitlement state changed/i);

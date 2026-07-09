@@ -324,7 +324,7 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
       required: true,
       strategy: "origin_referer_and_csrf_token",
     },
-    requiredQuery: ["email", "role"],
+    requiredQuery: [],
     handlerContract: "handleWorkspaceMemberAddRequest",
     responseKind: "json",
     idempotent: false,

@@ -50,7 +50,7 @@ test("Google OIDC runbook documents exact endpoint env mapping with placeholders
     "AUTH_CLIENT_ID=<google-oauth-client-id>",
     "AUTH_CLIENT_SECRET=<google-oauth-client-secret>",
     "AUTH_REDIRECT_URI=<platform-base-url>/api/platform/auth/callback",
-    "AUTH_ALLOWED_EMAILS=<comma-separated-invited-emails>",
+    "AUTH_ALLOWED_EMAILS=<comma-separated-allowlisted-emails>",
     "AUTH_ALLOWED_DOMAINS=<comma-separated-allowed-domains>",
   ];
 
@@ -84,7 +84,9 @@ test("Google OIDC runbook covers setup, security posture, smoke flow, and troubl
     "docs/internal-platform-smoke-runbook.md",
     "npm run platform:start",
     "Complete Google login",
+    "first-owner-pending-approval",
     "redirects to `/app`",
+    "activates the pending first-owner approval",
     "npm run platform:seed-internal-access",
     "redirect_uri_mismatch",
     "callback state or nonce failure",

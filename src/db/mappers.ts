@@ -87,7 +87,7 @@ export interface WorkspaceMembershipApprovalRow {
   email: string;
   role: Role;
   status: WorkspaceMembershipApprovalStatus;
-  requestedByUserId: string;
+  requestedByUserId: string | null;
   createdAt: TimestampValue;
   updatedAt: TimestampValue;
   acceptedAt: TimestampValue | null;

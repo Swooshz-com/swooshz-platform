@@ -42,7 +42,7 @@ AUTH_USERINFO_URL=https://openidconnect.googleapis.com/v1/userinfo
 AUTH_CLIENT_ID=<google-oauth-client-id>
 AUTH_CLIENT_SECRET=<google-oauth-client-secret>
 AUTH_REDIRECT_URI=<platform-base-url>/api/platform/auth/callback
-AUTH_ALLOWED_EMAILS=<comma-separated-invited-emails>
+AUTH_ALLOWED_EMAILS=<comma-separated-allowlisted-emails>
 AUTH_ALLOWED_DOMAINS=<comma-separated-allowed-domains>
 ```
 
@@ -66,7 +66,7 @@ AUTH_STATE_HASH_SECRET=<strong-random-placeholder>
 
 Personal Google accounts can be invited or allowed by exact email. With personal Gmail, Swooshz cannot enforce the user's Google 2FA policy. With Google Workspace, administrators can enforce 2-Step Verification in Workspace admin settings outside this repo.
 
-For internal UAT, exact `AUTH_ALLOWED_EMAILS` is preferred over open domain allow. Do not use broad domain allow unless intentionally approved. Keep `AUTH_ALLOWED_DOMAINS` unset unless the UAT risk and user population have been reviewed.
+For internal UAT, exact `AUTH_ALLOWED_EMAILS` is preferred over open domain allow. `AUTH_ALLOWED_EMAILS` is only a provider-entry filter; it does not create Platform users, workspaces, memberships, or first-owner access. Do not use broad domain allow unless intentionally approved. Keep `AUTH_ALLOWED_DOMAINS` unset unless the UAT risk and user population have been reviewed.
 
 Do not commit `.env` files or real provider secrets. Do not log provider tokens, ID tokens, auth codes, raw OIDC state, raw OIDC nonce, provider claims, raw provider responses, callback URLs containing secrets, or user profile JSON.
 
@@ -78,9 +78,9 @@ Use this runbook together with `docs/internal-platform-smoke-runbook.md`.
 2. Start the server with `npm run platform:start`.
 3. Visit `/`.
 4. Click sign in.
-5. Complete Google login.
-6. Confirm the callback redirects to `/app`.
-7. Run `npm run platform:seed-internal-access` for the exact email that logged in.
+5. For a fresh DB, run `npm run platform:seed-internal-access` with `PLATFORM_SEED_BOOTSTRAP_MODE=first-owner-pending-approval` for the reviewed first-owner email before login.
+6. Complete Google login with that reviewed email.
+7. Confirm the callback redirects to `/app` and activates the pending first-owner approval.
 8. Refresh `/app`.
 9. Confirm workspace access, app access, and launch intent behavior.
 
@@ -92,10 +92,10 @@ Use this runbook together with `docs/internal-platform-smoke-runbook.md`.
 - Invalid client id or secret: replace the local env values from the Google OAuth client without pasting the values into docs or logs.
 - Missing `openid email profile` scope: update the auth request scope configuration to include the required OIDC scopes.
 - Callback state or nonce failure: restart login from `/`, check `AUTH_STATE_HASH_SECRET`, and confirm callback requests return to the same platform origin and database-backed auth state store.
-- Email not allowed by `AUTH_ALLOWED_EMAILS`: add the exact invited email to the local allowlist and restart login.
+- Email not allowed by `AUTH_ALLOWED_EMAILS`: add the exact reviewed email to the local allowlist and restart login.
 - User logs in before being allowlisted: allowlist the exact email, restart login, and avoid using broad domain allow as a shortcut.
-- Seed says user not found: complete Google login first so the platform user exists.
-- Seed says missing provider identity: inspect the auth callback path; the seed requires an already-authenticated user with a provider identity.
+- Seed says user not found: either use first-owner pending approval mode before first login, or complete Google login first when seeding an existing provider-backed user.
+- Seed says missing provider identity: inspect the auth callback path; existing-user seeding requires an already-authenticated user with a provider identity.
 - `/app` has a session but no workspace or app access: run the internal access seed for the exact logged-in email, then refresh `/app`.
 
 ## Out Of Scope

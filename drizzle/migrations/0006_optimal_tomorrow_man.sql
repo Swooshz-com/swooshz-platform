@@ -1,0 +1,1 @@
+ALTER TABLE "workspace_membership_approvals" ALTER COLUMN "requested_by_user_id" DROP NOT NULL;

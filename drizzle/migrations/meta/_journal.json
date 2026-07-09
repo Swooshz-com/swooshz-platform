@@ -43,6 +43,13 @@
       "when": 1783479304000,
       "tag": "0005_sqag_app_key_migration",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1783587520445,
+      "tag": "0006_optimal_tomorrow_man",
+      "breakpoints": true
     }
   ]
 }

@@ -1724,9 +1724,12 @@ export function renderAdminShellPage(): string {
             }
 
             const result = await postAdminAction(
-              addMemberUrl(state.workspace.workspaceId, email, role),
+              addMemberUrl(state.workspace.workspaceId),
               null,
-              { loadingMessage: "Adding workspace member..." }
+              {
+                body: { email, role },
+                loadingMessage: "Adding workspace member..."
+              }
             );
             if (result) {
               addMemberForm.reset();
@@ -1826,8 +1829,10 @@ export function renderAdminShellPage(): string {
                 credentials: "same-origin",
                 cache: "no-store",
                 headers: {
+                  ...(options.body ? { "content-type": "application/json" } : {}),
                   "x-csrf-token": csrfToken
-                }
+                },
+                body: options.body ? JSON.stringify(options.body) : undefined
               });
               const payload = await readJson(response);
 
@@ -1952,10 +1957,8 @@ export function renderAdminShellPage(): string {
             return "/api/platform/workspaces/" + encodeURIComponent(workspaceId) + "/members";
           }
 
-          function addMemberUrl(workspaceId, email, role) {
-            return adminMembersUrl(workspaceId) +
-              "/add?email=" + encodeURIComponent(email) +
-              "&role=" + encodeURIComponent(role);
+          function addMemberUrl(workspaceId) {
+            return adminMembersUrl(workspaceId) + "/add";
           }
 
           function adminMemberUrl(workspaceId, membershipId) {

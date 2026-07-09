@@ -176,8 +176,8 @@ Gate status: blocked until hosted deployment exists and real OAuth/provider conf
   Next action: Run hosted login/logout only after provider setup.
   Evidence required: Sanitized smoke result with route names, status categories, and timestamp.
 - [ ] First owner/admin bootstrap.
-  Blocker: Hosted owner/admin identity is not approved outside repo and hosted login has not occurred.
-  Next action: Approve first owner/admin identity outside repo, complete real OIDC login, then run the seed only as a reviewed one-off.
+  Blocker: Hosted owner/admin identity is not approved outside repo and hosted first-owner bootstrap has not run.
+  Next action: Approve first owner/admin identity outside repo, run the reviewed first-owner pending approval seed, then complete real OIDC login for activation.
   Evidence required: Sanitized owner/admin bootstrap result; no real email or seed env values.
 - [ ] Pending member activation.
   Blocker: Hosted owner/admin and teammate smoke users are not approved.

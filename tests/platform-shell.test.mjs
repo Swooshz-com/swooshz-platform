@@ -293,7 +293,8 @@ test("admin shell references protected admin APIs and CSRF-protected actions", (
   assert.match(html, /\/api\/platform\/session\/csrf/);
   assert.match(html, /\/api\/platform\/workspaces\//);
   assert.match(html, /\/members/);
-  assert.match(html, /\/add\?email=/);
+  assert.match(html, /\/add/);
+  assert.match(html, /body: \{ email, role \}/);
   assert.match(html, /\/member-approvals/);
   assert.match(html, /\/revoke/);
   assert.match(html, /\/role\?role=/);

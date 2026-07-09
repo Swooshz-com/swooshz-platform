@@ -40,7 +40,7 @@ export interface WorkspaceMembershipApprovalRecord {
   email: string;
   role: Role;
   status: WorkspaceMembershipApprovalStatus;
-  requestedByUserId: string;
+  requestedByUserId: string | null;
   createdAt: IsoTimestamp;
   updatedAt: IsoTimestamp;
   acceptedAt: IsoTimestamp | null;

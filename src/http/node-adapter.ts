@@ -80,6 +80,7 @@ export interface NodePlatformHttpAdapterDependencies {
 export interface NodePlatformHttpRequestLike {
   method?: string;
   url?: string;
+  body?: string | Uint8Array | null;
   headers?: IncomingHttpHeaders | HttpRequestHeaders;
 }
 
@@ -93,6 +94,7 @@ const jsonContentType = "application/json; charset=utf-8";
 const htmlContentType = "text/html; charset=utf-8";
 const adapterUrlBase = "http://swooshz-platform.local";
 const defaultCsrfTokenTtlSeconds = 900;
+const maxJsonRequestBodyBytes = 8 * 1024;
 
 interface RouteMatch {
   route: HttpRouteContract;
@@ -311,13 +313,6 @@ export async function handleNodePlatformHttpRequest(
   }
 
   if (route.id === "platform_workspace_member_add") {
-    const targetEmail = parsedUrl.searchParams.get("email");
-    const role = parsedUrl.searchParams.get("role");
-
-    if (!targetEmail || !role) {
-      return missingRequiredQueryResponse(noStoreHeaders());
-    }
-
     const now = dependencies.now();
     const securityResult = await validateAdminRouteSecurity({
       route,
@@ -332,6 +327,14 @@ export async function handleNodePlatformHttpRequest(
         securityResult.reason,
         noStoreHeaders(),
       );
+    }
+
+    const body = parseJsonObjectBody(request.body);
+    const targetEmail = readBodyString(body, "email");
+    const role = readBodyString(body, "role");
+
+    if (!targetEmail || !role) {
+      return missingRequiredBodyResponse(noStoreHeaders());
     }
 
     return toNodeResponse(
@@ -776,6 +779,7 @@ export async function writeNodePlatformHttpResponse(
   const adapterResponse = await handleNodePlatformHttpRequest(dependencies, {
     method: request.method,
     url: request.url,
+    body: await readNodeRequestBody(request),
     headers: request.headers,
   });
 
@@ -798,6 +802,64 @@ function parseRequestUrl(url: string | undefined): URL | null {
   } catch {
     return null;
   }
+}
+
+async function readNodeRequestBody(request: IncomingMessage): Promise<string> {
+  if (!["POST", "PUT", "PATCH"].includes(normalizeMethod(request.method))) {
+    return "";
+  }
+
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buffer.length;
+
+    if (totalBytes > maxJsonRequestBodyBytes) {
+      return "";
+    }
+
+    chunks.push(buffer);
+  }
+
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+function parseJsonObjectBody(
+  body: NodePlatformHttpRequestLike["body"],
+): Record<string, unknown> | null {
+  if (!body) {
+    return null;
+  }
+
+  const serialized = Buffer.isBuffer(body)
+    ? body.toString("utf8")
+    : typeof body === "string"
+      ? body
+      : Buffer.from(body).toString("utf8");
+
+  if (!serialized.trim() || Buffer.byteLength(serialized, "utf8") > maxJsonRequestBodyBytes) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(serialized) as unknown;
+
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function readBodyString(body: Record<string, unknown> | null, key: string): string | null {
+  const value = body?.[key];
+
+  return typeof value === "string" && value.trim() ? value : null;
 }
 
 function findRouteByPath(pathname: string): RouteMatch | null {
@@ -917,6 +979,19 @@ function missingRequiredQueryResponse(
     {
       outcome: "error",
       message: "Required query parameters are missing.",
+    },
+    headers,
+  );
+}
+
+function missingRequiredBodyResponse(
+  headers: Record<string, string> = {},
+): NodePlatformHttpResponse {
+  return jsonResponse(
+    400,
+    {
+      outcome: "error",
+      message: "Required request body fields are missing.",
     },
     headers,
   );

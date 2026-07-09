@@ -248,6 +248,75 @@ test("pending approval activates even when provider email passes auth policy", a
   ]);
 });
 
+test("first-owner bootstrap approval activates owner only on zero-member workspace", async () => {
+  const firstOwnerApproval = pendingApproval({
+    role: "owner",
+    requestedByUserId: null,
+  });
+  const deps = createResolverDependencies({
+    membershipApprovals: [firstOwnerApproval],
+    membershipIdFactory: () => "membership_first_owner_bootstrap",
+    auditEventIdFactory: () => "audit_first_owner_bootstrap_accepted",
+  });
+  const resolver = createPlatformIdentitySessionResolver(deps);
+
+  const result = await resolver.resolveAuthenticatedIdentity({
+    identity: {
+      ...verifiedIdentity,
+      providerSubject: "first-owner-provider-subject",
+      verifiedEmail: "pending.user@example.test",
+      displayName: "First Owner",
+    },
+    stateReference: createStateReference(),
+    now,
+    authPolicy: {
+      providerEmailAllowed: true,
+    },
+  });
+
+  assert.equal(result.platformUserId, "user_auth_callback_1");
+  assert.equal(result.providerIdentityId, "provider_identity_auth_callback_1");
+  assert.equal(result.workspaceMembershipGranted, true);
+  assert.deepEqual(deps.records.memberships, [
+    {
+      id: "membership_first_owner_bootstrap",
+      workspaceId: "workspace_koncept_images",
+      userId: "user_auth_callback_1",
+      role: "owner",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    },
+  ]);
+  assert.deepEqual(deps.records.membershipApprovals, [
+    {
+      ...firstOwnerApproval,
+      status: "accepted",
+      updatedAt: now,
+      acceptedAt: now,
+      acceptedUserId: "user_auth_callback_1",
+    },
+  ]);
+  assert.equal(deps.records.sessions.length, 1);
+  assert.deepEqual(deps.records.auditEvents, [
+    {
+      id: "audit_first_owner_bootstrap_accepted",
+      workspaceId: "workspace_koncept_images",
+      actorUserId: "user_auth_callback_1",
+      eventType: "workspace.membership_approval.accepted",
+      targetType: "membership_approval",
+      targetId: "approval_pending_example",
+      createdAt: now,
+      metadata: {
+        newRole: "owner",
+        newStatus: "active",
+        targetUserId: "user_auth_callback_1",
+        source: "provider_backed_sign_in",
+      },
+    },
+  ]);
+});
+
 test("revoked or missing pending approval does not authorize non-allowlisted sign-in", async () => {
   for (const [name, membershipApprovals] of [
     ["missing approval", []],
@@ -310,7 +379,17 @@ test("pending approval acceptance fails closed for unsafe approval and user stat
       },
     ],
     [
-      "invalid approval role",
+      "owner approval after workspace already has a member",
+      {
+        users: [existingPendingUser],
+        memberships: [existingPendingMembership],
+        membershipApprovals: [
+          pendingApproval({ role: "owner", requestedByUserId: null }),
+        ],
+      },
+    ],
+    [
+      "owner approval without bootstrap actor",
       {
         membershipApprovals: [pendingApproval({ role: "owner" })],
       },

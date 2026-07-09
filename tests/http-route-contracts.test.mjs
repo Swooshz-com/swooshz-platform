@@ -339,7 +339,7 @@ test("workspace admin member routes are session-protected and contract-driven", 
     required: true,
     strategy: "origin_referer_and_csrf_token",
   });
-  assert.deepEqual(add.requiredQuery, ["email", "role"]);
+  assert.deepEqual(add.requiredQuery, []);
   assert.equal(add.handlerContract, "handleWorkspaceMemberAddRequest");
   assert.equal(add.idempotent, false);
 

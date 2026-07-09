@@ -17,9 +17,9 @@ const privateDatabaseUrl =
 const privateErrorDetail =
   "connect ECONNREFUSED private-host.invalid private_user private_pass";
 const expectedMigrationState = {
-  latestTag: "0005_sqag_app_key_migration",
-  latestCreatedAt: 1783479304000,
-  migrationCount: 6,
+  latestTag: "0006_optimal_tomorrow_man",
+  latestCreatedAt: 1783587520445,
+  migrationCount: 7,
 };
 
 test("platform DB readiness check package script exists", async () => {
@@ -161,7 +161,10 @@ test("DB readiness reports schema not ready when migrations are behind the journ
   assert.equal(report.status, "schema_not_ready");
   assert.equal(report.checks.migrations, "failed");
   assert.match(output, /migration_state=behind/);
-  assert.match(output, /expected_latest_migration=0005_sqag_app_key_migration/);
+  assert.match(
+    output,
+    new RegExp(`expected_latest_migration=${expectedMigrationState.latestTag}`),
+  );
   assertNoPrivateMaterial(output);
 });
 

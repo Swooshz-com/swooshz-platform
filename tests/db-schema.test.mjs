@@ -63,6 +63,7 @@ test("database schema and migrations include pending workspace membership approv
   assert.match(migrationSql, /"role" "role" NOT NULL/);
   assert.match(migrationSql, /"status" "workspace_membership_approval_status" NOT NULL/);
   assert.match(migrationSql, /"requested_by_user_id" text NOT NULL/);
+  assert.match(migrationSql, /ALTER COLUMN "requested_by_user_id" DROP NOT NULL/);
   assert.match(migrationSql, /"accepted_user_id" text/);
   assert.match(migrationSql, /"revoked_by_user_id" text/);
   assert.match(migrationSql, /"workspace_membership_approvals_pending_unique"/);

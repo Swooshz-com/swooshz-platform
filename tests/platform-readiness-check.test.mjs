@@ -284,6 +284,7 @@ test("readiness check reports optional bootstrap env without failing runtime rea
     PLATFORM_SEED_USER_EMAIL: "",
     PLATFORM_SEED_WORKSPACE_SLUG: "",
     PLATFORM_SEED_WORKSPACE_NAME: "",
+    PLATFORM_SEED_BOOTSTRAP_MODE: "",
     PLATFORM_SEED_MEMBERSHIP_ROLE: "",
   });
 
@@ -292,6 +293,7 @@ test("readiness check reports optional bootstrap env without failing runtime rea
   assert.ok(report.missingOptional.some((entry) => entry.name === "PLATFORM_SEED_USER_EMAIL"));
   assert.ok(report.missingOptional.some((entry) => entry.name === "PLATFORM_SEED_WORKSPACE_SLUG"));
   assert.ok(report.missingOptional.some((entry) => entry.name === "PLATFORM_SEED_WORKSPACE_NAME"));
+  assert.ok(report.missingOptional.some((entry) => entry.name === "PLATFORM_SEED_BOOTSTRAP_MODE"));
 });
 
 test("readiness script stays dry-run and does not import migration server or network code", async () => {
@@ -336,6 +338,7 @@ function completeEnv() {
     PLATFORM_SEED_USER_EMAIL: "<hosted-owner-admin-email-after-login>",
     PLATFORM_SEED_WORKSPACE_SLUG: "<reviewed-workspace-slug>",
     PLATFORM_SEED_WORKSPACE_NAME: "<reviewed-workspace-name>",
+    PLATFORM_SEED_BOOTSTRAP_MODE: "first-owner-pending-approval",
     PLATFORM_SEED_MEMBERSHIP_ROLE: "owner",
   };
 }
