@@ -43,6 +43,8 @@ export const HOSTED_READINESS_ENV_CHECKS = [
   ),
   bootstrapOnly("PLATFORM_SEED_CONFIRM", "bootstrap", validateSeedConfirm),
   bootstrapOnly("PLATFORM_SEED_USER_EMAIL", "bootstrap"),
+  bootstrapOnly("PLATFORM_SEED_WORKSPACE_SLUG", "bootstrap"),
+  bootstrapOnly("PLATFORM_SEED_WORKSPACE_NAME", "bootstrap"),
   optional("PLATFORM_SEED_MEMBERSHIP_ROLE", "bootstrap", validateSeedRole),
 ];
 

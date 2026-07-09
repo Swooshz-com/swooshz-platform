@@ -75,6 +75,8 @@ One-off operator names, not long-running service env:
 - `DATABASE_MIGRATIONS_CONFIRM`
 - `PLATFORM_SEED_CONFIRM`
 - `PLATFORM_SEED_USER_EMAIL`
+- `PLATFORM_SEED_WORKSPACE_SLUG`
+- `PLATFORM_SEED_WORKSPACE_NAME`
 - `PLATFORM_SEED_MEMBERSHIP_ROLE`
 
 Do not commit, print, screenshot, or paste real values for these names into repo files, tickets, PRs, logs, or chat.

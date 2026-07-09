@@ -108,6 +108,34 @@ test("generic OIDC JWKS verifier accepts Google issuer identifier without traili
   assert.equal(claims.subject, "provider-subject-123");
 });
 
+test("generic OIDC JWKS verifier binds multi-audience tokens to authorized party", async () => {
+  const fixture = createVerifierFixture();
+  const acceptedToken = signJwt(fixture.keys, {
+    ...baseClaims(),
+    aud: [clientId, "synthetic-other-client-id"],
+    azp: clientId,
+  });
+
+  const claims = await fixture.verifier.verify(verifierInput({ idToken: acceptedToken }));
+
+  assert.equal(claims.subject, "provider-subject-123");
+
+  for (const rejectedClaims of [
+    { ...baseClaims(), aud: [clientId, "synthetic-other-client-id"] },
+    { ...baseClaims(), aud: [clientId, "synthetic-other-client-id"], azp: "" },
+    { ...baseClaims(), aud: [clientId, "synthetic-other-client-id"], azp: "synthetic-other-client-id" },
+    { ...baseClaims(), aud: [clientId, "synthetic-other-client-id"], azp: ["synthetic-other-client-id"] },
+  ]) {
+    await assert.rejects(
+      () =>
+        fixture.verifier.verify(
+          verifierInput({ idToken: signJwt(fixture.keys, rejectedClaims) }),
+        ),
+      assertProviderErrorIsSafe,
+    );
+  }
+});
+
 test("generic OIDC JWKS verifier keeps only safe primitive metadata", async () => {
   const fixture = createVerifierFixture();
   const blockedMetadata = Object.fromEntries(

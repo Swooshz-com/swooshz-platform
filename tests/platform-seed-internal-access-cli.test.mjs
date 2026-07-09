@@ -44,6 +44,8 @@ test("seed CLI validation refuses missing user email before DB connection", asyn
       env: {
         DATABASE_URL: privateDatabasePlaceholder,
         PLATFORM_SEED_CONFIRM: "seed-reviewed-internal-access",
+        PLATFORM_SEED_WORKSPACE_SLUG: "internal-workspace",
+        PLATFORM_SEED_WORKSPACE_NAME: "Internal Workspace",
       },
       now: () => now,
       createDatabaseRepositories() {
@@ -58,16 +60,41 @@ test("seed CLI validation refuses missing user email before DB connection", asyn
   assert.equal(connected, false);
 });
 
-test("seed CLI config normalizes safe defaults without exposing private values", () => {
+test("seed CLI validation refuses missing workspace identity before DB connection", async () => {
+  let connected = false;
+
+  await assert.rejects(
+    () => executePlatformSeedInternalAccess({
+      env: {
+        DATABASE_URL: privateDatabasePlaceholder,
+        PLATFORM_SEED_CONFIRM: "seed-reviewed-internal-access",
+        PLATFORM_SEED_USER_EMAIL: "owner@example.test",
+      },
+      now: () => now,
+      createDatabaseRepositories() {
+        connected = true;
+        throw new Error("should not connect");
+      },
+      writeLine() {},
+    }),
+    assertSeedCliError("missing_workspace_identity"),
+  );
+
+  assert.equal(connected, false);
+});
+
+test("seed CLI config requires explicit workspace identity without exposing private values", () => {
   const config = readPlatformSeedInternalAccessConfig({
     PLATFORM_SEED_CONFIRM: "seed-reviewed-internal-access",
     PLATFORM_SEED_USER_EMAIL: " Owner@Example.TEST ",
+    PLATFORM_SEED_WORKSPACE_SLUG: " internal-workspace ",
+    PLATFORM_SEED_WORKSPACE_NAME: " Internal Workspace ",
   });
 
   assert.deepEqual(config, {
     normalizedUserEmail: "owner@example.test",
-    workspaceSlug: "koncept-images-pte-ltd",
-    workspaceName: "Koncept Images Pte Ltd",
+    workspaceSlug: "internal-workspace",
+    workspaceName: "Internal Workspace",
     appKey: "sqag",
     appName: "SQAG",
     membershipRole: "owner",
@@ -117,7 +144,7 @@ test("existing user with provider identity gets idempotent workspace app entitle
   assert.equal(first.outcome, "seeded");
   assert.equal(first.user.email, "owner@example.test");
   assert.equal(first.providerIdentity.id, "provider_identity_owner");
-  assert.equal(first.workspace.slug, "koncept-images-pte-ltd");
+  assert.equal(first.workspace.slug, "internal-workspace");
   assert.equal(first.app.key, "sqag");
   assert.equal(first.app.name, "SQAG");
   assert.equal(first.membership.role, "owner");
@@ -251,7 +278,8 @@ test("seed supports optional app launch URL without printing it in summary outpu
 
   assert.equal(result.app.launchUrl, "https://apps.example.test/sqag");
   assert.equal(fixture.closed, true);
-  assert.match(lines.join("\n"), /workspace=koncept-images-pte-ltd/);
+  assert.match(lines.join("\n"), /workspace=configured/);
+  assert.doesNotMatch(lines.join("\n"), /internal-workspace|Internal Workspace/);
   assert.match(lines.join("\n"), /app=sqag/);
   assert.match(lines.join("\n"), /user=existing_provider_backed_user/);
   assert.match(lines.join("\n"), /role=owner/);
@@ -278,6 +306,8 @@ function validEnv(email = "owner@example.test") {
   return {
     PLATFORM_SEED_CONFIRM: "seed-reviewed-internal-access",
     PLATFORM_SEED_USER_EMAIL: email,
+    PLATFORM_SEED_WORKSPACE_SLUG: "internal-workspace",
+    PLATFORM_SEED_WORKSPACE_NAME: "Internal Workspace",
   };
 }
 

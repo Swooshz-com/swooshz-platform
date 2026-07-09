@@ -116,8 +116,8 @@ Internal seed:
 ```text
 PLATFORM_SEED_CONFIRM=seed-reviewed-internal-access
 PLATFORM_SEED_USER_EMAIL=<email-used-for-login>
-PLATFORM_SEED_WORKSPACE_SLUG=<optional-workspace-slug>
-PLATFORM_SEED_WORKSPACE_NAME=<optional-workspace-name>
+PLATFORM_SEED_WORKSPACE_SLUG=<reviewed-workspace-slug>
+PLATFORM_SEED_WORKSPACE_NAME=<reviewed-workspace-name>
 PLATFORM_SEED_MEMBERSHIP_ROLE=<optional-owner-admin-or-member>
 PLATFORM_SEED_APP_LAUNCH_URL=<optional-app-launch-url>
 ```
@@ -185,12 +185,15 @@ Run the seed command for the email address that just completed real OIDC login:
 ```powershell
 $env:PLATFORM_SEED_CONFIRM="seed-reviewed-internal-access"
 $env:PLATFORM_SEED_USER_EMAIL="<email-used-for-login>"
+$env:PLATFORM_SEED_WORKSPACE_SLUG="<reviewed-workspace-slug>"
+$env:PLATFORM_SEED_WORKSPACE_NAME="<reviewed-workspace-name>"
 npm run platform:seed-internal-access
 ```
 
-Optional workspace overrides use the `PLATFORM_SEED_WORKSPACE_*` env names
-listed above. `PLATFORM_SEED_APP_LAUNCH_URL` may set a launch URL, but the app
-key and app name are fixed to canonical SQAG.
+Workspace seed identity must be supplied explicitly through the
+`PLATFORM_SEED_WORKSPACE_*` env names listed above. The seed command does not
+fall back to a default production workspace. `PLATFORM_SEED_APP_LAUNCH_URL` may
+set a launch URL, but the app key and app name are fixed to canonical SQAG.
 
 The seed requires the user already exists and has a provider identity. It does not create users, provider identities, or sessions. It seeds workspace, app registry, entitlement, and membership records only.
 
