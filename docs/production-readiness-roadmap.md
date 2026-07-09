@@ -28,13 +28,14 @@ Non-goals for this roadmap update:
 | Frontend visual freeze candidate | A 34-screen Stitch visual/layout freeze candidate exists and is recorded in `docs/frontend-stitch-visual-freeze-parity-plan.md`; scoped public, portal, workspace-admin, access-information, and resources slices are locally implemented after PRs #86-#90, but full frontend launch clearance, production copy, consolidated screenshot parity, and hosted visual evidence remain unchecked. |
 | Blocked until VPS/shared hosting foundation | Gate 1 and Platform hosted deployment execution are blocked until the shared Hostinger/Coolify foundation exists. That foundation is shared across Platform, SQAG, and SKR; it must not become Platform-only. |
 | Blocked until SQAG/SKR hosting readiness | Shared VPS purchase/use is intentionally waiting for SQAG and SKR to reach hosting readiness; Platform must not assume the VPS already exists. |
-| Can be worked before VPS | Security hardening review, backup/restore procedure detail, monitoring/incident decisions, legal/compliance drafts, session-management planning, rate-limit review, and roadmap updates can continue without live hosting. |
+| Can be worked before VPS | Security hardening review, backup/restore procedure detail, monitoring/incident decisions, legal/compliance drafts, session-management planning, rate-limit review, and roadmap updates can continue without live hosting. Pre-VPS planning templates now exist, but they are not hosted evidence or production approval. |
 
 ## Next Recommended Pre-VPS Work
 
-- Review and refine security hardening items that do not need live hosting: CSRF smoke plan, rate limiting posture, session expiry/rotation posture, security headers, dependency/security audit cadence, and secret rotation plan.
-- Draft legal/compliance docs and launch governance placeholders: privacy policy, terms, data retention policy, account/member removal policy, vendor/subprocessor notes, and final go/no-go owner.
-- Turn backup/restore expectations into an operator-owned evidence template that records only sanitized backup id, restore target, timestamp, owner, and pass/fail status.
+- Use `docs/platform-pre-vps-security-hardening.md` to review security hardening items that do not need live hosting: CSRF smoke plan, rate limiting posture, session expiry/rotation posture, security headers, dependency/security audit cadence, and secret rotation plan. Keep hosted evidence unchecked until the hosted environment exists and smoke is separately approved.
+- Use `docs/platform-final-go-no-go-checklist.md` to track legal/compliance and launch governance placeholders: privacy policy, terms, data retention policy, account/member removal policy, vendor/subprocessor notes, and final go/no-go owner. Do not treat the checklist template as launch approval.
+- Use `docs/platform-backup-restore-evidence-template.md` for future operator-owned restore evidence. It records sanitized fields only and is not backup/restore evidence until a real approved restore test produces reviewed evidence.
+- Use `docs/platform-secret-rotation-runbook.md` for secret rotation planning with env names only. Do not add or request real secret values.
 - Keep the frontend design readiness gate in `docs/frontend-design-readiness.md`, the Stitch parity plan in `docs/frontend-stitch-visual-freeze-parity-plan.md`, and the current audit in `docs/frontend-readiness-audit.md` aligned before any further public website, Blog/resources, portal, customer admin, or internal admin/content admin implementation. Do not tick frontend work complete without implemented UI, canonical copy corrections, deterministic tests, screenshot parity evidence, and later hosted evidence after deployment is separately approved.
 - Review repo-side CI/container readiness in `docs/ci-cd/CURRENT_CICD_STATUS.md` and `docs/coolify-deployment-readiness.md`; keep it separate from hosted deployment evidence.
 - Keep SQAG/SKR hosting-readiness work separate from Platform. Do not purchase or configure the shared VPS from this Platform roadmap alone.
@@ -199,6 +200,8 @@ Gate status: blocked until hosted deployment exists and real OAuth/provider conf
 
 Gate status: mostly blocked until shared hosting operations are decided. Some procedure detail can be worked before VPS.
 
+- [x] Backup/restore evidence template drafted.
+  Evidence: `docs/platform-backup-restore-evidence-template.md` records sanitized evidence fields and explicitly states that the template is not evidence until a real approved restore test occurs; covered by `tests/platform-pre-vps-security-hardening.test.mjs`.
 - [ ] Backup owner.
   Blocker: Shared foundation operations owner is not decided.
   Next action: Name the backup owner outside repo planning notes.
@@ -228,6 +231,8 @@ Gate status: mostly blocked until shared hosting operations are decided. Some pr
 
 Gate status: blocked until shared hosting and Platform hosted process exist. Logging/monitoring/incident gate planning can continue before VPS.
 
+- [x] Monitoring/logging/incident planning placeholders drafted.
+  Evidence: `docs/platform-pre-vps-security-hardening.md` and `docs/platform-final-go-no-go-checklist.md` list required owner, retention, alert destination, and incident placeholders while preserving that real monitoring/logging/alerting evidence remains pending; covered by `tests/platform-pre-vps-security-hardening.test.mjs`.
 - [ ] Coolify log retention.
   Blocker: Coolify foundation does not exist.
   Next action: Decide retention duration, access owner, and redaction process.
@@ -261,6 +266,12 @@ Gate status: blocked until shared hosting and Platform hosted process exist. Log
 
 Gate status: partially implemented locally, not hosted-verified. Security hardening gate completion requires hosted evidence where browser/runtime behavior depends on hosted deployment.
 
+- [x] Pre-VPS security hardening plan documented.
+  Evidence: `docs/platform-pre-vps-security-hardening.md` records CSRF smoke expectations, origin/referer expectations, session/cookie posture, security-header posture, rate limiting posture, dependency/security audit cadence planning, incident placeholders, legal/compliance placeholders, and final go/no-go ownership boundaries; covered by `tests/platform-pre-vps-security-hardening.test.mjs`.
+- [x] Secret rotation runbook drafted with env names only.
+  Evidence: `docs/platform-secret-rotation-runbook.md` documents routine rotation and emergency revoke planning using env names only and no values; covered by `tests/platform-pre-vps-security-hardening.test.mjs`.
+- [x] Dependency/security audit cadence planning documented.
+  Evidence: `docs/platform-pre-vps-security-hardening.md` proposes review timing and command candidates while keeping first audit result pending; covered by `tests/platform-pre-vps-security-hardening.test.mjs`.
 - [ ] HTTPS-only hosted config.
   Blocker: Hosted Platform URL/TLS does not exist.
   Next action: Run hosted readiness and hosted smoke after TLS is configured.
@@ -333,8 +344,10 @@ Gate status: blocked until Swooshz Quote Auto Generator and SKR readiness and ho
 
 ## Gate 8: Legal/Compliance And Launch Governance Gate
 
-Gate status: not started. This legal/compliance gate and final go/no-go process can begin before VPS, but launch approval requires signed-off evidence.
+Gate status: planning placeholders drafted; approvals not started. This legal/compliance gate and final go/no-go process can begin before VPS, but launch approval requires signed-off evidence.
 
+- [x] Legal/compliance and final go/no-go placeholders drafted.
+  Evidence: `docs/platform-pre-vps-security-hardening.md` lists legal/compliance placeholder categories, and `docs/platform-final-go-no-go-checklist.md` records owner placeholders and unchecked final gates; covered by `tests/platform-pre-vps-security-hardening.test.mjs`.
 - [ ] Privacy policy.
   Blocker: Public/internal policy text is not drafted or approved.
   Next action: Draft policy reflecting Platform-owned account/access data and product-owned runtime data.
@@ -359,7 +372,7 @@ Gate status: not started. This legal/compliance gate and final go/no-go process 
   Blocker: Owner is documented as required but not approved.
   Next action: Name the final launch approver outside repo.
   Evidence required: Sanitized final go/no-go owner record.
-- [ ] Final launch checklist.
-  Blocker: Gates 1-8 are not complete.
-  Next action: Build final launch checklist from this roadmap after all launch-critical evidence is available.
+- [ ] Final launch checklist completed.
+  Blocker: Gates 1-8 are not complete, and `docs/platform-final-go-no-go-checklist.md` is only an unchecked template.
+  Next action: Complete the final checklist only after all launch-critical evidence is available.
   Evidence required: Completed gate checklist, hosted smoke evidence, security review evidence, legal/compliance approval, and final go/no-go decision.
