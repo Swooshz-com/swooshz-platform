@@ -45,9 +45,11 @@ import {
 } from "./route-contracts.js";
 import {
   renderAdminShellPage,
+  renderAppShellPage,
+} from "./platform-shell.js";
+import {
   renderAboutPage,
   renderAuthErrorPage,
-  renderAppShellPage,
   renderContactPage,
   renderLandingPage,
   renderLoginPage,
@@ -55,7 +57,7 @@ import {
   renderResourcesPage,
   renderRequestAccessPage,
   renderSolutionsPage,
-} from "./platform-shell.js";
+} from "./platform-public-shell.js";
 import type { BrowserSessionCookieConfig } from "./session-cookie.js";
 import { extractBrowserSessionIdFromCookieHeader } from "./session-cookie.js";
 import { validateHttpRequestSecurityForRoute } from "./request-security.js";

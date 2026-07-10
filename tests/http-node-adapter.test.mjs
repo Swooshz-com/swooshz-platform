@@ -87,7 +87,7 @@ test("GET /solutions renders the public products page as no-store HTML", async (
   assertNoStoreHeaders(response.headers);
   assert.match(response.body, /Swooshz Quote Auto Generator/);
   assert.match(response.body, /Vendor workflow pending/);
-  assert.match(response.body, /Unavailable until confirmed/);
+  assert.match(response.body, /unavailable until confirmed/i);
   assert.equal(fixture.calls.sessionsFindById, 0);
   assert.equal(fixture.calls.csrfValidate, 0);
   assertResponseIsPrivacySafe(response);
@@ -107,7 +107,7 @@ test("GET /resources renders the safe public resources page as no-store HTML", a
   assert.equal(response.headers["content-type"], "text/html; charset=utf-8");
   assertNoStoreHeaders(response.headers);
   assert.match(response.body, /Insights & Resources|Resources/);
-  assert.match(response.body, /Content pending editorial review/i);
+  assert.match(response.body, /practical guides|approved workspaces|platform access/i);
   assert.match(response.body, /href="\/resources\/platform-launch-boundaries"/);
   assert.doesNotMatch(response.body, /<form|<input|<textarea|newsletter|subscribe/i);
   assert.equal(fixture.calls.sessionsFindById, 0);
@@ -129,7 +129,7 @@ test("GET /resources/platform-launch-boundaries renders the safe article page as
   assert.equal(response.headers["content-type"], "text/html; charset=utf-8");
   assertNoStoreHeaders(response.headers);
   assert.match(response.body, /How Swooshz Platform launches workspace apps safely/);
-  assert.match(response.body, /Article template pending editorial approval/i);
+  assert.match(response.body, /clear guide|sign-in and an approved application/i);
   assert.match(response.body, /Swooshz Quote Auto Generator/);
   assert.doesNotMatch(response.body, /<form|<input|<textarea|newsletter|subscribe|<pre|<code/i);
   assert.equal(fixture.calls.sessionsFindById, 0);
@@ -214,7 +214,7 @@ test("GET /login renders provider-backed access entry as no-store HTML", async (
   assert.equal(response.statusCode, 200);
   assert.equal(response.headers["content-type"], "text/html; charset=utf-8");
   assertNoStoreHeaders(response.headers);
-  assert.match(response.body, /Secure Access Portal/);
+  assert.match(response.body, /Enter your Swooshz workspace/);
   assert.match(response.body, /\/api\/platform\/auth\/start/);
   assert.match(response.body, /No public signup is available/);
   assert.doesNotMatch(response.body, /type="password"|Forgot\?/);

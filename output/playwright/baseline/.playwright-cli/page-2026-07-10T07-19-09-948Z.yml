@@ -1,0 +1,90 @@
+- generic [active] [ref=f2e1]:
+  - banner [ref=f2e2]:
+    - link "Swooshz" [ref=f2e3] [cursor=pointer]:
+      - /url: /
+    - navigation "Public navigation" [ref=f2e4]:
+      - link "Home" [ref=f2e5] [cursor=pointer]:
+        - /url: /
+      - link "Solutions" [ref=f2e6] [cursor=pointer]:
+        - /url: /solutions
+      - link "Resources" [ref=f2e7] [cursor=pointer]:
+        - /url: /resources
+      - link "About" [ref=f2e8] [cursor=pointer]:
+        - /url: /about
+      - link "Contact" [ref=f2e9] [cursor=pointer]:
+        - /url: /contact
+    - generic [ref=f2e10]:
+      - link "Login" [ref=f2e11] [cursor=pointer]:
+        - /url: /login
+      - link "Request Access" [ref=f2e12] [cursor=pointer]:
+        - /url: /request-access
+  - main [ref=f2e13]:
+    - generic [ref=f2e14]:
+      - generic [ref=f2e15]:
+        - paragraph [ref=f2e16]: Resources
+        - heading "Insights & Resources" [level=1] [ref=f2e17]
+        - paragraph [ref=f2e18]: Content pending editorial review. These public placeholders outline Platform access concepts without publishing customer examples, production metrics, or product workflow records.
+      - complementary [ref=f2e19]:
+        - heading "Content safety" [level=2] [ref=f2e20]
+        - paragraph [ref=f2e21]: Static resources describe Platform boundaries only. No public comments, signup forms, public forms, or intake flow is enabled.
+    - region [ref=f2e22]:
+      - generic [ref=f2e23]:
+        - heading "Topic Areas" [level=2] [ref=f2e24]
+        - paragraph [ref=f2e25]: Non-interactive labels for the current placeholder editorial scope.
+      - generic "Resource topics" [ref=f2e26]:
+        - generic [ref=f2e27]: All topics
+        - generic [ref=f2e28]: Platform access
+        - generic [ref=f2e29]: Provider-backed entry
+        - generic [ref=f2e30]: Product boundaries
+    - region [ref=f2e31]:
+      - generic [ref=f2e32]:
+        - heading "Public Resource Placeholders" [level=2] [ref=f2e33]
+        - paragraph [ref=f2e34]: Only the first article route is implemented in this slice.
+      - generic [ref=f2e35]:
+        - article [ref=f2e36]:
+          - generic [ref=f2e37]: Launch boundary
+          - generic [ref=f2e39]:
+            - generic [ref=f2e40]: Platform access
+            - heading [level=3] [ref=f2e41]:
+              - link "How Swooshz Platform launches workspace apps safely" [ref=f2e42] [cursor=pointer]:
+                - /url: /resources/platform-launch-boundaries
+            - paragraph [ref=f2e43]: A placeholder overview of workspace approval, provider-backed access, entitlement checks, and separate app launch boundaries.
+            - link "Read article ->" [ref=f2e44] [cursor=pointer]:
+              - /url: /resources/platform-launch-boundaries
+        - article [ref=f2e45]:
+          - generic [ref=f2e46]: Access model
+          - generic [ref=f2e48]:
+            - generic [ref=f2e49]: Access
+            - heading "Provider-backed access matters" [level=3] [ref=f2e50]
+            - paragraph [ref=f2e51]: Placeholder content for explaining why Platform access starts with approved provider-backed accounts.
+            - generic [ref=f2e52]: Placeholder only
+        - article [ref=f2e53]:
+          - generic [ref=f2e54]: Workspace prep
+          - generic [ref=f2e56]:
+            - generic [ref=f2e57]: Workspace readiness
+            - heading "Preparing workspace access before launch" [level=3] [ref=f2e58]
+            - paragraph [ref=f2e59]: Placeholder content for reviewing memberships, roles, and app access before a workspace app is launched.
+            - generic [ref=f2e60]: Placeholder only
+        - article [ref=f2e61]:
+          - generic [ref=f2e62]: Separate app
+          - generic [ref=f2e64]:
+            - generic [ref=f2e65]: Product boundary
+            - heading "Keeping product workflow data outside Platform" [level=3] [ref=f2e66]
+            - paragraph [ref=f2e67]: Placeholder content for explaining that Swooshz Quote Auto Generator is a separate app launched from Platform.
+            - generic [ref=f2e68]: Placeholder only
+  - contentinfo [ref=f2e69]:
+    - strong [ref=f2e70]: Swooshz
+    - navigation "Footer navigation" [ref=f2e71]:
+      - link "Resources" [ref=f2e72] [cursor=pointer]:
+        - /url: /resources
+      - link "About" [ref=f2e73] [cursor=pointer]:
+        - /url: /about
+      - link "Contact" [ref=f2e74] [cursor=pointer]:
+        - /url: /contact
+      - link "Request Access" [ref=f2e75] [cursor=pointer]:
+        - /url: /request-access
+      - generic [ref=f2e76]: Privacy
+      - generic [ref=f2e77]: Terms
+      - generic [ref=f2e78]: Security
+      - generic [ref=f2e79]: Status
+    - paragraph [ref=f2e80]: © Swooshz. Content to be finalised before launch.

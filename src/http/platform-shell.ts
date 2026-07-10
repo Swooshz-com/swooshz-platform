@@ -1,4 +1,16 @@
-export function renderLandingPage(): string {
+export {
+  renderAboutPage,
+  renderAuthErrorPage,
+  renderContactPage,
+  renderLandingPage,
+  renderLoginPage,
+  renderResourceArticlePage,
+  renderResourcesPage,
+  renderRequestAccessPage,
+  renderSolutionsPage,
+} from "./platform-public-shell.js";
+
+function renderLegacyLandingPage(): string {
   return htmlDocument({
     title: "Swooshz Platform",
     body: `
@@ -99,7 +111,7 @@ export function renderLandingPage(): string {
   });
 }
 
-export function renderSolutionsPage(): string {
+function renderLegacySolutionsPage(): string {
   return htmlDocument({
     title: "Swooshz Platform Solutions",
     body: `
@@ -170,7 +182,7 @@ export function renderSolutionsPage(): string {
   });
 }
 
-export function renderResourcesPage(): string {
+function renderLegacyResourcesPage(): string {
   return htmlDocument({
     title: "Swooshz Platform Resources",
     body: `
@@ -285,7 +297,7 @@ export function renderResourcesPage(): string {
   });
 }
 
-export function renderResourceArticlePage(): string {
+function renderLegacyResourceArticlePage(): string {
   return htmlDocument({
     title: "How Swooshz Platform Launches Workspace Apps Safely",
     body: `
@@ -383,7 +395,7 @@ export function renderResourceArticlePage(): string {
   });
 }
 
-export function renderAboutPage(): string {
+function renderLegacyAboutPage(): string {
   return htmlDocument({
     title: "About Swooshz",
     body: `
@@ -480,7 +492,7 @@ export function renderAboutPage(): string {
   });
 }
 
-export function renderContactPage(): string {
+function renderLegacyContactPage(): string {
   return htmlDocument({
     title: "Contact Swooshz",
     body: `
@@ -524,7 +536,7 @@ export function renderContactPage(): string {
   });
 }
 
-export function renderRequestAccessPage(): string {
+function renderLegacyRequestAccessPage(): string {
   return htmlDocument({
     title: "Request Access - Swooshz Platform",
     body: `
@@ -573,7 +585,7 @@ export function renderRequestAccessPage(): string {
   });
 }
 
-export function renderLoginPage(): string {
+function renderLegacyLoginPage(): string {
   return htmlDocument({
     title: "Swooshz Platform Access",
     body: `
@@ -2305,7 +2317,7 @@ export function renderAdminShellPage(): string {
   });
 }
 
-export function renderAuthErrorPage(): string {
+function renderLegacyAuthErrorPage(): string {
   return htmlDocument({
     title: "Swooshz Platform Access Not Approved",
     body: `

@@ -33,25 +33,32 @@ function withoutSharedStyle(html) {
   return html.replace(/<style>[\s\S]*?<\/style>/g, "");
 }
 
-test("landing page renders the public Stitch parity homepage with canonical product copy", () => {
+test("landing page renders the public AI solutions homepage with canonical product copy", () => {
   const html = renderLandingPage();
 
   assert.match(html, /Swooshz Platform/);
-  assert.match(html, /workspace platform for launching trusted business apps/i);
+  assert.match(html, /One trusted place for your Swooshz tools\./i);
+  assert.match(html, /AI solutions platform/i);
+  assert.match(html, /exhibition and interior design/i);
   assert.match(html, /Swooshz Quote Auto Generator/);
   assert.match(html, /separate app launched from\s+Platform/i);
   assert.match(html, /SEO \/ GEO \/ Seozilla/);
-  assert.match(html, /Vendor workflow pending|Coming soon|Unavailable until confirmed/i);
+  assert.match(html, /vendor workflow.*pending|not available yet|unavailable/i);
+  assert.match(html, /class="access-map"/);
   assert.match(html, /href="\/solutions"/);
   assert.match(html, /href="\/login"/);
   assert.match(html, /href="\/request-access"/);
+  assert.match(html, /aria-controls="public-mobile-menu"/);
+  assert.match(html, /<svg[^>]+aria-hidden="true"[^>]+focusable="false"/);
+  assert.doesNotMatch(html, />\s*(?:doc|shield|apps|geo|nodes|grid|lock)\s*</i);
   assert.doesNotMatch(html, /SESSION_SECRET|DATABASE_URL|postgresql:\/\//i);
 });
 
 test("login page preserves provider-backed auth start without public signup or password auth", () => {
   const html = renderLoginPage();
 
-  assert.match(html, /Secure Access Portal/);
+  assert.match(html, /Enter your Swooshz workspace/);
+  assert.match(html, /Swooshz Platform/);
   assert.match(html, /approved provider-backed account/);
   assert.match(html, /href="\/api\/platform\/auth\/start"/);
   assert.match(html, /Continue with Google|Continue with approved provider/);
@@ -59,7 +66,7 @@ test("login page preserves provider-backed auth start without public signup or p
   assert.match(html, /No public signup is available/);
   assert.match(html, /href="\/app"/);
   assert.doesNotMatch(html, /<form/i);
-  assert.doesNotMatch(html, /type="password"|Forgot\?|Sign In/i);
+  assert.doesNotMatch(html, /type="password"|Forgot\?/i);
   assert.match(html, /href="\/request-access"/);
   assert.doesNotMatch(html, /INTERNAL PLATFORM SHELL/);
   assert.doesNotMatch(html, /fake|demo|sample|create public account|public signup available/i);
@@ -68,8 +75,11 @@ test("login page preserves provider-backed auth start without public signup or p
 test("solutions page separates Platform SQAG and unavailable vendor-pending products", () => {
   const html = renderSolutionsPage();
 
+  assert.match(html, /AI solutions/i);
+  assert.match(html, /exhibition and interior design/i);
   assert.match(html, /Swooshz Quote Auto Generator/);
   assert.match(html, /separate product app launched from Platform/i);
+  assert.match(html, /whitelabel/i);
   assert.match(html, /Access Management/);
   assert.match(html, /Workspace Entitlements/);
   assert.match(html, /Owner/);
@@ -78,7 +88,7 @@ test("solutions page separates Platform SQAG and unavailable vendor-pending prod
   assert.match(html, /Pending/);
   assert.match(html, /SEO \/ GEO \/ Seozilla/);
   assert.match(html, /Vendor workflow pending/);
-  assert.match(html, /Unavailable until confirmed/);
+  assert.match(html, /unavailable until confirmed/i);
   assert.doesNotMatch(html, /SKR/);
 });
 
@@ -86,6 +96,7 @@ test("about page renders safe public company and platform boundary copy", () => 
   const html = renderAboutPage();
 
   assert.match(html, /About Swooshz/);
+  assert.match(html, /AI solutions platform/i);
   assert.match(html, /workspace access/i);
   assert.match(html, /provider-backed\s+accounts/i);
   assert.match(html, /Swooshz Quote Auto Generator/);
@@ -126,17 +137,19 @@ test("request access page is a public information state without signup or delive
   assert.doesNotMatch(html, /invite sent|email invitation|confirmation email|support ticket|CRM/i);
 });
 
-test("resources page renders safe placeholder listing content", () => {
+test("resources page renders honest editorial listing content", () => {
   const html = withoutSharedStyle(renderResourcesPage());
 
   assert.match(html, /Insights & Resources|Resources/);
-  assert.match(html, /Content pending editorial review/i);
+  assert.match(html, /practical guides|approved workspaces|platform access/i);
   assert.match(html, /How Swooshz Platform launches workspace apps safely/);
-  assert.match(html, /Provider-backed access matters/);
-  assert.match(html, /Keeping product workflow data outside Platform/);
+  assert.match(html, /Workspace access checklist/);
+  assert.match(html, /What belongs in Platform/);
   assert.match(html, /Swooshz Quote Auto\s+Generator/);
   assert.match(html, /separate app launched from\s+Platform/i);
   assert.match(html, /href="\/resources\/platform-launch-boundaries"/);
+  assert.match(html, /resource-card-inert/);
+  assert.doesNotMatch(html, /Content pending editorial review|Public Resource Placeholders|Placeholder only/i);
   assert.doesNotMatch(html, /<form|<input|<textarea|newsletter|subscribe|email capture/i);
   assert.doesNotMatch(html, /by\s+[A-Z][a-z]+|author|team member|workspace member/i);
   assert.doesNotMatch(html, fakeDateCopy);
@@ -149,14 +162,15 @@ test("resource article page renders safe article template without fake metadata"
   const html = withoutSharedStyle(renderResourceArticlePage());
 
   assert.match(html, /How Swooshz Platform launches workspace apps safely/);
-  assert.match(html, /Article template pending editorial approval/i);
+  assert.match(html, /clear guide|sign-in and an approved application/i);
   assert.match(html, /Provider-backed access/);
   assert.match(html, /Swooshz Quote Auto\s+Generator/);
   assert.match(html, /separate app launched from\s+Platform/i);
   assert.match(html, /product workflow data stays outside Platform/i);
   assert.match(html, /SEO \/ GEO \/ Seozilla/);
-  assert.match(html, /unavailable until confirmed|vendor workflow pending/i);
+  assert.match(html, /unavailable|vendor workflow.*pending/i);
   assert.match(html, /href="\/resources"/);
+  assert.match(html, /aria-label="In this guide"/);
   assert.doesNotMatch(html, /<form|<input|<textarea|newsletter|subscribe|email capture/i);
   assert.doesNotMatch(html, /by\s+[A-Z][a-z]+|author|team member|workspace member/i);
   assert.doesNotMatch(html, fakeDateCopy);
@@ -179,7 +193,22 @@ test("public navigation links implemented pages and resources route", () => {
   assert.match(html, /href="\/contact"/);
   assert.match(html, /href="\/resources"/);
   assert.match(html, /href="\/request-access"/);
+  assert.match(html, /id="public-mobile-menu"/);
+  assert.match(html, /class="public-menu-toggle"[^>]+aria-expanded="false"/);
+  assert.match(html, /aria-label="Open navigation menu"/);
   assert.doesNotMatch(html, /<span aria-disabled="true">(?:Blog|Resources)<\/span>/);
+});
+
+test("public resources future topics are visibly inert instead of fake links", () => {
+  const html = withoutSharedStyle(renderResourcesPage());
+
+  assert.match(html, /class="resource-card resource-card-inert"/);
+  const inertCards =
+    html.match(/<article class="resource-card resource-card-inert">[\s\S]*?<\/article>/g) ?? [];
+  assert.equal(inertCards.length, 3);
+  for (const card of inertCards) {
+    assert.doesNotMatch(card, /<a\b/i);
+  }
 });
 
 test("implemented frontend slice excludes forbidden copy and unapproved business flows", () => {
@@ -546,8 +575,8 @@ test("future-only navigation controls render disabled instead of clickable links
   assert.match(html, /<span aria-disabled="true">Settings<\/span>/);
   assert.match(html, /\.portal-nav span\[aria-disabled="true"\]/);
   assert.match(html, /pointer-events: none/);
-  assert.match(html, /<a class="" href="\/about">About<\/a>/);
-  assert.match(html, /<a class="" href="\/resources">Resources<\/a>/);
+  assert.match(html, /<a class="public-nav-link[^\"]*" href="\/about">/);
+  assert.match(html, /<a class="public-nav-link[^\"]*" href="\/resources">/);
   assert.doesNotMatch(html, /<a\b[^>]*>\s*(?:Help|Settings)\s*<\/a>/i);
 });
 

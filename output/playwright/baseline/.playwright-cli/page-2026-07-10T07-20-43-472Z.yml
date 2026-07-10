@@ -1,0 +1,62 @@
+- generic [active] [ref=f13e1]:
+  - banner [ref=f13e2]:
+    - link "Swooshz" [ref=f13e3] [cursor=pointer]:
+      - /url: /
+    - navigation "Public navigation" [ref=f13e4]:
+      - link "Home" [ref=f13e5] [cursor=pointer]:
+        - /url: /
+      - link "Solutions" [ref=f13e6] [cursor=pointer]:
+        - /url: /solutions
+      - link "Resources" [ref=f13e7] [cursor=pointer]:
+        - /url: /resources
+      - link "About" [ref=f13e8] [cursor=pointer]:
+        - /url: /about
+      - link "Contact" [ref=f13e9] [cursor=pointer]:
+        - /url: /contact
+    - generic [ref=f13e10]:
+      - link "Login" [ref=f13e11] [cursor=pointer]:
+        - /url: /login
+      - link "Request Access" [ref=f13e12] [cursor=pointer]:
+        - /url: /request-access
+  - main [ref=f13e13]:
+    - generic [ref=f13e14]:
+      - paragraph [ref=f13e15]: Workspace access
+      - heading "Request Access" [level=1] [ref=f13e16]
+      - paragraph [ref=f13e17]: Access to Swooshz Platform requires an approved workspace, a provider-backed account, and the right workspace role.
+      - generic "Access requirements" [ref=f13e18]:
+        - article [ref=f13e19]:
+          - generic [ref=f13e20]: "01"
+          - heading "Workspace approval" [level=2] [ref=f13e21]
+          - paragraph [ref=f13e22]: Your organization or workspace sponsor must approve Platform access.
+        - article [ref=f13e23]:
+          - generic [ref=f13e24]: "02"
+          - heading "Provider-backed account" [level=2] [ref=f13e25]
+          - paragraph [ref=f13e26]: Use the approved provider account assigned to your workspace.
+        - article [ref=f13e27]:
+          - generic [ref=f13e28]: "03"
+          - heading "Role and app access" [level=2] [ref=f13e29]
+          - paragraph [ref=f13e30]: Workspace roles and entitlements control which apps can launch.
+      - generic [ref=f13e31]:
+        - heading "No public signup is available" [level=2] [ref=f13e32]
+        - paragraph [ref=f13e33]: This page does not create an account, send a request, or grant workspace access. Use your existing Swooshz or workspace sponsor channel to ask for access review.
+      - generic [ref=f13e34]:
+        - link "Go to access entry" [ref=f13e35] [cursor=pointer]:
+          - /url: /login
+        - link "Contact guidance" [ref=f13e36] [cursor=pointer]:
+          - /url: /contact
+  - contentinfo [ref=f13e37]:
+    - strong [ref=f13e38]: Swooshz
+    - navigation "Footer navigation" [ref=f13e39]:
+      - link "Resources" [ref=f13e40] [cursor=pointer]:
+        - /url: /resources
+      - link "About" [ref=f13e41] [cursor=pointer]:
+        - /url: /about
+      - link "Contact" [ref=f13e42] [cursor=pointer]:
+        - /url: /contact
+      - link "Request Access" [ref=f13e43] [cursor=pointer]:
+        - /url: /request-access
+      - generic [ref=f13e44]: Privacy
+      - generic [ref=f13e45]: Terms
+      - generic [ref=f13e46]: Security
+      - generic [ref=f13e47]: Status
+    - paragraph [ref=f13e48]: © Swooshz. Content to be finalised before launch.

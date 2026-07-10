@@ -1,0 +1,74 @@
+- generic [active] [ref=f16e1]:
+  - banner [ref=f16e2]:
+    - link "Swooshz" [ref=f16e3] [cursor=pointer]:
+      - /url: /
+    - navigation "Public navigation" [ref=f16e4]:
+      - link "Home" [ref=f16e5] [cursor=pointer]:
+        - /url: /
+      - link "Solutions" [ref=f16e6] [cursor=pointer]:
+        - /url: /solutions
+      - link "Resources" [ref=f16e7] [cursor=pointer]:
+        - /url: /resources
+      - link "About" [ref=f16e8] [cursor=pointer]:
+        - /url: /about
+      - link "Contact" [ref=f16e9] [cursor=pointer]:
+        - /url: /contact
+    - generic [ref=f16e10]:
+      - link "Login" [ref=f16e11] [cursor=pointer]:
+        - /url: /login
+      - link "Request Access" [ref=f16e12] [cursor=pointer]:
+        - /url: /request-access
+  - main [ref=f16e13]:
+    - generic [ref=f16e14]:
+      - generic [ref=f16e15]:
+        - paragraph [ref=f16e16]: Institutional utility
+        - heading "Swooshz Quote Auto Generator" [level=1] [ref=f16e17]
+        - paragraph [ref=f16e18]: A separate product app launched from Platform for approved workspaces with active access and entitlement checks.
+        - link "Access entry" [ref=f16e20] [cursor=pointer]:
+          - /url: /login
+      - generic "Swooshz Quote Auto Generator launch preview" [ref=f16e21]:
+        - generic [ref=f16e22]:
+          - generic [ref=f16e23]: Quote generator preview
+          - generic [ref=f16e24]: ...
+        - generic [ref=f16e25]:
+          - generic [ref=f16e26]: doc
+          - paragraph [ref=f16e27]: Swooshz Quote Auto Generator opens as a separate app after Platform launch checks.
+    - generic [ref=f16e28]:
+      - generic [ref=f16e29]:
+        - heading "Core Platform Capabilities" [level=2] [ref=f16e30]
+        - paragraph [ref=f16e31]: Engineered for controlled access, clear ownership boundaries, and auditability.
+      - generic [ref=f16e32]:
+        - article [ref=f16e33]:
+          - generic [ref=f16e34]: shield
+          - heading "Access Management" [level=3] [ref=f16e35]
+          - paragraph [ref=f16e36]: Platform owns provider identities, sessions, workspace memberships, roles, and app launch eligibility.
+          - generic "Visible workspace roles" [ref=f16e37]:
+            - generic [ref=f16e38]: Owner
+            - generic [ref=f16e39]: Admin
+            - generic [ref=f16e40]: Member
+            - generic [ref=f16e41]: Pending
+        - article [ref=f16e42]:
+          - generic [ref=f16e43]: nodes
+          - heading "Workspace Entitlements" [level=3] [ref=f16e44]
+          - paragraph [ref=f16e45]: App availability is controlled at the workspace boundary and fails closed when access is unavailable.
+        - article [ref=f16e46]:
+          - generic [ref=f16e47]: geo
+          - heading "SEO / GEO / Seozilla" [level=3] [ref=f16e48]
+          - paragraph [ref=f16e49]: Vendor workflow pending. Unavailable until confirmed.
+          - generic [ref=f16e50]: Coming soon
+  - contentinfo [ref=f16e51]:
+    - strong [ref=f16e52]: Swooshz
+    - navigation "Footer navigation" [ref=f16e53]:
+      - link "Resources" [ref=f16e54] [cursor=pointer]:
+        - /url: /resources
+      - link "About" [ref=f16e55] [cursor=pointer]:
+        - /url: /about
+      - link "Contact" [ref=f16e56] [cursor=pointer]:
+        - /url: /contact
+      - link "Request Access" [ref=f16e57] [cursor=pointer]:
+        - /url: /request-access
+      - generic [ref=f16e58]: Privacy
+      - generic [ref=f16e59]: Terms
+      - generic [ref=f16e60]: Security
+      - generic [ref=f16e61]: Status
+    - paragraph [ref=f16e62]: © Swooshz. Content to be finalised before launch.
