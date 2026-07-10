@@ -694,8 +694,10 @@ test("Drizzle audit repository lists workspace events newest first with a safe l
 test("Drizzle repositories expose a transaction runner for admin mutations", async () => {
   const fakeDb = createFakeDrizzleDb();
   let transactionCalled = false;
-  fakeDb.transaction = async (operation) => {
+  let transactionConfig;
+  fakeDb.transaction = async (operation, config) => {
     transactionCalled = true;
+    transactionConfig = config;
     return operation(fakeDb);
   };
 
@@ -709,6 +711,7 @@ test("Drizzle repositories expose a transaction runner for admin mutations", asy
 
   assert.equal(result, "committed");
   assert.equal(transactionCalled, true);
+  assert.deepEqual(transactionConfig, { isolationLevel: "serializable" });
 });
 
 test("pure domain and platform port modules do not import database adapter details", async () => {

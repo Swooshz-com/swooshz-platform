@@ -44,6 +44,8 @@ import {
   type CsrfTokenServiceDependencies,
 } from "./csrf-token-service.js";
 import {
+  DEFAULT_BROWSER_SESSION_COOKIE_NAME,
+  DEFAULT_AUTH_STATE_COOKIE_NAME,
   buildBrowserSessionClearCookie,
   extractBrowserSessionIdFromCookieHeader,
   type BrowserSessionCookieConfig,
@@ -55,7 +57,7 @@ export interface HttpRequestHeaders {
 
 export interface HttpResponseLike {
   status: number;
-  headers?: Record<string, string>;
+  headers?: Record<string, string | readonly string[]>;
   body?: unknown;
 }
 
@@ -113,7 +115,7 @@ export interface SqagBrowserLaunchHttpClient {
     headers: HttpRequestHeaders;
   }): Promise<{
     status: number;
-    headers?: HttpRequestHeaders;
+    headers?: Record<string, string | readonly string[]>;
     body?: unknown;
   }>;
 }
@@ -478,9 +480,20 @@ export async function handleSqagBrowserLaunchRequest(
     return sqagLaunchFailure();
   }
 
-  const setCookie = readHeader(sqagResponse.headers, "set-cookie");
+  const setCookies = readHeaderValues(sqagResponse.headers, "set-cookie");
 
-  if (!setCookie) {
+  if (
+    setCookies.length === 0 ||
+    !setCookies.every((setCookie) => isSafeSqagSetCookie(
+      setCookie,
+      [
+        request.cookie?.name ?? DEFAULT_BROWSER_SESSION_COOKIE_NAME,
+        DEFAULT_AUTH_STATE_COOKIE_NAME,
+      ],
+      launch.launchToken,
+      request.cookie?.secure === true,
+    ))
+  ) {
     return sqagLaunchFailure();
   }
 
@@ -488,7 +501,7 @@ export async function handleSqagBrowserLaunchRequest(
     status: 200,
     headers: {
       ...noStoreHeaders(),
-      "set-cookie": setCookie,
+      "set-cookie": setCookies.length === 1 ? setCookies[0] : setCookies,
     },
     body: {
       outcome: "launch_opened",
@@ -1134,6 +1147,76 @@ function extractSessionId(
   return extractBrowserSessionIdFromCookieHeader(readHeader(headers, "cookie"), config);
 }
 
+function isSafeSqagSetCookie(
+  setCookie: string,
+  reservedCookieNames: readonly string[],
+  launchToken: string,
+  requireSecure: boolean,
+): boolean {
+  if (
+    setCookie.length === 0 ||
+    setCookie.length > 4096 ||
+    /[\u0000-\u001f\u007f]/.test(setCookie)
+  ) {
+    return false;
+  }
+
+  const cookiePairStarts = setCookie.match(
+    /(?:^|,)\s*[!#$%&'*+\-.^_`|~0-9A-Za-z]+=/g,
+  ) ?? [];
+  if (cookiePairStarts.length !== 1) {
+    return false;
+  }
+
+  const parts = setCookie.split(";").map((part) => part.trim());
+  const cookiePair = parts[0];
+  const separatorIndex = cookiePair.indexOf("=");
+
+  if (separatorIndex <= 0) {
+    return false;
+  }
+
+  const cookieName = cookiePair.slice(0, separatorIndex);
+  const cookieValue = cookiePair.slice(separatorIndex + 1);
+  if (
+    !/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(cookieName) ||
+    reservedCookieNames.some(
+      (reservedName) => cookieName.toLowerCase() === reservedName.trim().toLowerCase(),
+    ) ||
+    cookieValue.length === 0
+  ) {
+    return false;
+  }
+
+  let decodedCookieValue: string;
+  try {
+    decodedCookieValue = decodeURIComponent(cookieValue);
+  } catch {
+    return false;
+  }
+  if (
+    setCookie.includes(launchToken) ||
+    setCookie.includes(encodeURIComponent(launchToken)) ||
+    decodedCookieValue.includes(launchToken)
+  ) {
+    return false;
+  }
+
+  const attributes = parts.slice(1).map((attribute) => attribute.toLowerCase());
+  const sameSite = attributes.find((attribute) => attribute.startsWith("samesite="));
+  if (
+    !attributes.includes("httponly") ||
+    !attributes.includes("path=/") ||
+    attributes.some((attribute) => attribute.startsWith("domain=")) ||
+    (sameSite !== "samesite=lax" && sameSite !== "samesite=strict") ||
+    (requireSecure && !attributes.includes("secure"))
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
 async function findSessionSafely(
   sessions: SessionRepository,
   sessionId: string,
@@ -1165,6 +1248,26 @@ function readHeader(
   );
 
   return matchingKey ? headers[matchingKey] : undefined;
+}
+
+function readHeaderValues(
+  headers: Record<string, string | readonly string[]> | undefined,
+  name: string,
+): string[] {
+  if (!headers) {
+    return [];
+  }
+
+  const lowerName = name.toLowerCase();
+  const matchingKey = Object.keys(headers).find(
+    (candidate) => candidate.toLowerCase() === lowerName,
+  );
+  if (!matchingKey) {
+    return [];
+  }
+
+  const value = headers[matchingKey];
+  return typeof value === "string" ? [value] : [...value];
 }
 
 function denied(

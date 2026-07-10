@@ -98,7 +98,7 @@ export function createPlatformStartSqagBrowserLaunchHttpClient(options = {}) {
       return {
         status: response.status,
         headers: {
-          "set-cookie": readSetCookieHeader(response.headers),
+          "set-cookie": readSetCookieHeaders(response.headers),
         },
         async body() {
           try {
@@ -265,16 +265,17 @@ function readSqagAppBaseUrl(env) {
   }
 }
 
-function readSetCookieHeader(headers) {
+function readSetCookieHeaders(headers) {
   if (typeof headers?.getSetCookie === "function") {
-    return headers.getSetCookie()[0] ?? "";
+    return headers.getSetCookie();
   }
 
   if (typeof headers?.get === "function") {
-    return headers.get("set-cookie") ?? "";
+    const value = headers.get("set-cookie");
+    return value ? [value] : [];
   }
 
-  return "";
+  return [];
 }
 
 function readEnvironment(env) {

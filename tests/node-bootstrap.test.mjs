@@ -430,7 +430,7 @@ test("bootstrap-created auth callback succeeds only through injected fake provid
   const bootstrap = createPlatformNodeBootstrap(fixture.input);
 
   await bootstrap.start();
-  await fixture.lastServer.handle({
+  const startResponse = await fixture.lastServer.handle({
     method: "GET",
     url: "/api/platform/auth/start",
     headers: {},
@@ -441,6 +441,7 @@ test("bootstrap-created auth callback succeeds only through injected fake provid
     ),
     fixture.records.authStates[0].stateHash,
   );
+  const bindingCookie = startResponse.headers["set-cookie"].split(";", 1)[0];
   const callbackUrl = `/api/platform/auth/callback?code=synthetic-auth-code&state=${fixture.calls.lastAuthStartInput.state}`;
   assert.equal(
     new URL(callbackUrl, "https://platform.example.invalid").searchParams.get("state"),
@@ -449,7 +450,7 @@ test("bootstrap-created auth callback succeeds only through injected fake provid
   const response = await fixture.lastServer.handle({
     method: "GET",
     url: callbackUrl,
-    headers: {},
+    headers: { cookie: bindingCookie },
   });
 
   assert.equal(response.statusCode, 302, JSON.stringify({
@@ -472,7 +473,7 @@ test("bootstrap-created auth callback succeeds only through injected fake provid
     dbOperations: fixture.calls.dbOperations,
   }));
   assert.equal(response.headers.location, "/app");
-  assert.match(response.headers["set-cookie"], /^swooshz_session=session_auth_bootstrap_1;/);
+  assert.match(response.headers["set-cookie"][0], /^swooshz_session=session_auth_bootstrap_1;/);
   assert.equal(fixture.calls.authExchangeCodeForTokens, 1);
   assert.equal(fixture.calls.authVerifyTokens, 1);
   assert.equal(fixture.records.sessions.length, 1);
@@ -562,6 +563,7 @@ test("bootstrap generic OIDC mode calls provider network only during callback", 
   const authorizationUrl = new URL(startResponse.headers.location);
   const state = authorizationUrl.searchParams.get("state");
   const nonce = authorizationUrl.searchParams.get("nonce");
+  const bindingCookie = startResponse.headers["set-cookie"].split(";", 1)[0];
 
   assert.equal(startResponse.statusCode, 302);
   assert.equal(fixture.calls.genericOidcHttp, 0);
@@ -587,12 +589,12 @@ test("bootstrap generic OIDC mode calls provider network only during callback", 
   const response = await fixture.lastServer.handle({
     method: "GET",
     url: `/api/platform/auth/callback?code=synthetic-auth-code&state=${state}`,
-    headers: {},
+    headers: { cookie: bindingCookie },
   });
 
   assert.equal(response.statusCode, 302);
   assert.equal(response.headers.location, "/app");
-  assert.match(response.headers["set-cookie"], /^swooshz_session=session_auth_bootstrap_1;/);
+  assert.match(response.headers["set-cookie"][0], /^swooshz_session=session_auth_bootstrap_1;/);
   assert.equal(fixture.calls.genericOidcHttp, 2);
   assert.deepEqual(
     fixture.calls.genericOidcHttpUrls,
@@ -619,6 +621,7 @@ test("bootstrap generic OIDC mode fails nonce mismatch and bad signature safely"
     const authorizationUrl = new URL(startResponse.headers.location);
     const state = authorizationUrl.searchParams.get("state");
     const nonce = authorizationUrl.searchParams.get("nonce");
+    const bindingCookie = startResponse.headers["set-cookie"].split(";", 1)[0];
     const idToken = signJwt(fixture.keys, {
       iss: issuerUrl,
       aud: "synthetic-client-id",
@@ -640,7 +643,7 @@ test("bootstrap generic OIDC mode fails nonce mismatch and bad signature safely"
     const response = await fixture.lastServer.handle({
       method: "GET",
       url: `/api/platform/auth/callback?code=synthetic-auth-code&state=${state}`,
-      headers: {},
+      headers: { cookie: bindingCookie },
     });
 
     assert.equal(response.statusCode, 400);

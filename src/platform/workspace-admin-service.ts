@@ -306,6 +306,11 @@ export async function disableWorkspaceMembership(
       throw adminError("not_found", "Workspace membership was not found.");
     }
 
+    await revokeSessionsWithoutActiveMemberships(
+      transactionRepositories,
+      target.userId,
+      input.now,
+    );
     await appendAuditEvent(transactionRepositories, {
       id: input.auditEventId,
       workspaceId: input.workspaceId,
@@ -430,7 +435,11 @@ export async function removeWorkspaceMembership(
       throw adminError("not_found", "Workspace membership was not found.");
     }
 
-    await transactionRepositories.sessions.revokeActiveForUser(target.userId, input.now);
+    await revokeSessionsWithoutActiveMemberships(
+      transactionRepositories,
+      target.userId,
+      input.now,
+    );
 
     await appendAuditEvent(transactionRepositories, {
       id: input.auditEventId,
@@ -449,6 +458,20 @@ export async function removeWorkspaceMembership(
 
     return removed;
   });
+}
+
+async function revokeSessionsWithoutActiveMemberships(
+  repositories: PlatformRepositories,
+  userId: string,
+  now: string,
+): Promise<void> {
+  const remainingMemberships = await repositories.memberships.listForUser(userId);
+
+  if (remainingMemberships.some((membership) => membership.status === "active")) {
+    return;
+  }
+
+  await repositories.sessions.revokeActiveForUser(userId, now);
 }
 
 export async function addExistingWorkspaceUserByEmail(

@@ -89,7 +89,10 @@ export interface DrizzleDatabase {
       returning(): Promise<readonly Row[]>;
     };
   };
-  transaction?<T>(operation: (transactionDb: DrizzleDatabase) => Promise<T>): Promise<T>;
+  transaction?<T>(
+    operation: (transactionDb: DrizzleDatabase) => Promise<T>,
+    config?: { isolationLevel: "serializable" },
+  ): Promise<T>;
 }
 
 export function createDrizzlePlatformRepositories(
@@ -417,8 +420,10 @@ export function createDrizzlePlatformRepositories(
     workspaceAdminTransactions: transaction
       ? {
           run(operation) {
-            return transaction((transactionDb) =>
-              operation(createDrizzlePlatformRepositories(transactionDb)),
+            return transaction(
+              (transactionDb) =>
+                operation(createDrizzlePlatformRepositories(transactionDb)),
+              { isolationLevel: "serializable" },
             );
           },
         }

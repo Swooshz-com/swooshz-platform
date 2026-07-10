@@ -573,22 +573,23 @@ test("runtime composition wires auth callback through injected provider adapter 
     },
   });
 
-  await handleNodePlatformHttpRequest(dependencies, {
+  const startResponse = await handleNodePlatformHttpRequest(dependencies, {
     method: "GET",
     url: "/api/platform/auth/start",
     headers: {},
   });
 
+  const bindingCookie = startResponse.headers["set-cookie"].split(";", 1)[0];
   const response = await handleNodePlatformHttpRequest(dependencies, {
     method: "GET",
     url: `/api/platform/auth/callback?code=synthetic-auth-code&state=${fixture.calls.lastAuthStartInput.state}`,
-    headers: {},
+    headers: { cookie: bindingCookie },
   });
   const body = JSON.parse(response.body);
 
   assert.equal(response.statusCode, 302);
   assert.equal(response.headers.location, "/app");
-  assert.match(response.headers["set-cookie"], /^swooshz_session=session_auth_runtime_1;/);
+  assert.match(response.headers["set-cookie"][0], /^swooshz_session=session_auth_runtime_1;/);
   assert.deepEqual(body, { outcome: "authenticated" });
   assert.equal(fixture.calls.authExchangeCodeForTokens, 1);
   assert.equal(fixture.calls.authVerifyTokens, 1);
