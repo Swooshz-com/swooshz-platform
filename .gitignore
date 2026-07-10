@@ -1,6 +1,13 @@
 node_modules/
 dist/
 
+# Toolkit local repair backups.
+.agent-toolkit-backups/
+
+# Local QA captures and agent planning artifacts.
+output/playwright/
+docs/superpowers/
+
 # Local secrets and operator-only environment files.
 .env
 .env.*
