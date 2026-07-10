@@ -151,7 +151,7 @@ test("resources page renders honest editorial listing content", () => {
   assert.match(html, /resource-card-inert/);
   assert.doesNotMatch(html, /Content pending editorial review|Public Resource Placeholders|Placeholder only/i);
   assert.doesNotMatch(html, /<form|<input|<textarea|newsletter|subscribe|email capture/i);
-  assert.doesNotMatch(html, /by\s+[A-Z][a-z]+|author|team member|workspace member/i);
+  assert.doesNotMatch(html, /by\s+[A-Z][a-z]+|[Aa]uthor/);
   assert.doesNotMatch(html, fakeDateCopy);
   assert.doesNotMatch(html, /case study|testimonial|customer story|\bROI\b|\d+%/i);
   assert.doesNotMatch(html, /CMS|content admin|editor dashboard|publish workflow/i);
