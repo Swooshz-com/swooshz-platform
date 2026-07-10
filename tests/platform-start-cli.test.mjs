@@ -12,6 +12,7 @@ import {
   PlatformStartCliError,
   createPlatformStartBootstrapInput,
   createPlatformStartGenericOidcHttpClient,
+  createPlatformStartSqagBrowserLaunchHttpClient,
   createPlatformStartShutdownHandler,
   executePlatformStart,
   formatPlatformStartSummary,
@@ -171,6 +172,45 @@ test("generic OIDC fetch HTTP client does not call fetch until invoked", async (
     },
   ]);
 });
+test("SQAG handoff HTTP client preserves every upstream Set-Cookie value", async () => {
+  const cookies = [
+    "swooshz_quote_session=safe-session; Path=/; HttpOnly; SameSite=Lax; Secure",
+    "swooshz_quote_device=safe-device; Path=/; HttpOnly; SameSite=Strict; Secure",
+  ];
+  const calls = [];
+  const httpClient = createPlatformStartSqagBrowserLaunchHttpClient({
+    fetchImplementation: async (url, init) => {
+      calls.push({ url, init });
+      return {
+        status: 200,
+        headers: {
+          getSetCookie() {
+            return cookies;
+          },
+        },
+        async json() {
+          return { status: "platform_session_created" };
+        },
+      };
+    },
+  });
+
+  const response = await httpClient.post({
+    url: "https://sqag.example.invalid/api/platform/launch",
+    headers: { "x-app-launch-token": "synthetic-launch-token" },
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.headers["set-cookie"], cookies);
+  assert.deepEqual(calls, [{
+    url: "https://sqag.example.invalid/api/platform/launch",
+    init: {
+      method: "POST",
+      headers: { "x-app-launch-token": "synthetic-launch-token" },
+    },
+  }]);
+});
+
 
 test("generic OIDC mode fails safely before listen when fetch is unavailable", () => {
   assert.throws(

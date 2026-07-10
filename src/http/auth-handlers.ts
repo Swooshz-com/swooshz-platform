@@ -5,6 +5,7 @@ import type {
 } from "../auth/callback.js";
 import type { AuthCallbackServiceDependencies } from "../auth/callback-service.js";
 import { handleAuthCallback } from "../auth/callback-service.js";
+import { authStateReferencesEqual } from "../auth/auth-state-crypto.js";
 import type { AuthConfig } from "../auth/config.js";
 import type { OidcProviderAdapter } from "../auth/oidc.js";
 import {
@@ -13,7 +14,10 @@ import {
 } from "../auth/errors.js";
 import type { HttpResponseLike } from "./handlers.js";
 import {
+  buildAuthStateBindingCookie,
+  buildAuthStateBindingClearCookie,
   buildBrowserSessionSetCookie,
+  extractAuthStateBindingFromCookieHeader,
   type BrowserSessionCookieConfig,
 } from "./session-cookie.js";
 
@@ -41,6 +45,7 @@ export interface AuthStartHttpDependencies {
 
 export interface AuthStartHttpRequest {
   now: string;
+  cookie?: BrowserSessionCookieConfig;
 }
 
 export interface AuthStartFailureDiagnostic {
@@ -125,6 +130,7 @@ export type AuthCallbackFailureCategory =
 export interface AuthCallbackHttpRequest {
   query: RawAuthCallbackParams;
   now: string;
+  headers?: Record<string, string | undefined>;
   cookie?: BrowserSessionCookieConfig;
 }
 
@@ -138,6 +144,7 @@ export async function handleAuthStartRequest(
   let nonce: string;
   let stateHash: string;
   let nonceHash: string;
+  let browserBinding: string;
 
   try {
     state = readFactoryValue(
@@ -186,6 +193,18 @@ export async function handleAuthStartRequest(
       dependencies,
       error,
       "nonce_reference_failed",
+    );
+  }
+
+  try {
+    browserBinding = readReference(
+      dependencies.stateReferenceFactory("browser-binding:" + stateHash),
+    );
+  } catch (error) {
+    return authStartFailureFor(
+      dependencies,
+      error,
+      "state_reference_failed",
     );
   }
 
@@ -252,7 +271,13 @@ export async function handleAuthStartRequest(
   return {
     status: 302,
     headers: {
+      ...noStoreHeaders(),
       location,
+      "set-cookie": buildAuthStateBindingCookie(
+        browserBinding,
+        dependencies.ttlSeconds,
+        request.cookie,
+      ),
     },
     body: {
       outcome: "redirecting",
@@ -265,6 +290,7 @@ export async function handleAuthCallbackRequest(
   request: AuthCallbackHttpRequest,
 ): Promise<HttpResponseLike> {
   try {
+    assertAuthCallbackBrowserBinding(dependencies, request);
     const result = await handleAuthCallback(dependencies, {
       params: request.query,
       now: request.now,
@@ -273,11 +299,12 @@ export async function handleAuthCallbackRequest(
     return {
       status: 302,
       headers: {
+        ...noStoreHeaders(),
         location: normalizeLocalRedirectPath(dependencies.successRedirectPath),
-        "set-cookie": buildBrowserSessionSetCookie(
-          result.session.id,
-          request.cookie,
-        ),
+        "set-cookie": [
+          buildBrowserSessionSetCookie(result.session.id, request.cookie),
+          buildAuthStateBindingClearCookie(request.cookie),
+        ],
       },
       body: {
         outcome: "authenticated",
@@ -288,7 +315,7 @@ export async function handleAuthCallbackRequest(
       category: classifyAuthCallbackFailure(error),
     });
 
-    return authCallbackFailure();
+    return authCallbackFailure(request.cookie);
   }
 }
 
@@ -495,6 +522,47 @@ function normalizeLocalRedirectPath(value: string | undefined): string {
   return candidate;
 }
 
+function assertAuthCallbackBrowserBinding(
+  dependencies: AuthCallbackHttpDependencies,
+  request: AuthCallbackHttpRequest,
+): void {
+  if (!request.query.code || !request.query.state) {
+    return;
+  }
+
+  const rawState = request.query.state?.trim();
+
+  if (!rawState) {
+    return;
+  }
+
+  const stateHash = dependencies.stateReferenceFactory(rawState);
+  const expectedBinding = dependencies.stateReferenceFactory(
+    "browser-binding:" + stateHash,
+  );
+  const actualBinding = extractAuthStateBindingFromCookieHeader(
+    request.headers?.cookie,
+  );
+
+  if (
+    !actualBinding ||
+    !authStateReferencesEqual(actualBinding, expectedBinding)
+  ) {
+    throw new AuthCallbackError(
+      "missing_stored_state",
+      "Authentication callback state could not be verified.",
+    );
+  }
+}
+
+function noStoreHeaders(): Record<string, string> {
+  return {
+    "cache-control": "no-store, no-cache, must-revalidate",
+    pragma: "no-cache",
+    expires: "0",
+  };
+}
+
 function authStartFailureFor(
   dependencies: AuthStartHttpDependencies,
   error: unknown,
@@ -510,6 +578,7 @@ function authStartFailureFor(
 function authStartFailure(): HttpResponseLike {
   return {
     status: 500,
+    headers: noStoreHeaders(),
     body: {
       outcome: "error",
       message: "Authentication start could not be completed.",
@@ -517,9 +586,15 @@ function authStartFailure(): HttpResponseLike {
   };
 }
 
-function authCallbackFailure(): HttpResponseLike {
+function authCallbackFailure(
+  cookie: BrowserSessionCookieConfig | undefined,
+): HttpResponseLike {
   return {
     status: 400,
+    headers: {
+      ...noStoreHeaders(),
+      "set-cookie": buildAuthStateBindingClearCookie(cookie),
+    },
     body: {
       outcome: "error",
       message: "Authentication callback could not be completed.",

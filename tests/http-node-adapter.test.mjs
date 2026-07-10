@@ -24,6 +24,7 @@ const launchTokenExpiresAt = "2026-06-27T00:05:00.000Z";
 const authState = "synthetic-browser-state-reference";
 const authNonce = "synthetic-browser-nonce-reference";
 const authStateHash = "hash_synthetic_browser_state_reference";
+const authBrowserBindingHash = "browser_binding_hash_reference";
 const authNonceHash = "hash_synthetic_browser_nonce_reference";
 const providerAuthorizationUrl =
   "https://auth.example.invalid/oauth2/authorize?request=synthetic-authorization";
@@ -584,7 +585,7 @@ test("SQAG browser launch handoff consumes token server-side and returns safe la
 
   assert.equal(response.statusCode, 200);
   assertNoStoreHeaders(response.headers);
-  assert.equal(response.headers["set-cookie"], "swooshz_quote_session=safe-sqag-session; Path=/; HttpOnly; SameSite=Lax");
+  assert.equal(response.headers["set-cookie"], "swooshz_quote_session=safe-sqag-session; Path=/; HttpOnly; SameSite=Lax; Secure");
   assert.deepEqual(body, {
     outcome: "launch_opened",
     appKey: "sqag",
@@ -606,6 +607,142 @@ test("SQAG browser launch handoff consumes token server-side and returns safe la
   assert.doesNotMatch(response.headers.location ?? "", new RegExp(rawLaunchToken));
   assert.doesNotMatch(response.headers["set-cookie"], new RegExp(rawLaunchToken));
   assertResponseIsPrivacySafe(response);
+});
+
+test("SQAG browser launch handoff rejects attempts to overwrite the Platform session cookie", async () => {
+  const fixture = createAdapterFixture({
+    sqagLaunchHandoff: {
+      baseUrl: "http://127.0.0.1:8765",
+      setCookie: "SwOoShZ_SeSsIoN=attacker-controlled; Domain=.example.invalid; Path=/api/platform; HttpOnly; SameSite=Lax; Secure",
+    },
+  });
+
+  const { response, body } = await request({
+    method: "POST",
+    url: "/api/platform/apps/launch/open?workspaceId=workspace_koncept_images&appKey=sqag",
+    headers: {
+      ...logoutHeaders(),
+      host: "127.0.0.1:4317",
+    },
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 502);
+  assertNoStoreHeaders(response.headers);
+  assert.deepEqual(body, {
+    outcome: "error",
+    message: "SQAG browser launch could not be completed.",
+  });
+  assert.equal(response.headers["set-cookie"], undefined);
+  assertResponseIsPrivacySafe(response);
+});
+
+test("SQAG browser launch rejects mixed safe and reserved upstream cookies", async () => {
+  const fixture = createAdapterFixture({
+    sqagLaunchHandoff: {
+      baseUrl: "http://127.0.0.1:8765",
+      setCookie: [
+        "swooshz_quote_session=safe-session; Path=/; HttpOnly; SameSite=Lax; Secure",
+        "SWOOSHZ_SESSION=attacker-session; Path=/; HttpOnly; SameSite=Lax; Secure",
+      ],
+    },
+  });
+
+  const { response, body } = await request({
+    method: "POST",
+    url: "/api/platform/apps/launch/open?workspaceId=workspace_koncept_images&appKey=sqag",
+    headers: {
+      ...logoutHeaders(),
+      host: "127.0.0.1:4317",
+    },
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 502);
+  assertNoStoreHeaders(response.headers);
+  assert.equal(response.headers["set-cookie"], undefined);
+  assert.deepEqual(body, {
+    outcome: "error",
+    message: "SQAG browser launch could not be completed.",
+  });
+  assertResponseIsPrivacySafe(response);
+});
+
+test("SQAG browser launch preserves multiple reviewed safe cookies", async () => {
+  const safeCookies = [
+    "swooshz_quote_session=safe-session; Path=/; HttpOnly; SameSite=Lax; Secure",
+    "swooshz_quote_device=safe-device; Path=/; HttpOnly; SameSite=Strict; Secure",
+  ];
+  const fixture = createAdapterFixture({
+    sqagLaunchHandoff: {
+      baseUrl: "http://127.0.0.1:8765",
+      setCookie: safeCookies,
+    },
+  });
+
+  const { response, body } = await request({
+    method: "POST",
+    url: "/api/platform/apps/launch/open?workspaceId=workspace_koncept_images&appKey=sqag",
+    headers: {
+      ...logoutHeaders(),
+      host: "127.0.0.1:4317",
+    },
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 200);
+  assertNoStoreHeaders(response.headers);
+  assert.deepEqual(response.headers["set-cookie"], safeCookies);
+  assert.equal(body.outcome, "launch_opened");
+  assertResponseIsPrivacySafe(response);
+});
+
+test("SQAG browser launch rejects raw launch-token reflection in a cookie", async () => {
+  const fixture = createAdapterFixture({
+    sqagLaunchHandoff: {
+      baseUrl: "http://127.0.0.1:8765",
+      setCookie: `swooshz_quote_session=${rawLaunchToken}; Path=/; HttpOnly; SameSite=Lax; Secure`,
+    },
+  });
+
+  const { response, body } = await request({
+    method: "POST",
+    url: "/api/platform/apps/launch/open?workspaceId=workspace_koncept_images&appKey=sqag",
+    headers: {
+      ...logoutHeaders(),
+      host: "127.0.0.1:4317",
+    },
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(response.statusCode, 502);
+  assertNoStoreHeaders(response.headers);
+  assert.equal(response.headers["set-cookie"], undefined);
+  assert.doesNotMatch(JSON.stringify(response), new RegExp(rawLaunchToken));
+  assert.doesNotMatch(JSON.stringify(body), new RegExp(rawLaunchToken));
+  assertResponseIsPrivacySafe(response);
+});
+
+test("SQAG browser launch rejects combined or malformed upstream cookies", async () => {
+  for (const setCookie of [
+    "swooshz_quote_session=safe; Path=/; HttpOnly; SameSite=Lax; Secure, swooshz_session=bad; Path=/; HttpOnly",
+    "swooshz_quote_session=safe\r\nInjected: value; Path=/; HttpOnly; SameSite=Lax; Secure",
+    `swooshz_quote_session=${"x".repeat(4097)}; Path=/; HttpOnly; SameSite=Lax; Secure`,
+  ]) {
+    const fixture = createAdapterFixture({
+      sqagLaunchHandoff: { baseUrl: "http://127.0.0.1:8765", setCookie },
+    });
+    const { response } = await request({
+      method: "POST",
+      url: "/api/platform/apps/launch/open?workspaceId=workspace_koncept_images&appKey=sqag",
+      headers: { ...logoutHeaders(), host: "127.0.0.1:4317" },
+      dependencies: fixture.dependencies,
+    });
+
+    assert.equal(response.statusCode, 502);
+    assert.equal(response.headers["set-cookie"], undefined);
+    assertNoStoreHeaders(response.headers);
+  }
 });
 
 test("SQAG browser launch handoff fails safely without session access config or safe cookie host", async () => {
@@ -912,6 +1049,15 @@ test("auth start route redirects to provider and stores only state references", 
 
   assert.equal(response.statusCode, 302);
   assert.equal(response.headers.location, providerAuthorizationUrl);
+  assertNoStoreHeaders(response.headers);
+  const bindingCookies = setCookieHeaders(response);
+  assert.equal(bindingCookies.length, 1);
+  assert.match(bindingCookies[0], /^swooshz_auth_state=browser_binding_hash_reference;/);
+  assert.match(bindingCookies[0], /HttpOnly/);
+  assert.match(bindingCookies[0], /Path=\/api\/platform\/auth\/callback/);
+  assert.match(bindingCookies[0], /SameSite=Lax/);
+  assert.match(bindingCookies[0], /Max-Age=600/);
+  assert.match(bindingCookies[0], /Secure/);
   assert.deepEqual(body, { outcome: "redirecting" });
   assert.equal(fixture.calls.authStateStore, 1);
   assert.deepEqual(fixture.records.authStates[0], {
@@ -929,29 +1075,54 @@ test("auth start route redirects to provider and stores only state references", 
 
 test("auth callback route sets a browser session cookie on success", async () => {
   const fixture = createAdapterFixture();
+  const start = await request({
+    method: "GET",
+    url: "/api/platform/auth/start",
+    dependencies: fixture.dependencies,
+  });
+  const bindingCookie = requestCookieFromSetCookie(setCookieHeaders(start.response)[0]);
   const { response, body } = await request({
     method: "GET",
+    headers: {
+      cookie: bindingCookie,
+    },
     url: `/api/platform/auth/callback?code=synthetic-auth-code&state=${authState}`,
     dependencies: fixture.dependencies,
   });
 
   assert.equal(response.statusCode, 302);
   assert.equal(response.headers.location, "/app");
-  assert.match(response.headers["set-cookie"], /^swooshz_session=session_auth_callback_1;/);
-  assert.match(response.headers["set-cookie"], /HttpOnly/);
-  assert.match(response.headers["set-cookie"], /SameSite=Lax/);
-  assert.match(response.headers["set-cookie"], /Secure/);
+  const callbackCookies = setCookieHeaders(response);
+  assert.equal(callbackCookies.length, 2);
+  assert.match(callbackCookies[0], /^swooshz_session=session_auth_callback_1;/);
+  assert.match(callbackCookies[0], /HttpOnly/);
+  assert.match(callbackCookies[0], /Path=\/api\/platform/);
+  assert.match(callbackCookies[0], /Secure/);
+  assert.match(callbackCookies[1], /^swooshz_auth_state=;/);
+  assert.match(callbackCookies[1], /Path=\/api\/platform\/auth\/callback/);
+  assert.match(callbackCookies[1], /Max-Age=0/);
+  assert.match(callbackCookies[1], /Secure/);
   assert.deepEqual(body, { outcome: "authenticated" });
   assert.equal(fixture.calls.authStateConsume, 1);
   assert.equal(fixture.calls.authTokenExchange, 1);
+  assert.equal(fixture.calls.authIdentityResolve, 1);
   assert.doesNotMatch(JSON.stringify(body), /session_auth_callback_1/);
   assertResponseIsPrivacySafe(response);
 });
 
 test("auth callback missing code or state renders safe browser error page", async () => {
   const fixture = createAdapterFixture();
+  const start = await request({
+    method: "GET",
+    url: "/api/platform/auth/start",
+    dependencies: fixture.dependencies,
+  });
+  const bindingCookie = requestCookieFromSetCookie(setCookieHeaders(start.response)[0]);
   const { response, body } = await request({
     method: "GET",
+    headers: {
+      cookie: bindingCookie,
+    },
     url: `/api/platform/auth/callback?state=${authState}`,
     dependencies: fixture.dependencies,
   });
@@ -963,15 +1134,28 @@ test("auth callback missing code or state renders safe browser error page", asyn
   assert.match(body, /Access not approved/);
   assert.match(body, /href="\/api\/platform\/auth\/start"/);
   assert.doesNotMatch(body, /synthetic-auth-code|synthetic-browser-state-reference|provider-subject/i);
-  assert.equal(response.headers["set-cookie"], undefined);
+  assert.equal(setCookieHeaders(response).length, 1);
+  assert.match(setCookieHeaders(response)[0], /^swooshz_auth_state=;/);
+  assert.match(setCookieHeaders(response)[0], /Max-Age=0/);
+  assert.equal(fixture.calls.authStateConsume, 0);
   assert.equal(fixture.calls.authTokenExchange, 0);
+  assert.equal(fixture.calls.authIdentityResolve, 0);
   assertResponseIsPrivacySafe(response);
 });
 
 test("auth callback unapproved provider account renders safe retry UI", async () => {
   const fixture = createAdapterFixture({ authIdentityErrorCode: "email_not_allowed" });
+  const start = await request({
+    method: "GET",
+    url: "/api/platform/auth/start",
+    dependencies: fixture.dependencies,
+  });
+  const bindingCookie = requestCookieFromSetCookie(setCookieHeaders(start.response)[0]);
   const { response, body } = await request({
     method: "GET",
+    headers: {
+      cookie: bindingCookie,
+    },
     url: `/api/platform/auth/callback?code=synthetic-auth-code&state=${authState}`,
     dependencies: fixture.dependencies,
   });
@@ -982,10 +1166,100 @@ test("auth callback unapproved provider account renders safe retry UI", async ()
   assert.match(body, /Access not approved/);
   assert.match(body, /Try another Google account/);
   assert.match(body, /href="\/api\/platform\/auth\/start"/);
-  assert.equal(response.headers["set-cookie"], undefined);
+  assert.equal(setCookieHeaders(response).length, 1);
+  assert.match(setCookieHeaders(response)[0], /^swooshz_auth_state=;/);
+  assert.match(setCookieHeaders(response)[0], /Max-Age=0/);
+  assert.equal(fixture.calls.authStateConsume, 1);
+  assert.equal(fixture.calls.authTokenExchange, 1);
+  assert.equal(fixture.calls.authIdentityResolve, 1);
   assert.doesNotMatch(body, /synthetic-auth-code|synthetic-browser-state-reference/);
   assert.doesNotMatch(body, /email_not_allowed|AUTH_ALLOWED_EMAILS|provider-subject|raw-claim/i);
   assertResponseIsPrivacySafe(response);
+});
+
+test("transferred OIDC callback cannot authenticate a browser without the initiating binding", async () => {
+  const fixture = createAdapterFixture();
+  const start = await request({
+    method: "GET",
+    url: "/api/platform/auth/start",
+    dependencies: fixture.dependencies,
+  });
+  const browserABinding = requestCookieFromSetCookie(
+    setCookieHeaders(start.response)[0],
+  );
+
+  const browserB = await request({
+    method: "GET",
+    url: `/api/platform/auth/callback?code=synthetic-auth-code&state=${authState}`,
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(browserB.response.statusCode, 400);
+  assertNoStoreHeaders(browserB.response.headers);
+  assert.equal(fixture.calls.authStateConsume, 0);
+  assert.equal(fixture.calls.authTokenExchange, 0);
+  assert.equal(fixture.calls.authIdentityResolve, 0);
+  assert.equal(setCookieHeaders(browserB.response).length, 1);
+  assert.match(setCookieHeaders(browserB.response)[0], /^swooshz_auth_state=;/);
+  assert.doesNotMatch(JSON.stringify(browserB.body), /session_auth_callback_1|browser_binding_hash_reference/);
+  assertResponseIsPrivacySafe(browserB.response);
+
+  const browserA = await request({
+    method: "GET",
+    headers: { cookie: browserABinding },
+    url: `/api/platform/auth/callback?code=synthetic-auth-code&state=${authState}`,
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(browserA.response.statusCode, 302);
+  assert.equal(fixture.calls.authStateConsume, 1);
+  assert.equal(fixture.calls.authTokenExchange, 1);
+  assert.equal(fixture.calls.authIdentityResolve, 1);
+  assert.match(setCookieHeaders(browserA.response)[0], /^swooshz_session=/);
+  assertResponseIsPrivacySafe(browserA.response);
+});
+
+test("consumed OIDC callback state and cleared browser binding cannot be replayed", async () => {
+  const fixture = createAdapterFixture();
+  const start = await request({
+    method: "GET",
+    url: "/api/platform/auth/start",
+    dependencies: fixture.dependencies,
+  });
+  const bindingCookie = requestCookieFromSetCookie(setCookieHeaders(start.response)[0]);
+  const callbackUrl = `/api/platform/auth/callback?code=synthetic-auth-code&state=${authState}`;
+
+  const first = await request({
+    method: "GET",
+    headers: { cookie: bindingCookie },
+    url: callbackUrl,
+    dependencies: fixture.dependencies,
+  });
+  const replay = await request({
+    method: "GET",
+    headers: { cookie: bindingCookie },
+    url: callbackUrl,
+    dependencies: fixture.dependencies,
+  });
+  const afterClear = await request({
+    method: "GET",
+    url: callbackUrl,
+    dependencies: fixture.dependencies,
+  });
+
+  assert.equal(first.response.statusCode, 302);
+  assert.equal(replay.response.statusCode, 400);
+  assert.equal(afterClear.response.statusCode, 400);
+  assert.equal(fixture.calls.authStateConsume, 2);
+  assert.equal(fixture.calls.authTokenExchange, 1);
+  assert.equal(fixture.calls.authIdentityResolve, 1);
+  assert.equal(setCookieHeaders(replay.response).length, 1);
+  assert.match(setCookieHeaders(replay.response)[0], /^swooshz_auth_state=;/);
+  assert.doesNotMatch(setCookieHeaders(replay.response)[0], /^swooshz_session=/);
+  assert.equal(setCookieHeaders(afterClear.response).length, 1);
+  assert.match(setCookieHeaders(afterClear.response)[0], /^swooshz_auth_state=;/);
+  assertResponseIsPrivacySafe(replay.response);
+  assertResponseIsPrivacySafe(afterClear.response);
 });
 
 test("auth route wrong methods return safe 405 responses", async () => {
@@ -1311,6 +1585,7 @@ function createAdapterFixture(overrides = {}) {
   };
   const calls = instrumentRepositories(repositories);
   calls.sqagLaunchRequests = [];
+  let authStateConsumed = false;
   const dependencies = {
     repositories,
     now: () => now,
@@ -1392,6 +1667,11 @@ function createAdapterFixture(overrides = {}) {
         async consumeState(input) {
           calls.authStateConsume += 1;
           assert.equal(input.stateHash, authStateHash);
+          if (authStateConsumed) {
+            return null;
+          }
+
+          authStateConsumed = true;
           return {
             providerKey: "example-oidc",
             stateHash: authStateHash,
@@ -1407,6 +1687,7 @@ function createAdapterFixture(overrides = {}) {
       },
       platformIdentityResolver: {
         async resolveAuthenticatedIdentity(input) {
+          calls.authIdentityResolve += 1;
           if (overrides.authIdentityErrorCode) {
             throw new AuthCallbackError(
               overrides.authIdentityErrorCode,
@@ -1473,7 +1754,8 @@ function createAdapterFixture(overrides = {}) {
           return {
             status: overrides.sqagLaunchHandoff.status ?? 200,
             headers: {
-              "set-cookie": "swooshz_quote_session=safe-sqag-session; Path=/; HttpOnly; SameSite=Lax",
+              "set-cookie": overrides.sqagLaunchHandoff.setCookie ??
+                "swooshz_quote_session=safe-sqag-session; Path=/; HttpOnly; SameSite=Lax; Secure",
             },
             body: overrides.sqagLaunchHandoff.body ?? {
               status: "platform_session_created",
@@ -1498,6 +1780,7 @@ function instrumentRepositories(repositories) {
     authStateStore: 0,
     authStateConsume: 0,
     authTokenExchange: 0,
+    authIdentityResolve: 0,
   };
 
   const originalFindById = repositories.sessions.findById.bind(repositories.sessions);
@@ -1559,7 +1842,25 @@ function hashAuthReference(value) {
     return authNonceHash;
   }
 
+  if (value === "browser-binding:" + authStateHash) {
+    return authBrowserBindingHash;
+  }
+
   return "hash_unknown_reference";
+}
+
+function setCookieHeaders(response) {
+  const value = response.headers["set-cookie"];
+
+  if (!value) {
+    return [];
+  }
+
+  return Array.isArray(value) ? value : [value];
+}
+
+function requestCookieFromSetCookie(setCookie) {
+  return setCookie.split(";", 1)[0];
 }
 
 function logoutHeaders({ csrfToken = validCsrfToken } = {}) {

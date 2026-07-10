@@ -17,6 +17,7 @@ const rawState = "synthetic-browser-state-reference";
 const rawNonce = "synthetic-browser-nonce-reference";
 const stateHash = "hash_synthetic_browser_state_reference";
 const nonceHash = "hash_synthetic_browser_nonce_reference";
+const browserBindingHash = "browser_binding_hash_reference";
 const providerAuthorizationUrl =
   "https://auth.example.invalid/oauth2/authorize?request=synthetic-authorization";
 const sessionId = "session_auth_callback_1";
@@ -57,6 +58,43 @@ test("auth start returns provider redirect and stores only hashed state and nonc
   assertHttpAuthResponseIsSafe(response);
 });
 
+
+test("auth start binds the callback to a transient browser transaction cookie", async () => {
+  const startFixture = createAuthStartFixture();
+  const startResponse = await handleAuthStartRequest(startFixture.dependencies, {
+    now,
+    cookie: { secure: true },
+  });
+
+  assert.equal(startResponse.status, 302);
+  assert.match(
+    startResponse.headers["set-cookie"],
+    /^swooshz_auth_state=browser_binding_hash_reference;/,
+  );
+  assert.match(startResponse.headers["set-cookie"], /Path=\/api\/platform\/auth\/callback/);
+  assert.match(startResponse.headers["set-cookie"], /HttpOnly/);
+  assert.match(startResponse.headers["set-cookie"], /SameSite=Lax/);
+  assert.match(startResponse.headers["set-cookie"], /Secure/);
+
+  const callbackFixture = createAuthCallbackFixture();
+  const callbackResponse = await handleAuthCallbackRequest(
+    callbackFixture.dependencies,
+    {
+      query: { code: "synthetic-auth-code", state: rawState },
+      headers: {
+        cookie: "swooshz_auth_state=wrong-browser-binding",
+      },
+      now,
+      cookie: { secure: true },
+    },
+  );
+
+  assert.equal(callbackResponse.status, 400);
+  assert.equal(callbackFixture.oidcAdapter.exchangedInputs.length, 0);
+  assert.match(callbackResponse.headers["set-cookie"], /^swooshz_auth_state=;/);
+  assert.match(callbackResponse.headers["set-cookie"], /Max-Age=0/);
+  assertHttpAuthResponseIsSafe(callbackResponse);
+});
 test("auth start requests provider account selection without exposing auth material", async () => {
   const fixture = createAuthStartFixture();
 
@@ -197,15 +235,22 @@ test("auth callback success sets browser session cookie without exposing session
   const response = await handleAuthCallbackRequest(fixture.dependencies, {
     query: { code: "synthetic-auth-code", state: rawState },
     now,
+    headers: {
+      cookie: "swooshz_auth_state=" + browserBindingHash,
+    },
     cookie: { secure: true },
   });
 
   assert.equal(response.status, 302);
   assert.equal(response.headers.location, "/app");
-  assert.match(response.headers["set-cookie"], /^swooshz_session=session_auth_callback_1;/);
-  assert.match(response.headers["set-cookie"], /HttpOnly/);
-  assert.match(response.headers["set-cookie"], /SameSite=Lax/);
-  assert.match(response.headers["set-cookie"], /Secure/);
+  assert.deepEqual(response.headers["set-cookie"].length, 2);
+  assert.match(response.headers["set-cookie"][0], /^swooshz_session=session_auth_callback_1;/);
+  assert.match(response.headers["set-cookie"][0], /Path=\/api\/platform/);
+  assert.match(response.headers["set-cookie"][0], /HttpOnly/);
+  assert.match(response.headers["set-cookie"][1], /^swooshz_auth_state=;/);
+  assert.match(response.headers["set-cookie"][1], /Path=\/api\/platform\/auth\/callback/);
+  assert.match(response.headers["set-cookie"][1], /Max-Age=0/);
+  assert.match(response.headers["set-cookie"][1], /Secure/);
   assert.deepEqual(response.body, { outcome: "authenticated" });
   assert.equal(fixture.stateStore.consumedInputs[0].stateHash, stateHash);
   assert.equal(fixture.oidcAdapter.exchangedInputs[0].code, "synthetic-auth-code");
@@ -230,6 +275,9 @@ test("auth callback failure does not expose provider or callback details", async
       state: rawState,
     },
     now,
+    headers: {
+      cookie: "swooshz_auth_state=" + browserBindingHash,
+    },
     cookie: { secure: true },
   });
 
@@ -238,7 +286,8 @@ test("auth callback failure does not expose provider or callback details", async
     outcome: "error",
     message: "Authentication callback could not be completed.",
   });
-  assert.equal(response.headers?.["set-cookie"], undefined);
+  assert.match(response.headers["set-cookie"], /^swooshz_auth_state=;/);
+  assert.match(response.headers["set-cookie"], /Max-Age=0/);
   assert.deepEqual(diagnostics, [{ category: "provider_error" }]);
   assertHttpAuthResponseIsSafe(response);
   assertHttpAuthDiagnosticIsSafe(diagnostics);
@@ -263,6 +312,9 @@ test("auth callback provider diagnostics report only a stable safe category", as
     },
     now,
     cookie: { secure: true },
+    headers: {
+      cookie: "swooshz_auth_state=" + browserBindingHash,
+    },
   });
 
   assert.equal(response.status, 400);
@@ -359,6 +411,10 @@ function createAuthStartFixture(options = {}) {
         return nonceHash;
       }
 
+
+      if (value === "browser-binding:" + stateHash) {
+        return browserBindingHash;
+      }
       throw new Error(privateFailure);
     },
     ttlSeconds: 600,
@@ -440,8 +496,13 @@ function createAuthCallbackFixture(options = {}) {
       platformIdentityResolver,
       callbackFailureReporter: options.callbackFailureReporter,
       stateReferenceFactory(value) {
-        assert.equal(value, rawState);
-        return stateHash;
+        if (value === rawState) {
+          return stateHash;
+        }
+        if (value === "browser-binding:" + stateHash) {
+          return browserBindingHash;
+        }
+        throw new Error(privateFailure);
       },
       stateStore,
     },

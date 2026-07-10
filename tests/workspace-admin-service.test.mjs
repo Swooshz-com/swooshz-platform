@@ -1173,6 +1173,12 @@ test("self-demotion and self-removal are guarded", async () => {
 test("owner and admin can disable membership and disabled user cannot launch SQAG", async () => {
   const { repositories, input, records } = adminFixture({ role: "owner" });
 
+  const broadRevocations = [];
+  const revokeActiveForUser = repositories.sessions.revokeActiveForUser.bind(repositories.sessions);
+  repositories.sessions.revokeActiveForUser = async (userId, revokedAt) => {
+    broadRevocations.push({ userId, revokedAt });
+    return revokeActiveForUser(userId, revokedAt);
+  };
   const result = await disableWorkspaceMembership(repositories, {
     ...input,
     membershipId: "membership_member_example",
@@ -1207,7 +1213,84 @@ test("owner and admin can disable membership and disabled user cannot launch SQA
     appKey: "sqag",
     now,
   });
-  assert.equal(accessDecision.result, AccessDecisionResult.MembershipRequired);
+  assert.equal(accessDecision.result, AccessDecisionResult.NotAuthenticated);
+  assert.equal(
+    records.sessions.find((session) => session.id === "session_member_example")?.revokedAt,
+    now,
+  );
+  assert.deepEqual(broadRevocations, [
+    { userId: "user_member_example", revokedAt: now },
+  ]);
+  assert.equal(
+    records.sessions.find((session) => session.id === "session_owner_example")?.revokedAt,
+    null,
+  );
+});
+
+test("disabling one of two active workspace memberships preserves the shared session", async () => {
+  const { repositories, input, records } = adminFixture({
+    extraMemberships: [
+      {
+        id: "membership_member_other_workspace",
+        workspaceId: "workspace_other_example",
+        userId: "user_member_example",
+        role: "member",
+        status: "active",
+        createdAt: earlier,
+        updatedAt: earlier,
+      },
+    ],
+  });
+  records.appEntitlements.push({
+    id: "entitlement_other_sqag",
+    workspaceId: "workspace_other_example",
+    appId: "app_sqag",
+    status: "enabled",
+    grantedByUserId: "user_owner_example",
+    createdAt: earlier,
+    updatedAt: earlier,
+  });
+  let broadRevocationCalls = 0;
+  const revokeActiveForUser = repositories.sessions.revokeActiveForUser.bind(repositories.sessions);
+  repositories.sessions.revokeActiveForUser = async (...args) => {
+    broadRevocationCalls += 1;
+    return revokeActiveForUser(...args);
+  };
+
+  await disableWorkspaceMembership(repositories, {
+    ...input,
+    membershipId: "membership_member_example",
+    auditEventId: "audit_membership_disabled_with_other_workspace",
+  });
+
+  assert.equal(
+    records.sessions.find((session) => session.id === "session_member_example")?.revokedAt,
+    null,
+  );
+  assert.equal(broadRevocationCalls, 0);
+  const disabledWorkspaceAccess = await decidePlatformAppAccess(repositories, {
+    sessionId: "session_member_example",
+    selectedWorkspaceId: "workspace_koncept_images",
+    appKey: "sqag",
+    now,
+  });
+  const remainingWorkspaceAccess = await decidePlatformAppAccess(repositories, {
+    sessionId: "session_member_example",
+    selectedWorkspaceId: "workspace_other_example",
+    appKey: "sqag",
+    now,
+  });
+
+  assert.equal(
+    disabledWorkspaceAccess.result,
+    AccessDecisionResult.MembershipRequired,
+  );
+  assert.equal(remainingWorkspaceAccess.result, AccessDecisionResult.Allowed);
+  assert.equal(
+    records.memberships.find((membership) => membership.id === "membership_member_other_workspace")
+      ?.status,
+    "active",
+  );
 });
 
 test("owner and admin can reactivate disabled non-owner membership", async () => {
@@ -1226,7 +1309,7 @@ test("owner and admin can reactivate disabled non-owner membership", async () =>
       appKey: "sqag",
       now,
     });
-    assert.equal(deniedWhileDisabled.result, AccessDecisionResult.MembershipRequired);
+    assert.equal(deniedWhileDisabled.result, AccessDecisionResult.NotAuthenticated);
 
     const result = await reactivateWorkspaceMembership(repositories, {
       ...input,
@@ -1263,7 +1346,11 @@ test("owner and admin can reactivate disabled non-owner membership", async () =>
       appKey: "sqag",
       now,
     });
-  assert.equal(allowedAfterReactivation.result, AccessDecisionResult.Allowed);
+    assert.equal(allowedAfterReactivation.result, AccessDecisionResult.NotAuthenticated);
+    assert.equal(
+      records.sessions.find((session) => session.id === "session_member_example")?.revokedAt,
+      now,
+    );
   }
 });
 
@@ -1299,6 +1386,16 @@ test("owner and admin can remove active or disabled non-owner membership without
           },
         ],
       });
+      records.appEntitlements.push({
+        id: `entitlement_other_sqag_${role}_${status}`,
+        workspaceId: "workspace_other_example",
+        appId: "app_sqag",
+        status: "enabled",
+        grantedByUserId: "user_owner_example",
+        createdAt: earlier,
+        updatedAt: earlier,
+      });
+
 
       const result = await removeWorkspaceMembership(repositories, {
         ...input,
@@ -1333,6 +1430,10 @@ test("owner and admin can remove active or disabled non-owner membership without
         true,
       );
       assert.equal(records.sessions.some((session) => session.id === "session_member_example"), true);
+      assert.equal(
+        records.sessions.find((session) => session.id === "session_member_example")?.revokedAt,
+        null,
+      );
       assert.deepEqual(records.auditEvents.at(-1), {
         id: `audit_membership_removed_${role}_${status}`,
         workspaceId: "workspace_koncept_images",
@@ -1355,12 +1456,94 @@ test("owner and admin can remove active or disabled non-owner membership without
         appKey: "sqag",
         now,
       });
-      assert.equal(accessDecision.result, AccessDecisionResult.NotAuthenticated);
+      assert.equal(accessDecision.result, AccessDecisionResult.MembershipRequired);
+      const otherWorkspaceAccess = await decidePlatformAppAccess(repositories, {
+        sessionId: "session_member_example",
+        selectedWorkspaceId: "workspace_other_example",
+        appKey: "sqag",
+        now,
+      });
+      assert.equal(otherWorkspaceAccess.result, AccessDecisionResult.Allowed);
     }
   }
 });
 
-test("membership removal revokes the removed user's active sessions", async () => {
+test("removing the final active membership revokes only that user's active sessions", async () => {
+  const { repositories, input, records } = adminFixture();
+  records.sessions.push(
+    {
+      id: "session_member_second_example",
+      userId: "user_member_example",
+      createdAt: earlier,
+      expiresAt: future,
+      lastSeenAt: earlier,
+      revokedAt: null,
+    },
+    {
+      id: "session_member_already_revoked_example",
+      userId: "user_member_example",
+      createdAt: past,
+      expiresAt: future,
+      lastSeenAt: past,
+      revokedAt: earlier,
+    },
+    {
+      id: "session_unrelated_example",
+      userId: "user_viewer_example",
+      createdAt: earlier,
+      expiresAt: future,
+      lastSeenAt: earlier,
+      revokedAt: null,
+    },
+  );
+  const broadRevocations = [];
+  const revokeActiveForUser = repositories.sessions.revokeActiveForUser.bind(repositories.sessions);
+  repositories.sessions.revokeActiveForUser = async (userId, revokedAt) => {
+    broadRevocations.push({ userId, revokedAt });
+    return revokeActiveForUser(userId, revokedAt);
+  };
+
+  await removeWorkspaceMembership(repositories, {
+    ...input,
+    membershipId: "membership_member_example",
+    auditEventId: "audit_final_membership_removed",
+  });
+
+  assert.deepEqual(broadRevocations, [
+    { userId: "user_member_example", revokedAt: now },
+  ]);
+  assert.equal(
+    records.sessions.find((session) => session.id === "session_member_example")?.revokedAt,
+    now,
+  );
+  assert.equal(
+    records.sessions.find((session) => session.id === "session_member_second_example")?.revokedAt,
+    now,
+  );
+  assert.equal(
+    records.sessions.find(
+      (session) => session.id === "session_member_already_revoked_example",
+    )?.revokedAt,
+    earlier,
+  );
+  assert.equal(
+    records.sessions.find((session) => session.id === "session_owner_example")?.revokedAt,
+    null,
+  );
+  assert.equal(
+    records.sessions.find((session) => session.id === "session_unrelated_example")?.revokedAt,
+    null,
+  );
+  const accessDecision = await decidePlatformAppAccess(repositories, {
+    sessionId: "session_member_example",
+    selectedWorkspaceId: "workspace_koncept_images",
+    appKey: "sqag",
+    now,
+  });
+  assert.equal(accessDecision.result, AccessDecisionResult.NotAuthenticated);
+});
+
+test("membership removal preserves sessions when another active membership remains", async () => {
   const { repositories, input, records } = adminFixture({
     extraMemberships: [
       {
@@ -1384,6 +1567,13 @@ test("membership removal revokes the removed user's active sessions", async () =
       },
     ],
   });
+  let broadRevocationCalls = 0;
+  const revokeActiveForUser = repositories.sessions.revokeActiveForUser.bind(repositories.sessions);
+  repositories.sessions.revokeActiveForUser = async (...args) => {
+    broadRevocationCalls += 1;
+    return revokeActiveForUser(...args);
+  };
+
   records.sessions.push(
     {
       id: "session_member_second_example",
@@ -1419,11 +1609,11 @@ test("membership removal revokes the removed user's active sessions", async () =
 
   assert.equal(
     records.sessions.find((session) => session.id === "session_member_example")?.revokedAt,
-    now,
+    null,
   );
   assert.equal(
     records.sessions.find((session) => session.id === "session_member_second_example")?.revokedAt,
-    now,
+    null,
   );
   assert.equal(
     records.sessions.find(
@@ -1450,6 +1640,7 @@ test("membership removal revokes the removed user's active sessions", async () =
     ),
     true,
   );
+  assert.equal(broadRevocationCalls, 0);
 });
 
 test("membership removal rejects unsafe targets without mutation", async () => {
@@ -1831,6 +2022,10 @@ test("membership disable rolls back when audit append fails", async () => {
     records.memberships.find((membership) => membership.id === "membership_member_example")
       ?.status,
     "active",
+  );
+  assert.equal(
+    records.sessions.find((session) => session.id === "session_member_example")?.revokedAt,
+    null,
   );
   assert.equal(records.auditEvents.length, 0);
 });

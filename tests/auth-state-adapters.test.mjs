@@ -13,6 +13,7 @@ import {
 import {
   AuthStateCryptoConfigError,
   createHmacAuthStateReferenceFactory,
+  authStateReferencesEqual,
   createSecureAuthNonceFactory,
   createSecureAuthStateFactory,
 } from "../dist/auth/auth-state-crypto.js";
@@ -68,6 +69,12 @@ test("HMAC auth state reference factory is stable and differentiates values", ()
   assert.match(first, /^auth-state:v1:hmac-sha256:[A-Za-z0-9_-]+$/);
   assert.doesNotMatch(first, new RegExp(rawState));
   assert.doesNotMatch(first, new RegExp(strongSecret));
+});
+
+test("auth state reference comparison accepts only exact equal values", () => {
+  assert.equal(authStateReferencesEqual(stateHash, stateHash), true);
+  assert.equal(authStateReferencesEqual(stateHash, nonceHash), false);
+  assert.equal(authStateReferencesEqual(stateHash, stateHash + "x"), false);
 });
 
 test("HMAC auth state reference factory rejects weak or blank secrets safely", () => {

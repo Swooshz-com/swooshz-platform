@@ -1,4 +1,4 @@
-import { createHmac, randomBytes } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 export type AuthStateCryptoConfigErrorCode = "invalid_secret" | "invalid_value";
 
@@ -77,6 +77,16 @@ export function createHmacAuthStateReferenceFactory(
 
     return `${referencePrefix}:${digest}`;
   };
+}
+
+export function authStateReferencesEqual(left: string, right: string): boolean {
+  const leftBytes = Buffer.from(left, "utf8");
+  const rightBytes = Buffer.from(right, "utf8");
+
+  return leftBytes.length === rightBytes.length && timingSafeEqual(
+    leftBytes,
+    rightBytes,
+  );
 }
 
 function readByteLength(value: number | undefined): number {

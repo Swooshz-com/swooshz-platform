@@ -86,7 +86,7 @@ export interface NodePlatformHttpRequestLike {
 
 export interface NodePlatformHttpResponse {
   statusCode: number;
-  headers: Record<string, string>;
+  headers: Record<string, string | readonly string[]>;
   body: string;
 }
 
@@ -202,6 +202,7 @@ export async function handleNodePlatformHttpRequest(
     return toNodeResponse(
       await handleAuthStartRequest(dependencies.authStart, {
         now: dependencies.now(),
+        cookie: dependencies.cookie,
       }),
     );
   }
@@ -221,6 +222,7 @@ export async function handleNodePlatformHttpRequest(
         },
       },
       {
+        headers,
         query: {
           code: optionalSearchParam(parsedUrl, "code"),
           state: optionalSearchParam(parsedUrl, "state"),
@@ -238,6 +240,7 @@ export async function handleNodePlatformHttpRequest(
         renderAuthErrorPage(),
         {
           ...noStoreHeaders(),
+          ...callbackResponse.headers,
           "x-auth-failure": safeAuthFailureHeader(failureCategory),
         },
       );
@@ -1061,17 +1064,25 @@ function createFallbackWorkspaceAdminId(
 }
 
 function authStartFailureResponse(): NodePlatformHttpResponse {
-  return jsonResponse(500, {
-    outcome: "error",
-    message: "Authentication start could not be completed.",
-  });
+  return jsonResponse(
+    500,
+    {
+      outcome: "error",
+      message: "Authentication start could not be completed.",
+    },
+    noStoreHeaders(),
+  );
 }
 
 function authCallbackFailureResponse(status: 400 | 500): NodePlatformHttpResponse {
-  return jsonResponse(status, {
-    outcome: "error",
-    message: "Authentication callback could not be completed.",
-  });
+  return jsonResponse(
+    status,
+    {
+      outcome: "error",
+      message: "Authentication callback could not be completed.",
+    },
+    noStoreHeaders(),
+  );
 }
 
 function safeAuthFailureHeader(category: AuthCallbackFailureCategory | null): string {
@@ -1150,7 +1161,7 @@ function securityFailureResponse(
 function jsonResponse(
   statusCode: number,
   body: unknown,
-  headers: Record<string, string> = {},
+  headers: Record<string, string | readonly string[]> = {},
 ): NodePlatformHttpResponse {
   return {
     statusCode,
@@ -1165,7 +1176,7 @@ function jsonResponse(
 function htmlResponse(
   statusCode: number,
   body: string,
-  headers: Record<string, string> = {},
+  headers: Record<string, string | readonly string[]> = {},
 ): NodePlatformHttpResponse {
   return {
     statusCode,
