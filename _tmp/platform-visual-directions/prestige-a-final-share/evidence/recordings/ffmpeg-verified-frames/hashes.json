@@ -1,0 +1,41 @@
+{
+  "initial": {
+    "files": [
+      "initial-0_2.png",
+      "initial-1_6.png",
+      "initial-3.png"
+    ],
+    "hashes": [
+      "6d0cb2dda1211e0398d42619e2663889d1b46ec1f79709bac62f62480be0bb2c",
+      "6bb9bd32b16090e6833a92714f7a422547c33b4360612ec2288644e858f31dfa",
+      "bd50f57ac0f8f875149b18462f41e22bb963d58db8292a579868120cc000294d"
+    ],
+    "unique": 3
+  },
+  "scroll": {
+    "files": [
+      "scroll-0_2.png",
+      "scroll-2_4.png",
+      "scroll-4_5.png"
+    ],
+    "hashes": [
+      "221afdf0093a5ac31275b6e081d73e8952b59a0264a319112784d02d75a1071c",
+      "45e8e35465266f6ce359109a96778858bbc7312453b2bf7f563bc2d87a15f7cf",
+      "0a22b4a42674ec00372468ebfbab9e78055b8587a148731b484dd4c5a8031a0b"
+    ],
+    "unique": 3
+  },
+  "menu": {
+    "files": [
+      "menu-0_2.png",
+      "menu-1_8.png",
+      "menu-3_4.png"
+    ],
+    "hashes": [
+      "cd4a594f53f13635f391dcfde159ed57a3cb9537b7971783c63bc19e87ed4b98",
+      "84a51fa20e9f398a1e0039fb04463cccaa1a4e9226abf94a58be92e673a3a6da",
+      "3225e2d24706a12ce45a67e5ab93aefa773b76503a63f445481a46e3bdc38364"
+    ],
+    "unique": 3
+  }
+}
