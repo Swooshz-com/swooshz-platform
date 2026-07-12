@@ -69,16 +69,16 @@ copying SKR's input interception.
 | `npm ci` | PASS |
 | `npm run typecheck` | PASS |
 | `npm run build` | PASS; generated content-addressed assets materialized in `dist/http/public-assets` |
-| Focused frontend and adapter tests | PASS, 48/48 |
+| Focused frontend and adapter tests | PASS, 100/100 |
 | Full `npm test` | PASS, 729/729 |
 | JavaScript syntax checks | PASS |
 | `docker build --tag swooshz-platform:prestige-a-cache-amendment .` | PASS; runtime stage reports 0 vulnerabilities |
 | `npm audit --omit=dev` | PASS; 0 vulnerabilities |
 | Full `npm audit` | 4 moderate development-only advisories through `drizzle-kit` and older `esbuild`; absent from the pruned runtime image |
 | `npm run platform:sqag-smoke-readiness` | PASS; synthetic readiness correctly reports `production_ready=false` without live services |
-| Browser screenshot/video matrix | PASS locally; final amended-head GitHub Actions artifact pending publication |
-| `/app` and `/app/admin` visual regression | PASS locally on desktop and mobile; final amended-head artifact pending |
-| Standard Codex Security scan | Prior scan complete; amended-head scan pending native workspace start |
+| Browser screenshot/video matrix | PASS; the amended-head GitHub Actions artifact was published and manually reviewed, and the exact final-head artifact is recorded in PR #100 |
+| `/app` and `/app/admin` visual regression | PASS on desktop and mobile in the published artifact |
+| Standard Codex Security scan | PASS; native standard scan `41fe34ce-bd21-471f-aa5d-7aae5a47f81c` completed against implementation head `a15b6fc3e006e16a515571c39a90973e9c212b20` with two pre-existing reportable findings and no cache/evidence-amendment finding |
 | `git diff --check` | PASS |
 
 ## Browser and interaction evidence
@@ -122,21 +122,28 @@ resulting evidence was manually reviewed.
 
 ## Security result
 
-Readable standard-scan report:
+Readable amended-head standard-scan report:
 
-`C:\Users\xPass\AppData\Local\Temp\codex-security-scans\swooshz-platform\567fa25003be840198bea1edc663b46aede11b2f_20260711T223036Z\report.md`
+`C:\Users\xPass\AppData\Local\Temp\codex-security-scans-doaqCW\prestige-a-production\a15b6fc3e006e16a515571c39a90973e9c212b20_20260712T055321Z_1xl868om\report.md`
 
-No reportable issue was introduced by the Prestige A public-site diff. Three
-pre-existing availability/resource findings survived repository-wide gates:
+No reportable issue was introduced by the Prestige A public-site or cache/evidence
+amendment diff. Two pre-existing persistent-allocation findings survived the
+standard repository-wide gates:
 
 | Priority | Finding | Boundary |
 | --- | --- | --- |
 | P2 / medium | Anonymous auth start can create unbounded persistent `auth_states` rows | Pre-existing authentication/backend path |
-| P3 / low | Pre-routing mutation-body reads rely on lower-layer timing defaults | Pre-existing Node HTTP adapter/server path |
 | P3 / low | Authenticated CSRF issuance can create unbounded persistent token rows | Pre-existing session/backend path |
 
-Thirteen additional candidates were rejected or marked not applicable with
-counterevidence preserved in canonical coverage. These findings were not fixed
+The pre-routing slow-body candidate was rejected after exact runtime
+introspection confirmed that the shipped Node 22 server applies a finite
+300-second whole-request timeout and closes expired requests with 408. A shorter
+explicit application timeout remains reasonable defense in depth, but the
+candidate's effectively unbounded premise did not survive validation.
+
+All other reviewed surfaces were rejected, marked not applicable, or closed
+without a credible candidate, with counterevidence preserved in canonical
+coverage. The two surviving findings were not fixed
 because this implementation explicitly excludes changes to OIDC, sessions,
 CSRF, database behavior, and API contracts. They remain production-launch
 limitations requiring separately scoped backend work.
@@ -156,15 +163,15 @@ limitations requiring separately scoped backend work.
 | Severity | Finding | Status |
 | --- | --- | --- |
 | P2 | Pre-existing anonymous auth-state resource allocation | Open for separately scoped backend remediation; blocks an unconditional production-launch claim, not review of this visual-only PR. |
-| P3 | Pre-existing slow request-body timing policy | Open for separately scoped server-hardening work. |
 | P3 | Pre-existing authenticated CSRF row allocation | Open for separately scoped backend remediation. |
+| Informational | Node request-body timeout policy | Current Node 22 default bounds whole-request receipt to 300 seconds; a shorter explicit timeout is optional separately scoped defense in depth. |
 | P3 | Four moderate development-only advisories under `drizzle-kit`/older `esbuild` | Runtime/pruned image is unaffected; track through a compatible tooling upgrade. |
 | Informational | In-app Browser connection unavailable | Closed through the documented Playwright fallback and manual evidence review. |
 
 ## Release gates
 
-The public-site branch is PR-ready once final diff review, repeated closing
-checks, commit, push, and CI verification complete. There is no unresolved P0
+The public-site branch is PR-ready after final diff review, closing validation,
+commit, push, and CI verification. There is no unresolved P0
 or P1 finding, and no reportable finding was introduced by Prestige A. This
-audit does not represent production-launch approval while the three explicitly
+audit does not represent production-launch approval while the two explicitly
 recorded pre-existing findings and deployment controls remain unresolved.
