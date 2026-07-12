@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, gt, inArray, isNotNull, isNull, lte, or } from "drizzle-orm";
 
 import {
   mapCsrfTokenRow,
@@ -16,24 +16,63 @@ import type {
 
 type Row = Record<string, unknown>;
 
+export const maxActiveCsrfTokensPerSessionPurpose = 8;
+
 export function createDrizzleCsrfTokenRepository(
   db: Pick<DrizzleDatabase, "select" | "insert" | "delete" | "transaction">,
 ): CsrfTokenRepository {
   return {
-    async replaceForSession(input) {
+    async createBoundedForSession(input) {
       if (!db.transaction) {
-        throw new Error("CSRF token replacement requires transaction support.");
+        throw new Error("Bounded CSRF token persistence requires transaction support.");
       }
 
       return db.transaction(async (tx) => {
+        const sessionPurpose = and(
+          eq(csrfTokens.sessionId, input.sessionId),
+          eq(csrfTokens.purpose, input.purpose),
+        );
+        const createdAt = toDate(input.createdAt);
+
         await tx
           .delete(csrfTokens)
           .where(
             and(
-              eq(csrfTokens.sessionId, input.sessionId),
-              eq(csrfTokens.purpose, input.purpose),
+              sessionPurpose,
+              or(
+                lte(csrfTokens.expiresAt, createdAt),
+                isNotNull(csrfTokens.consumedAt),
+                isNotNull(csrfTokens.revokedAt),
+              ),
             ),
           );
+
+        const activeRows = await tx
+          .select()
+          .from(csrfTokens)
+          .where(
+            and(
+              sessionPurpose,
+              gt(csrfTokens.expiresAt, createdAt),
+              isNull(csrfTokens.consumedAt),
+              isNull(csrfTokens.revokedAt),
+            ),
+          );
+        const idsToEvict = selectOldestCsrfTokenIds(
+          activeRows,
+          maxActiveCsrfTokensPerSessionPurpose - 1,
+        );
+
+        if (idsToEvict.length > 0) {
+          await tx
+            .delete(csrfTokens)
+            .where(
+              and(
+                sessionPurpose,
+                inArray(csrfTokens.id, idsToEvict),
+              ),
+            );
+        }
 
         const rows = await tx
           .insert(csrfTokens)
@@ -102,4 +141,35 @@ function csrfTokenToValues(input: CreateCsrfTokenRecordInput): Row {
     consumedAt: Date | null;
     revokedAt: Date | null;
   };
+}
+
+
+function selectOldestCsrfTokenIds(
+  rows: readonly Row[],
+  retainedBeforeInsert: number,
+): string[] {
+  return [...rows]
+    .sort((left, right) => compareNewestFirst(left, right))
+    .slice(retainedBeforeInsert)
+    .map((row) => String(row.id));
+}
+
+function compareNewestFirst(left: Row, right: Row): number {
+  const createdDifference = toTimestamp(right.createdAt) - toTimestamp(left.createdAt);
+
+  if (createdDifference !== 0) {
+    return createdDifference;
+  }
+
+  return String(right.id).localeCompare(String(left.id));
+}
+
+function toTimestamp(value: unknown): number {
+  const timestamp = value instanceof Date ? value.getTime() : Date.parse(String(value));
+
+  if (!Number.isFinite(timestamp)) {
+    throw new Error("Expected persisted CSRF token creation time to be valid.");
+  }
+
+  return timestamp;
 }

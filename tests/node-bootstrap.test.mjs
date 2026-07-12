@@ -1142,7 +1142,14 @@ function createFakeDrizzleDb(calls, records) {
       return {
         where() {
           if (tableName === "auth_states") records.authStates.splice(0);
-          if (tableName === "csrf_tokens") records.csrfTokens.splice(0);
+          if (tableName === "csrf_tokens") {
+            for (let index = records.csrfTokens.length - 1; index >= 0; index -= 1) {
+              const token = records.csrfTokens[index];
+              if (Date.parse(token.expiresAt) <= Date.parse(now) || token.consumedAt || token.revokedAt) {
+                records.csrfTokens.splice(index, 1);
+              }
+            }
+          }
           return Promise.resolve([]);
         },
       };

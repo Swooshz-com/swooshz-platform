@@ -69,10 +69,10 @@ copying SKR's input interception.
 | `npm ci` | PASS |
 | `npm run typecheck` | PASS |
 | `npm run build` | PASS; generated content-addressed assets materialized in `dist/http/public-assets` |
-| Focused public-site, HTTP adapter, auth-state, and CSRF tests | PASS, 56/56 |
-| Full `npm test` | PASS, 732/732 |
+| Focused CSRF repository/service, HTTP handler/adapter, runtime multi-page, portal/admin, and auth-state tests | PASS, 192/192 |
+| Full `npm test` | PASS, 738/738 |
 | JavaScript syntax checks | PASS |
-| `docker build --tag swooshz-platform:prestige-a-pr100 .` | PASS; runtime stage reports 0 vulnerabilities |
+| `docker build --tag swooshz-platform:prestige-a-pr100-csrf-bounded .` | PASS; runtime stage reports 0 vulnerabilities |
 | `npm audit --omit=dev` | PASS; 0 vulnerabilities |
 | Full `npm audit` | 4 moderate development-only advisories through `drizzle-kit` and older `esbuild`; absent from the pruned runtime image |
 | `npm run platform:sqag-smoke-readiness` | PASS; synthetic readiness correctly reports `production_ready=false` without live services |
@@ -133,7 +133,7 @@ The standard scan identified two persistent-allocation findings that this amendm
 | Priority | Finding | Remediation |
 | --- | --- | --- |
 | P2 / medium | Anonymous auth start could create unbounded persistent `auth_states` rows | Closed: stale lifecycle rows are deleted and a serializable hard 10,000-row global retained-state cap rejects additional allocation. |
-| P3 / low | Authenticated CSRF issuance could create unbounded persistent token rows | Closed: issuance serializably replaces the existing row for the same session and purpose, retaining at most one. |
+| P3 / low | Authenticated CSRF issuance could create unbounded persistent token rows | Closed without breaking multi-tab use: issuance keeps a serializable bounded active set of eight per session-purpose, removes stale rows, and evicts only oldest overflow. |
 
 The pre-routing slow-body candidate was rejected after exact runtime
 introspection confirmed that the shipped Node 22 server applies a finite
@@ -152,7 +152,7 @@ renderer composition.
 - Public rendering and assets are isolated in public-only helpers and modules.
 - Authenticated portal/admin renderer and browser JavaScript are unchanged.
 - The only backend behavior changes are bounded auth-state persistence and
-  single-record CSRF replacement requested to close P2/P3. OIDC validation,
+  bounded multi-token CSRF retention requested to close P2/P3. OIDC validation,
   sessions, cookies, workspace/membership/role/entitlement decisions,
   launch-token/product-proxy behavior, admin actions, and API contracts are unchanged.
 - No prototype directory, evidence capture, or scan bundle is intended for
@@ -163,7 +163,7 @@ renderer composition.
 | Severity | Finding | Status |
 | --- | --- | --- |
 | P2 | Anonymous auth-state persistent allocation | Closed with stale-row cleanup and a serializable hard retained-row cap. |
-| P3 | Authenticated CSRF persistent allocation | Closed with serializable replacement per session-purpose pair. |
+| P3 | Authenticated CSRF persistent allocation | Closed with a serializable eight-token active set per session-purpose and oldest-only overflow eviction. |
 | Informational | Node request-body timeout policy | Current Node 22 default bounds whole-request receipt to 300 seconds; a shorter explicit timeout is optional separately scoped defense in depth. |
 | P3 | Four moderate development-only advisories under `drizzle-kit`/older `esbuild` | Runtime/pruned image is unaffected; track through a compatible tooling upgrade. |
 | Informational | In-app Browser connection unavailable | Closed through the documented Playwright fallback and manual evidence review. |
