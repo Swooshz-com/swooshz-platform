@@ -11,6 +11,8 @@ import {
   PlatformRuntimeSecretConfigError,
   readPlatformRuntimeSecretConfig,
   issueCsrfTokenForSession,
+  getHttpRouteContract,
+  validateHttpRequestSecurityForRoute,
 } from "../dist/index.js";
 import { readAuthConfig } from "../dist/auth/index.js";
 
@@ -380,6 +382,65 @@ test("composed CSRF validator accepts a token issued by composed dependencies", 
 
   assert.deepEqual(result, { valid: true });
   assert.doesNotMatch(JSON.stringify(result), rawTokenPattern);
+});
+
+test("composed CSRF persistence keeps app and admin tokens valid for one session", async () => {
+  const fixture = createRuntimeFixture();
+  let id = 0;
+  const dependencies = createPlatformRuntimeDependencies({
+    db: fixture.db,
+    runtimeConfig: fixture.runtimeConfig,
+    secrets: { csrfTokenHashSecret: csrfSecret },
+    now: () => now,
+    csrfTokenIdFactory: {
+      createId() {
+        id += 1;
+        return `csrf_record_${id}`;
+      },
+    },
+    csrfTokenTtlSeconds: 900,
+  });
+
+  const appToken = await issueCsrfTokenForSession(dependencies.csrfTokenIssuer, {
+    sessionId,
+    now,
+    ttlSeconds: 900,
+    purpose: "browser_session",
+  });
+  const adminToken = await issueCsrfTokenForSession(dependencies.csrfTokenIssuer, {
+    sessionId,
+    now,
+    ttlSeconds: 900,
+    purpose: "browser_session",
+  });
+
+  assert.equal(fixture.records.csrfTokens.length, 2);
+  assert.deepEqual(
+    await dependencies.csrfTokenValidator.validate({ csrfToken: appToken.csrfToken, sessionId, now }),
+    { valid: true },
+  );
+  assert.deepEqual(
+    await dependencies.csrfTokenValidator.validate({ csrfToken: adminToken.csrfToken, sessionId, now }),
+    { valid: true },
+  );
+
+  let successfulMutations = 0;
+  for (const [routeId, csrfToken] of [
+    ["platform_app_launch", appToken.csrfToken],
+    ["platform_workspace_member_add", adminToken.csrfToken],
+  ]) {
+    const security = await validateHttpRequestSecurityForRoute({
+      route: getHttpRouteContract(routeId),
+      headers: { origin: allowedOrigin, "x-csrf-token": csrfToken },
+      sessionId,
+      now,
+      originConfig: fixture.runtimeConfig.originConfig,
+      csrfTokenValidator: dependencies.csrfTokenValidator,
+    });
+    assert.deepEqual(security, { allowed: true });
+    successfulMutations += 1;
+  }
+  assert.equal(successfulMutations, 2);
 });
 
 test("runtime composition wires auth start without provider calls during creation", async () => {
@@ -908,6 +969,26 @@ function createFakeDrizzleDb(records) {
           };
         },
       };
+    },
+    delete(table) {
+      const tableName = table;
+      return {
+        where() {
+          if (tableName === schema.authStates) records.authStates.splice(0);
+          if (tableName === schema.csrfTokens) {
+            for (let index = records.csrfTokens.length - 1; index >= 0; index -= 1) {
+              const token = records.csrfTokens[index];
+              if (Date.parse(token.expiresAt) <= Date.parse(now) || token.consumedAt || token.revokedAt) {
+                records.csrfTokens.splice(index, 1);
+              }
+            }
+          }
+          return Promise.resolve([]);
+        },
+      };
+    },
+    transaction(operation) {
+      return operation(this);
     },
     update(table) {
       return {

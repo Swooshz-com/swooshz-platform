@@ -7,6 +7,7 @@ import {
   createRepositoryBackedCsrfTokenValidator,
   issueCsrfTokenForSession,
 } from "../dist/index.js";
+import { maxActiveCsrfTokensPerSessionPurpose } from "../dist/db/csrf-token-repository.js";
 
 const now = "2026-06-27T00:00:00.000Z";
 const later = "2026-06-27T00:15:00.000Z";
@@ -134,6 +135,89 @@ test("issue service rejects blank token and blank hash safely", async () => {
     () => issueCsrfTokenForSession(blankHash.dependencies, issueInput()),
     assertPrivacySafeError("token_hash_failed"),
   );
+});
+
+test("issuing token B preserves token A for the same session and purpose", async () => {
+  const tokenB = "synthetic-csrf-token-reference-b";
+  const records = [tokenRecord()];
+  const fixture = csrfFixture({ records, issuedTokens: [tokenB] });
+  const validator = createRepositoryBackedCsrfTokenValidator(fixture.dependencies);
+
+  await issueCsrfTokenForSession(fixture.dependencies, issueInput());
+
+  assert.equal(records.length, 2);
+  assert.deepEqual(await validator.validate({ csrfToken: rawToken, sessionId, now }), { valid: true });
+  assert.deepEqual(await validator.validate({ csrfToken: tokenB, sessionId, now }), { valid: true });
+  assert.equal(fixture.calls.createBoundedForSession, 1);
+});
+
+test("bounded issuance evicts only the oldest token and keeps the newest tokens valid", async () => {
+  const issuedTokens = Array.from({ length: maxActiveCsrfTokensPerSessionPurpose + 1 }, (_, index) =>
+    "synthetic-csrf-token-" + (index + 1),
+  );
+  const fixture = csrfFixture({ issuedTokens });
+  const validator = createRepositoryBackedCsrfTokenValidator(fixture.dependencies);
+
+  for (let index = 0; index < issuedTokens.length; index += 1) {
+    await issueCsrfTokenForSession(fixture.dependencies, issueInput({
+      now: new Date(Date.parse(now) + index * 1000).toISOString(),
+      ttlSeconds: 3600,
+    }));
+  }
+
+  assert.equal(fixture.records.length, maxActiveCsrfTokensPerSessionPurpose);
+  assert.deepEqual(
+    await validator.validate({ csrfToken: issuedTokens[0], sessionId, now }),
+    { valid: false, reason: "unknown_token" },
+  );
+  for (const newest of issuedTokens.slice(1)) {
+    assert.deepEqual(await validator.validate({ csrfToken: newest, sessionId, now }), { valid: true });
+  }
+});
+
+test("bounded issuance isolates sessions and future token purposes", async () => {
+  const otherSessionRecords = Array.from({ length: maxActiveCsrfTokensPerSessionPurpose }, (_, index) =>
+    tokenRecord({ id: "other-session-" + index, sessionId: otherSessionId, tokenHash: "other-" + index }),
+  );
+  const futurePurposeRecords = Array.from({ length: maxActiveCsrfTokensPerSessionPurpose }, (_, index) =>
+    tokenRecord({ id: "future-purpose-" + index, purpose: "future_purpose", tokenHash: "future-" + index }),
+  );
+  const records = [...otherSessionRecords, ...futurePurposeRecords];
+  const fixture = csrfFixture({ records, issuedTokens: ["synthetic-current-pair-token"] });
+
+  await issueCsrfTokenForSession(fixture.dependencies, issueInput());
+
+  assert.equal(records.filter((record) => record.sessionId === otherSessionId).length, maxActiveCsrfTokensPerSessionPurpose);
+  assert.equal(records.filter((record) => record.purpose === "future_purpose").length, maxActiveCsrfTokensPerSessionPurpose);
+  assert.equal(records.filter((record) => record.sessionId === sessionId && record.purpose === "browser_session").length, 1);
+});
+
+test("bounded issuance removes expired consumed and revoked rows for its pair", async () => {
+  const records = [
+    tokenRecord({ id: "expired", expiresAt: now }),
+    tokenRecord({ id: "consumed", consumedAt: past }),
+    tokenRecord({ id: "revoked", revokedAt: past }),
+    tokenRecord({ id: "active", tokenHash: "active_hash" }),
+  ];
+  const fixture = csrfFixture({ records, issuedTokens: ["synthetic-cleanup-token"] });
+
+  await issueCsrfTokenForSession(fixture.dependencies, issueInput());
+
+  assert.deepEqual(records.map((record) => record.id).sort(), ["active", "csrf_record_5"]);
+});
+
+test("concurrent issuance remains bounded", async () => {
+  const issuanceCount = maxActiveCsrfTokensPerSessionPurpose * 3;
+  const issuedTokens = Array.from({ length: issuanceCount }, (_, index) => "synthetic-concurrent-" + index);
+  const fixture = csrfFixture({ issuedTokens });
+
+  await Promise.all(issuedTokens.map((_, index) => issueCsrfTokenForSession(
+    fixture.dependencies,
+    issueInput({ now: new Date(Date.parse(now) + index).toISOString(), ttlSeconds: 3600 }),
+  )));
+
+  assert.equal(fixture.records.length, maxActiveCsrfTokensPerSessionPurpose);
+  assert.equal(new Set(fixture.records.map((record) => record.id)).size, maxActiveCsrfTokensPerSessionPurpose);
 });
 
 test("repository-backed validator accepts valid token for same session", async () => {
@@ -367,10 +451,11 @@ function tokenRecord(overrides = {}) {
 
 function csrfFixture(options = {}) {
   const records = options.records ?? [];
+  let nextId = records.length;
   const calls = {
     tokenFactory: 0,
     hash: 0,
-    create: 0,
+    createBoundedForSession: 0,
     findActiveBySessionAndTokenHash: [],
   };
   const dependencies = {
@@ -385,7 +470,7 @@ function csrfFixture(options = {}) {
           return "   ";
         }
 
-        return rawToken;
+        return options.issuedTokens?.[calls.tokenFactory - 1] ?? rawToken;
       },
     },
     tokenHasher: {
@@ -395,12 +480,11 @@ function csrfFixture(options = {}) {
           throw new Error(privateFailure);
         }
 
-        assert.equal(token, rawToken);
         if (options.blankHash) {
           return "   ";
         }
 
-        return tokenHash;
+        return token === rawToken ? tokenHash : `hash_${token}`;
       },
     },
     idFactory: {
@@ -409,14 +493,34 @@ function csrfFixture(options = {}) {
           throw new Error(privateFailure);
         }
 
-        return `csrf_record_${records.length + 1}`;
+        nextId += 1;
+        return `csrf_record_${nextId}`;
       },
     },
     tokens: {
-      async create(record) {
-        calls.create += 1;
+      async createBoundedForSession(record) {
+        calls.createBoundedForSession += 1;
         if (options.failCreate) {
           throw new Error(privateFailure);
+        }
+
+        const nowMs = Date.parse(record.createdAt);
+        for (let index = records.length - 1; index >= 0; index -= 1) {
+          const candidate = records[index];
+          if (
+            candidate.sessionId === record.sessionId &&
+            candidate.purpose === record.purpose &&
+            (Date.parse(candidate.expiresAt) <= nowMs || candidate.consumedAt || candidate.revokedAt)
+          ) {
+            records.splice(index, 1);
+          }
+        }
+
+        const activeForPair = records
+          .filter((candidate) => candidate.sessionId === record.sessionId && candidate.purpose === record.purpose)
+          .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt) || right.id.localeCompare(left.id));
+        for (const evicted of activeForPair.slice(maxActiveCsrfTokensPerSessionPurpose - 1)) {
+          records.splice(records.indexOf(evicted), 1);
         }
 
         records.push(record);

@@ -1593,7 +1593,7 @@ function createAdapterFixture(overrides = {}) {
     originConfig: { allowedOrigins: [allowedOrigin] },
     csrfTokenIssuer: {
       tokens: {
-        async create(record) {
+        async createBoundedForSession(record) {
           calls.csrfTokenCreate += 1;
           records.csrfTokens.push(record);
           return record;

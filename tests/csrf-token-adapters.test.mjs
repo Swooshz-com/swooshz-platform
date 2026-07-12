@@ -3,12 +3,15 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
+import { PgDialect } from "drizzle-orm/pg-core";
+
 import * as schema from "../dist/db/schema.js";
 import {
   mapCsrfTokenRow,
 } from "../dist/db/mappers.js";
 import {
   createDrizzleCsrfTokenRepository,
+  maxActiveCsrfTokensPerSessionPurpose,
 } from "../dist/db/csrf-token-repository.js";
 import {
   CsrfTokenCryptoConfigError,
@@ -96,15 +99,17 @@ test("maps CSRF token rows to storage-agnostic records", () => {
   });
 });
 
-test("Drizzle CSRF repository create stores only token hashes", async () => {
+test("Drizzle CSRF repository creates a bounded session token and stores only token hashes", async () => {
   const fakeDb = createFakeDrizzleDb({
     insertRows: new Map([[schema.csrfTokens, [csrfTokenRow]]]),
   });
   const repository = createDrizzleCsrfTokenRepository(fakeDb);
 
-  const created = await repository.create(mapCsrfTokenRow(csrfTokenRow));
+  const created = await repository.createBoundedForSession(mapCsrfTokenRow(csrfTokenRow));
 
   assert.deepEqual(created, mapCsrfTokenRow(csrfTokenRow));
+  assert.equal(fakeDb.calls.filter((call) => call.operation === "delete.where").length, 1);
+  assert.deepEqual(fakeDb.calls.find((call) => call.operation === "transaction").options, { isolationLevel: "serializable" });
   const insert = fakeDb.calls.find(
     (call) => call.operation === "insert.values" && call.table === schema.csrfTokens,
   );
@@ -113,6 +118,40 @@ test("Drizzle CSRF repository create stores only token hashes", async () => {
   assert.equal("csrfToken" in insert.values, false);
   assert.equal("rawToken" in insert.values, false);
   assert.doesNotMatch(JSON.stringify(insert.values), new RegExp(rawToken));
+});
+
+test("Drizzle CSRF repository cleans stale rows and evicts only the oldest row at capacity", async () => {
+  const activeRows = Array.from({ length: maxActiveCsrfTokensPerSessionPurpose }, (_, index) => ({
+    ...csrfTokenRow,
+    id: "csrf_active_" + index,
+    tokenHash: "hash_active_" + index,
+    createdAt: new Date(createdAt.getTime() + index * 1000),
+  }));
+  const fakeDb = createFakeDrizzleDb({
+    selectRows: new Map([[schema.csrfTokens, activeRows]]),
+    insertRows: new Map([[schema.csrfTokens, [csrfTokenRow]]]),
+  });
+  const repository = createDrizzleCsrfTokenRepository(fakeDb);
+
+  await repository.createBoundedForSession(mapCsrfTokenRow(csrfTokenRow));
+
+  const dialect = new PgDialect();
+  const deletes = fakeDb.calls.filter((call) => call.operation === "delete.where");
+  assert.equal(deletes.length, 2);
+  const cleanup = dialect.sqlToQuery(deletes[0].condition);
+  assert.match(cleanup.sql, /expires_at.*<=/);
+  assert.match(cleanup.sql, /consumed_at.*is not null/);
+  assert.match(cleanup.sql, /revoked_at.*is not null/);
+  assert.deepEqual(cleanup.params.slice(0, 2), [sessionId, "browser_session"]);
+
+  const eviction = dialect.sqlToQuery(deletes[1].condition);
+  assert.match(eviction.sql, /id.*in/);
+  assert.deepEqual(eviction.params.slice(0, 2), [sessionId, "browser_session"]);
+  assert.deepEqual(eviction.params.slice(2), ["csrf_active_0"]);
+  assert.deepEqual(
+    fakeDb.calls.find((call) => call.operation === "transaction").options,
+    { isolationLevel: "serializable" },
+  );
 });
 
 test("Drizzle CSRF repository find filters by session token hash and purpose", async () => {
@@ -234,15 +273,27 @@ function createFakeDrizzleDb({ selectRows, insertRows } = {}) {
       return {
         from(table) {
           calls.push({ operation: "select.from", table });
-
-          return {
-            where(condition) {
-              calls.push({ operation: "select.where", table, condition });
-              return new FakeSelectResult(selectRows?.get(table) ?? [], calls, table);
-            },
+          const result = new FakeSelectResult(selectRows?.get(table) ?? [], calls, table);
+          result.where = (condition) => {
+            calls.push({ operation: "select.where", table, condition });
+            return result;
           };
+          return result;
         },
       };
+    },
+    delete(table) {
+      calls.push({ operation: "delete", table });
+      return {
+        where(condition) {
+          calls.push({ operation: "delete.where", table, condition });
+          return Promise.resolve([]);
+        },
+      };
+    },
+    transaction(operation, options) {
+      calls.push({ operation: "transaction", options });
+      return operation(this);
     },
     insert(table) {
       calls.push({ operation: "insert", table });

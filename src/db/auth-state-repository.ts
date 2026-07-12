@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, lte, or } from "drizzle-orm";
 
 import {
   mapAuthStateRow,
@@ -16,17 +16,44 @@ import type {
 
 type Row = Record<string, unknown>;
 
+export const maxPersistedAuthStates = 10_000;
+
 export function createDrizzleAuthStateStore(
-  db: Pick<DrizzleDatabase, "select" | "insert" | "update">,
+  db: Pick<DrizzleDatabase, "select" | "insert" | "update" | "delete" | "transaction">,
 ): AuthStateIssueStore & AuthStateStore {
   return {
     async storeState(input) {
-      const rows = await db
-        .insert(authStates)
-        .values(authStateToValues(input))
-        .returning();
+      if (!db.transaction) {
+        throw new Error("Auth state persistence requires transaction support.");
+      }
 
-      return toStoredAuthState(mapOneRequired(rows[0], mapAuthStateRow));
+      return db.transaction(async (tx) => {
+        await tx
+          .delete(authStates)
+          .where(
+            or(
+              lte(authStates.expiresAt, toDate(input.createdAt)),
+              isNotNull(authStates.consumedAt),
+              isNotNull(authStates.revokedAt),
+            ),
+          );
+
+        const retained = await tx
+          .select()
+          .from(authStates)
+          .limit(maxPersistedAuthStates);
+
+        if (retained.length >= maxPersistedAuthStates) {
+          throw new Error("Auth state persistence capacity has been reached.");
+        }
+
+        const rows = await tx
+          .insert(authStates)
+          .values(authStateToValues(input))
+          .returning();
+
+        return toStoredAuthState(mapOneRequired(rows[0], mapAuthStateRow));
+      }, { isolationLevel: "serializable" });
     },
     async consumeState(input) {
       const row = await selectOne(

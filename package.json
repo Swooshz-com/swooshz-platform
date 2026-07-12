@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node scripts/generate-public-asset-manifest.mjs && tsc -p tsconfig.json && node scripts/copy-public-assets.mjs",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "npm run build && node scripts/db-migrate.mjs",
     "platform:db-readiness-check": "npm run build && node scripts/platform-db-readiness-check.mjs",
@@ -12,12 +12,14 @@
     "platform:start": "node scripts/platform-start.mjs",
     "platform:sqag-smoke-readiness": "npm run build && node scripts/verify-platform-sqag-smoke-readiness.mjs",
     "platform:seed-internal-access": "node scripts/platform-seed-internal-access.mjs",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "npm run build && node --test tests/*.test.mjs"
+    "typecheck": "node scripts/generate-public-asset-manifest.mjs --check && tsc --noEmit -p tsconfig.json",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "evidence:public-site": "node scripts/capture-public-site-evidence.mjs"
   },
   "devDependencies": {
     "@types/pg": "^8.20.0",
     "drizzle-kit": "^0.31.10",
+    "playwright": "1.61.1",
     "typescript": "^5.9.2"
   },
   "dependencies": {

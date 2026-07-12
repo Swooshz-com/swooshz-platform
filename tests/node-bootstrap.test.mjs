@@ -1137,6 +1137,26 @@ function createFakeDrizzleDb(calls, records) {
         },
       };
     },
+    delete(table) {
+      const tableName = readTableName(table);
+      return {
+        where() {
+          if (tableName === "auth_states") records.authStates.splice(0);
+          if (tableName === "csrf_tokens") {
+            for (let index = records.csrfTokens.length - 1; index >= 0; index -= 1) {
+              const token = records.csrfTokens[index];
+              if (Date.parse(token.expiresAt) <= Date.parse(now) || token.consumedAt || token.revokedAt) {
+                records.csrfTokens.splice(index, 1);
+              }
+            }
+          }
+          return Promise.resolve([]);
+        },
+      };
+    },
+    transaction(operation) {
+      return operation(this);
+    },
     update(table) {
       calls.query += 1;
       calls.dbOperations.push(`update:${readTableName(table)}`);

@@ -1,0 +1,60 @@
+name: Public site review evidence
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/public-site-evidence.yml"
+      - "package-lock.json"
+      - "package.json"
+      - "scripts/capture-public-site-evidence.mjs"
+      - "scripts/copy-public-assets.mjs"
+      - "scripts/generate-public-asset-manifest.mjs"
+      - "scripts/public-asset-manifest.mjs"
+      - "src/http/public-asset-manifest.ts"
+      - "src/http/public-assets/**"
+      - "src/http/public-site-assets.ts"
+      - "src/http/public-site.ts"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evidence:
+    name: Capture public-site review evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out exact pull-request head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build production output
+        run: npm run build
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Capture exact-head evidence
+        run: npm run evidence:public-site -- --output "$RUNNER_TEMP/public-site-evidence"
+        env:
+          EVIDENCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Upload reviewable evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: prestige-a-public-site-evidence-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/public-site-evidence
+          if-no-files-found: error
+          retention-days: 14

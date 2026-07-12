@@ -45,9 +45,11 @@ import {
 } from "./route-contracts.js";
 import {
   renderAdminShellPage,
-  renderAboutPage,
   renderAuthErrorPage,
   renderAppShellPage,
+} from "./platform-shell.js";
+import {
+  renderAboutPage,
   renderContactPage,
   renderLandingPage,
   renderLoginPage,
@@ -55,7 +57,8 @@ import {
   renderResourcesPage,
   renderRequestAccessPage,
   renderSolutionsPage,
-} from "./platform-shell.js";
+} from "./public-site.js";
+import { isKnownPublicSiteAsset, readPublicSiteAsset } from "./public-site-assets.js";
 import type { BrowserSessionCookieConfig } from "./session-cookie.js";
 import { extractBrowserSessionIdFromCookieHeader } from "./session-cookie.js";
 import { validateHttpRequestSecurityForRoute } from "./request-security.js";
@@ -87,7 +90,7 @@ export interface NodePlatformHttpRequestLike {
 export interface NodePlatformHttpResponse {
   statusCode: number;
   headers: Record<string, string | readonly string[]>;
-  body: string;
+  body: string | Uint8Array;
 }
 
 const jsonContentType = "application/json; charset=utf-8";
@@ -114,6 +117,22 @@ export async function handleNodePlatformHttpRequest(
     });
   }
 
+  const method = normalizeMethod(request.method);
+
+  if (isKnownPublicSiteAsset(parsedUrl.pathname)) {
+    if (method !== "GET") {
+      return jsonResponse(405, {
+        outcome: "error",
+        message: "Method not allowed.",
+      }, {
+        allow: "GET",
+      });
+    }
+
+    const assetResponse = await readPublicSiteAsset(parsedUrl.pathname);
+    return assetResponse ?? jsonResponse(404, { outcome: "error", message: "Route not found." });
+  }
+
   const routeMatch = findRouteByPath(parsedUrl.pathname);
 
   if (!routeMatch) {
@@ -124,8 +143,6 @@ export async function handleNodePlatformHttpRequest(
   }
 
   const route = routeMatch.route;
-
-  const method = normalizeMethod(request.method);
 
   if (method !== route.method) {
     return jsonResponse(
