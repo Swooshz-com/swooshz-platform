@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/copy-public-assets.mjs",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "npm run build && node scripts/db-migrate.mjs",
     "platform:db-readiness-check": "npm run build && node scripts/platform-db-readiness-check.mjs",
