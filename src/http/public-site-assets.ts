@@ -1,5 +1,7 @@
 import { readFile } from "node:fs/promises";
 
+import { generatedPublicAssetDefinitions } from "./public-asset-manifest.js";
+
 export interface PublicSiteAssetResponse {
   statusCode: number;
   headers: Record<string, string>;
@@ -7,27 +9,27 @@ export interface PublicSiteAssetResponse {
 }
 
 interface PublicAssetDefinition {
-  fileName: string;
+  outputFileName: string;
   contentType: string;
+  immutable: boolean;
 }
 
-const publicAssetDefinitions = new Map<string, PublicAssetDefinition>([
-  ["/public-assets/public-site.css", { fileName: "public-site.css", contentType: "text/css; charset=utf-8" }],
-  ["/public-assets/public-site.js", { fileName: "public-site.js", contentType: "text/javascript; charset=utf-8" }],
-  ["/public-assets/swooshz-mark.png", { fileName: "swooshz-mark.png", contentType: "image/png" }],
-  ["/public-assets/hero-monument-640.avif", { fileName: "hero-monument-640.avif", contentType: "image/avif" }],
-  ["/public-assets/hero-monument-960.avif", { fileName: "hero-monument-960.avif", contentType: "image/avif" }],
-  ["/public-assets/hero-monument-1280.avif", { fileName: "hero-monument-1280.avif", contentType: "image/avif" }],
-  ["/public-assets/hero-monument-1672.avif", { fileName: "hero-monument-1672.avif", contentType: "image/avif" }],
-  ["/public-assets/hero-monument-640.webp", { fileName: "hero-monument-640.webp", contentType: "image/webp" }],
-  ["/public-assets/hero-monument-960.webp", { fileName: "hero-monument-960.webp", contentType: "image/webp" }],
-  ["/public-assets/hero-monument-1280.webp", { fileName: "hero-monument-1280.webp", contentType: "image/webp" }],
-  ["/public-assets/hero-monument-1672.webp", { fileName: "hero-monument-1672.webp", contentType: "image/webp" }],
-  ["/public-assets/hero-monument-640.png", { fileName: "hero-monument-640.png", contentType: "image/png" }],
-  ["/public-assets/hero-monument-1280.png", { fileName: "hero-monument-1280.png", contentType: "image/png" }],
-  ["/public-assets/fonts/manrope-latin-variable.woff2", { fileName: "fonts/manrope-latin-variable.woff2", contentType: "font/woff2" }],
-  ["/public-assets/fonts/fraunces-italic-latin-variable.woff2", { fileName: "fonts/fraunces-italic-latin-variable.woff2", contentType: "font/woff2" }],
-]);
+const immutableCacheControl = "public, max-age=31536000, immutable";
+const revalidateCacheControl = "public, max-age=0, must-revalidate";
+const publicAssetDefinitions = new Map<string, PublicAssetDefinition>();
+
+for (const asset of generatedPublicAssetDefinitions) {
+  publicAssetDefinitions.set(asset.logicalPath, {
+    outputFileName: asset.fileName,
+    contentType: asset.contentType,
+    immutable: false,
+  });
+  publicAssetDefinitions.set(asset.versionedPath, {
+    outputFileName: asset.versionedFileName,
+    contentType: asset.contentType,
+    immutable: true,
+  });
+}
 
 export function isKnownPublicSiteAsset(pathname: string): boolean {
   return publicAssetDefinitions.has(pathname);
@@ -40,13 +42,13 @@ export async function readPublicSiteAsset(pathname: string): Promise<PublicSiteA
     return null;
   }
 
-  const assetUrl = new URL(`./public-assets/${definition.fileName}`, import.meta.url);
+  const assetUrl = new URL(`./public-assets/${definition.outputFileName}`, import.meta.url);
   const body = await readFile(assetUrl);
 
   return {
     statusCode: 200,
     headers: {
-      "cache-control": "public, max-age=31536000, immutable",
+      "cache-control": definition.immutable ? immutableCacheControl : revalidateCacheControl,
       "content-type": definition.contentType,
       "x-content-type-options": "nosniff",
     },

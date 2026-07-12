@@ -52,3 +52,19 @@ The supplied notices are SIL Open Font License 1.1 text. Notice SHA-256 values:
 
 Fonts are served locally with `font-display: swap`. No remote font request or
 unrelated font file is included.
+
+## Cache and content-versioning strategy
+
+Every browser-rendered public asset URL contains the first 16 hexadecimal
+characters of that asset's SHA-256 digest. The generated manifest is derived
+from the bytes served in production; changing those bytes changes the URL. CSS
+is hashed after its font references are rewritten to the fonts' own hashed
+paths, so the stylesheet URL also changes when a referenced font changes.
+
+The production build regenerates `src/http/public-asset-manifest.ts`, removes
+stale generated output under `dist/http/public-assets`, and materializes both
+the content-addressed files referenced by HTML/CSS and revalidating logical
+aliases. Content-addressed paths receive one-year `immutable` caching. Logical
+unversioned aliases receive `public, max-age=0, must-revalidate` and are retained
+only as safe compatibility paths. The typecheck command fails when the committed
+generated manifest no longer matches source asset bytes.

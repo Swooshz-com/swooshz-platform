@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
+
+import { buildPublicAssetManifest, createVersionedPublicAssetPath } from "../scripts/public-asset-manifest.mjs";
+import { generatedPublicAssetDefinitions, publicAssetUrl } from "../dist/http/public-asset-manifest.js";
 
 import {
   renderAboutPage,
@@ -68,22 +72,71 @@ test("hero uses responsive optimized formats with one homepage-only preload", as
   assert.ok((await stat("src/http/public-assets/hero-monument-1672.avif")).size < 100_000);
 });
 
-test("public assets are allowlisted, typed, immutable, and copied by the production build", async () => {
-  const stylesheet = await readPublicSiteAsset("/public-assets/public-site.css");
-  const script = await readPublicSiteAsset("/public-assets/public-site.js");
+test("unversioned assets revalidate while content-addressed assets are immutable", async () => {
+  const logicalPath = "/public-assets/public-site.css";
+  const versionedPath = publicAssetUrl(logicalPath);
+  const logical = await readPublicSiteAsset(logicalPath);
+  const versioned = await readPublicSiteAsset(versionedPath);
+  const script = await readPublicSiteAsset(publicAssetUrl("/public-assets/public-site.js"));
   const missing = await readPublicSiteAsset("/public-assets/not-allowlisted.txt");
 
-  assert.equal(stylesheet?.headers["content-type"], "text/css; charset=utf-8");
+  assert.equal(logical?.headers["cache-control"], "public, max-age=0, must-revalidate");
+  assert.doesNotMatch(logical?.headers["cache-control"] ?? "", /immutable/);
+  assert.equal(versioned?.headers["cache-control"], "public, max-age=31536000, immutable");
+  assert.equal(versioned?.headers["content-type"], "text/css; charset=utf-8");
   assert.equal(script?.headers["content-type"], "text/javascript; charset=utf-8");
-  assert.equal(stylesheet?.headers["x-content-type-options"], "nosniff");
-  assert.equal(stylesheet?.headers["cache-control"], "public, max-age=31536000, immutable");
+  assert.equal(logical?.headers["x-content-type-options"], "nosniff");
+  assert.equal(versioned?.headers["x-content-type-options"], "nosniff");
   assert.equal(missing, null);
-  assert.ok((await stat("dist/http/public-assets/public-site.css")).size > 0);
+
+  const servedHash = createHash("sha256").update(versioned.body).digest("hex").slice(0, 16);
+  assert.equal(versionedPath.split("/")[2], servedHash);
+});
+
+test("content-versioned URLs change whenever asset bytes change", () => {
+  const logicalPath = "/public-assets/example.css";
+  const first = createVersionedPublicAssetPath(logicalPath, Buffer.from("body{color:navy}"));
+  const second = createVersionedPublicAssetPath(logicalPath, Buffer.from("body{color:teal}"));
+
+  assert.notEqual(first, second);
+  assert.match(first, /^\/public-assets\/[a-f0-9]{16}\/example\.css$/);
+  assert.match(second, /^\/public-assets\/[a-f0-9]{16}\/example\.css$/);
+});
+
+test("rendered HTML and CSS reference allowlisted generated assets present in production output", async () => {
+  const html = publicPages.map((renderPage) => renderPage()).join("\n");
+  const htmlAssetUrls = [...new Set(html.match(/\/public-assets\/[^\s"',)]+/g) ?? [])];
+
+  assert.ok(htmlAssetUrls.length > 0);
+  assert.doesNotMatch(html, /\/public-assets\/(?![a-f0-9]{16}\/)/);
+
+  for (const assetUrl of htmlAssetUrls) {
+    const asset = await readPublicSiteAsset(assetUrl);
+    assert.ok(asset, `Expected rendered asset to be allowlisted: ${assetUrl}`);
+    assert.equal(asset.headers["x-content-type-options"], "nosniff");
+  }
+
+  const stylesheet = await readPublicSiteAsset(publicAssetUrl("/public-assets/public-site.css"));
+  const stylesheetText = Buffer.from(stylesheet.body).toString("utf8");
+  const cssAssetUrls = [...new Set(stylesheetText.match(/\/public-assets\/[^\s"')]+/g) ?? [])];
+  assert.ok(cssAssetUrls.length >= 2);
+  assert.doesNotMatch(stylesheetText, /\/public-assets\/(?![a-f0-9]{16}\/)/);
+
+  for (const assetUrl of cssAssetUrls) {
+    assert.ok(await readPublicSiteAsset(assetUrl), `Expected CSS asset to be allowlisted: ${assetUrl}`);
+  }
+
+  for (const definition of generatedPublicAssetDefinitions) {
+    assert.ok((await stat(`dist/http/public-assets/${definition.versionedFileName}`)).size > 0);
+  }
+
+  const generated = await buildPublicAssetManifest();
+  assert.equal((await readFile("src/http/public-asset-manifest.ts", "utf8")).replaceAll("\r\n", "\n"), generated.source);
 });
 
 test("public assets and interactions are absent from app and admin HTML", () => {
   for (const html of [renderAppShellPage(), renderAdminShellPage()]) {
-    assert.doesNotMatch(html, /public-site\.(?:css|js)/);
+    assert.doesNotMatch(html, /\/public-assets\//);
     assert.doesNotMatch(html, /data-public-route|data-public-menu-toggle|data-scroll-scene/);
   }
 });

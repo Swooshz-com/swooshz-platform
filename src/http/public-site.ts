@@ -1,3 +1,5 @@
+import { publicAssetUrl } from "./public-asset-manifest.js";
+
 type PublicRoute =
   | "home"
   | "solutions"
@@ -15,15 +17,15 @@ interface PublicDocumentOptions {
 }
 
 const heroAvifSrcset = [640, 960, 1280, 1672]
-  .map((width) => `/public-assets/hero-monument-${width}.avif ${width}w`)
+  .map((width) => `${publicAssetUrl(`/public-assets/hero-monument-${width}.avif`)} ${width}w`)
   .join(", ");
 
 const heroWebpSrcset = [640, 960, 1280, 1672]
-  .map((width) => `/public-assets/hero-monument-${width}.webp ${width}w`)
+  .map((width) => `${publicAssetUrl(`/public-assets/hero-monument-${width}.webp`)} ${width}w`)
   .join(", ");
 
 const heroPngSrcset = [640, 1280]
-  .map((width) => `/public-assets/hero-monument-${width}.png ${width}w`)
+  .map((width) => `${publicAssetUrl(`/public-assets/hero-monument-${width}.png`)} ${width}w`)
   .join(", ");
 
 export function renderLandingPage(): string {
@@ -415,7 +417,7 @@ export function renderLoginPage(): string {
     body: `
       <main id="main-content" class="login-route">
         <div class="login-art">
-          <a class="login-home-link" href="/"><img src="/public-assets/swooshz-mark.png" width="34" height="34" alt=""><span>Swooshz</span></a>
+          <a class="login-home-link" href="/"><img src="${publicAssetUrl("/public-assets/swooshz-mark.png")}" width="34" height="34" alt=""><span>Swooshz</span></a>
           ${heroPicture("", true)}
         </div>
         <section class="login-panel" aria-labelledby="login-heading">
@@ -442,7 +444,7 @@ export function renderLoginPage(): string {
 
 function publicDocument({ title, route, body, preloadHero = false }: PublicDocumentOptions): string {
   const preload = preloadHero
-    ? `<link rel="preload" as="image" href="/public-assets/hero-monument-1280.avif" imagesrcset="${heroAvifSrcset}" imagesizes="(max-width: 720px) 170vw, (max-width: 900px) 116vw, min(82vw, 1240px)" type="image/avif" fetchpriority="high">`
+    ? `<link rel="preload" as="image" href="${publicAssetUrl("/public-assets/hero-monument-1280.avif")}" imagesrcset="${heroAvifSrcset}" imagesizes="(max-width: 720px) 170vw, (max-width: 900px) 116vw, min(82vw, 1240px)" type="image/avif" fetchpriority="high">`
     : "";
 
   return `<!doctype html>
@@ -453,9 +455,9 @@ function publicDocument({ title, route, body, preloadHero = false }: PublicDocum
   <meta name="theme-color" content="#f5f6f2">
   <title>${title}</title>
   ${preload}
-  <link rel="icon" href="/public-assets/swooshz-mark.png" type="image/png">
-  <link rel="stylesheet" href="/public-assets/public-site.css">
-  <script defer src="/public-assets/public-site.js"></script>
+  <link rel="icon" href="${publicAssetUrl("/public-assets/swooshz-mark.png")}" type="image/png">
+  <link rel="stylesheet" href="${publicAssetUrl("/public-assets/public-site.css")}">
+  <script defer src="${publicAssetUrl("/public-assets/public-site.js")}"></script>
 </head>
 <body class="public-site" data-public-route="${route}">
   <a class="public-skip-link" href="#main-content">Skip to main content</a>
@@ -470,7 +472,7 @@ function heroPicture(className: string, eager: boolean): string {
       <picture>
         <source type="image/avif" srcset="${heroAvifSrcset}" sizes="(max-width: 720px) 170vw, (max-width: 900px) 116vw, min(82vw, 1240px)">
         <source type="image/webp" srcset="${heroWebpSrcset}" sizes="(max-width: 720px) 170vw, (max-width: 900px) 116vw, min(82vw, 1240px)">
-        <img src="/public-assets/hero-monument-1280.png" srcset="${heroPngSrcset}" sizes="(max-width: 720px) 170vw, (max-width: 900px) 116vw, min(82vw, 1240px)" width="1672" height="941" alt="" ${eager ? 'loading="eager" fetchpriority="high"' : 'loading="lazy"'} decoding="async">
+        <img src="${publicAssetUrl("/public-assets/hero-monument-1280.png")}" srcset="${heroPngSrcset}" sizes="(max-width: 720px) 170vw, (max-width: 900px) 116vw, min(82vw, 1240px)" width="1672" height="941" alt="" ${eager ? 'loading="eager" fetchpriority="high"' : 'loading="lazy"'} decoding="async">
       </picture>
       ${className ? "<figcaption>Entry / context / focus</figcaption>" : ""}
     </figure>
@@ -483,7 +485,7 @@ function publicNav(active: Exclude<PublicRoute, "login">): string {
   return `
     <header class="public-nav">
       <a class="public-brand" href="/" aria-label="Swooshz Platform home">
-        <img src="/public-assets/swooshz-mark.png" width="34" height="34" alt="">
+        <img src="${publicAssetUrl("/public-assets/swooshz-mark.png")}" width="34" height="34" alt="">
         <span>Swooshz</span><small>Platform</small>
       </a>
       <nav class="public-primary-nav" aria-label="Public navigation" data-public-navigation>
@@ -507,7 +509,7 @@ function publicNav(active: Exclude<PublicRoute, "login">): string {
 function publicFooter(): string {
   return `
     <footer class="public-footer">
-      <a class="public-footer-brand" href="/"><img src="/public-assets/swooshz-mark.png" width="28" height="28" alt=""><span>Swooshz Platform</span></a>
+      <a class="public-footer-brand" href="/"><img src="${publicAssetUrl("/public-assets/swooshz-mark.png")}" width="28" height="28" alt=""><span>Swooshz Platform</span></a>
       <nav aria-label="Footer navigation">
         <a class="" href="/solutions">Solutions</a>
         <a class="" href="/resources">Resources</a>
