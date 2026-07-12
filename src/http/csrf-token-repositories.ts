@@ -25,7 +25,7 @@ export interface CreateCsrfTokenRecordInput {
 }
 
 export interface CsrfTokenRepository {
-  create(input: CreateCsrfTokenRecordInput): Promise<CsrfTokenRecord>;
+  replaceForSession(input: CreateCsrfTokenRecordInput): Promise<CsrfTokenRecord>;
   findBySessionAndTokenHash(
     sessionId: string,
     tokenHash: string,

@@ -1137,6 +1137,19 @@ function createFakeDrizzleDb(calls, records) {
         },
       };
     },
+    delete(table) {
+      const tableName = readTableName(table);
+      return {
+        where() {
+          if (tableName === "auth_states") records.authStates.splice(0);
+          if (tableName === "csrf_tokens") records.csrfTokens.splice(0);
+          return Promise.resolve([]);
+        },
+      };
+    },
+    transaction(operation) {
+      return operation(this);
+    },
     update(table) {
       calls.query += 1;
       calls.dbOperations.push(`update:${readTableName(table)}`);

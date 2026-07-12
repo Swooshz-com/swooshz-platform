@@ -17,16 +17,31 @@ import type {
 type Row = Record<string, unknown>;
 
 export function createDrizzleCsrfTokenRepository(
-  db: Pick<DrizzleDatabase, "select" | "insert">,
+  db: Pick<DrizzleDatabase, "select" | "insert" | "delete" | "transaction">,
 ): CsrfTokenRepository {
   return {
-    async create(input) {
-      const rows = await db
-        .insert(csrfTokens)
-        .values(csrfTokenToValues(input))
-        .returning();
+    async replaceForSession(input) {
+      if (!db.transaction) {
+        throw new Error("CSRF token replacement requires transaction support.");
+      }
 
-      return mapOneRequired(rows[0], mapCsrfTokenRow);
+      return db.transaction(async (tx) => {
+        await tx
+          .delete(csrfTokens)
+          .where(
+            and(
+              eq(csrfTokens.sessionId, input.sessionId),
+              eq(csrfTokens.purpose, input.purpose),
+            ),
+          );
+
+        const rows = await tx
+          .insert(csrfTokens)
+          .values(csrfTokenToValues(input))
+          .returning();
+
+        return mapOneRequired(rows[0], mapCsrfTokenRow);
+      }, { isolationLevel: "serializable" });
     },
     async findBySessionAndTokenHash(sessionId, tokenHash, purpose) {
       return mapOne(

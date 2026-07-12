@@ -9,6 +9,7 @@ import {
 } from "../dist/db/mappers.js";
 import {
   createDrizzleAuthStateStore,
+  maxPersistedAuthStates,
 } from "../dist/db/auth-state-repository.js";
 import {
   AuthStateCryptoConfigError,
@@ -129,6 +130,26 @@ test("Drizzle auth state store stores only hashed state and nonce references", a
   assert.equal("nonce" in insert.values, false);
   assert.doesNotMatch(JSON.stringify(insert.values), new RegExp(rawState));
   assert.doesNotMatch(JSON.stringify(insert.values), new RegExp(rawNonce));
+});
+
+test("Drizzle auth state store purges stale rows and enforces a hard capacity", async () => {
+  const atCapacity = Array.from({ length: maxPersistedAuthStates }, () => authStateRow);
+  const fakeDb = createFakeDrizzleDb({
+    selectRows: new Map([[schema.authStates, atCapacity]]),
+    insertRows: new Map([[schema.authStates, [authStateRow]]]),
+  });
+  const store = createDrizzleAuthStateStore(fakeDb);
+
+  await assert.rejects(
+    store.storeState(mapStoredAuthStateInput(authStateRow)),
+    /capacity has been reached/,
+  );
+  assert.equal(fakeDb.calls.filter((call) => call.operation === "delete.where").length, 1);
+  assert.equal(fakeDb.calls.filter((call) => call.operation === "insert.values").length, 0);
+  assert.deepEqual(
+    fakeDb.calls.find((call) => call.operation === "transaction").options,
+    { isolationLevel: "serializable" },
+  );
 });
 
 test("Drizzle auth state store consumeState filters by provider key and state hash", async () => {
@@ -282,13 +303,12 @@ function createFakeDrizzleDb({ selectRows, insertRows, updateRows } = {}) {
       return {
         from(table) {
           calls.push({ operation: "select.from", table });
-
-          return {
-            where(condition) {
-              calls.push({ operation: "select.where", table, condition });
-              return new FakeSelectResult(selectRows?.get(table) ?? [], calls, table);
-            },
+          const result = new FakeSelectResult(selectRows?.get(table) ?? [], calls, table);
+          result.where = (condition) => {
+            calls.push({ operation: "select.where", table, condition });
+            return result;
           };
+          return result;
         },
       };
     },
@@ -311,6 +331,19 @@ function createFakeDrizzleDb({ selectRows, insertRows, updateRows } = {}) {
           };
         },
       };
+    },
+    delete(table) {
+      calls.push({ operation: "delete", table });
+      return {
+        where(condition) {
+          calls.push({ operation: "delete.where", table, condition });
+          return Promise.resolve([]);
+        },
+      };
+    },
+    transaction(operation, options) {
+      calls.push({ operation: "transaction", options });
+      return operation(this);
     },
     update(table) {
       calls.push({ operation: "update", table });

@@ -69,16 +69,16 @@ copying SKR's input interception.
 | `npm ci` | PASS |
 | `npm run typecheck` | PASS |
 | `npm run build` | PASS; generated content-addressed assets materialized in `dist/http/public-assets` |
-| Focused frontend and adapter tests | PASS, 100/100 |
-| Full `npm test` | PASS, 729/729 |
+| Focused public-site, HTTP adapter, auth-state, and CSRF tests | PASS, 56/56 |
+| Full `npm test` | PASS, 732/732 |
 | JavaScript syntax checks | PASS |
-| `docker build --tag swooshz-platform:prestige-a-cache-amendment .` | PASS; runtime stage reports 0 vulnerabilities |
+| `docker build --tag swooshz-platform:prestige-a-pr100 .` | PASS; runtime stage reports 0 vulnerabilities |
 | `npm audit --omit=dev` | PASS; 0 vulnerabilities |
 | Full `npm audit` | 4 moderate development-only advisories through `drizzle-kit` and older `esbuild`; absent from the pruned runtime image |
 | `npm run platform:sqag-smoke-readiness` | PASS; synthetic readiness correctly reports `production_ready=false` without live services |
 | Browser screenshot/video matrix | PASS; the amended-head GitHub Actions artifact was published and manually reviewed, and the exact final-head artifact is recorded in PR #100 |
 | `/app` and `/app/admin` visual regression | PASS on desktop and mobile in the published artifact |
-| Standard Codex Security scan | PASS; native standard scan `41fe34ce-bd21-471f-aa5d-7aae5a47f81c` completed against implementation head `a15b6fc3e006e16a515571c39a90973e9c212b20` with two pre-existing reportable findings and no cache/evidence-amendment finding |
+| Standard Codex Security scan | PASS with remediation; native standard scan `41fe34ce-bd21-471f-aa5d-7aae5a47f81c` identified two persistent-allocation findings, both closed in this amendment with bounded serializable repository behavior and focused regression coverage |
 | `git diff --check` | PASS |
 
 ## Browser and interaction evidence
@@ -114,6 +114,8 @@ sizes; the amendment does not change layout, motion, or authenticated renderers.
 - [x] Mobile remains ordinary touch scrolling with no scene settling.
 - [x] Sticky-header offsets preserve anchored and focused targets.
 - [x] `/app` and `/app/admin` retain their prior visual shell.
+- [x] Primary CTA labels and arrows retain 17.502:1 default contrast and 5.473:1 hover/focus contrast.
+- [x] The keyboard-focused skip link retains 17.502:1 contrast.
 - [x] No confirmed major visual defect remains.
 
 The in-app Browser connection timed out twice during setup. The approved
@@ -126,14 +128,12 @@ Readable amended-head standard-scan report:
 
 `C:\Users\xPass\AppData\Local\Temp\codex-security-scans-doaqCW\prestige-a-production\a15b6fc3e006e16a515571c39a90973e9c212b20_20260712T055321Z_1xl868om\report.md`
 
-No reportable issue was introduced by the Prestige A public-site or cache/evidence
-amendment diff. Two pre-existing persistent-allocation findings survived the
-standard repository-wide gates:
+The standard scan identified two persistent-allocation findings that this amendment now remediates:
 
-| Priority | Finding | Boundary |
+| Priority | Finding | Remediation |
 | --- | --- | --- |
-| P2 / medium | Anonymous auth start can create unbounded persistent `auth_states` rows | Pre-existing authentication/backend path |
-| P3 / low | Authenticated CSRF issuance can create unbounded persistent token rows | Pre-existing session/backend path |
+| P2 / medium | Anonymous auth start could create unbounded persistent `auth_states` rows | Closed: stale lifecycle rows are deleted and a serializable hard 10,000-row global retained-state cap rejects additional allocation. |
+| P3 / low | Authenticated CSRF issuance could create unbounded persistent token rows | Closed: issuance serializably replaces the existing row for the same session and purpose, retaining at most one. |
 
 The pre-routing slow-body candidate was rejected after exact runtime
 introspection confirmed that the shipped Node 22 server applies a finite
@@ -143,18 +143,18 @@ candidate's effectively unbounded premise did not survive validation.
 
 All other reviewed surfaces were rejected, marked not applicable, or closed
 without a credible candidate, with counterevidence preserved in canonical
-coverage. The two surviving findings were not fixed
-because this implementation explicitly excludes changes to OIDC, sessions,
-CSRF, database behavior, and API contracts. They remain production-launch
-limitations requiring separately scoped backend work.
+coverage. The allocation fixes do not alter OIDC state/nonce validation,
+session semantics, request-security decisions, API contracts, or authenticated
+renderer composition.
 
 ## Production-boundary review
 
 - Public rendering and assets are isolated in public-only helpers and modules.
 - Authenticated portal/admin renderer and browser JavaScript are unchanged.
-- No OIDC, session, cookie, CSRF, workspace, membership, role, entitlement,
-  launch-token, product-proxy, database, admin-action, or API-contract behavior
-  was intentionally modified.
+- The only backend behavior changes are bounded auth-state persistence and
+  single-record CSRF replacement requested to close P2/P3. OIDC validation,
+  sessions, cookies, workspace/membership/role/entitlement decisions,
+  launch-token/product-proxy behavior, admin actions, and API contracts are unchanged.
 - No prototype directory, evidence capture, or scan bundle is intended for
   commit.
 
@@ -162,8 +162,8 @@ limitations requiring separately scoped backend work.
 
 | Severity | Finding | Status |
 | --- | --- | --- |
-| P2 | Pre-existing anonymous auth-state resource allocation | Open for separately scoped backend remediation; blocks an unconditional production-launch claim, not review of this visual-only PR. |
-| P3 | Pre-existing authenticated CSRF row allocation | Open for separately scoped backend remediation. |
+| P2 | Anonymous auth-state persistent allocation | Closed with stale-row cleanup and a serializable hard retained-row cap. |
+| P3 | Authenticated CSRF persistent allocation | Closed with serializable replacement per session-purpose pair. |
 | Informational | Node request-body timeout policy | Current Node 22 default bounds whole-request receipt to 300 seconds; a shorter explicit timeout is optional separately scoped defense in depth. |
 | P3 | Four moderate development-only advisories under `drizzle-kit`/older `esbuild` | Runtime/pruned image is unaffected; track through a compatible tooling upgrade. |
 | Informational | In-app Browser connection unavailable | Closed through the documented Playwright fallback and manual evidence review. |
@@ -171,7 +171,7 @@ limitations requiring separately scoped backend work.
 ## Release gates
 
 The public-site branch is PR-ready after final diff review, closing validation,
-commit, push, and CI verification. There is no unresolved P0
-or P1 finding, and no reportable finding was introduced by Prestige A. This
-audit does not represent production-launch approval while the two explicitly
-recorded pre-existing findings and deployment controls remain unresolved.
+commit, push, and CI verification. There is no unresolved P0 or P1 finding, and
+the scan's P2/P3 allocation findings are closed. This audit does not represent
+hosted production-launch approval while deployment/operator controls remain
+outside this PR.

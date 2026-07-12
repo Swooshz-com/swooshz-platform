@@ -96,15 +96,17 @@ test("maps CSRF token rows to storage-agnostic records", () => {
   });
 });
 
-test("Drizzle CSRF repository create stores only token hashes", async () => {
+test("Drizzle CSRF repository replaces the session token and stores only token hashes", async () => {
   const fakeDb = createFakeDrizzleDb({
     insertRows: new Map([[schema.csrfTokens, [csrfTokenRow]]]),
   });
   const repository = createDrizzleCsrfTokenRepository(fakeDb);
 
-  const created = await repository.create(mapCsrfTokenRow(csrfTokenRow));
+  const created = await repository.replaceForSession(mapCsrfTokenRow(csrfTokenRow));
 
   assert.deepEqual(created, mapCsrfTokenRow(csrfTokenRow));
+  assert.equal(fakeDb.calls.filter((call) => call.operation === "delete.where").length, 1);
+  assert.deepEqual(fakeDb.calls.find((call) => call.operation === "transaction").options, { isolationLevel: "serializable" });
   const insert = fakeDb.calls.find(
     (call) => call.operation === "insert.values" && call.table === schema.csrfTokens,
   );
@@ -234,15 +236,27 @@ function createFakeDrizzleDb({ selectRows, insertRows } = {}) {
       return {
         from(table) {
           calls.push({ operation: "select.from", table });
-
-          return {
-            where(condition) {
-              calls.push({ operation: "select.where", table, condition });
-              return new FakeSelectResult(selectRows?.get(table) ?? [], calls, table);
-            },
+          const result = new FakeSelectResult(selectRows?.get(table) ?? [], calls, table);
+          result.where = (condition) => {
+            calls.push({ operation: "select.where", table, condition });
+            return result;
           };
+          return result;
         },
       };
+    },
+    delete(table) {
+      calls.push({ operation: "delete", table });
+      return {
+        where(condition) {
+          calls.push({ operation: "delete.where", table, condition });
+          return Promise.resolve([]);
+        },
+      };
+    },
+    transaction(operation, options) {
+      calls.push({ operation: "transaction", options });
+      return operation(this);
     },
     insert(table) {
       calls.push({ operation: "insert", table });

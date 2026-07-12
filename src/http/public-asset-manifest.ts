@@ -4,11 +4,11 @@
 export const generatedPublicAssetDefinitions = [
   {
     "logicalPath": "/public-assets/public-site.css",
-    "versionedPath": "/public-assets/833e433b0ca31719/public-site.css",
+    "versionedPath": "/public-assets/22bd68b753a45e5a/public-site.css",
     "fileName": "public-site.css",
-    "versionedFileName": "833e433b0ca31719/public-site.css",
+    "versionedFileName": "22bd68b753a45e5a/public-site.css",
     "contentType": "text/css; charset=utf-8",
-    "contentHash": "833e433b0ca31719"
+    "contentHash": "22bd68b753a45e5a"
   },
   {
     "logicalPath": "/public-assets/public-site.js",

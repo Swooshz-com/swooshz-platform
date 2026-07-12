@@ -77,8 +77,30 @@ body.public-site::before {
   pointer-events: none;
 }
 
-.public-site a {
+:where(.public-site a:any-link) {
   color: inherit;
+}
+
+a.public-skip-link:any-link,
+a.public-button:any-link {
+  color: white;
+}
+
+a.public-brand:any-link,
+a.public-button-secondary:any-link,
+a.public-quiet-link:any-link,
+a.public-footer-brand:any-link,
+a.login-home-link:any-link {
+  color: var(--public-ink);
+}
+
+.public-primary-nav a:any-link,
+a.public-nav-login:any-link {
+  color: var(--public-muted);
+}
+
+a.reading-back:any-link {
+  color: var(--public-teal);
 }
 
 .public-site button,

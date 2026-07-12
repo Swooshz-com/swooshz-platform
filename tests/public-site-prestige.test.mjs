@@ -50,6 +50,28 @@ test("public Prestige pages expose named navigation and visible non-empty CTA la
   assert.match(landing, /aria-controls="public-navigation"/);
 });
 
+test("public anchor colour architecture preserves CTA and secondary link intent", async () => {
+  const css = await readFile("src/http/public-assets/public-site.css", "utf8");
+
+  assert.match(css, /:where\(\.public-site a:any-link\)\s*\{\s*color:\s*inherit;/);
+  assert.doesNotMatch(css, /\.public-site a\s*\{\s*color:\s*inherit;/);
+
+  for (const selector of [
+    "a.public-button:any-link",
+    "a.public-skip-link:any-link",
+    "a.reading-back:any-link",
+    "a.public-nav-login:any-link",
+    "a.public-quiet-link:any-link",
+    "a.public-button-secondary:any-link",
+    "a.public-footer-brand:any-link",
+    "a.public-brand:any-link",
+    "a.login-home-link:any-link",
+  ]) {
+    assert.match(css, new RegExp(selector.replaceAll(".", "\\.")));
+  }
+
+});
+
 test("hero uses responsive optimized formats with one homepage-only preload", async () => {
   const landing = renderLandingPage();
   const nonHome = renderSolutionsPage() + renderLoginPage();

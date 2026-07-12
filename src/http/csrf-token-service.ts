@@ -175,7 +175,7 @@ async function createRecordSafely(
   record: CsrfTokenRecord,
 ): Promise<CsrfTokenRecord> {
   try {
-    return await tokens.create(record);
+    return await tokens.replaceForSession(record);
   } catch {
     throw new CsrfTokenServiceError("token_store_failed");
   }

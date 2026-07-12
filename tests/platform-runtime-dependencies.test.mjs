@@ -909,6 +909,19 @@ function createFakeDrizzleDb(records) {
         },
       };
     },
+    delete(table) {
+      const tableName = table;
+      return {
+        where() {
+          if (tableName === schema.authStates) records.authStates.splice(0);
+          if (tableName === schema.csrfTokens) records.csrfTokens.splice(0);
+          return Promise.resolve([]);
+        },
+      };
+    },
+    transaction(operation) {
+      return operation(this);
+    },
     update(table) {
       return {
         set(values) {

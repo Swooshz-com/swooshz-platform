@@ -82,6 +82,7 @@ const consoleFailures = [];
 
 try {
   assertRenderedAssetsAreVersioned();
+  const contrastResults = await assertPublicAnchorContrast(browser, origin);
   await captureRouteMatrix(browser, origin, { width: 1440, height: 900 }, "desktop");
   await captureRouteMatrix(browser, origin, { width: 390, height: 844 }, "mobile");
   await createContactSheet(browser, "desktop", 2, 640);
@@ -92,6 +93,7 @@ try {
   await capturePage(browser, origin, "/", { width: 1366, height: 768 }, "screenshots/home-short-1366x768.png");
   await capturePage(browser, origin, "/", { width: 844, height: 390 }, "screenshots/home-short-landscape-844x390.png");
   await captureMenuOpen(browser, origin);
+  await captureSkipLinkFocus(browser, origin);
   await capturePage(browser, origin, "/", { width: 1440, height: 900 }, "screenshots/reduced-motion-desktop.png", { reducedMotion: "reduce" });
   await capturePage(browser, origin, "/", { width: 390, height: 844 }, "screenshots/reduced-motion-mobile.png", { reducedMotion: "reduce", isMobile: true, hasTouch: true });
 
@@ -119,6 +121,7 @@ try {
     browser: `Chromium ${browser.version()}`,
     captureOrigin: origin,
     cacheStrategy: "SHA-256 content-addressed URLs with immutable caching; logical aliases revalidate",
+    contrastResults,
     files,
   };
   await writeFile(join(outputRoot, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
@@ -171,6 +174,136 @@ async function captureMenuOpen(browserInstance, baseUrl) {
   await context.close();
 }
 
+async function captureSkipLinkFocus(browserInstance, baseUrl) {
+  const context = await browserInstance.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
+  const page = await context.newPage();
+  watchConsole(page, "skip-link-focus");
+  await loadReady(page, `${baseUrl}/`);
+  await focusByKeyboard(page, ".public-skip-link");
+  const path = join(outputRoot, "screenshots/skip-link-focus.png");
+  await mkdir(dirname(path), { recursive: true });
+  await page.screenshot({ path });
+  await context.close();
+}
+
+async function assertPublicAnchorContrast(browserInstance, baseUrl) {
+  const cases = [
+    { id: "home-primary", route: "/", selector: ".prestige-hero-actions .public-button" },
+    { id: "login-primary", route: "/login", selector: ".login-actions .public-button" },
+    { id: "navigation-primary", route: "/", selector: ".public-nav-cta" },
+  ];
+  const results = [];
+
+  for (const testCase of cases) {
+    for (const state of ["default", "hover", "keyboard-focus"]) {
+      const context = await browserInstance.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
+      const page = await context.newPage();
+      watchConsole(page, `contrast-${testCase.id}-${state}`);
+      await loadReady(page, `${baseUrl}${testCase.route}`);
+      const locator = page.locator(testCase.selector).first();
+      await locator.waitFor({ state: "visible" });
+
+      if (state === "hover") {
+        await locator.hover();
+        await page.waitForTimeout(380);
+      } else if (state === "keyboard-focus") {
+        await focusByKeyboard(page, testCase.selector);
+        await page.waitForTimeout(380);
+      }
+
+      const measurement = await measureAnchorContrast(locator);
+      assertContrastMeasurement(testCase.id, state, measurement);
+      results.push({ id: testCase.id, state, ...measurement });
+      await context.close();
+    }
+  }
+
+  const skipContext = await browserInstance.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
+  const skipPage = await skipContext.newPage();
+  watchConsole(skipPage, "contrast-skip-link-keyboard-focus");
+  await loadReady(skipPage, `${baseUrl}/`);
+  await focusByKeyboard(skipPage, ".public-skip-link");
+  const skipMeasurement = await measureAnchorContrast(skipPage.locator(".public-skip-link"));
+  assertContrastMeasurement("skip-link", "keyboard-focus", skipMeasurement);
+  results.push({ id: "skip-link", state: "keyboard-focus", ...skipMeasurement });
+  await skipContext.close();
+
+  return results;
+}
+
+async function focusByKeyboard(page, selector) {
+  for (let index = 0; index < 40; index += 1) {
+    await page.keyboard.press("Tab");
+    if (await page.locator(selector).evaluate((element) => element === document.activeElement)) return;
+  }
+  throw new Error(`Keyboard focus did not reach ${selector}.`);
+}
+
+async function measureAnchorContrast(locator) {
+  const measurement = await locator.evaluate((element) => {
+    const foreground = getComputedStyle(element).color;
+    const pseudo = getComputedStyle(element, "::before");
+    const pseudoTransform = pseudo.transform;
+    const pseudoVisible = pseudo.content !== "none" &&
+      pseudo.backgroundColor !== "rgba(0, 0, 0, 0)" &&
+      (pseudoTransform === "none" || /matrix\([^,]+,[^,]+,[^,]+,[^,]+,\s*0(?:\.0+)?,\s*0(?:\.0+)?\)/.test(pseudoTransform));
+    let background = pseudoVisible ? pseudo.backgroundColor : getComputedStyle(element).backgroundColor;
+    let ancestor = element.parentElement;
+
+    while (background === "rgba(0, 0, 0, 0)" && ancestor) {
+      background = getComputedStyle(ancestor).backgroundColor;
+      ancestor = ancestor.parentElement;
+    }
+
+    const arrow = element.querySelector("b");
+    return {
+      foreground,
+      background,
+      arrowForeground: arrow ? getComputedStyle(arrow).color : null,
+      pseudoVisible,
+      pseudoTransform,
+    };
+  });
+
+  return {
+    ...measurement,
+    contrast: contrastRatio(measurement.foreground, measurement.background),
+    arrowContrast: measurement.arrowForeground
+      ? contrastRatio(measurement.arrowForeground, measurement.background)
+      : null,
+  };
+}
+
+function assertContrastMeasurement(id, state, measurement) {
+  if (measurement.contrast < 4.5) {
+    throw new Error(`${id} ${state} contrast ${measurement.contrast.toFixed(2)}:1 is below 4.5:1 (${measurement.foreground} on ${measurement.background}).`);
+  }
+  if (measurement.arrowContrast !== null && measurement.arrowContrast < 3) {
+    throw new Error(`${id} ${state} arrow contrast ${measurement.arrowContrast.toFixed(2)}:1 is below 3:1.`);
+  }
+}
+
+function contrastRatio(foreground, background) {
+  const foregroundLuminance = relativeLuminance(parseRgb(foreground));
+  const backgroundLuminance = relativeLuminance(parseRgb(background));
+  const lighter = Math.max(foregroundLuminance, backgroundLuminance);
+  const darker = Math.min(foregroundLuminance, backgroundLuminance);
+  return Number(((lighter + 0.05) / (darker + 0.05)).toFixed(3));
+}
+
+function parseRgb(value) {
+  const channels = value.match(/[\d.]+/g)?.slice(0, 3).map(Number);
+  if (!channels || channels.length !== 3) throw new Error(`Unsupported computed color: ${value}`);
+  return channels;
+}
+
+function relativeLuminance(channels) {
+  const [red, green, blue] = channels.map((channel) => {
+    const value = channel / 255;
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+}
 async function createContactSheet(browserInstance, label, columns, imageWidth) {
   const captures = [];
 
@@ -295,7 +428,11 @@ async function listFiles(root) {
 }
 
 function renderReadme(manifest) {
-  return `# Prestige A public-site review evidence\n\n- Exact amended head: \`${manifest.headSha}\`\n- Browser: ${manifest.browser}\n- Generated: ${manifest.generatedAt}\n- Cache strategy: ${manifest.cacheStrategy}\n\nThis artifact was generated from the checked-out pull-request head by the public-site evidence workflow. It contains desktop/mobile route contact sheets, required responsive and reduced-motion captures, portal/admin regression screenshots, and real Chromium recordings for desktop and mobile interactions.\n`;
+  const contrastRows = manifest.contrastResults
+    .map((result) => `| ${result.id} | ${result.state} | ${result.contrast.toFixed(3)}:1 | ${result.arrowContrast === null ? "n/a" : `${result.arrowContrast.toFixed(3)}:1`} |`)
+    .join("\n");
+
+  return `# Prestige A public-site review evidence\n\n- Exact amended head: \`${manifest.headSha}\`\n- Browser: ${manifest.browser}\n- Generated: ${manifest.generatedAt}\n- Cache strategy: ${manifest.cacheStrategy}\n\n## Computed contrast\n\n| Target | State | Text | Arrow |\n| --- | --- | ---: | ---: |\n${contrastRows}\n\nThis artifact was generated from the checked-out pull-request head by the public-site evidence workflow. It contains desktop/mobile route contact sheets, required responsive and reduced-motion captures, the focused skip link, portal/admin regression screenshots, and real Chromium recordings for desktop and mobile interactions.\n`;
 }
 
 function writeResponse(response, statusCode, headers, body) {

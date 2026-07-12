@@ -136,6 +136,17 @@ test("issue service rejects blank token and blank hash safely", async () => {
   );
 });
 
+test("issuing another CSRF token replaces the previous session-purpose record", async () => {
+  const records = [tokenRecord()];
+  const fixture = csrfFixture({ records });
+
+  await issueCsrfTokenForSession(fixture.dependencies, issueInput());
+
+  assert.equal(records.length, 1);
+  assert.equal(records[0].id, "csrf_record_2");
+  assert.equal(fixture.calls.replaceForSession, 1);
+});
+
 test("repository-backed validator accepts valid token for same session", async () => {
   const fixture = csrfFixture({
     records: [tokenRecord()],
@@ -370,7 +381,7 @@ function csrfFixture(options = {}) {
   const calls = {
     tokenFactory: 0,
     hash: 0,
-    create: 0,
+    replaceForSession: 0,
     findActiveBySessionAndTokenHash: [],
   };
   const dependencies = {
@@ -413,12 +424,17 @@ function csrfFixture(options = {}) {
       },
     },
     tokens: {
-      async create(record) {
-        calls.create += 1;
+      async replaceForSession(record) {
+        calls.replaceForSession += 1;
         if (options.failCreate) {
           throw new Error(privateFailure);
         }
 
+        for (let index = records.length - 1; index >= 0; index -= 1) {
+          if (records[index].sessionId === record.sessionId && records[index].purpose === record.purpose) {
+            records.splice(index, 1);
+          }
+        }
         records.push(record);
         return record;
       },

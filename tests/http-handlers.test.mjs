@@ -825,7 +825,7 @@ function csrfIssueFixture(options = {}) {
   const records = [];
   const dependencies = {
     tokens: {
-      async create(record) {
+      async replaceForSession(record) {
         if (options.failCreate) {
           throw new Error(privateStorageError);
         }
