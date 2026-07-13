@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>Swooshz Platform - Authenticated UI Polish Study</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to main content</a>
+    <div class="app-shell">
+      <header class="app-bar" aria-label="Application header">
+        <div class="bar-inner">
+          <a class="brand" href="?view=launcher" aria-label="Swooshz Platform home">
+            <img src="assets/swooshz-mark.png" width="34" height="34" alt="">
+            <span>Swooshz Platform</span>
+          </a>
+
+          <div class="desktop-account-context">
+            <label class="context-control">
+              <span>Workspace</span>
+              <select id="workspace-select" aria-label="Current workspace">
+                <option>Swooshz Studio</option>
+                <option>Northstar Events</option>
+              </select>
+            </label>
+            <div class="context-value">
+              <span>Role</span>
+              <strong>Admin</strong>
+            </div>
+            <button class="account-button" type="button" aria-haspopup="menu" aria-expanded="false">
+              <span class="avatar" aria-hidden="true">SP</span>
+              <span>Sam Parker</span>
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 8 4 4 4-4"/></svg>
+            </button>
+          </div>
+
+          <button class="mobile-menu-button" type="button" aria-label="Open account menu" aria-expanded="false">
+            <span class="avatar" aria-hidden="true">SP</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h14"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <div class="mobile-context" aria-label="Current access context">
+        <button id="mobile-workspace" type="button">
+          <span>Workspace</span>
+          <strong>Swooshz Studio</strong>
+        </button>
+        <div>
+          <span>Role</span>
+          <strong>Admin</strong>
+        </div>
+      </div>
+
+      <nav class="admin-nav desktop-admin-nav" aria-label="Administration sections">
+        <div class="nav-inner">
+          <a class="is-active" href="?view=members">Members</a>
+          <a href="?view=pending">Pending approvals</a>
+          <a href="?view=access">Product access</a>
+          <a href="?view=audit">Audit activity</a>
+        </div>
+      </nav>
+
+      <main id="main-content">
+        <section class="launcher-page" aria-labelledby="launcher-title">
+          <header class="page-heading launcher-heading">
+            <h1 id="launcher-title">Your product</h1>
+            <p>Open the product available to your workspace.</p>
+          </header>
+
+          <article class="launch-unit" aria-labelledby="product-title">
+            <div class="product-summary">
+              <div class="product-mark" aria-hidden="true">
+                <svg class="quote-document-icon" viewBox="0 0 64 64">
+                  <path class="icon-sheet" d="M17 7h21l11 11v39H17z"/>
+                  <path class="icon-fold" d="M38 7v12h11"/>
+                  <path class="icon-line" d="M23 28h21M23 36h21M23 44h21"/>
+                  <path class="icon-column" d="M36 28v16"/>
+                  <path class="icon-total" d="M23 51h21"/>
+                </svg>
+              </div>
+              <div>
+                <p class="product-label">Quotations</p>
+                <h2 id="product-title">Swooshz Quote Auto Generator</h2>
+                <p class="product-description">Create professional quotations using your approved workspace.</p>
+              </div>
+            </div>
+
+            <div class="launch-readiness" aria-label="Launch readiness">
+              <div class="readiness-status">
+                <span id="launch-status-dot" class="status-dot" aria-hidden="true"></span>
+                <span>
+                  <span class="readiness-label">Product status</span>
+                  <strong id="launch-status">Ready to launch</strong>
+                </span>
+              </div>
+              <button id="launch-button" class="primary-button launch-button" type="button">
+                <span>Launch product</span>
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12m-5-5 5 5-5 5"/></svg>
+              </button>
+              <div id="launch-feedback" class="launch-feedback" role="status" aria-live="polite" hidden></div>
+            </div>
+            <footer class="launch-handoff">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5zM8 9h8M8 13h5"/></svg>
+              <span><strong>Ready when you are.</strong> Your workspace and role stay the same when the product opens.</span>
+            </footer>
+          </article>
+        </section>
+
+        <section class="admin-page" aria-labelledby="members-title">
+          <button id="section-selector" class="mobile-section-selector" type="button" aria-haspopup="menu" aria-expanded="false">
+            <span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 20v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2m7-10a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm13 10v-2a4 4 0 0 0-3-3.87M16 2.13a4 4 0 0 1 0 7.75"/></svg>
+              <b id="section-label">Members</b>
+            </span>
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 8 4 4 4-4"/></svg>
+          </button>
+
+          <header class="admin-heading">
+            <div>
+              <h1 id="members-title">Members</h1>
+              <p>Manage who can access this workspace and what they are allowed to do.</p>
+            </div>
+            <button class="primary-button add-member-button" type="button" data-open-add-member>
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg>
+              Add member
+            </button>
+          </header>
+
+          <div class="member-surface">
+            <div class="member-table-head" aria-hidden="true">
+              <span>Member</span>
+              <span>Role</span>
+              <span>Status</span>
+              <span>Last active</span>
+              <span>Action</span>
+            </div>
+            <div class="member-list" role="list" aria-label="Workspace members">
+              <article class="member-row" role="listitem">
+                <div class="member-identity">
+                  <span class="member-avatar">SP</span>
+                  <span><strong>Sam Parker <em>You</em></strong><small>sam.parker@example.com</small></span>
+                </div>
+                <div class="member-field"><span>Role</span><strong>Owner</strong></div>
+                <div class="member-field"><span>Status</span><strong class="member-status"><i></i>Active</strong></div>
+                <div class="member-field"><span>Last active</span><strong>Now</strong></div>
+                <div class="member-action"><span class="protected-label">Protected owner</span></div>
+              </article>
+
+              <article class="member-row" role="listitem">
+                <div class="member-identity">
+                  <span class="member-avatar">AM</span>
+                  <span><strong>Avery Morgan</strong><small>avery.morgan@example.com</small></span>
+                </div>
+                <div class="member-field"><span>Role</span><strong>Admin</strong></div>
+                <div class="member-field"><span>Status</span><strong class="member-status"><i></i>Active</strong></div>
+                <div class="member-field"><span>Last active</span><strong>2 hours ago</strong></div>
+                <div class="member-action"><button type="button" data-member-menu="Avery Morgan">Manage</button></div>
+              </article>
+
+              <article class="member-row" role="listitem">
+                <div class="member-identity">
+                  <span class="member-avatar">JL</span>
+                  <span><strong>Jordan Lee</strong><small>jordan.lee@example.com</small></span>
+                </div>
+                <div class="member-field"><span>Role</span><strong>Member</strong></div>
+                <div class="member-field"><span>Status</span><strong class="member-status"><i></i>Active</strong></div>
+                <div class="member-field"><span>Last active</span><strong>Yesterday</strong></div>
+                <div class="member-action"><button type="button" data-member-menu="Jordan Lee">Manage</button></div>
+              </article>
+
+              <article class="member-row" role="listitem">
+                <div class="member-identity">
+                  <span class="member-avatar">RN</span>
+                  <span><strong>Riley Nguyen</strong><small>riley.nguyen@example.com</small></span>
+                </div>
+                <div class="member-field"><span>Role</span><strong>Member</strong></div>
+                <div class="member-field"><span>Status</span><strong class="member-status is-disabled"><i></i>Disabled</strong></div>
+                <div class="member-field"><span>Last active</span><strong>12 Jun 2026</strong></div>
+                <div class="member-action"><button type="button" data-confirm="reactivate">Reactivate</button></div>
+              </article>
+
+              <article class="member-row" role="listitem">
+                <div class="member-identity">
+                  <span class="member-avatar">TS</span>
+                  <span><strong>Taylor Singh</strong><small>taylor.singh.with-a-deliberately-long-address@example.com</small></span>
+                </div>
+                <div class="member-field"><span>Role</span><strong>Member</strong></div>
+                <div class="member-field"><span>Status</span><strong class="member-status"><i></i>Active</strong></div>
+                <div class="member-field"><span>Last active</span><strong>3 days ago</strong></div>
+                <div class="member-action"><button type="button" data-member-menu="Taylor Singh">Manage</button></div>
+              </article>
+            </div>
+            <footer class="member-footer">
+              <span>5 members</span>
+              <span>The workspace owner cannot be removed.</span>
+            </footer>
+          </div>
+        </section>
+
+        <section class="support-page access-page" aria-labelledby="access-title">
+          <button class="mobile-section-selector secondary-selector" type="button" data-shared-section-selector>
+            <span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg><b>Product access</b></span>
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 8 4 4 4-4"/></svg>
+          </button>
+          <header class="admin-heading">
+            <div>
+              <h1 id="access-title">Product access</h1>
+              <p>Control whether this workspace can use its current product.</p>
+            </div>
+          </header>
+          <article class="entitlement-surface">
+            <div class="entitlement-product">
+              <div class="product-mark compact" aria-hidden="true">
+                <svg class="quote-document-icon" viewBox="0 0 64 64">
+                  <path class="icon-sheet" d="M17 7h21l11 11v39H17z"/>
+                  <path class="icon-fold" d="M38 7v12h11"/>
+                  <path class="icon-line" d="M23 28h21M23 36h21M23 44h21"/>
+                  <path class="icon-column" d="M36 28v16"/>
+                  <path class="icon-total" d="M23 51h21"/>
+                </svg>
+              </div>
+              <div>
+                <h2>Swooshz Quote Auto Generator</h2>
+                <p>Members with access can create professional quotations for this workspace.</p>
+              </div>
+            </div>
+            <div class="entitlement-state">
+              <span>Product access</span>
+              <strong><i></i>Enabled</strong>
+            </div>
+            <button id="disable-product" class="secondary-button" type="button" data-confirm="disable-product">Disable product access</button>
+          </article>
+          <p class="surface-note"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Zm0-12v4m0 3h.01"/></svg> Disabling product access prevents new launches and does not change member records.</p>
+        </section>
+
+        <section class="support-page pending-page" aria-labelledby="pending-title">
+          <button class="mobile-section-selector secondary-selector" type="button" data-shared-section-selector><span><b>Pending approvals</b></span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 8 4 4 4-4"/></svg></button>
+          <header class="admin-heading"><div><h1 id="pending-title">Pending approvals</h1><p>Review access requests waiting for an administrator.</p></div></header>
+          <div class="empty-state"><h2>No pending approvals</h2><p>New workspace access requests will appear here for review.</p></div>
+        </section>
+
+        <section class="support-page audit-page" aria-labelledby="audit-title">
+          <button class="mobile-section-selector secondary-selector" type="button" data-shared-section-selector><span><b>Audit activity</b></span><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 8 4 4 4-4"/></svg></button>
+          <header class="admin-heading"><div><h1 id="audit-title">Audit activity</h1><p>Review recent administrative changes for this workspace.</p></div></header>
+          <div class="audit-surface" role="list">
+            <article role="listitem"><time datetime="2026-07-13T09:42:00+08:00">Today, 09:42</time><p><strong>Sam Parker</strong> changed Avery Morgan’s role to Admin.</p></article>
+            <article role="listitem"><time datetime="2026-07-12T16:18:00+08:00">Yesterday, 16:18</time><p><strong>Sam Parker</strong> reactivated Riley Nguyen.</p></article>
+            <article role="listitem"><time datetime="2026-07-10T11:05:00+08:00">10 Jul, 11:05</time><p><strong>System</strong> recorded a successful product launch.</p></article>
+          </div>
+        </section>
+        <div id="section-menu" class="section-menu" role="menu" hidden>
+          <a role="menuitem" href="?view=members">Members</a>
+          <a role="menuitem" href="?view=pending">Pending approvals</a>
+          <a role="menuitem" href="?view=access">Product access</a>
+          <a role="menuitem" href="?view=audit">Audit activity</a>
+        </div>
+      </main>
+    </div>
+
+    <div id="member-menu" class="action-menu" role="menu" hidden>
+      <button type="button" role="menuitem" data-confirm="role">Change role</button>
+      <button type="button" role="menuitem" data-confirm="disable-member">Disable member</button>
+      <button type="button" role="menuitem" data-confirm="remove-member" class="danger-item">Remove member</button>
+    </div>
+
+    <div id="modal-overlay" class="modal-overlay" hidden>
+      <div class="modal-backdrop" data-close-modal></div>
+      <section id="add-member-modal" class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="add-member-title" hidden>
+        <header class="modal-header">
+          <div><p class="modal-kicker">Members</p><h2 id="add-member-title">Add member</h2></div>
+          <button class="icon-button" type="button" aria-label="Close add member" data-close-modal><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"/></svg></button>
+        </header>
+        <form id="add-member-form" class="modal-form">
+          <p>Add an existing Swooshz account to this workspace.</p>
+          <label>Email address<input id="member-email" type="email" required placeholder="name@example.com" autocomplete="off"></label>
+          <label>Role<select id="member-role"><option>Member</option><option>Admin</option></select></label>
+          <div id="modal-feedback" class="inline-feedback" role="status" aria-live="polite" hidden></div>
+          <footer class="modal-actions"><button class="secondary-button" type="button" data-close-modal>Cancel</button><button class="primary-button" type="submit">Add member</button></footer>
+        </form>
+      </section>
+
+      <section id="confirm-modal" class="modal-panel confirm-panel" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-copy" hidden>
+        <header class="modal-header"><div><p class="modal-kicker">Confirm change</p><h2 id="confirm-title">Disable product access?</h2></div><button class="icon-button" type="button" aria-label="Close confirmation" data-close-modal><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"/></svg></button></header>
+        <div class="confirm-body"><p id="confirm-copy">Members will be unable to launch this product until access is enabled again.</p></div>
+        <footer class="modal-actions confirm-actions"><button class="secondary-button" type="button" data-close-modal>Cancel</button><button id="confirm-action" class="danger-button" type="button">Disable product access</button></footer>
+      </section>
+    </div>
+    <div id="live-region" class="sr-only" aria-live="polite"></div>
+    <script src="app.js"></script>
+  </body>
+</html>

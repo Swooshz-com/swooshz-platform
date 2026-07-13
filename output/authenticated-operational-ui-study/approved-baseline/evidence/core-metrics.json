@@ -1,0 +1,130 @@
+{
+  "origin": "localhost ephemeral",
+  "errors": [],
+  "metrics": {
+    "desktop-launcher": {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "scrollWidth": 1440,
+      "scrollHeight": 900,
+      "description": {
+        "x": 263,
+        "y": 346,
+        "width": 620,
+        "height": 50,
+        "bottom": 396
+      },
+      "descriptionVisible": true,
+      "launchButton": {
+        "x": 965,
+        "y": 388,
+        "width": 312,
+        "height": 46,
+        "bottom": 434
+      },
+      "sectionSelector": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0,
+        "bottom": 0
+      },
+      "smallestRoutineFont": 14
+    },
+    "desktop-members": {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "scrollWidth": 1440,
+      "scrollHeight": 900,
+      "description": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0,
+        "bottom": 0
+      },
+      "descriptionVisible": false,
+      "launchButton": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0,
+        "bottom": 0
+      },
+      "sectionSelector": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0,
+        "bottom": 0
+      },
+      "smallestRoutineFont": 14
+    },
+    "mobile-launcher-390": {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "scrollWidth": 390,
+      "scrollHeight": 844,
+      "description": {
+        "x": 39,
+        "y": 403,
+        "width": 314,
+        "height": 67,
+        "bottom": 470
+      },
+      "descriptionVisible": true,
+      "launchButton": {
+        "x": 39,
+        "y": 569,
+        "width": 314,
+        "height": 48,
+        "bottom": 617
+      },
+      "sectionSelector": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0,
+        "bottom": 0
+      },
+      "smallestRoutineFont": 14
+    },
+    "mobile-members-390": {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "scrollWidth": 390,
+      "scrollHeight": 1250,
+      "description": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0,
+        "bottom": 0
+      },
+      "descriptionVisible": false,
+      "launchButton": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0,
+        "bottom": 0
+      },
+      "sectionSelector": {
+        "x": 16,
+        "y": 131,
+        "width": 358,
+        "height": 48,
+        "bottom": 179
+      },
+      "smallestRoutineFont": 14
+    }
+  }
+}

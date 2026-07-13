@@ -1,0 +1,22 @@
+{
+  "workspace": {
+    "primary": "Swooshz Studio",
+    "alternate": "Northstar Events",
+    "role": "Admin",
+    "account": "Sam Parker",
+    "accountEmail": "sam.parker@example.com"
+  },
+  "product": {
+    "name": "Swooshz Quote Auto Generator",
+    "entitlement": "enabled",
+    "session": "ready"
+  },
+  "members": [
+    { "name": "Sam Parker", "email": "sam.parker@example.com", "role": "Owner", "status": "active", "lastActive": "Now" },
+    { "name": "Avery Morgan", "email": "avery.morgan@example.com", "role": "Admin", "status": "active", "lastActive": "2 hours ago" },
+    { "name": "Jordan Lee", "email": "jordan.lee@example.com", "role": "Member", "status": "active", "lastActive": "Yesterday" },
+    { "name": "Riley Nguyen", "email": "riley.nguyen@example.com", "role": "Member", "status": "disabled", "lastActive": "12 Jun 2026" },
+    { "name": "Taylor Singh", "email": "taylor.singh.with-a-deliberately-long-address@example.com", "role": "Member", "status": "active", "lastActive": "3 days ago" }
+  ],
+  "failureIdentity": "synthetic.user@fail.invalid"
+}

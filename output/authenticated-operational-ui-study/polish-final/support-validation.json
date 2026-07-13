@@ -1,0 +1,673 @@
+{
+  "origin": "localhost ephemeral",
+  "browser": "Installed Google Chrome via Playwright",
+  "errors": [],
+  "warnings": [],
+  "results": {
+    "desktop-product-access": {
+      "url": "http://127.0.0.1:54593/?view=access",
+      "title": "Swooshz Platform - Authenticated UI Polish Study",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "clientWidth": 1440,
+      "scrollWidth": 1440,
+      "scrollHeight": 900,
+      "noHorizontalOverflow": true,
+      "bodyTextLength": 473,
+      "frameworkOverlay": false,
+      "smallestRoutineFont": 14,
+      "minimumKeyTargetHeight": null,
+      "description": null,
+      "launchButton": null,
+      "sectionSelector": null,
+      "modal": null,
+      "actionMenu": null,
+      "focused": "Skip to main content\n    \n      \n        \n          \n            \n            Sw",
+      "landmarks": {
+        "header": 8,
+        "nav": 1,
+        "main": 1
+      },
+      "visibleH1Count": 1,
+      "longEmailWraps": true,
+      "productDescriptionVisible": false,
+      "launchActionVisibleInViewport": false
+    },
+    "desktop-pending-approvals": {
+      "url": "http://127.0.0.1:54593/?view=pending",
+      "title": "Swooshz Platform - Authenticated UI Polish Study",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "clientWidth": 1440,
+      "scrollWidth": 1440,
+      "scrollHeight": 900,
+      "noHorizontalOverflow": true,
+      "bodyTextLength": 314,
+      "frameworkOverlay": false,
+      "smallestRoutineFont": 14,
+      "minimumKeyTargetHeight": null,
+      "description": null,
+      "launchButton": null,
+      "sectionSelector": null,
+      "modal": null,
+      "actionMenu": null,
+      "focused": "Skip to main content\n    \n      \n        \n          \n            \n            Sw",
+      "landmarks": {
+        "header": 8,
+        "nav": 1,
+        "main": 1
+      },
+      "visibleH1Count": 1,
+      "longEmailWraps": true,
+      "productDescriptionVisible": false,
+      "launchActionVisibleInViewport": false
+    },
+    "desktop-audit-activity": {
+      "url": "http://127.0.0.1:54593/?view=audit",
+      "title": "Swooshz Platform - Authenticated UI Polish Study",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "clientWidth": 1440,
+      "scrollWidth": 1440,
+      "scrollHeight": 900,
+      "noHorizontalOverflow": true,
+      "bodyTextLength": 414,
+      "frameworkOverlay": false,
+      "smallestRoutineFont": 14,
+      "minimumKeyTargetHeight": null,
+      "description": null,
+      "launchButton": null,
+      "sectionSelector": null,
+      "modal": null,
+      "actionMenu": null,
+      "focused": "Skip to main content\n    \n      \n        \n          \n            \n            Sw",
+      "landmarks": {
+        "header": 8,
+        "nav": 1,
+        "main": 1
+      },
+      "visibleH1Count": 1,
+      "longEmailWraps": true,
+      "productDescriptionVisible": false,
+      "launchActionVisibleInViewport": false
+    },
+    "desktop-add-member-modal": {
+      "url": "http://127.0.0.1:54593/?view=members",
+      "title": "Swooshz Platform - Authenticated UI Polish Study",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "clientWidth": 1440,
+      "scrollWidth": 1440,
+      "scrollHeight": 900,
+      "noHorizontalOverflow": true,
+      "bodyTextLength": 863,
+      "frameworkOverlay": false,
+      "smallestRoutineFont": 14,
+      "minimumKeyTargetHeight": 44,
+      "description": null,
+      "launchButton": null,
+      "sectionSelector": null,
+      "modal": {
+        "x": 430,
+        "y": 251,
+        "width": 580,
+        "height": 399,
+        "bottom": 649,
+        "right": 1010
+      },
+      "actionMenu": null,
+      "focused": "member-email",
+      "landmarks": {
+        "header": 8,
+        "nav": 1,
+        "main": 1
+      },
+      "visibleH1Count": 1,
+      "longEmailWraps": true,
+      "productDescriptionVisible": false,
+      "launchActionVisibleInViewport": false
+    },
+    "desktop-member-action-menu": {
+      "url": "http://127.0.0.1:54593/?view=members",
+      "title": "Swooshz Platform - Authenticated UI Polish Study",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "clientWidth": 1440,
+      "scrollWidth": 1440,
+      "scrollHeight": 900,
+      "noHorizontalOverflow": true,
+      "bodyTextLength": 780,
+      "frameworkOverlay": false,
+      "smallestRoutineFont": 14,
+      "minimumKeyTargetHeight": 42,
+      "description": null,
+      "launchButton": null,
+      "sectionSelector": null,
+      "modal": null,
+      "actionMenu": {
+        "x": 1097,
+        "y": 464,
+        "width": 190,
+        "height": 140,
+        "bottom": 604,
+        "right": 1287
+      },
+      "focused": "Change role",
+      "landmarks": {
+        "header": 8,
+        "nav": 1,
+        "main": 1
+      },
+      "visibleH1Count": 1,
+      "longEmailWraps": true,
+      "productDescriptionVisible": false,
+      "launchActionVisibleInViewport": false
+    },
+    "desktop-confirmation-modal": {
+      "url": "http://127.0.0.1:54593/?view=members",
+      "title": "Swooshz Platform - Authenticated UI Polish Study",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "clientWidth": 1440,
+      "scrollWidth": 1440,
+      "scrollHeight": 900,
+      "noHorizontalOverflow": true,
+      "bodyTextLength": 858,
+      "frameworkOverlay": false,
+      "smallestRoutineFont": 14,
+      "minimumKeyTargetHeight": 44,
+      "description": null,
+      "launchButton": null,
+      "sectionSelector": null,
+      "modal": {
+        "x": 460,
+        "y": 331,
+        "width": 520,
+        "height": 238,
+        "bottom": 569,
+        "right": 980
+      },
+      "actionMenu": null,
+      "focused": "BUTTON",
+      "landmarks": {
+        "header": 8,
+        "nav": 1,
+        "main": 1
+      },
+      "visibleH1Count": 1,
+      "longEmailWraps": true,
+      "productDescriptionVisible": false,
+      "launchActionVisibleInViewport": false
+    },
+    "desktop-launch-failure": {
+      "url": "http://127.0.0.1:54593/?view=launcher&state=failure",
+      "title": "Swooshz Platform - Authenticated UI Polish Study",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "clientWidth": 1440,
+      "scrollWidth": 1440,
+      "scrollHeight": 901,
+      "noHorizontalOverflow": true,
+      "bodyTextLength": 496,
+      "frameworkOverlay": false,
+      "smallestRoutineFont": 14,
+      "minimumKeyTargetHeight": 46,
+      "description": {
+        "x": 323,
+        "y": 423,
+        "width": 576,
+        "height": 25,
+        "bottom": 448,
+        "right": 899
+      },
+      "launchButton": {
+        "x": 972,
+        "y": 424,
+        "width": 255,
+        "height": 46,
+        "bottom": 470,
+        "right": 1227
+      },
+      "sectionSelector": null,
+      "modal": null,
+      "actionMenu": null,
+      "focused": "Skip to main content\n    \n      \n        \n          \n            \n            Sw",
+      "landmarks": {
+        "header": 8,
+        "nav": 1,
+        "main": 1
+      },
+      "visibleH1Count": 1,
+      "longEmailWraps": true,
+      "productDescriptionVisible": true,
+      "launchActionVisibleInViewport": true
+    },
+    "desktop-product-access-unavailable": {
+      "url": "http://127.0.0.1:54593/?view=launcher&state=unavailable",
+      "title": "Swooshz Platform - Authenticated UI Polish Study",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "clientWidth": 1440,
+      "scrollWidth": 1440,
+      "scrollHeight": 901,
+      "noHorizontalOverflow": true,
+      "bodyTextLength": 499,
+      "frameworkOverlay": false,
+      "smallestRoutineFont": 14,
+      "minimumKeyTargetHeight": 46,
+      "description": {
+        "x": 323,
+        "y": 429,
+        "width": 576,
+        "height": 25,
+        "bottom": 453,
+        "right": 899
+      },
+      "launchButton": {
+        "x": 972,
+        "y": 429,
+        "width": 255,
+        "height": 46,
+        "bottom": 475,
+        "right": 1227
+      },
+      "sectionSelector": null,
+      "modal": null,
+      "actionMenu": null,
+      "focused": "Skip to main content\n    \n      \n        \n          \n            \n            Sw",
+      "landmarks": {
+        "header": 8,
+        "nav": 1,
+        "main": 1
+      },
+      "visibleH1Count": 1,
+      "longEmailWraps": true,
+      "productDescriptionVisible": true,
+      "launchActionVisibleInViewport": true
+    },
+    "mobile-product-access": {
+      "url": "http://127.0.0.1:54593/?view=access",
+      "title": "Swooshz Platform - Authenticated UI Polish Study",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "clientWidth": 390,
+      "scrollWidth": 390,
+      "scrollHeight": 844,
+      "noHorizontalOverflow": true,
+      "bodyTextLength": 404,
+      "frameworkOverlay": false,
+      "smallestRoutineFont": 14,
+      "minimumKeyTargetHeight": 44,
+      "description": null,
+      "launchButton": null,
+      "sectionSelector": null,
+      "modal": null,
+      "actionMenu": null,
+      "focused": "Skip to main content\n    \n      \n        \n          \n            \n            Sw",
+      "landmarks": {
+        "header": 8,
+        "nav": 1,
+        "main": 1
+      },
+      "visibleH1Count": 1,
+      "longEmailWraps": true,
+      "productDescriptionVisible": false,
+      "launchActionVisibleInViewport": false
+    },
+    "mobile-add-member-modal": {
+      "url": "http://127.0.0.1:54593/?view=members",
+      "title": "Swooshz Platform - Authenticated UI Polish Study",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "clientWidth": 390,
+      "scrollWidth": 390,
+      "scrollHeight": 1282,
+      "noHorizontalOverflow": true,
+      "bodyTextLength": 820,
+      "frameworkOverlay": false,
+      "smallestRoutineFont": 14,
+      "minimumKeyTargetHeight": 44,
+      "description": null,
+      "launchButton": null,
+      "sectionSelector": {
+        "x": 16,
+        "y": 131,
+        "width": 358,
+        "height": 48,
+        "bottom": 179,
+        "right": 374
+      },
+      "modal": {
+        "x": 12,
+        "y": 361,
+        "width": 366,
+        "height": 471,
+        "bottom": 832,
+        "right": 378
+      },
+      "actionMenu": null,
+      "focused": "member-email",
+      "landmarks": {
+        "header": 8,
+        "nav": 1,
+        "main": 1
+      },
+      "visibleH1Count": 1,
+      "longEmailWraps": true,
+      "productDescriptionVisible": false,
+      "launchActionVisibleInViewport": false
+    },
+    "mobile-member-action": {
+      "url": "http://127.0.0.1:54593/?view=members",
+      "title": "Swooshz Platform - Authenticated UI Polish Study",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "clientWidth": 390,
+      "scrollWidth": 390,
+      "scrollHeight": 1282,
+      "noHorizontalOverflow": true,
+      "bodyTextLength": 737,
+      "frameworkOverlay": false,
+      "smallestRoutineFont": 14,
+      "minimumKeyTargetHeight": 44,
+      "description": null,
+      "launchButton": null,
+      "sectionSelector": {
+        "x": 16,
+        "y": 131,
+        "width": 358,
+        "height": 48,
+        "bottom": 179,
+        "right": 374
+      },
+      "modal": null,
+      "actionMenu": {
+        "x": 16,
+        "y": 658,
+        "width": 358,
+        "height": 152,
+        "bottom": 810,
+        "right": 374
+      },
+      "focused": "Change role",
+      "landmarks": {
+        "header": 8,
+        "nav": 1,
+        "main": 1
+      },
+      "visibleH1Count": 1,
+      "longEmailWraps": true,
+      "productDescriptionVisible": false,
+      "launchActionVisibleInViewport": false
+    },
+    "mobile-confirmation": {
+      "url": "http://127.0.0.1:54593/?view=members",
+      "title": "Swooshz Platform - Authenticated UI Polish Study",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "clientWidth": 390,
+      "scrollWidth": 390,
+      "scrollHeight": 1282,
+      "noHorizontalOverflow": true,
+      "bodyTextLength": 815,
+      "frameworkOverlay": false,
+      "smallestRoutineFont": 14,
+      "minimumKeyTargetHeight": 44,
+      "description": null,
+      "launchButton": null,
+      "sectionSelector": {
+        "x": 16,
+        "y": 131,
+        "width": 358,
+        "height": 48,
+        "bottom": 179,
+        "right": 374
+      },
+      "modal": {
+        "x": 12,
+        "y": 524,
+        "width": 366,
+        "height": 308,
+        "bottom": 832,
+        "right": 378
+      },
+      "actionMenu": null,
+      "focused": "BUTTON",
+      "landmarks": {
+        "header": 8,
+        "nav": 1,
+        "main": 1
+      },
+      "visibleH1Count": 1,
+      "longEmailWraps": true,
+      "productDescriptionVisible": false,
+      "launchActionVisibleInViewport": false
+    },
+    "launcher-320": {
+      "url": "http://127.0.0.1:54593/?view=launcher",
+      "title": "Swooshz Platform - Authenticated UI Polish Study",
+      "viewport": {
+        "width": 320,
+        "height": 844
+      },
+      "clientWidth": 320,
+      "scrollWidth": 320,
+      "scrollHeight": 844,
+      "noHorizontalOverflow": true,
+      "bodyTextLength": 370,
+      "frameworkOverlay": false,
+      "smallestRoutineFont": 14,
+      "minimumKeyTargetHeight": 44,
+      "description": {
+        "x": 35,
+        "y": 376,
+        "width": 252,
+        "height": 41,
+        "bottom": 418,
+        "right": 287
+      },
+      "launchButton": {
+        "x": 35,
+        "y": 511,
+        "width": 252,
+        "height": 48,
+        "bottom": 559,
+        "right": 287
+      },
+      "sectionSelector": null,
+      "modal": null,
+      "actionMenu": null,
+      "focused": "Skip to main content\n    \n      \n        \n          \n            \n            Sw",
+      "landmarks": {
+        "header": 8,
+        "nav": 1,
+        "main": 1
+      },
+      "visibleH1Count": 1,
+      "longEmailWraps": true,
+      "productDescriptionVisible": true,
+      "launchActionVisibleInViewport": true
+    },
+    "members-320": {
+      "url": "http://127.0.0.1:54593/?view=members",
+      "title": "Swooshz Platform - Authenticated UI Polish Study",
+      "viewport": {
+        "width": 320,
+        "height": 844
+      },
+      "clientWidth": 320,
+      "scrollWidth": 320,
+      "scrollHeight": 1282,
+      "noHorizontalOverflow": true,
+      "bodyTextLength": 696,
+      "frameworkOverlay": false,
+      "smallestRoutineFont": 14,
+      "minimumKeyTargetHeight": 44,
+      "description": null,
+      "launchButton": null,
+      "sectionSelector": {
+        "x": 12,
+        "y": 131,
+        "width": 296,
+        "height": 48,
+        "bottom": 179,
+        "right": 308
+      },
+      "modal": null,
+      "actionMenu": null,
+      "focused": "Skip to main content\n    \n      \n        \n          \n            \n            Sw",
+      "landmarks": {
+        "header": 8,
+        "nav": 1,
+        "main": 1
+      },
+      "visibleH1Count": 1,
+      "longEmailWraps": true,
+      "productDescriptionVisible": false,
+      "launchActionVisibleInViewport": false
+    },
+    "keyboard-focus": {
+      "url": "http://127.0.0.1:54593/?view=launcher",
+      "title": "Swooshz Platform - Authenticated UI Polish Study",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "clientWidth": 1440,
+      "scrollWidth": 1440,
+      "scrollHeight": 901,
+      "noHorizontalOverflow": true,
+      "bodyTextLength": 398,
+      "frameworkOverlay": false,
+      "smallestRoutineFont": 14,
+      "minimumKeyTargetHeight": 46,
+      "description": {
+        "x": 323,
+        "y": 491,
+        "width": 576,
+        "height": 25,
+        "bottom": 516,
+        "right": 899
+      },
+      "launchButton": {
+        "x": 972,
+        "y": 491,
+        "width": 255,
+        "height": 46,
+        "bottom": 537,
+        "right": 1227
+      },
+      "sectionSelector": null,
+      "modal": null,
+      "actionMenu": null,
+      "focused": "launch-button",
+      "landmarks": {
+        "header": 8,
+        "nav": 1,
+        "main": 1
+      },
+      "visibleH1Count": 1,
+      "longEmailWraps": true,
+      "productDescriptionVisible": true,
+      "launchActionVisibleInViewport": true
+    },
+    "zoom-200": {
+      "url": "http://127.0.0.1:54593/?view=members",
+      "title": "Swooshz Platform - Authenticated UI Polish Study",
+      "viewport": {
+        "width": 720,
+        "height": 450
+      },
+      "clientWidth": 720,
+      "scrollWidth": 720,
+      "scrollHeight": 1240,
+      "noHorizontalOverflow": true,
+      "bodyTextLength": 696,
+      "frameworkOverlay": false,
+      "smallestRoutineFont": 14,
+      "minimumKeyTargetHeight": 44,
+      "description": null,
+      "launchButton": null,
+      "sectionSelector": {
+        "x": 16,
+        "y": 131,
+        "width": 688,
+        "height": 48,
+        "bottom": 179,
+        "right": 704
+      },
+      "modal": null,
+      "actionMenu": null,
+      "focused": "Skip to main content\n    \n      \n        \n          \n            \n            Sw",
+      "landmarks": {
+        "header": 8,
+        "nav": 1,
+        "main": 1
+      },
+      "visibleH1Count": 1,
+      "longEmailWraps": true,
+      "productDescriptionVisible": false,
+      "launchActionVisibleInViewport": false
+    }
+  },
+  "interaction": {
+    "modalFocusEntry": "member-email",
+    "addDialogSemantics": {
+      "role": "dialog",
+      "ariaModal": "true",
+      "labelledBy": "add-member-title"
+    },
+    "focusContainedAfterReverseTab": true,
+    "focusRestoredAfterEscape": true,
+    "memberMenuVisible": true,
+    "memberMenuFirstFocus": "Change role",
+    "memberMenuClosedWithEscape": true,
+    "confirmDialogSemantics": {
+      "role": "alertdialog",
+      "ariaModal": "true",
+      "labelledBy": "confirm-title",
+      "describedBy": "confirm-copy"
+    },
+    "confirmClosedWithEscape": true,
+    "mobileSectionMenuItems": [
+      "Members",
+      "Pending approvals",
+      "Product access",
+      "Audit activity"
+    ],
+    "mobileSectionMenuClosedWithEscape": true,
+    "mobileAccountMenuVisible": true,
+    "reducedMotionDuration": "1e-05s",
+    "longEmailWraps": true,
+    "workspaceSwitch": "Northstar Events",
+    "launchBusy": "Opening product...",
+    "launchBusyDisabled": true,
+    "launchFailureVisible": true,
+    "launchFailureCopy": "We could not open the product. Try again.\nRetry",
+    "retryBusy": "Opening product..."
+  }
+}

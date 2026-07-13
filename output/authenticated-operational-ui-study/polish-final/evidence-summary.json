@@ -1,0 +1,181 @@
+{
+  "study": "Swooshz Platform authenticated operational UI polish",
+  "status": "polish-v2-passed",
+  "scope": "Ignored local visual-reference study only",
+  "repository": {
+    "platformBranch": "agent/authenticated-direction-b",
+    "startingHead": "106b7f9b0ee8ae7bc63b2e3e02e75867aa6b53ca",
+    "platformMainInspected": "699c04d26585a52bde1ad0d2a157fe266a950ceb",
+    "approvedStudyIgnored": true,
+    "approvedStudyTracked": false,
+    "productionFilesChanged": false,
+    "sqagFilesChanged": false,
+    "pullRequest101Changed": false,
+    "commitCreated": false,
+    "pushPerformed": false,
+    "pullRequestCreated": false,
+    "subagentsUsed": false
+  },
+  "browserReview": {
+    "preferredPath": "Reinstalled Browser plugin",
+    "preferredPathResult": "Startup timed out before page acquisition; no page action occurred",
+    "fallbackPath": "Repository-declared Playwright 1.61.1 with installed Google Chrome",
+    "origin": "Ephemeral 127.0.0.1 static server",
+    "externalRequests": 0,
+    "consoleErrors": 0,
+    "consoleWarnings": 0,
+    "frameworkOverlays": 0
+  },
+  "coreVersion1": [
+    "evidence/core-v1/desktop-launcher.png",
+    "evidence/core-v1/desktop-members.png",
+    "evidence/core-v1/mobile-launcher-390.png",
+    "evidence/core-v1/mobile-members-390.png"
+  ],
+  "coreFinal": [
+    "evidence/core-v2/desktop-launcher.png",
+    "evidence/core-v2/desktop-members.png",
+    "evidence/core-v2/mobile-launcher-390.png",
+    "evidence/core-v2/mobile-members-390.png"
+  ],
+  "supporting": [
+    "evidence/supporting/desktop-product-access.png",
+    "evidence/supporting/desktop-pending-approvals.png",
+    "evidence/supporting/desktop-audit-activity.png",
+    "evidence/supporting/desktop-add-member-modal.png",
+    "evidence/supporting/desktop-member-action-menu.png",
+    "evidence/supporting/desktop-confirmation-modal.png",
+    "evidence/supporting/desktop-launch-failure.png",
+    "evidence/supporting/desktop-product-access-unavailable.png",
+    "evidence/supporting/mobile-product-access.png",
+    "evidence/supporting/mobile-add-member-modal.png",
+    "evidence/supporting/mobile-member-action.png",
+    "evidence/supporting/mobile-confirmation.png",
+    "evidence/supporting/launcher-320.png",
+    "evidence/supporting/members-320.png",
+    "evidence/supporting/keyboard-focus.png",
+    "evidence/supporting/zoom-200.png"
+  ],
+  "comparisons": [
+    "evidence/comparisons/baseline-vs-polished-launcher.png",
+    "evidence/comparisons/baseline-vs-polished-members.png",
+    "evidence/comparisons/baseline-vs-polished-mobile-launcher.png",
+    "evidence/comparisons/baseline-vs-polished-mobile-members.png",
+    "evidence/comparisons/final-four-screen-contact-sheet.png",
+    "evidence/comparisons/final-mobile-comparison-sheet.png",
+    "evidence/comparisons/product-icon-detail-sheet.png",
+    "evidence/comparisons/copy-before-and-after-sheet.png"
+  ],
+  "documents": [
+    "README.md",
+    "copy-map.md",
+    "product-identity.md",
+    "polish-rationale.md",
+    "polish-review-v1.md",
+    "polish-review-v2.md",
+    "manual-review.md"
+  ],
+  "validationArtifacts": [
+    "polish-v1-metrics.json",
+    "polish-v2-metrics.json",
+    "support-validation.json"
+  ],
+  "coreMeasurements": {
+    "desktopLauncher": {
+      "viewport": "1440x900",
+      "launchUnit": { "x": 180, "y": 384, "width": 1080, "height": 244 },
+      "smallestRoutineTextPx": 14,
+      "bodyTextPx": 16,
+      "pageTitlePx": 34,
+      "launchButtonHeightPx": 46,
+      "horizontalOverflow": false
+    },
+    "desktopMembers": {
+      "viewport": "1440x900",
+      "smallestRoutineTextPx": 14,
+      "bodyTextPx": 16,
+      "pageTitlePx": 34,
+      "horizontalOverflow": false
+    },
+    "mobileLauncher390": {
+      "viewport": "390x844",
+      "descriptionBottomPx": 400,
+      "launchActionBottomPx": 543,
+      "launchUnitBottomPx": 651,
+      "descriptionVisible": true,
+      "launchActionVisible": true,
+      "smallestRoutineTextPx": 14,
+      "bodyTextPx": 16,
+      "pageTitlePx": 28,
+      "horizontalOverflow": false
+    },
+    "mobileMembers390": {
+      "viewport": "390x844",
+      "sectionSelectorHeightPx": 48,
+      "smallestRoutineTextPx": 14,
+      "bodyTextPx": 16,
+      "pageTitlePx": 28,
+      "horizontalOverflow": false
+    },
+    "mobileLauncher320": {
+      "viewport": "320x844",
+      "descriptionBottomPx": 418,
+      "launchActionBottomPx": 559,
+      "descriptionVisible": true,
+      "launchActionVisible": true,
+      "minimumKeyTargetHeightPx": 44,
+      "horizontalOverflow": false
+    },
+    "effectiveZoom200": {
+      "cssViewport": "720x450",
+      "deviceScaleFactor": 2,
+      "minimumKeyTargetHeightPx": 44,
+      "horizontalOverflow": false
+    }
+  },
+  "accessibility": {
+    "singleVisibleH1PerCapturedState": true,
+    "semanticLandmarksPresent": true,
+    "visibleKeyboardFocus": true,
+    "keyboardOperableNavigation": true,
+    "keyboardOperableActionMenus": true,
+    "dialogSemanticsVerified": true,
+    "alertDialogSemanticsVerified": true,
+    "escapeCloseVerified": true,
+    "focusEntryVerified": true,
+    "focusContainmentVerified": true,
+    "focusRestorationVerified": true,
+    "liveStatusFeedbackVerified": true,
+    "statusUsesText": true,
+    "reducedMotionVerified": true,
+    "keyboardTrapsFound": 0,
+    "longNameAndEmailWrappingVerified": true,
+    "contrastRatios": {
+      "primaryInkOnPage": 15.41,
+      "secondaryInkOnPage": 7.90,
+      "mutedTextOnSurface": 4.92,
+      "whiteOnPrimaryTeal": 5.56,
+      "darkTealOnSoftTeal": 8.05,
+      "dangerTextOnSurface": 5.86
+    }
+  },
+  "productTruth": {
+    "customerFacingProductCount": 1,
+    "customerFacingProductName": "Swooshz Quote Auto Generator",
+    "description": "Create professional quotations using your approved workspace.",
+    "studyOnlyProductSymbol": true,
+    "fakeProductsPresent": false,
+    "marketplacePresent": false,
+    "marketingHeroPresent": false,
+    "darkSidebarPresent": false
+  },
+  "decision": {
+    "approvedStructurePreserved": true,
+    "structuralRedesign": false,
+    "newDirectionCreated": false,
+    "productionPortPerformed": false,
+    "version1ReviewCompleted": true,
+    "genuineVersion2RefinementCompleted": true,
+    "version2Passed": true
+  }
+}

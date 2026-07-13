@@ -1,0 +1,185 @@
+{
+  "version": "v2",
+  "origin": "localhost ephemeral",
+  "errors": [],
+  "warnings": [],
+  "pages": {
+    "desktop-launcher": {
+      "url": "http://127.0.0.1:57180/?view=launcher",
+      "title": "Swooshz Platform - Authenticated UI Polish Study",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "clientWidth": 1440,
+      "scrollWidth": 1440,
+      "scrollHeight": 901,
+      "noHorizontalOverflow": true,
+      "meaningfulBodyText": true,
+      "frameworkOverlay": false,
+      "description": {
+        "x": 323,
+        "y": 491,
+        "width": 576,
+        "height": 25,
+        "bottom": 516,
+        "right": 899
+      },
+      "launchButton": {
+        "x": 972,
+        "y": 491,
+        "width": 255,
+        "height": 46,
+        "bottom": 537,
+        "right": 1227
+      },
+      "launchUnit": {
+        "x": 180,
+        "y": 384,
+        "width": 1080,
+        "height": 244,
+        "bottom": 628,
+        "right": 1260
+      },
+      "productIcon": {
+        "x": 235,
+        "y": 435,
+        "width": 52,
+        "height": 52,
+        "bottom": 487,
+        "right": 287
+      },
+      "memberSurface": null,
+      "sectionSelector": null,
+      "smallestRoutineFont": 14,
+      "bodyFont": 16,
+      "pageTitleFont": 34,
+      "productDescriptionVisible": true,
+      "launchActionVisibleInViewport": true
+    },
+    "desktop-members": {
+      "url": "http://127.0.0.1:57180/?view=members",
+      "title": "Swooshz Platform - Authenticated UI Polish Study",
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "clientWidth": 1440,
+      "scrollWidth": 1440,
+      "scrollHeight": 900,
+      "noHorizontalOverflow": true,
+      "meaningfulBodyText": true,
+      "frameworkOverlay": false,
+      "description": null,
+      "launchButton": null,
+      "launchUnit": null,
+      "productIcon": null,
+      "memberSurface": {
+        "x": 130,
+        "y": 269,
+        "width": 1180,
+        "height": 497,
+        "bottom": 766,
+        "right": 1310
+      },
+      "sectionSelector": null,
+      "smallestRoutineFont": 14,
+      "bodyFont": 16,
+      "pageTitleFont": 34,
+      "productDescriptionVisible": false,
+      "launchActionVisibleInViewport": false
+    },
+    "mobile-launcher-390": {
+      "url": "http://127.0.0.1:57180/?view=launcher",
+      "title": "Swooshz Platform - Authenticated UI Polish Study",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "clientWidth": 390,
+      "scrollWidth": 390,
+      "scrollHeight": 844,
+      "noHorizontalOverflow": true,
+      "meaningfulBodyText": true,
+      "frameworkOverlay": false,
+      "description": {
+        "x": 39,
+        "y": 356,
+        "width": 314,
+        "height": 44,
+        "bottom": 400,
+        "right": 353
+      },
+      "launchButton": {
+        "x": 39,
+        "y": 495,
+        "width": 314,
+        "height": 48,
+        "bottom": 543,
+        "right": 353
+      },
+      "launchUnit": {
+        "x": 16,
+        "y": 223,
+        "width": 358,
+        "height": 428,
+        "bottom": 651,
+        "right": 374
+      },
+      "productIcon": {
+        "x": 41,
+        "y": 248,
+        "width": 34,
+        "height": 34,
+        "bottom": 282,
+        "right": 75
+      },
+      "memberSurface": null,
+      "sectionSelector": null,
+      "smallestRoutineFont": 14,
+      "bodyFont": 16,
+      "pageTitleFont": 28,
+      "productDescriptionVisible": true,
+      "launchActionVisibleInViewport": true
+    },
+    "mobile-members-390": {
+      "url": "http://127.0.0.1:57180/?view=members",
+      "title": "Swooshz Platform - Authenticated UI Polish Study",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "clientWidth": 390,
+      "scrollWidth": 390,
+      "scrollHeight": 1282,
+      "noHorizontalOverflow": true,
+      "meaningfulBodyText": true,
+      "frameworkOverlay": false,
+      "description": null,
+      "launchButton": null,
+      "launchUnit": null,
+      "productIcon": null,
+      "memberSurface": {
+        "x": 15,
+        "y": 367,
+        "width": 360,
+        "height": 867,
+        "bottom": 1234,
+        "right": 375
+      },
+      "sectionSelector": {
+        "x": 16,
+        "y": 131,
+        "width": 358,
+        "height": 48,
+        "bottom": 179,
+        "right": 374
+      },
+      "smallestRoutineFont": 14,
+      "bodyFont": 16,
+      "pageTitleFont": 28,
+      "productDescriptionVisible": false,
+      "launchActionVisibleInViewport": false
+    }
+  }
+}
