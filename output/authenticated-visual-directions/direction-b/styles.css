@@ -1,0 +1,69 @@
+/* Direction B: Precision Workspace - compact controls, strict alignment, and table-first scanning. */
+body[data-direction="b"] { --paper: #f4f5f1; --line: rgba(9, 37, 61, .22); --line-strong: rgba(9, 37, 61, .42); }
+body[data-direction="b"] .app-header { background: var(--navy); border-bottom-color: rgba(255,255,255,.18); backdrop-filter: none; }
+body[data-direction="b"] .brand, body[data-direction="b"] .account-chip { color: #fff; }
+body[data-direction="b"] .brand small { color: #b4cbd0; border-left-color: rgba(255,255,255,.24); }
+body[data-direction="b"] .brand-mark { color: #a6e3db; }
+body[data-direction="b"] .public-label { color: #c2d5d8; }
+body[data-direction="b"] .account-chip { border-color: rgba(255,255,255,.28); background: transparent; }
+body[data-direction="b"] .shell-grid { grid-template-columns: 180px minmax(0, 1fr); max-width: none; width: 100%; }
+body[data-direction="b"] .side-rail { top: 62px; padding: 23px 14px; background: #102d42; border-color: rgba(255,255,255,.16); }
+body[data-direction="b"] .rail-context strong { color: #fff; }
+body[data-direction="b"] .rail-context span { color: #bbced2; }
+body[data-direction="b"] .rail-context .eyebrow { color: #8fdbd1; }
+body[data-direction="b"] .primary-nav button { min-height: 38px; padding: 0 9px; color: #cadadd; font-size: 12px; }
+body[data-direction="b"] .primary-nav button[aria-current="page"] { background: #1c4960; color: #fff; }
+body[data-direction="b"] .primary-nav button:not(:disabled):hover { color: #fff; background: #1c4960; }
+body[data-direction="b"] .logout-button { border-color: rgba(255,255,255,.18); color: #d8e6e8; }
+body[data-direction="b"] .content { max-width: 1440px; padding: 34px 42px 46px; }
+body[data-direction="b"] .page-intro { align-items: center; margin-bottom: 18px; padding-bottom: 18px; border-bottom: 2px solid var(--navy); }
+body[data-direction="b"] .page-intro h1 { max-width: none; margin-top: 3px; font-size: clamp(26px, 3.1vw, 42px); font-weight: 720; letter-spacing: -.052em; }
+body[data-direction="b"] .page-intro p:not(.eyebrow) { max-width: 780px; font-size: 13px; }
+body[data-direction="b"] .eyebrow, body[data-direction="b"] th, body[data-direction="b"] .identity-strip dt, body[data-direction="b"] .admin-summary small { letter-spacing: .1em; }
+body[data-direction="b"] .button, body[data-direction="b"] .workspace-trigger, body[data-direction="b"] .role-badge, body[data-direction="b"] .state-badge, body[data-direction="b"] .status-line, body[data-direction="b"] .account-chip { border-radius: 2px; }
+body[data-direction="b"] .status-line { min-height: 40px; padding: 8px 11px; font-size: 12px; }
+body[data-direction="b"] .identity-strip { margin: 16px 0; }
+body[data-direction="b"] .identity-strip > div { padding-top: 9px; padding-bottom: 9px; }
+body[data-direction="b"] .workspace-head { align-items: center; margin: 22px 0 10px; }
+body[data-direction="b"] .workspace-head h2, body[data-direction="b"] .surface h2 { font-size: 17px; font-weight: 800; }
+body[data-direction="b"] .launcher-list { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, .8fr); gap: 14px; border-top: 0; }
+body[data-direction="b"] .app-row { min-height: 0; align-items: start; padding: 16px; border: 1px solid var(--line-strong); background: rgba(255,255,255,.42); }
+body[data-direction="b"] .app-row h3 { font-size: 15px; }
+body[data-direction="b"] .app-row p { font-size: 12px; }
+body[data-direction="b"] .app-glyph { width: 36px; height: 36px; font-size: 18px; }
+body[data-direction="b"] .app-actions { min-width: 116px; }
+body[data-direction="b"] .app-actions .button { min-height: 38px; padding: 0 11px; }
+body[data-direction="b"] .subnav { gap: 0; border: 1px solid var(--line-strong); }
+body[data-direction="b"] .subnav button { min-height: 38px; padding: 0 12px; border-right: 1px solid var(--line); border-bottom: 0; font-size: 11px; }
+body[data-direction="b"] .subnav button[aria-current="page"] { border-bottom: 0; background: var(--navy); color: #fff; }
+body[data-direction="b"] .admin-summary { gap: 0; margin: 15px 0; border-color: var(--line-strong); }
+body[data-direction="b"] .admin-summary > div { min-height: 64px; padding: 11px 14px; }
+body[data-direction="b"] .surface { margin-top: 22px; }
+body[data-direction="b"] .surface-heading { margin-bottom: 8px; }
+body[data-direction="b"] th, body[data-direction="b"] td { padding-top: 9px; padding-bottom: 9px; }
+body[data-direction="b"] th { font-size: 8px; }
+body[data-direction="b"] td { font-size: 11px; }
+body[data-direction="b"] .person strong { font-size: 12px; }
+body[data-direction="b"] .menu-button, body[data-direction="b"] .role-select { min-height: 30px; border-radius: 2px; font-size: 10px; }
+body[data-direction="b"] .menu-panel { border-radius: 2px; }
+body[data-direction="b"] .entitlement-row { padding: 14px 0; }
+body[data-direction="b"] .modal { border-top: 4px solid var(--teal); border-radius: 2px; }
+
+@media (max-width: 860px) {
+  body[data-direction="b"] .shell-grid { width: min(100% - 32px, 1460px); }
+  body[data-direction="b"] .side-rail { position: relative; top: auto; min-height: 82px; align-items: flex-start; padding: 15px 0 18px; background: transparent; border-color: var(--line); }
+  body[data-direction="b"] .rail-context strong { color: var(--ink); }
+  body[data-direction="b"] .rail-context span { color: var(--muted); }
+  body[data-direction="b"] .rail-context { gap: 2px; }
+  body[data-direction="b"] .primary-nav { background: #102d42; }
+  body[data-direction="b"] .content { padding: 34px 0 46px; }
+  body[data-direction="b"] .mobile-menu-button { color: var(--ink); }
+}
+@media (max-width: 640px) {
+  body[data-direction="b"] .page-intro { align-items: start; }
+  body[data-direction="b"] .launcher-list { grid-template-columns: 1fr; gap: 0; border-top: 1px solid var(--line-strong); }
+  body[data-direction="b"] .app-row { border-width: 0 0 1px; }
+  body[data-direction="b"] .app-row:first-child { border-top: 0; }
+  body[data-direction="b"] .subnav { width: 100%; }
+  body[data-direction="b"] .admin-summary { grid-template-columns: 1fr; }
+}
