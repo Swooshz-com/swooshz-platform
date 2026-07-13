@@ -1,0 +1,439 @@
+{
+  "browser": "Playwright Chromium 1.61.1",
+  "checkedViewports": [
+    {
+      "width": 320,
+      "height": 844
+    },
+    {
+      "width": 390,
+      "height": 844
+    },
+    {
+      "width": 768,
+      "height": 1024
+    },
+    {
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "width": 1920,
+      "height": 900
+    }
+  ],
+  "visualReview": {
+    "firstViewports": "passed",
+    "heroToSecondScene": "passed",
+    "mobileComposition": "passed",
+    "reducedMotion": "passed",
+    "contactSheets": "passed"
+  },
+  "studies": {
+    "prestige-1": {
+      "browser": "Playwright Chromium 1.61.1",
+      "baseUrl": "http://127.0.0.1:8765",
+      "study": {
+        "key": "prestige-1",
+        "route": "direction-a-prestige-1",
+        "transition": "#platform",
+        "theatre": false
+      },
+      "createdAt": "2026-07-11T13:58:36.603Z",
+      "screenshots": {
+        "desktop": {
+          "viewportWidth": 1440,
+          "viewportHeight": 900,
+          "scrollWidth": 1440,
+          "scrollHeight": 3108,
+          "horizontalOverflow": false,
+          "h1Visible": true,
+          "bodyTextLength": 1204
+        },
+        "mobile": {
+          "viewportWidth": 390,
+          "viewportHeight": 844,
+          "scrollWidth": 390,
+          "scrollHeight": 3101,
+          "horizontalOverflow": false,
+          "h1Visible": true,
+          "bodyTextLength": 1137,
+          "menuExpanded": "true"
+        },
+        "reduced_desktop": {
+          "viewportWidth": 1440,
+          "viewportHeight": 900,
+          "scrollWidth": 1440,
+          "scrollHeight": 3108,
+          "horizontalOverflow": false,
+          "h1Visible": true,
+          "bodyTextLength": 1204
+        },
+        "reduced_mobile": {
+          "viewportWidth": 390,
+          "viewportHeight": 844,
+          "scrollWidth": 390,
+          "scrollHeight": 3101,
+          "horizontalOverflow": false,
+          "h1Visible": true,
+          "bodyTextLength": 1137
+        }
+      },
+      "desktopLoadVideo": "videos/prestige-1-desktop-load.webm",
+      "desktopScrollVideo": "videos/prestige-1-desktop-scroll.webm",
+      "mobileLoadVideo": "videos/prestige-1-mobile-load.webm",
+      "responsive": [
+        {
+          "width": 320,
+          "height": 844,
+          "scrollWidth": 320,
+          "horizontalOverflow": false,
+          "h1Visible": true,
+          "ctaVisible": true,
+          "ctaHeight": 50,
+          "imageLoaded": true,
+          "bodyTextLength": 1137,
+          "errors": []
+        },
+        {
+          "width": 390,
+          "height": 844,
+          "scrollWidth": 390,
+          "horizontalOverflow": false,
+          "h1Visible": true,
+          "ctaVisible": true,
+          "ctaHeight": 50,
+          "imageLoaded": true,
+          "bodyTextLength": 1137,
+          "errors": []
+        },
+        {
+          "width": 768,
+          "height": 1024,
+          "scrollWidth": 768,
+          "horizontalOverflow": false,
+          "h1Visible": true,
+          "ctaVisible": true,
+          "ctaHeight": 50,
+          "imageLoaded": true,
+          "bodyTextLength": 1204,
+          "errors": []
+        },
+        {
+          "width": 1440,
+          "height": 900,
+          "scrollWidth": 1440,
+          "horizontalOverflow": false,
+          "h1Visible": true,
+          "ctaVisible": true,
+          "ctaHeight": 50,
+          "imageLoaded": true,
+          "bodyTextLength": 1204,
+          "errors": []
+        },
+        {
+          "width": 1920,
+          "height": 900,
+          "scrollWidth": 1920,
+          "horizontalOverflow": false,
+          "h1Visible": true,
+          "ctaVisible": true,
+          "ctaHeight": 50,
+          "imageLoaded": true,
+          "bodyTextLength": 1204,
+          "errors": []
+        }
+      ],
+      "interactions": {
+        "expanded": "true",
+        "menuVisible": true,
+        "menuButtonSize": {
+          "width": 46,
+          "height": 46
+        },
+        "blankLinks": 0,
+        "landmarks": {
+          "main": true,
+          "footer": true,
+          "skipLink": true
+        },
+        "headings": {
+          "h1": 1,
+          "h2": 1
+        },
+        "focusVisible": true,
+        "errors": []
+      }
+    },
+    "prestige-2": {
+      "browser": "Playwright Chromium 1.61.1",
+      "baseUrl": "http://127.0.0.1:8765",
+      "study": {
+        "key": "prestige-2",
+        "route": "direction-a-prestige-2",
+        "transition": "#sequence",
+        "theatre": false
+      },
+      "createdAt": "2026-07-11T13:58:33.740Z",
+      "screenshots": {
+        "desktop": {
+          "viewportWidth": 1440,
+          "viewportHeight": 900,
+          "scrollWidth": 1440,
+          "scrollHeight": 4057,
+          "horizontalOverflow": false,
+          "h1Visible": true,
+          "bodyTextLength": 1198
+        },
+        "mobile": {
+          "viewportWidth": 390,
+          "viewportHeight": 844,
+          "scrollWidth": 390,
+          "scrollHeight": 4388,
+          "horizontalOverflow": false,
+          "h1Visible": true,
+          "bodyTextLength": 1137,
+          "menuExpanded": "true"
+        },
+        "reduced_desktop": {
+          "viewportWidth": 1440,
+          "viewportHeight": 900,
+          "scrollWidth": 1440,
+          "scrollHeight": 4057,
+          "horizontalOverflow": false,
+          "h1Visible": true,
+          "bodyTextLength": 1198
+        },
+        "reduced_mobile": {
+          "viewportWidth": 390,
+          "viewportHeight": 844,
+          "scrollWidth": 390,
+          "scrollHeight": 4388,
+          "horizontalOverflow": false,
+          "h1Visible": true,
+          "bodyTextLength": 1137
+        }
+      },
+      "desktopLoadVideo": "videos/prestige-2-desktop-load.webm",
+      "desktopScrollVideo": "videos/prestige-2-desktop-scroll.webm",
+      "mobileLoadVideo": "videos/prestige-2-mobile-load.webm",
+      "responsive": [
+        {
+          "width": 320,
+          "height": 844,
+          "scrollWidth": 320,
+          "horizontalOverflow": false,
+          "h1Visible": true,
+          "ctaVisible": true,
+          "ctaHeight": 50,
+          "imageLoaded": true,
+          "bodyTextLength": 1137,
+          "errors": []
+        },
+        {
+          "width": 390,
+          "height": 844,
+          "scrollWidth": 390,
+          "horizontalOverflow": false,
+          "h1Visible": true,
+          "ctaVisible": true,
+          "ctaHeight": 50,
+          "imageLoaded": true,
+          "bodyTextLength": 1137,
+          "errors": []
+        },
+        {
+          "width": 768,
+          "height": 1024,
+          "scrollWidth": 768,
+          "horizontalOverflow": false,
+          "h1Visible": true,
+          "ctaVisible": true,
+          "ctaHeight": 50,
+          "imageLoaded": true,
+          "bodyTextLength": 1198,
+          "errors": []
+        },
+        {
+          "width": 1440,
+          "height": 900,
+          "scrollWidth": 1440,
+          "horizontalOverflow": false,
+          "h1Visible": true,
+          "ctaVisible": true,
+          "ctaHeight": 50,
+          "imageLoaded": true,
+          "bodyTextLength": 1198,
+          "errors": []
+        },
+        {
+          "width": 1920,
+          "height": 900,
+          "scrollWidth": 1920,
+          "horizontalOverflow": false,
+          "h1Visible": true,
+          "ctaVisible": true,
+          "ctaHeight": 50,
+          "imageLoaded": true,
+          "bodyTextLength": 1198,
+          "errors": []
+        }
+      ],
+      "interactions": {
+        "expanded": "true",
+        "menuVisible": true,
+        "menuButtonSize": {
+          "width": 46,
+          "height": 46
+        },
+        "blankLinks": 0,
+        "landmarks": {
+          "main": true,
+          "footer": true,
+          "skipLink": true
+        },
+        "headings": {
+          "h1": 1,
+          "h2": 1
+        },
+        "focusVisible": true,
+        "errors": []
+      }
+    },
+    "prestige-3": {
+      "browser": "Playwright Chromium 1.61.1",
+      "baseUrl": "http://127.0.0.1:8765",
+      "study": {
+        "key": "prestige-3",
+        "route": "direction-a-prestige-3",
+        "transition": "#theatre",
+        "theatre": true
+      },
+      "createdAt": "2026-07-11T13:58:32.537Z",
+      "screenshots": {
+        "desktop": {
+          "viewportWidth": 1440,
+          "viewportHeight": 900,
+          "scrollWidth": 1440,
+          "scrollHeight": 4142,
+          "horizontalOverflow": false,
+          "h1Visible": true,
+          "bodyTextLength": 1120
+        },
+        "mobile": {
+          "viewportWidth": 390,
+          "viewportHeight": 844,
+          "scrollWidth": 390,
+          "scrollHeight": 3604,
+          "horizontalOverflow": false,
+          "h1Visible": true,
+          "bodyTextLength": 976,
+          "menuExpanded": "true"
+        },
+        "reduced_desktop": {
+          "viewportWidth": 1440,
+          "viewportHeight": 900,
+          "scrollWidth": 1440,
+          "scrollHeight": 3094,
+          "horizontalOverflow": false,
+          "h1Visible": true,
+          "bodyTextLength": 1090
+        },
+        "reduced_mobile": {
+          "viewportWidth": 390,
+          "viewportHeight": 844,
+          "scrollWidth": 390,
+          "scrollHeight": 2783,
+          "horizontalOverflow": false,
+          "h1Visible": true,
+          "bodyTextLength": 976
+        }
+      },
+      "desktopLoadVideo": "videos/prestige-3-desktop-load.webm",
+      "desktopScrollVideo": "videos/prestige-3-desktop-scroll.webm",
+      "mobileLoadVideo": "videos/prestige-3-mobile-load.webm",
+      "responsive": [
+        {
+          "width": 320,
+          "height": 844,
+          "scrollWidth": 320,
+          "horizontalOverflow": false,
+          "h1Visible": true,
+          "ctaVisible": true,
+          "ctaHeight": 50,
+          "imageLoaded": true,
+          "bodyTextLength": 976,
+          "errors": []
+        },
+        {
+          "width": 390,
+          "height": 844,
+          "scrollWidth": 390,
+          "horizontalOverflow": false,
+          "h1Visible": true,
+          "ctaVisible": true,
+          "ctaHeight": 50,
+          "imageLoaded": true,
+          "bodyTextLength": 976,
+          "errors": []
+        },
+        {
+          "width": 768,
+          "height": 1024,
+          "scrollWidth": 768,
+          "horizontalOverflow": false,
+          "h1Visible": true,
+          "ctaVisible": true,
+          "ctaHeight": 50,
+          "imageLoaded": true,
+          "bodyTextLength": 1120,
+          "errors": []
+        },
+        {
+          "width": 1440,
+          "height": 900,
+          "scrollWidth": 1440,
+          "horizontalOverflow": false,
+          "h1Visible": true,
+          "ctaVisible": true,
+          "ctaHeight": 50,
+          "imageLoaded": true,
+          "bodyTextLength": 1120,
+          "errors": []
+        },
+        {
+          "width": 1920,
+          "height": 900,
+          "scrollWidth": 1920,
+          "horizontalOverflow": false,
+          "h1Visible": true,
+          "ctaVisible": true,
+          "ctaHeight": 50,
+          "imageLoaded": true,
+          "bodyTextLength": 1120,
+          "errors": []
+        }
+      ],
+      "interactions": {
+        "expanded": "true",
+        "menuVisible": true,
+        "menuButtonSize": {
+          "width": 46,
+          "height": 46
+        },
+        "blankLinks": 0,
+        "landmarks": {
+          "main": true,
+          "footer": true,
+          "skipLink": true
+        },
+        "headings": {
+          "h1": 1,
+          "h2": 3
+        },
+        "focusVisible": true,
+        "errors": []
+      }
+    }
+  }
+}

@@ -1,0 +1,2 @@
+# Preserve bundled OFL license text verbatim, including upstream trailing spaces.
+**/assets/fonts/OFL-*.txt whitespace=-trailing-space

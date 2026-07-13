@@ -1,0 +1,38 @@
+{
+  "prestige-a-initial-load": {
+    "file": "prestige-a-initial-load.webm",
+    "bytes": 304251,
+    "duration": 3.833,
+    "width": 1440,
+    "height": 900,
+    "sourceFrames": 5,
+    "encodedFrames": 46,
+    "frameRate": 12,
+    "method": "FFmpeg 8.1.2 temporary local encoding from verified browser frames",
+    "errors": []
+  },
+  "prestige-a-main-scroll": {
+    "file": "prestige-a-main-scroll.webm",
+    "bytes": 1333102,
+    "duration": 5,
+    "width": 1440,
+    "height": 900,
+    "sourceFrames": 21,
+    "encodedFrames": 60,
+    "frameRate": 12,
+    "method": "FFmpeg 8.1.2 temporary local encoding from verified browser frames",
+    "errors": []
+  },
+  "prestige-a-mobile-menu": {
+    "file": "prestige-a-mobile-menu.webm",
+    "bytes": 128368,
+    "duration": 4,
+    "width": 390,
+    "height": 844,
+    "sourceFrames": 10,
+    "encodedFrames": 48,
+    "frameRate": 12,
+    "method": "FFmpeg 8.1.2 temporary local encoding from verified browser frames",
+    "errors": []
+  }
+}

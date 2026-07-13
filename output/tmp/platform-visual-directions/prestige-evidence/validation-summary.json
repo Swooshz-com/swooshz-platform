@@ -1,0 +1,74 @@
+{
+  "status": "passed",
+  "checkedAt": "2026-07-11T14:08:01.810Z",
+  "failures": [],
+  "details": {
+    "studies": {
+      "prestige-1": {
+        "responsiveWidths": [
+          320,
+          390,
+          768,
+          1440,
+          1920
+        ],
+        "errors": [],
+        "mobileMenu": "true",
+        "focusVisible": true
+      },
+      "prestige-2": {
+        "responsiveWidths": [
+          320,
+          390,
+          768,
+          1440,
+          1920
+        ],
+        "errors": [],
+        "mobileMenu": "true",
+        "focusVisible": true
+      },
+      "prestige-3": {
+        "responsiveWidths": [
+          320,
+          390,
+          768,
+          1440,
+          1920
+        ],
+        "errors": [],
+        "mobileMenu": "true",
+        "focusVisible": true
+      }
+    },
+    "screenshots": {
+      "prestige-1-desktop-first": "1440x900",
+      "prestige-1-desktop-study": "1440x1800",
+      "prestige-1-mobile-first": "390x844",
+      "prestige-1-mobile-study": "390x1688",
+      "prestige-1-mobile-menu": "390x844",
+      "prestige-1-reduced-desktop": "1440x900",
+      "prestige-1-reduced-mobile": "390x844",
+      "prestige-2-desktop-first": "1440x900",
+      "prestige-2-desktop-study": "1440x1800",
+      "prestige-2-mobile-first": "390x844",
+      "prestige-2-mobile-study": "390x1688",
+      "prestige-2-mobile-menu": "390x844",
+      "prestige-2-reduced-desktop": "1440x900",
+      "prestige-2-reduced-mobile": "390x844",
+      "prestige-3-desktop-first": "1440x900",
+      "prestige-3-desktop-study": "1440x1800",
+      "prestige-3-mobile-first": "390x844",
+      "prestige-3-mobile-study": "390x1688",
+      "prestige-3-mobile-menu": "390x844",
+      "prestige-3-reduced-desktop": "1440x900",
+      "prestige-3-reduced-mobile": "390x844"
+    },
+    "contactSheets": {
+      "contact-sheet-desktop.png": "1440x410",
+      "contact-sheet-mobile.png": "1440x900"
+    }
+  },
+  "externalRuntimeDependencies": [],
+  "inlineDataSvgNamespace": "Prestige 1 uses an inline data SVG with the standard W3C namespace; it makes no network request."
+}

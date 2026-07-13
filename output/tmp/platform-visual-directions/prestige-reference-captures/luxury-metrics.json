@@ -1,0 +1,100 @@
+[
+  {
+    "name": "bang-olufsen",
+    "requestedUrl": "https://www.bang-olufsen.com/en/int",
+    "finalUrl": "https://www.bang-olufsen.com/en/int",
+    "metrics": {
+      "title": "Bang & Olufsen - High-end Headphones, Speakers, and Televisions",
+      "body": {
+        "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+        "color": "rgb(0, 0, 0)",
+        "fontFamily": "BeoSupreme, \"Lexend Deca\", Arial, Helvetica, sans-serif"
+      },
+      "h1": null,
+      "firstLargeImage": {
+        "x": 0,
+        "y": 765,
+        "width": 1440,
+        "height": 1440
+      },
+      "imageCount": 15,
+      "videoCount": 2,
+      "sectionCount": 0,
+      "documentHeight": 900,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      }
+    }
+  },
+  {
+    "name": "aman",
+    "requestedUrl": "https://www.aman.com/",
+    "finalUrl": "https://www.aman.com/",
+    "metrics": {
+      "title": "Aman Resorts, Hotels & Residences - Explore Luxury Destinations",
+      "body": {
+        "background": "rgb(243, 238, 231) none repeat scroll 0% 0% / auto padding-box border-box",
+        "color": "rgb(49, 49, 49)",
+        "fontFamily": "\"Lyon Display Web\", \"Times New Roman\", serif"
+      },
+      "h1": null,
+      "firstLargeImage": {
+        "x": 24.5,
+        "y": 1260.921875,
+        "width": 914.84375,
+        "height": 569.828125
+      },
+      "imageCount": 15,
+      "videoCount": 0,
+      "sectionCount": 25,
+      "documentHeight": 4881,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      }
+    }
+  },
+  {
+    "name": "audemars-piguet",
+    "requestedUrl": "https://www.audemarspiguet.com/com/en/home.html",
+    "finalUrl": "https://www.audemarspiguet.com/com/en/home.html",
+    "metrics": {
+      "title": "Audemars Piguet | Swiss Luxury Watches",
+      "body": {
+        "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+        "color": "rgb(255, 255, 255)",
+        "fontFamily": "\"Helvetica Neue Web\", sans-serif"
+      },
+      "h1": {
+        "text": "NO ONE SHAPES TIME ALONE",
+        "rect": {
+          "x": 92.5,
+          "y": 383.625,
+          "width": 418.328125,
+          "height": 112
+        },
+        "fontFamily": "\"Helvetica Neue Web\", sans-serif",
+        "fontSize": "56px",
+        "fontWeight": "100",
+        "lineHeight": "56px",
+        "letterSpacing": "-0.56px",
+        "color": "rgb(255, 255, 255)"
+      },
+      "firstLargeImage": {
+        "x": 0,
+        "y": 900,
+        "width": 1440,
+        "height": 900
+      },
+      "imageCount": 49,
+      "videoCount": 4,
+      "sectionCount": 4,
+      "documentHeight": 6350,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      }
+    }
+  }
+]

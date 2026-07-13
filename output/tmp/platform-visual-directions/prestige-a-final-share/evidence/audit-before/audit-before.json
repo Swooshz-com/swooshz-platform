@@ -1,0 +1,44 @@
+{
+  "browser": "Playwright Chromium 1.61.1",
+  "baseUrl": "http://127.0.0.1:8765/direction-a-prestige-1/",
+  "checks": {
+    "desktop": {
+      "ready": true,
+      "scrollWidth": 1440,
+      "innerWidth": 1440,
+      "consoleReady": true
+    },
+    "mobileNavigation": {
+      "closedState": {
+        "navAriaHidden": null,
+        "navInert": false,
+        "focusableClosedLinks": 4,
+        "bodyOverflow": "hidden auto"
+      },
+      "openState": {
+        "expanded": "true",
+        "activeClass": true,
+        "activeElement": "menu-toggle",
+        "bodyOverflow": "hidden auto",
+        "bodyMenuOpen": true
+      },
+      "escapeState": {
+        "expanded": "false",
+        "activeElementTag": "A",
+        "activeElementClass": "",
+        "focusRestored": false
+      },
+      "resizeState": {
+        "expanded": "true",
+        "activeClass": true,
+        "bodyMenuOpen": true
+      }
+    },
+    "errors": [],
+    "reducedMotion": {
+      "heroProgress": "1",
+      "headlineTransform": "none",
+      "visualTransform": "none"
+    }
+  }
+}

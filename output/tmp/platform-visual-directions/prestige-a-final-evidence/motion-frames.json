@@ -1,0 +1,97 @@
+{
+  "0ms": {
+    "eyebrowOpacity": "0.72",
+    "headlineOpacity": [
+      "0.42",
+      "0.42",
+      "0.42"
+    ],
+    "headlineTransform": [
+      "matrix(1, 0, 0, 1, 0, 18.6624)",
+      "matrix(1, 0, 0, 1, 0, 18.6624)",
+      "matrix(1, 0, 0, 1, 0, 18.6624)"
+    ],
+    "ledeOpacity": "0.68",
+    "ctaOpacity": "0.72",
+    "artworkOpacity": "0.5",
+    "artworkClip": "inset(7% 0px 0px)",
+    "h1Visible": true,
+    "ctaVisible": true
+  },
+  "120ms": {
+    "eyebrowOpacity": "0.881241",
+    "headlineOpacity": [
+      "0.554012",
+      "0.435407",
+      "0.42"
+    ],
+    "headlineTransform": [
+      "matrix(1, 0, 0, 1, 0, 7.43392)",
+      "matrix(1, 0, 0, 1, 0, 15.0285)",
+      "matrix(1, 0, 0, 1, 0, 18.6624)"
+    ],
+    "ledeOpacity": "0.68",
+    "ctaOpacity": "0.72",
+    "artworkOpacity": "0.5",
+    "artworkClip": "inset(7% 0px 0px)",
+    "h1Visible": true,
+    "ctaVisible": true
+  },
+  "360ms": {
+    "eyebrowOpacity": "1",
+    "headlineOpacity": [
+      "0.893417",
+      "0.803767",
+      "0.666027"
+    ],
+    "headlineTransform": [
+      "matrix(1, 0, 0, 1, 0, 1.12431)",
+      "matrix(1, 0, 0, 1, 0, 2.29222)",
+      "matrix(1, 0, 0, 1, 0, 4.62592)"
+    ],
+    "ledeOpacity": "0.7524",
+    "ctaOpacity": "0.728243",
+    "artworkOpacity": "0.647622",
+    "artworkClip": "inset(1.97347% 0px 0px)",
+    "h1Visible": true,
+    "ctaVisible": true
+  },
+  "720ms": {
+    "eyebrowOpacity": "1",
+    "headlineOpacity": [
+      "1",
+      "0.996704",
+      "0.981139"
+    ],
+    "headlineTransform": [
+      "matrix(1, 0, 0, 1, 0, 0.0206925)",
+      "matrix(1, 0, 0, 1, 0, 0.0806586)",
+      "matrix(1, 0, 0, 1, 0, 0.224604)"
+    ],
+    "ledeOpacity": "0.984145",
+    "ctaOpacity": "0.967864",
+    "artworkOpacity": "0.942615",
+    "artworkClip": "inset(0.18369% 0px 0px)",
+    "h1Visible": true,
+    "ctaVisible": true
+  },
+  "1100ms": {
+    "eyebrowOpacity": "1",
+    "headlineOpacity": [
+      "1",
+      "1",
+      "1"
+    ],
+    "headlineTransform": [
+      "none",
+      "none",
+      "none"
+    ],
+    "ledeOpacity": "1",
+    "ctaOpacity": "1",
+    "artworkOpacity": "1",
+    "artworkClip": "inset(0.00277641% 0px 0px)",
+    "h1Visible": true,
+    "ctaVisible": true
+  }
+}

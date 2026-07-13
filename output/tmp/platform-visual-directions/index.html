@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Swooshz Platform visual direction prototypes." />
+    <title>Swooshz Platform / Visual directions</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #08243a;
+        --muted: #5c7080;
+        --paper: #f6f8f7;
+        --line: #d8e1e2;
+        --teal: #128b8d;
+        --aqua: #dff1ee;
+        --navy: #071b32;
+        --cream: #f0eadf;
+      }
+
+      * { box-sizing: border-box; }
+      html { scroll-behavior: smooth; }
+      body {
+        margin: 0;
+        color: var(--ink);
+        background: var(--paper);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1.5;
+      }
+
+      a { color: inherit; }
+      :focus-visible { outline: 3px solid #f0ad4e; outline-offset: 4px; }
+      .wrap { width: min(1180px, calc(100% - 48px)); margin: 0 auto; }
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        border-bottom: 1px solid rgba(8,36,58,.12);
+        background: rgba(246,248,247,.9);
+        backdrop-filter: blur(18px);
+      }
+      .topbar-inner { display: flex; align-items: center; justify-content: space-between; min-height: 72px; gap: 24px; }
+      .brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 800; letter-spacing: -.04em; text-decoration: none; }
+      .brand-mark { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 9px; background: var(--teal); color: #fff; font-size: 15px; }
+      .brand span:last-child { font-size: 18px; }
+      nav { display: flex; align-items: center; gap: 22px; }
+      nav a { font-size: 13px; text-decoration: none; color: var(--muted); }
+      nav a:hover { color: var(--ink); }
+      .nav-cta { padding: 11px 17px; border-radius: 999px; background: var(--ink); color: #fff; font-weight: 700; }
+      .intro { padding: 96px 0 72px; }
+      .kicker { color: var(--teal); font-size: 12px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
+      h1 { max-width: 760px; margin: 18px 0 20px; font-size: clamp(48px, 8vw, 104px); line-height: .92; letter-spacing: -.08em; }
+      .intro p { max-width: 650px; margin: 0; color: var(--muted); font-size: 19px; }
+      .directions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; padding-bottom: 86px; }
+      .direction { min-height: 460px; display: flex; flex-direction: column; justify-content: space-between; border: 1px solid var(--line); border-radius: 30px; overflow: hidden; background: #fff; text-decoration: none; transition: transform .25s ease, box-shadow .25s ease; }
+      .direction:hover { transform: translateY(-6px); box-shadow: 0 22px 50px rgba(8,36,58,.12); }
+      .preview { min-height: 280px; position: relative; overflow: hidden; }
+      .preview-a { background: #e9f2ef; }
+      .preview-a::before, .preview-a::after { content: ""; position: absolute; background: #0b2c47; transform: rotate(-14deg); }
+      .preview-a::before { width: 70%; height: 92px; top: 76px; left: -6%; }
+      .preview-a::after { width: 45%; height: 150px; right: -7%; bottom: -18px; background: #8bcac4; }
+      .preview-b { background: #091f38; }
+      .preview-b::before { content: ""; position: absolute; inset: 64px 30px 54px; border: 1px solid rgba(110,219,212,.5); border-radius: 50%; box-shadow: 0 0 0 34px rgba(110,219,212,.06), 0 0 0 70px rgba(110,219,212,.04); }
+      .preview-b::after { content: ""; position: absolute; width: 70px; height: 70px; left: calc(50% - 35px); top: 105px; border-radius: 24px; background: #6edbd4; box-shadow: 110px -46px 0 -21px #f0eadf, -100px 75px 0 -21px #f0eadf, 122px 101px 0 -21px #128b8d; }
+      .preview-c { background: #08162b; }
+      .preview-c::before { content: ""; position: absolute; width: 72%; height: 190px; left: 17%; top: 46px; border: 18px solid #f0eadf; border-radius: 18px 8px 26px 8px; transform: rotate(-9deg); }
+      .preview-c::after { content: ""; position: absolute; width: 12px; height: 270px; left: 55%; top: 20px; background: #42c8c1; transform: rotate(32deg); box-shadow: 0 0 0 8px rgba(66,200,193,.14); }
+      .direction-copy { padding: 24px 26px 26px; }
+      .direction-copy h2 { margin: 0 0 8px; font-size: 27px; letter-spacing: -.04em; }
+      .direction-copy p { margin: 0 0 18px; color: var(--muted); }
+      .view { color: var(--teal); font-size: 13px; font-weight: 800; }
+      footer { padding: 26px 0 42px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+      footer p { margin: 0; }
+      @media (max-width: 760px) {
+        .wrap { width: min(100% - 32px, 600px); }
+        nav a:not(.nav-cta) { display: none; }
+        .intro { padding: 64px 0 48px; }
+        .directions { grid-template-columns: 1fr; }
+        .direction { min-height: 420px; }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="wrap topbar-inner">
+        <a class="brand" href="./"><span class="brand-mark" aria-hidden="true">S</span><span>Swooshz</span></a>
+        <nav aria-label="Prototype navigation">
+          <a href="#directions">Directions</a>
+          <a href="#note">Scope note</a>
+          <a class="nav-cta" href="./direction-a/">Open Direction A</a>
+        </nav>
+      </div>
+    </header>
+    <main>
+      <section class="intro wrap" aria-labelledby="intro-title">
+        <div class="kicker">Temporary visual exploration</div>
+        <h1 id="intro-title">Three ways into Swooshz.</h1>
+        <p>Standalone homepage prototypes for choosing a visual direction before any production frontend integration. Each page is local-only and uses the real platform/product boundaries as content source.</p>
+      </section>
+      <section class="directions wrap" id="directions" aria-label="Visual directions">
+        <a class="direction" href="./direction-a/">
+          <div class="preview preview-a" aria-hidden="true"></div>
+          <div class="direction-copy"><h2>Direction A / Editorial</h2><p>Quietly premium, typographic, asymmetrical, and product-story led.</p><span class="view">Explore A →</span></div>
+        </a>
+        <a class="direction" href="./direction-b/">
+          <div class="preview preview-b" aria-hidden="true"></div>
+          <div class="direction-copy"><h2>Direction B / Ecosystem</h2><p>A connected workspace network with visible movement from account to apps.</p><span class="view">Explore B →</span></div>
+        </a>
+        <a class="direction" href="./direction-c/">
+          <div class="preview preview-c" aria-hidden="true"></div>
+          <div class="direction-copy"><h2>Direction C / Bold product</h2><p>High-contrast, document-led, expressive, and deliberately memorable.</p><span class="view">Explore C →</span></div>
+        </a>
+      </section>
+      <section class="wrap" id="note" style="padding: 0 0 92px;">
+        <div style="max-width: 760px; border-left: 3px solid var(--teal); padding: 4px 0 4px 20px; color: var(--muted);">
+          <strong style="color: var(--ink);">Prototype boundary.</strong> This package does not import the production shell, call Platform APIs, add public signup, pricing, billing, fake data, or the unlaunched SEO / GEO / Seozilla product area.
+        </div>
+      </section>
+    </main>
+    <footer><div class="wrap"><p>Local-only exploration · Swooshz Platform · no production integration</p></div></footer>
+  </body>
+</html>

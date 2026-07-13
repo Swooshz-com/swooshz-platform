@@ -1,0 +1,177 @@
+{
+  "browser": "Playwright Chromium 1.61.1",
+  "url": "file:///C:/Users/xPass/GitHub%20Projects/swooshz-platform/_tmp/platform-visual-directions/direction-a-prestige-1/index.html",
+  "capturedAt": "2026-07-11T17:02:44.826Z",
+  "responsive": [
+    {
+      "width": 320,
+      "height": 844,
+      "innerWidth": 320,
+      "scrollWidth": 320,
+      "horizontalOverflow": false,
+      "ctaVisible": true,
+      "ctaFullyVisible": true,
+      "ctaBottom": 532,
+      "artworkVisible": true,
+      "heroIndexDisplay": "none"
+    },
+    {
+      "width": 768,
+      "height": 1024,
+      "innerWidth": 768,
+      "scrollWidth": 768,
+      "horizontalOverflow": false,
+      "ctaVisible": true,
+      "ctaFullyVisible": true,
+      "ctaBottom": 538,
+      "artworkVisible": true,
+      "heroIndexDisplay": "grid"
+    },
+    {
+      "width": 844,
+      "height": 390,
+      "innerWidth": 844,
+      "scrollWidth": 844,
+      "horizontalOverflow": false,
+      "ctaVisible": true,
+      "ctaFullyVisible": true,
+      "ctaBottom": 353,
+      "artworkVisible": true,
+      "heroIndexDisplay": "none"
+    },
+    {
+      "width": 1920,
+      "height": 900,
+      "innerWidth": 1920,
+      "scrollWidth": 1920,
+      "horizontalOverflow": false,
+      "ctaVisible": true,
+      "ctaFullyVisible": true,
+      "ctaBottom": 858,
+      "artworkVisible": true,
+      "heroIndexDisplay": "grid"
+    }
+  ],
+  "interactions": {
+    "scroll": {
+      "downProgress": 0.9893,
+      "upProgress": 0,
+      "rapidProgress": 0,
+      "valid": true
+    },
+    "pointerAndTabReturn": {
+      "pointerMoved": {
+        "x": "0.360",
+        "y": "-0.100"
+      },
+      "pointerLeave": {
+        "x": "0",
+        "y": "0"
+      },
+      "pointerReturn": {
+        "x": "0",
+        "y": "0",
+        "ready": true
+      }
+    },
+    "navigation": {
+      "closedMenuTab": {
+        "activeClass": "button button-primary",
+        "activeText": "Enter the platform↗",
+        "navHidden": "true",
+        "navInert": true
+      },
+      "openMenu": {
+        "activeText": "The idea",
+        "expanded": "true",
+        "navHidden": "false",
+        "navInert": false,
+        "bodyOverflow": "hidden",
+        "scrollY": 0
+      },
+      "scrollWhileOpen": 0,
+      "escaped": {
+        "focusRestored": true,
+        "expanded": "false",
+        "bodyOverflow": "hidden auto"
+      },
+      "desktopResize": {
+        "expanded": "false",
+        "navHidden": "false",
+        "navInert": false,
+        "openClass": false,
+        "bodyOpen": false
+      },
+      "orientationReset": {
+        "expanded": "false",
+        "navHidden": "true",
+        "navInert": true,
+        "bodyOpen": false
+      },
+      "touchPointer": {
+        "x": "0",
+        "y": "0"
+      }
+    },
+    "reduced-desktop": {
+      "topState": {
+        "scrollY": 0,
+        "heroProgress": "0",
+        "headlineOpacity": "1",
+        "headlineTransform": "none",
+        "artworkOpacity": "1",
+        "artworkTransform": "none",
+        "cueAnimation": "none"
+      },
+      "scrolledProgress": "0"
+    },
+    "reduced-mobile": {
+      "topState": {
+        "scrollY": 0,
+        "heroProgress": "0",
+        "headlineOpacity": "1",
+        "headlineTransform": "none",
+        "artworkOpacity": "1",
+        "artworkTransform": "none",
+        "cueAnimation": "none"
+      },
+      "scrolledProgress": "0"
+    }
+  },
+  "motion": {
+    "120ms": {
+      "ready": true,
+      "headlineOpacity": "1",
+      "headlineTransform": "none",
+      "ctaOpacity": "1",
+      "artworkOpacity": "1",
+      "h1Height": 471.6875
+    },
+    "300ms": {
+      "ready": true,
+      "headlineOpacity": "1",
+      "headlineTransform": "none",
+      "ctaOpacity": "1",
+      "artworkOpacity": "1",
+      "h1Height": 471.6875
+    },
+    "620ms": {
+      "ready": true,
+      "headlineOpacity": "1",
+      "headlineTransform": "none",
+      "ctaOpacity": "1",
+      "artworkOpacity": "1",
+      "h1Height": 471.6875
+    },
+    "1100ms": {
+      "ready": true,
+      "headlineOpacity": "1",
+      "headlineTransform": "none",
+      "ctaOpacity": "1",
+      "artworkOpacity": "1",
+      "h1Height": 471.6875
+    }
+  },
+  "errors": [],
+  "passed": true
+}

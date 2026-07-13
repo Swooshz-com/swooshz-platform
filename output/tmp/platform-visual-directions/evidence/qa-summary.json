@@ -1,0 +1,179 @@
+{
+  "browserPath": "in-app browser setup timed out; installed Playwright Chromium fallback used",
+  "screenshots": [
+    "direction-a-desktop-first.png",
+    "direction-a-desktop-full.png",
+    "direction-a-mobile-first.png",
+    "direction-a-mobile-full.png",
+    "direction-a-mobile-menu.png",
+    "direction-b-desktop-first.png",
+    "direction-b-desktop-full.png",
+    "direction-b-mobile-first.png",
+    "direction-b-mobile-full.png",
+    "direction-b-mobile-menu.png",
+    "direction-c-desktop-first.png",
+    "direction-c-desktop-full.png",
+    "direction-c-mobile-first.png",
+    "direction-c-mobile-full.png",
+    "direction-c-mobile-menu.png"
+  ],
+  "contactSheets": [
+    "contact-sheet-desktop.png",
+    "contact-sheet-mobile.png"
+  ],
+  "responsive": {
+    "results": [
+      {
+        "direction": "a",
+        "width": 320,
+        "title": "Direction A / Swooshz Platform",
+        "bodyText": 2917,
+        "scrollWidth": 320,
+        "viewportWidth": 320,
+        "menuButton": true,
+        "errors": []
+      },
+      {
+        "direction": "a",
+        "width": 390,
+        "title": "Direction A / Swooshz Platform",
+        "bodyText": 2917,
+        "scrollWidth": 390,
+        "viewportWidth": 390,
+        "menuButton": true,
+        "errors": []
+      },
+      {
+        "direction": "a",
+        "width": 768,
+        "title": "Direction A / Swooshz Platform",
+        "bodyText": 2950,
+        "scrollWidth": 768,
+        "viewportWidth": 768,
+        "menuButton": true,
+        "errors": []
+      },
+      {
+        "direction": "a",
+        "width": 1440,
+        "title": "Direction A / Swooshz Platform",
+        "bodyText": 2950,
+        "scrollWidth": 1440,
+        "viewportWidth": 1440,
+        "menuButton": true,
+        "errors": []
+      },
+      {
+        "direction": "a",
+        "width": 1920,
+        "title": "Direction A / Swooshz Platform",
+        "bodyText": 2950,
+        "scrollWidth": 1920,
+        "viewportWidth": 1920,
+        "menuButton": true,
+        "errors": []
+      },
+      {
+        "direction": "b",
+        "width": 320,
+        "title": "Direction B / Swooshz Platform",
+        "bodyText": 2771,
+        "scrollWidth": 320,
+        "viewportWidth": 320,
+        "menuButton": true,
+        "errors": []
+      },
+      {
+        "direction": "b",
+        "width": 390,
+        "title": "Direction B / Swooshz Platform",
+        "bodyText": 2771,
+        "scrollWidth": 390,
+        "viewportWidth": 390,
+        "menuButton": true,
+        "errors": []
+      },
+      {
+        "direction": "b",
+        "width": 768,
+        "title": "Direction B / Swooshz Platform",
+        "bodyText": 2826,
+        "scrollWidth": 768,
+        "viewportWidth": 768,
+        "menuButton": true,
+        "errors": []
+      },
+      {
+        "direction": "b",
+        "width": 1440,
+        "title": "Direction B / Swooshz Platform",
+        "bodyText": 2826,
+        "scrollWidth": 1440,
+        "viewportWidth": 1440,
+        "menuButton": true,
+        "errors": []
+      },
+      {
+        "direction": "b",
+        "width": 1920,
+        "title": "Direction B / Swooshz Platform",
+        "bodyText": 2826,
+        "scrollWidth": 1920,
+        "viewportWidth": 1920,
+        "menuButton": true,
+        "errors": []
+      },
+      {
+        "direction": "c",
+        "width": 320,
+        "title": "Direction C / Swooshz Platform",
+        "bodyText": 2617,
+        "scrollWidth": 320,
+        "viewportWidth": 320,
+        "menuButton": true,
+        "errors": []
+      },
+      {
+        "direction": "c",
+        "width": 390,
+        "title": "Direction C / Swooshz Platform",
+        "bodyText": 2617,
+        "scrollWidth": 390,
+        "viewportWidth": 390,
+        "menuButton": true,
+        "errors": []
+      },
+      {
+        "direction": "c",
+        "width": 768,
+        "title": "Direction C / Swooshz Platform",
+        "bodyText": 2658,
+        "scrollWidth": 768,
+        "viewportWidth": 768,
+        "menuButton": true,
+        "errors": []
+      },
+      {
+        "direction": "c",
+        "width": 1440,
+        "title": "Direction C / Swooshz Platform",
+        "bodyText": 2658,
+        "scrollWidth": 1440,
+        "viewportWidth": 1440,
+        "menuButton": true,
+        "errors": []
+      },
+      {
+        "direction": "c",
+        "width": 1920,
+        "title": "Direction C / Swooshz Platform",
+        "bodyText": 2658,
+        "scrollWidth": 1920,
+        "viewportWidth": 1920,
+        "menuButton": true,
+        "errors": []
+      }
+    ],
+    "failed": []
+  }
+}

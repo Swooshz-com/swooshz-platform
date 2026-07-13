@@ -1,0 +1,275 @@
+[
+  {
+    "name": "linear",
+    "requestedUrl": "https://linear.app/",
+    "finalUrl": "https://linear.app/",
+    "metrics": {
+      "title": "Linear – The system for product development",
+      "body": {
+        "background": "rgb(8, 9, 10) none repeat scroll 0% 0% / auto padding-box border-box",
+        "color": "rgb(247, 248, 248)",
+        "fontFamily": "\"Inter Variable\", \"SF Pro Display\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Oxygen, Ubuntu, Cantarell, \"Open Sans\", \"Helvetica Neue\", sans-serif"
+      },
+      "header": {
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 1440,
+          "height": 73
+        },
+        "position": "fixed",
+        "background": "rgba(0, 0, 0, 0) linear-gradient(rgba(11, 11, 11, 0.8) 0%, oklab(0.149576 0.00000680983 0.00000298768 / 0.761905) 100%) repeat scroll 0% 0% / auto padding-box border-box",
+        "borderBottom": "1px solid rgba(255, 255, 255, 0.08)"
+      },
+      "h1": {
+        "text": "The product development system for teams and agentsThe product developmentsystem for teams and agentsThe product development system for teams and agents",
+        "rect": {
+          "x": 78,
+          "y": 272,
+          "width": 1282,
+          "height": 128
+        },
+        "fontFamily": "\"Inter Variable\", \"SF Pro Display\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Oxygen, Ubuntu, Cantarell, \"Open Sans\", \"Helvetica Neue\", sans-serif",
+        "fontSize": "64px",
+        "fontWeight": "510",
+        "lineHeight": "64px",
+        "letterSpacing": "-1.408px",
+        "color": "rgb(247, 248, 248)"
+      },
+      "firstLargeImage": {
+        "x": 12,
+        "y": 527,
+        "width": 1416,
+        "height": 768
+      },
+      "sectionCount": 9,
+      "imageCount": 32,
+      "videoCount": 0,
+      "canvasCount": 0,
+      "elementsWithMotionStyles": 200,
+      "documentHeight": 10898,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      }
+    },
+    "consoleErrors": []
+  },
+  {
+    "name": "framer",
+    "requestedUrl": "https://www.framer.com/",
+    "finalUrl": "https://www.framer.com/",
+    "metrics": {
+      "title": "Framer: AI website builder for professional sites",
+      "body": {
+        "background": "rgb(0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+        "color": "rgb(0, 0, 0)",
+        "fontFamily": "sans-serif"
+      },
+      "header": {
+        "rect": {
+          "x": 0,
+          "y": 64,
+          "width": 1440,
+          "height": 307
+        },
+        "position": "relative",
+        "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+        "borderBottom": "0px none rgb(0, 0, 0)"
+      },
+      "h1": {
+        "text": "Framer is the AI website builder for standout sites",
+        "rect": {
+          "x": 120,
+          "y": 164,
+          "width": 607,
+          "height": 108
+        },
+        "fontFamily": "\"GT Walsheim Medium\", \"GT Walsheim Medium Placeholder\", sans-serif",
+        "fontSize": "54px",
+        "fontWeight": "500",
+        "lineHeight": "54px",
+        "letterSpacing": "-2.16px",
+        "color": "rgb(255, 255, 255)"
+      },
+      "firstLargeImage": {
+        "x": 455,
+        "y": 573.96875,
+        "width": 530,
+        "height": 175.484375
+      },
+      "sectionCount": 6,
+      "imageCount": 105,
+      "videoCount": 6,
+      "canvasCount": 0,
+      "elementsWithMotionStyles": 50,
+      "documentHeight": 11211,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      }
+    },
+    "consoleErrors": [
+      "Failed to load resource: the server responded with a status of 401 ()",
+      "Failed to load resource: the server responded with a status of 401 ()",
+      "Provider's accounts list is empty.",
+      "Failed to load resource: the server responded with a status of 401 ()",
+      "Failed to load resource: the server responded with a status of 401 ()",
+      "Failed to load resource: the server responded with a status of 401 ()",
+      "Failed to load resource: the server responded with a status of 401 ()",
+      "Failed to load resource: the server responded with a status of 401 ()",
+      "Failed to load resource: the server responded with a status of 401 ()",
+      "Failed to load resource: the server responded with a status of 401 ()"
+    ]
+  },
+  {
+    "name": "stripe",
+    "requestedUrl": "https://stripe.com/",
+    "finalUrl": "https://stripe.com/en-sg",
+    "metrics": {
+      "title": "Stripe | Financial Infrastructure to Grow Your Revenue",
+      "body": {
+        "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+        "color": "rgb(0, 0, 0)",
+        "fontFamily": "sohne-var, \"SF Pro Display\", sans-serif"
+      },
+      "header": {
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "width": 1440,
+          "height": 76
+        },
+        "position": "relative",
+        "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+        "borderBottom": "0px none rgb(0, 0, 0)"
+      },
+      "h1": {
+        "text": "Financial infrastructure to grow your revenue. Accept payments, offer financial services and implement custom revenue models – from your first transaction to your billionth.",
+        "rect": {
+          "x": 208,
+          "y": 258.125,
+          "width": 958.453125,
+          "height": 220.75
+        },
+        "fontFamily": "sohne-var, \"SF Pro Display\", sans-serif",
+        "fontSize": "48px",
+        "fontWeight": "300",
+        "lineHeight": "55.2px",
+        "letterSpacing": "-0.96px",
+        "color": "rgb(129, 184, 26)"
+      },
+      "firstLargeImage": {
+        "x": 337.296875,
+        "y": -107,
+        "width": 1392,
+        "height": 975
+      },
+      "sectionCount": 15,
+      "imageCount": 40,
+      "videoCount": 0,
+      "canvasCount": 1,
+      "elementsWithMotionStyles": 455,
+      "documentHeight": 14614,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      }
+    },
+    "consoleErrors": []
+  },
+  {
+    "name": "aesop",
+    "requestedUrl": "https://www.aesop.com/",
+    "finalUrl": "https://www.aesop.com/",
+    "metrics": {
+      "title": "Just a moment...",
+      "body": {
+        "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+        "color": "rgb(49, 49, 49)",
+        "fontFamily": "system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, \"Noto Sans\", sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\""
+      },
+      "header": null,
+      "h1": {
+        "text": "www.aesop.com",
+        "rect": {
+          "x": 272,
+          "y": 128,
+          "width": 293.734375,
+          "height": 50
+        },
+        "fontFamily": "system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, \"Noto Sans\", sans-serif, \"Apple Color Emoji\", \"Segoe UI Emoji\", \"Segoe UI Symbol\", \"Noto Color Emoji\"",
+        "fontSize": "40px",
+        "fontWeight": "600",
+        "lineHeight": "50px",
+        "letterSpacing": "normal",
+        "color": "rgb(49, 49, 49)"
+      },
+      "firstLargeImage": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "sectionCount": 0,
+      "imageCount": 1,
+      "videoCount": 0,
+      "canvasCount": 0,
+      "elementsWithMotionStyles": 4,
+      "documentHeight": 900,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      }
+    },
+    "consoleErrors": [
+      "Failed to load resource: the server responded with a status of 403 ()",
+      "Failed to load resource: the server responded with a status of 403 ()",
+      "%c%d font-size:0;color:transparent NaN",
+      "%c%d font-size:0;color:transparent NaN"
+    ]
+  },
+  {
+    "name": "rimowa",
+    "requestedUrl": "https://www.rimowa.com/ww/en/home",
+    "finalUrl": "https://www.rimowa.com/ww/en/home",
+    "metrics": {
+      "title": "Access Denied",
+      "body": {
+        "background": "rgba(0, 0, 0, 0) none repeat scroll 0% 0% / auto padding-box border-box",
+        "color": "rgb(0, 0, 0)",
+        "fontFamily": "\"Times New Roman\""
+      },
+      "header": null,
+      "h1": {
+        "text": "Access Denied",
+        "rect": {
+          "x": 8,
+          "y": 8,
+          "width": 1424,
+          "height": 37
+        },
+        "fontFamily": "\"Times New Roman\"",
+        "fontSize": "32px",
+        "fontWeight": "700",
+        "lineHeight": "normal",
+        "letterSpacing": "normal",
+        "color": "rgb(0, 0, 0)"
+      },
+      "firstLargeImage": null,
+      "sectionCount": 0,
+      "imageCount": 0,
+      "videoCount": 0,
+      "canvasCount": 0,
+      "elementsWithMotionStyles": 0,
+      "documentHeight": 900,
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      }
+    },
+    "consoleErrors": [
+      "Failed to load resource: the server responded with a status of 403 ()"
+    ]
+  }
+]
