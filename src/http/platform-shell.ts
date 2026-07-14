@@ -365,11 +365,11 @@ export function renderAdminShellPage(): string {
         </header>
 
         <nav class="admin-section-nav" aria-label="Administration sections">
-          <div class="admin-nav-inner" role="tablist" aria-label="Administration sections">
-            <button type="button" role="tab" data-admin-nav="members" aria-selected="true">Members</button>
-            <button type="button" role="tab" data-admin-nav="pending-approvals" aria-selected="false">Pending approvals</button>
-            <button type="button" role="tab" data-admin-nav="app-access" aria-selected="false">Product access</button>
-            <button type="button" role="tab" data-admin-nav="activity" aria-selected="false">Audit activity</button>
+          <div class="admin-nav-inner">
+            <button type="button" data-admin-nav="members" aria-current="page">Members</button>
+            <button type="button" data-admin-nav="pending-approvals">Pending approvals</button>
+            <button type="button" data-admin-nav="app-access">Product access</button>
+            <button type="button" data-admin-nav="activity">Audit activity</button>
           </div>
         </nav>
 
@@ -412,7 +412,7 @@ export function renderAdminShellPage(): string {
             <button id="closeAddMemberModalButton" class="modal-close" type="button" aria-label="Close add member form">&times;</button>
           </div>
           <div class="modal-body">
-            <p id="addMemberModalBody">Add an existing Swooshz account to this workspace.</p>
+            <p id="addMemberModalBody">Add a teammate by email. Existing Swooshz accounts are added immediately. Otherwise, access activates after the same email signs in with Google. No invitation email is sent.</p>
             <p id="addMemberResult" class="inline-feedback" role="status" aria-live="polite" hidden></p>
             <form id="addMemberForm" class="field-stack">
               <label><strong>Email address</strong><input name="email" type="email" autocomplete="email" placeholder="name@example.com" required></label>
@@ -568,7 +568,10 @@ export function renderAdminShellPage(): string {
             }
           });
           document.addEventListener("click", (event) => {
-            if (!event.target.closest(".action-menu")) closeAllActionMenus(false);
+            if (!event.target.closest(".action-menu")) {
+              const focusWasInsidePanel = document.activeElement?.closest?.(".action-menu-panel") !== null;
+              closeAllActionMenus(focusWasInsidePanel);
+            }
           });
 
           const requestedSection = new URLSearchParams(window.location.search).get("section");
@@ -754,14 +757,14 @@ export function renderAdminShellPage(): string {
               member.role === "owner" && member.status === "active"
             ).length;
 
-            for (const member of memberList) {
+            for (const [memberIndex, member] of memberList.entries()) {
               const row = document.createElement("tr");
               row.append(
                 memberIdentityCell(member, "Member"),
                 roleCell(member, "Role"),
                 tableCell(displayStatus(member.status || ""), "Status"),
                 timeCell(member.user?.lastLoginAt, "Last active"),
-                memberActionsCell(member, activeOwnerCount, "Actions")
+                memberActionsCell(member, activeOwnerCount, "Actions", memberIndex)
               );
               body.append(row);
             }
@@ -954,7 +957,7 @@ export function renderAdminShellPage(): string {
             return cell;
           }
 
-          function memberActionsCell(member, activeOwnerCount, label) {
+          function memberActionsCell(member, activeOwnerCount, label, memberIndex) {
             const cell = document.createElement("td");
             setCellLabel(cell, label);
             const isSelf = member.user?.id === state.context?.user?.userId;
@@ -984,35 +987,39 @@ export function renderAdminShellPage(): string {
             menuButton.className = "auth-secondary-button compact";
             menuButton.textContent = "Manage";
             menuButton.disabled = !["active", "disabled"].includes(member.status);
-            menuButton.setAttribute("aria-haspopup", "menu");
+            const actionIdSuffix = String(member.membershipId || memberIndex).replace(/[^a-zA-Z0-9_-]/g, "-");
+            menuButton.id = "member-actions-trigger-" + String(memberIndex) + "-" + actionIdSuffix;
+            menuPanel.id = "member-actions-panel-" + String(memberIndex) + "-" + actionIdSuffix;
+            menuButton.setAttribute("aria-controls", menuPanel.id);
             menuButton.setAttribute("aria-expanded", "false");
             menuButton.addEventListener("click", () => {
               const shouldOpen = menuPanel.hidden;
               closeAllActionMenus(false);
-              state.lastActionMenuButton = menuButton;
               menuPanel.hidden = !shouldOpen;
               menuButton.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
-              if (shouldOpen) menuPanel.querySelector("button")?.focus();
+              if (shouldOpen) {
+                state.lastActionMenuButton = menuButton;
+                menuPanel.querySelector("button")?.focus();
+              }
             });
 
             menuPanel.className = "action-menu-panel";
-            menuPanel.setAttribute("role", "menu");
             menuPanel.hidden = true;
             if (member.status === "active") {
               menuPanel.append(actionButton("Disable member", () => {
-                closeAllActionMenus(false);
+                closeAllActionMenus(false, true);
                 disableMember(member.membershipId);
               }));
             }
             if (member.status === "disabled") {
               menuPanel.append(actionButton("Reactivate member", () => {
-                closeAllActionMenus(false);
+                closeAllActionMenus(false, true);
                 reactivateMember(member.membershipId);
               }));
             }
             if (["active", "disabled"].includes(member.status)) {
               menuPanel.append(actionButton("Remove member", () => {
-                closeAllActionMenus(false);
+                closeAllActionMenus(false, true);
                 removeMember(member.membershipId);
               }));
             }
@@ -1021,12 +1028,14 @@ export function renderAdminShellPage(): string {
             return cell;
           }
 
-          function closeAllActionMenus(restoreFocus = false) {
+          function closeAllActionMenus(restoreFocus = false, preserveTrigger = false) {
+            const restoreTarget = state.lastActionMenuButton;
             for (const panel of document.querySelectorAll(".action-menu-panel")) panel.hidden = true;
-            for (const button of document.querySelectorAll(".action-menu button[aria-haspopup]")) {
+            for (const button of document.querySelectorAll(".action-menu > button[aria-controls]")) {
               button.setAttribute("aria-expanded", "false");
             }
-            if (restoreFocus) state.lastActionMenuButton?.focus();
+            if (!preserveTrigger) state.lastActionMenuButton = null;
+            if (restoreFocus) restoreTarget?.focus();
           }
           function actionButton(label, onClick) {
             const button = document.createElement("button");
@@ -1560,9 +1569,11 @@ export function renderAdminShellPage(): string {
             adminSectionSelect.value = section;
             for (const button of adminNavButtons) {
               const active = button.dataset.adminNav === section;
-              button.setAttribute("aria-selected", active ? "true" : "false");
-              button.toggleAttribute("aria-current", active);
-              button.tabIndex = active ? 0 : -1;
+              if (active) {
+                button.setAttribute("aria-current", "page");
+              } else {
+                button.removeAttribute("aria-current");
+              }
             }
             for (const panel of document.querySelectorAll("[data-admin-section]")) {
               panel.hidden = panel.dataset.adminSection !== section;
@@ -4092,8 +4103,8 @@ function htmlDocument({
       font-weight: 650;
     }
     .admin-nav-inner button::after { position: absolute; right: 0; bottom: -1px; left: 0; height: 3px; background: transparent; content: ""; }
-    .admin-nav-inner button[aria-selected="true"] { color: var(--auth-teal-dark); background: linear-gradient(90deg, var(--auth-teal) 0 3px, var(--auth-teal-soft) 3px 100%); }
-    .admin-nav-inner button[aria-selected="true"]::after { background: var(--auth-teal); }
+    .admin-nav-inner button[aria-current="page"] { color: var(--auth-teal-dark); background: linear-gradient(90deg, var(--auth-teal) 0 3px, var(--auth-teal-soft) 3px 100%); }
+    .admin-nav-inner button[aria-current="page"]::after { background: var(--auth-teal); }
     .admin-main { padding-top: 42px; }
     .mobile-admin-selector { display: none; }
     .admin-page-header { display: flex; align-items: end; justify-content: space-between; gap: 32px; margin-bottom: 22px; }

@@ -316,10 +316,12 @@ test("admin shell includes an accessible add-member flow with allowed non-owner 
   assert.match(html, /id="addMemberForm"/);
   assert.match(html, /id="addMemberModal"/);
   assert.match(html, /role="dialog" aria-modal="true"/);
-  assert.match(html, /Add an existing Swooshz account to this workspace\./);
+  assert.match(html, /Existing Swooshz accounts are added immediately\./);
+  assert.match(html, /access activates after the same email signs in with Google\./);
+  assert.match(html, /No invitation email is sent\./);
   assert.match(html, /id="addMemberSubmitButton"[^>]*type="submit">Add member<\/button>/);
   assert.match(html, /<option value="member" selected>Member<\/option><option value="admin">Admin<\/option>/);
-  assert.doesNotMatch(html, /value="owner"|value="viewer"|email invitation|send invite/i);
+  assert.doesNotMatch(html, /value="owner"|value="viewer"|send invite|invitation (?:is|was) sent|confirmation email/i);
   assert.match(html, /addExistingMember/);
   assert.match(html, /Pending approval created\./);
   assert.match(html, /Existing user added to workspace\./);
@@ -444,10 +446,13 @@ test("admin shell limits usable controls to owner/admin workspace context", () =
 test("admin shell renders compact accessible member actions with confirmations", () => {
   const html = renderAdminShellPage();
 
-  assert.match(html, /function memberActionsCell\(member, activeOwnerCount, label\)/);
+  assert.match(html, /function memberActionsCell\(member, activeOwnerCount, label, memberIndex\)/);
   assert.match(html, /menuButton\.textContent = "Manage"/);
-  assert.match(html, /aria-haspopup", "menu"/);
+  assert.match(html, /menuButton\.id = "member-actions-trigger-"/);
+  assert.match(html, /menuPanel\.id = "member-actions-panel-"/);
+  assert.match(html, /aria-controls", menuPanel\.id/);
   assert.match(html, /aria-expanded", "false"/);
+  assert.match(html, /menuPanel\.querySelector\("button"\)\?\.focus\(\)/);
   assert.match(html, /closeAllActionMenus/);
   assert.match(html, /actionButton\("Disable member"/);
   assert.match(html, /actionButton\("Reactivate member"/);
@@ -458,7 +463,20 @@ test("admin shell renders compact accessible member actions with confirmations",
   assert.match(html, /modalConfirmButton\.disabled = true/);
   assert.match(html, /restoreModalFocus/);
   assert.match(html, /trapModalFocus/);
+  assert.doesNotMatch(html, /role="menu"|role="menuitem"|aria-haspopup", "menu"/);
   assert.doesNotMatch(html, /window\.confirm|Permanent action|associated projects and data|data loss/i);
+});
+
+test("admin section navigation uses reachable native buttons and one current-page marker", () => {
+  const html = renderAdminShellPage();
+
+  assert.match(html, /<nav class="admin-section-nav" aria-label="Administration sections">/);
+  assert.match(html, /data-admin-nav="members" aria-current="page">Members<\/button>/);
+  assert.match(html, /button\.setAttribute\("aria-current", "page"\)/);
+  assert.match(html, /button\.removeAttribute\("aria-current"\)/);
+  assert.doesNotMatch(html, /role="tablist"|role="tab"|aria-selected/);
+  assert.doesNotMatch(html, /button\.tabIndex\s*=|tabIndex\s*=\s*active\s*\?\s*0\s*:\s*-1/);
+  assert.equal((html.match(/data-admin-nav=/g) ?? []).length, 4);
 });
 
 test("admin shell uses the approved compact four-section workspace administration surface", () => {
