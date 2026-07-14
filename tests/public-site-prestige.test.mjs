@@ -156,9 +156,11 @@ test("rendered HTML and CSS reference allowlisted generated assets present in pr
   assert.equal((await readFile("src/http/public-asset-manifest.ts", "utf8")).replaceAll("\r\n", "\n"), generated.source);
 });
 
-test("public assets and interactions are absent from app and admin HTML", () => {
+test("authenticated shells use only versioned first-party assets and no public interactions", () => {
   for (const html of [renderAppShellPage(), renderAdminShellPage()]) {
-    assert.doesNotMatch(html, /\/public-assets\//);
+    assert.match(html, /\/public-assets\/[a-f0-9]{16}\/swooshz-mark\.png/);
+    assert.match(html, /\/public-assets\/[a-f0-9]{16}\/fonts\/manrope-latin-variable\.woff2/);
+    assert.doesNotMatch(html, /\/public-assets\/(?![a-f0-9]{16}\/)/);
     assert.doesNotMatch(html, /data-public-route|data-public-menu-toggle|data-scroll-scene/);
   }
 });

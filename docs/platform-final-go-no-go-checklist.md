@@ -46,7 +46,7 @@ The checklist must remain unchecked until every launch-critical gate has evidenc
 - [ ] Swooshz Quote Auto Generator remains a separate launched app, and Platform does not own product workflow/runtime data.
 - [ ] Hosted Platform-to-Swooshz Quote Auto Generator launch handoff remains manual or has approved cross-host session/cookie strategy and smoke evidence.
 - [ ] SKR remains separate from Platform and has its own hosting-readiness evidence.
-- [ ] SEO/GEO/Seozilla remains unavailable/vendor pending unless separately approved in a future scope.
+- [ ] SEO/GEO/Seozilla remains absent from customer-facing Platform surfaces unless separately approved under a future product contract.
 - [ ] No billing, payment, upgrade, plan, or credits flow is introduced before approval.
 - [ ] Final launch decision is recorded by the final launch approver outside repo.
 

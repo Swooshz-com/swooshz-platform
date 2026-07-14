@@ -95,7 +95,7 @@ test("internal alpha platform contract documents the admin foundation status", a
   assert.match(contract, /same transaction\/unit-of-work/i);
   assert.match(contract, /audit append failure cannot leave membership, approval, or entitlement state changed/i);
   assert.match(contract, /Quote operators remain mapped to `member`/i);
-  assert.match(contract, /No polished product UI exists yet/i);
+  assert.match(contract, /approved compact authenticated interface exists for `\/app` and `\/app\/admin`/i);
   assert.match(contract, /CSRF\/origin validation/i);
 });
 

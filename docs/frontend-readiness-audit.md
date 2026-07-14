@@ -59,8 +59,8 @@ copy-safety goals:
 - Swooshz Quote Auto Generator is presented as a separate app launched from
   Platform. Platform does not own Swooshz Quote Auto Generator product
   workflow/runtime data.
-- SEO/GEO/Seozilla remains unavailable until confirmed and vendor workflow
-  pending. No SEO/GEO/Seozilla integration is added.
+- The SEO/GEO/Seozilla product direction is retired and absent from customer-facing
+  Platform routes. No integration or placeholder product content is added.
 - SKR content is absent from the Platform frontend.
 - Billing, payment, upgrade, and plan flows remain absent.
 

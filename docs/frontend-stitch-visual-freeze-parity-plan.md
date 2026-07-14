@@ -1,5 +1,7 @@
 # Frontend Stitch Visual Freeze Parity Plan
 
+> Product-direction notice (2026-07-14): SEO/GEO/Seozilla is retired. Any two-product or vendor-pending material below is historical design-study context and must not be implemented. The current customer-facing Platform has one product: Swooshz Quote Auto Generator.
+
 Production readiness is not approved. This document is a frontend implementation plan and parity checklist for the approved Stitch visual pack. It does not implement the frontend, approve hosted execution, approve production copy, or replace the existing Platform security and product contracts.
 
 The latest Stitch pack is the visual/layout freeze candidate only. During this planning PR, the local Stitch pack was inspected without committing screenshots, source paths, or private design assets. The required 34 screen directories were present. Raw Stitch copy is not production copy and must be corrected before screenshot parity is judged.

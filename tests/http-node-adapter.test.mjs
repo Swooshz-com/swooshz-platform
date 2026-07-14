@@ -86,8 +86,8 @@ test("GET /solutions renders the public products page as no-store HTML", async (
   assert.equal(response.headers["content-type"], "text/html; charset=utf-8");
   assertNoStoreHeaders(response.headers);
   assert.match(response.body, /Swooshz Quote Auto Generator/);
-  assert.match(response.body, /Vendor workflow pending/);
-  assert.match(response.body, /Unavailable until confirmed/);
+  assert.match(response.body, /One focused product, reached through one trusted place\./);
+  assert.doesNotMatch(response.body, /Vendor workflow pending|Unavailable until confirmed|SEO \/ GEO \/ Seozilla/i);
   assert.equal(fixture.calls.sessionsFindById, 0);
   assert.equal(fixture.calls.csrfValidate, 0);
   assertResponseIsPrivacySafe(response);
@@ -128,7 +128,7 @@ test("GET /resources/platform-launch-boundaries renders the safe article page as
   assert.equal(response.statusCode, 200);
   assert.equal(response.headers["content-type"], "text/html; charset=utf-8");
   assertNoStoreHeaders(response.headers);
-  assert.match(response.body, /How Swooshz Platform launches workspace apps safely/);
+  assert.match(response.body, /How Swooshz Platform launches its workspace product safely/);
   assert.match(response.body, /Article template pending editorial approval/i);
   assert.match(response.body, /Swooshz Quote Auto Generator/);
   assert.doesNotMatch(response.body, /<form|<input|<textarea|newsletter|subscribe|<pre|<code/i);
@@ -152,7 +152,7 @@ test("GET /about renders the safe public about page as no-store HTML", async () 
   assertNoStoreHeaders(response.headers);
   assert.match(response.body, /About Swooshz/);
   assert.match(response.body, /Swooshz Quote Auto Generator/);
-  assert.match(response.body, /Vendor workflow pending|Unavailable until confirmed/);
+  assert.doesNotMatch(response.body, /Vendor workflow pending|Unavailable until confirmed|SEO \/ GEO \/ Seozilla/i);
   assert.equal(fixture.calls.sessionsFindById, 0);
   assert.equal(fixture.calls.csrfValidate, 0);
   assertResponseIsPrivacySafe(response);

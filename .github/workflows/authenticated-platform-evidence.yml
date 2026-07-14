@@ -1,0 +1,64 @@
+name: Authenticated platform review evidence
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/authenticated-platform-evidence.yml"
+      - "package-lock.json"
+      - "package.json"
+      - "scripts/authenticated-platform-evidence-contract.mjs"
+      - "scripts/capture-authenticated-platform-evidence.mjs"
+      - "scripts/copy-public-assets.mjs"
+      - "scripts/generate-public-asset-manifest.mjs"
+      - "src/http/platform-shell.ts"
+      - "src/http/public-asset-manifest.ts"
+      - "src/http/public-assets/**"
+      - "tests/authenticated-platform-evidence.test.mjs"
+      - "tests/platform-shell.test.mjs"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evidence:
+    name: Capture authenticated platform evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out exact pull-request head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Build production renderer
+        run: npm run build
+
+      - name: Run authenticated evidence contract tests
+        run: node --test tests/authenticated-platform-evidence.test.mjs
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Capture exact-head authenticated evidence
+        run: npm run evidence:authenticated-platform -- --output "$RUNNER_TEMP/authenticated-platform-evidence-$EVIDENCE_HEAD_SHA"
+        env:
+          EVIDENCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Upload exact-head authenticated evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: authenticated-platform-evidence-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/authenticated-platform-evidence-${{ github.event.pull_request.head.sha || github.sha }}
+          if-no-files-found: error
+          retention-days: 14

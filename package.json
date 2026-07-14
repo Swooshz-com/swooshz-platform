@@ -14,7 +14,8 @@
     "platform:seed-internal-access": "node scripts/platform-seed-internal-access.mjs",
     "typecheck": "node scripts/generate-public-asset-manifest.mjs --check && tsc --noEmit -p tsconfig.json",
     "test": "npm run build && node --test tests/*.test.mjs",
-    "evidence:public-site": "node scripts/capture-public-site-evidence.mjs"
+    "evidence:public-site": "node scripts/capture-public-site-evidence.mjs",
+    "evidence:authenticated-platform": "node scripts/capture-authenticated-platform-evidence.mjs"
   },
   "devDependencies": {
     "@types/pg": "^8.20.0",

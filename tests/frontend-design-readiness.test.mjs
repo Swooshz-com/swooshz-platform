@@ -57,8 +57,8 @@ test("frontend design readiness doc records required Stitch gate and scope langu
     "Swooshz internal admin",
     "content admin",
     "static/Git-backed blog",
-    "Seozilla-assisted publishing",
-    "blocked until vendor confirms workflow",
+    "SEO/GEO/Seozilla product direction has been retired",
+    "not a current Platform phase or placeholder",
     "local visual success is not hosted evidence",
     "Design docs are not implemented UI",
     "production readiness is not approved",
@@ -148,10 +148,10 @@ test("Stitch visual freeze parity plan preserves platform logic and avoids imple
 test("production roadmap keeps frontend implementation and hosted visual evidence unchecked", async () => {
   const roadmap = await readRoadmap();
 
-  assert.match(roadmap, /34-screen Stitch visual\/layout freeze candidate exists/i);
-  assert.match(roadmap, /visual\/layout reference only/i);
-  assert.match(roadmap, /scoped public, portal, workspace-admin, access-information, and resources slices are locally implemented after PRs #86-#90/i);
-  assert.match(roadmap, /full frontend launch clearance, production copy, consolidated screenshot parity, and hosted visual evidence remain unchecked/i);
+  assert.match(roadmap, /approved public and authenticated customer-facing surfaces are implemented locally/i);
+  assert.match(roadmap, /Historical Stitch material remains reference context only/i);
+  assert.match(roadmap, /approved authenticated package and canonical product-truth copy govern `\/app` and `\/app\/admin`/i);
+  assert.match(roadmap, /does not approve hosted visual evidence or final frontend launch clearance/i);
   assert.match(roadmap, /Raw Stitch copy is not production copy/i);
   assert.match(roadmap, /- \[ \] Frontend implementation complete/i);
   assert.match(roadmap, /- \[ \] Hosted visual evidence complete/i);

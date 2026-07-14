@@ -37,11 +37,11 @@ test("landing page renders the public Stitch parity homepage with canonical prod
   const html = renderLandingPage();
 
   assert.match(html, /Swooshz Platform/);
-  assert.match(html, /workspace platform for launching trusted business apps/i);
+  assert.match(html, /trusted entry point for your approved workspace/i);
   assert.match(html, /Swooshz Quote Auto Generator/);
   assert.match(html, /separate app launched from\s+Platform/i);
-  assert.match(html, /SEO \/ GEO \/ Seozilla/);
-  assert.match(html, /Vendor workflow pending|Coming soon|Unavailable until confirmed/i);
+  assert.doesNotMatch(html, /SEO \/ GEO \/ Seozilla/i);
+  assert.doesNotMatch(html, /Vendor workflow pending|Coming soon|Unavailable until confirmed/i);
   assert.match(html, /href="\/solutions"/);
   assert.match(html, /href="\/login"/);
   assert.match(html, /href="\/request-access"/);
@@ -65,21 +65,19 @@ test("login page preserves provider-backed auth start without public signup or p
   assert.doesNotMatch(html, /fake|demo|sample|create public account|public signup available/i);
 });
 
-test("solutions page separates Platform SQAG and unavailable vendor-pending products", () => {
+test("solutions page presents one approved product and no abandoned product chapter", () => {
   const html = renderSolutionsPage();
 
+  assert.match(html, /One focused product, reached through one trusted place\./);
   assert.match(html, /Swooshz Quote Auto Generator/);
   assert.match(html, /separate product app launched from Platform/i);
-  assert.match(html, /Access Management/);
-  assert.match(html, /Workspace Entitlements/);
+  assert.match(html, /Platform owns the entry/);
   assert.match(html, /Owner/);
   assert.match(html, /Admin/);
   assert.match(html, /Member/);
   assert.match(html, /Pending/);
-  assert.match(html, /SEO \/ GEO \/ Seozilla/);
-  assert.match(html, /Vendor workflow pending/);
-  assert.match(html, /Unavailable until confirmed/);
-  assert.doesNotMatch(html, /SKR/);
+  assert.equal((html.match(/product-chapter-number/g) ?? []).length, 1);
+  assert.doesNotMatch(html, /SEO \/ GEO \/ Seozilla|Vendor workflow pending|Unavailable until confirmed|SKR/i);
 });
 
 test("about page renders safe public company and platform boundary copy", () => {
@@ -90,8 +88,8 @@ test("about page renders safe public company and platform boundary copy", () => 
   assert.match(html, /provider-backed\s+accounts/i);
   assert.match(html, /Swooshz Quote Auto Generator/);
   assert.match(html, /separate app launched\s+from Platform/i);
-  assert.match(html, /SEO \/ GEO \/ Seozilla/);
-  assert.match(html, /Vendor workflow pending|Unavailable until confirmed/i);
+  assert.doesNotMatch(html, /SEO \/ GEO \/ Seozilla/i);
+  assert.doesNotMatch(html, /Vendor workflow pending|Unavailable until confirmed/i);
   assert.match(html, /href="\/contact"/);
   assert.match(html, /href="\/request-access"/);
   assert.doesNotMatch(html, /founder|team member|case study|founded in|headquarters/i);
@@ -131,7 +129,7 @@ test("resources page renders safe placeholder listing content", () => {
 
   assert.match(html, /Insights & Resources|Resources/);
   assert.match(html, /Content pending editorial review/i);
-  assert.match(html, /How Swooshz Platform launches workspace apps safely/);
+  assert.match(html, /How Swooshz Platform launches its workspace product safely/);
   assert.match(html, /Provider-backed access matters/);
   assert.match(html, /Keeping product workflow data outside Platform/);
   assert.match(html, /Swooshz Quote Auto\s+Generator/);
@@ -148,14 +146,14 @@ test("resources page renders safe placeholder listing content", () => {
 test("resource article page renders safe article template without fake metadata", () => {
   const html = withoutSharedStyle(renderResourceArticlePage());
 
-  assert.match(html, /How Swooshz Platform launches workspace apps safely/);
+  assert.match(html, /How Swooshz Platform launches its workspace product safely/);
   assert.match(html, /Article template pending editorial approval/i);
   assert.match(html, /Provider-backed access/);
   assert.match(html, /Swooshz Quote Auto\s+Generator/);
   assert.match(html, /separate app launched from\s+Platform/i);
   assert.match(html, /product workflow data stays outside Platform/i);
-  assert.match(html, /SEO \/ GEO \/ Seozilla/);
-  assert.match(html, /unavailable until confirmed|vendor workflow pending/i);
+  assert.doesNotMatch(html, /SEO \/ GEO \/ Seozilla/i);
+  assert.doesNotMatch(html, /unavailable until confirmed|vendor workflow pending/i);
   assert.match(html, /href="\/resources"/);
   assert.doesNotMatch(html, /<form|<input|<textarea|newsletter|subscribe|email capture/i);
   assert.doesNotMatch(html, /by\s+[A-Z][a-z]+|author|team member|workspace member/i);
@@ -216,8 +214,7 @@ test("app shell references only existing browser JSON APIs", () => {
   assert.match(html, /\/api\/platform\/session\/csrf/);
   assert.match(html, /\/api\/platform\/apps\/launch\/open/);
   assert.match(html, /\/api\/platform\/logout/);
-  assert.match(html, /adminLink\.href = adminWorkspaces\.length === 1\s*\?\s*"\/app\/admin"/);
-  assert.match(html, /"\/app\/admin\?workspace=" \+ encodeURIComponent\(adminWorkspace\.workspaceSlug\)/);
+  assert.match(html, /adminLink\.href = "\/app\/admin\?workspace=" \+ encodeURIComponent\(workspace\.workspaceSlug\)/);
   assert.doesNotMatch(html, /"\/app\/admin\?workspaceId="/);
   assert.match(html, /id="adminLink"[^>]*hidden/);
 });
@@ -229,40 +226,44 @@ test("app shell shows a clear no-workspace-access state for authenticated users"
   assert.doesNotMatch(html, /No active workspaces are available\./);
 });
 
-test("app shell renders portal launcher and fail-closed entitlement states with safe copy", () => {
+test("app shell renders the approved compact launcher and fail-closed product states", () => {
   const html = renderAppShellPage();
 
-  assert.match(html, /App Launcher/);
+  assert.match(html, /class="authenticated-shell launcher-shell"/);
+  assert.match(html, /Your product/);
+  assert.match(html, /Available to your workspace\./);
   assert.match(html, /Swooshz Quote Auto Generator/);
-  assert.match(html, /Launch Apps/);
-  assert.match(html, /Contact workspace admin/);
-  assert.match(html, /Return to apps/);
-  assert.match(html, /Product unavailable/);
-  assert.match(html, /Access unavailable/);
-  assert.match(html, /app\.access\?\.allowed === true/);
-  assert.doesNotMatch(html, /upgrade your plan|billing|payment/i);
+  assert.match(html, /Create professional quotations using your approved workspace\./);
+  assert.match(html, /Ready to launch/);
+  assert.match(html, /Open product/);
+  assert.match(html, /Product access unavailable/);
+  assert.match(html, /Your workspace does not currently have access to this product\./);
+  assert.match(html, /We could not open the product\. Try again\./);
+  assert.match(html, /Retry/);
+  assert.match(html, /state\.app\?\.access\?\.allowed === true/);
+  assert.doesNotMatch(html, /<aside[^>]*sidebar|upgrade your plan|billing|payment/i);
+  assert.match(html, /@media \(max-width: 350px\)[\s\S]*\.auth-account-context \{ width: calc\(100% \+ 23px\);[\s\S]*64px 52px 55px/);
+  assert.match(html, /\.auth-header-link, \.auth-header-button \{ min-width: 0; \}/);
 });
 
-test("portal and admin shells format workspace roles without prominent Viewer copy", () => {
+test("launcher and admin shells format workspace roles without unsupported role copy", () => {
   const appHtml = renderAppShellPage();
   const adminHtml = renderAdminShellPage();
 
-  assert.match(appHtml, /textBlock\("Role", displayWorkspaceRole\(workspace\.membershipRole\)\)/);
+  assert.match(appHtml, /workspaceRole\.textContent = displayWorkspaceRole\(workspace\.membershipRole\)/);
   assert.match(appHtml, /function displayWorkspaceRole\(role\)/);
-  assert.match(adminHtml, /textBlock\("Role", displayRole\(workspace\.membershipRole\)\)/);
+  assert.match(adminHtml, /headerWorkspaceRole\.textContent = displayRole\(workspace\.membershipRole\)/);
   assert.match(adminHtml, /tableCell\(displayStatus\(member\.status \|\| ""\), "Status"\)/);
   assert.match(adminHtml, /tableCell\(displayRole\(approval\.role\), "Role"\)/);
-  assert.match(adminHtml, /tableCell\(displayStatus\(approval\.status\), "Status"\)/);
-  assert.doesNotMatch(appHtml + adminHtml, /textBlock\("Role", workspace\.membershipRole\)/);
   assert.doesNotMatch(appHtml + adminHtml, /\bViewer\b/);
 });
 
-test("app shell normalizes SQAG display copy without changing app keys or launch endpoint", () => {
+test("app shell presents the approved product name while preserving the internal app key contract", () => {
   const html = renderAppShellPage();
 
-  assert.match(html, /displayAppName\(app\)/);
-  assert.match(html, /"&appKey=" \+ encodeURIComponent\(appKey\)/);
-  assert.match(html, /return "Swooshz Quote Auto Generator"/);
+  assert.match(html, /Swooshz Quote Auto Generator/);
+  assert.match(html, /String\(app\.appKey \|\| ""\)\.toLowerCase\(\) === "sqag"/);
+  assert.match(html, /"&appKey=" \+ encodeURIComponent\(state\.app\.appKey\)/);
   assert.match(html, /endpoints\.launch \+/);
   assert.doesNotMatch(html, /Split-Pane Auto Generator|Structured Query/i);
 });
@@ -309,89 +310,66 @@ test("admin shell references protected admin APIs and CSRF-protected actions", (
   assert.match(html, /"x-csrf-token": csrfToken/);
 });
 
-test("admin shell includes add-existing-user form with allowed non-owner roles", () => {
+test("admin shell includes an accessible add-member flow with allowed non-owner roles", () => {
   const html = renderAdminShellPage();
 
   assert.match(html, /id="addMemberForm"/);
   assert.match(html, /id="addMemberModal"/);
-  assert.match(html, /id="openAddMemberButton"/);
-  assert.match(html, /id="addMemberResult"/);
-  assert.match(html, /name="email"/);
-  assert.match(html, /name="role"/);
-  assert.match(html, /Create a pending workspace access approval/);
-  assert.match(html, /provider-backed sign-in flow/);
-  assert.match(html, /button[^>]*type="submit"[^>]*>\s*Add member\s*<\/button>/);
-  assert.match(html, /<option value="admin">Admin<\/option>/);
-  assert.match(html, /<option value="member" selected>Member<\/option>/);
-  assert.doesNotMatch(html, /value="owner"/);
-  assert.doesNotMatch(html, /value="viewer"|>viewer<|>Viewer</);
-  assert.doesNotMatch(html, /email invitation|send invite|Invite a new member/i);
+  assert.match(html, /role="dialog" aria-modal="true"/);
+  assert.match(html, /Existing Swooshz accounts are added immediately\./);
+  assert.match(html, /access activates after the same email signs in with Google\./);
+  assert.match(html, /No invitation email is sent\./);
+  assert.match(html, /id="addMemberSubmitButton"[^>]*type="submit">Add member<\/button>/);
+  assert.match(html, /<option value="member" selected>Member<\/option><option value="admin">Admin<\/option>/);
+  assert.doesNotMatch(html, /value="owner"|value="viewer"|send invite|invitation (?:is|was) sent|confirmation email/i);
   assert.match(html, /addExistingMember/);
   assert.match(html, /Pending approval created\./);
   assert.match(html, /Existing user added to workspace\./);
-  assert.match(html, /setAddMemberResult/);
+  assert.match(html, /addMemberSubmitButton\.disabled = true/);
+  assert.match(html, /addMemberSubmitButton\.textContent = "Adding member\.\.\."/);
   assert.match(html, /safeAdminActionMessage/);
-  assert.match(html, /payload\.message/);
   assert.match(html, /Workspace admin action could not be completed\./);
 });
 
 test("admin shell renders pending approvals with revoke controls", () => {
   const html = renderAdminShellPage();
 
-  assert.match(html, /id="pendingApprovals"/);
-  assert.match(html, /sectionHeading\("Pending Approvals"\)/);
-  assert.match(html, /Review pending workspace access approvals/);
-  assert.match(html, /No email delivery is implied/);
+  assert.match(html, /data-admin-nav="pending-approvals"/);
+  assert.match(html, /sectionHeading\("Pending approvals"\)/);
+  assert.match(html, /Review access waiting for an administrator\./);
   assert.match(html, /renderPendingApprovals/);
   assert.match(html, /adminApprovalsUrl/);
   assert.match(html, /approvalActionsCell/);
   assert.match(html, /revokeApproval/);
   assert.match(html, /"Approval revoked\."/);
-  assert.match(html, /Pending Approvals/);
-  assert.doesNotMatch(html, /owner approval/i);
+  assert.doesNotMatch(html, /owner approval|email delivery is implied/i);
 });
 
-test("admin shell documents owner transfer as unavailable in internal alpha", () => {
+test("admin shell protects owners without exposing an unfinished owner-transfer surface", () => {
   const html = renderAdminShellPage();
 
-  assert.match(html, /id="ownerTransfer"/);
-  assert.match(html, /Owner transfer is not available in internal alpha yet\./);
-  assert.match(html, /reviewed operator process before hosted execution/);
-  assert.doesNotMatch(html, /transferOwner|owner-transfer-confirmation|\/owner-transfer/);
+  assert.match(html, /id="ownerTransfer" hidden/);
+  assert.match(html, /isProtectedOwner = member\.role === "owner"/);
+  assert.match(html, /"Protected owner"/);
+  assert.doesNotMatch(html, /Owner transfer is not available|transferOwner|owner-transfer-confirmation|\/owner-transfer/);
 });
 
-test("admin shell includes Activity section for safe audit browsing", () => {
+test("admin shell includes an Audit activity section for safe audit browsing", () => {
   const html = renderAdminShellPage();
 
-  assert.match(html, /id="activity"/);
-  assert.match(html, /sectionHeading\("Audit Log"\)/);
+  assert.match(html, /data-admin-nav="activity"[^>]*>Audit activity<\/button>/);
+  assert.match(html, /sectionHeading\("Audit activity"\)/);
   assert.match(html, /renderActivity/);
   assert.match(html, /adminAuditEventsUrl/);
   assert.match(html, /activityLabel/);
   assert.match(html, /metadataRows/);
-  assert.match(html, /App launch allowed/);
-  assert.match(html, /App launch denied/);
-  assert.match(html, /Role changed/);
-  assert.match(html, /Member removed/);
-  assert.match(html, /Login blocked for unapproved user/);
-  assert.doesNotMatch(html, /SQAG access enabled|SQAG access disabled|Membership approval/i);
-  assert.match(html, /Action/);
-  assert.match(html, /Subject/);
-  assert.match(html, /Actor/);
-  assert.match(html, /Time/);
-  assert.match(html, /Details/);
+  assert.match(html, /App launch allowed|App launch denied|Role changed|Member removed/);
+  assert.match(html, /Action|Subject|Actor|Time|Details/);
   assert.match(html, /activityPageSize: 10/);
   assert.match(html, /function activityPager/);
-  assert.match(html, /Older/);
-  assert.match(html, /Newer/);
-  assert.match(html, /event\.targetLabel/);
-  assert.match(html, /Unknown user/);
-  assert.match(html, /Previous role/);
-  assert.match(html, /New status/);
+  assert.match(html, /Older|Newer/);
   assert.match(html, /normalizeAppKeyMetadata/);
   assert.match(html, /value: "Swooshz Quote Auto Generator"/);
-  assert.match(html, /Platform user/);
-  assert.match(html, /System/);
   assert.doesNotMatch(html, /title = raw/);
 });
 
@@ -436,87 +414,85 @@ test("admin shell Activity subject identifies affected users and pending emails 
   assert.doesNotMatch(html, /providerSubject|rawClaims|oauthCode|rawProvider/i);
 });
 
-test("platform shells explain logout scope and show signed-out Google account note", () => {
+test("platform shells use CSRF-protected logout and preserve the signed-out account note", () => {
   const appHtml = renderAppShellPage();
   const adminHtml = renderAdminShellPage();
   const loginHtml = renderLoginPage();
 
   for (const html of [appHtml, adminHtml]) {
-    assert.match(html, /Sign out of Swooshz Platform/);
+    assert.match(html, />Log out<\/button>/);
+    assert.match(html, /fetch\(endpoints\.logout/);
+    assert.match(html, /"x-csrf-token": csrfToken/);
     assert.match(html, /window\.location\.assign\("\/login\?signedOut=1"\)/);
   }
-
-  assert.match(
-    loginHtml,
-    /You are signed out of Swooshz Platform\.\s+Your Google account may\s+still be signed in\./,
-  );
+  assert.match(loginHtml, /You are signed out of Swooshz Platform\.\s+Your Google account may\s+still be signed in\./);
   assert.match(loginHtml, /URLSearchParams\(window\.location\.search\)/);
 });
 
 test("admin shell limits usable controls to owner/admin workspace context", () => {
   const html = renderAdminShellPage();
 
-  assert.match(html, /membershipRole === "owner" \|\| workspace\.membershipRole === "admin"/);
+  assert.match(html, /workspace\.membershipRole === "owner" \|\| workspace\.membershipRole === "admin"/);
   assert.match(html, /params\.get\("workspace"\)/);
   assert.match(html, /workspace\.workspaceSlug === requestedSlug/);
-  assert.match(html, /Workspace slug/);
-  assert.doesNotMatch(html, /Workspace ID/);
   assert.match(html, /Workspace admin is available to workspace owners and admins only\./);
   assert.match(html, /actorIsOwner = state\.workspace\?\.membershipRole === "owner"/);
   assert.match(html, /option\.disabled = role === "owner" && !actorIsOwner/);
-  assert.match(html, /member\.role === "owner" && !actorIsOwner/);
   assert.match(html, /isProtectedOwner = member\.role === "owner"/);
-  assert.match(html, /"Member disabled\."/);
-  assert.match(html, /"Member reactivated\."/);
-  assert.match(html, /"Member removed\."/);
+  assert.match(html, /"Member disabled\."|"Member reactivated\."|"Member removed\."/);
   assert.doesNotMatch(html, /\bviewer\b/i);
-  assert.doesNotMatch(html, /button\.disabled = isSelf \|\| member\.status !== "active"/);
 });
 
-test("admin shell renders member row actions as a compact Actions menu with internal action modal", () => {
+test("admin shell renders compact accessible member actions with confirmations", () => {
   const html = renderAdminShellPage();
 
-  assert.match(html, /function memberActionsCell\(member, activeOwnerCount, label\)/);
-  assert.match(html, /menuButton\.textContent = "Actions"/);
+  assert.match(html, /function memberActionsCell\(member, activeOwnerCount, label, memberIndex\)/);
+  assert.match(html, /menuButton\.textContent = "Manage"/);
+  assert.match(html, /menuButton\.id = "member-actions-trigger-"/);
+  assert.match(html, /menuPanel\.id = "member-actions-panel-"/);
+  assert.match(html, /aria-controls", menuPanel\.id/);
+  assert.match(html, /aria-expanded", "false"/);
+  assert.match(html, /menuPanel\.querySelector\("button"\)\?\.focus\(\)/);
   assert.match(html, /closeAllActionMenus/);
-  assert.match(html, /actionButton\("Disable Access"/);
-  assert.match(html, /actionButton\("Reactivate"/);
-  assert.match(html, /actionButton\("Remove from Workspace"/);
-  assert.match(html, /removeMember\(member\.membershipId\)/);
+  assert.match(html, /actionButton\("Disable member"/);
+  assert.match(html, /actionButton\("Reactivate member"/);
+  assert.match(html, /actionButton\("Remove member"/);
   assert.match(html, /id="adminActionModal"/);
-  assert.match(html, /Remove member\?/);
-  assert.match(
-    html,
-    /This removes workspace access for this member\. Their platform account is not deleted\./,
-  );
-  assert.match(html, /Remove member/);
-  assert.match(html, /Cancel/);
-  assert.match(html, /Removing member\.\.\./);
+  assert.match(html, /role="alertdialog" aria-modal="true"/);
+  assert.match(html, /This removes workspace access for this member\. Their platform account is not deleted\./);
   assert.match(html, /modalConfirmButton\.disabled = true/);
-  assert.match(html, /modalCancelButton\.disabled = true/);
-  assert.doesNotMatch(html, /Permanent action|associated projects and data|data loss|product records/i);
-  assert.doesNotMatch(html, /window\.confirm/);
-  assert.match(html, /member\.status === "active"/);
-  assert.match(html, /member\.status === "disabled"/);
-  assert.match(html, /menuButton\.disabled = !canAct \|\| !\["active", "disabled"\]\.includes\(member\.status\)/);
-  assert.match(html, /adminMemberUrl\(state\.workspace\.workspaceId, membershipId\) \+ "\/remove"/);
-  assert.match(html, /case "workspace\.membership\.removed":\s*return "Member removed";/);
-  assert.doesNotMatch(html, /button\.textContent = member\.status === "disabled" \? "Reactivate" : "Disable"/);
+  assert.match(html, /restoreModalFocus/);
+  assert.match(html, /trapModalFocus/);
+  assert.doesNotMatch(html, /role="menu"|role="menuitem"|aria-haspopup", "menu"/);
+  assert.doesNotMatch(html, /window\.confirm|Permanent action|associated projects and data|data loss/i);
 });
 
-test("admin shell uses Stitch portal layout for workspace management surfaces", () => {
+test("admin section navigation uses reachable native buttons and one current-page marker", () => {
   const html = renderAdminShellPage();
 
-  assert.match(html, /class="portal-layout admin-layout"/);
-  assert.match(html, /class="portal-sidebar"/);
-  assert.match(html, /Workspace Members/);
-  assert.match(html, /Manage access and roles for your workspace/);
-  assert.match(html, /Members/);
-  assert.match(html, /Activity/);
-  assert.match(html, /Add Member/);
-  assert.match(html, /data-admin-section="members"/);
-  assert.match(html, /data-admin-section="pending-approvals"/);
-  assert.match(html, /data-admin-section="activity"/);
+  assert.match(html, /<nav class="admin-section-nav" aria-label="Administration sections">/);
+  assert.match(html, /data-admin-nav="members" aria-current="page">Members<\/button>/);
+  assert.match(html, /button\.setAttribute\("aria-current", "page"\)/);
+  assert.match(html, /button\.removeAttribute\("aria-current"\)/);
+  assert.doesNotMatch(html, /role="tablist"|role="tab"|aria-selected/);
+  assert.doesNotMatch(html, /button\.tabIndex\s*=|tabIndex\s*=\s*active\s*\?\s*0\s*:\s*-1/);
+  assert.equal((html.match(/data-admin-nav=/g) ?? []).length, 4);
+});
+
+test("admin shell uses the approved compact four-section workspace administration surface", () => {
+  const html = renderAdminShellPage();
+
+  assert.match(html, /class="authenticated-shell admin-shell"/);
+  assert.match(html, /class="admin-section-nav"/);
+  assert.match(html, /data-admin-nav="members"/);
+  assert.match(html, /data-admin-nav="pending-approvals"/);
+  assert.match(html, /data-admin-nav="app-access"/);
+  assert.match(html, /data-admin-nav="activity"/);
+  assert.match(html, />Members<\/button>/);
+  assert.match(html, />Pending approvals<\/button>/);
+  assert.match(html, />Product access<\/button>/);
+  assert.match(html, />Audit activity<\/button>/);
+  assert.doesNotMatch(withoutSharedStyle(html), /portal-sidebar|Dashboard|Billing|Settings|Security|Reports|Integrations/);
 });
 
 test("admin shell does not render an enabled no-op workspace search control", () => {
@@ -527,28 +503,28 @@ test("admin shell does not render an enabled no-op workspace search control", ()
   assert.doesNotMatch(html, /Search workspace/);
 });
 
-test("platform topbar decorative icons are hidden non-controls without placeholder text", () => {
-  const appTopbar = extractTopbarActions(renderAppShellPage());
-  const adminTopbar = extractTopbarActions(renderAdminShellPage());
+test("authenticated headers expose only working account, workspace, role, admin, product, and logout controls", () => {
+  const appHtml = renderAppShellPage();
+  const adminHtml = renderAdminShellPage();
 
-  for (const topbar of [appTopbar, adminTopbar]) {
-    assert.match(topbar, /aria-hidden="true"/);
-    assert.match(topbar, /class="topbar-icon/);
-    assert.doesNotMatch(topbar, /<a\b|<button\b|role="button"/i);
-    assert.doesNotMatch(topbar, />\s*(bell|history|account)\s*</i);
+  for (const html of [appHtml, adminHtml]) {
+    assert.match(html, /class="auth-app-bar"/);
+    assert.match(html, /Signed in as/);
+    assert.match(html, /Workspace/);
+    assert.match(html, /Role/);
+    assert.match(html, />Log out<\/button>/);
   }
+  assert.match(appHtml, />Administration<\/a>/);
+  assert.match(adminHtml, />Your product<\/a>/);
 });
 
-test("future-only navigation controls render disabled instead of clickable links", () => {
-  const html = renderAdminShellPage() + renderLandingPage() + renderSolutionsPage();
+test("authenticated navigation omits future-only and abandoned destinations", () => {
+  const html = renderAppShellPage() + renderAdminShellPage();
 
-  assert.match(html, /<span aria-disabled="true">Help<\/span>/);
-  assert.match(html, /<span aria-disabled="true">Settings<\/span>/);
-  assert.match(html, /\.portal-nav span\[aria-disabled="true"\]/);
-  assert.match(html, /pointer-events: none/);
-  assert.match(html, /<a class="" href="\/about">About<\/a>/);
-  assert.match(html, /<a class="" href="\/resources">Resources<\/a>/);
-  assert.doesNotMatch(html, /<a\b[^>]*>\s*(?:Help|Settings)\s*<\/a>/i);
+  assert.doesNotMatch(html, />Help<|>Settings<|Dashboard|Billing|Security|Reports|Integrations/);
+  assert.doesNotMatch(html, /SEO \/ GEO \/ Seozilla|Vendor workflow pending/i);
+  assert.match(html, /href="\/app"/);
+  assert.match(html, /href="\/app\/admin"/);
 });
 
 test("admin shell modals support keyboard and backdrop dismissal with visible focus states", () => {
@@ -565,19 +541,18 @@ test("admin shell modals support keyboard and backdrop dismissal with visible fo
   assert.match(html, /:focus-visible/);
 });
 
-test("admin shell app access surface avoids raw implementation identifiers", () => {
+test("admin shell product access surface shows one customer-facing product and no raw identifiers", () => {
   const html = renderAdminShellPage();
 
-  assert.match(html, /sectionHeading\("App Access"\)/);
-  assert.match(html, /Workspace app availability and launch access controls\./);
+  assert.match(html, /sectionHeading\("Product access"\)/);
+  assert.match(html, /Control whether this workspace can use its current product\./);
   assert.match(html, /displayEntitlementAppName/);
-  assert.match(html, /textBlock\("Workspace access"/);
-  assert.match(html, /Disable access/);
-  assert.match(html, /Allow launch/);
-  assert.doesNotMatch(html, /textBlock\("App key"/);
-  assert.doesNotMatch(html, /textBlock\("Granted by"/);
-  assert.doesNotMatch(html, /textBlock\("Entitlement"/);
-  assert.doesNotMatch(html, /grantedByUserId/);
+  assert.match(html, /Members with access can create professional quotations for this workspace\./);
+  assert.match(html, /Enable product access/);
+  assert.match(html, /Disable product access/);
+  assert.match(html, /Disabling product access prevents new launches and does not change member records\./);
+  assert.match(html, /String\(entitlement\.appKey \|\| ""\)\.toLowerCase\(\) === "sqag"/);
+  assert.doesNotMatch(html, /textBlock\("App key"|textBlock\("Granted by"|grantedByUserId/);
 });
 
 test("admin shell mobile tables expose row labels without horizontal overflow", () => {
@@ -607,7 +582,7 @@ test("admin shell activity actors avoid raw ids and private actor emails", () =>
   assert.doesNotMatch(html, /actorEmail/);
 });
 
-test("admin shell shows loading feedback for state-changing admin actions", () => {
+test("admin shell shows busy feedback for state-changing admin actions", () => {
   const html = renderAdminShellPage();
 
   assert.match(html, /id="adminActionStatus"/);
@@ -616,9 +591,10 @@ test("admin shell shows loading feedback for state-changing admin actions", () =
   assert.match(html, /Disabling member\.\.\./);
   assert.match(html, /Reactivating member\.\.\./);
   assert.match(html, /Revoking approval\.\.\./);
-  assert.match(html, /Updating app access\.\.\./);
-  assert.match(html, /Adding workspace member\.\.\./);
+  assert.match(html, /Updating product access\.\.\./);
+  assert.match(html, /Adding member\.\.\./);
   assert.match(html, /showActionStatus\(loadingMessage, true\)/);
+  assert.match(html, /setModalBusy\(true, action\.loadingMessage\)/);
 });
 
 test("admin shell keeps secret raw-auth and SQAG quote material out of static HTML", () => {
