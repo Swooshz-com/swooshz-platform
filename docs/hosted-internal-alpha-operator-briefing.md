@@ -25,7 +25,7 @@ Non-goals:
 The local/internal UAT platform-admin foundation is mostly implemented/documented for narrow reviewed internal use:
 
 - Provider-backed generic OIDC login and Platform-owned server-side sessions are documented.
-- `/app` and `/app/admin` exist as minimal internal surfaces, not polished product UI.
+- `/app` and `/app/admin` use the approved compact production interface locally; hosted visual evidence and hosted smoke remain pending.
 - Owner/admin flows can add existing provider-backed users by email after first sign-in, change roles, disable and reactivate non-owner memberships, enable/disable SQAG entitlement, and browse recent activity.
 - App launch checks fail closed across session, user, workspace, membership, entitlement, role, and app availability conditions.
 - The SQAG handoff path keeps the raw one-time launch token out of browser URLs and storage.

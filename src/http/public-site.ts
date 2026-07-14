@@ -41,12 +41,12 @@ export function renderLandingPage(): string {
             <p class="public-label">Swooshz Platform / Entry 01</p>
             <h1 id="home-heading">
               <span>One trusted place.</span>
-              <span>Your Swooshz tools</span>
+              <span>Your Swooshz product</span>
               <span class="public-accent">within reach.</span>
             </h1>
             <p class="prestige-hero-lede">
               Enter once, find your approved workspace, and reach the Swooshz
-              applications available to your team.
+              product available to your team.
             </p>
             <div class="prestige-hero-actions">
               <a class="public-button" href="/login"><span>Enter the platform</span><b aria-hidden="true">&nearr;</b></a>
@@ -67,14 +67,14 @@ export function renderLandingPage(): string {
               <p class="public-label">Platform positioning</p>
               <h2 id="positioning-heading">The relationship stays clear.</h2>
               <p>
-                Swooshz Platform is the workspace platform for launching trusted business apps. Each
-                approved application remains focused on its own work.
+                Swooshz Platform is the trusted entry point for your approved workspace and
+                Swooshz Quote Auto Generator remains focused on quotation work.
               </p>
             </div>
             <div class="positioning-lines" aria-label="Platform relationship">
               <p><span>01</span>One provider-backed account</p>
               <p><span>02</span>Your approved workspace context</p>
-              <p><span>03</span>Only applications available to that workspace</p>
+              <p><span>03</span>The product available to that workspace</p>
             </div>
           </div>
         </section>
@@ -86,7 +86,7 @@ export function renderLandingPage(): string {
               <h2 id="bridge-heading">A calm place to arrive. <em class="public-accent">A precise place to continue.</em></h2>
               <p>
                 Platform brings account, workspace membership, role context,
-                and approved application access together without pulling
+                and approved product access together without pulling
                 specialised product workflows into the platform itself.
               </p>
             </div>
@@ -101,7 +101,7 @@ export function renderLandingPage(): string {
               </article>
               <article>
                 <span>03</span>
-                <div><h3>Focused Swooshz applications</h3><p>Entitlement checks keep each separate product launch intentional.</p></div>
+                <div><h3>Your Swooshz product</h3><p>Access checks keep the separate product launch intentional.</p></div>
               </article>
             </div>
           </div>
@@ -135,7 +135,7 @@ export function renderLandingPage(): string {
             </div>
             <aside class="closing-aside">
               <p>
-                Access is approved through your existing Swooshz or workspace sponsor channel. There is no public signup. SEO / GEO / Seozilla: Unavailable until confirmed. Vendor workflow pending.
+                Access is approved through your existing Swooshz or workspace sponsor channel. There is no public signup.
               </p>
               <div class="closing-actions">
                 <a class="public-button" href="/request-access"><span>Understand access</span><b aria-hidden="true">&nearr;</b></a>
@@ -159,12 +159,12 @@ export function renderSolutionsPage(): string {
       <main id="main-content" class="public-page">
         <section class="editorial-hero" aria-labelledby="solutions-heading">
           <div class="editorial-hero-copy">
-            <p class="public-label">Swooshz applications</p>
-            <h1 id="solutions-heading">Focused products, reached through one trusted place.</h1>
+            <p class="public-label">Swooshz product</p>
+            <h1 id="solutions-heading">One focused product, reached through one trusted place.</h1>
             <p class="lede">
               Platform handles account entry, workspace context, roles, approved
-              application access, and launch. Each product remains responsible
-              for its specialised work.
+              product access, and launch. Swooshz Quote Auto Generator remains
+              responsible for its specialised work.
             </p>
           </div>
         </section>
@@ -175,20 +175,9 @@ export function renderSolutionsPage(): string {
               <p class="public-label">Available for approved workspaces</p>
               <h2>Swooshz Quote Auto Generator</h2>
               <p>
-                A separate product app launched from Platform for quotation workflows. Platform verifies workspace access and entitlement before launch; the product owns its workflows, generated artefacts, and product history.
+                A separate product app launched from Platform for quotation workflows. Platform verifies workspace access before launch; the product owns its workflows, generated artefacts, and product history.
               </p>
               <a class="public-button" href="/login"><span>Enter the platform</span><b aria-hidden="true">&nearr;</b></a>
-            </div>
-          </article>
-          <article class="product-chapter">
-            <span class="product-chapter-number">02</span>
-            <div>
-              <p class="public-label">Unavailable / vendor-pending</p>
-              <h2>SEO / GEO / Seozilla</h2>
-              <p>
-                Unavailable until confirmed. Vendor workflow pending. It cannot be launched or purchased through Platform.
-              </p>
-              <span class="availability-note">Vendor workflow pending</span>
             </div>
           </article>
         </section>
@@ -199,7 +188,7 @@ export function renderSolutionsPage(): string {
               <h2>Shared access. Separate product ownership.</h2>
             </div>
             <div class="editorial-copy">
-              <article><h3>Platform owns the entry</h3><p>Access Management and Workspace Entitlements cover accounts, sessions, workspaces, memberships, roles, application access, launch, administration, and audit boundaries. Visible workspace roles remain Owner, Admin, Member, and Pending.</p></article>
+              <article><h3>Platform owns the entry</h3><p>Platform access covers accounts, sessions, workspaces, memberships, roles, product access, launch, administration, and audit boundaries. Visible workspace roles remain Owner, Admin, Member, and Pending.</p></article>
               <article><h3>The product owns the workflow</h3><p>Swooshz Quote Auto Generator keeps quotation logic and product runtime data within its own application.</p></article>
             </div>
           </div>
@@ -221,7 +210,7 @@ export function renderResourcesPage(): string {
           <div class="editorial-hero-copy">
             <p class="public-label">Resources</p>
             <h1 id="resources-heading">Notes for understanding the Platform boundary.</h1>
-            <p class="lede">Content pending editorial review. A small collection about approved access, workspace context, and separate product launches.</p>
+            <p class="lede">Content pending editorial review. A small collection about approved access, workspace context, and the separate product launch.</p>
           </div>
         </section>
         <section class="editorial-section resource-index" aria-labelledby="resource-list-heading">
@@ -237,8 +226,8 @@ export function renderResourcesPage(): string {
             <article class="resource-entry">
               <span>01</span>
               <div>
-                <h3><a href="/resources/platform-launch-boundaries">How Swooshz Platform launches workspace apps safely</a></h3>
-                <p>Workspace approval, provider-backed access, entitlement checks, and the boundary between Platform and a launched product.</p>
+                <h3><a href="/resources/platform-launch-boundaries">How Swooshz Platform launches its workspace product safely</a></h3>
+                <p>Workspace approval, provider-backed access, product-access checks, and the boundary between Platform and the launched product.</p>
                 <a href="/resources/platform-launch-boundaries">Read the article &rarr;</a>
               </div>
             </article>
@@ -264,7 +253,7 @@ export function renderResourcesPage(): string {
 
 export function renderResourceArticlePage(): string {
   return publicDocument({
-    title: "How Swooshz Platform Launches Workspace Apps Safely",
+    title: "How Swooshz Platform Launches Its Workspace Product Safely",
     route: "resources",
     body: `
       ${publicNav("resources")}
@@ -273,20 +262,20 @@ export function renderResourceArticlePage(): string {
         <article>
           <header class="reading-hero">
             <p class="public-label">Platform access</p>
-            <h1>How Swooshz Platform launches workspace apps safely</h1>
+            <h1>How Swooshz Platform launches its workspace product safely</h1>
             <p class="lede">
-              Article template pending editorial approval. A clear view of the account, workspace, entitlement, and product boundaries that shape an approved launch.
+              Article template pending editorial approval. A clear view of the account, workspace, access, and product boundaries that shape an approved launch.
             </p>
           </header>
           <div class="article-layout">
             <div class="article-body">
               <section id="workspace-first">
                 <h2>Access starts with the workspace</h2>
-                <p>Swooshz Platform is responsible for the access surface around workspace applications. It checks the signed-in account, selected workspace, membership role, and application entitlement before a launch path is available.</p>
+                <p>Swooshz Platform is responsible for the access surface around its workspace product. It checks the signed-in account, selected workspace, membership role, and product access before a launch path is available.</p>
               </section>
               <section id="provider-entry">
                 <h2>Provider-backed access</h2>
-                <p>Access is not self-service. A user arrives through an approved provider-backed account associated with an approved workspace, and Platform evaluates whether the requested application is available.</p>
+                <p>Access is not self-service. A user arrives through an approved provider-backed account associated with an approved workspace, and Platform evaluates whether Swooshz Quote Auto Generator is available.</p>
               </section>
               <aside class="article-callout">
                 <strong>Boundary note</strong>
@@ -296,10 +285,6 @@ export function renderResourceArticlePage(): string {
                 <h2>A separate product launch</h2>
                 <p>Platform coordinates access and launch. Swooshz Quote Auto Generator remains a separate app launched from Platform, and product workflow data stays outside Platform.</p>
               </section>
-              <section id="unavailable-products">
-                <h2>Unavailable product areas stay unavailable</h2>
-                <p>SEO / GEO / Seozilla: Unavailable until confirmed. Vendor workflow pending. The public website does not suggest that it can be launched, purchased, or accessed.</p>
-              </section>
             </div>
             <aside class="article-sidebar" aria-labelledby="article-outline-heading">
               <h2 id="article-outline-heading">In this article</h2>
@@ -307,7 +292,6 @@ export function renderResourceArticlePage(): string {
                 <li><a href="#workspace-first">Workspace first</a></li>
                 <li><a href="#provider-entry">Provider-backed entry</a></li>
                 <li><a href="#product-launch">Separate launch</a></li>
-                <li><a href="#unavailable-products">Unavailable products</a></li>
               </ul>
             </aside>
           </div>
@@ -328,8 +312,8 @@ export function renderAboutPage(): string {
         <section class="editorial-hero" aria-labelledby="about-heading">
           <div class="editorial-hero-copy">
             <p class="public-label">About Swooshz</p>
-            <h1 id="about-heading">Clarity at the point where people and products meet.</h1>
-            <p class="lede">Swooshz Platform creates one deliberate place for account entry, workspace access and context, and approved application access.</p>
+            <h1 id="about-heading">Clarity at the point where people and product meet.</h1>
+            <p class="lede">Swooshz Platform creates one deliberate place for account entry, workspace access and context, and approved product access.</p>
           </div>
         </section>
         <section class="editorial-section">
@@ -338,14 +322,14 @@ export function renderAboutPage(): string {
             <div class="editorial-copy">
               <article><h3>Clear ownership</h3><p>Platform explains and enforces its access boundary without absorbing specialised product work.</p></article>
               <article><h3>Approved context</h3><p>Provider-backed accounts, active workspace membership, roles, and entitlements shape what a person can reach.</p></article>
-              <article><h3>Focused continuation</h3><p>Approved applications launch separately and remain responsible for their own workflows and runtime data.</p></article>
+              <article><h3>Focused continuation</h3><p>Swooshz Quote Auto Generator launches separately and remains responsible for its own workflows and runtime data.</p></article>
             </div>
           </div>
         </section>
         <section class="editorial-section dark">
           <div class="editorial-split">
             <div class="editorial-heading"><p class="public-label">A restrained system</p><h2>Precision before noise.</h2></div>
-            <div class="editorial-copy"><article><h3>Truthful public language</h3><p>No invented company history, metrics, customers, awards, integrations, or access promises.</p></article><article><h3>Purposeful product boundaries</h3><p>Swooshz Quote Auto Generator remains a separate app launched from Platform. SEO / GEO / Seozilla: Unavailable until confirmed. Vendor workflow pending.</p></article></div>
+            <div class="editorial-copy"><article><h3>Truthful public language</h3><p>No invented company history, metrics, customers, awards, integrations, or access promises.</p></article><article><h3>Purposeful product boundaries</h3><p>Swooshz Quote Auto Generator remains a separate app launched from Platform and owns its quotation workflows and runtime data.</p></article></div>
           </div>
         </section>
       </main>
@@ -390,14 +374,14 @@ export function renderRequestAccessPage(): string {
           <p class="public-label">Workspace access</p>
           <h1 id="request-access-heading">A connected path into your workspace.</h1>
           <p class="lede">Access begins with an approved workspace and continues through the provider account associated with it.</p>
-          <div class="truth-note"><strong>No public signup is available.</strong> This page does not create an account, send a request, or grant application access.</div>
+          <div class="truth-note"><strong>No public signup is available.</strong> This page does not create an account, send a request, or grant product access.</div>
         </section>
         <section aria-label="Access journey">
           <div class="journey-list">
             <article><span>01</span><div><h2>Speak with your sponsor</h2><p>Use your existing Swooshz or workspace sponsor channel to request review.</p></div></article>
             <article><span>02</span><div><h2>Workspace approval is recorded</h2><p>Membership and role establish the workspace context available after sign-in.</p></div></article>
             <article><span>03</span><div><h2>Continue with Google</h2><p>Use the approved provider-backed account associated with your workspace.</p></div></article>
-            <article><span>04</span><div><h2>Launch approved applications</h2><p>Workspace entitlements determine which separate Swooshz products can open.</p></div></article>
+            <article><span>04</span><div><h2>Open the product</h2><p>Your approved workspace determines whether Swooshz Quote Auto Generator can open.</p></div></article>
           </div>
           <div class="prestige-hero-actions">
             <a class="public-button" href="/login"><span>Go to access entry</span><b aria-hidden="true">&nearr;</b></a>

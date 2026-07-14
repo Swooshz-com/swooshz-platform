@@ -6,7 +6,7 @@ Goal: define the target frontend structure and the evidence required before Code
 
 Platform owns auth, provider identities, sessions, workspaces, roles/memberships, app registry, entitlements, launch checks/tokens, audit/activity events, hosted runbooks/operator decisions, public Swooshz website/content planning, and future billing/credits only when approved. Platform must not own product workflow/runtime data.
 
-SQAG is a separate product app launched from Platform, not embedded in Platform. SKR is a separate website/app and must not be mixed into Swooshz Platform. SEO/GEO/Seozilla integration is not confirmed; it remains design/planning only until explicitly approved.
+SQAG is a separate product app launched from Platform, not embedded in Platform. SKR is a separate website/app and must not be mixed into Swooshz Platform. The SEO/GEO/Seozilla product direction has been retired. It must not appear in customer-facing Platform surfaces or current product planning.
 
 The latest Stitch design pack contains 34 required screens and is approved as the visual/layout freeze candidate only. Raw Stitch copy is not production copy. The canonical parity, copy override, and screenshot acceptance rules live in `docs/frontend-stitch-visual-freeze-parity-plan.md`.
 
@@ -19,7 +19,7 @@ Reviewed source and tests:
 - `tests/platform-shell.test.mjs`, `tests/http-route-contracts.test.mjs`, `tests/http-admin-routes.test.mjs`, `tests/auth-http-handlers.test.mjs`, and related tests: guard current route coverage, auth/login/callback failure behavior, admin/member/activity behavior, CSRF/origin protection, and privacy-safe output.
 - `docs/production-readiness-roadmap.md`, `docs/internal-alpha-design-direction.md`, `docs/internal-alpha-platform-contract.md`, `docs/internal-alpha-go-no-go-checklist.md`, and hosted/internal-alpha runbooks: establish the current internal-alpha shell, boundaries, and launch blockers.
 
-Current implementation evidence is limited to the existing shell and tests. Design docs are not implemented UI. Local visual success is not hosted evidence.
+The approved compact `/app` and `/app/admin` production interface is implemented locally with deterministic tests and responsive browser evidence. Local visual success is still not hosted evidence.
 
 ## Target Frontend Structure
 
@@ -45,7 +45,7 @@ Google Stitch is the approved design reference source before broad frontend impl
 - Codex must not introduce fake backend flows, fake signup, fake product runtime data, ecommerce, checkout, booking, payment, or product workflow screens.
 - Codex must not include secrets, private customer data, raw IDs, cookies, tokens, provider console values, private staff identities, screenshots with private data, table exports, or backup exports in design assets/docs.
 - Codex must keep SQAG as a separate app launch from Platform, and must not mix SKR into Swooshz Platform.
-- Codex must keep SEO/GEO/Seozilla as planning-only. Seozilla-assisted publishing is Phase 3 and blocked until vendor confirms workflow.
+- Codex must keep the retired SEO/GEO/Seozilla direction out of customer-facing Platform copy, navigation, fixtures, and product surfaces unless a separately approved future product contract replaces this decision.
 
 ## Evidence And Ticking Rules
 
@@ -66,7 +66,7 @@ Evidence limits:
 - Design docs are not implemented UI.
 - Static/Git-backed blog is acceptable for Phase 1.
 - Internal content admin is concept/planning only unless explicitly scoped later.
-- Seozilla-assisted publishing is Phase 3 and blocked until vendor confirms workflow.
+- The retired SEO/GEO/Seozilla direction is not a current Platform phase or placeholder.
 - Hosted smoke can be recorded only after a future approved deployment; this document does not approve deployment.
 - A checked item must name the evidence type and point to the source, such as PR number/commit, test file/command, approved Stitch screenshot, screenshot comparison, local visual note, or hosted smoke note.
 

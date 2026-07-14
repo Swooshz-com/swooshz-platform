@@ -25,7 +25,7 @@ Non-goals for this roadmap update:
 | --- | --- |
 | Done | Gate 0 foundation items with merged-code, merged-doc, and local-test evidence are checked below. |
 | In progress | Hosted readiness documentation, env checks, DB readiness tooling, repo-side CI/container readiness, admin/member flows, audit/activity, and launch-token contracts exist, but hosted smoke evidence is not recorded. |
-| Frontend visual freeze candidate | A 34-screen Stitch visual/layout freeze candidate exists and is recorded in `docs/frontend-stitch-visual-freeze-parity-plan.md`; scoped public, portal, workspace-admin, access-information, and resources slices are locally implemented after PRs #86-#90, but full frontend launch clearance, production copy, consolidated screenshot parity, and hosted visual evidence remain unchecked. |
+| Frontend visual freeze candidate | The Prestige public site and approved compact authenticated launcher/admin interface are implemented locally with deterministic and responsive browser evidence. Full frontend launch clearance, hosted visual evidence, and hosted smoke remain unchecked. |
 | Blocked until VPS/shared hosting foundation | Gate 1 and Platform hosted deployment execution are blocked until the shared Hostinger/Coolify foundation exists. That foundation is shared across Platform, SQAG, and SKR; it must not become Platform-only. |
 | Blocked until SQAG/SKR hosting readiness | Shared VPS purchase/use is intentionally waiting for SQAG and SKR to reach hosting readiness; Platform must not assume the VPS already exists. |
 | Can be worked before VPS | Security hardening review, backup/restore procedure detail, monitoring/incident decisions, legal/compliance drafts, session-management planning, rate-limit review, and roadmap updates can continue without live hosting. Pre-VPS planning templates now exist, but they are not hosted evidence or production approval. |
@@ -57,12 +57,12 @@ Non-goals for this roadmap update:
 
 ## Frontend Visual Freeze And Implementation Gate
 
-Gate status: partially implemented locally, not hosted-verified. The 34-screen Stitch visual freeze candidate exists and is approved as visual/layout reference only. Raw Stitch copy is not production copy, and canonical copy override rules must be applied before screenshot parity is judged. PRs #86-#90 implemented the currently scoped public, portal, workspace-admin, access-information, and resources slices locally, but this does not approve hosted visual evidence, production copy, or final frontend launch clearance.
+Gate status: the approved public and authenticated customer-facing surfaces are implemented locally, but they are not hosted-verified. Historical Stitch material remains reference context only; the approved authenticated package and canonical product-truth copy govern `/app` and `/app/admin`. Local implementation does not approve hosted visual evidence or final frontend launch clearance.
 
 Hosted OAuth/provider configuration remains unchecked, and the existing hosted Platform deployment, hosted Swooshz Quote Auto Generator deployment, live Platform-to-Swooshz Quote Auto Generator smoke, monitoring/logging/alerting, backup/restore, and final go/no-go gates remain unchecked.
 
 - [ ] Frontend implementation complete.
-  Blocker: Scoped slices are locally implemented, but production copy, full consolidated parity review, hosted evidence, access-status nuance, and future internal admin/content admin decisions remain incomplete or out of scope.
+  Blocker: The scoped public and authenticated surfaces are locally implemented, but hosted evidence, hosted accessibility review, and separately scoped internal admin/content-admin decisions remain incomplete or out of scope.
   Next action: Treat `docs/frontend-readiness-audit.md` as the current local frontend audit. Do not add new Platform frontend features unless a clear copy, accessibility, or safety blocker is found; otherwise return to SQAG/SKR hosting readiness and shared-hosting prerequisites.
   Evidence required: Implemented routes/components, deterministic tests, screenshot parity review against all approved scopes, production copy approval, hosted visual review after deployment is separately approved, and confirmation that canonical copy overrides were applied.
 - [ ] Hosted visual evidence complete.
@@ -72,7 +72,7 @@ Hosted OAuth/provider configuration remains unchecked, and the existing hosted P
 - [ ] Production copy approved.
   Blocker: Raw Stitch copy is not production copy.
   Next action: Review public site, Blog/resources, access, member, entitlement, audit, and product-copy strings against `docs/frontend-stitch-visual-freeze-parity-plan.md`.
-  Evidence required: Approved copy review showing Swooshz Quote Auto Generator naming, SEO/GEO/Seozilla pending status, safe entitlement wording, role vocabulary, safe audit events, and draft Blog/resources boundaries.
+  Evidence required: Approved copy review showing Swooshz Quote Auto Generator naming, absence of the retired SEO/GEO/Seozilla direction, safe product-access wording, role vocabulary, safe audit events, and draft Blog/resources boundaries.
 
 ## Gate 0: Current Foundation Already Completed
 

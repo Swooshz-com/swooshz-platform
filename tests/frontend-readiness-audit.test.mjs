@@ -36,15 +36,15 @@ test("frontend readiness audit records implemented local surfaces without hosted
   assert.doesNotMatch(audit, /hosted smoke (?:passed|complete)|hosted visual evidence complete/i);
 });
 
-test("frontend readiness audit preserves Platform SQAG and vendor-pending boundaries", async () => {
+test("frontend readiness audit preserves Platform, SQAG, and retired-product boundaries", async () => {
   const audit = await readAudit();
   const normalizedAudit = normalizeWhitespace(audit);
 
   const requiredPhrases = [
     "Swooshz Quote Auto Generator is presented as a separate app launched from Platform",
     "Platform does not own Swooshz Quote Auto Generator product workflow/runtime data",
-    "SEO/GEO/Seozilla remains unavailable until confirmed and vendor workflow pending",
-    "No SEO/GEO/Seozilla integration is added",
+    "The SEO/GEO/Seozilla product direction is retired and absent from customer-facing Platform routes",
+    "No integration or placeholder product content is added",
     "SKR content is absent from the Platform frontend",
     "Billing, payment, upgrade, and plan flows remain absent",
   ];

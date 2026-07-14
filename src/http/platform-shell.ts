@@ -1,659 +1,92 @@
-export function renderLandingPage(): string {
-  return htmlDocument({
-    title: "Swooshz Platform",
-    body: `
-      ${publicNav("home")}
-      <main class="public-page">
-        <section class="public-hero">
-          <div class="hero-copy">
-            <h1>The workspace platform for launching trusted business apps</h1>
-            <p class="lede">
-              Coordinate approved workspace access, app entitlements, and
-              separate product launches from one controlled Platform shell.
-            </p>
-            <div class="button-row">
-              <a class="primary-action" href="/login">Access entry</a>
-              <a class="secondary-action" href="/solutions">View solutions</a>
-            </div>
-          </div>
-          <div class="architecture-card" aria-label="Platform launch architecture preview">
-            <div class="architecture-bar">
-              <span>Swooshz Platform</span>
-              <span>Access control</span>
-            </div>
-            <div class="architecture-grid">
-              <span>Provider identity</span>
-              <span>Workspace membership</span>
-              <span>App entitlement</span>
-              <span>Launch token</span>
-              <span>Separate app handoff</span>
-              <span>Audit event</span>
-            </div>
-          </div>
-        </section>
-        <section class="public-band">
-          <div class="section-heading">
-            <h2>Core Modules</h2>
-            <p>Purpose-built access surfaces for specialized operational requirements.</p>
-          </div>
-          <div class="module-grid">
-            <article class="module-card module-card-wide">
-              <div class="card-title-row">
-                <h3>Swooshz Quote Auto Generator</h3>
-                <span class="icon-mark" aria-hidden="true">doc</span>
-              </div>
-              <p>
-                Swooshz Quote Auto Generator is a separate app launched from
-                Platform after workspace access and entitlement checks pass.
-              </p>
-              <div class="mini-workflow" aria-label="Launch boundary">
-                <span>Platform access</span>
-                <span>Entitlement check</span>
-                <span>Separate app launch</span>
-              </div>
-            </article>
-            <div class="module-stack">
-              <article class="module-card muted-card">
-                <div class="card-title-row">
-                  <h3>SEO / GEO / Seozilla</h3>
-                  <span class="status-pill">Coming soon</span>
-                </div>
-                <p>Vendor workflow pending. Unavailable until confirmed.</p>
-              </article>
-              <article class="module-card muted-card">
-                <div class="card-title-row">
-                  <h3>Platform workspace controls</h3>
-                  <span class="status-pill">Available</span>
-                </div>
-                <p>Memberships, roles, entitlements, launch checks, and audit activity.</p>
-              </article>
-            </div>
-          </div>
-        </section>
-        <section class="process-section">
-          <div class="section-heading centered">
-            <h2>Standardized Execution</h2>
-            <p>A controlled three-step path for launching approved workspace apps.</p>
-          </div>
-          <div class="process-grid">
-            <article>
-              <span>01</span>
-              <h3>Workspace approval</h3>
-              <p>Provider-backed users must belong to an approved workspace.</p>
-            </article>
-            <article>
-              <span>02</span>
-              <h3>Entitlement check</h3>
-              <p>Platform verifies the selected app is available for that workspace.</p>
-            </article>
-            <article>
-              <span>03</span>
-              <h3>Separate app launch</h3>
-              <p>Launch opens the product app without embedding product workflow data.</p>
-            </article>
-          </div>
-        </section>
-      </main>
-      ${publicFooter()}
-    `,
-  });
-}
-
-export function renderSolutionsPage(): string {
-  return htmlDocument({
-    title: "Swooshz Platform Solutions",
-    body: `
-      ${publicNav("solutions")}
-      <main class="public-page">
-        <section class="solutions-hero">
-          <div class="hero-copy">
-            <p class="utility-label">Institutional utility</p>
-            <h1>Swooshz Quote Auto Generator</h1>
-            <p class="lede">
-              A separate product app launched from Platform for approved
-              workspaces with active access and entitlement checks.
-            </p>
-            <div class="button-row">
-              <a class="primary-action" href="/login">Access entry</a>
-            </div>
-          </div>
-          <div class="product-preview" aria-label="Swooshz Quote Auto Generator launch preview">
-            <div class="preview-window-bar">
-              <span>Quote generator preview</span>
-              <span aria-hidden="true">...</span>
-            </div>
-            <div class="preview-empty">
-              <span class="icon-mark large" aria-hidden="true">doc</span>
-              <p>Swooshz Quote Auto Generator opens as a separate app after Platform launch checks.</p>
-            </div>
-          </div>
-        </section>
-        <section class="public-band">
-          <div class="section-heading">
-            <h2>Core Platform Capabilities</h2>
-            <p>Engineered for controlled access, clear ownership boundaries, and auditability.</p>
-          </div>
-          <div class="capability-grid">
-            <article class="module-card module-card-wide">
-              <span class="icon-mark" aria-hidden="true">shield</span>
-              <h3>Access Management</h3>
-              <p>
-                Platform owns provider identities, sessions, workspace
-                memberships, roles, and app launch eligibility.
-              </p>
-              <div class="role-rail" aria-label="Visible workspace roles">
-                <span>Owner</span>
-                <span>Admin</span>
-                <span>Member</span>
-                <span>Pending</span>
-              </div>
-            </article>
-            <article class="module-card">
-              <span class="icon-mark" aria-hidden="true">nodes</span>
-              <h3>Workspace Entitlements</h3>
-              <p>
-                App availability is controlled at the workspace boundary and
-                fails closed when access is unavailable.
-              </p>
-            </article>
-            <article class="module-card unavailable-card">
-              <span class="icon-mark large" aria-hidden="true">geo</span>
-              <h3>SEO / GEO / Seozilla</h3>
-              <p>Vendor workflow pending. Unavailable until confirmed.</p>
-              <span class="status-pill">Coming soon</span>
-            </article>
-          </div>
-        </section>
-      </main>
-      ${publicFooter()}
-    `,
-  });
-}
-
-export function renderResourcesPage(): string {
-  return htmlDocument({
-    title: "Swooshz Platform Resources",
-    body: `
-      ${publicNav("resources")}
-      <main class="public-page resources-page">
-        <section class="resources-hero">
-          <div>
-            <p class="utility-label">Resources</p>
-            <h1>Insights & Resources</h1>
-            <p class="lede">
-              Content pending editorial review. These public placeholders outline
-              Platform access concepts without publishing customer examples,
-              production metrics, or product workflow records.
-            </p>
-          </div>
-          <aside class="resource-note" aria-labelledby="resource-note-heading">
-            <h2 id="resource-note-heading">Content safety</h2>
-            <p>
-              Static resources describe Platform boundaries only. No public
-              comments, signup forms, public forms, or intake flow is enabled.
-            </p>
-          </aside>
-        </section>
-
-        <section class="resources-band" aria-labelledby="resource-topics-heading">
-          <div class="section-heading">
-            <h2 id="resource-topics-heading">Topic Areas</h2>
-            <p>Non-interactive labels for the current placeholder editorial scope.</p>
-          </div>
-          <div class="topic-rail" aria-label="Resource topics">
-            <span aria-current="true">All topics</span>
-            <span>Platform access</span>
-            <span>Provider-backed entry</span>
-            <span>Product boundaries</span>
-          </div>
-        </section>
-
-        <section class="resources-band" aria-labelledby="resource-list-heading">
-          <div class="section-heading">
-            <h2 id="resource-list-heading">Public Resource Placeholders</h2>
-            <p>Only the first article route is implemented in this slice.</p>
-          </div>
-          <div class="resource-grid">
-            <article class="resource-card resource-card-featured">
-              <div class="resource-visual resource-visual-primary" aria-hidden="true">
-                <span>Launch boundary</span>
-              </div>
-              <div class="resource-card-body">
-                <span class="resource-kicker">Platform access</span>
-                <h3>
-                  <a href="/resources/platform-launch-boundaries">
-                    How Swooshz Platform launches workspace apps safely
-                  </a>
-                </h3>
-                <p>
-                  A placeholder overview of workspace approval, provider-backed
-                  access, entitlement checks, and separate app launch boundaries.
-                </p>
-                <a class="text-link" href="/resources/platform-launch-boundaries">Read article</a>
-              </div>
-            </article>
-
-            <article class="resource-card">
-              <div class="resource-visual" aria-hidden="true">
-                <span>Access model</span>
-              </div>
-              <div class="resource-card-body">
-                <span class="resource-kicker">Access</span>
-                <h3>Provider-backed access matters</h3>
-                <p>
-                  Placeholder content for explaining why Platform access starts
-                  with approved provider-backed accounts.
-                </p>
-                <span class="status-pill">Placeholder only</span>
-              </div>
-            </article>
-
-            <article class="resource-card">
-              <div class="resource-visual" aria-hidden="true">
-                <span>Workspace prep</span>
-              </div>
-              <div class="resource-card-body">
-                <span class="resource-kicker">Workspace readiness</span>
-                <h3>Preparing workspace access before launch</h3>
-                <p>
-                  Placeholder content for reviewing memberships, roles, and app
-                  access before a workspace app is launched.
-                </p>
-                <span class="status-pill">Placeholder only</span>
-              </div>
-            </article>
-
-            <article class="resource-card">
-              <div class="resource-visual" aria-hidden="true">
-                <span>Separate app</span>
-              </div>
-              <div class="resource-card-body">
-                <span class="resource-kicker">Product boundary</span>
-                <h3>Keeping product workflow data outside Platform</h3>
-                <p>
-                  Placeholder content for explaining that Swooshz Quote Auto
-                  Generator is a separate app launched from Platform.
-                </p>
-                <span class="status-pill">Placeholder only</span>
-              </div>
-            </article>
-          </div>
-        </section>
-      </main>
-      ${publicFooter()}
-    `,
-  });
-}
-
-export function renderResourceArticlePage(): string {
-  return htmlDocument({
-    title: "How Swooshz Platform Launches Workspace Apps Safely",
-    body: `
-      ${publicNav("resources")}
-      <main class="public-page article-page">
-        <article class="article-shell">
-          <header class="article-hero">
-            <p class="utility-label">Platform access</p>
-            <h1>How Swooshz Platform launches workspace apps safely</h1>
-            <p class="lede">
-              Article template pending editorial approval. This static page
-              records safe placeholder structure without personal bylines,
-              publication dates, customer examples, or production examples.
-            </p>
-            <div class="article-meta" aria-label="Article status">
-              <span>Placeholder article</span>
-              <span>Review required before launch</span>
-            </div>
-          </header>
-
-          <div class="article-visual" aria-hidden="true">
-            <div>
-              <span>Approved workspace</span>
-              <span>Provider-backed access</span>
-              <span>Entitlement check</span>
-              <span>Separate app launch</span>
-            </div>
-          </div>
-
-          <div class="article-layout">
-            <div class="article-body">
-              <section>
-                <h2>Access starts with the workspace</h2>
-                <p>
-                  Swooshz Platform is responsible for the access surface around
-                  workspace apps. It checks the signed-in account, the selected
-                  workspace, the user's role, and the app entitlement before a
-                  launch path is available.
-                </p>
-              </section>
-
-              <section>
-                <h2>Provider-backed access</h2>
-                <p>
-                  Public access is not self-service in this slice. Users arrive
-                  through an approved provider-backed account that belongs to an
-                  approved workspace, then Platform evaluates whether the
-                  requested app can be launched.
-                </p>
-              </section>
-
-              <aside class="article-callout">
-                <strong>Boundary note</strong>
-                <p>
-                  Swooshz Quote Auto Generator is a separate app launched from
-                  Platform. Its product workflow data stays outside Platform.
-                </p>
-              </aside>
-
-              <section>
-                <h2>Separate product launch</h2>
-                <p>
-                  Platform launches workspace apps through access and entitlement
-                  checks. It does not embed Swooshz Quote Auto Generator product
-                  workflows, runtime records, generated artifacts, or private
-                  product state in the public website.
-                </p>
-              </section>
-
-              <section>
-                <h2>Unavailable product areas</h2>
-                <p>
-                  SEO / GEO / Seozilla remains unavailable until confirmed.
-                  Any vendor workflow is pending and outside this public
-                  resources slice.
-                </p>
-              </section>
-            </div>
-
-            <aside class="article-sidebar" aria-labelledby="article-sidebar-heading">
-              <h2 id="article-sidebar-heading">Template guardrails</h2>
-              <ul>
-                <li>No public signup or public forms.</li>
-                <li>No customer examples or performance claims.</li>
-                <li>No code snippets or production integration instructions.</li>
-                <li>No product workflow records inside Platform.</li>
-              </ul>
-              <a class="secondary-action" href="/resources">Back to resources</a>
-            </aside>
-          </div>
-        </article>
-      </main>
-      ${publicFooter()}
-    `,
-  });
-}
-
-export function renderAboutPage(): string {
-  return htmlDocument({
-    title: "About Swooshz",
-    body: `
-      ${publicNav("about")}
-      <main class="public-page">
-        <section class="public-hero public-hero-centered">
-          <div class="hero-copy">
-            <p class="utility-label">About Swooshz</p>
-            <h1>Reliable access surfaces for controlled workspace apps</h1>
-            <p class="lede">
-              Swooshz Platform focuses on workspace access, provider-backed
-              accounts, roles, entitlements, and safe app launch boundaries.
-            </p>
-            <div class="button-row">
-              <a class="primary-action" href="/request-access">Request access information</a>
-              <a class="secondary-action" href="/contact">Contact</a>
-            </div>
-          </div>
-          <div class="architecture-card about-architecture" aria-label="Swooshz Platform operating model">
-            <div class="architecture-bar">
-              <span>Platform boundary</span>
-              <span>Access first</span>
-            </div>
-            <div class="architecture-grid architecture-grid-stacked">
-              <span>Provider-backed account</span>
-              <span>Approved workspace</span>
-              <span>Workspace role</span>
-              <span>App entitlement</span>
-              <span>Launch check</span>
-              <span>Audit activity</span>
-            </div>
-          </div>
-        </section>
-        <section class="public-band">
-          <div class="section-heading">
-            <h2>Core Principles</h2>
-            <p>Public information pages use safe copy and preserve product ownership boundaries.</p>
-          </div>
-          <div class="capability-grid three-up-grid">
-            <article class="module-card">
-              <span class="icon-mark" aria-hidden="true">grid</span>
-              <h3>Functional clarity</h3>
-              <p>
-                Platform explains what it owns: access entry, workspaces,
-                memberships, app entitlements, launch checks, and audit labels.
-              </p>
-            </article>
-            <article class="module-card">
-              <span class="icon-mark" aria-hidden="true">shield</span>
-              <h3>Operational transparency</h3>
-              <p>
-                Access requires an approved workspace and provider-backed
-                account before workspace apps can be launched.
-              </p>
-            </article>
-            <article class="module-card">
-              <span class="icon-mark" aria-hidden="true">lock</span>
-              <h3>Technical rigor</h3>
-              <p>
-                Swooshz Quote Auto Generator remains a separate app launched
-                from Platform, without product workflow data embedded here.
-              </p>
-            </article>
-          </div>
-        </section>
-        <section class="public-band">
-          <div class="section-heading">
-            <h2>Product Boundaries</h2>
-            <p>Only confirmed Platform and access surfaces are described as available.</p>
-          </div>
-          <div class="module-grid">
-            <article class="module-card module-card-wide">
-              <div class="card-title-row">
-                <h3>Swooshz Quote Auto Generator</h3>
-                <span class="status-pill">Separate app</span>
-              </div>
-              <p>
-                Swooshz Quote Auto Generator is launched separately after
-                Platform access and entitlement checks pass.
-              </p>
-            </article>
-            <article class="module-card muted-card">
-              <div class="card-title-row">
-                <h3>SEO / GEO / Seozilla</h3>
-                <span class="status-pill">Vendor workflow pending</span>
-              </div>
-              <p>Unavailable until confirmed. No integration is live in this Platform slice.</p>
-            </article>
-          </div>
-        </section>
-      </main>
-      ${publicFooter()}
-    `,
-  });
-}
-
-export function renderContactPage(): string {
-  return htmlDocument({
-    title: "Contact Swooshz",
-    body: `
-      ${publicNav("contact")}
-      <main class="public-page">
-        <section class="public-split-page">
-          <article class="public-info-panel">
-            <p class="utility-label">Access enquiry</p>
-            <h1>Contact Swooshz</h1>
-            <p class="lede">
-              Use your existing Swooshz or workspace sponsor channel for access
-              questions, workspace approval, and provider-backed account setup.
-            </p>
-            <div class="button-row">
-              <a class="primary-action" href="/request-access">Review access requirements</a>
-              <a class="secondary-action" href="/login">Access entry</a>
-            </div>
-          </article>
-          <aside class="public-info-panel muted-panel" aria-labelledby="contact-guidance-heading">
-            <h2 id="contact-guidance-heading">Contact guidance</h2>
-            <div class="guidance-list">
-              <p>
-                Do not send secrets, cookies, provider tokens, private customer
-                data, or Swooshz Quote Auto Generator product records through a
-                public enquiry channel.
-              </p>
-              <p>
-                This page is informational only. It does not submit messages,
-                create accounts, or connect a backend intake flow.
-              </p>
-              <p>
-                If your workspace already approved access, continue through the
-                provider-backed access entry.
-              </p>
-            </div>
-          </aside>
-        </section>
-      </main>
-      ${publicFooter()}
-    `,
-  });
-}
-
-export function renderRequestAccessPage(): string {
-  return htmlDocument({
-    title: "Request Access - Swooshz Platform",
-    body: `
-      ${publicNav("requestAccess")}
-      <main class="public-page request-access-page">
-        <section class="access-state-panel">
-          <p class="utility-label">Workspace access</p>
-          <h1>Request Access</h1>
-          <p class="lede">
-            Access to Swooshz Platform requires an approved workspace,
-            a provider-backed account, and the right workspace role.
-          </p>
-          <div class="access-requirement-grid" aria-label="Access requirements">
-            <article>
-              <span>01</span>
-              <h2>Workspace approval</h2>
-              <p>Your organization or workspace sponsor must approve Platform access.</p>
-            </article>
-            <article>
-              <span>02</span>
-              <h2>Provider-backed account</h2>
-              <p>Use the approved provider account assigned to your workspace.</p>
-            </article>
-            <article>
-              <span>03</span>
-              <h2>Role and app access</h2>
-              <p>Workspace roles and entitlements control which apps can launch.</p>
-            </article>
-          </div>
-          <div class="notice-card">
-            <h2>No public signup is available</h2>
-            <p>
-              This page does not create an account, send a request, or grant
-              workspace access. Use your existing Swooshz or workspace sponsor
-              channel to ask for access review.
-            </p>
-          </div>
-          <div class="button-row centered-actions">
-            <a class="primary-action" href="/login">Go to access entry</a>
-            <a class="secondary-action" href="/contact">Contact guidance</a>
-          </div>
-        </section>
-      </main>
-      ${publicFooter()}
-    `,
-  });
-}
-
-export function renderLoginPage(): string {
-  return htmlDocument({
-    title: "Swooshz Platform Access",
-    body: `
-      <main class="login-canvas">
-        <section class="access-panel">
-          <div class="access-heading">
-            <h1>Swooshz</h1>
-            <p>Secure Access Portal</p>
-          </div>
-          <p id="signedOutNotice" class="signed-out" hidden>
-            You are signed out of Swooshz Platform. Your Google account may
-            still be signed in.
-          </p>
-          <p class="lede">
-            Access requires an approved provider-backed account for your
-            workspace. No public signup is available.
-          </p>
-          <p class="helper">Use the approved Google account for your workspace.</p>
-          <div class="login-actions">
-            <a class="primary-action" href="/api/platform/auth/start">Continue with Google</a>
-            <a class="secondary-action" href="/app">Already signed in? Continue to app</a>
-          </div>
-        </section>
-        <div class="login-lines" aria-hidden="true"></div>
-      </main>
-      ${publicFooter()}
-      <script>
-        (() => {
-          const params = new URLSearchParams(window.location.search);
-          const notice = document.getElementById("signedOutNotice");
-          if (params.get("signedOut") === "1" && notice) {
-            notice.hidden = false;
-          }
-        })();
-      </script>
-    `,
-  });
-}
+import { publicAssetUrl } from "./public-asset-manifest.js";
 
 export function renderAppShellPage(): string {
   return htmlDocument({
-    title: "Swooshz Platform App",
+    title: "Swooshz Platform",
     body: `
-      <div class="portal-layout">
-        <aside class="portal-sidebar">
-          <div class="portal-brand">
-            <span class="brand-mark" aria-hidden="true">apps</span>
-            <div>
-              <h1>Swooshz Platform</h1>
-              <p>Enterprise Workspace</p>
+      <div class="authenticated-shell launcher-shell">
+        <a class="auth-skip-link" href="#main-content">Skip to main content</a>
+        <header class="auth-app-bar" aria-label="Application header">
+          <div class="auth-bar-inner">
+            <a class="auth-brand" href="/app" aria-label="Swooshz Platform home">
+              <img src="${publicAssetUrl("/public-assets/swooshz-mark.png")}" width="34" height="34" alt="">
+              <span>Swooshz Platform</span>
+            </a>
+            <div id="accountContext" class="auth-account-context" hidden>
+              <label id="workspaceControl" class="auth-context-control" hidden>
+                <span>Workspace</span>
+                <select id="workspaceSelect" aria-label="Current workspace"></select>
+              </label>
+              <div id="singleWorkspaceContext" class="auth-context-value">
+                <span>Workspace</span>
+                <strong id="workspaceName"></strong>
+              </div>
+              <div class="auth-context-value auth-role-context">
+                <span>Role</span>
+                <strong id="workspaceRole"></strong>
+              </div>
+              <div class="auth-account-copy">
+                <span>Signed in as</span>
+                <strong id="accountName"></strong>
+                <small id="accountEmail"></small>
+              </div>
+              <a id="adminLink" class="auth-header-link" href="/app/admin" hidden>Administration</a>
+              <button id="logoutButton" class="auth-header-button" type="button">Log out</button>
             </div>
           </div>
-          <button class="primary-action sidebar-launch" type="button" disabled>Launch Apps</button>
-          <nav class="portal-nav" aria-label="Workspace navigation">
-            <a class="portal-nav-active" href="/app">Home</a>
-            <a href="/app">Apps</a>
-            <a id="adminLink" href="/app/admin" hidden>Admin</a>
-            <span aria-disabled="true">Members</span>
-            <span aria-disabled="true">Activity</span>
-          </nav>
-          <button id="logoutButton" class="sidebar-logout" type="button" hidden>Sign out of Swooshz Platform</button>
-        </aside>
-        <main class="portal-main">
-          <header class="portal-topbar">
-            <p>Platform</p>
-            <div class="portal-topbar-actions" aria-hidden="true">
-              <span class="topbar-icon"></span>
-              <span class="topbar-icon topbar-icon-history"></span>
-              <span class="topbar-icon topbar-icon-account"></span>
-            </div>
-          </header>
-          <section class="portal-canvas">
-            <div class="portal-heading">
-              <h2>App Launcher</h2>
-              <p>Select a workspace app to begin.</p>
-            </div>
-            <section id="status" class="status" role="status">Loading platform session...</section>
-            <section id="identity" class="identity" hidden></section>
-            <section id="workspaces" class="workspace-list" aria-live="polite"></section>
-            <section id="launchResult" class="handoff" hidden></section>
+        </header>
+
+        <main id="main-content" class="auth-main launcher-main">
+          <section class="launcher-page" aria-labelledby="launcherTitle">
+            <header class="auth-page-heading">
+              <h1 id="launcherTitle">Your product</h1>
+              <p>Available to your workspace.</p>
+            </header>
+
+            <section id="status" class="auth-status" role="status" aria-live="polite">Loading your workspace...</section>
+            <section id="noWorkspace" class="auth-empty-state" hidden>
+              <h2>No workspace available</h2>
+              <p>No workspace access is available for this account.</p>
+            </section>
+
+            <article id="launchUnit" class="launch-unit" aria-labelledby="productTitle" hidden>
+              <div class="product-summary">
+                <div class="product-mark" aria-hidden="true">
+                  <svg class="quote-document-icon" viewBox="0 0 64 64">
+                    <path class="icon-sheet" d="M17 7h21l11 11v39H17z"></path>
+                    <path class="icon-fold" d="M38 7v12h11"></path>
+                    <path class="icon-line" d="M23 28h21M23 36h21M23 44h21"></path>
+                    <path class="icon-column" d="M36 28v16"></path>
+                    <path class="icon-total" d="M23 51h21"></path>
+                  </svg>
+                </div>
+                <div class="product-copy">
+                  <p class="product-label">Quotations</p>
+                  <h2 id="productTitle">Swooshz Quote Auto Generator</h2>
+                  <p class="product-description">Create professional quotations using your approved workspace.</p>
+                </div>
+              </div>
+
+              <div id="launchReadiness" class="launch-readiness">
+                <div class="readiness-status">
+                  <span id="launchStatusDot" class="auth-status-dot" aria-hidden="true"></span>
+                  <span>
+                    <span class="readiness-label">Product status</span>
+                    <strong id="launchStatus">Ready to launch</strong>
+                  </span>
+                </div>
+                <button id="launchButton" class="auth-primary-button launch-button" type="button">Open product</button>
+                <div id="launchFeedback" class="launch-feedback" role="alert" hidden>
+                  <strong>We could not open the product. Try again.</strong>
+                  <button id="retryLaunchButton" type="button">Retry</button>
+                </div>
+              </div>
+
+              <footer class="launch-note">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5zM8 9h8M8 13h5"></path></svg>
+                <span><strong>Ready when you are.</strong> Your workspace and role stay the same when the product opens.</span>
+              </footer>
+            </article>
           </section>
         </main>
       </div>
@@ -665,444 +98,348 @@ export function renderAppShellPage(): string {
             launch: "/api/platform/apps/launch/open",
             logout: "/api/platform/logout"
           };
-
           const state = {
-            csrfToken: null
+            context: null,
+            csrfToken: null,
+            workspace: null,
+            app: null,
+            launchBusy: false
           };
 
           const status = document.getElementById("status");
-          const identity = document.getElementById("identity");
-          const workspaces = document.getElementById("workspaces");
-          const launchResult = document.getElementById("launchResult");
-          const logoutButton = document.getElementById("logoutButton");
+          const noWorkspace = document.getElementById("noWorkspace");
+          const launchUnit = document.getElementById("launchUnit");
+          const launchReadiness = document.getElementById("launchReadiness");
+          const launchStatus = document.getElementById("launchStatus");
+          const launchStatusDot = document.getElementById("launchStatusDot");
+          const launchButton = document.getElementById("launchButton");
+          const retryLaunchButton = document.getElementById("retryLaunchButton");
+          const launchFeedback = document.getElementById("launchFeedback");
+          const accountContext = document.getElementById("accountContext");
+          const accountName = document.getElementById("accountName");
+          const accountEmail = document.getElementById("accountEmail");
+          const workspaceControl = document.getElementById("workspaceControl");
+          const workspaceSelect = document.getElementById("workspaceSelect");
+          const singleWorkspaceContext = document.getElementById("singleWorkspaceContext");
+          const workspaceName = document.getElementById("workspaceName");
+          const workspaceRole = document.getElementById("workspaceRole");
           const adminLink = document.getElementById("adminLink");
+          const logoutButton = document.getElementById("logoutButton");
 
-          logoutButton.addEventListener("click", () => {
-            void logout();
+          workspaceSelect.addEventListener("change", () => {
+            const workspace = state.context?.workspaces?.find((candidate) =>
+              candidate.workspaceId === workspaceSelect.value
+            );
+            if (workspace) renderWorkspace(workspace);
           });
+          launchButton.addEventListener("click", () => { void launchProduct(); });
+          retryLaunchButton.addEventListener("click", () => { void launchProduct(); });
+          logoutButton.addEventListener("click", () => { void logout(); });
 
           void loadContext();
 
           async function loadContext() {
-            setStatus("Loading platform session...");
-
+            setStatus("Loading your workspace...");
             try {
               const response = await fetch(endpoints.context, {
                 credentials: "same-origin",
                 cache: "no-store"
               });
               const context = await readJson(response);
-
               if (!response.ok || context.outcome !== "authenticated") {
                 renderUnauthenticated();
                 return;
               }
-
               renderAuthenticated(context);
             } catch {
-              setStatus("Platform session could not be loaded.");
+              setStatus("We could not load your workspace. Try again by refreshing the page.");
             }
           }
 
           function renderUnauthenticated() {
-            logoutButton.hidden = true;
-            adminLink.hidden = true;
-            identity.hidden = true;
-            workspaces.replaceChildren();
-            launchResult.hidden = true;
-            status.innerHTML =
-              '<span>No active platform session.</span> ' +
-              '<a href="/api/platform/auth/start">Continue with Google</a>';
+            accountContext.hidden = true;
+            launchUnit.hidden = true;
+            noWorkspace.hidden = true;
+            status.replaceChildren();
+            const message = document.createElement("span");
+            message.textContent = "You are not signed in. ";
+            const link = document.createElement("a");
+            link.href = "/api/platform/auth/start";
+            link.textContent = "Continue with Google";
+            status.append(message, link);
+            status.hidden = false;
           }
 
           function renderAuthenticated(context) {
-            logoutButton.hidden = false;
-            setStatus("Platform session active.");
-
-            identity.hidden = false;
-            identity.replaceChildren(
-              textBlock("Signed in as", context.user.displayName || context.user.email),
-              textBlock("Email", context.user.email),
-              textBlock("User status", context.user.status)
-            );
-
-            workspaces.replaceChildren();
-
-            if (!Array.isArray(context.workspaces) || context.workspaces.length === 0) {
+            state.context = context;
+            accountContext.hidden = false;
+            accountName.textContent = context.user.displayName || context.user.email;
+            accountEmail.textContent = context.user.email || "";
+            const workspaces = Array.isArray(context.workspaces) ? context.workspaces : [];
+            workspaceSelect.replaceChildren();
+            for (const workspace of workspaces) {
+              const option = document.createElement("option");
+              option.value = workspace.workspaceId;
+              option.textContent = workspace.workspaceName || workspace.workspaceId;
+              workspaceSelect.append(option);
+            }
+            workspaceControl.hidden = workspaces.length < 2;
+            singleWorkspaceContext.hidden = workspaces.length > 1;
+            if (workspaces.length === 0) {
+              state.workspace = null;
+              state.app = null;
+              status.hidden = true;
+              launchUnit.hidden = true;
+              noWorkspace.hidden = false;
               adminLink.hidden = true;
-              workspaces.append(emptyMessage("No workspace access is available for this account."));
               return;
             }
-
-            const adminWorkspace = context.workspaces.find((workspace) =>
-              workspace.membershipRole === "owner" || workspace.membershipRole === "admin"
-            );
-            if (adminWorkspace) {
-              const adminWorkspaces = context.workspaces.filter((workspace) =>
-                workspace.membershipRole === "owner" || workspace.membershipRole === "admin"
-              );
-              adminLink.href = adminWorkspaces.length === 1
-                ? "/app/admin"
-                : "/app/admin?workspace=" + encodeURIComponent(adminWorkspace.workspaceSlug);
-              adminLink.hidden = false;
-            } else {
-              adminLink.hidden = true;
-            }
-
-            for (const workspace of context.workspaces) {
-              workspaces.append(renderWorkspace(workspace));
-            }
+            renderWorkspace(workspaces[0]);
           }
 
           function renderWorkspace(workspace) {
-            const section = document.createElement("section");
-            section.className = "workspace";
-
-            const header = document.createElement("div");
-            header.className = "workspace-header";
-            header.append(
-              textBlock("Workspace", workspace.workspaceName || workspace.workspaceId),
-              textBlock("Role", displayWorkspaceRole(workspace.membershipRole))
-            );
-            section.append(header);
-
-            const apps = document.createElement("div");
-            apps.className = "apps";
-            const appList = Array.isArray(workspace.apps) ? workspace.apps : [];
-
-            if (appList.length === 0) {
-              apps.append(emptyMessage("No apps are registered for this workspace."));
+            state.workspace = workspace;
+            workspaceSelect.value = workspace.workspaceId;
+            workspaceName.textContent = workspace.workspaceName || workspace.workspaceId;
+            workspaceRole.textContent = displayWorkspaceRole(workspace.membershipRole);
+            noWorkspace.hidden = true;
+            const canAdmin = workspace.membershipRole === "owner" || workspace.membershipRole === "admin";
+            adminLink.hidden = !canAdmin;
+            if (canAdmin) {
+              adminLink.href = "/app/admin?workspace=" + encodeURIComponent(workspace.workspaceSlug);
             }
-
-            for (const app of appList) {
-              apps.append(renderApp(workspace, app));
-            }
-
-            section.append(apps);
-            return section;
+            const apps = Array.isArray(workspace.apps) ? workspace.apps : [];
+            state.app = apps.find((app) => String(app.appKey || "").toLowerCase() === "sqag") || null;
+            launchUnit.hidden = false;
+            renderLaunchState(state.app?.access?.allowed === true ? "ready" : "unavailable");
+            status.hidden = true;
           }
 
-          function renderApp(workspace, app) {
-            const row = document.createElement("article");
-            row.className = "app-row";
-
-            const detail = document.createElement("div");
-            detail.append(
-              textBlock("App", displayAppName(app)),
-              textBlock("Access", app.access?.allowed === true ? "Access available." : "Unavailable.")
-            );
-            row.append(detail);
-
-            if (app.access?.allowed === true) {
-              const button = document.createElement("button");
-              button.type = "button";
-              button.className = "primary-action compact";
-              button.textContent = "Launch";
-              button.addEventListener("click", () => {
-                void launchApp(workspace.workspaceId, app.appKey);
-              });
-              row.append(button);
-            } else {
-              row.append(renderUnavailableApp(app));
+          function renderLaunchState(nextState) {
+            launchReadiness.classList.remove("is-loading", "is-unavailable");
+            launchFeedback.hidden = true;
+            launchButton.disabled = false;
+            launchButton.textContent = "Open product";
+            launchStatusDot.classList.remove("is-disabled");
+            if (nextState === "loading") {
+              launchReadiness.classList.add("is-loading");
+              launchButton.disabled = true;
+              launchButton.textContent = "Opening product...";
+              launchStatus.textContent = "Opening product";
+              return;
             }
-
-            return row;
-          }
-
-          function renderUnavailableApp(app) {
-            const node = document.createElement("div");
-            node.className = "unavailable-state";
-
-            const title = document.createElement("strong");
-            title.textContent = "Product unavailable";
-            const message = document.createElement("span");
-            message.textContent = unavailableAccessMessage(app);
-
-            const actions = document.createElement("div");
-            actions.className = "unavailable-actions";
-            const returnLink = document.createElement("a");
-            returnLink.className = "secondary-action compact";
-            returnLink.href = "/app";
-            returnLink.textContent = "Return to apps";
-            const contact = document.createElement("span");
-            contact.className = "contact-admin";
-            contact.textContent = "Contact workspace admin";
-            actions.append(returnLink, contact);
-
-            node.append(title, message, actions);
-            return node;
-          }
-
-          function displayAppName(app) {
-            const key = String(app.appKey || "").toLowerCase();
-            const name = String(app.appName || "");
-
-            if (key === "sqag" || name.toLowerCase() === "sqag") {
-              return "Swooshz Quote Auto Generator";
+            if (nextState === "failure") {
+              launchStatus.textContent = "Could not open";
+              launchFeedback.hidden = false;
+              return;
             }
-
-            return name || app.appKey || "Workspace app";
-          }
-
-          function displayWorkspaceRole(role) {
-            switch (role) {
-              case "owner":
-                return "Owner";
-              case "admin":
-                return "Admin";
-              default:
-                return "Member";
+            if (nextState === "unavailable") {
+              launchReadiness.classList.add("is-unavailable");
+              launchStatusDot.classList.add("is-disabled");
+              launchStatus.textContent = "Product access unavailable";
+              launchButton.disabled = true;
+              launchFeedback.replaceChildren();
+              const heading = document.createElement("strong");
+              heading.textContent = "Product access unavailable";
+              const copy = document.createElement("span");
+              copy.textContent = "Your workspace does not currently have access to this product.";
+              launchFeedback.append(heading, copy);
+              launchFeedback.hidden = false;
+              return;
             }
+            launchStatus.textContent = "Ready to launch";
           }
 
-          function accessMessage(app) {
-            if (app.access?.allowed === true) {
-              return "Access available.";
-            }
-
-            return app.access?.message ||
-              "This workspace access or entitlement is not available for this product.";
-          }
-
-          function unavailableAccessMessage(app) {
-            const message = String(app.access?.message || "");
-
-            if (message.toLowerCase().includes("vendor workflow pending")) {
-              return "Vendor workflow pending.";
-            }
-
-            return "Access unavailable.";
-          }
-
-          async function launchApp(workspaceId, appKey) {
-            setStatus("Opening app...");
-            launchResult.hidden = true;
-
+          async function launchProduct() {
+            if (state.launchBusy || !state.workspace || !state.app || state.app.access?.allowed !== true) return;
+            state.launchBusy = true;
+            renderLaunchState("loading");
             try {
               const csrfToken = await getCsrfToken();
               const response = await fetch(
                 endpoints.launch +
-                  "?workspaceId=" + encodeURIComponent(workspaceId) +
-                  "&appKey=" + encodeURIComponent(appKey),
+                  "?workspaceId=" + encodeURIComponent(state.workspace.workspaceId) +
+                  "&appKey=" + encodeURIComponent(state.app.appKey),
                 {
                   method: "POST",
                   credentials: "same-origin",
                   cache: "no-store",
-                  headers: {
-                    "x-csrf-token": csrfToken
-                  }
+                  headers: { "x-csrf-token": csrfToken }
                 }
               );
               const payload = await readJson(response);
-
               if (!response.ok || payload.outcome !== "launch_opened" || !payload.launchUrl) {
-                setStatus("App could not be opened.");
+                renderLaunchState("failure");
                 return;
               }
-
-              setStatus("Opening app...");
               window.location.assign(payload.launchUrl);
             } catch {
-              setStatus("App could not be opened.");
+              renderLaunchState("failure");
+            } finally {
+              state.launchBusy = false;
             }
           }
 
           async function getCsrfToken() {
-            if (state.csrfToken) {
-              return state.csrfToken;
-            }
-
+            if (state.csrfToken) return state.csrfToken;
             const response = await fetch(endpoints.csrf, {
               credentials: "same-origin",
               cache: "no-store"
             });
             const payload = await readJson(response);
-
             if (!response.ok || payload.outcome !== "issued" || !payload.csrfToken) {
               throw new Error("CSRF token unavailable.");
             }
-
             state.csrfToken = payload.csrfToken;
             return state.csrfToken;
           }
 
           async function logout() {
             setStatus("Signing out...");
-
             try {
               const csrfToken = await getCsrfToken();
               await fetch(endpoints.logout, {
                 method: "POST",
                 credentials: "same-origin",
                 cache: "no-store",
-                headers: {
-                  "x-csrf-token": csrfToken
-                }
+                headers: { "x-csrf-token": csrfToken }
               });
             } finally {
               window.location.assign("/login?signedOut=1");
             }
           }
 
+          function displayWorkspaceRole(role) {
+            if (role === "owner") return "Owner";
+            if (role === "admin") return "Admin";
+            return "Member";
+          }
+
           async function readJson(response) {
-            try {
-              return await response.json();
-            } catch {
-              return {};
-            }
+            try { return await response.json(); } catch { return {}; }
           }
 
           function setStatus(message) {
             status.textContent = message;
-          }
-
-          function textBlock(label, value) {
-            const block = document.createElement("p");
-            const strong = document.createElement("strong");
-            strong.textContent = label;
-            const span = document.createElement("span");
-            span.textContent = value ?? "";
-            block.append(strong, span);
-            return block;
-          }
-
-          function emptyMessage(message) {
-            const node = document.createElement("p");
-            node.className = "empty";
-            node.textContent = message;
-            return node;
+            status.hidden = false;
           }
         })();
       </script>
     `,
   });
 }
-
 export function renderAdminShellPage(): string {
   return htmlDocument({
-    title: "Swooshz Platform Admin",
+    title: "Swooshz Platform Administration",
     body: `
-      <div class="portal-layout admin-layout">
-        <aside class="portal-sidebar">
-          <div class="portal-brand">
-            <span class="brand-mark" aria-hidden="true">S</span>
-            <div>
-              <h1>Swooshz Platform</h1>
-              <p>Enterprise Workspace</p>
+      <div id="adminShell" class="authenticated-shell admin-shell" data-active-section="members">
+        <a class="auth-skip-link" href="#main-content">Skip to main content</a>
+        <header class="auth-app-bar" aria-label="Application header">
+          <div class="auth-bar-inner">
+            <a class="auth-brand" href="/app" aria-label="Swooshz Platform home">
+              <img src="${publicAssetUrl("/public-assets/swooshz-mark.png")}" width="34" height="34" alt="">
+              <span>Swooshz Platform</span>
+            </a>
+            <div id="accountContext" class="auth-account-context" hidden>
+              <label id="workspaceControl" class="auth-context-control" hidden>
+                <span>Workspace</span>
+                <select id="workspaceSelect" aria-label="Current workspace"></select>
+              </label>
+              <div id="singleWorkspaceContext" class="auth-context-value">
+                <span>Workspace</span>
+                <strong id="headerWorkspaceName"></strong>
+              </div>
+              <div class="auth-context-value auth-role-context">
+                <span>Role</span>
+                <strong id="headerWorkspaceRole"></strong>
+              </div>
+              <div class="auth-account-copy">
+                <span>Signed in as</span>
+                <strong id="headerAccountName"></strong>
+                <small id="headerAccountEmail"></small>
+              </div>
+              <a class="auth-header-link" href="/app">Your product</a>
+              <button id="logoutButton" class="auth-header-button" type="button">Log out</button>
             </div>
           </div>
-          <a class="primary-action sidebar-launch" href="/app">Launch Apps</a>
-          <nav class="portal-nav" aria-label="Workspace admin navigation">
-            <a href="/app">Home</a>
-            <a href="/app">Apps</a>
-            <a class="portal-nav-active" href="/app/admin">Members</a>
-            <a href="#activity">Activity</a>
-            <span aria-disabled="true">Help</span>
-            <span aria-disabled="true">Settings</span>
-          </nav>
-          <button id="logoutButton" class="sidebar-logout" type="button" hidden>Sign out of Swooshz Platform</button>
-        </aside>
-        <main class="portal-main">
-          <header class="portal-topbar">
-            <div class="portal-topbar-actions" aria-hidden="true">
-              <span class="topbar-icon"></span>
-              <span class="topbar-icon topbar-icon-history"></span>
-              <span class="topbar-icon topbar-icon-account"></span>
+        </header>
+
+        <nav class="admin-section-nav" aria-label="Administration sections">
+          <div class="admin-nav-inner" role="tablist" aria-label="Administration sections">
+            <button type="button" role="tab" data-admin-nav="members" aria-selected="true">Members</button>
+            <button type="button" role="tab" data-admin-nav="pending-approvals" aria-selected="false">Pending approvals</button>
+            <button type="button" role="tab" data-admin-nav="app-access" aria-selected="false">Product access</button>
+            <button type="button" role="tab" data-admin-nav="activity" aria-selected="false">Audit activity</button>
+          </div>
+        </nav>
+
+        <main id="main-content" class="auth-main admin-main">
+          <label class="mobile-admin-selector">
+            <span>Administration section</span>
+            <select id="adminSectionSelect">
+              <option value="members">Members</option>
+              <option value="pending-approvals">Pending approvals</option>
+              <option value="app-access">Product access</option>
+              <option value="activity">Audit activity</option>
+            </select>
+          </label>
+          <header class="admin-page-header">
+            <div class="auth-page-heading">
+              <h1 id="adminPageTitle">Members</h1>
+              <p id="adminPageDescription">Manage who can access this workspace and what they are allowed to do.</p>
             </div>
+            <button id="openAddMemberButton" class="auth-primary-button" type="button" hidden>Add member</button>
           </header>
-          <section class="portal-canvas admin-canvas">
-            <div class="admin-page-header">
-              <div class="portal-heading">
-                <h2>Workspace Members</h2>
-                <p>Manage access and roles for your workspace.</p>
-              </div>
-              <button id="openAddMemberButton" class="primary-action compact" type="button" hidden>Add Member</button>
-            </div>
-            <section id="status" class="status" role="status">Loading platform session...</section>
-            <section id="adminActionStatus" class="action-status" role="status" hidden>
-              <span class="spinner" aria-hidden="true"></span>
-              <span id="adminActionStatusText"></span>
-            </section>
-            <section id="identity" class="identity admin-summary-grid" hidden></section>
-            <section id="workspaceSummary" class="workspace admin-summary" hidden></section>
-            <section id="ownerTransfer" class="workspace admin-surface" hidden>
-              <h2>Owner Transfer</h2>
-              <p class="empty">
-                Owner transfer is not available in internal alpha yet. Use a
-                reviewed operator process before hosted execution.
-              </p>
-            </section>
-            <section id="members" class="workspace admin-surface" data-admin-section="members" hidden></section>
-            <section id="pendingApprovals" class="workspace admin-surface" data-admin-section="pending-approvals" hidden></section>
-            <section id="activity" class="workspace admin-surface" data-admin-section="activity" hidden></section>
-            <section id="entitlements" class="workspace admin-surface" data-admin-section="app-access" hidden></section>
+          <section id="status" class="auth-status" role="status" aria-live="polite">Loading your workspace...</section>
+          <section id="adminActionStatus" class="auth-action-status" role="status" aria-live="polite" hidden>
+            <span class="spinner" aria-hidden="true"></span>
+            <span id="adminActionStatusText"></span>
           </section>
+          <section id="identity" hidden></section>
+          <section id="workspaceSummary" hidden></section>
+          <section id="ownerTransfer" hidden></section>
+          <section id="members" class="admin-panel" data-admin-section="members" hidden></section>
+          <section id="pendingApprovals" class="admin-panel" data-admin-section="pending-approvals" hidden></section>
+          <section id="entitlements" class="admin-panel" data-admin-section="app-access" hidden></section>
+          <section id="activity" class="admin-panel" data-admin-section="activity" hidden></section>
         </main>
       </div>
-      <div id="addMemberModal" class="modal-backdrop" hidden>
-        <section
-          class="action-modal add-member-modal"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="addMemberModalTitle"
-          aria-describedby="addMemberModalBody"
-        >
+
+      <div id="addMemberModal" class="modal-backdrop auth-modal-backdrop" hidden>
+        <section class="action-modal add-member-modal" role="dialog" aria-modal="true" aria-labelledby="addMemberModalTitle" aria-describedby="addMemberModalBody">
           <div class="modal-header">
-            <h2 id="addMemberModalTitle">Add Member</h2>
+            <div><p class="modal-kicker">Members</p><h2 id="addMemberModalTitle">Add member</h2></div>
             <button id="closeAddMemberModalButton" class="modal-close" type="button" aria-label="Close add member form">&times;</button>
           </div>
           <div class="modal-body">
-            <p id="addMemberModalBody" class="empty">
-              Create a pending workspace access approval or add an existing
-              provider-backed user. Access activates through the existing
-              provider-backed sign-in flow.
-            </p>
-            <p id="addMemberResult" class="empty" role="status" hidden></p>
+            <p id="addMemberModalBody">Add an existing Swooshz account to this workspace.</p>
+            <p id="addMemberResult" class="inline-feedback" role="status" aria-live="polite" hidden></p>
             <form id="addMemberForm" class="field-stack">
-              <label>
-                <strong>Email address</strong>
-                <input name="email" type="email" autocomplete="email" placeholder="workspace.user@example.com" required>
-              </label>
-              <label>
-                <strong>Workspace role</strong>
-                <select name="role" required>
-                  <option value="admin">Admin</option>
-                  <option value="member" selected>Member</option>
-                </select>
-              </label>
+              <label><strong>Email address</strong><input name="email" type="email" autocomplete="email" placeholder="name@example.com" required></label>
+              <label><strong>Role</strong><select name="role" required><option value="member" selected>Member</option><option value="admin">Admin</option></select></label>
               <div class="modal-actions">
-                <button id="cancelAddMemberModalButton" class="secondary-action compact" type="button">Cancel</button>
-                <button class="primary-action compact" type="submit">Add member</button>
+                <button id="cancelAddMemberModalButton" class="auth-secondary-button" type="button">Cancel</button>
+                <button id="addMemberSubmitButton" class="auth-primary-button" type="submit">Add member</button>
               </div>
             </form>
           </div>
         </section>
       </div>
-      <div id="adminActionModal" class="modal-backdrop" hidden>
-        <section
-          class="action-modal member-action-modal"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="adminActionModalTitle"
-          aria-describedby="adminActionModalBody"
-        >
+
+      <div id="adminActionModal" class="modal-backdrop auth-modal-backdrop" hidden>
+        <section class="action-modal member-action-modal" role="alertdialog" aria-modal="true" aria-labelledby="adminActionModalTitle" aria-describedby="adminActionModalBody">
           <div class="modal-header">
-            <h2 id="adminActionModalTitle">Remove member?</h2>
-            <button id="adminActionModalCancel" class="modal-close" type="button" aria-label="Cancel member action">&times;</button>
+            <div><p class="modal-kicker">Confirm change</p><h2 id="adminActionModalTitle">Remove member?</h2></div>
+            <button id="adminActionModalCancel" class="modal-close" type="button" aria-label="Cancel administrative action">&times;</button>
           </div>
           <div class="modal-body">
-            <p id="adminActionModalBody">
-              This removes workspace access for this member. Their platform account is not deleted.
-            </p>
-            <p id="adminActionModalLoading" class="modal-loading" role="status" hidden>
-              <span class="spinner" aria-hidden="true"></span>
-              <span id="adminActionModalLoadingText">Removing member...</span>
-            </p>
+            <p id="adminActionModalBody">This removes workspace access for this member. Their platform account is not deleted.</p>
+            <p id="adminActionModalLoading" class="modal-loading" role="status" hidden><span class="spinner" aria-hidden="true"></span><span id="adminActionModalLoadingText">Removing member...</span></p>
             <p id="adminActionModalError" class="modal-error" role="alert" hidden></p>
           </div>
           <div class="modal-actions modal-footer">
-            <button id="adminActionModalDismiss" class="secondary-action compact" type="button">Cancel</button>
-            <button id="adminActionModalConfirm" class="primary-action compact" type="button">Remove member</button>
+            <button id="adminActionModalDismiss" class="auth-secondary-button" type="button">Cancel</button>
+            <button id="adminActionModalConfirm" class="auth-danger-button" type="button">Remove member</button>
           </div>
         </section>
       </div>
@@ -1121,9 +458,26 @@ export function renderAdminShellPage(): string {
             activityEvents: [],
             activityPage: 0,
             activityPageSize: 10,
-            modalAction: null
+            modalAction: null,
+            modalRestoreFocus: null,
+            lastActionMenuButton: null,
+            activeSection: "members",
+            adminReady: false
           };
 
+          const adminShell = document.getElementById("adminShell");
+          const accountContext = document.getElementById("accountContext");
+          const workspaceControl = document.getElementById("workspaceControl");
+          const workspaceSelect = document.getElementById("workspaceSelect");
+          const singleWorkspaceContext = document.getElementById("singleWorkspaceContext");
+          const headerWorkspaceName = document.getElementById("headerWorkspaceName");
+          const headerWorkspaceRole = document.getElementById("headerWorkspaceRole");
+          const headerAccountName = document.getElementById("headerAccountName");
+          const headerAccountEmail = document.getElementById("headerAccountEmail");
+          const adminPageTitle = document.getElementById("adminPageTitle");
+          const adminPageDescription = document.getElementById("adminPageDescription");
+          const adminSectionSelect = document.getElementById("adminSectionSelect");
+          const adminNavButtons = document.querySelectorAll("[data-admin-nav]");
           const status = document.getElementById("status");
           const adminActionStatus = document.getElementById("adminActionStatus");
           const adminActionStatusText = document.getElementById("adminActionStatusText");
@@ -1135,6 +489,7 @@ export function renderAdminShellPage(): string {
           const cancelAddMemberModalButton = document.getElementById("cancelAddMemberModalButton");
           const addMemberResult = document.getElementById("addMemberResult");
           const addMemberForm = document.getElementById("addMemberForm");
+          const addMemberSubmitButton = document.getElementById("addMemberSubmitButton");
           const ownerTransfer = document.getElementById("ownerTransfer");
           const pendingApprovals = document.getElementById("pendingApprovals");
           const members = document.getElementById("members");
@@ -1154,6 +509,23 @@ export function renderAdminShellPage(): string {
           logoutButton.addEventListener("click", () => {
             void logout();
           });
+          workspaceSelect.addEventListener("change", () => {
+            const workspace = state.context?.workspaces?.find((candidate) =>
+              candidate.workspaceId === workspaceSelect.value &&
+              (candidate.membershipRole === "owner" || candidate.membershipRole === "admin")
+            );
+            if (!workspace) return;
+            state.workspace = workspace;
+            const nextUrl = new URL(window.location.href);
+            nextUrl.searchParams.set("workspace", workspace.workspaceSlug);
+            window.history.replaceState({}, "", nextUrl);
+            renderWorkspaceSummary(workspace);
+            void loadAdminData();
+          });
+          for (const button of adminNavButtons) {
+            button.addEventListener("click", () => setAdminSection(button.dataset.adminNav));
+          }
+          adminSectionSelect.addEventListener("change", () => setAdminSection(adminSectionSelect.value));
           addMemberForm.addEventListener("submit", (event) => {
             void addExistingMember(event);
           });
@@ -1186,17 +558,21 @@ export function renderAdminShellPage(): string {
             }
           });
           document.addEventListener("keydown", (event) => {
+            if (event.key === "Tab" && (!addMember.hidden || !adminActionModal.hidden)) {
+              trapModalFocus(event);
+            }
             if (event.key === "Escape") {
-              closeAllActionMenus();
-              if (!addMember.hidden) {
-                closeAddMemberModal();
-              }
-              if (!adminActionModal.hidden) {
-                closeActionModal();
-              }
+              closeAllActionMenus(true);
+              if (!addMember.hidden) closeAddMemberModal();
+              if (!adminActionModal.hidden) closeActionModal();
             }
           });
+          document.addEventListener("click", (event) => {
+            if (!event.target.closest(".action-menu")) closeAllActionMenus(false);
+          });
 
+          const requestedSection = new URLSearchParams(window.location.search).get("section");
+          setAdminSection(requestedSection || "members");
           void loadContext();
 
           async function loadContext() {
@@ -1280,13 +656,13 @@ export function renderAdminShellPage(): string {
               }
 
               renderWorkspaceSummary(state.workspace);
-              openAddMemberButton.hidden = false;
-              ownerTransfer.hidden = false;
               renderPendingApprovals(approvalsPayload.approvals);
               renderMembers(membersPayload.members);
               renderEntitlements(entitlementsPayload.entitlements);
               renderActivity(activityPayload.events);
-              setStatus("Workspace admin ready.");
+              state.adminReady = true;
+              setAdminSection(state.activeSection);
+              setStatus("Workspace administration ready.");
             } catch {
               setStatus("Workspace admin could not be loaded.");
               hideAdminSections();
@@ -1315,11 +691,16 @@ export function renderAdminShellPage(): string {
           }
 
           function renderUnauthenticated() {
+            accountContext.hidden = true;
             logoutButton.hidden = true;
             hideAdminSections();
-            status.innerHTML =
-              '<span>No active platform session.</span> ' +
-              '<a href="/api/platform/auth/start">Continue with Google</a>';
+            status.replaceChildren();
+            const message = document.createElement("span");
+            message.textContent = "No active platform session. ";
+            const link = document.createElement("a");
+            link.href = "/api/platform/auth/start";
+            link.textContent = "Continue with Google";
+            status.append(message, link);
           }
 
           function renderForbidden() {
@@ -1328,29 +709,37 @@ export function renderAdminShellPage(): string {
           }
 
           function renderIdentity(context) {
-            identity.hidden = false;
-            identity.replaceChildren(
-              textBlock("Signed in as", context.user.displayName || context.user.email),
-              textBlock("Email", context.user.email),
-              textBlock("User status", context.user.status)
-            );
+            identity.hidden = true;
+            accountContext.hidden = false;
+            headerAccountName.textContent = context.user.displayName || context.user.email;
+            headerAccountEmail.textContent = context.user.email || "";
+            const adminWorkspaces = Array.isArray(context.workspaces)
+              ? context.workspaces.filter((workspace) =>
+                  workspace.membershipRole === "owner" || workspace.membershipRole === "admin"
+                )
+              : [];
+            workspaceSelect.replaceChildren();
+            for (const workspace of adminWorkspaces) {
+              const option = document.createElement("option");
+              option.value = workspace.workspaceId;
+              option.textContent = workspace.workspaceName || workspace.workspaceId;
+              workspaceSelect.append(option);
+            }
+            workspaceControl.hidden = adminWorkspaces.length < 2;
+            singleWorkspaceContext.hidden = adminWorkspaces.length > 1;
           }
 
           function renderWorkspaceSummary(workspace) {
-            workspaceSummary.hidden = false;
-            workspaceSummary.replaceChildren(
-              sectionHeading("Workspace"),
-              textBlock("Name", workspace.workspaceName),
-              textBlock("Workspace slug", workspace.workspaceSlug),
-              textBlock("Role", displayRole(workspace.membershipRole))
-            );
+            workspaceSummary.hidden = true;
+            headerWorkspaceName.textContent = workspace.workspaceName || workspace.workspaceId;
+            headerWorkspaceRole.textContent = displayRole(workspace.membershipRole);
+            workspaceSelect.value = workspace.workspaceId;
           }
-
           function renderMembers(memberList) {
             members.hidden = false;
             members.replaceChildren(
-              sectionHeading("Workspace Members"),
-              sectionDescription("Current workspace access and supported roles.")
+              sectionHeading("Members"),
+              sectionDescription("Manage who can access this workspace and what they are allowed to do.")
             );
 
             if (!Array.isArray(memberList) || memberList.length === 0) {
@@ -1384,8 +773,8 @@ export function renderAdminShellPage(): string {
           function renderPendingApprovals(approvalList) {
             pendingApprovals.hidden = false;
             pendingApprovals.replaceChildren(
-              sectionHeading("Pending Approvals"),
-              sectionDescription("Review pending workspace access approvals. No email delivery is implied by this list.")
+              sectionHeading("Pending approvals"),
+              sectionDescription("Review access waiting for an administrator.")
             );
 
             if (!Array.isArray(approvalList) || approvalList.length === 0) {
@@ -1416,48 +805,52 @@ export function renderAdminShellPage(): string {
           function renderEntitlements(entitlementList) {
             entitlements.hidden = false;
             entitlements.replaceChildren(
-              sectionHeading("App Access"),
-              sectionDescription("Workspace app availability and launch access controls.")
+              sectionHeading("Product access"),
+              sectionDescription("Control whether this workspace can use its current product.")
             );
-
-            if (!Array.isArray(entitlementList) || entitlementList.length === 0) {
-              entitlements.append(emptyMessage("No app entitlements are configured."));
+            const productAccess = Array.isArray(entitlementList)
+              ? entitlementList.filter((entitlement) =>
+                  String(entitlement.appKey || "").toLowerCase() === "sqag"
+                )
+              : [];
+            if (productAccess.length === 0) {
+              entitlements.append(emptyMessage("Product access has not been configured for this workspace."));
               return;
             }
-
-            const list = document.createElement("div");
-            list.className = "apps";
-
-            for (const entitlement of entitlementList) {
+            for (const entitlement of productAccess) {
               const row = document.createElement("article");
-              row.className = "app-row";
+              row.className = "product-access-row";
               const detail = document.createElement("div");
-              detail.append(
-                textBlock("App", displayEntitlementAppName(entitlement)),
-                textBlock("App status", displayEntitlementStatus(entitlement.appStatus)),
-                textBlock("Workspace access", displayAccessStatus(entitlement.status)),
-                textBlock("Updated", formatDate(entitlement.updatedAt))
-              );
-              row.append(detail);
-
-              if (entitlement.appKey === "sqag") {
-                const button = document.createElement("button");
-                button.type = "button";
-                button.className = "secondary-action compact";
-                const nextStatus = entitlement.status === "enabled" ? "disabled" : "enabled";
-                button.textContent = nextStatus === "enabled" ? "Allow launch" : "Disable access";
-                button.addEventListener("click", () => {
-                  void updateEntitlement(nextStatus);
-                });
-                row.append(button);
-              }
-
-              list.append(row);
+              detail.className = "product-access-product";
+              const copy = document.createElement("div");
+              const heading = document.createElement("h3");
+              const description = document.createElement("p");
+              heading.textContent = displayEntitlementAppName(entitlement);
+              description.textContent = "Members with access can create professional quotations for this workspace.";
+              copy.append(heading, description);
+              detail.append(productSymbol(), copy);
+              const accessState = document.createElement("div");
+              accessState.className = "product-access-state";
+              const accessLabel = document.createElement("span");
+              const accessValue = document.createElement("strong");
+              accessLabel.textContent = "Product access";
+              accessValue.textContent = displayAccessStatus(entitlement.status);
+              accessValue.dataset.status = entitlement.status === "enabled" ? "enabled" : "disabled";
+              accessState.append(accessLabel, accessValue);
+              const button = document.createElement("button");
+              button.type = "button";
+              button.className = "auth-secondary-button";
+              const nextStatus = entitlement.status === "enabled" ? "disabled" : "enabled";
+              button.textContent = nextStatus === "enabled" ? "Enable product access" : "Disable product access";
+              button.addEventListener("click", () => updateEntitlement(nextStatus));
+              row.append(detail, accessState, button);
+              entitlements.append(row);
             }
-
-            entitlements.append(list);
+            const note = document.createElement("p");
+            note.className = "surface-note";
+            note.textContent = "Disabling product access prevents new launches and does not change member records.";
+            entitlements.append(note);
           }
-
           function renderActivity(eventList) {
             activity.hidden = false;
             state.activityEvents = Array.isArray(eventList) ? eventList : [];
@@ -1467,8 +860,8 @@ export function renderAdminShellPage(): string {
 
           function renderActivityPage() {
             activity.replaceChildren(
-              sectionHeading("Audit Log"),
-              sectionDescription("Safe workspace activity labels without internal identifiers or provider metadata.")
+              sectionHeading("Audit activity"),
+              sectionDescription("Review recent administrative changes for this workspace.")
             );
 
             const eventList = state.activityEvents;
@@ -1553,7 +946,9 @@ export function renderAdminShellPage(): string {
             select.disabled =
               isSelf || member.status !== "active" || (member.role === "owner" && !actorIsOwner);
             select.addEventListener("change", () => {
-              void changeMemberRole(member.membershipId, select.value);
+              const nextRole = select.value;
+              select.value = member.role;
+              changeMemberRole(member.membershipId, nextRole);
             });
             cell.append(select);
             return cell;
@@ -1562,70 +957,77 @@ export function renderAdminShellPage(): string {
           function memberActionsCell(member, activeOwnerCount, label) {
             const cell = document.createElement("td");
             setCellLabel(cell, label);
-            const menu = document.createElement("div");
-            const menuButton = document.createElement("button");
-            const menuPanel = document.createElement("div");
             const isSelf = member.user?.id === state.context?.user?.userId;
             const isProtectedOwner = member.role === "owner";
             const isLastActiveOwner =
               member.role === "owner" && member.status === "active" && activeOwnerCount <= 1;
             const canAct = !isSelf && !isProtectedOwner && !isLastActiveOwner;
 
+            if (!canAct) {
+              const protectedLabel = document.createElement("span");
+              protectedLabel.className = "protected-label";
+              protectedLabel.textContent = isProtectedOwner || isLastActiveOwner
+                ? "Protected owner"
+                : "Your account";
+              protectedLabel.title = isProtectedOwner || isLastActiveOwner
+                ? "The workspace owner cannot be removed."
+                : "Use another administrator for changes to your own access.";
+              cell.append(protectedLabel);
+              return cell;
+            }
+
+            const menu = document.createElement("div");
+            const menuButton = document.createElement("button");
+            const menuPanel = document.createElement("div");
             menu.className = "action-menu";
             menuButton.type = "button";
-            menuButton.className = "secondary-action compact";
-            menuButton.textContent = "Actions";
-            menuButton.disabled = !canAct || !["active", "disabled"].includes(member.status);
-            menuButton.setAttribute("aria-haspopup", "true");
+            menuButton.className = "auth-secondary-button compact";
+            menuButton.textContent = "Manage";
+            menuButton.disabled = !["active", "disabled"].includes(member.status);
+            menuButton.setAttribute("aria-haspopup", "menu");
             menuButton.setAttribute("aria-expanded", "false");
             menuButton.addEventListener("click", () => {
               const shouldOpen = menuPanel.hidden;
-              closeAllActionMenus();
+              closeAllActionMenus(false);
+              state.lastActionMenuButton = menuButton;
               menuPanel.hidden = !shouldOpen;
               menuButton.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+              if (shouldOpen) menuPanel.querySelector("button")?.focus();
             });
 
             menuPanel.className = "action-menu-panel";
+            menuPanel.setAttribute("role", "menu");
             menuPanel.hidden = true;
-
             if (member.status === "active") {
-              menuPanel.append(actionButton("Disable Access", () => {
-                closeAllActionMenus();
-                void disableMember(member.membershipId);
+              menuPanel.append(actionButton("Disable member", () => {
+                closeAllActionMenus(false);
+                disableMember(member.membershipId);
               }));
             }
-
             if (member.status === "disabled") {
-              menuPanel.append(actionButton("Reactivate", () => {
-                closeAllActionMenus();
-                void reactivateMember(member.membershipId);
+              menuPanel.append(actionButton("Reactivate member", () => {
+                closeAllActionMenus(false);
+                reactivateMember(member.membershipId);
               }));
             }
-
             if (["active", "disabled"].includes(member.status)) {
-              menuPanel.append(actionButton("Remove from Workspace", () => {
-                closeAllActionMenus();
-                void removeMember(member.membershipId);
+              menuPanel.append(actionButton("Remove member", () => {
+                closeAllActionMenus(false);
+                removeMember(member.membershipId);
               }));
             }
-
             menu.append(menuButton, menuPanel);
             cell.append(menu);
             return cell;
           }
 
-          function closeAllActionMenus() {
-            const panels = document.querySelectorAll(".action-menu-panel");
-            for (const panel of panels) {
-              panel.hidden = true;
-            }
-
-            const buttons = document.querySelectorAll(".action-menu button[aria-haspopup='true']");
-            for (const button of buttons) {
+          function closeAllActionMenus(restoreFocus = false) {
+            for (const panel of document.querySelectorAll(".action-menu-panel")) panel.hidden = true;
+            for (const button of document.querySelectorAll(".action-menu button[aria-haspopup]")) {
               button.setAttribute("aria-expanded", "false");
             }
+            if (restoreFocus) state.lastActionMenuButton?.focus();
           }
-
           function actionButton(label, onClick) {
             const button = document.createElement("button");
             button.type = "button";
@@ -1650,13 +1052,16 @@ export function renderAdminShellPage(): string {
             return cell;
           }
 
-          async function changeMemberRole(membershipId, role) {
-            await postAdminAction(
-              adminMemberUrl(state.workspace.workspaceId, membershipId) +
+          function changeMemberRole(membershipId, role) {
+            openActionModal({
+              title: "Change role?",
+              body: "Confirm that you want to change this member's role.",
+              confirmLabel: "Change role",
+              url: adminMemberUrl(state.workspace.workspaceId, membershipId) +
                 "/role?role=" + encodeURIComponent(role),
-              "Member role updated.",
-              { loadingMessage: "Saving workspace admin change..." }
-            );
+              successMessage: "Member role updated.",
+              loadingMessage: "Changing member role..."
+            });
           }
 
           async function disableMember(membershipId) {
@@ -1703,13 +1108,19 @@ export function renderAdminShellPage(): string {
             });
           }
 
-          async function updateEntitlement(nextStatus) {
-            await postAdminAction(
-              adminEntitlementsUrl(state.workspace.workspaceId) +
+          function updateEntitlement(nextStatus) {
+            const disabling = nextStatus === "disabled";
+            openActionModal({
+              title: disabling ? "Disable product access?" : "Enable product access?",
+              body: disabling
+                ? "Members will be unable to launch this product until access is enabled again."
+                : "Members with access will be able to launch this product.",
+              confirmLabel: disabling ? "Disable product access" : "Enable product access",
+              url: adminEntitlementsUrl(state.workspace.workspaceId) +
                 "/sqag/status?status=" + encodeURIComponent(nextStatus),
-              "Workspace admin change saved.",
-              { loadingMessage: "Updating app access..." }
-            );
+              successMessage: disabling ? "Product access disabled." : "Product access enabled.",
+              loadingMessage: "Updating product access..."
+            });
           }
 
           async function addExistingMember(event) {
@@ -1717,27 +1128,27 @@ export function renderAdminShellPage(): string {
             const formData = new FormData(addMemberForm);
             const email = String(formData.get("email") || "");
             const role = String(formData.get("role") || "member");
-
             if (!email.trim()) {
-              setStatus("Workspace admin action could not be completed.");
+              setAddMemberResult("We could not add this member. Check the email address and try again.");
               return;
             }
-
+            addMemberSubmitButton.disabled = true;
+            addMemberSubmitButton.textContent = "Adding member...";
             const result = await postAdminAction(
               addMemberUrl(state.workspace.workspaceId),
               null,
-              {
-                body: { email, role },
-                loadingMessage: "Adding workspace member..."
-              }
+              { body: { email, role }, loadingMessage: "Adding member..." }
             );
+            addMemberSubmitButton.disabled = false;
+            addMemberSubmitButton.textContent = "Add member";
             if (result) {
               addMemberForm.reset();
               closeAddMemberModal();
             }
           }
-
           function openActionModal(action) {
+            state.modalRestoreFocus = state.lastActionMenuButton || document.activeElement;
+            state.lastActionMenuButton = null;
             state.modalAction = action;
             modalTitle.textContent = action.title;
             modalBody.textContent = action.body;
@@ -1750,17 +1161,17 @@ export function renderAdminShellPage(): string {
           }
 
           function openAddMemberModal() {
+            state.modalRestoreFocus = openAddMemberButton;
             setAddMemberResult("");
             addMember.hidden = false;
             addMemberForm.querySelector("input[name='email']").focus();
           }
 
           function closeAddMemberModal() {
+            if (addMemberSubmitButton.disabled) return;
             addMember.hidden = true;
             setAddMemberResult("");
-            if (!openAddMemberButton.hidden) {
-              openAddMemberButton.focus();
-            }
+            restoreModalFocus();
           }
 
           function closeActionModal() {
@@ -1773,6 +1184,7 @@ export function renderAdminShellPage(): string {
             modalError.hidden = true;
             modalError.textContent = "";
             setModalBusy(false, "");
+            restoreModalFocus();
           }
 
           async function runModalAction() {
@@ -2111,6 +1523,7 @@ export function renderAdminShellPage(): string {
           }
 
           function hideAdminSections() {
+            state.adminReady = false;
             identity.hidden = true;
             adminActionStatus.hidden = true;
             adminActionStatusText.textContent = "";
@@ -2132,8 +1545,82 @@ export function renderAdminShellPage(): string {
             activity.replaceChildren();
           }
 
+          function setAdminSection(requestedSection) {
+            const sectionContent = {
+              members: ["Members", "Manage who can access this workspace and what they are allowed to do."],
+              "pending-approvals": ["Pending approvals", "Review access waiting for an administrator."],
+              "app-access": ["Product access", "Control whether this workspace can use its current product."],
+              activity: ["Audit activity", "Review recent administrative changes for this workspace."]
+            };
+            const section = sectionContent[requestedSection] ? requestedSection : "members";
+            state.activeSection = section;
+            adminShell.dataset.activeSection = section;
+            adminPageTitle.textContent = sectionContent[section][0];
+            adminPageDescription.textContent = sectionContent[section][1];
+            adminSectionSelect.value = section;
+            for (const button of adminNavButtons) {
+              const active = button.dataset.adminNav === section;
+              button.setAttribute("aria-selected", active ? "true" : "false");
+              button.toggleAttribute("aria-current", active);
+              button.tabIndex = active ? 0 : -1;
+            }
+            for (const panel of document.querySelectorAll("[data-admin-section]")) {
+              panel.hidden = panel.dataset.adminSection !== section;
+            }
+            openAddMemberButton.hidden = !state.adminReady || section !== "members";
+          }
+
+          function restoreModalFocus() {
+            const target = state.modalRestoreFocus;
+            state.modalRestoreFocus = null;
+            target?.focus?.();
+          }
+
+          function trapModalFocus(event) {
+            const backdrop = !addMember.hidden ? addMember : adminActionModal;
+            const focusable = [...backdrop.querySelectorAll(
+              'button:not([disabled]), input:not([disabled]), select:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])'
+            )];
+            if (focusable.length === 0) return;
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+              event.preventDefault();
+              last.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+              event.preventDefault();
+              first.focus();
+            }
+          }
+
+          function productSymbol() {
+            const namespace = "http://www.w3.org/2000/svg";
+            const mark = document.createElement("span");
+            const svg = document.createElementNS(namespace, "svg");
+            mark.className = "product-mark compact";
+            mark.setAttribute("aria-hidden", "true");
+            svg.setAttribute("class", "quote-document-icon");
+            svg.setAttribute("viewBox", "0 0 64 64");
+            const paths = [
+              ["icon-sheet", "M17 7h21l11 11v39H17z"],
+              ["icon-fold", "M38 7v12h11"],
+              ["icon-line", "M23 28h21M23 36h21M23 44h21"],
+              ["icon-column", "M36 28v16"],
+              ["icon-total", "M23 51h21"]
+            ];
+            for (const [className, data] of paths) {
+              const path = document.createElementNS(namespace, "path");
+              path.setAttribute("class", className);
+              path.setAttribute("d", data);
+              svg.append(path);
+            }
+            mark.append(svg);
+            return mark;
+          }
+
           function setStatus(message) {
             status.textContent = message;
+            status.hidden = message === "Workspace administration ready.";
           }
 
           function sectionHeading(value) {
@@ -2228,7 +1715,7 @@ export function renderAdminShellPage(): string {
           }
 
           function displayAccessStatus(status) {
-            return status === "enabled" ? "Allowed" : "Unavailable";
+            return status === "enabled" ? "Enabled" : "Disabled";
           }
 
           function textBlock(label, value) {
@@ -2325,44 +1812,6 @@ export function renderAuthErrorPage(): string {
       </main>
     `,
   });
-}
-
-function publicNav(active: "home" | "solutions" | "resources" | "about" | "contact" | "requestAccess"): string {
-  return `
-    <header class="public-nav">
-      <a class="public-brand" href="/">Swooshz</a>
-      <nav aria-label="Public navigation">
-        <a class="${active === "home" ? "active" : ""}" href="/">Home</a>
-        <a class="${active === "solutions" ? "active" : ""}" href="/solutions">Solutions</a>
-        <a class="${active === "resources" ? "active" : ""}" href="/resources">Resources</a>
-        <a class="${active === "about" ? "active" : ""}" href="/about">About</a>
-        <a class="${active === "contact" ? "active" : ""}" href="/contact">Contact</a>
-      </nav>
-      <div class="public-actions">
-        <a class="text-action" href="/login">Login</a>
-        <a class="primary-action compact ${active === "requestAccess" ? "active" : ""}" href="/request-access">Request Access</a>
-      </div>
-    </header>
-  `;
-}
-
-function publicFooter(): string {
-  return `
-    <footer class="public-footer">
-      <strong>Swooshz</strong>
-      <nav aria-label="Footer navigation">
-        <a href="/resources">Resources</a>
-        <a href="/about">About</a>
-        <a href="/contact">Contact</a>
-        <a href="/request-access">Request Access</a>
-        <span>Privacy</span>
-        <span>Terms</span>
-        <span>Security</span>
-        <span>Status</span>
-      </nav>
-      <p>&copy; Swooshz. Content to be finalised before launch.</p>
-    </footer>
-  `;
 }
 
 function htmlDocument({
@@ -4288,6 +3737,566 @@ function htmlDocument({
       .modal-body,
       .modal-footer {
         padding: 18px;
+      }
+    }
+
+    @font-face {
+      font-family: "Auth Manrope";
+      src: url("${publicAssetUrl("/public-assets/fonts/manrope-latin-variable.woff2")}") format("woff2");
+      font-style: normal;
+      font-weight: 200 800;
+      font-display: swap;
+    }
+
+    .authenticated-shell,
+    .auth-modal-backdrop {
+      --auth-paper: #f0f1ed;
+      --auth-surface: #fffefa;
+      --auth-surface-soft: #f3f6f4;
+      --auth-ink: #0f1a2a;
+      --auth-ink-secondary: #364b63;
+      --auth-muted: #637184;
+      --auth-line: #ccd5d4;
+      --auth-line-strong: #9eafb2;
+      --auth-line-subtle: #e1e7e5;
+      --auth-teal: #0b756d;
+      --auth-teal-dark: #064f4c;
+      --auth-teal-soft: #e0f1ec;
+      --auth-success: #188657;
+      --auth-disabled: #7b8490;
+      --auth-danger: #9b463f;
+      --auth-focus: 0 0 0 3px rgb(29 119 146 / 28%);
+      color: var(--auth-ink);
+      font-family: "Auth Manrope", ui-sans-serif, system-ui, sans-serif;
+      font-size: 16px;
+      line-height: 1.5;
+    }
+
+    .authenticated-shell {
+      min-width: 320px;
+      min-height: 100vh;
+      background: linear-gradient(180deg, rgb(255 254 250 / 56%), transparent 280px), var(--auth-paper);
+    }
+
+    .authenticated-shell *,
+    .auth-modal-backdrop * { box-sizing: border-box; }
+    .authenticated-shell span,
+    .authenticated-shell strong,
+    .auth-modal-backdrop span,
+    .auth-modal-backdrop strong {
+      color: inherit;
+      font-size: inherit;
+      font-weight: inherit;
+      letter-spacing: normal;
+      text-transform: none;
+    }
+    .authenticated-shell button,
+    .authenticated-shell input,
+    .authenticated-shell select,
+    .auth-modal-backdrop button,
+    .auth-modal-backdrop input,
+    .auth-modal-backdrop select { font: inherit; }
+    .authenticated-shell svg,
+    .auth-modal-backdrop svg {
+      fill: none;
+      stroke: currentColor;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-width: 1.8;
+    }
+    .authenticated-shell :focus-visible,
+    .auth-modal-backdrop :focus-visible {
+      outline: 2px solid #116a82;
+      outline-offset: 2px;
+      box-shadow: var(--auth-focus);
+    }
+
+    .auth-skip-link {
+      position: fixed;
+      top: 8px;
+      left: 8px;
+      z-index: 100;
+      transform: translateY(-160%);
+      padding: 10px 14px;
+      border-radius: 8px;
+      background: var(--auth-ink);
+      color: #fff;
+    }
+    .auth-skip-link:focus { transform: translateY(0); }
+
+    .auth-app-bar {
+      position: relative;
+      min-height: 66px;
+      border-bottom: 1px solid var(--auth-line);
+      background: rgb(255 254 250 / 98%);
+    }
+    .auth-app-bar::before {
+      display: block;
+      height: 3px;
+      background: linear-gradient(90deg, var(--auth-teal) 0 9%, var(--auth-ink) 9% 100%);
+      content: "";
+    }
+    .auth-bar-inner,
+    .admin-nav-inner,
+    .auth-main {
+      width: min(1180px, calc(100% - 48px));
+      margin: 0 auto;
+    }
+    .auth-bar-inner {
+      min-height: 63px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+    .auth-brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 11px;
+      flex: 0 0 auto;
+      color: var(--auth-ink);
+      font-size: 18px;
+      font-weight: 780;
+      letter-spacing: -.02em;
+      text-decoration: none;
+    }
+    .auth-brand img { width: 34px; height: 34px; object-fit: contain; }
+    .auth-account-context {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 20px;
+    }
+    .auth-context-control,
+    .auth-context-value,
+    .auth-account-copy {
+      display: grid;
+      gap: 0;
+      min-width: 0;
+      color: var(--auth-ink);
+      font-size: 14px;
+      line-height: 1.25;
+    }
+    .auth-context-control > span,
+    .auth-context-value > span,
+    .auth-account-copy > span,
+    .auth-account-copy small { color: var(--auth-muted); font-size: 14px; }
+    .auth-context-control select {
+      width: auto;
+      min-width: 150px;
+      min-height: 30px;
+      margin-left: -4px;
+      padding: 1px 26px 1px 3px;
+      border: 0;
+      background: transparent;
+      color: var(--auth-ink);
+      font-size: 15px;
+      font-weight: 720;
+    }
+    .auth-context-value strong,
+    .auth-account-copy strong { font-size: 15px; font-weight: 720; }
+    .auth-account-copy { max-width: 210px; }
+    .auth-account-copy strong,
+    .auth-account-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .auth-header-link,
+    .auth-header-button {
+      min-height: 44px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 10px;
+      border: 0;
+      background: transparent;
+      color: var(--auth-teal-dark);
+      font-size: 14px;
+      font-weight: 740;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .auth-header-button { cursor: pointer; }
+    .auth-header-link:hover,
+    .auth-header-button:hover { background: var(--auth-teal-soft); }
+
+    .auth-main { padding: 58px 0 72px; }
+    .launcher-main {
+      min-height: calc(100vh - 66px);
+      display: grid;
+      align-items: center;
+      padding-top: 48px;
+      padding-bottom: 96px;
+    }
+    .launcher-page { width: 100%; max-width: 1080px; margin: 0 auto; }
+    .auth-page-heading { max-width: 760px; }
+    .auth-page-heading h1 {
+      margin: 0 0 8px;
+      color: var(--auth-ink);
+      font-size: 34px;
+      font-weight: 740;
+      line-height: 1.08;
+      letter-spacing: -.035em;
+    }
+    .auth-page-heading p {
+      margin: 0;
+      color: var(--auth-ink-secondary);
+      font-size: 16px;
+    }
+    .auth-status,
+    .auth-action-status {
+      margin: 20px 0 0;
+      padding: 12px 14px;
+      border: 1px solid var(--auth-line);
+      border-radius: 8px;
+      background: var(--auth-surface);
+      color: var(--auth-ink-secondary);
+      font-size: 15px;
+    }
+    .auth-status a { color: var(--auth-teal-dark); font-weight: 720; }
+    .auth-empty-state {
+      margin-top: 24px;
+      padding: 28px;
+      border: 1px dashed var(--auth-line-strong);
+      border-left: 3px solid var(--auth-teal);
+      border-radius: 12px;
+      background: rgb(255 254 250 / 82%);
+    }
+    .auth-empty-state h2 { margin: 0 0 6px; font-size: 22px; }
+    .auth-empty-state p { margin: 0; color: var(--auth-ink-secondary); }
+
+    .authenticated-shell .launch-unit {
+      position: relative;
+      display: grid;
+      grid-template-columns: minmax(0, 1.42fr) minmax(320px, .58fr);
+      margin-top: 24px;
+      overflow: hidden;
+      border: 1px solid var(--auth-line);
+      border-radius: 12px;
+      background: var(--auth-surface);
+      box-shadow: 0 6px 18px rgb(15 26 42 / 7%);
+    }
+    .authenticated-shell .launch-unit::before {
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 4px;
+      background: linear-gradient(180deg, var(--auth-teal) 0 76%, var(--auth-ink) 76% 100%);
+      content: "";
+    }
+    .authenticated-shell .product-summary {
+      display: grid;
+      grid-template-columns: 76px minmax(0, 1fr);
+      gap: 24px;
+      align-items: start;
+      padding: 38px 40px 38px 42px;
+    }
+    .authenticated-shell .product-mark {
+      width: 76px;
+      height: 76px;
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+      border: 1px solid #bfd4cf;
+      border-radius: 9px;
+      background: #edf6f2;
+    }
+    .authenticated-shell .quote-document-icon,
+    .auth-modal-backdrop .quote-document-icon { width: 52px; height: 52px; }
+    .quote-document-icon .icon-sheet { fill: var(--auth-surface); stroke: var(--auth-ink); stroke-width: 2.2; }
+    .quote-document-icon .icon-fold { stroke: var(--auth-teal); stroke-width: 2.4; }
+    .quote-document-icon .icon-line { stroke: #7c8d96; stroke-width: 2.1; }
+    .quote-document-icon .icon-column { stroke: var(--auth-teal); stroke-width: 1.9; }
+    .quote-document-icon .icon-total { stroke: var(--auth-teal); stroke-width: 3; }
+    .product-label { margin: 0 0 6px; color: var(--auth-teal-dark); font-size: 14px; font-weight: 780; }
+    .authenticated-shell .product-summary h2 {
+      max-width: 580px;
+      margin: 0 0 10px;
+      color: var(--auth-ink);
+      font-size: 27px;
+      font-weight: 740;
+      line-height: 1.14;
+      letter-spacing: -.025em;
+    }
+    .product-description { max-width: 620px; margin: 0; color: var(--auth-ink-secondary); font-size: 16px; line-height: 1.56; }
+    .launch-readiness {
+      display: grid;
+      align-content: center;
+      gap: 20px;
+      padding: 32px;
+      border-left: 1px solid var(--auth-line);
+      background: #f1f5f3;
+    }
+    .readiness-status { min-height: 54px; display: flex; align-items: center; gap: 12px; }
+    .readiness-status > span:last-child { display: grid; gap: 1px; }
+    .readiness-label { color: var(--auth-muted); font-size: 14px; }
+    .readiness-status strong { font-size: 16px; font-weight: 760; }
+    .auth-status-dot { width: 8px; height: 8px; display: inline-block; border-radius: 50%; background: var(--auth-success); }
+    .auth-status-dot.is-disabled { background: var(--auth-disabled); }
+    .auth-primary-button,
+    .auth-secondary-button,
+    .auth-danger-button {
+      min-height: 46px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 18px;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 750;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .auth-primary-button { border: 1px solid var(--auth-teal-dark); background: var(--auth-teal); color: #fff; }
+    .auth-primary-button:hover { background: var(--auth-teal-dark); }
+    .auth-secondary-button { border: 1px solid var(--auth-line-strong); background: var(--auth-surface); color: var(--auth-ink); }
+    .auth-secondary-button:hover { background: var(--auth-surface-soft); }
+    .auth-danger-button { border: 1px solid #883c36; background: var(--auth-danger); color: #fff; }
+    .launch-button { width: 100%; }
+    .launch-readiness.is-loading .launch-button { cursor: wait; opacity: .72; }
+    .launch-readiness.is-unavailable .launch-button { border-color: #9aa3ad; background: #9aa3ad; }
+    .launch-feedback {
+      padding: 11px 12px;
+      border: 1px solid #e2b8b2;
+      border-radius: 8px;
+      background: #fff3f0;
+      color: #7e302a;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+    .launch-feedback strong { display: block; color: #68241f; font-weight: 760; }
+    .launch-feedback span { display: block; }
+    .launch-feedback button { min-height: 44px; padding: 0; border: 0; background: transparent; color: #6d2924; font-weight: 780; text-decoration: underline; }
+    .launch-note {
+      grid-column: 1 / -1;
+      min-height: 58px;
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 11px 32px 11px 42px;
+      border-top: 1px solid var(--auth-line-strong);
+      background: linear-gradient(90deg, #eef5f1 0 70%, #f8faf7 70% 100%);
+      color: var(--auth-ink-secondary);
+      font-size: 14px;
+    }
+    .launch-note svg { width: 20px; height: 20px; flex: 0 0 auto; color: var(--auth-teal); }
+    .launch-note strong { color: var(--auth-ink); font-weight: 760; }
+
+    .admin-section-nav { border-bottom: 1px solid var(--auth-line); background: rgb(255 254 250 / 84%); }
+    .admin-nav-inner { height: 58px; display: flex; align-items: stretch; gap: 6px; }
+    .admin-nav-inner button {
+      position: relative;
+      min-height: 44px;
+      padding: 0 14px;
+      border: 0;
+      background: transparent;
+      color: var(--auth-ink-secondary);
+      font-size: 15px;
+      font-weight: 650;
+    }
+    .admin-nav-inner button::after { position: absolute; right: 0; bottom: -1px; left: 0; height: 3px; background: transparent; content: ""; }
+    .admin-nav-inner button[aria-selected="true"] { color: var(--auth-teal-dark); background: linear-gradient(90deg, var(--auth-teal) 0 3px, var(--auth-teal-soft) 3px 100%); }
+    .admin-nav-inner button[aria-selected="true"]::after { background: var(--auth-teal); }
+    .admin-main { padding-top: 42px; }
+    .mobile-admin-selector { display: none; }
+    .admin-page-header { display: flex; align-items: end; justify-content: space-between; gap: 32px; margin-bottom: 22px; }
+    .admin-page-header .auth-page-heading h1 { font-size: 34px; }
+    .auth-action-status { display: flex; align-items: center; gap: 9px; margin-bottom: 18px; }
+    .admin-panel { min-width: 0; }
+    .admin-panel > h2,
+    .admin-panel > .section-description { display: none; }
+    .admin-panel table {
+      width: 100%;
+      overflow: visible;
+      border: 1px solid #becac9;
+      border-radius: 12px;
+      border-collapse: separate;
+      border-spacing: 0;
+      background: var(--auth-surface);
+      box-shadow: 0 6px 18px rgb(15 26 42 / 7%);
+      table-layout: auto;
+    }
+    .admin-panel th,
+    .admin-panel td { padding: 12px 16px; border-top: 1px solid var(--auth-line-subtle); color: var(--auth-ink); font-size: 15px; vertical-align: middle; }
+    .admin-panel th {
+      height: 52px;
+      border-top: 0;
+      border-bottom: 1px solid var(--auth-line-strong);
+      background: #f0f3f1;
+      color: var(--auth-ink-secondary);
+      font-size: 14px;
+      font-weight: 750;
+      letter-spacing: .01em;
+      text-transform: none;
+    }
+    .admin-panel th:first-child { border-left: 3px solid var(--auth-teal); background: #e5efec; color: var(--auth-teal-dark); }
+    .admin-panel tbody tr:hover,
+    .admin-panel tbody tr:focus-within { background: linear-gradient(90deg, #eff7f4 0 38%, #f8faf9 38% 100%); box-shadow: inset 3px 0 0 rgb(11 117 109 / 72%); }
+    .admin-panel select,
+    .auth-modal-backdrop input,
+    .auth-modal-backdrop select {
+      min-height: 46px;
+      padding: 0 12px;
+      border: 1px solid var(--auth-line-strong);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--auth-ink);
+      font-size: 15px;
+    }
+    .admin-panel select { min-width: 110px; }
+    .authenticated-shell .member-identity { min-width: 260px; display: flex; align-items: center; gap: 13px; padding-right: 18px; border-right: 1px solid var(--auth-line-subtle); }
+    .authenticated-shell .member-avatar { width: 40px; height: 40px; display: grid; place-items: center; flex: 0 0 auto; border: 1px solid #c9dfda; border-radius: 10px; background: var(--auth-teal-soft); color: var(--auth-teal-dark); font-size: 14px; font-weight: 750; }
+    .authenticated-shell .member-identity > span:last-child { min-width: 0; }
+    .authenticated-shell .member-identity strong { display: block; color: var(--auth-ink); font-size: 16px; font-weight: 770; line-height: 1.35; }
+    .authenticated-shell .member-identity strong + span { display: block; overflow-wrap: anywhere; color: var(--auth-muted); font-size: 14px; }
+    .protected-label { display: inline-flex; min-height: 44px; align-items: center; color: var(--auth-muted); font-size: 14px; font-weight: 650; }
+    .authenticated-shell .action-menu { position: relative; display: inline-flex; }
+    .authenticated-shell .action-menu-panel { position: absolute; z-index: 20; top: calc(100% + 6px); right: 0; min-width: 190px; display: grid; gap: 4px; padding: 6px; border: 1px solid var(--auth-line-strong); border-radius: 8px; background: var(--auth-surface); box-shadow: 0 14px 36px rgb(15 26 42 / 16%); }
+    .authenticated-shell .action-menu-panel[hidden] { display: none; }
+    .authenticated-shell .action-menu-panel button { width: 100%; min-height: 44px; justify-content: flex-start; border: 0; background: transparent; }
+    .product-access-row { display: grid; grid-template-columns: minmax(0, 1fr) 170px 220px; gap: 24px; align-items: center; padding: 26px 28px; border: 1px solid var(--auth-line); border-left: 3px solid var(--auth-teal); border-radius: 12px; background: var(--auth-surface); box-shadow: 0 6px 18px rgb(15 26 42 / 7%); }
+    .product-access-product { min-width: 0; display: flex; align-items: center; gap: 18px; }
+    .authenticated-shell .product-mark.compact { width: 58px; height: 58px; }
+    .authenticated-shell .product-mark.compact .quote-document-icon { width: 36px; height: 36px; }
+    .product-access-product h3 { margin: 0 0 6px; color: var(--auth-ink); font-size: 22px; line-height: 1.2; }
+    .product-access-product p { margin: 0; color: var(--auth-ink-secondary); font-size: 15px; }
+    .product-access-state { display: grid; gap: 4px; }
+    .product-access-state > span { color: var(--auth-muted); font-size: 14px; }
+    .product-access-state strong { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 740; }
+    .product-access-state strong::before { width: 8px; height: 8px; border-radius: 50%; background: var(--auth-disabled); content: ""; }
+    .product-access-state strong[data-status="enabled"]::before { background: var(--auth-success); }
+    .surface-note { margin: 18px 0 0; color: var(--auth-ink-secondary); font-size: 14px; }
+    .admin-panel > .empty { padding: 30px; border: 1px dashed var(--auth-line-strong); border-left: 3px solid var(--auth-teal); border-radius: 12px; background: rgb(255 254 250 / 82%); color: var(--auth-ink-secondary); font-size: 15px; }
+    .pager { margin-top: 16px; display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+    .pager .empty { margin: 0 auto 0 0; color: var(--auth-muted); font-size: 14px; }
+
+    .auth-modal-backdrop { background: rgb(15 26 42 / 28%); }
+    .auth-modal-backdrop .action-modal { width: min(580px, calc(100vw - 48px)); max-height: min(760px, calc(100vh - 48px)); overflow: auto; border: 1px solid #ccd5d8; border-top: 3px solid var(--auth-teal); border-radius: 12px; background: var(--auth-surface); box-shadow: 0 24px 70px rgb(15 26 42 / 24%); }
+    .auth-modal-backdrop .member-action-modal { width: min(520px, calc(100vw - 48px)); }
+    .auth-modal-backdrop .modal-header { align-items: flex-start; padding: 20px 22px 17px; }
+    .auth-modal-backdrop .modal-kicker { margin: 0 0 3px; color: var(--auth-teal-dark); font-size: 14px; font-weight: 780; }
+    .auth-modal-backdrop .modal-header h2 { font-size: 22px; }
+    .auth-modal-backdrop .modal-close { width: 44px; min-height: 44px; margin: -8px -8px 0 0; font-size: 24px; }
+    .auth-modal-backdrop .modal-body { padding: 18px 22px; }
+    .auth-modal-backdrop .modal-body > p { margin: 0; color: var(--auth-ink-secondary); font-size: 15px; }
+    .auth-modal-backdrop .field-stack label { color: var(--auth-ink); font-size: 14px; font-weight: 750; }
+    .auth-modal-backdrop .modal-actions { gap: 10px; }
+    .auth-modal-backdrop .modal-footer { padding: 16px 22px 20px; background: var(--auth-surface); }
+    .inline-feedback { padding: 10px 12px; border-radius: 8px; background: #eaf7ef; color: #145d3f !important; font-size: 14px !important; }
+    .modal-error { color: #7e302a !important; }
+
+    @media (max-width: 980px) {
+      .auth-account-copy { display: none; }
+      .auth-account-context { gap: 10px; }
+      .product-access-row { grid-template-columns: minmax(0, 1fr) 150px; }
+      .product-access-row > button { grid-column: 2; }
+    }
+
+    @media (max-width: 760px) {
+      .authenticated-shell { background: var(--auth-paper); }
+      .auth-app-bar { min-height: 58px; }
+      .auth-bar-inner,
+      .admin-nav-inner,
+      .auth-main { width: 100%; }
+      .auth-bar-inner { min-height: 55px; flex-wrap: wrap; gap: 0; padding: 0 16px; }
+      .auth-brand { min-height: 55px; gap: 8px; font-size: 16px; }
+      .auth-brand img { width: 30px; height: 30px; }
+      .auth-account-context { order: 2; width: calc(100% + 32px); min-height: 56px; display: grid; grid-template-columns: minmax(0, 1fr) 78px auto auto; gap: 0; margin: 0 -16px; border-top: 1px solid var(--auth-line); background: var(--auth-surface); }
+      .auth-account-context > * { min-width: 0; padding: 7px 12px; }
+      .auth-account-context > * + * { border-left: 1px solid var(--auth-line); }
+      .auth-context-control,
+      .auth-context-value { align-content: center; }
+      .auth-context-control select { width: 100%; min-width: 0; max-width: 100%; padding-left: 0; overflow: hidden; text-overflow: ellipsis; font-size: 14px; }
+      .auth-context-value strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+      .auth-context-control > span,
+      .auth-context-value > span { font-size: 14px; }
+      .auth-account-copy { display: none; }
+      .auth-header-link,
+      .auth-header-button { min-width: 52px; padding: 0 8px; font-size: 13px; }
+      .auth-header-link { font-size: 0; }
+      .auth-header-link::after { font-size: 13px; content: "Admin"; }
+      .auth-main { padding: 24px 16px 48px; }
+      .launcher-main { min-height: 0; display: block; }
+      .auth-page-heading h1 { font-size: 28px; line-height: 1.12; }
+      .auth-page-heading p { font-size: 15px; }
+      .authenticated-shell .launch-unit { grid-template-columns: 1fr; margin-top: 22px; }
+      .authenticated-shell .launch-unit::before { width: 3px; }
+      .authenticated-shell .product-summary { grid-template-columns: 38px minmax(0, 1fr); gap: 8px 12px; padding: 22px 20px 20px 22px; }
+      .authenticated-shell .product-copy { display: contents; }
+      .authenticated-shell .product-mark { width: 38px; height: 38px; border: 0; background: transparent; }
+      .authenticated-shell .product-mark .quote-document-icon { width: 34px; height: 34px; }
+      .product-label { align-self: center; margin: 0; }
+      .authenticated-shell .product-summary h2 { grid-column: 1 / -1; margin: 0; font-size: 24px; line-height: 1.16; }
+      .product-description { grid-column: 1 / -1; font-size: 15px; line-height: 1.48; }
+      .launch-readiness { gap: 14px; padding: 16px 20px 18px 22px; border-top: 1px solid var(--auth-line); border-left: 0; }
+      .readiness-status { min-height: 42px; }
+      .launch-button { min-height: 48px; }
+      .launch-note { min-height: 0; align-items: flex-start; padding: 13px 20px 14px 22px; background: #f3f8f5; line-height: 1.42; }
+      .launch-note span { display: grid; gap: 1px; }
+      .admin-section-nav { display: none; }
+      .admin-main { padding-top: 16px; }
+      .mobile-admin-selector { display: grid; gap: 6px; margin-bottom: 22px; color: var(--auth-muted); font-size: 14px; }
+      .mobile-admin-selector select { width: 100%; min-height: 48px; padding: 0 14px; border: 1px solid var(--auth-line-strong); border-radius: 8px; background: var(--auth-surface); color: var(--auth-ink); font-size: 15px; font-weight: 720; }
+      .admin-page-header { align-items: stretch; flex-direction: column; gap: 16px; margin-bottom: 20px; }
+      .admin-page-header .auth-page-heading h1 { font-size: 28px; }
+      .admin-page-header .auth-primary-button { width: 100%; min-height: 48px; }
+      .admin-panel table,
+      .admin-panel thead,
+      .admin-panel tbody,
+      .admin-panel tr,
+      .admin-panel th,
+      .admin-panel td { display: block; width: 100%; }
+      .admin-panel table { overflow: visible; }
+      .admin-panel thead { display: none; }
+      .admin-panel tr { padding: 14px 16px; border-bottom: 1px solid var(--auth-line-subtle); }
+      .admin-panel tr:last-child { border-bottom: 0; }
+      .admin-panel td { min-height: 48px; padding: 9px 0; border: 0; }
+      .admin-panel td::before { display: block; margin-bottom: 4px; color: var(--auth-muted); content: attr(data-label); font-size: 14px; font-weight: 720; text-transform: none; }
+      .authenticated-shell .member-identity { min-width: 0; align-items: flex-start; padding: 0; border: 0; }
+      .authenticated-shell .member-identity strong { font-size: 16px; }
+      .admin-panel select { width: 100%; }
+      .authenticated-shell .action-menu,
+      .authenticated-shell .action-menu-panel { position: static; width: 100%; }
+      .authenticated-shell .action-menu-panel { margin-top: 8px; }
+      .product-access-row { grid-template-columns: 1fr; gap: 18px; padding: 20px; }
+      .product-access-row > button { grid-column: auto; width: 100%; min-height: 48px; }
+      .product-access-product { align-items: flex-start; gap: 14px; }
+      .authenticated-shell .product-mark.compact { width: 46px; height: 46px; border: 1px solid #bfd4cf; background: #edf6f2; }
+      .authenticated-shell .product-mark.compact .quote-document-icon { width: 30px; height: 30px; }
+      .product-access-product h3 { font-size: 20px; }
+      .product-access-product p { font-size: 14px; }
+      .product-access-state { grid-template-columns: 110px 1fr; align-items: center; }
+      .pager { align-items: stretch; flex-wrap: wrap; }
+      .pager .empty { width: 100%; margin: 0; }
+      .pager .auth-secondary-button,
+      .pager .secondary-action { flex: 1; }
+      .auth-modal-backdrop { align-items: end; padding: 12px; }
+      .auth-modal-backdrop .action-modal,
+      .auth-modal-backdrop .member-action-modal { width: 100%; max-height: calc(100vh - 24px); border-radius: 12px; }
+      .auth-modal-backdrop .modal-actions { display: grid; grid-template-columns: 1fr; }
+      .auth-modal-backdrop .modal-actions button { width: 100%; min-height: 48px; }
+    }
+
+    @media (max-width: 350px) {
+      .auth-bar-inner { padding-right: 12px; padding-left: 12px; }
+      .auth-account-context { width: calc(100% + 23px); grid-template-columns: minmax(0, 1fr) 64px 52px 55px; margin-right: -11px; margin-left: -12px; }
+      .auth-header-link, .auth-header-button { min-width: 0; }
+      .auth-account-context > * { padding-right: 8px; padding-left: 8px; }
+      .auth-main { padding-right: 12px; padding-left: 12px; }
+      .authenticated-shell .product-summary { grid-template-columns: 42px minmax(0, 1fr); gap: 12px; padding: 19px 16px 18px 18px; }
+      .authenticated-shell .product-summary h2 { font-size: 22px; }
+      .product-description { font-size: 14px; }
+      .launch-readiness { padding: 16px 16px 18px 18px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .authenticated-shell *,
+      .authenticated-shell *::before,
+      .authenticated-shell *::after,
+      .auth-modal-backdrop *,
+      .auth-modal-backdrop *::before,
+      .auth-modal-backdrop *::after {
+        scroll-behavior: auto !important;
+        transition-duration: .01ms !important;
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
       }
     }
   </style>

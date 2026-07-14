@@ -1,5 +1,7 @@
 # Swooshz Platform — Design Direction and Page-by-Page UX Spec (Internal Alpha)
 
+> Product-direction notice (2026-07-14): the SEO/GEO placeholder direction below is retired historical design-study context. It must not be implemented or shown on customer-facing Platform surfaces; the current product is Swooshz Quote Auto Generator.
+
 Status: DRAFT for approval — design direction and UX concepts only, no production code.
 Revision 2026-07-05: Add member redesigned around the pending-approval membership
 model (the previous add-existing-user flow is bootstrap-only, not target UX);

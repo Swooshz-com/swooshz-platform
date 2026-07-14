@@ -2,7 +2,7 @@
 
 Production readiness is not approved. This document is repo-side deployment readiness only. It does not deploy Swooshz Platform, create a VPS, configure Coolify, configure DNS/TLS, configure OAuth, run hosted smoke, or approve production launch.
 
-The shared Hostinger/Coolify foundation is not created yet. That future VPS/Coolify foundation is shared across Swooshz Platform, Swooshz Quote Auto Generator, and SKR; it must not become Platform-only. Swooshz Quote Auto Generator remains a separate product app launched from Platform, not embedded in Platform. SKR remains a separate website/app. SEO/GEO/Seozilla remains planning-only and vendor pending.
+The shared Hostinger/Coolify foundation is not created yet. That future VPS/Coolify foundation is shared across Swooshz Platform, Swooshz Quote Auto Generator, and SKR; it must not become Platform-only. Swooshz Quote Auto Generator remains a separate product app launched from Platform, not embedded in Platform. SKR remains a separate website/app. The SEO/GEO/Seozilla product direction is retired and must remain absent from customer-facing Platform surfaces.
 
 ## App Type And Build Strategy
 
