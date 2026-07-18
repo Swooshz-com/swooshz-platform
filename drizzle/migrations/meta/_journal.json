@@ -50,6 +50,13 @@
       "when": 1783587520445,
       "tag": "0006_optimal_tomorrow_man",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1784354477743,
+      "tag": "0007_remove_legacy_kqag_tables",
+      "breakpoints": true
     }
   ]
 }
