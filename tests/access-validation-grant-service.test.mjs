@@ -55,6 +55,21 @@ test("live validation fails closed for every authoritative access invalidation",
   assert.equal(await validateAccessValidationGrant(wrongWorkspace.dependencies, { validationGrantId: wrongWorkspace.grant.id, workspaceId: "workspace_other", appKey: "sqag", now }), null);
 });
 
+test("live validation returns the role from the final membership read", async () => {
+  const fixture = createFixture();
+  fixture.grant.consumedAt = now;
+  let membershipReads = 0;
+  fixture.repositories.memberships.findForUserInWorkspace = async () => {
+    membershipReads += 1;
+    return { ...fixture.membership, role: membershipReads === 1 ? "owner" : "member" };
+  };
+
+  const validation = await validateAccessValidationGrant(fixture.dependencies, { validationGrantId: fixture.grant.id, workspaceId: "workspace_1", appKey: "sqag", now });
+
+  assert.equal(membershipReads, 2);
+  assert.equal(validation?.currentRole, "member");
+});
+
 test("expired handle, revoke, and repository failure remain fail closed", async () => {
   const expired = createFixture();
   expired.grant.handleHash = handleHash; expired.grant.handleExpiresAt = "2026-07-20T23:59:00.000Z";

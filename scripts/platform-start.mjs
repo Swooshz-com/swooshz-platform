@@ -93,6 +93,7 @@ export function createPlatformStartSqagBrowserLaunchHttpClient(options = {}) {
       const response = await fetchForSqag(request.url, {
         method: "POST",
         headers: request.headers,
+        redirect: "manual",
       });
 
       return {

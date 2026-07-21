@@ -211,6 +211,7 @@ test("SQAG handoff HTTP client does not relay upstream Set-Cookie values", async
     init: {
       method: "POST",
       headers: { "x-app-launch-token": "synthetic-launch-token" },
+      redirect: "manual",
     },
   }]);
 });
