@@ -31,36 +31,36 @@ The auth/session security contract documents implemented auth/session behavior, 
 - PostgreSQL provider and backup/restore owner: approve the recommended Neon target or a replacement provider, backup cadence, restore owner, and restore test process. Recommended non-secret target: project `swooshz-platform`, region `Singapore / aws-ap-southeast-1`, database `swooshz_platform`, role/user `platform_app`, pooled `DATABASE_URL` for runtime.
 - Migration approver and rollback approver: decide who approves manual migrations and who can approve rollback or fix-forward.
 - OIDC provider/client owner: decide who owns provider registration, client settings, and hosted auth configuration outside this repo.
-- Exact hosted redirect URI placeholder approval process: decide how `<hosted-oidc-redirect-uri>` becomes the reviewed hosted callback value outside repo notes.
+- Exact hosted callback registration owner: decide who registers `https://swooshz.com/api/platform/auth/callback` with the OIDC provider outside the repo.
 - Secret storage owner and rotation owner: decide where secrets are stored, who can read them, and who rotates them.
 - Log retention/access owner: decide who owns hosted logs, retention, access review, and redaction process.
 - First owner/admin identity approval outside repo: decide the first internal owner/admin identity outside source control.
 - Add-existing-user internal alpha process owner: decide who runs and reviews the add-existing-user process after teammates sign in once.
-- SQAG handoff mode decision: `manual` first vs `server_handoff`: decide whether hosted alpha starts with manual handoff or reviewed server handoff.
-- Cross-host SQAG session/cookie strategy decision before `server_handoff`: decide the hosted browser/session/cookie strategy before enabling cross-host handoff.
+- SQAG `server_handoff` smoke approval: decide who approves the implemented production handoff after hosted evidence passes.
+- Host-only SQAG session/finalization evidence: decide who reviews the two host-only cookies, header-only finalization, and live-validation smoke evidence.
 - Incident contact/escalation path: decide who receives hosted internal-alpha incidents and how escalation happens.
 - Go/no-go approver: decide who can approve starting hosted internal-alpha execution after all required evidence is reviewed.
 
 ## Approval Checklist
 
-Every row uses placeholders only. Fill actual owners, providers, domains, identities, secrets, and evidence outside the repo.
+Every private or operational row uses placeholders only. Fill actual owners, providers, identities, secrets, and evidence outside the repo; public origins use the canonical routing contract.
 
 | Decision item | Required owner/approver placeholder | Evidence required | Repo impact | Status placeholder |
 | --- | --- | --- | --- | --- |
 | Platform host/provider choice | `<owner-or-approver-placeholder>` | `<approved-platform-hosting-target-evidence>` | Docs only; no deployment config in this PR. | `<status-placeholder>` |
-| SQAG host/provider choice | `<owner-or-approver-placeholder>` | `<approved-sqag-hosting-target-evidence>` | Platform handoff placeholders only; no SQAG repo change. | `<status-placeholder>` |
+| SQAG host/provider choice | `<owner-or-approver-placeholder>` | `<approved-sqag-hosting-target-evidence>` | Canonical `https://quote.swooshz.com` handoff contract only; no SQAG repo change. | `<status-placeholder>` |
 | TLS/reverse proxy approach | `<owner-or-approver-placeholder>` | `<approved-tls-reverse-proxy-evidence>` | Hosted docs only; no proxy config. | `<status-placeholder>` |
 | Process manager/container approach | `<owner-or-approver-placeholder>` | `<approved-process-manager-or-container-evidence>` | Hosted docs only; no runtime supervisor config. | `<status-placeholder>` |
 | PostgreSQL provider and backup/restore owner | `<owner-or-approver-placeholder>` | `<approved-neon-target-backup-restore-evidence>` | Hosted docs and readiness checks only; no Neon creation, no secrets, no deployment. | `<status-placeholder>` |
 | Migration approver and rollback approver | `<owner-or-approver-placeholder>` | `<approved-migration-rollback-evidence>` | Migrations stay explicit/manual only. | `<status-placeholder>` |
 | OIDC provider/client owner | `<owner-or-approver-placeholder>` | `<approved-oidc-client-evidence>` | Hosted docs only; no provider calls. | `<status-placeholder>` |
-| Exact hosted redirect URI placeholder approval process | `<owner-or-approver-placeholder>` | `<approved-hosted-redirect-uri-process-evidence>` | Placeholder docs only; no real hosted URL. | `<status-placeholder>` |
+| Exact hosted callback registration owner | `<owner-or-approver-placeholder>` | `<approved-hosted-redirect-uri-process-evidence>` | Register `https://swooshz.com/api/platform/auth/callback`; no provider action in this repo. | `<status-placeholder>` |
 | Secret storage owner and rotation owner | `<owner-or-approver-placeholder>` | `<approved-secret-storage-rotation-evidence>` | Hosted docs only; no secrets committed. | `<status-placeholder>` |
 | Log retention/access owner | `<owner-or-approver-placeholder>` | `<approved-log-retention-access-evidence>` | Hosted docs only; no log backend config. | `<status-placeholder>` |
 | First owner/admin identity approval outside repo | `<owner-or-approver-placeholder>` | `<approved-first-owner-admin-identity-evidence>` | Hosted docs only; no real identity values. | `<status-placeholder>` |
 | Add-existing-user internal alpha process owner | `<owner-or-approver-placeholder>` | `<approved-add-existing-user-process-evidence>` | Existing Platform flow only; no invitation delivery. | `<status-placeholder>` |
-| SQAG handoff mode decision: `manual` first vs `server_handoff` | `<owner-or-approver-placeholder>` | `<approved-sqag-handoff-mode-evidence>` | Hosted docs only; no SQAG call. | `<status-placeholder>` |
-| Cross-host SQAG session/cookie strategy decision before `server_handoff` | `<owner-or-approver-placeholder>` | `<approved-cross-host-session-cookie-evidence>` | Hosted docs only; no session strategy code. | `<status-placeholder>` |
+| SQAG `server_handoff` smoke approval | `<owner-or-approver-placeholder>` | `<approved-sqag-handoff-mode-evidence>` | Hosted evidence only; no SQAG call from this record. | `<status-placeholder>` |
+| Host-only SQAG session/finalization evidence | `<owner-or-approver-placeholder>` | `<approved-cross-host-session-cookie-evidence>` | Review the implemented contract and hosted smoke; no live action from this record. | `<status-placeholder>` |
 | Incident contact/escalation path | `<owner-or-approver-placeholder>` | `<approved-incident-escalation-evidence>` | Hosted docs only; no alerting config. | `<status-placeholder>` |
 | Go/no-go approver | `<owner-or-approver-placeholder>` | `<approved-go-no-go-evidence>` | Hosted execution remains blocked until approved outside repo. | `<status-placeholder>` |
 
@@ -68,13 +68,13 @@ Every row uses placeholders only. Fill actual owners, providers, domains, identi
 
 This record is not approved by this PR. It documents what must be approved outside the repo before hosted execution. Do not deploy until every required decision is approved outside repo and the hosted smoke checklist has a reviewed execution window.
 
-Approval evidence should stay outside this repo when it contains real providers, domains, identities, URLs, credentials, database details, OAuth values, cookies, tokens, provider identity material, log exports, or private operational details.
+Approval evidence should stay outside this repo when it contains private provider configuration, identities, credentials, database details, OAuth values, cookies, tokens, provider identity material, log exports, or private operational details. Canonical public origins remain documented in the repo.
 
 ## Platform And SQAG Boundary
 
 Platform does not own SQAG quote data.
 
-SQAG deployment/runtime/data decisions remain outside this Platform PR except for Platform handoff placeholders. Platform may document the handoff mode decision and the placeholder for the SQAG hosted base, but it does not decide or implement SQAG runtime operations in this repo.
+SQAG deployment/runtime/data decisions remain outside this Platform PR except for the Platform handoff contract. Platform implements and documents its `server_handoff` boundary to the canonical SQAG origin, but it does not decide or implement SQAG runtime operations in this repo.
 
 No SQAG app-data editing, SQAG profiles/pricing, quote history, generated artifacts, or quote sessions move into Platform.
 

@@ -8,7 +8,9 @@ export type PlatformRuntimeSecretConfigErrorCode =
   | "missing_auth_state_hash_secret"
   | "invalid_auth_state_hash_secret"
   | "missing_app_launch_token_hash_secret"
-  | "invalid_app_launch_token_hash_secret";
+  | "invalid_app_launch_token_hash_secret"
+  | "missing_platform_sqag_service_secret"
+  | "invalid_platform_sqag_service_secret";
 
 export class PlatformRuntimeSecretConfigError extends Error {
   readonly code: PlatformRuntimeSecretConfigErrorCode;
@@ -25,16 +27,19 @@ export interface PlatformRuntimeSecretConfig {
   csrfTokenHashSecret: string;
   authStateHashSecret?: string;
   appLaunchTokenHashSecret?: string;
+  platformSqagServiceSecret?: string;
 }
 
 export interface PlatformRuntimeSecretConfigReadOptions {
   requireAuthStateHashSecret?: boolean;
   requireAppLaunchTokenHashSecret?: boolean;
+  requirePlatformSqagServiceSecret?: boolean;
 }
 
 const minimumCsrfTokenHashSecretLength = 32;
 const minimumAuthStateHashSecretLength = 32;
 const minimumAppLaunchTokenHashSecretLength = 32;
+const minimumPlatformSqagServiceSecretLength = 32;
 
 export function readPlatformRuntimeSecretConfig(
   env: PlatformRuntimeSecretEnv,
@@ -43,6 +48,7 @@ export function readPlatformRuntimeSecretConfig(
   const csrfTokenHashSecret = readString(env.CSRF_TOKEN_HASH_SECRET);
   const authStateHashSecret = readString(env.AUTH_STATE_HASH_SECRET);
   const appLaunchTokenHashSecret = readString(env.APP_LAUNCH_TOKEN_HASH_SECRET);
+  const platformSqagServiceSecret = readString(env.PLATFORM_SQAG_SERVICE_SECRET);
 
   if (!csrfTokenHashSecret) {
     throw new PlatformRuntimeSecretConfigError("missing_csrf_token_hash_secret");
@@ -63,6 +69,13 @@ export function readPlatformRuntimeSecretConfig(
     throw new PlatformRuntimeSecretConfigError("invalid_auth_state_hash_secret");
   }
 
+  if (options.requirePlatformSqagServiceSecret && !platformSqagServiceSecret) {
+    throw new PlatformRuntimeSecretConfigError("missing_platform_sqag_service_secret");
+  }
+  if (platformSqagServiceSecret && platformSqagServiceSecret.length < minimumPlatformSqagServiceSecretLength) {
+    throw new PlatformRuntimeSecretConfigError("invalid_platform_sqag_service_secret");
+  }
+
   if (options.requireAppLaunchTokenHashSecret && !appLaunchTokenHashSecret) {
     throw new PlatformRuntimeSecretConfigError("missing_app_launch_token_hash_secret");
   }
@@ -80,6 +93,7 @@ export function readPlatformRuntimeSecretConfig(
     csrfTokenHashSecret,
     ...(authStateHashSecret ? { authStateHashSecret } : {}),
     ...(appLaunchTokenHashSecret ? { appLaunchTokenHashSecret } : {}),
+    ...(platformSqagServiceSecret ? { platformSqagServiceSecret } : {}),
   };
 }
 

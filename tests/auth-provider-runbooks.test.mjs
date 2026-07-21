@@ -49,7 +49,7 @@ test("Google OIDC runbook documents exact endpoint env mapping with placeholders
     "AUTH_USERINFO_URL=https://openidconnect.googleapis.com/v1/userinfo",
     "AUTH_CLIENT_ID=<google-oauth-client-id>",
     "AUTH_CLIENT_SECRET=<google-oauth-client-secret>",
-    "AUTH_REDIRECT_URI=<platform-base-url>/api/platform/auth/callback",
+    "AUTH_REDIRECT_URI=https://swooshz.com/api/platform/auth/callback",
     "AUTH_ALLOWED_EMAILS=<comma-separated-allowlisted-emails>",
     "AUTH_ALLOWED_DOMAINS=<comma-separated-allowed-domains>",
   ];

@@ -12,13 +12,13 @@ const requiredDecisionItems = [
   "PostgreSQL provider and backup/restore owner",
   "Migration approver and rollback approver",
   "OIDC provider/client owner",
-  "Exact hosted redirect URI placeholder approval process",
+  "Exact hosted callback registration owner",
   "Secret storage owner and rotation owner",
   "Log retention/access owner",
   "First owner/admin identity approval outside repo",
   "Add-existing-user internal alpha process owner",
-  "SQAG handoff mode decision: `manual` first vs `server_handoff`",
-  "Cross-host SQAG session/cookie strategy decision before `server_handoff`",
+  "SQAG `server_handoff` smoke approval",
+  "Host-only SQAG session/finalization evidence",
   "Incident contact/escalation path",
   "Go/no-go approver",
 ];
@@ -76,7 +76,7 @@ test("hosted operator decision record confirms Platform and SQAG boundaries", as
   assert.match(record, /Platform does not own SQAG quote data/i);
   assert.match(
     record,
-    /SQAG deployment\/runtime\/data decisions remain outside this Platform PR except for Platform handoff placeholders/i,
+    /SQAG deployment\/runtime\/data decisions remain outside this Platform PR except for the Platform handoff contract/i,
   );
   assert.match(
     record,
@@ -87,7 +87,10 @@ test("hosted operator decision record confirms Platform and SQAG boundaries", as
 test("hosted operator decision record uses placeholders and avoids private material", async () => {
   const record = await readDecisionRecord();
 
-  assert.doesNotMatch(record, /https?:\/\/(?!<)[^\s>)]+/i);
+  const withoutApprovedPublicOrigins = record
+    .replaceAll("https://swooshz.com", "<platform-origin>")
+    .replaceAll("https://quote.swooshz.com", "<sqag-origin>");
+  assert.doesNotMatch(withoutApprovedPublicOrigins, /https?:\/\/(?!<)[^\s>)]+/i);
   assert.doesNotMatch(record, /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
   assert.doesNotMatch(record, /postgres(?:ql)?:\/\/[^\s>]+@/i);
   assert.doesNotMatch(record, /sk-[A-Za-z0-9]{20,}/);

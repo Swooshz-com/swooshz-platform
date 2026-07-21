@@ -41,7 +41,7 @@ AUTH_JWKS_URL=https://www.googleapis.com/oauth2/v3/certs
 AUTH_USERINFO_URL=https://openidconnect.googleapis.com/v1/userinfo
 AUTH_CLIENT_ID=<google-oauth-client-id>
 AUTH_CLIENT_SECRET=<google-oauth-client-secret>
-AUTH_REDIRECT_URI=<platform-base-url>/api/platform/auth/callback
+AUTH_REDIRECT_URI=https://swooshz.com/api/platform/auth/callback
 AUTH_ALLOWED_EMAILS=<comma-separated-allowlisted-emails>
 AUTH_ALLOWED_DOMAINS=<comma-separated-allowed-domains>
 ```
@@ -86,7 +86,7 @@ Use this runbook together with `docs/internal-platform-smoke-runbook.md`.
 
 ## Troubleshooting
 
-- `redirect_uri_mismatch`: confirm the Google OAuth client authorized redirect URI exactly matches `<platform-base-url>/api/platform/auth/callback` and `AUTH_REDIRECT_URI`.
+- `redirect_uri_mismatch`: confirm the Google OAuth client authorized redirect URI exactly matches `https://swooshz.com/api/platform/auth/callback` and `AUTH_REDIRECT_URI`. Never register `www.swooshz.com` as a callback.
 - Google consent screen not configured or not published for external users: finish the consent screen setup or keep testing within the configured audience.
 - Test user not added while the app is in testing mode: add the placeholder tester account in Google Cloud before retrying.
 - Invalid client id or secret: replace the local env values from the Google OAuth client without pasting the values into docs or logs.

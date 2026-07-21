@@ -287,6 +287,21 @@ test("app shell does not persist launch tokens in browser storage or URLs", () =
   assert.doesNotMatch(html, /URLSearchParams\([^)]*launchToken/s);
 });
 
+test("app shell finalizes SQAG on its exact origin with credentials and a header-only handle", () => {
+  const html = renderAppShellPage();
+
+  assert.match(html, /response\.headers\.get\("x-sqag-finalization-handle"\)/);
+  assert.match(html, /const launchUrl = new URL\(payload\.launchUrl\)/);
+  assert.match(html, /const finalizationUrl = new URL\(payload\.finalizationUrl\)/);
+  assert.match(html, /launchUrl\.origin !== finalizationUrl\.origin/);
+  assert.match(html, /launchUrl\.origin === window\.location\.origin/);
+  assert.match(html, /fetch\(finalizationUrl\.toString\(\), \{[\s\S]*method: "POST"[\s\S]*credentials: "include"[\s\S]*"x-sqag-finalization-handle": finalizationHandle[\s\S]*\}\)/);
+  assert.match(html, /finalizationHandle = null;[\s\S]*if \(!finalizeResponse\.ok\)/);
+  assert.match(html, /window\.location\.assign\(launchUrl\.toString\(\)\)/);
+  assert.doesNotMatch(html, /document\.cookie|Domain=\.swooshz\.com|localStorage|sessionStorage/);
+  assert.doesNotMatch(html, /[?&#](?:launchToken|finalizationHandle)=/);
+});
+
 test("admin shell references protected admin APIs and CSRF-protected actions", () => {
   const html = renderAdminShellPage();
 

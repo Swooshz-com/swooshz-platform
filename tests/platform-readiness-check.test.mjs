@@ -49,7 +49,7 @@ test("readiness check passes for complete hosted internal-alpha env without prin
   assertNoPrivateMaterial(lines.join("\n"));
 });
 
-test("readiness check accepts multiple HTTPS origin entries with optional ports", () => {
+test("readiness check rejects alternate and ported Platform origins", () => {
   const result = createPlatformReadinessReport({
     ...completeEnv(),
     PLATFORM_ALLOWED_ORIGINS: [
@@ -58,7 +58,8 @@ test("readiness check accepts multiple HTTPS origin entries with optional ports"
     ].join(","),
   });
 
-  assert.equal(result.ok, true);
+  assert.equal(result.ok, false);
+  assertInvalid(result, "PLATFORM_ALLOWED_ORIGINS", "must_be_canonical_platform_apex");
 });
 
 test("readiness check fails with safe missing and invalid env names only", () => {
@@ -188,6 +189,11 @@ test("hosted readiness rejects unsafe URL and origin shapes", () => {
       "query_or_fragment_not_allowed",
     ],
     [
+      "PLATFORM_PUBLIC_BASE_URL",
+      "https://user:password@swooshz.com",
+      "credentials_not_allowed",
+    ],
+    [
       "AUTH_REDIRECT_URI",
       [callbackBase, "?code=private-code"].join(""),
       "query_or_fragment_not_allowed",
@@ -196,6 +202,11 @@ test("hosted readiness rejects unsafe URL and origin shapes", () => {
       "AUTH_REDIRECT_URI",
       [callbackBase, "#fragment"].join(""),
       "query_or_fragment_not_allowed",
+    ],
+    [
+      "AUTH_REDIRECT_URI",
+      "https://user:password@swooshz.com/api/platform/auth/callback",
+      "credentials_not_allowed",
     ],
     [
       "AUTH_REDIRECT_URI",
@@ -310,8 +321,8 @@ function completeEnv() {
     NODE_ENV: "production",
     PLATFORM_HTTP_HOST: "0.0.0.0",
     PLATFORM_HTTP_PORT: "4317",
-    PLATFORM_PUBLIC_BASE_URL: "https://platform.placeholder.invalid",
-    PLATFORM_ALLOWED_ORIGINS: "https://platform.placeholder.invalid",
+    PLATFORM_PUBLIC_BASE_URL: "https://swooshz.com",
+    PLATFORM_ALLOWED_ORIGINS: "https://swooshz.com",
     PLATFORM_COOKIE_SECURE: "true",
     DATABASE_URL: privateValues[0],
     DATABASE_SSL_MODE: "require",
@@ -329,11 +340,12 @@ function completeEnv() {
     AUTH_USERINFO_URL: "https://issuer.placeholder.invalid/oauth2/userinfo",
     AUTH_CLIENT_ID: "placeholder-client-id",
     AUTH_CLIENT_SECRET: privateValues[2],
-    AUTH_REDIRECT_URI: "https://platform.placeholder.invalid/api/platform/auth/callback",
+    AUTH_REDIRECT_URI: "https://swooshz.com/api/platform/auth/callback",
     AUTH_ALLOWED_EMAILS: "<comma-separated-allowlisted-emails>",
     AUTH_ALLOWED_DOMAINS: "",
     PLATFORM_SQAG_LAUNCH_MODE: "server_handoff",
-    PLATFORM_SQAG_APP_BASE_URL: "https://sqag.placeholder.invalid",
+    PLATFORM_SQAG_APP_BASE_URL: "https://quote.swooshz.com",
+    PLATFORM_SQAG_SERVICE_SECRET: "private-sqag-service-secret-value-32-chars",
     PLATFORM_SEED_CONFIRM: "seed-reviewed-internal-access",
     PLATFORM_SEED_USER_EMAIL: "<hosted-owner-admin-email-after-login>",
     PLATFORM_SEED_WORKSPACE_SLUG: "<reviewed-workspace-slug>",

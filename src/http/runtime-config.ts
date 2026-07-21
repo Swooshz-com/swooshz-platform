@@ -118,6 +118,18 @@ function readPublicBaseUrl(
     throw new NodePlatformRuntimeConfigError("invalid_public_base_url");
   }
 
+  if (options.production) {
+    const parsed = new URL(raw);
+    if (
+      parsed.origin !== "https://swooshz.com" ||
+      parsed.pathname !== "/" ||
+      parsed.username ||
+      parsed.password
+    ) {
+      throw new NodePlatformRuntimeConfigError("invalid_public_base_url");
+    }
+  }
+
   return raw;
 }
 
@@ -162,9 +174,13 @@ function readAllowedOrigins(
     throw new NodePlatformRuntimeConfigError("missing_allowed_origins");
   }
 
-  return origins.map((origin) =>
+  const normalized = origins.map((origin) =>
     normalizeAllowedOrigin(origin, options.production),
   );
+  if (options.production && (normalized.length !== 1 || normalized[0] !== "https://swooshz.com")) {
+    throw new NodePlatformRuntimeConfigError("invalid_allowed_origin");
+  }
+  return normalized;
 }
 
 function normalizeAllowedOrigin(value: string, production: boolean): string {

@@ -127,11 +127,11 @@ The database stores only a versioned HMAC token hash plus session, user, workspa
 
 ## SQAG Browser Launch Open Endpoint
 
-`POST /api/platform/apps/launch/open?workspaceId=...&appKey=sqag` is the browser-safe local UAT handoff for SQAG. It requires the active Platform browser session cookie, Origin/Referer validation, and a CSRF token. It re-checks protected SQAG app access by creating a normal Platform launch intent server-side.
+`POST /api/platform/apps/launch/open?workspaceId=...&appKey=sqag` is the implemented browser-safe hosted handoff for SQAG. It requires the active apex Platform browser session, Origin/Referer validation, and CSRF, then re-checks protected SQAG access before the server-to-server launch.
 
-When explicitly configured with `PLATFORM_SQAG_LAUNCH_MODE=server_handoff` and `PLATFORM_SQAG_APP_BASE_URL=<sqag-local-base-url>`, Platform forwards the raw one-time launch token to SQAG server-to-server as `x-app-launch-token` on `POST <sqag-local-base-url>/api/platform/launch`. Platform then returns SQAG's session cookie and a safe `launchUrl` response to the browser. The response does not include the raw launch token.
+When explicitly configured with `PLATFORM_SQAG_LAUNCH_MODE=server_handoff`, `PLATFORM_SQAG_APP_BASE_URL=<sqag-https-origin>`, and the shared service secret, Platform forwards the raw one-time launch token to SQAG server-to-server as `x-app-launch-token`. SQAG returns a one-time finalization handle only in `X-SQAG-Finalization-Handle`; Platform relays that header, never SQAG cookies, and returns same-origin SQAG finalize and launch URLs.
 
-The local UAT shape is fully clickable only when Platform and SQAG are visited through the same browser cookie host, for example the same `127.0.0.1` host on different ports. If the configured SQAG URL host differs from the Platform request host, Platform fails closed instead of creating an open proxy or forwarding cookies across an unsafe boundary.
+The hosted contract deliberately requires separate HTTPS origins. The browser posts the ephemeral handle in the same header to the exact SQAG finalize origin with credentials enabled, then navigates to the clean launch URL. The handle is never put in a URL, body, DOM, cookie, or browser storage.
 
 The endpoint is restricted to `appKey=sqag`. It does not create SQAG users, SQAG auth, SQAG storage, billing, public signup, invitations, member management, deployment automation, DNS/TLS, object storage, or a general-purpose proxy.
 
@@ -156,7 +156,7 @@ The platform app launch flow is:
 5. Platform verifies workspace entitlement for the app.
 6. Platform verifies the user's role can launch the app.
 7. Later: platform verifies billing or credit status.
-8. Platform launches SQAG through the server-side browser handoff when explicitly configured for local UAT.
+8. Platform launches SQAG through the server-side handoff and two-stage, header-only finalization when explicitly configured.
 9. App receives or resolves platform identity/workspace context through that boundary.
 
 No app should infer workspace access from a display name, email domain, or local app setting.
@@ -165,7 +165,7 @@ The service-level entitlement mutation contract is generic by `appKey` so future
 
 ## Platform-To-App Boundary
 
-The current Platform-owned mechanism is a short-lived app launch token that is issued only after Platform access checks and consumed by an app backend through the header-only consume route. Browser-safe SQAG local UAT additionally uses a server-side handoff route that keeps the raw launch token out of browser URLs, cookies, storage, logs, screenshots, and UI responses.
+The Platform-owned mechanism combines a short-lived app launch token with a distinct non-secret validation grant. SQAG registers only a short-lived handle hash; a header-only consume route single-uses the raw finalization handle; every later service-authenticated validation re-evaluates the live Platform session, user, workspace, membership role, app status, and entitlement with no positive cache.
 
 Any future app integration mechanism must preserve this contract:
 

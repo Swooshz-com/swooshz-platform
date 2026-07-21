@@ -75,6 +75,7 @@ test("auth start binds the callback to a transient browser transaction cookie", 
   assert.match(startResponse.headers["set-cookie"], /HttpOnly/);
   assert.match(startResponse.headers["set-cookie"], /SameSite=Lax/);
   assert.match(startResponse.headers["set-cookie"], /Secure/);
+  assert.doesNotMatch(startResponse.headers["set-cookie"], /Domain=/i);
 
   const callbackFixture = createAuthCallbackFixture();
   const callbackResponse = await handleAuthCallbackRequest(
@@ -93,6 +94,7 @@ test("auth start binds the callback to a transient browser transaction cookie", 
   assert.equal(callbackFixture.oidcAdapter.exchangedInputs.length, 0);
   assert.match(callbackResponse.headers["set-cookie"], /^swooshz_auth_state=;/);
   assert.match(callbackResponse.headers["set-cookie"], /Max-Age=0/);
+  assert.doesNotMatch(callbackResponse.headers["set-cookie"], /Domain=/i);
   assertHttpAuthResponseIsSafe(callbackResponse);
 });
 test("auth start requests provider account selection without exposing auth material", async () => {

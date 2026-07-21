@@ -140,7 +140,7 @@ export function createPlatformNodeBootstrap(
       const authAdapter = readAuthAdapter(input);
       const authEnabled =
         authProviderMode === "generic_oidc" || Boolean(authAdapter);
-      const secrets = readSecretConfigSafely(input.env, authEnabled, true);
+      const secrets = readSecretConfigSafely(input.env, authEnabled, true, Boolean(input.sqagBrowserLaunch));
       const authConfig = authEnabled
         ? readAuthConfigSafely(input.env, authProviderMode)
         : null;
@@ -245,11 +245,13 @@ function readSecretConfigSafely(
   env: PlatformNodeBootstrapEnv,
   requireAuthStateHashSecret: boolean,
   requireAppLaunchTokenHashSecret: boolean,
+  requirePlatformSqagServiceSecret: boolean,
 ): PlatformRuntimeSecretConfig {
   try {
     return readPlatformRuntimeSecretConfig(env, {
       requireAuthStateHashSecret,
       requireAppLaunchTokenHashSecret,
+      requirePlatformSqagServiceSecret,
     });
   } catch {
     throw new PlatformNodeBootstrapError("invalid_config");
@@ -361,7 +363,7 @@ function assertProductionHostedUrlConfig(input: {
     assertHostedAuthRedirectUri(authConfig.redirectUri);
   }
 
-  assertHttpsUrl(input.sqagBrowserLaunchBaseUrl);
+  assertHostedSqagBaseUrl(input.sqagBrowserLaunchBaseUrl);
 }
 
 function assertHttpsUrl(value: string | null | undefined): void {
@@ -383,12 +385,36 @@ function assertHostedAuthRedirectUri(value: string): void {
     const parsed = new URL(value);
 
     if (
-      parsed.protocol !== "https:" ||
+      parsed.origin !== "https://swooshz.com" ||
+      parsed.pathname !== "/api/platform/auth/callback" ||
+      parsed.username ||
+      parsed.password ||
       parsed.search ||
-      parsed.hash ||
-      !parsed.pathname.endsWith("/api/platform/auth/callback")
+      parsed.hash
     ) {
       throw new Error("Hosted auth redirect URI is invalid.");
+    }
+  } catch {
+    throw new PlatformNodeBootstrapError("invalid_config");
+  }
+}
+
+function assertHostedSqagBaseUrl(value: string | undefined): void {
+  if (!value) {
+    return;
+  }
+
+  try {
+    const parsed = new URL(value);
+    if (
+      parsed.origin !== "https://quote.swooshz.com" ||
+      parsed.pathname !== "/" ||
+      parsed.username ||
+      parsed.password ||
+      parsed.search ||
+      parsed.hash
+    ) {
+      throw new Error("Hosted SQAG base URL is invalid.");
     }
   } catch {
     throw new PlatformNodeBootstrapError("invalid_config");

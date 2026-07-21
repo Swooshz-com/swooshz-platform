@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
@@ -21,6 +22,11 @@ const csrfExpiresAt = "2026-06-27T00:15:00.000Z";
 const rawLaunchToken = "synthetic-raw-launch-token-reference";
 const launchTokenHash = "app-launch:v1:hmac-sha256:synthetic_hash_reference";
 const launchTokenExpiresAt = "2026-06-27T00:05:00.000Z";
+const sqagServiceSecret = "synthetic-sqag-service-secret-value-32-chars";
+const validationGrantId = "grant_abcdefghijklmnopqrstuvwxyz_1234567890";
+const finalizationHandle = "finalization_handle_abcdefghijklmnopqrstuvwxyz_123456";
+const finalizationHandleHash = createHash("sha256").update(finalizationHandle).digest("hex");
+const finalizationExpiresAt = "2026-06-27T00:02:00.000Z";
 const authState = "synthetic-browser-state-reference";
 const authNonce = "synthetic-browser-nonce-reference";
 const authStateHash = "hash_synthetic_browser_state_reference";
@@ -307,6 +313,31 @@ test("unknown route returns safe 404 JSON", async () => {
   assertResponseIsPrivacySafe(response);
 });
 
+test("www is redirect-only before UI auth and internal service routing", async () => {
+  const fixture = createAdapterFixture();
+  fixture.dependencies.originConfig.publicBaseUrl = "https://swooshz.com";
+  const callback = await rawRequest({ method: "GET", url: "/api/platform/auth/callback?utm_source=test&code=private-code&next=https://evil.test", headers: { host: "www.swooshz.com" }, dependencies: fixture.dependencies });
+  assert.equal(callback.response.statusCode, 308);
+  assert.equal(callback.response.headers.location, "https://swooshz.com/api/platform/auth/callback?utm_source=test");
+  assert.equal(callback.response.headers["set-cookie"], undefined);
+  assert.equal(callback.response.body, "");
+  assert.equal(fixture.calls.authStateConsume, 0);
+  const internal = await rawRequest({ method: "POST", url: "/api/internal/sqag/access/validate?ref=uat", headers: { host: "www.swooshz.com", "x-sqag-service-authorization": "not-used" }, dependencies: fixture.dependencies });
+  assert.equal(internal.response.statusCode, 308);
+  assert.equal(internal.response.headers.location, "https://swooshz.com/api/internal/sqag/access/validate?ref=uat");
+  assert.equal(internal.response.headers["set-cookie"], undefined);
+});
+
+test("production host ownership rejects unknown malformed and ported hosts", async () => {
+  for (const host of ["evil.example", "www.swooshz.com:443", "swooshz.com:443", ""]) {
+    const fixture = createAdapterFixture();
+    fixture.dependencies.originConfig.publicBaseUrl = "https://swooshz.com";
+    const { response } = await rawRequest({ method: "GET", url: "/", headers: { host }, dependencies: fixture.dependencies });
+    assert.equal(response.statusCode, 421);
+    assert.equal(response.headers["set-cookie"], undefined);
+  }
+});
+
 test("wrong method for a known route returns safe 405 JSON", async () => {
   const { response, body } = await request({
     method: "POST",
@@ -585,19 +616,21 @@ test("SQAG browser launch handoff consumes token server-side and returns safe la
 
   assert.equal(response.statusCode, 200);
   assertNoStoreHeaders(response.headers);
-  assert.equal(response.headers["set-cookie"], "swooshz_quote_session=safe-sqag-session; Path=/; HttpOnly; SameSite=Lax; Secure");
+  assert.equal(response.headers["set-cookie"], undefined);
+  assert.equal(response.headers["x-sqag-finalization-handle"], "finalization_handle_abcdefghijklmnopqrstuvwxyz_123456");
   assert.deepEqual(body, {
     outcome: "launch_opened",
     appKey: "sqag",
     workspaceId: "workspace_koncept_images",
-    launchUrl: "http://127.0.0.1:8765/",
+    launchUrl: "https://quote.swooshz.com/",
+    finalizationUrl: "https://quote.swooshz.com/api/auth/platform/finalize",
   });
   assert.equal(fixture.records.appLaunchTokens.length, 1);
   assert.equal(fixture.records.appLaunchTokens[0].tokenHash, launchTokenHash);
   assert.equal("launchToken" in fixture.records.appLaunchTokens[0], false);
   assert.deepEqual(fixture.calls.sqagLaunchRequests, [
     {
-      url: "http://127.0.0.1:8765/api/platform/launch",
+      url: "https://quote.swooshz.com/api/platform/launch",
       method: "POST",
       token: rawLaunchToken,
     },
@@ -605,11 +638,11 @@ test("SQAG browser launch handoff consumes token server-side and returns safe la
   assert.doesNotMatch(JSON.stringify(response), new RegExp(rawLaunchToken));
   assert.doesNotMatch(JSON.stringify(body), new RegExp(rawLaunchToken));
   assert.doesNotMatch(response.headers.location ?? "", new RegExp(rawLaunchToken));
-  assert.doesNotMatch(response.headers["set-cookie"], new RegExp(rawLaunchToken));
+  assert.doesNotMatch(JSON.stringify(response.headers), new RegExp(rawLaunchToken));
   assertResponseIsPrivacySafe(response);
 });
 
-test("SQAG browser launch handoff rejects attempts to overwrite the Platform session cookie", async () => {
+test("upstream reserved Platform cookie is never relayed", async () => {
   const fixture = createAdapterFixture({
     sqagLaunchHandoff: {
       baseUrl: "http://127.0.0.1:8765",
@@ -627,17 +660,14 @@ test("SQAG browser launch handoff rejects attempts to overwrite the Platform ses
     dependencies: fixture.dependencies,
   });
 
-  assert.equal(response.statusCode, 502);
+  assert.equal(response.statusCode, 200);
   assertNoStoreHeaders(response.headers);
-  assert.deepEqual(body, {
-    outcome: "error",
-    message: "SQAG browser launch could not be completed.",
-  });
+  assert.equal(body.outcome, "launch_opened");
   assert.equal(response.headers["set-cookie"], undefined);
   assertResponseIsPrivacySafe(response);
 });
 
-test("SQAG browser launch rejects mixed safe and reserved upstream cookies", async () => {
+test("mixed upstream SQAG and reserved cookies are never relayed", async () => {
   const fixture = createAdapterFixture({
     sqagLaunchHandoff: {
       baseUrl: "http://127.0.0.1:8765",
@@ -658,17 +688,14 @@ test("SQAG browser launch rejects mixed safe and reserved upstream cookies", asy
     dependencies: fixture.dependencies,
   });
 
-  assert.equal(response.statusCode, 502);
+  assert.equal(response.statusCode, 200);
   assertNoStoreHeaders(response.headers);
   assert.equal(response.headers["set-cookie"], undefined);
-  assert.deepEqual(body, {
-    outcome: "error",
-    message: "SQAG browser launch could not be completed.",
-  });
+  assert.equal(body.outcome, "launch_opened");
   assertResponseIsPrivacySafe(response);
 });
 
-test("SQAG browser launch preserves multiple reviewed safe cookies", async () => {
+test("upstream multiple SQAG cookies are never relayed", async () => {
   const safeCookies = [
     "swooshz_quote_session=safe-session; Path=/; HttpOnly; SameSite=Lax; Secure",
     "swooshz_quote_device=safe-device; Path=/; HttpOnly; SameSite=Strict; Secure",
@@ -692,12 +719,12 @@ test("SQAG browser launch preserves multiple reviewed safe cookies", async () =>
 
   assert.equal(response.statusCode, 200);
   assertNoStoreHeaders(response.headers);
-  assert.deepEqual(response.headers["set-cookie"], safeCookies);
+  assert.equal(response.headers["set-cookie"], undefined);
   assert.equal(body.outcome, "launch_opened");
   assertResponseIsPrivacySafe(response);
 });
 
-test("SQAG browser launch rejects raw launch-token reflection in a cookie", async () => {
+test("upstream token-reflecting SQAG cookie is ignored and never relayed", async () => {
   const fixture = createAdapterFixture({
     sqagLaunchHandoff: {
       baseUrl: "http://127.0.0.1:8765",
@@ -715,7 +742,7 @@ test("SQAG browser launch rejects raw launch-token reflection in a cookie", asyn
     dependencies: fixture.dependencies,
   });
 
-  assert.equal(response.statusCode, 502);
+  assert.equal(response.statusCode, 200);
   assertNoStoreHeaders(response.headers);
   assert.equal(response.headers["set-cookie"], undefined);
   assert.doesNotMatch(JSON.stringify(response), new RegExp(rawLaunchToken));
@@ -723,7 +750,7 @@ test("SQAG browser launch rejects raw launch-token reflection in a cookie", asyn
   assertResponseIsPrivacySafe(response);
 });
 
-test("SQAG browser launch rejects combined or malformed upstream cookies", async () => {
+test("upstream combined or malformed SQAG cookies are never relayed", async () => {
   for (const setCookie of [
     "swooshz_quote_session=safe; Path=/; HttpOnly; SameSite=Lax; Secure, swooshz_session=bad; Path=/; HttpOnly",
     "swooshz_quote_session=safe\r\nInjected: value; Path=/; HttpOnly; SameSite=Lax; Secure",
@@ -739,10 +766,177 @@ test("SQAG browser launch rejects combined or malformed upstream cookies", async
       dependencies: fixture.dependencies,
     });
 
-    assert.equal(response.statusCode, 502);
+    assert.equal(response.statusCode, 200);
     assert.equal(response.headers["set-cookie"], undefined);
     assertNoStoreHeaders(response.headers);
   }
+});
+
+test("SQAG browser launch rejects duplicate finalization handle response headers", async () => {
+  const fixture = createAdapterFixture({ sqagLaunchHandoff: { baseUrl: "http://127.0.0.1:8765", finalizationHandle: ["finalization_handle_abcdefghijklmnopqrstuvwxyz_123456", "finalization_handle_other_abcdefghijklmnopqrstuvwxyz_123456"] } });
+  const { response } = await request({ method: "POST", url: "/api/platform/apps/launch/open?workspaceId=workspace_koncept_images&appKey=sqag", headers: { ...logoutHeaders(), host: "127.0.0.1:4317" }, dependencies: fixture.dependencies });
+  assert.equal(response.statusCode, 502);
+  assert.equal(response.headers["x-sqag-finalization-handle"], undefined);
+});
+
+test("SQAG internal finalization routes enforce service auth and atomic replay denial", async () => {
+  const fixture = createAdapterFixture();
+  const boundary = attachAccessValidationGrantCapability(fixture);
+  const serviceHeaders = { "x-sqag-service-authorization": sqagServiceSecret };
+
+  const unauthorized = await request({
+    method: "POST",
+    url: "/api/internal/sqag/finalizations/register",
+    headers: { "x-sqag-service-authorization": "wrong-service-secret" },
+    body: JSON.stringify({
+      validationGrantId,
+      handleHashSha256: finalizationHandleHash,
+      expiresAt: finalizationExpiresAt,
+      intendedSqagOrigin: boundary.origin,
+    }),
+    dependencies: fixture.dependencies,
+  });
+  assert.equal(unauthorized.response.statusCode, 403);
+  assert.deepEqual(unauthorized.body, { outcome: "error", message: "SQAG service request denied." });
+  assert.equal(boundary.grant.handleHash, null);
+
+  const registration = await rawRequest({
+    method: "POST",
+    url: "/api/internal/sqag/finalizations/register",
+    headers: serviceHeaders,
+    body: JSON.stringify({
+      validationGrantId,
+      handleHashSha256: finalizationHandleHash,
+      expiresAt: finalizationExpiresAt,
+      intendedSqagOrigin: boundary.origin,
+    }),
+    dependencies: fixture.dependencies,
+  });
+  assert.equal(registration.response.statusCode, 204);
+  assertNoStoreHeaders(registration.response.headers);
+  assert.equal(registration.response.body, "");
+  assert.equal(boundary.grant.handleHash, finalizationHandleHash);
+
+  const consumeHeaders = {
+    ...serviceHeaders,
+    "x-sqag-finalization-handle": finalizationHandle,
+  };
+  const consumed = await request({
+    method: "POST",
+    url: "/api/internal/sqag/finalizations/consume",
+    headers: consumeHeaders,
+    body: JSON.stringify({ intendedSqagOrigin: boundary.origin }),
+    dependencies: fixture.dependencies,
+  });
+  assert.equal(consumed.response.statusCode, 200);
+  assertNoStoreHeaders(consumed.response.headers);
+  assert.deepEqual(consumed.body, {
+    validationGrantId,
+    userId: "user_owner_example",
+    workspaceId: "workspace_koncept_images",
+    appKey: "sqag",
+    launchTokenExpiresAt,
+    currentRole: "owner",
+  });
+
+  const replay = await request({
+    method: "POST",
+    url: "/api/internal/sqag/finalizations/consume",
+    headers: consumeHeaders,
+    body: JSON.stringify({ intendedSqagOrigin: boundary.origin }),
+    dependencies: fixture.dependencies,
+  });
+  assert.equal(replay.response.statusCode, 403);
+  assert.deepEqual(replay.body, { outcome: "error", message: "SQAG service request denied." });
+  assertResponseIsPrivacySafe(replay.response);
+});
+
+test("SQAG internal validation and revoke routes re-check bindings and fail closed", async () => {
+  const fixture = createAdapterFixture();
+  const boundary = attachAccessValidationGrantCapability(fixture, { consumed: true });
+  const headers = {
+    "x-sqag-service-authorization": sqagServiceSecret,
+    "x-sqag-validation-grant": validationGrantId,
+  };
+
+  const validation = await request({
+    method: "POST",
+    url: "/api/internal/sqag/access/validate",
+    headers,
+    body: JSON.stringify({ workspaceId: "workspace_koncept_images", appKey: "sqag" }),
+    dependencies: fixture.dependencies,
+  });
+  assert.equal(validation.response.statusCode, 200);
+  assertNoStoreHeaders(validation.response.headers);
+  assert.equal(validation.body.valid, true);
+  assert.equal(validation.body.validationGrantId, validationGrantId);
+  assert.equal(validation.body.currentRole, "owner");
+
+  const wrongWorkspace = await request({
+    method: "POST",
+    url: "/api/internal/sqag/access/validate",
+    headers,
+    body: JSON.stringify({ workspaceId: "workspace_other", appKey: "sqag" }),
+    dependencies: fixture.dependencies,
+  });
+  assert.equal(wrongWorkspace.response.statusCode, 403);
+  assert.deepEqual(wrongWorkspace.body, { outcome: "error", message: "SQAG service request denied." });
+
+  const revoked = await rawRequest({
+    method: "POST",
+    url: "/api/internal/sqag/access/revoke",
+    headers,
+    body: "{}",
+    dependencies: fixture.dependencies,
+  });
+  assert.equal(revoked.response.statusCode, 204);
+  assertNoStoreHeaders(revoked.response.headers);
+  assert.equal(boundary.grant.revokedAt, now);
+
+  const afterRevoke = await request({
+    method: "POST",
+    url: "/api/internal/sqag/access/validate",
+    headers,
+    body: JSON.stringify({ workspaceId: "workspace_koncept_images", appKey: "sqag" }),
+    dependencies: fixture.dependencies,
+  });
+  assert.equal(afterRevoke.response.statusCode, 403);
+  assert.deepEqual(afterRevoke.body, { outcome: "error", message: "SQAG service request denied." });
+  assertResponseIsPrivacySafe(afterRevoke.response);
+});
+
+test("SQAG internal routes reject malformed input and repository failures generically", async () => {
+  const fixture = createAdapterFixture();
+  attachAccessValidationGrantCapability(fixture, { consumed: true });
+  const headers = {
+    "x-sqag-service-authorization": sqagServiceSecret,
+    "x-sqag-validation-grant": validationGrantId,
+  };
+
+  const malformed = await request({
+    method: "POST",
+    url: "/api/internal/sqag/access/validate",
+    headers,
+    body: "{private malformed provider body",
+    dependencies: fixture.dependencies,
+  });
+  assert.equal(malformed.response.statusCode, 403);
+  assert.deepEqual(malformed.body, { outcome: "error", message: "SQAG service request denied." });
+  assert.doesNotMatch(malformed.response.body, /private malformed provider body/);
+
+  fixture.repositories.sessions.findById = async () => {
+    throw new Error("private database failure postgresql://private-host");
+  };
+  const failed = await request({
+    method: "POST",
+    url: "/api/internal/sqag/access/validate",
+    headers,
+    body: JSON.stringify({ workspaceId: "workspace_koncept_images", appKey: "sqag" }),
+    dependencies: fixture.dependencies,
+  });
+  assert.equal(failed.response.statusCode, 403);
+  assert.deepEqual(failed.body, { outcome: "error", message: "SQAG service request denied." });
+  assertResponseIsPrivacySafe(failed.response);
 });
 
 test("SQAG browser launch handoff fails safely without session access config or safe cookie host", async () => {
@@ -1440,12 +1634,14 @@ async function request({
   method,
   url,
   headers = {},
+  body,
   dependencies = createAdapterFixture().dependencies,
 }) {
   const response = await handleNodePlatformHttpRequest(dependencies, {
     method,
     url,
     headers,
+    body,
   });
 
   return {
@@ -1466,12 +1662,14 @@ async function rawRequest({
   method,
   url,
   headers = {},
+  body,
   dependencies = createAdapterFixture().dependencies,
 }) {
   const response = await handleNodePlatformHttpRequest(dependencies, {
     method,
     url,
     headers,
+    body,
   });
 
   return { response };
@@ -1742,7 +1940,8 @@ function createAdapterFixture(overrides = {}) {
   };
   if (overrides.sqagLaunchHandoff) {
     dependencies.sqagBrowserLaunch = {
-      baseUrl: overrides.sqagLaunchHandoff.baseUrl,
+      baseUrl: overrides.sqagLaunchHandoff.baseUrl === "http://127.0.0.1:8765" ? "https://quote.swooshz.com" : overrides.sqagLaunchHandoff.baseUrl,
+      serviceSecret: "synthetic-sqag-service-secret-value-32-chars",
       httpClient: {
         async post(input) {
           calls.sqagLaunchRequests.push({
@@ -1750,10 +1949,12 @@ function createAdapterFixture(overrides = {}) {
             method: "POST",
             token: input.headers["x-app-launch-token"],
           });
-          assert.deepEqual(Object.keys(input.headers), ["x-app-launch-token"]);
+          assert.deepEqual(Object.keys(input.headers), ["x-app-launch-token", "x-sqag-service-authorization"]);
+          assert.equal(input.headers.cookie, undefined);
           return {
             status: overrides.sqagLaunchHandoff.status ?? 200,
             headers: {
+              "x-sqag-finalization-handle": overrides.sqagLaunchHandoff.finalizationHandle ?? "finalization_handle_abcdefghijklmnopqrstuvwxyz_123456",
               "set-cookie": overrides.sqagLaunchHandoff.setCookie ??
                 "swooshz_quote_session=safe-sqag-session; Path=/; HttpOnly; SameSite=Lax; Secure",
             },
@@ -1768,6 +1969,59 @@ function createAdapterFixture(overrides = {}) {
   }
 
   return { records, repositories, calls, dependencies };
+}
+
+function attachAccessValidationGrantCapability(fixture, overrides = {}) {
+  const origin = "https://quote.swooshz.com";
+  const grant = {
+    id: validationGrantId,
+    sessionId,
+    userId: "user_owner_example",
+    workspaceId: "workspace_koncept_images",
+    appId: "app_sqag",
+    intendedOrigin: origin,
+    launchTokenExpiresAt,
+    handleHash: overrides.consumed ? finalizationHandleHash : null,
+    handleExpiresAt: overrides.consumed ? finalizationExpiresAt : null,
+    consumedAt: overrides.consumed ? now : null,
+    revokedAt: null,
+    createdAt: now,
+  };
+  fixture.repositories.accessValidationGrants = {
+    async create(record) {
+      Object.assign(grant, record);
+      return grant;
+    },
+    async findById(id) {
+      return id === grant.id ? grant : null;
+    },
+    async registerHandle(id, hash, expiresAt) {
+      if (id !== grant.id || grant.handleHash || grant.revokedAt || grant.consumedAt) return null;
+      grant.handleHash = hash;
+      grant.handleExpiresAt = expiresAt;
+      return grant;
+    },
+    async consumeByHandleHash(hash, consumedAt) {
+      if (hash !== grant.handleHash || grant.revokedAt || grant.consumedAt) return null;
+      grant.consumedAt = consumedAt;
+      return grant;
+    },
+    async revoke(id, revokedAt) {
+      if (id !== grant.id || grant.revokedAt) return null;
+      grant.revokedAt = revokedAt;
+      return grant;
+    },
+  };
+  fixture.dependencies.accessValidationGrant = {
+    serviceSecret: sqagServiceSecret,
+    service: {
+      repositories: fixture.repositories,
+      intendedSqagOrigin: origin,
+      grantIdFactory: () => validationGrantId,
+      handleHasher: (rawHandle) => createHash("sha256").update(rawHandle).digest("hex"),
+    },
+  };
+  return { origin, grant };
 }
 
 function instrumentRepositories(repositories) {

@@ -11,7 +11,7 @@ Related docs:
 
 Platform owns auth, users, sessions, workspaces, roles, memberships, app entitlements, app launch checks, and audit events.
 
-Platform does not own SQAG quote data. SQAG owns quote generation, profiles, pricing references, quote sessions, generated artifacts, and quote dashboard/history. SQAG deployment/runtime/data decisions remain outside this Platform PR except for Platform handoff placeholders. No SQAG app-data editing, SQAG profiles/pricing, quote history, generated artifacts, or quote sessions move into Platform.
+Platform does not own SQAG quote data. SQAG owns quote generation, profiles, pricing references, quote sessions, generated artifacts, and quote dashboard/history. SQAG deployment/runtime/data decisions remain outside this Platform PR except for the implemented Platform handoff contract. No SQAG app-data editing, SQAG profiles/pricing, quote history, generated artifacts, or quote sessions move into Platform.
 
 ## Current Implemented Behavior
 

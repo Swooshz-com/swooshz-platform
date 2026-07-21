@@ -98,18 +98,20 @@ export function createPlatformStartSqagBrowserLaunchHttpClient(options = {}) {
       return {
         status: response.status,
         headers: {
-          "set-cookie": readSetCookieHeaders(response.headers),
+          "x-sqag-finalization-handle": readHeaderValue(response.headers, "x-sqag-finalization-handle"),
         },
-        async body() {
-          try {
-            return await response.json();
-          } catch {
-            return null;
-          }
-        },
+        body: await readJsonSafely(response),
       };
     },
   };
+}
+
+async function readJsonSafely(response) {
+  try { return await response.json(); } catch { return null; }
+}
+
+function readHeaderValue(headers, name) {
+  return typeof headers?.get === "function" ? headers.get(name) || undefined : undefined;
 }
 
 export async function executePlatformStart(options = {}) {
@@ -253,6 +255,10 @@ function readSqagAppBaseUrl(env) {
       throw new Error("hosted handoff URL must not include query or fragment");
     }
 
+    if (production && (parsed.origin !== "https://quote.swooshz.com" || parsed.pathname !== "/" || parsed.username || parsed.password)) {
+      throw new Error("hosted handoff URL must use the canonical SQAG origin");
+    }
+
     parsed.search = "";
     parsed.hash = "";
     parsed.pathname = parsed.pathname.endsWith("/")
@@ -263,19 +269,6 @@ function readSqagAppBaseUrl(env) {
   } catch {
     throw new PlatformStartCliError("invalid_config");
   }
-}
-
-function readSetCookieHeaders(headers) {
-  if (typeof headers?.getSetCookie === "function") {
-    return headers.getSetCookie();
-  }
-
-  if (typeof headers?.get === "function") {
-    const value = headers.get("set-cookie");
-    return value ? [value] : [];
-  }
-
-  return [];
 }
 
 function readEnvironment(env) {

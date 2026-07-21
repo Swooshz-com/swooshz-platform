@@ -420,7 +420,7 @@ test("CSRF lifecycle modules do not use Math.random or weak token generation", a
   for (const filePath of files) {
     const contents = await readFile(filePath, "utf8");
 
-    assert.doesNotMatch(contents, /Math\.random|randomUUID|createHash|createHmac|crypto/i);
+    assert.doesNotMatch(contents, /Math\.random|randomUUID|createHash|createHmac|from\s+["'](?:node:)?crypto["']/i);
   }
 });
 

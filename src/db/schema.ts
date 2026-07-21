@@ -329,6 +329,29 @@ export const appLaunchTokens = pgTable(
   ],
 );
 
+export const accessValidationGrants = pgTable(
+  "access_validation_grants",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id").notNull().references(() => sessions.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+    workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "restrict" }),
+    appId: text("app_id").notNull().references(() => apps.id, { onDelete: "restrict" }),
+    intendedOrigin: text("intended_origin").notNull(),
+    launchTokenExpiresAt: timestamp("launch_token_expires_at", { withTimezone: true }).notNull(),
+    handleHash: text("handle_hash"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    handleExpiresAt: timestamp("handle_expires_at", { withTimezone: true }),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("access_validation_grants_handle_hash_unique").on(table.handleHash),
+    index("access_validation_grants_session_id_idx").on(table.sessionId),
+    index("access_validation_grants_expiry_idx").on(table.handleExpiresAt),
+  ],
+);
+
 export const appEntitlements = pgTable(
   "app_entitlements",
   {

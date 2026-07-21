@@ -64,7 +64,10 @@ Secret runtime names:
 - `CSRF_TOKEN_HASH_SECRET`
 - `AUTH_STATE_HASH_SECRET`
 - `APP_LAUNCH_TOKEN_HASH_SECRET`
+- `PLATFORM_SQAG_SERVICE_SECRET`
 - `AUTH_CLIENT_SECRET`
+
+Platform and SQAG must receive the same `PLATFORM_SQAG_SERVICE_SECRET` value through their separate Coolify secret stores. Platform uses `https://swooshz.com`; SQAG uses `https://quote.swooshz.com`. Do not scope either app's browser cookie to `.swooshz.com`: each service owns only its host cookie.
 
 Private operational data names:
 
@@ -81,13 +84,13 @@ One-off operator names, not long-running service env:
 
 Do not commit, print, screenshot, or paste real values for these names into repo files, tickets, PRs, logs, or chat.
 
-## OAuth Callback Placeholders
+## Canonical Public Origins And OAuth Callback
 
-Use placeholders only:
+Use these exact production public values:
 
-- Platform base URL: `<hosted-platform-base-url>`.
-- OIDC callback URI: `<hosted-oidc-redirect-uri>`.
-- Swooshz Quote Auto Generator base URL: `<hosted-sqag-base-url>`.
+- Platform base URL: `https://swooshz.com`.
+- OIDC callback URI: `https://swooshz.com/api/platform/auth/callback`.
+- Swooshz Quote Auto Generator base URL: `https://quote.swooshz.com`.
 
 The hosted OIDC callback must end with `/api/platform/auth/callback` and must not include query parameters or fragments. Real provider console values and client secrets stay outside the repo.
 
@@ -126,6 +129,7 @@ Recommended future Coolify app settings, after the shared foundation exists and 
 - Healthcheck path: `/healthz`.
 - Restart policy: explicit and reviewed by the operator.
 - Secrets/env: injected through Coolify, not committed.
+- Route the Platform service explicitly for `swooshz.com` and the redirect-only handler for `www.swooshz.com`; remove any Traefik default/catch-all route. The certificate must be trusted and cover both apex and `www`; SQAG has its own trusted certificate for `quote.swooshz.com`.
 - Migrations: manual one-off only, never build/start/deploy/restart/healthcheck hooks.
 - Seed/bootstrap: manual one-off only after real hosted auth creates the user.
 
@@ -188,5 +192,7 @@ Deployment remains blocked until:
 - Hosted Platform and Swooshz Quote Auto Generator deployment evidence exists.
 - Live Platform-to-Swooshz Quote Auto Generator smoke is approved and completed.
 - Final go/no-go is recorded outside repo.
+
+Post-deploy evidence must check apex and `www` on desktop, mobile, and a Googlebot user agent; confirm 308 path/safe-query preservation, certificate SAN/trust, no cookies or UI on `www`, forms/actions, iframes, external resources/APIs, and redirects use only approved origins. Capture privacy-safe screenshots only. Record Safe Browsing verdicts separately for apex, `www`, and SQAG, and perform Search Console URL inspection only when existing approved access is available. Do not request indexing, review, or reconsideration from this runbook.
 
 This document is not hosted evidence. It is not a production readiness claim.

@@ -70,7 +70,7 @@ Before execution, the operator must collect approval evidence outside the repo f
 | Secrets | Approved storage, access review, and rotation owner. | No secrets committed. |
 | Logs/incidents | Approved retention/access owner, redaction process, and escalation path. | No log backend config. |
 | First owner/admin | Approved first identity outside source control after real provider sign-in. | No real identity values in repo. |
-| SQAG handoff | Approved `manual` or `server_handoff` mode and cross-host session/cookie strategy. | Platform handoff placeholders only. |
+| SQAG handoff | Approved hosted smoke of `server_handoff`, host-only cookies, header-only finalization, and live validation. | Platform handoff contract only. |
 | Final decision | Go/no-go approver signs off after smoke evidence. | Hosted execution stays blocked until approved. |
 
 ## Recommended hosted topology options
@@ -100,7 +100,7 @@ Options:
 | `manual` first | Safest hosted planning default when cross-host SQAG handoff is not approved. | Platform access checks, SQAG entitlement behavior, and operator manual access path are documented and smoke-tested. |
 | `server_handoff` later | Only after hosted SQAG base, cookie/session strategy, token privacy, and failure modes are approved. | Hosted SQAG handoff/session/cookie decision must be approved and smoke-tested before execution. Confirm no raw launch token appears in browser URL, storage, logs, or tickets. |
 
-Do not move SQAG quote data into Platform. Do not propose Platform storage for SQAG quote/session/profile/pricing/generated-artifact data. Platform handoff placeholders may be documented, but SQAG app-data responsibilities stay outside this Platform repo.
+Do not move SQAG quote data into Platform. Do not propose Platform storage for SQAG quote/session/profile/pricing/generated-artifact data. The Platform handoff contract may be documented and implemented here, but SQAG app-data responsibilities stay outside this Platform repo.
 
 ## Secret/config handling requirements
 

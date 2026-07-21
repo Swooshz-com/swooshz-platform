@@ -85,7 +85,7 @@ test(".dockerignore excludes secrets local files logs caches and private design 
   }
 });
 
-test("Coolify readiness doc keeps deployment planning disabled and placeholder-only", async () => {
+test("Coolify readiness doc keeps deployment disabled and records exact public origins", async () => {
   const doc = await readFile(coolifyDocPath, "utf8");
 
   const requiredPhrases = [
@@ -100,8 +100,8 @@ test("Coolify readiness doc keeps deployment planning disabled and placeholder-o
     "Dockerfile",
     ".dockerignore",
     "secret names",
-    "<hosted-platform-base-url>",
-    "<hosted-oidc-redirect-uri>",
+    "https://swooshz.com",
+    "https://swooshz.com/api/platform/auth/callback",
     "staging/internal-alpha",
     "production",
     "Production deploy requires manual approval",
@@ -114,7 +114,7 @@ test("Coolify readiness doc keeps deployment planning disabled and placeholder-o
     assert.match(doc, new RegExp(escapeRegExp(phrase), "i"));
   }
 
-  assertSecretNamesOnly(doc);
+  assertSecretNamesOnly(doc, { allowApprovedPublicOrigins: true });
   assert.doesNotMatch(doc, /coolify deploy --|docker push|ssh .*@|dns record type/i);
 });
 
@@ -166,7 +166,7 @@ test("production roadmap records only repo-side CI/container readiness and keeps
   assert.doesNotMatch(roadmap, /- \[x\] Platform entitlement and launch-token flow smoke tested/i);
 });
 
-function assertSecretNamesOnly(value) {
+function assertSecretNamesOnly(value, options = {}) {
   assert.doesNotMatch(value, /sk-[A-Za-z0-9]{20,}/);
   assert.doesNotMatch(value, /AKIA[0-9A-Z]{16}/);
   assert.doesNotMatch(value, /-----BEGIN [A-Z ]*PRIVATE KEY-----/);
@@ -177,7 +177,12 @@ function assertSecretNamesOnly(value) {
   assert.doesNotMatch(value, /id_token[=:][A-Za-z0-9._-]{20,}/i);
   assert.doesNotMatch(value, /auth[_-]?code[=:][A-Za-z0-9._-]{12,}/i);
   assert.doesNotMatch(value, /cookie[=:][A-Za-z0-9._-]{12,}/i);
-  assert.doesNotMatch(value, /https?:\/\/(?!<)[^\s>)]+/i);
+  const valueWithoutApprovedOrigins = options.allowApprovedPublicOrigins
+    ? value.replaceAll("https://swooshz.com", "<platform-origin>")
+        .replaceAll("https://www.swooshz.com", "<platform-redirect-origin>")
+        .replaceAll("https://quote.swooshz.com", "<sqag-origin>")
+    : value;
+  assert.doesNotMatch(valueWithoutApprovedOrigins, /https?:\/\/(?!<)[^\s>)]+/i);
   assert.doesNotMatch(value, /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
 }
 
