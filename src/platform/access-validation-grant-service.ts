@@ -46,12 +46,15 @@ export async function revokeAccessValidationGrant(deps: AccessValidationGrantDep
 async function validateGrant(deps: AccessValidationGrantDependencies, id: string, workspaceId: string, appKey: string, now: string) {
   const grant = await deps.repositories.accessValidationGrants.findById(id);
   if (!grant || grant.revokedAt || !grant.consumedAt || grant.workspaceId !== workspaceId || appKey !== "sqag" || grant.intendedOrigin !== deps.intendedSqagOrigin) return null;
-  const [session, user, workspace, app, membership] = await Promise.all([deps.repositories.sessions.findById(grant.sessionId), deps.repositories.users.findById(grant.userId), deps.repositories.workspaces.findById(grant.workspaceId), deps.repositories.apps.findById(grant.appId), deps.repositories.memberships.findForUserInWorkspace(grant.userId, grant.workspaceId)]);
-  if (!session || session.userId !== grant.userId || !user || !workspace || !app || app.key !== "sqag" || !membership) return null;
+  const [session, user, workspace, app] = await Promise.all([deps.repositories.sessions.findById(grant.sessionId), deps.repositories.users.findById(grant.userId), deps.repositories.workspaces.findById(grant.workspaceId), deps.repositories.apps.findById(grant.appId)]);
+  if (!session || session.userId !== grant.userId || !user || !workspace || !app || app.key !== "sqag") return null;
   const decision = await decideProtectedAppAccess(deps.repositories, { sessionId: grant.sessionId, selectedWorkspaceId: grant.workspaceId, appKey: "sqag", now });
   if (decision.outcome !== "allowed") return null;
-  return { userId: grant.userId, workspaceId: grant.workspaceId, appKey: "sqag" as const, launchTokenExpiresAt: grant.launchTokenExpiresAt, currentRole: membership.role };
+  const currentMembership = await deps.repositories.memberships.findForUserInWorkspace(grant.userId, grant.workspaceId);
+  if (!currentMembership || currentMembership.status !== "active" || !isSqagLaunchRole(currentMembership.role)) return null;
+  return { userId: grant.userId, workspaceId: grant.workspaceId, appKey: "sqag" as const, launchTokenExpiresAt: grant.launchTokenExpiresAt, currentRole: currentMembership.role };
 }
 
 function validGrantId(value: string) { return value.length >= 32 && value.length <= 256 && /^[A-Za-z0-9_-]+$/.test(value); }
 function validHandle(value: string) { return value.length >= 32 && value.length <= 512 && /^[A-Za-z0-9_-]+$/.test(value); }
+function isSqagLaunchRole(value: string): value is "owner" | "admin" | "member" { return value === "owner" || value === "admin" || value === "member"; }
