@@ -52,7 +52,7 @@ The platform-side handoff contract is now explicit:
 3. The direct browser launch-token route `POST /api/platform/apps/launch?workspaceId=<platform-workspace-id>&appKey=sqag` is disabled for raw-token delivery and must not mint or return a raw token to the browser.
 4. The browser-safe SQAG handoff route is `POST /api/platform/apps/launch/open?workspaceId=<platform-workspace-id>&appKey=sqag`.
 5. The browser-safe handoff route requires an active browser session cookie plus Origin/Referer and CSRF validation.
-6. In browser-safe handoff mode, Platform creates the launch intent internally, stores only a versioned hash of the launch token plus lifecycle metadata, and sends the raw launch token only in the server-side `x-app-launch-token` header to SQAG. SQAG consumes it, registers only a hash of a distinct one-time finalization handle, and returns that handle to Platform only through `X-SQAG-Finalization-Handle`.
+6. In browser-safe handoff mode, Platform creates the launch intent internally, stores only a versioned hash of the launch token plus lifecycle metadata, and sends the raw launch token only in the server-side `x-app-launch-token` header to SQAG. The same request includes exactly one `x-sqag-service-authorization` header so SQAG can authenticate Platform before it inspects or consumes the launch token. SQAG consumes it, registers only a hash of a distinct one-time finalization handle, and returns that handle to Platform only through `X-SQAG-Finalization-Handle`.
 7. Platform returns the finalization handle to its browser shell only through `X-SQAG-Finalization-Handle`. The shell posts it once, with credentials, to the exact SQAG finalization origin. SQAG sets its host-only session cookie from `quote.swooshz.com`; Platform never relays SQAG `Set-Cookie` and never sets `Domain=.swooshz.com`.
 8. The browser-safe handoff response must not include the raw launch token, token hash, provider tokens, provider claims, auth code, state, nonce, database URL, or platform session secret.
 9. The raw launch token must not be placed in browser response bodies, URL query parameters, browser storage, cookies, logs, docs, screenshots, committed files, or app telemetry.
@@ -87,7 +87,14 @@ Safe browser launch server-side SQAG consume request shape:
 ```http
 POST <sqag-local-base-url>/api/platform/launch HTTP/1.1
 X-App-Launch-Token: <one-time-raw-launch-token>
+X-SQAG-Service-Authorization: <shared-platform-sqag-service-secret>
 ```
+
+The same shared service-secret value must be entered separately and securely as
+`PLATFORM_SQAG_SERVICE_SECRET` in Platform and `SQAG_PLATFORM_SERVICE_SECRET`
+in SQAG. SQAG independently verifies the credential before consuming the
+one-time launch token. The value must never appear in repositories, logs,
+screenshots, reports, or chat.
 
 Safe browser launch response shape:
 
