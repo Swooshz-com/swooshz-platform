@@ -241,7 +241,25 @@ test("production bootstrap rejects unsafe hosted auth callback shape before DB o
   const fixture = createBootstrapFixture({
     withGenericAuth: true,
     env: {
-      AUTH_REDIRECT_URI: "https://platform.example.invalid/api/platform/auth/callback?code=raw-secret",
+      AUTH_REDIRECT_URI: "https://swooshz.com/api/platform/auth/callback?code=raw-secret",
+    },
+  });
+  const bootstrap = createPlatformNodeBootstrap(fixture.input);
+
+  await assert.rejects(
+    () => bootstrap.start(),
+    assertPrivacySafeBootstrapError("invalid_config"),
+  );
+  assert.equal(fixture.calls.databaseClientFactory, 0);
+  assert.equal(fixture.calls.serverFactory, 0);
+  assert.equal(fixture.calls.listen, 0);
+});
+
+test("production bootstrap requires the exact canonical auth callback before DB or listen", async () => {
+  const fixture = createBootstrapFixture({
+    withGenericAuth: true,
+    env: {
+      AUTH_REDIRECT_URI: "https://platform.example.invalid/api/platform/auth/callback",
     },
   });
   const bootstrap = createPlatformNodeBootstrap(fixture.input);
@@ -264,8 +282,8 @@ test("bootstrap composes runtime dependencies with secure cookie origin and CSRF
   const dependencies = fixture.calls.serverDependencies[0];
   assert.deepEqual(dependencies.cookie, { secure: true });
   assert.deepEqual(dependencies.originConfig, {
-    allowedOrigins: ["https://platform.example.test"],
-    publicBaseUrl: "https://platform.example.test",
+    allowedOrigins: ["https://swooshz.com"],
+    publicBaseUrl: "https://swooshz.com",
   });
   assert.equal(dependencies.csrfTokenTtlSeconds, 321);
   assert.ok(dependencies.csrfTokenIssuer);
@@ -305,7 +323,7 @@ test("bootstrap-created server disables direct browser launch-token responses", 
     method: "POST",
     url: "/api/platform/apps/launch?workspaceId=workspace_koncept_images&appKey=sqag",
     headers: {
-      origin: "https://platform.example.test",
+      origin: "https://swooshz.com",
       cookie: "swooshz_session=session_owner_example",
       "x-csrf-token": issued.csrfToken,
     },
@@ -792,8 +810,8 @@ function createBootstrapFixture(options = {}) {
   const env = {
     PLATFORM_HTTP_HOST: "127.0.0.1",
     PLATFORM_HTTP_PORT: "4317",
-    PLATFORM_PUBLIC_BASE_URL: "https://platform.example.test",
-    PLATFORM_ALLOWED_ORIGINS: "https://platform.example.test",
+    PLATFORM_PUBLIC_BASE_URL: "https://swooshz.com",
+    PLATFORM_ALLOWED_ORIGINS: "https://swooshz.com",
     PLATFORM_COOKIE_SECURE: "true",
     NODE_ENV: "production",
     DATABASE_URL: databaseUrl,
@@ -807,7 +825,7 @@ function createBootstrapFixture(options = {}) {
           AUTH_TOKEN_URL: "https://auth.example.invalid/oauth2/token",
           AUTH_CLIENT_ID: "synthetic-client-id",
           AUTH_CLIENT_SECRET: "synthetic-client-secret-value",
-          AUTH_REDIRECT_URI: "https://platform.example.invalid/api/platform/auth/callback",
+          AUTH_REDIRECT_URI: "https://swooshz.com/api/platform/auth/callback",
           SESSION_SECRET: "synthetic-session-secret-value-32",
         }
       : {}),
@@ -822,7 +840,7 @@ function createBootstrapFixture(options = {}) {
           AUTH_JWKS_URL: jwksUrl,
           AUTH_CLIENT_ID: "synthetic-client-id",
           AUTH_CLIENT_SECRET: "synthetic-client-secret-value",
-          AUTH_REDIRECT_URI: "https://platform.example.invalid/api/platform/auth/callback",
+          AUTH_REDIRECT_URI: "https://swooshz.com/api/platform/auth/callback",
           SESSION_SECRET: "synthetic-session-secret-value-32",
         }
       : {}),
@@ -1083,7 +1101,7 @@ function createFakeServer({ calls, dependencies, listenOutcome }) {
     },
     async handle(request) {
       const { handleNodePlatformHttpRequest } = await import("../dist/index.js");
-      return handleNodePlatformHttpRequest(dependencies, request);
+      return handleNodePlatformHttpRequest(dependencies, { ...request, headers: { host: "swooshz.com", ...request.headers } });
     },
   };
 

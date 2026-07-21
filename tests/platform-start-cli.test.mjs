@@ -172,7 +172,7 @@ test("generic OIDC fetch HTTP client does not call fetch until invoked", async (
     },
   ]);
 });
-test("SQAG handoff HTTP client preserves every upstream Set-Cookie value", async () => {
+test("SQAG handoff HTTP client does not relay upstream Set-Cookie values", async () => {
   const cookies = [
     "swooshz_quote_session=safe-session; Path=/; HttpOnly; SameSite=Lax; Secure",
     "swooshz_quote_device=safe-device; Path=/; HttpOnly; SameSite=Strict; Secure",
@@ -184,6 +184,9 @@ test("SQAG handoff HTTP client preserves every upstream Set-Cookie value", async
       return {
         status: 200,
         headers: {
+          get(name) {
+            return name === "x-sqag-finalization-handle" ? "finalization_handle_abcdefghijklmnopqrstuvwxyz_123456" : null;
+          },
           getSetCookie() {
             return cookies;
           },
@@ -201,7 +204,8 @@ test("SQAG handoff HTTP client preserves every upstream Set-Cookie value", async
   });
 
   assert.equal(response.status, 200);
-  assert.deepEqual(response.headers["set-cookie"], cookies);
+  assert.equal(response.headers["set-cookie"], undefined);
+  assert.equal(response.headers["x-sqag-finalization-handle"], "finalization_handle_abcdefghijklmnopqrstuvwxyz_123456");
   assert.deepEqual(calls, [{
     url: "https://sqag.example.invalid/api/platform/launch",
     init: {

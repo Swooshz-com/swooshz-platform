@@ -70,6 +70,21 @@ export interface AppLaunchTokenRecord {
   revokedAt: IsoTimestamp | null;
 }
 
+export interface AccessValidationGrantRecord {
+  id: string;
+  sessionId: string;
+  userId: string;
+  workspaceId: string;
+  appId: string;
+  intendedOrigin: string;
+  launchTokenExpiresAt: IsoTimestamp;
+  handleHash: string | null;
+  createdAt: IsoTimestamp;
+  handleExpiresAt: IsoTimestamp | null;
+  consumedAt: IsoTimestamp | null;
+  revokedAt: IsoTimestamp | null;
+}
+
 export interface UserRepository {
   findById(id: string): Promise<User | null>;
   findByNormalizedEmail(email: string): Promise<User | null>;
@@ -190,6 +205,14 @@ export interface AppLaunchTokenRepository {
   ): Promise<AppLaunchTokenRecord | null>;
 }
 
+export interface AccessValidationGrantRepository {
+  create(record: AccessValidationGrantRecord): Promise<AccessValidationGrantRecord>;
+  findById(id: string): Promise<AccessValidationGrantRecord | null>;
+  registerHandle(id: string, handleHash: string, expiresAt: IsoTimestamp): Promise<AccessValidationGrantRecord | null>;
+  consumeByHandleHash(handleHash: string, consumedAt: IsoTimestamp): Promise<AccessValidationGrantRecord | null>;
+  revoke(id: string, revokedAt: IsoTimestamp): Promise<AccessValidationGrantRecord | null>;
+}
+
 export interface PlatformRepositories {
   users: UserRepository;
   providerIdentities?: ProviderIdentityRepository;
@@ -203,4 +226,5 @@ export interface PlatformRepositories {
   auditEvents?: AuditEventRepository;
   workspaceAdminTransactions?: WorkspaceAdminTransactionRepository;
   appLaunchTokens?: AppLaunchTokenRepository;
+  accessValidationGrants?: AccessValidationGrantRepository;
 }

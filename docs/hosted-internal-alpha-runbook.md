@@ -8,11 +8,12 @@ Before using this runbook for a real hosted execution window, review the operato
 
 Also review the auth/session security contract in `docs/auth-session-security-contract.md`. That contract documents the implemented auth/session posture, the pre-alpha gap inventory, and the deferred security/session-management surfaces. This PR does not approve hosted deployment.
 
-Use placeholders in this repo and in shared notes:
+Use the canonical public routing contract in this repo and shared notes:
 
-- Platform hosted base URL placeholder: `<hosted-platform-base-url>`.
-- SQAG hosted base URL placeholder: `<hosted-sqag-base-url>`.
-- Google/OIDC hosted redirect URI placeholder: `<hosted-oidc-redirect-uri>`.
+- Platform canonical origin: `https://swooshz.com`.
+- Platform redirect-only origin: `https://www.swooshz.com`.
+- SQAG canonical origin: `https://quote.swooshz.com`.
+- Google/OIDC redirect URI: `https://swooshz.com/api/platform/auth/callback`.
 
 The hosted redirect URI should resolve to the platform callback route, end with `/api/platform/auth/callback`, and avoid query parameters or fragments. Real configured domains, real staff addresses, database URLs, OAuth values, cookies, tokens, provider identity material, callback URLs with query parameters, and SQAG private app data do not belong in this repository, tickets, screenshots, or shared logs.
 
@@ -32,9 +33,9 @@ This PR does not add a session-management UI. Security/session management remain
 
 ## Deployment Plan
 
-1. Choose the reviewed host for `<hosted-platform-base-url>` and the reviewed SQAG host for `<hosted-sqag-base-url>`.
+1. Configure the reviewed Platform route for `https://swooshz.com`, the redirect-only `https://www.swooshz.com` route, and the SQAG route for `https://quote.swooshz.com`.
 2. Configure the reviewed Neon PostgreSQL database service outside the repo, using the non-secret target in the Neon Hosted Postgres Readiness section.
-3. Configure the OIDC client outside the repo with `<hosted-oidc-redirect-uri>`.
+3. Configure the OIDC client outside the repo with `https://swooshz.com/api/platform/auth/callback`.
 4. Store secrets and runtime env outside the repo in the hosting secret manager or process manager secret store.
 5. Build the platform application with `npm run build`.
 6. Run `npm run platform:readiness-check` as a dry-run env checklist before migration or server start. Hosted readiness requires `NODE_ENV=production`, HTTPS browser/provider-facing URLs, origin-only allowed origins, the reviewed callback path shape, and a valid Postgres-shaped `DATABASE_URL`; it does not connect to the database.
@@ -64,11 +65,11 @@ Recommended hosted operator checks:
 
 This section is a deployment-readiness checklist for a future Hostinger VPS plus Coolify execution window. It does not buy or create VPS resources, configure DNS, deploy the app, configure OAuth, run migrations, seed access, or approve hosted production readiness.
 
-Use placeholders only:
+Use the exact public origins; keep private configuration values as placeholders only:
 
-- App domain placeholder: `<hosted-platform-base-url>`, with `app.swooshz.com` as the likely non-secret hostname candidate until operator approval records the final value outside this repo.
-- SQAG app placeholder: `<hosted-sqag-base-url>`.
-- OIDC callback placeholder: `<hosted-oidc-redirect-uri>`.
+- Canonical Platform origin: `https://swooshz.com`. `https://www.swooshz.com` is redirect-only and must issue a path plus safe-query preserving permanent 308 to the apex. It must never serve UI, auth callbacks, session cookies, OAuth entry, or third-party redirects.
+- SQAG canonical origin: `https://quote.swooshz.com`.
+- OIDC callback: `https://swooshz.com/api/platform/auth/callback`.
 
 Coolify app/service shape:
 
@@ -84,12 +85,12 @@ Deploy-time env categories:
 
 | Category | Env names | Coolify handling | Notes |
 | --- | --- | --- | --- |
-| Non-secret operator choices | `NODE_ENV`, `PLATFORM_HTTP_HOST`, `PLATFORM_HTTP_PORT`, `PLATFORM_PUBLIC_BASE_URL`, `PLATFORM_ALLOWED_ORIGINS`, `PLATFORM_COOKIE_SECURE`, `DATABASE_SSL_MODE`, `PLATFORM_AUTH_PROVIDER_MODE`, `AUTH_PROVIDER_KEY`, `AUTH_ISSUER_URL`, `AUTH_AUTHORIZATION_URL`, `AUTH_TOKEN_URL`, `AUTH_JWKS_URL`, `AUTH_USERINFO_URL`, `AUTH_CLIENT_ID`, `AUTH_REDIRECT_URI`, `AUTH_ALLOWED_DOMAINS`, `PLATFORM_SQAG_LAUNCH_MODE`, `PLATFORM_SQAG_APP_BASE_URL` | Set as reviewed environment entries with placeholder values in repo notes. | Hosted runtime uses `NODE_ENV=production`, explicit origins only, HTTPS public/provider URLs, and `PLATFORM_COOKIE_SECURE=true`. Use `manual` SQAG launch mode until cross-host handoff is reviewed. |
-| Secret values | `DATABASE_URL`, `SESSION_SECRET`, `CSRF_TOKEN_HASH_SECRET`, `AUTH_STATE_HASH_SECRET`, `APP_LAUNCH_TOKEN_HASH_SECRET`, `AUTH_CLIENT_SECRET` | Inject through Coolify secret/env storage only. | Do not commit, print, screenshot, paste, or expose values in build logs, app logs, tickets, shell history, or PRs. |
+| Non-secret operator choices | `NODE_ENV`, `PLATFORM_HTTP_HOST`, `PLATFORM_HTTP_PORT`, `PLATFORM_PUBLIC_BASE_URL`, `PLATFORM_ALLOWED_ORIGINS`, `PLATFORM_COOKIE_SECURE`, `DATABASE_SSL_MODE`, `PLATFORM_AUTH_PROVIDER_MODE`, `AUTH_PROVIDER_KEY`, `AUTH_ISSUER_URL`, `AUTH_AUTHORIZATION_URL`, `AUTH_TOKEN_URL`, `AUTH_JWKS_URL`, `AUTH_USERINFO_URL`, `AUTH_CLIENT_ID`, `AUTH_REDIRECT_URI`, `AUTH_ALLOWED_DOMAINS`, `PLATFORM_SQAG_LAUNCH_MODE`, `PLATFORM_SQAG_APP_BASE_URL` | Set as reviewed environment entries. | Hosted runtime uses `NODE_ENV=production`, the exact canonical origins, HTTPS provider URLs, `PLATFORM_COOKIE_SECURE=true`, and `server_handoff` for the implemented separate-origin SQAG flow. |
+| Secret values | `DATABASE_URL`, `SESSION_SECRET`, `CSRF_TOKEN_HASH_SECRET`, `AUTH_STATE_HASH_SECRET`, `APP_LAUNCH_TOKEN_HASH_SECRET`, `PLATFORM_SQAG_SERVICE_SECRET`, `AUTH_CLIENT_SECRET` | Inject through Coolify secret/env storage only. | Platform and SQAG receive the same service secret through their separate secret stores. Do not commit, print, screenshot, paste, or expose values in build logs, app logs, tickets, shell history, or PRs. |
 | Private allowlist values | `AUTH_ALLOWED_EMAILS` | Treat as private operational data, even though it is not a credential. | Keep real staff addresses outside the repo; use placeholders in docs and tickets. |
 | Migration-only values | `DATABASE_MIGRATIONS_CONFIRM` | Do not keep on the long-running Coolify app service. Set only for the reviewed one-off manual migration command when a future migration is approved. | The migrated Neon database should already return `ready` from `npm run platform:db-readiness-check` before app start. |
 | Bootstrap-only values | `PLATFORM_SEED_CONFIRM`, `PLATFORM_SEED_USER_EMAIL`, `PLATFORM_SEED_WORKSPACE_SLUG`, `PLATFORM_SEED_WORKSPACE_NAME`, `PLATFORM_SEED_MEMBERSHIP_ROLE` | Do not keep on the long-running Coolify app service. Set only for a reviewed one-off bootstrap after real hosted auth creates the user. | These values must not become env-controlled business/admin state, default production data, or a fake login path. |
-| Product handoff placeholders | `PLATFORM_SQAG_LAUNCH_MODE`, `PLATFORM_SQAG_APP_BASE_URL` | Keep placeholder-only until SQAG hosting and cross-host session/cookie behavior are approved. | Platform stores launch checks/tokens and entitlements only; product workflow/runtime data remains outside Platform. |
+| Product handoff configuration | `PLATFORM_SQAG_LAUNCH_MODE`, `PLATFORM_SQAG_APP_BASE_URL`, `PLATFORM_SQAG_SERVICE_SECRET` | Use `server_handoff`, exact `https://quote.swooshz.com`, and a shared secret injected separately into both services. | Platform stores launch checks/tokens and entitlements only; product workflow/runtime data remains outside Platform. |
 
 Coolify readiness sequence:
 
@@ -115,7 +116,7 @@ Hosted smoke checklist after deployment:
 3. Confirm `npm run platform:db-readiness-check` still reports sanitized status `ready` from an operator shell when live DB recheck is intentionally run.
 4. Confirm auth start/callback shape only after hosted OAuth is configured outside this PR.
 5. Confirm `/app`, `/app/admin`, session logout, admin denial, entitlement denial, and audit/activity checks follow the Smoke Checklist below.
-6. Keep SQAG in `manual` mode unless hosted handoff and cross-host cookie/session behavior are approved and smoke tested.
+6. Verify the `server_handoff` finalization and live-validation flow with host-only cookies; do not broaden either cookie to `.swooshz.com`.
 
 Rollback and fix-forward notes:
 
@@ -127,11 +128,11 @@ Rollback and fix-forward notes:
 
 ## TLS And Reverse Proxy Notes
 
-The hosted platform must be served over HTTPS before internal-alpha browser testing. The reverse proxy or load balancer should terminate TLS for `<hosted-platform-base-url>` and forward only the reviewed platform origin.
+The hosted platform must be served over HTTPS before internal-alpha browser testing. The reverse proxy or load balancer should terminate TLS for `https://swooshz.com`, route only that host to Platform, and give `www.swooshz.com` only the redirect handler.
 
 Operator checks:
 
-- `PLATFORM_PUBLIC_BASE_URL` uses the HTTPS platform placeholder value.
+- `PLATFORM_PUBLIC_BASE_URL` is exactly `https://swooshz.com`.
 - `PLATFORM_PUBLIC_BASE_URL` does not include query parameters or fragments.
 - `PLATFORM_ALLOWED_ORIGINS` contains only the hosted Platform origin, with no path, query, or fragment.
 - `PLATFORM_COOKIE_SECURE=true` in production.
@@ -233,11 +234,11 @@ SQAG handoff rollback:
 
 1. Set `PLATFORM_SQAG_LAUNCH_MODE=manual` to stop browser handoff while keeping Platform access checks available.
 2. Confirm `/app` reports a safe launch failure rather than exposing tokens.
-3. Re-enable `server_handoff` only after the SQAG hosted base URL and cross-host session strategy are reviewed. The readiness checker validates the SQAG base URL shape only; cross-host session and cookie behavior remains an operator review and smoke-test item.
+3. Restore `server_handoff` only after confirming `PLATFORM_SQAG_APP_BASE_URL=https://quote.swooshz.com`, the shared service secret is injected into both services, and the host-only cookie/finalization flow is smoke tested.
 
 ## Health Check Procedure
 
-Use `GET /healthz` against `<hosted-platform-base-url>`. A healthy response means the HTTP adapter is reachable; it does not prove OIDC, database migrations, session cookies, admin authorization, SQAG handoff, or audit integrity by itself.
+Use `GET https://swooshz.com/healthz`. A healthy response means the HTTP adapter is reachable; it does not prove OIDC, database migrations, session cookies, admin authorization, SQAG handoff, or audit integrity by itself.
 
 Minimum checks:
 
@@ -266,8 +267,8 @@ Stop and redact the log collection process if a log includes secret values, data
 | `NODE_ENV` | Runtime mode for hosted config. | Required | `production` | No | Hosted readiness requires `production`; development and test fail readiness. |
 | `PLATFORM_HTTP_HOST` | Host/interface the reviewed process binds. | Required | `<host-to-bind>` | No | Empty value fails readiness; hosting decides the real bind address. |
 | `PLATFORM_HTTP_PORT` | Port the reviewed process binds. | Required | `<port-to-bind>` | No | Must be an integer port; invalid values fail startup/readiness. |
-| `PLATFORM_PUBLIC_BASE_URL` | Public HTTPS Platform base URL. | Required | `<hosted-platform-base-url>` | No | Hosted readiness requires HTTPS and no query parameters or fragments. |
-| `PLATFORM_ALLOWED_ORIGINS` | Allowed browser origin list for CSRF/origin checks. | Required | `<hosted-platform-base-url>` | No | Hosted readiness requires HTTPS origins only: scheme, host, optional port, and no path, query, or fragment. |
+| `PLATFORM_PUBLIC_BASE_URL` | Public HTTPS Platform base URL. | Required | `https://swooshz.com` | No | Production readiness requires this exact apex origin. |
+| `PLATFORM_ALLOWED_ORIGINS` | Allowed browser origin list for CSRF/origin checks. | Required | `https://swooshz.com` | No | Production readiness permits only the exact apex origin. |
 | `PLATFORM_COOKIE_SECURE` | Forces secure browser session cookies. | Required | `true` | No | Production requires `true`; false fails startup/readiness. |
 | `DATABASE_URL` | Pooled PostgreSQL app connection string from the secret store. | Required | `<database-url-from-secret-store>` | Yes | Required for live DB connection and migrations; hosted readiness rejects missing or malformed Postgres URL shape and never prints the value. |
 | `DATABASE_SSL_MODE` | Optional DB SSL mode override. | Optional | `<require-or-disable-if-needed>` | No | When set, must be `require` or `disable`; invalid value fails readiness/startup. Use only when the hosted connection string or provider settings do not already enforce the intended SSL behavior. |
@@ -285,11 +286,12 @@ Stop and redact the log collection process if a log includes secret values, data
 | `AUTH_USERINFO_URL` | Optional OIDC userinfo endpoint. | Optional | `<provider-userinfo-url-if-used>` | No | Hosted readiness requires HTTPS when set; called only after token verification succeeds. |
 | `AUTH_CLIENT_ID` | OIDC client id. | Required | `<oidc-client-id-placeholder>` | No | Missing value fails auth config/readiness. |
 | `AUTH_CLIENT_SECRET` | OIDC client secret. | Required | `<oidc-client-secret-placeholder>` | Yes | Missing value fails auth config/readiness; never print it. |
-| `AUTH_REDIRECT_URI` | Hosted callback URI configured with the provider. | Required | `<hosted-oidc-redirect-uri>` | No | Hosted readiness requires HTTPS, no query parameters or fragments, and a path ending in `/api/platform/auth/callback`. |
+| `AUTH_REDIRECT_URI` | Hosted callback URI configured with the provider. | Required | `https://swooshz.com/api/platform/auth/callback` | No | Production readiness requires this exact callback URI. |
 | `AUTH_ALLOWED_EMAILS` | Bootstrap/emergency exact allowlist for internal-alpha users. | Required | `<comma-separated-allowlisted-emails>` | No | Provider-entry filter only. It does not create a Platform user, workspace, membership, or first owner by itself. Day-to-day teammate onboarding can use pending workspace approvals; malformed values fail auth config. Treat as private. |
 | `AUTH_ALLOWED_DOMAINS` | Optional reviewed domain allowlist. | Optional | `<comma-separated-allowed-domains-if-approved>` | No | Leave unset unless broad domain allow is reviewed; malformed values fail auth config. |
-| `PLATFORM_SQAG_LAUNCH_MODE` | Controls SQAG browser handoff behavior. | Required | `manual` or `server_handoff` | No | Unsupported value fails startup/readiness. Use `manual` until hosted handoff is reviewed. |
-| `PLATFORM_SQAG_APP_BASE_URL` | SQAG hosted base URL for browser handoff. | Required when server_handoff | `<hosted-sqag-base-url>` | No | Omit when launch mode is `manual`; when `server_handoff`, hosted readiness requires HTTPS and no query parameters or fragments. |
+| `PLATFORM_SQAG_LAUNCH_MODE` | Controls SQAG browser handoff behavior. | Required | `server_handoff` | No | Unsupported values fail startup/readiness; production cross-subdomain launch uses the implemented server handoff. |
+| `PLATFORM_SQAG_APP_BASE_URL` | SQAG hosted base URL for browser handoff. | Required when server_handoff | `https://quote.swooshz.com` | No | Production `server_handoff` readiness requires this exact SQAG origin. |
+| `PLATFORM_SQAG_SERVICE_SECRET` | Shared service authorization for Platform-to-SQAG calls. | Required when server_handoff | `<strong-random-placeholder>` | Yes | Must be at least 32 characters and injected separately into Platform and SQAG; never expose it to browser code or logs. |
 | `PLATFORM_SEED_CONFIRM` | Explicit first owner/admin bootstrap confirmation. | Required for bootstrap only | `seed-reviewed-internal-access` | No | Required only for `npm run platform:seed-internal-access`; unexpected value fails seed config. |
 | `PLATFORM_SEED_USER_EMAIL` | Reviewed owner/admin email for bootstrap. | Required for bootstrap only | `<hosted-owner-admin-email-after-login>` | No | Required only for seed; treat as private and do not commit real values. In first-owner mode this is the email that will complete real OIDC after the pending approval is prepared. |
 | `PLATFORM_SEED_WORKSPACE_SLUG` | Reviewed bootstrap workspace slug. | Required for bootstrap only | `<reviewed-workspace-slug>` | No | Required only for seed; no default workspace is created when missing. |
@@ -382,7 +384,7 @@ Audit/activity verification should show event type, target type/id, actor user i
 Run this checklist after hosted startup and before broader internal-alpha use:
 
 1. Confirm server starts without importing/listening side effects by using only `npm run platform:start` as the hosted process command.
-2. Call `GET /healthz` on `<hosted-platform-base-url>` and confirm a successful response.
+2. Call `GET https://swooshz.com/healthz` and confirm a successful response.
 3. Start auth through `/api/platform/auth/start` and confirm auth start/callback shape without printing secrets or callback query details.
 4. Complete login and confirm the callback returns to `/app`.
 5. Fetch login session context through the platform shell and confirm no provider tokens, cookies, or secrets are rendered.
@@ -422,7 +424,7 @@ Before actual hosted internal-alpha execution, operators still need reviewed dec
 - Neon PostgreSQL provider target, backup cadence, restore test, and retention.
 - TLS/reverse proxy configuration.
 - OIDC client registration outside the repo.
-- hosted SQAG handoff and cross-host session/cookie strategy.
+- hosted SQAG handoff and host-only session-cookie/finalization evidence.
 - log retention and incident review process.
 - first owner/admin identity outside repo notes.
 - any infrastructure change approval required by the operator team.

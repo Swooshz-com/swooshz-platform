@@ -73,7 +73,7 @@ SQAG production readiness is separate from this Platform repository. Platform ca
 | SQAG entitlement enable/disable for owner/admin | Implemented | `docs/internal-alpha-platform-contract.md`; `src/platform/workspace-admin-service.ts`; `tests/http-admin-routes.test.mjs` | Go for local/internal UAT | Platform manages entitlement state only. |
 | SQAG launch access decision | Implemented | `docs/sqag-integration-contract.md`; `src/access/decide-app-access.ts`; `tests/account-domain.test.mjs`; `tests/platform-app-access-service.test.mjs` | Go for current roles | Owner/admin/member launch is allowed when workspace and entitlement are active; viewer remains denied. Future apps inherit the blocked viewer launch default until an explicit read-only product policy is approved. |
 | Header-only one-time app launch token consume | Implemented | `docs/sqag-integration-contract.md`; `docs/auth-session-security-contract.md`; `src/platform/app-launch-token-consume-service.ts`; `tests/app-launch-token-consume-service.test.mjs` | Go for current contract | Consume is POST and token-consuming; it is not a read-only browser-session route. |
-| Hosted SQAG handoff/session strategy | Blocked until operator approval | `docs/hosted-internal-alpha-operator-decisions.md`; `docs/hosted-internal-alpha-runbook.md` | No-go for hosted execution | Cross-host session/cookie strategy must be approved and smoke-tested outside this PR. |
+| Hosted SQAG handoff/session strategy | Implemented | `docs/sqag-integration-contract.md`; `src/http/handlers.ts`; `src/http/platform-shell.ts`; `docs/hosted-internal-alpha-runbook.md` | No-go until hosted smoke passes | The separate-origin handoff, host-only cookies, header-only finalization, and live validation are implemented; hosted evidence and operator approval remain pending. |
 
 ## Audit/activity
 
@@ -89,7 +89,7 @@ SQAG production readiness is separate from this Platform repository. Platform ca
 | --- | --- | --- | --- | --- |
 | Hosted runbook and smoke checklist | Documented | `docs/hosted-internal-alpha-runbook.md` | Go as documentation only | Does not approve deployment by itself. |
 | Dry-run readiness checker | Implemented | `scripts/platform-readiness-check.mjs`; `tests/platform-readiness-check.test.mjs`; `docs/hosted-internal-alpha-runbook.md` | Go as preflight validation only | Does not call OIDC, SQAG, databases, migrations, servers, or seed commands. |
-| Hosted production/HTTPS/origin/callback guardrails | Implemented | `docs/hosted-internal-alpha-runbook.md`; `tests/platform-readiness-check.test.mjs` | Go as hosted env-shape validation | Real hosted values must remain outside repo and be reviewed by operators. |
+| Hosted production/HTTPS/origin/callback guardrails | Implemented | `docs/hosted-internal-alpha-runbook.md`; `tests/platform-readiness-check.test.mjs` | Go as hosted env-shape validation | Canonical public origins and callback are committed; private provider, identity, database, and secret values remain outside the repo. |
 | Actual hosted deployment execution | Blocked until operator approval | `docs/hosted-internal-alpha-operator-decisions.md`; `docs/hosted-internal-alpha-runbook.md` | No-go until approvals and smoke pass | No deployment/config/runtime code is added here. |
 
 ## Operator approvals
@@ -114,7 +114,7 @@ SQAG production readiness is separate from this Platform repository. Platform ca
 
 | Checklist item | Current status | Evidence/source doc or source file | Go/no-go decision | Notes |
 | --- | --- | --- | --- | --- |
-| Placeholder-only hosted docs | Documented | `docs/hosted-internal-alpha-runbook.md`; `docs/hosted-internal-alpha-operator-decisions.md`; this checklist | Go for docs review | Real hosted values, identities, domains, URLs, credentials, and private operational evidence stay outside repo. |
+| Public-origin/private-value separation | Documented | `docs/hosted-internal-alpha-runbook.md`; `docs/hosted-internal-alpha-operator-decisions.md`; this checklist | Go for docs review | Canonical public domains and URLs are explicit; identities, credentials, provider values, database values, and private operational evidence stay outside the repo. |
 | Secret/value-safe readiness output | Implemented | `scripts/platform-readiness-check.mjs`; `tests/platform-readiness-check.test.mjs` | Go for dry-run validation | Output is limited to env names, categories, and safe failure reasons. |
 | Privacy-safe logs and screenshots guidance | Documented | `docs/hosted-internal-alpha-runbook.md`; `docs/internal-platform-smoke-runbook.md` | Go for runbook review | Do not paste real private values, auth material, DB material, browser session material, provider identity material, or SQAG private data into repo notes. |
 

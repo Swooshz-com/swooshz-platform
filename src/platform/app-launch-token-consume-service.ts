@@ -8,6 +8,7 @@ import type {
   PlatformRepositories,
 } from "./repositories.js";
 import type { AppLaunchTokenHasher } from "./app-launch-intent-service.js";
+import { issueAccessValidationGrant, type AccessValidationGrantDependencies } from "./access-validation-grant-service.js";
 
 export type AppLaunchTokenConsumeServiceErrorCode =
   | "launch_token_hash_failed"
@@ -47,6 +48,7 @@ export interface AppLaunchTokenConsumeDependencies {
   };
   launchTokenHasher: AppLaunchTokenHasher;
   billingGate?: BillingGate;
+  accessValidationGrant?: AccessValidationGrantDependencies;
 }
 
 export interface AppLaunchTokenConsumeInput {
@@ -75,6 +77,7 @@ export type AppLaunchTokenConsumeResult =
       };
       membershipRole: string;
       launchTokenExpiresAt: string;
+      validationGrantId?: string;
     }
   | {
       outcome: "invalid";
@@ -203,6 +206,17 @@ export async function consumeAppLaunchToken(
     return invalid("consumed_launch_token");
   }
 
+  const grant = dependencies.accessValidationGrant
+    ? await issueAccessValidationGrant(dependencies.accessValidationGrant, {
+        sessionId: token.sessionId,
+        userId: token.userId,
+        workspaceId: token.workspaceId,
+        appId: token.appId,
+        launchTokenExpiresAt: token.expiresAt,
+        now: input.now,
+      })
+    : null;
+
   return {
     outcome: "consumed",
     user: {
@@ -222,6 +236,7 @@ export async function consumeAppLaunchToken(
     },
     membershipRole: membership.role,
     launchTokenExpiresAt: token.expiresAt,
+    ...(grant ? { validationGrantId: grant.id } : {}),
   };
 }
 

@@ -9,7 +9,7 @@ const BOOTSTRAP_ONLY = "Required for bootstrap only";
 const SQAG_HANDOFF_ONLY = "Required when server_handoff";
 
 export const HOSTED_READINESS_ENV_CHECKS = [
-  required("PLATFORM_PUBLIC_BASE_URL", "public_runtime", validateHostedBaseUrl),
+  required("PLATFORM_PUBLIC_BASE_URL", "public_runtime", validatePlatformBaseUrl),
   required("NODE_ENV", "runtime_mode", validateNodeEnv),
   required("PLATFORM_HTTP_HOST", "public_runtime"),
   required("PLATFORM_HTTP_PORT", "public_runtime", validatePort),
@@ -38,9 +38,10 @@ export const HOSTED_READINESS_ENV_CHECKS = [
   conditional(
     "PLATFORM_SQAG_APP_BASE_URL",
     "sqag_handoff",
-    validateHostedBaseUrl,
+    validateSqagBaseUrl,
     (env) => readEnv(env, "PLATFORM_SQAG_LAUNCH_MODE") === "server_handoff",
   ),
+  conditional("PLATFORM_SQAG_SERVICE_SECRET", "sqag_handoff", validateMinimumLength(32), (env) => readEnv(env, "PLATFORM_SQAG_LAUNCH_MODE") === "server_handoff", { secret: true }),
   bootstrapOnly("PLATFORM_SEED_CONFIRM", "bootstrap", validateSeedConfirm),
   bootstrapOnly("PLATFORM_SEED_USER_EMAIL", "bootstrap"),
   bootstrapOnly("PLATFORM_SEED_WORKSPACE_SLUG", "bootstrap"),
@@ -157,8 +158,8 @@ function bootstrapOnly(name, category, validate = validatePresent) {
   return check(name, category, BOOTSTRAP_ONLY, validate);
 }
 
-function conditional(name, category, validate, condition) {
-  return check(name, category, SQAG_HANDOFF_ONLY, validate, { condition });
+function conditional(name, category, validate, condition, options = {}) {
+  return check(name, category, SQAG_HANDOFF_ONLY, validate, { ...options, condition });
 }
 
 function check(name, category, required, validate, options = {}) {
@@ -206,7 +207,28 @@ function validateHostedBaseUrl(value) {
     return result;
   }
 
+  if (result.parsed.username || result.parsed.password) {
+    return invalid("credentials_not_allowed");
+  }
+
   return hasQueryOrFragment(result.parsed) ? invalid("query_or_fragment_not_allowed") : ok();
+}
+
+function validatePlatformBaseUrl(value) {
+  const result = validateHostedBaseUrl(value);
+  if (!result.ok) return result;
+  return new URL(value).origin === "https://swooshz.com" && new URL(value).pathname === "/"
+    ? ok()
+    : invalid("must_be_canonical_platform_apex");
+}
+
+function validateSqagBaseUrl(value) {
+  const result = validateHostedBaseUrl(value);
+  if (!result.ok) return result;
+  const parsed = new URL(value);
+  return parsed.origin === "https://quote.swooshz.com" && parsed.pathname === "/"
+    ? ok()
+    : invalid("must_be_canonical_sqag_origin");
 }
 
 function validateHostedAuthRedirectUri(value) {
@@ -216,7 +238,7 @@ function validateHostedAuthRedirectUri(value) {
   }
 
   const parsed = new URL(value);
-  return parsed.pathname.endsWith("/api/platform/auth/callback")
+  return parsed.origin === "https://swooshz.com" && parsed.pathname === "/api/platform/auth/callback"
     ? ok()
     : invalid("must_end_with_platform_auth_callback");
 }
@@ -239,7 +261,9 @@ function validateAllowedOrigins(value) {
     }
   }
 
-  return ok();
+  return origins.length === 1 && origins[0] === "https://swooshz.com"
+    ? ok()
+    : invalid("must_be_canonical_platform_apex");
 }
 
 function validateNodeEnv(value) {

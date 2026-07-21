@@ -268,11 +268,30 @@ export function renderAppShellPage(): string {
                 }
               );
               const payload = await readJson(response);
-              if (!response.ok || payload.outcome !== "launch_opened" || !payload.launchUrl) {
+              let finalizationHandle = response.headers.get("x-sqag-finalization-handle");
+              if (!response.ok || payload.outcome !== "launch_opened" || !payload.launchUrl || !payload.finalizationUrl || !finalizationHandle) {
                 renderLaunchState("failure");
                 return;
               }
-              window.location.assign(payload.launchUrl);
+              const launchUrl = new URL(payload.launchUrl);
+              const finalizationUrl = new URL(payload.finalizationUrl);
+              if (launchUrl.protocol !== "https:" || finalizationUrl.protocol !== "https:" || launchUrl.origin !== finalizationUrl.origin || launchUrl.origin === window.location.origin) {
+                finalizationHandle = null;
+                renderLaunchState("failure");
+                return;
+              }
+              const finalizeResponse = await fetch(finalizationUrl.toString(), {
+                method: "POST",
+                credentials: "include",
+                cache: "no-store",
+                headers: { "x-sqag-finalization-handle": finalizationHandle }
+              });
+              finalizationHandle = null;
+              if (!finalizeResponse.ok) {
+                renderLaunchState("failure");
+                return;
+              }
+              window.location.assign(launchUrl.toString());
             } catch {
               renderLaunchState("failure");
             } finally {

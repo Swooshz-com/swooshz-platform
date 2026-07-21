@@ -14,6 +14,7 @@ import { createInMemoryPlatformRepositories } from "./helpers/in-memory-platform
 const now = "2026-06-27T00:00:00.000Z";
 const publicBaseUrl = "https://platform.example.test/app";
 const allowedOrigin = "https://platform.example.test";
+const productionBaseUrl = "https://swooshz.com";
 const alternateAllowedOrigin = "https://admin.example.test";
 const syntheticPrivateUrl =
   "https://private.example.test/path?token=raw-session-token&db=postgresql://private-host";
@@ -84,8 +85,8 @@ test("production rejects insecure cookie config", () => {
   assertConfigError(
     () => readNodePlatformRuntimeConfig({
       NODE_ENV: "production",
-      PLATFORM_PUBLIC_BASE_URL: publicBaseUrl,
-      PLATFORM_ALLOWED_ORIGINS: allowedOrigin,
+      PLATFORM_PUBLIC_BASE_URL: productionBaseUrl,
+      PLATFORM_ALLOWED_ORIGINS: productionBaseUrl,
       PLATFORM_COOKIE_SECURE: "false",
     }),
     "insecure_cookie_config",
@@ -127,11 +128,30 @@ test("production rejects public base URL query or fragment", () => {
   );
 });
 
+test("production requires the exact canonical apex public base URL", () => {
+  for (const candidate of [
+    "https://www.swooshz.com",
+    "https://swooshz.com:8443",
+    "https://swooshz.com/platform",
+    "https://user:password@swooshz.com",
+  ]) {
+    assertConfigError(
+      () => readNodePlatformRuntimeConfig({
+        NODE_ENV: "production",
+        PLATFORM_PUBLIC_BASE_URL: candidate,
+        PLATFORM_ALLOWED_ORIGINS: productionBaseUrl,
+        PLATFORM_COOKIE_SECURE: "true",
+      }),
+      "invalid_public_base_url",
+    );
+  }
+});
+
 test("production rejects empty allowed origins", () => {
   assertConfigError(
     () => readNodePlatformRuntimeConfig({
       NODE_ENV: "production",
-      PLATFORM_PUBLIC_BASE_URL: publicBaseUrl,
+      PLATFORM_PUBLIC_BASE_URL: productionBaseUrl,
       PLATFORM_ALLOWED_ORIGINS: " ",
       PLATFORM_COOKIE_SECURE: "true",
     }),
@@ -143,7 +163,7 @@ test("production rejects non-HTTPS allowed origins", () => {
   assertConfigError(
     () => readNodePlatformRuntimeConfig({
       NODE_ENV: "production",
-      PLATFORM_PUBLIC_BASE_URL: publicBaseUrl,
+      PLATFORM_PUBLIC_BASE_URL: productionBaseUrl,
       PLATFORM_ALLOWED_ORIGINS: "http://platform.example.test",
       PLATFORM_COOKIE_SECURE: "true",
     }),
@@ -155,7 +175,7 @@ test("config errors do not echo raw env values private URLs or secrets", () => {
   assertConfigError(
     () => readNodePlatformRuntimeConfig({
       NODE_ENV: "production",
-      PLATFORM_PUBLIC_BASE_URL: publicBaseUrl,
+      PLATFORM_PUBLIC_BASE_URL: productionBaseUrl,
       PLATFORM_ALLOWED_ORIGINS: syntheticPrivateUrl,
       PLATFORM_COOKIE_SECURE: "false-raw-secret",
     }),

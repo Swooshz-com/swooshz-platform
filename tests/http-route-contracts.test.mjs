@@ -41,6 +41,10 @@ test("route manifest includes only approved initial platform routes", () => {
       "platform_app_launch",
       "platform_sqag_launch_open",
       "platform_app_launch_consume",
+      "platform_sqag_finalization_register",
+      "platform_sqag_finalization_consume",
+      "platform_sqag_access_validate",
+      "platform_sqag_access_revoke",
       "platform_logout",
     ],
   );
@@ -77,6 +81,10 @@ test("route manifest includes only approved initial platform routes", () => {
       "POST /api/platform/apps/launch",
       "POST /api/platform/apps/launch/open",
       "POST /api/platform/apps/launch/consume",
+      "POST /api/internal/sqag/finalizations/register",
+      "POST /api/internal/sqag/finalizations/consume",
+      "POST /api/internal/sqag/access/validate",
+      "POST /api/internal/sqag/access/revoke",
       "POST /api/platform/logout",
     ],
   );

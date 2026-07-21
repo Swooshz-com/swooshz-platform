@@ -70,7 +70,7 @@ test("migration journal and generated snapshot remain consistent", async () => {
     await readFile("drizzle/migrations/meta/0006_snapshot.json", "utf8"),
   );
   const currentSnapshot = JSON.parse(await readFile(snapshotPath, "utf8"));
-  const latestEntry = journal.entries.at(-1);
+  const legacyRemovalEntry = journal.entries.find((entry) => entry.tag === migrationTag);
 
   assert.equal(journal.version, "7");
   assert.equal(journal.dialect, "postgresql");
@@ -78,9 +78,8 @@ test("migration journal and generated snapshot remain consistent", async () => {
     journal.entries.map((entry) => entry.idx),
     journal.entries.map((_, index) => index),
   );
-  assert.equal(latestEntry.idx, 7);
-  assert.equal(latestEntry.tag, migrationTag);
-  assert.equal(latestEntry.breakpoints, true);
+  assert.equal(legacyRemovalEntry.idx, 7);
+  assert.equal(legacyRemovalEntry.breakpoints, true);
   assert.equal(currentSnapshot.prevId, previousSnapshot.id);
   assert.deepEqual(currentSnapshot.tables, previousSnapshot.tables);
   assert.deepEqual(currentSnapshot.enums, previousSnapshot.enums);

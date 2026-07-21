@@ -58,7 +58,7 @@ does not claim the live Platform-to-SQAG smoke or production readiness.
 
 Use placeholders only in local notes and shared docs. Do not paste real secrets, database credentials, staff emails, provider tokens, auth codes, provider subjects, callback payloads, or production domains.
 
-Use `127.0.0.1` consistently for local browser UAT examples and operator notes. Do not mix alternate loopback hostnames with `127.0.0.1` in the same local session, because browser cookies and same-host SQAG handoff checks are host-sensitive.
+Synthetic localhost checks do not reproduce the hosted origin boundary. Hosted UAT must use exact HTTPS origins: `https://swooshz.com` for Platform and `https://quote.swooshz.com` for SQAG, each with host-only cookies.
 
 Database:
 
@@ -127,20 +127,18 @@ name `SQAG`. `PLATFORM_SEED_APP_KEY` and `PLATFORM_SEED_APP_NAME` are not
 supported bootstrap inputs; setting either one fails closed before any database
 connection.
 
-SQAG browser launch handoff, for same-host local UAT only:
+SQAG browser launch handoff configuration (placeholder values only):
 
 ```text
 PLATFORM_SQAG_LAUNCH_MODE=server_handoff
 PLATFORM_SQAG_APP_BASE_URL=<sqag-local-base-url>
+PLATFORM_SQAG_SERVICE_SECRET=<shared-secret-from-approved-secret-store>
 ```
 
 Leave `PLATFORM_SQAG_LAUNCH_MODE` unset or set it to `manual` to keep the
 safe default: the Platform shell will not complete a browser handoff to SQAG.
 `server_handoff` is intended for local UAT where Platform and SQAG are visited
-through the same browser cookie host, for example the same `127.0.0.1` host on
-different ports. If the configured SQAG URL uses a different host from the
-Platform request host, the handoff fails closed instead of forwarding cookies
-across an unsafe boundary.
+through separate HTTPS origins with host-only cookies. Confirm the finalization handle appears only in the two request/response headers and never in URLs, bodies, storage, logs, or screenshots. The deprecated same-browser-cookie-host relay must remain absent.
 
 ### C. Apply Reviewed Migrations
 
@@ -210,7 +208,7 @@ The seed requires the user already exists and has a provider identity. It does n
 
 The browser launch route creates the Platform launch token server-side, forwards
 it to SQAG only in the `x-app-launch-token` header, copies SQAG's session cookie
-back to the same browser cookie host, and returns only the safe SQAG launch URL.
+back to the exact SQAG origin, and returns only the safe SQAG launch and finalization URLs plus the ephemeral response header.
 The raw launch token must never appear in URL query parameters, URL fragments,
 browser local/session storage, cookies, logs, screenshots, docs, telemetry, or
 test snapshots.
@@ -264,7 +262,7 @@ runbook `docs/platform-uat-smoke-runbook.md`.
 - `launch denied`: verify the workspace entitlement, membership role, app key, and session are active.
 - `CSRF/origin failure`: fetch a fresh CSRF token through the browser shell and confirm the request origin matches configured allowed origins.
 - `consumed/expired launch token`: create a new launch intent; launch tokens are one-time and short-lived.
-- `SQAG browser launch is not configured`: set `PLATFORM_SQAG_LAUNCH_MODE=server_handoff` and `PLATFORM_SQAG_APP_BASE_URL=<sqag-local-base-url>`, and confirm Platform and SQAG use the same browser cookie host.
+- `SQAG browser launch is not configured`: set the reviewed handoff mode, exact SQAG HTTPS base URL, and shared service secret; confirm Platform is the apex origin and SQAG is the exact quote subdomain.
 - `SQAG browser launch could not be completed`: confirm SQAG is running in `SQAG_PLATFORM_LAUNCH_MODE=platform`, accepts `POST /api/platform/launch`, and can consume Platform launch tokens through the header-only contract.
 
 ## Out Of Scope

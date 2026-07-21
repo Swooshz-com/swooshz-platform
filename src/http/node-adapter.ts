@@ -62,6 +62,8 @@ import { isKnownPublicSiteAsset, readPublicSiteAsset } from "./public-site-asset
 import type { BrowserSessionCookieConfig } from "./session-cookie.js";
 import { extractBrowserSessionIdFromCookieHeader } from "./session-cookie.js";
 import { validateHttpRequestSecurityForRoute } from "./request-security.js";
+import { serviceAuthorizationMatches } from "../platform/app-launch-token-crypto.js";
+import { consumeFinalizationHandle, registerFinalizationHandle, revokeAccessValidationGrant, validateAccessValidationGrant, type AccessValidationGrantDependencies } from "../platform/access-validation-grant-service.js";
 
 export interface NodePlatformHttpAdapterDependencies {
   repositories: PlatformRepositories;
@@ -76,6 +78,7 @@ export interface NodePlatformHttpAdapterDependencies {
   appLaunchIntent?: AppLaunchIntentDependencies;
   appLaunchTokenConsume?: AppLaunchTokenConsumeDependencies;
   sqagBrowserLaunch?: SqagBrowserLaunchDependencies["sqag"];
+  accessValidationGrant?: { serviceSecret: string; service: AccessValidationGrantDependencies };
   billingGate?: BillingGate;
   workspaceAdminIdFactory?: WorkspaceAdminIdFactory;
 }
@@ -115,6 +118,16 @@ export async function handleNodePlatformHttpRequest(
       outcome: "error",
       message: "Route not found.",
     });
+  }
+
+  const earlyHeaders = normalizeHeaders(request.headers);
+  const requestHost = (readHeader(earlyHeaders, "host") ?? "").toLowerCase();
+  if (requestHost === "www.swooshz.com") {
+    const apexOrigin = readApexRedirectOrigin(dependencies.originConfig.publicBaseUrl);
+    return { statusCode: 308, headers: { location: `${apexOrigin}${parsedUrl.pathname}${safeRedirectQuery(parsedUrl)}`, ...noStoreHeaders() }, body: "" };
+  }
+  if (isCanonicalProductionOrigin(dependencies.originConfig.publicBaseUrl) && requestHost !== "swooshz.com") {
+    return jsonResponse(421, { outcome: "error", message: "Request host is not served." }, noStoreHeaders());
   }
 
   const method = normalizeMethod(request.method);
@@ -698,7 +711,8 @@ export async function handleNodePlatformHttpRequest(
     if (
       !dependencies.appLaunchIntent ||
       !dependencies.sqagBrowserLaunch ||
-      !isSafeSameHostSqagLaunch(headers, dependencies.sqagBrowserLaunch.baseUrl)
+      !dependencies.sqagBrowserLaunch.serviceSecret ||
+      !isSafeSeparateOriginSqagLaunch(headers, dependencies.sqagBrowserLaunch.baseUrl)
     ) {
       return sqagLaunchNotConfiguredResponse();
     }
@@ -748,6 +762,43 @@ export async function handleNodePlatformHttpRequest(
         },
       ),
     );
+  }
+
+  if (route.id.startsWith("platform_sqag_finalization_") || route.id.startsWith("platform_sqag_access_")) {
+    const capability = dependencies.accessValidationGrant;
+    const authorization = readHeader(headers, "x-sqag-service-authorization") ?? "";
+    if (!capability || !authorization || !serviceAuthorizationMatches(authorization, capability.serviceSecret)) return sqagServiceDeniedResponse();
+    const body = parseJsonObjectBody(request.body);
+    const now = dependencies.now();
+    try {
+      if (route.id === "platform_sqag_finalization_register") {
+        const validationGrantId = readBodyString(body, "validationGrantId");
+        const handleHashSha256 = readBodyString(body, "handleHashSha256");
+        const expiresAt = readBodyString(body, "expiresAt");
+        const intendedSqagOrigin = readBodyString(body, "intendedSqagOrigin");
+        if (!validationGrantId || !handleHashSha256 || !expiresAt || !intendedSqagOrigin) return sqagServiceDeniedResponse();
+        const ok = await registerFinalizationHandle(capability.service, { validationGrantId, handleHashSha256, expiresAt, intendedSqagOrigin, now });
+        return ok ? emptyResponse(204, noStoreHeaders()) : sqagServiceDeniedResponse();
+      }
+      if (route.id === "platform_sqag_finalization_consume") {
+        const intendedSqagOrigin = readBodyString(body, "intendedSqagOrigin");
+        const rawHandle = readHeader(headers, "x-sqag-finalization-handle") ?? "";
+        if (!intendedSqagOrigin) return sqagServiceDeniedResponse();
+        const context = await consumeFinalizationHandle(capability.service, { rawHandle, intendedSqagOrigin, now });
+        return context ? jsonResponse(200, context, noStoreHeaders()) : sqagServiceDeniedResponse();
+      }
+      const validationGrantId = readHeader(headers, "x-sqag-validation-grant") ?? "";
+      if (route.id === "platform_sqag_access_revoke") {
+        return await revokeAccessValidationGrant(capability.service, validationGrantId, now) ? emptyResponse(204, noStoreHeaders()) : sqagServiceDeniedResponse();
+      }
+      const workspaceId = readBodyString(body, "workspaceId");
+      const appKey = readBodyString(body, "appKey");
+      if (!workspaceId || !appKey) return sqagServiceDeniedResponse();
+      const context = await validateAccessValidationGrant(capability.service, { validationGrantId, workspaceId, appKey, now });
+      return context ? jsonResponse(200, { valid: true, validationGrantId, ...context }, noStoreHeaders()) : sqagServiceDeniedResponse();
+    } catch {
+      return sqagServiceDeniedResponse();
+    }
   }
 
   if (route.id === "platform_logout") {
@@ -1190,6 +1241,14 @@ function jsonResponse(
   };
 }
 
+function emptyResponse(statusCode: number, headers: Record<string, string> = {}): NodePlatformHttpResponse {
+  return { statusCode, headers, body: "" };
+}
+
+function sqagServiceDeniedResponse(): NodePlatformHttpResponse {
+  return jsonResponse(403, { outcome: "error", message: "SQAG service request denied." }, noStoreHeaders());
+}
+
 function htmlResponse(
   statusCode: number,
   body: string,
@@ -1205,24 +1264,23 @@ function htmlResponse(
   };
 }
 
-function isSafeSameHostSqagLaunch(
+function isSafeSeparateOriginSqagLaunch(
   headers: HttpRequestHeaders,
   baseUrl: string,
 ): boolean {
-  const requestHost = readHeader(headers, "host")?.split(":")[0]?.trim().toLowerCase();
-
-  if (!requestHost) {
+  const requestOrigin = readHeader(headers, "origin");
+  if (!requestOrigin) {
     return false;
   }
 
   try {
     const parsed = new URL(baseUrl);
 
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    if (parsed.protocol !== "https:") {
       return false;
     }
 
-    return parsed.hostname.toLowerCase() === requestHost;
+    return parsed.origin !== new URL(requestOrigin).origin;
   } catch {
     return false;
   }
@@ -1256,4 +1314,29 @@ function noStoreHeaders(): Record<string, string> {
     pragma: "no-cache",
     expires: "0",
   };
+}
+
+function readApexRedirectOrigin(configured: string | undefined): string {
+  try {
+    const parsed = new URL(configured ?? "");
+    if (parsed.protocol === "https:" && parsed.hostname === "swooshz.com" && !parsed.port) return parsed.origin;
+  } catch { /* use the canonical fail-closed target */ }
+  return "https://swooshz.com";
+}
+
+function isCanonicalProductionOrigin(configured: string | undefined): boolean {
+  try { return new URL(configured ?? "").origin === "https://swooshz.com"; } catch { return false; }
+}
+
+function safeRedirectQuery(url: URL): string {
+  if (url.search.length > 1024) return "";
+  const safe = new URLSearchParams();
+  for (const [key, value] of url.searchParams) {
+    if (!/^[A-Za-z0-9_.~-]{1,64}$/.test(key) || value.length > 256) continue;
+    if (/(?:token|code|state|secret|password|session|auth|key)/i.test(key)) continue;
+    if (/[\u0000-\u001f\u007f\\]/.test(value) || /:\/\//.test(value)) continue;
+    safe.append(key, value);
+  }
+  const serialized = safe.toString();
+  return serialized ? `?${serialized}` : "";
 }

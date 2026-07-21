@@ -124,6 +124,7 @@ export interface SqagBrowserLaunchDependencies {
   appLaunchIntent: AppLaunchIntentDependencies;
   sqag: {
     baseUrl: string;
+    serviceSecret?: string;
     httpClient: SqagBrowserLaunchHttpClient;
   };
 }
@@ -470,6 +471,7 @@ export async function handleSqagBrowserLaunchRequest(
       url: new URL("/api/platform/launch", baseUrl).toString(),
       headers: {
         "x-app-launch-token": launch.launchToken,
+        ...(dependencies.sqag.serviceSecret ? { "x-sqag-service-authorization": dependencies.sqag.serviceSecret } : {}),
       },
     });
   } catch {
@@ -480,37 +482,31 @@ export async function handleSqagBrowserLaunchRequest(
     return sqagLaunchFailure();
   }
 
-  const setCookies = readHeaderValues(sqagResponse.headers, "set-cookie");
-
-  if (
-    setCookies.length === 0 ||
-    !setCookies.every((setCookie) => isSafeSqagSetCookie(
-      setCookie,
-      [
-        request.cookie?.name ?? DEFAULT_BROWSER_SESSION_COOKIE_NAME,
-        DEFAULT_AUTH_STATE_COOKIE_NAME,
-      ],
-      launch.launchToken,
-      request.cookie?.secure === true,
-    ))
-  ) {
+  const finalizationHandles = readHeaderValues(sqagResponse.headers, "x-sqag-finalization-handle");
+  const finalizationHandle = finalizationHandles.length === 1 ? finalizationHandles[0] : "";
+  if (!/^[A-Za-z0-9_-]{32,512}$/.test(finalizationHandle) || finalizationHandle.includes(",")) {
     return sqagLaunchFailure();
   }
+
+  const launchUrl = new URL("/", baseUrl).toString();
+  const finalizationUrl = new URL("/api/auth/platform/finalize", baseUrl).toString();
 
   return {
     status: 200,
     headers: {
       ...noStoreHeaders(),
-      "set-cookie": setCookies.length === 1 ? setCookies[0] : setCookies,
+      "x-sqag-finalization-handle": finalizationHandle,
     },
     body: {
       outcome: "launch_opened",
       appKey: launch.appKey,
       workspaceId: launch.workspaceId,
-      launchUrl: baseUrl.toString(),
+      launchUrl,
+      finalizationUrl,
     },
   };
 }
+
 
 export async function handleWorkspaceMembersAdminRequest(
   repositories: PlatformRepositories,

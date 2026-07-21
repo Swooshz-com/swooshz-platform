@@ -57,6 +57,7 @@ test("builds a session Set-Cookie header with secure browser defaults", () => {
   assert.match(header, /Path=\/api\/platform/);
   assert.match(header, /SameSite=Lax/);
   assert.match(header, /Secure/);
+  assert.doesNotMatch(header, /Domain=/i);
   assert.match(header, /Max-Age=3600/);
 });
 
@@ -69,6 +70,7 @@ test("clearing cookie expires and removes the browser session reference safely",
   assert.match(header, /SameSite=Lax/);
   assert.match(header, /Secure/);
   assert.match(header, /Max-Age=0/);
+  assert.doesNotMatch(header, /Domain=/i);
   assert.match(header, /Expires=Thu, 01 Jan 1970 00:00:00 GMT/);
 });
 

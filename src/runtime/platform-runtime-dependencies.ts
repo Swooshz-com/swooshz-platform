@@ -1,5 +1,6 @@
 import { createDrizzleAuthStateStore } from "../db/auth-state-repository.js";
 import { createDrizzleAppLaunchTokenRepository } from "../db/app-launch-token-repository.js";
+import { createDrizzleAccessValidationGrantRepository } from "../db/access-validation-grant-repository.js";
 import { createDrizzleCsrfTokenRepository } from "../db/csrf-token-repository.js";
 import {
   createDrizzlePlatformRepositories,
@@ -35,6 +36,8 @@ import { createSecureWorkspaceAdminIdFactory } from "../platform/workspace-admin
 import type {
   AppLaunchTokenIdFactory,
 } from "../platform/app-launch-intent-service.js";
+import { createAccessValidationGrantId, hashFinalizationHandle } from "../platform/app-launch-token-crypto.js";
+import type { AccessValidationGrantDependencies } from "../platform/access-validation-grant-service.js";
 import {
   createHmacCsrfTokenHasher,
   createSecureCsrfTokenFactory,
@@ -147,6 +150,7 @@ export function createPlatformRuntimeDependencies(
         db: input.db,
         repositories,
         secrets: input.secrets,
+        sqagBaseUrl: input.sqagBrowserLaunch?.baseUrl,
       })
     : {};
 
@@ -162,7 +166,7 @@ export function createPlatformRuntimeDependencies(
     }),
     csrfTokenTtlSeconds: input.csrfTokenTtlSeconds ?? defaultCsrfTokenTtlSeconds,
     workspaceAdminIdFactory: createSecureWorkspaceAdminIdFactory(),
-    sqagBrowserLaunch: input.sqagBrowserLaunch,
+    sqagBrowserLaunch: input.sqagBrowserLaunch ? { ...input.sqagBrowserLaunch, serviceSecret: input.secrets.platformSqagServiceSecret } : undefined,
     ...appLaunchDependencies,
     ...authDependencies,
   };
@@ -173,17 +177,29 @@ function createAppLaunchDependencies({
   db,
   repositories,
   secrets,
+  sqagBaseUrl,
 }: {
   appLaunch: PlatformRuntimeAppLaunchDependencyInput;
   db: DrizzleDatabase;
   repositories: ReturnType<typeof createDrizzlePlatformRepositories>;
   secrets: PlatformRuntimeSecretConfig;
+  sqagBaseUrl?: string;
 }): Pick<
   NodePlatformHttpAdapterDependencies,
-  "appLaunchIntent" | "appLaunchTokenConsume"
+  "appLaunchIntent" | "appLaunchTokenConsume" | "accessValidationGrant"
 > {
   const appLaunchTokens = createDrizzleAppLaunchTokenRepository(db);
+  const accessValidationGrants = createDrizzleAccessValidationGrantRepository(db);
   const launchTokenHasher = createAppLaunchTokenHasherSafely(secrets);
+  const accessValidationGrant: AccessValidationGrantDependencies | undefined =
+    sqagBaseUrl && secrets.platformSqagServiceSecret
+      ? {
+          repositories: { ...repositories, accessValidationGrants },
+          intendedSqagOrigin: new URL(sqagBaseUrl).origin,
+          grantIdFactory: createAccessValidationGrantId,
+          handleHasher: hashFinalizationHandle,
+        }
+      : undefined;
 
   return {
     appLaunchIntent: {
@@ -204,7 +220,11 @@ function createAppLaunchDependencies({
         appLaunchTokens,
       },
       launchTokenHasher,
+      ...(accessValidationGrant ? { accessValidationGrant } : {}),
     },
+    ...(accessValidationGrant && secrets.platformSqagServiceSecret
+      ? { accessValidationGrant: { serviceSecret: secrets.platformSqagServiceSecret, service: accessValidationGrant } }
+      : {}),
   };
 }
 

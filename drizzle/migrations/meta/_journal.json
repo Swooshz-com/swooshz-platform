@@ -57,6 +57,13 @@
       "when": 1784354477743,
       "tag": "0007_remove_legacy_kqag_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1784620602227,
+      "tag": "0009_wonderful_star_brand",
+      "breakpoints": true
     }
   ]
 }

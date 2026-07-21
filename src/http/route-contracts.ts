@@ -29,6 +29,10 @@ export type HttpRouteId =
   | "platform_app_launch"
   | "platform_sqag_launch_open"
   | "platform_app_launch_consume"
+  | "platform_sqag_finalization_register"
+  | "platform_sqag_finalization_consume"
+  | "platform_sqag_access_validate"
+  | "platform_sqag_access_revoke"
   | "platform_logout";
 
 export type HttpRouteMethod = "GET" | "POST";
@@ -509,6 +513,38 @@ export const HTTP_ROUTE_CONTRACTS: readonly HttpRouteContract[] = [
     responseKind: "json",
     idempotent: false,
     implemented: true,
+  },
+  {
+    id: "platform_sqag_finalization_register",
+    method: "POST",
+    path: "/api/internal/sqag/finalizations/register",
+    browserSession: "none",
+    csrf: { required: false, strategy: "none" },
+    requiredQuery: [], handlerContract: "registerFinalizationHandle", responseKind: "json", idempotent: false, implemented: true,
+  },
+  {
+    id: "platform_sqag_finalization_consume",
+    method: "POST",
+    path: "/api/internal/sqag/finalizations/consume",
+    browserSession: "none",
+    csrf: { required: false, strategy: "none" },
+    requiredQuery: [], handlerContract: "consumeFinalizationHandle", responseKind: "json", idempotent: false, implemented: true,
+  },
+  {
+    id: "platform_sqag_access_validate",
+    method: "POST",
+    path: "/api/internal/sqag/access/validate",
+    browserSession: "none",
+    csrf: { required: false, strategy: "none" },
+    requiredQuery: [], handlerContract: "validateAccessValidationGrant", responseKind: "json", idempotent: false, implemented: true,
+  },
+  {
+    id: "platform_sqag_access_revoke",
+    method: "POST",
+    path: "/api/internal/sqag/access/revoke",
+    browserSession: "none",
+    csrf: { required: false, strategy: "none" },
+    requiredQuery: [], handlerContract: "revokeAccessValidationGrant", responseKind: "json", idempotent: false, implemented: true,
   },
   {
     id: "platform_logout",

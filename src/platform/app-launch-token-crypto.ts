@@ -1,4 +1,4 @@
-import { createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 import type {
   AppLaunchTokenFactory,
@@ -91,4 +91,18 @@ export function createSecureAppLaunchTokenIdFactory(
       return `app_launch_${id}`;
     },
   };
+}
+
+export function createAccessValidationGrantId(): string {
+  return randomBytes(32).toString("base64url");
+}
+
+export function hashFinalizationHandle(rawHandle: string): string {
+  return createHash("sha256").update(rawHandle, "utf8").digest("hex");
+}
+
+export function serviceAuthorizationMatches(actual: string, expected: string): boolean {
+  const left = Buffer.from(actual, "utf8");
+  const right = Buffer.from(expected, "utf8");
+  return left.length === right.length && timingSafeEqual(left, right);
 }

@@ -95,13 +95,16 @@ Safe browser launch response shape:
   "outcome": "launch_opened",
   "appKey": "sqag",
   "workspaceId": "<platform-workspace-id>",
-  "launchUrl": "<sqag-local-base-url>"
+  "launchUrl": "https://quote.swooshz.com/",
+  "finalizationUrl": "https://quote.swooshz.com/api/auth/platform/finalize"
 }
 ```
 
+The same response carries the raw one-time finalization handle only in `X-SQAG-Finalization-Handle`.
+
 The browser-safe launch response does not include the raw launch token. The raw token is not placed in URL query parameters, fragments, browser storage, cookies, logs, docs, screenshots, committed files, or app telemetry.
 
-Safe consume request shape for the future SQAG adapter:
+Safe consume request shape for the implemented SQAG adapter:
 
 ```http
 POST /api/platform/apps/launch/consume?appKey=sqag HTTP/1.1
@@ -130,7 +133,8 @@ Safe consume success response shape:
     "appName": "SQAG"
   },
   "membershipRole": "owner",
-  "launchTokenExpiresAt": "<iso-expiry>"
+  "launchTokenExpiresAt": "<iso-expiry>",
+  "validationGrantId": "<non-secret-grant-id>"
 }
 ```
 
@@ -157,7 +161,7 @@ SQAG should use the safe consume context to scope runtime/session/history data o
 
 Today, SQAG can use local/runtime storage for internal UAT. The next SQAG adapter phase should move SQAG runtime and session history behind the platform consume context without making SQAG the owner of accounts.
 
-The current browser-safe local UAT direction is:
+The implemented hosted browser-safe direction is:
 
 1. Platform authenticates the user.
 2. Platform selects the workspace.
@@ -223,7 +227,7 @@ Finalize the platform-side handoff contract around the launch-token issue, consu
 
 No provider SDKs, fake login, billing, deployment, or migration automation.
 
-### Phase 4: SQAG Platform Adapter
+### Phase 4: SQAG Platform Adapter (Implemented Contract)
 
 Implement and harden the SQAG-side adapter in the SQAG repository. The adapter consumes the platform launch token through the header-only consume endpoint and remains scoped to quote workflow runtime/session behavior.
 
@@ -231,14 +235,14 @@ SQAG changes should stay adapter-scoped and quote-workflow-specific.
 
 ## Local UAT Configuration
 
-Browser-safe SQAG launch is disabled by default. To enable it for local UAT, use placeholders such as:
+Browser-safe SQAG launch is disabled by default. To enable the reviewed hosted handoff, use injected values such as:
 
 ```text
 PLATFORM_SQAG_LAUNCH_MODE=server_handoff
 PLATFORM_SQAG_APP_BASE_URL=<sqag-local-base-url>
 ```
 
-The platform start CLI validates the configured SQAG base URL before listening and does not call SQAG during startup. The browser-safe handoff requires Platform and SQAG to be reachable on the same browser cookie host for local UAT. Different ports on `127.0.0.1` are acceptable for this local shape; mixing `localhost` and `127.0.0.1` is intentionally rejected.
+The platform start CLI validates the configured SQAG base URL before listening and does not call SQAG during startup. The launch contract uses separate HTTPS origins (`https://swooshz.com` and `https://quote.swooshz.com`) and host-only cookies. SQAG registers a short-lived SHA-256 handle hash against the non-secret validation grant through service-authenticated internal endpoints. Finalization is atomic and one-time; every later validation re-evaluates the live Platform session, user, workspace, membership role, app, and entitlement without a positive cache. The response field is `finalizationUrl`.
 
 Before any operator-hosted smoke, run the DB-free synthetic preflight:
 

@@ -17,9 +17,9 @@ const privateDatabaseUrl =
 const privateErrorDetail =
   "connect ECONNREFUSED private-host.invalid private_user private_pass";
 const expectedMigrationState = {
-  latestTag: "0007_remove_legacy_kqag_tables",
-  latestCreatedAt: 1784354477743,
-  migrationCount: 8,
+  latestTag: "0009_wonderful_star_brand",
+  latestCreatedAt: 1784620602227,
+  migrationCount: 9,
 };
 
 test("platform DB readiness check package script exists", async () => {

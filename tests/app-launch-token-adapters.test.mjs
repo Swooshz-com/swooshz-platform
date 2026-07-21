@@ -130,7 +130,7 @@ test("app launch token schema has hash-only lifecycle indexes and no raw token c
 
   assert.match(schemaContents, /appLaunchTokens/);
   assert.match(schemaContents, /tokenHash/);
-  assert.doesNotMatch(schemaContents, /launchToken|rawToken/);
+  assert.doesNotMatch(schemaContents, /rawLaunchToken|rawToken|launchToken\s*:/);
 });
 
 function createFakeDrizzleDb({ insertRows, selectRows, updateRows } = {}) {

@@ -49,7 +49,7 @@ test("internal platform smoke runbook documents the full smoke sequence", async 
     "redirects to `/app`",
     "npm run platform:seed-internal-access",
     "Refresh `/app`",
-    "Use `127.0.0.1` consistently",
+    "Hosted UAT must use exact HTTPS origins",
     "open `/app/admin`",
     "Add Existing User",
     "existing active provider-backed Platform user",
