@@ -2,7 +2,7 @@
 
 This runbook prepares Swooshz Platform for a reviewed hosted internal-alpha handoff. It is documentation, guardrails, and readiness tooling only. It does not deploy, provision, expose, sync, restart, or configure hosted infrastructure. This PR is readiness only, not full production readiness.
 
-SQAG-side PR #122 landed at merge commit `6f93180023636306fe10f0d6250ea2df71d486a0` and canonicalized SQAG launch payloads to `appKey=sqag`. Platform PR #79 landed at merge commit `c65bf67078031921f5b4ce73f03455804eb2fd07` and migrated Platform-owned SQAG app-key surfaces to `sqag`. Hosted Platform-to-SQAG smoke remains pending until an operator runs the smoke deliberately; do not claim production readiness from this documentation alone.
+SQAG-side PR #122 and Platform PR #79 established the historical `appKey=sqag` baseline only. Before hosted execution, record and jointly review the exact companion Platform and SQAG revisions that implement header-only finalization, host-only SQAG cookies, and live Platform access validation. Hosted Platform-to-SQAG smoke remains pending until an operator runs the smoke deliberately; do not claim production readiness from this documentation alone.
 
 Before using this runbook for a real hosted execution window, review the operator briefing in `docs/hosted-internal-alpha-operator-briefing.md` and the operator decision record in `docs/hosted-internal-alpha-operator-decisions.md`. The briefing summarizes the human go/no-go context; the decision record tracks the required out-of-repo hosting, approval, ownership, handoff, incident, and go/no-go decisions. This runbook does not approve deployment by itself.
 

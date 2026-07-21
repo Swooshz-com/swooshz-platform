@@ -2,14 +2,14 @@
 
 This runbook verifies the current internal Swooshz Platform flow using already-approved platform services and routes. It is an operator checklist, not a product feature, deployment guide, or database provisioning guide.
 
-SQAG-side PR #122 landed at merge commit `6f93180023636306fe10f0d6250ea2df71d486a0` and requires Platform launch and consume payloads to use `appKey=sqag`. Platform PR #79 landed at merge commit `c65bf67078031921f5b4ce73f03455804eb2fd07` and migrated Platform-owned SQAG registry, entitlement, launch/open, consume, seed/bootstrap, docs, tests, and admin surfaces to the canonical app key. Live Platform-to-SQAG smoke remains pending until an operator deliberately runs the hosted/live smoke; this runbook must not be used to claim production readiness before that operator smoke is actually performed.
+SQAG-side PR #122 and Platform PR #79 established the historical `appKey=sqag` baseline. They do not prove compatibility with the current cross-origin finalization and live-access-validation protocol. Record and jointly review the exact companion Platform and SQAG revisions before running hosted smoke. Live Platform-to-SQAG smoke remains pending until an operator deliberately runs the hosted/live smoke; this runbook must not be used to claim production readiness before that operator smoke is actually performed.
 
 ## Sanitized Local Smoke Evidence
 
 Operator-provided sanitized evidence for the local-only Platform-to-SQAG smoke on 2026-07-08 records:
 
 - Platform local main SHA checked: `58efef2dd2a80e9d9452678f0c397fc55212bdfd`.
-- SQAG local main SHA checked: `6f93180023636306fe10f0d6250ea2df71d486a0`.
+- Exact companion SQAG revision checked and recorded in the evidence bundle; it must implement this contract rather than only the historical app-key baseline.
 - `synthetic_gate_passed=true`.
 - `local_real_smoke_ran=true`.
 - `sqag_launch_success=true`.

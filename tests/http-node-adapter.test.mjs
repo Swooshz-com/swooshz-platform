@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
@@ -21,6 +22,11 @@ const csrfExpiresAt = "2026-06-27T00:15:00.000Z";
 const rawLaunchToken = "synthetic-raw-launch-token-reference";
 const launchTokenHash = "app-launch:v1:hmac-sha256:synthetic_hash_reference";
 const launchTokenExpiresAt = "2026-06-27T00:05:00.000Z";
+const sqagServiceSecret = "synthetic-sqag-service-secret-value-32-chars";
+const validationGrantId = "grant_abcdefghijklmnopqrstuvwxyz_1234567890";
+const finalizationHandle = "finalization_handle_abcdefghijklmnopqrstuvwxyz_123456";
+const finalizationHandleHash = createHash("sha256").update(finalizationHandle).digest("hex");
+const finalizationExpiresAt = "2026-06-27T00:02:00.000Z";
 const authState = "synthetic-browser-state-reference";
 const authNonce = "synthetic-browser-nonce-reference";
 const authStateHash = "hash_synthetic_browser_state_reference";
@@ -773,6 +779,166 @@ test("SQAG browser launch rejects duplicate finalization handle response headers
   assert.equal(response.headers["x-sqag-finalization-handle"], undefined);
 });
 
+test("SQAG internal finalization routes enforce service auth and atomic replay denial", async () => {
+  const fixture = createAdapterFixture();
+  const boundary = attachAccessValidationGrantCapability(fixture);
+  const serviceHeaders = { "x-sqag-service-authorization": sqagServiceSecret };
+
+  const unauthorized = await request({
+    method: "POST",
+    url: "/api/internal/sqag/finalizations/register",
+    headers: { "x-sqag-service-authorization": "wrong-service-secret" },
+    body: JSON.stringify({
+      validationGrantId,
+      handleHashSha256: finalizationHandleHash,
+      expiresAt: finalizationExpiresAt,
+      intendedSqagOrigin: boundary.origin,
+    }),
+    dependencies: fixture.dependencies,
+  });
+  assert.equal(unauthorized.response.statusCode, 403);
+  assert.deepEqual(unauthorized.body, { outcome: "error", message: "SQAG service request denied." });
+  assert.equal(boundary.grant.handleHash, null);
+
+  const registration = await rawRequest({
+    method: "POST",
+    url: "/api/internal/sqag/finalizations/register",
+    headers: serviceHeaders,
+    body: JSON.stringify({
+      validationGrantId,
+      handleHashSha256: finalizationHandleHash,
+      expiresAt: finalizationExpiresAt,
+      intendedSqagOrigin: boundary.origin,
+    }),
+    dependencies: fixture.dependencies,
+  });
+  assert.equal(registration.response.statusCode, 204);
+  assertNoStoreHeaders(registration.response.headers);
+  assert.equal(registration.response.body, "");
+  assert.equal(boundary.grant.handleHash, finalizationHandleHash);
+
+  const consumeHeaders = {
+    ...serviceHeaders,
+    "x-sqag-finalization-handle": finalizationHandle,
+  };
+  const consumed = await request({
+    method: "POST",
+    url: "/api/internal/sqag/finalizations/consume",
+    headers: consumeHeaders,
+    body: JSON.stringify({ intendedSqagOrigin: boundary.origin }),
+    dependencies: fixture.dependencies,
+  });
+  assert.equal(consumed.response.statusCode, 200);
+  assertNoStoreHeaders(consumed.response.headers);
+  assert.deepEqual(consumed.body, {
+    validationGrantId,
+    userId: "user_owner_example",
+    workspaceId: "workspace_koncept_images",
+    appKey: "sqag",
+    launchTokenExpiresAt,
+    currentRole: "owner",
+  });
+
+  const replay = await request({
+    method: "POST",
+    url: "/api/internal/sqag/finalizations/consume",
+    headers: consumeHeaders,
+    body: JSON.stringify({ intendedSqagOrigin: boundary.origin }),
+    dependencies: fixture.dependencies,
+  });
+  assert.equal(replay.response.statusCode, 403);
+  assert.deepEqual(replay.body, { outcome: "error", message: "SQAG service request denied." });
+  assertResponseIsPrivacySafe(replay.response);
+});
+
+test("SQAG internal validation and revoke routes re-check bindings and fail closed", async () => {
+  const fixture = createAdapterFixture();
+  const boundary = attachAccessValidationGrantCapability(fixture, { consumed: true });
+  const headers = {
+    "x-sqag-service-authorization": sqagServiceSecret,
+    "x-sqag-validation-grant": validationGrantId,
+  };
+
+  const validation = await request({
+    method: "POST",
+    url: "/api/internal/sqag/access/validate",
+    headers,
+    body: JSON.stringify({ workspaceId: "workspace_koncept_images", appKey: "sqag" }),
+    dependencies: fixture.dependencies,
+  });
+  assert.equal(validation.response.statusCode, 200);
+  assertNoStoreHeaders(validation.response.headers);
+  assert.equal(validation.body.valid, true);
+  assert.equal(validation.body.validationGrantId, validationGrantId);
+  assert.equal(validation.body.currentRole, "owner");
+
+  const wrongWorkspace = await request({
+    method: "POST",
+    url: "/api/internal/sqag/access/validate",
+    headers,
+    body: JSON.stringify({ workspaceId: "workspace_other", appKey: "sqag" }),
+    dependencies: fixture.dependencies,
+  });
+  assert.equal(wrongWorkspace.response.statusCode, 403);
+  assert.deepEqual(wrongWorkspace.body, { outcome: "error", message: "SQAG service request denied." });
+
+  const revoked = await rawRequest({
+    method: "POST",
+    url: "/api/internal/sqag/access/revoke",
+    headers,
+    body: "{}",
+    dependencies: fixture.dependencies,
+  });
+  assert.equal(revoked.response.statusCode, 204);
+  assertNoStoreHeaders(revoked.response.headers);
+  assert.equal(boundary.grant.revokedAt, now);
+
+  const afterRevoke = await request({
+    method: "POST",
+    url: "/api/internal/sqag/access/validate",
+    headers,
+    body: JSON.stringify({ workspaceId: "workspace_koncept_images", appKey: "sqag" }),
+    dependencies: fixture.dependencies,
+  });
+  assert.equal(afterRevoke.response.statusCode, 403);
+  assert.deepEqual(afterRevoke.body, { outcome: "error", message: "SQAG service request denied." });
+  assertResponseIsPrivacySafe(afterRevoke.response);
+});
+
+test("SQAG internal routes reject malformed input and repository failures generically", async () => {
+  const fixture = createAdapterFixture();
+  attachAccessValidationGrantCapability(fixture, { consumed: true });
+  const headers = {
+    "x-sqag-service-authorization": sqagServiceSecret,
+    "x-sqag-validation-grant": validationGrantId,
+  };
+
+  const malformed = await request({
+    method: "POST",
+    url: "/api/internal/sqag/access/validate",
+    headers,
+    body: "{private malformed provider body",
+    dependencies: fixture.dependencies,
+  });
+  assert.equal(malformed.response.statusCode, 403);
+  assert.deepEqual(malformed.body, { outcome: "error", message: "SQAG service request denied." });
+  assert.doesNotMatch(malformed.response.body, /private malformed provider body/);
+
+  fixture.repositories.sessions.findById = async () => {
+    throw new Error("private database failure postgresql://private-host");
+  };
+  const failed = await request({
+    method: "POST",
+    url: "/api/internal/sqag/access/validate",
+    headers,
+    body: JSON.stringify({ workspaceId: "workspace_koncept_images", appKey: "sqag" }),
+    dependencies: fixture.dependencies,
+  });
+  assert.equal(failed.response.statusCode, 403);
+  assert.deepEqual(failed.body, { outcome: "error", message: "SQAG service request denied." });
+  assertResponseIsPrivacySafe(failed.response);
+});
+
 test("SQAG browser launch handoff fails safely without session access config or safe cookie host", async () => {
   const missingSession = await request({
     method: "POST",
@@ -1468,12 +1634,14 @@ async function request({
   method,
   url,
   headers = {},
+  body,
   dependencies = createAdapterFixture().dependencies,
 }) {
   const response = await handleNodePlatformHttpRequest(dependencies, {
     method,
     url,
     headers,
+    body,
   });
 
   return {
@@ -1494,12 +1662,14 @@ async function rawRequest({
   method,
   url,
   headers = {},
+  body,
   dependencies = createAdapterFixture().dependencies,
 }) {
   const response = await handleNodePlatformHttpRequest(dependencies, {
     method,
     url,
     headers,
+    body,
   });
 
   return { response };
@@ -1799,6 +1969,59 @@ function createAdapterFixture(overrides = {}) {
   }
 
   return { records, repositories, calls, dependencies };
+}
+
+function attachAccessValidationGrantCapability(fixture, overrides = {}) {
+  const origin = "https://quote.swooshz.com";
+  const grant = {
+    id: validationGrantId,
+    sessionId,
+    userId: "user_owner_example",
+    workspaceId: "workspace_koncept_images",
+    appId: "app_sqag",
+    intendedOrigin: origin,
+    launchTokenExpiresAt,
+    handleHash: overrides.consumed ? finalizationHandleHash : null,
+    handleExpiresAt: overrides.consumed ? finalizationExpiresAt : null,
+    consumedAt: overrides.consumed ? now : null,
+    revokedAt: null,
+    createdAt: now,
+  };
+  fixture.repositories.accessValidationGrants = {
+    async create(record) {
+      Object.assign(grant, record);
+      return grant;
+    },
+    async findById(id) {
+      return id === grant.id ? grant : null;
+    },
+    async registerHandle(id, hash, expiresAt) {
+      if (id !== grant.id || grant.handleHash || grant.revokedAt || grant.consumedAt) return null;
+      grant.handleHash = hash;
+      grant.handleExpiresAt = expiresAt;
+      return grant;
+    },
+    async consumeByHandleHash(hash, consumedAt) {
+      if (hash !== grant.handleHash || grant.revokedAt || grant.consumedAt) return null;
+      grant.consumedAt = consumedAt;
+      return grant;
+    },
+    async revoke(id, revokedAt) {
+      if (id !== grant.id || grant.revokedAt) return null;
+      grant.revokedAt = revokedAt;
+      return grant;
+    },
+  };
+  fixture.dependencies.accessValidationGrant = {
+    serviceSecret: sqagServiceSecret,
+    service: {
+      repositories: fixture.repositories,
+      intendedSqagOrigin: origin,
+      grantIdFactory: () => validationGrantId,
+      handleHasher: (rawHandle) => createHash("sha256").update(rawHandle).digest("hex"),
+    },
+  };
+  return { origin, grant };
 }
 
 function instrumentRepositories(repositories) {

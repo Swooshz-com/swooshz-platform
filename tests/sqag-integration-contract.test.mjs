@@ -27,7 +27,8 @@ test("SQAG integration contract documents current platform launch handoff", asyn
   const doc = await readFile(contractPath, "utf8");
   const requiredPhrases = [
     "current platform code implements the launch-token issue and consume endpoints plus a narrow browser-safe SQAG handoff route",
-    "Platform PR #79 landed at merge commit `c65bf67078031921f5b4ce73f03455804eb2fd07`",
+    "SQAG-side PR #122 and Platform PR #79 established the historical `appKey=sqag` baseline",
+    "Before enabling `server_handoff`, operators must record and jointly review the exact Platform and SQAG revisions that implement this contract",
     "Browser user signs in to Swooshz Platform through OIDC",
     "Swooshz Platform owns the browser session, platform user, workspace membership, membership role, app entitlement, and app access decision",
     "POST /api/platform/apps/launch?workspaceId=<platform-workspace-id>&appKey=sqag",

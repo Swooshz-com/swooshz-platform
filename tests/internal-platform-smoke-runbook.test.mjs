@@ -79,7 +79,7 @@ test("internal platform smoke runbook records sanitized local-only SQAG smoke ev
     "Operator-provided sanitized evidence",
     "local-only Platform-to-SQAG smoke",
     "Platform local main SHA checked: `58efef2dd2a80e9d9452678f0c397fc55212bdfd`",
-    "SQAG local main SHA checked: `6f93180023636306fe10f0d6250ea2df71d486a0`",
+    "Exact companion SQAG revision checked and recorded in the evidence bundle",
     "`synthetic_gate_passed=true`",
     "`local_real_smoke_ran=true`",
     "`sqag_launch_success=true`",

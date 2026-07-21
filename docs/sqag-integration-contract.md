@@ -2,7 +2,7 @@
 
 SQAG is the first app integration target for Swooshz Platform. This contract defines the platform-owned launch boundary now that SQAG can consume platform launch context server-side. The current platform code implements the launch-token issue and consume endpoints plus a narrow browser-safe SQAG handoff route. SQAG quote workflow storage and app behavior remain owned by the SQAG repository.
 
-SQAG-side PR #122 landed at merge commit `6f93180023636306fe10f0d6250ea2df71d486a0` and made `sqag` the canonical app key. Platform PR #79 landed at merge commit `c65bf67078031921f5b4ce73f03455804eb2fd07` and aligned the Platform registry, entitlement, launch, consume, seed, docs, and admin surfaces to `appKey=sqag`. SQAG now rejects non-`sqag` launch payloads fail-closed. Live Platform-to-SQAG smoke remains pending until an operator deliberately runs the hosted/live smoke; the local synthetic readiness check does not claim production readiness.
+SQAG-side PR #122 and Platform PR #79 established the historical `appKey=sqag` baseline. They are not evidence of compatibility with the later cross-origin finalization and live-access-validation protocol. Before enabling `server_handoff`, operators must record and jointly review the exact Platform and SQAG revisions that implement this contract. Live Platform-to-SQAG smoke remains pending until an operator deliberately runs the hosted/live smoke; the local synthetic readiness check does not claim production readiness.
 
 ## Boundary Summary
 
@@ -52,13 +52,14 @@ The platform-side handoff contract is now explicit:
 3. The direct browser launch-token route `POST /api/platform/apps/launch?workspaceId=<platform-workspace-id>&appKey=sqag` is disabled for raw-token delivery and must not mint or return a raw token to the browser.
 4. The browser-safe SQAG handoff route is `POST /api/platform/apps/launch/open?workspaceId=<platform-workspace-id>&appKey=sqag`.
 5. The browser-safe handoff route requires an active browser session cookie plus Origin/Referer and CSRF validation.
-6. In browser-safe handoff mode, Platform creates the launch intent internally, stores only a versioned hash of the launch token plus lifecycle metadata, sends the raw launch token only in the server-side `x-app-launch-token` header to SQAG, receives SQAG's session cookie response, and returns only a safe launch URL to the browser.
-7. The browser-safe handoff response must not include the raw launch token, token hash, provider tokens, provider claims, auth code, state, nonce, database URL, or platform session secret.
-8. The raw launch token must not be placed in browser response bodies, URL query parameters, browser storage, cookies, logs, docs, screenshots, committed files, or app telemetry.
-9. SQAG must send any raw launch token only in the `x-app-launch-token` header to `POST /api/platform/apps/launch/consume?appKey=sqag`.
-10. The consume route requires no browser cookie and no CSRF token because the raw launch token is the credential.
-11. Platform hashes the submitted token before lookup, rejects missing, invalid, expired, consumed, revoked, and app-mismatched tokens safely, re-checks app access, consumes the token once, and returns only safe user/workspace/app context.
-12. The consume response is the only platform-owned context SQAG should use to create its own adapter-side runtime/session boundary.
+6. In browser-safe handoff mode, Platform creates the launch intent internally, stores only a versioned hash of the launch token plus lifecycle metadata, and sends the raw launch token only in the server-side `x-app-launch-token` header to SQAG. SQAG consumes it, registers only a hash of a distinct one-time finalization handle, and returns that handle to Platform only through `X-SQAG-Finalization-Handle`.
+7. Platform returns the finalization handle to its browser shell only through `X-SQAG-Finalization-Handle`. The shell posts it once, with credentials, to the exact SQAG finalization origin. SQAG sets its host-only session cookie from `quote.swooshz.com`; Platform never relays SQAG `Set-Cookie` and never sets `Domain=.swooshz.com`.
+8. The browser-safe handoff response must not include the raw launch token, token hash, provider tokens, provider claims, auth code, state, nonce, database URL, or platform session secret.
+9. The raw launch token must not be placed in browser response bodies, URL query parameters, browser storage, cookies, logs, docs, screenshots, committed files, or app telemetry.
+10. SQAG must send any raw launch token only in the `x-app-launch-token` header to `POST /api/platform/apps/launch/consume?appKey=sqag`.
+11. The consume route requires no browser cookie and no CSRF token because the raw launch token is the credential.
+12. Platform hashes the submitted token before lookup, rejects missing, invalid, expired, consumed, revoked, and app-mismatched tokens safely, re-checks app access, consumes the token once, and returns only safe user/workspace/app context plus a dedicated validation-grant identifier.
+13. The consume response may establish the bounded SQAG session binding, but it is not continuing authorization. SQAG must validate the bound Platform grant on every authenticated API request and fail closed on revocation, expiry, access change, malformed response, timeout, or Platform unavailability.
 
 The old pre-namespace app key is not whitelisted, is not an alias, and must not be accepted by launch/open or consume flows.
 
