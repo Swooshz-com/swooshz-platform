@@ -8,6 +8,7 @@ import {
   assertMigrationExecutionAllowed,
   createDatabasePool,
   readDatabaseConfig,
+  readOperatorDatabaseConfig,
 } from "../dist/db/client.js";
 
 const syntheticDatabaseUrl =
@@ -103,6 +104,59 @@ test("migration confirmation guard requires the documented exact value", () => {
   );
 });
 
+test("production operator connections require DATABASE_OPERATOR_URL", () => {
+  assert.throws(
+    () =>
+      readOperatorDatabaseConfig({
+        NODE_ENV: "production",
+        DATABASE_URL: syntheticDatabaseUrl,
+      }),
+    (error) => {
+      assert.equal(error instanceof DatabaseConfigError, true);
+      assert.equal(error.code, "missing_database_operator_url");
+      assert.doesNotMatch(error.message, /example_pass|db\.example\.invalid/);
+      return true;
+    },
+  );
+});
+
+test("operator connections are separated in production with local fallback", () => {
+  const operatorUrl =
+    "postgres://operator_user:operator_pass@operator.example.invalid:5432/swooshz_platform";
+  const production = readOperatorDatabaseConfig({
+    NODE_ENV: "production",
+    DATABASE_URL: syntheticDatabaseUrl,
+    DATABASE_OPERATOR_URL: operatorUrl,
+  });
+  const development = readOperatorDatabaseConfig({
+    NODE_ENV: "development",
+    DATABASE_URL: syntheticDatabaseUrl,
+  });
+
+  assert.equal(production.databaseUrl, operatorUrl);
+  assert.equal(development.databaseUrl, syntheticDatabaseUrl);
+});
+
+test("migration confirmation remains mandatory with operator URL", () => {
+  const operatorUrl =
+    "postgres://operator_user:operator_pass@operator.example.invalid:5432/swooshz_platform";
+  assert.throws(
+    () =>
+      assertMigrationExecutionAllowed({
+        NODE_ENV: "production",
+        DATABASE_OPERATOR_URL: operatorUrl,
+      }),
+    /DATABASE_MIGRATIONS_CONFIRM/,
+  );
+  assert.equal(
+    assertMigrationExecutionAllowed({
+      NODE_ENV: "production",
+      DATABASE_OPERATOR_URL: operatorUrl,
+      DATABASE_MIGRATIONS_CONFIRM: DATABASE_MIGRATIONS_CONFIRM_VALUE,
+    }).databaseUrl,
+    operatorUrl,
+  );
+});
 test("DB client module does not connect during import or pool creation", async () => {
   const pool = createDatabasePool(readDatabaseConfig({ DATABASE_URL: syntheticDatabaseUrl }));
 

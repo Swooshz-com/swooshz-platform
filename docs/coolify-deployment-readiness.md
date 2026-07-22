@@ -44,6 +44,7 @@ Non-secret runtime names:
 - `PLATFORM_ALLOWED_ORIGINS`
 - `PLATFORM_COOKIE_SECURE`
 - `DATABASE_SSL_MODE`
+- `DATABASE_EXPECTED_RUNTIME_ROLE`
 - `PLATFORM_AUTH_PROVIDER_MODE`
 - `AUTH_PROVIDER_KEY`
 - `AUTH_ISSUER_URL`
@@ -75,6 +76,7 @@ Private operational data names:
 
 One-off operator names, not long-running service env:
 
+- `DATABASE_OPERATOR_URL`
 - `DATABASE_MIGRATIONS_CONFIRM`
 - `PLATFORM_SEED_CONFIRM`
 - `PLATFORM_SEED_USER_EMAIL`
@@ -116,7 +118,7 @@ When an operator intentionally validates the hosted database from a reviewed she
 npm run platform:db-readiness-check
 ```
 
-That command uses `DATABASE_URL` and must print sanitized status only.
+That command uses the separately controlled `DATABASE_OPERATOR_URL` in production and must print sanitized status only. `DATABASE_OPERATOR_URL` and owner/migration credentials must never be configured on the long-running Coolify application.
 
 ## Coolify App Shape
 

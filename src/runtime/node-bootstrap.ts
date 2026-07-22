@@ -17,6 +17,11 @@ import type {
   UserIdFactoryInput,
 } from "../auth/platform-identity-resolver.js";
 import type { DrizzleDatabase } from "../db/repositories.js";
+import {
+  assertRuntimeDatabasePosture,
+  readExpectedRuntimeRole,
+  type RuntimeDatabasePostureClient,
+} from "../db/runtime-posture.js";
 import { createSecureCsrfTokenIdFactory } from "../http/csrf-token-crypto.js";
 import { createSecureAppLaunchTokenIdFactory } from "../platform/app-launch-token-crypto.js";
 import type { AppLaunchTokenIdFactory } from "../platform/app-launch-intent-service.js";
@@ -52,6 +57,10 @@ export type PlatformNodeBootstrapEnv =
 
 export interface PlatformBootstrapDatabaseClient {
   db: DrizzleDatabase;
+  query?(
+    text: string,
+    values: readonly unknown[],
+  ): Promise<{ rows: Array<Record<string, unknown>> }>;
   close?(): Promise<void> | void;
 }
 
@@ -150,9 +159,14 @@ export function createPlatformNodeBootstrap(
         sqagBrowserLaunchBaseUrl: input.sqagBrowserLaunch?.baseUrl,
       });
       assertGenericOidcRuntimeInput(input, authProviderMode);
+      const expectedRuntimeRole = readExpectedRuntimeRoleSafely(input.env);
       const databaseClient = createDatabaseClientSafely(input);
 
       try {
+        await assertRuntimeDatabasePostureSafely(
+          databaseClient,
+          expectedRuntimeRole,
+        );
         const dependencies = createDependenciesSafely({
           db: databaseClient.db,
           runtimeConfig,
@@ -440,10 +454,43 @@ function createDefaultDatabaseClient(
 
   return {
     db: client.db as unknown as DrizzleDatabase,
+    query(text, values) {
+      return client.pool.query(text, [...values]);
+    },
     close() {
       return client.pool.end();
     },
   };
+}
+
+function readExpectedRuntimeRoleSafely(
+  env: PlatformNodeBootstrapEnv,
+): string | null {
+  try {
+    return readExpectedRuntimeRole(env);
+  } catch {
+    throw new PlatformNodeBootstrapError("database_posture_failed");
+  }
+}
+
+async function assertRuntimeDatabasePostureSafely(
+  client: PlatformBootstrapDatabaseClient,
+  expectedRole: string | null,
+): Promise<void> {
+  if (!expectedRole) {
+    return;
+  }
+  if (!client.query) {
+    throw new PlatformNodeBootstrapError("database_posture_failed");
+  }
+  try {
+    await assertRuntimeDatabasePosture(
+      client as RuntimeDatabasePostureClient,
+      expectedRole,
+    );
+  } catch {
+    throw new PlatformNodeBootstrapError("database_posture_failed");
+  }
 }
 
 function createDependenciesSafely(

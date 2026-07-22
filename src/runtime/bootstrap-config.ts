@@ -1,6 +1,7 @@
 export type PlatformNodeBootstrapErrorCode =
   | "invalid_config"
   | "database_client_failed"
+  | "database_posture_failed"
   | "dependency_composition_failed"
   | "server_start_failed"
   | "server_stop_failed"

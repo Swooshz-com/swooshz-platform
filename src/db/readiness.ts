@@ -1,7 +1,7 @@
 import {
   createDatabasePool,
   DatabaseConfigError,
-  readDatabaseConfig,
+  readOperatorDatabaseConfig,
   type DatabaseConfig,
   type DatabaseEnvironment,
 } from "./client.js";
@@ -20,6 +20,7 @@ export const REQUIRED_PLATFORM_TABLES = [
   "apps",
   "app_launch_tokens",
   "app_entitlements",
+  "access_validation_grants",
 ] as const;
 
 export type DatabaseReadinessStatus =
@@ -106,7 +107,7 @@ export async function createDatabaseReadinessReport(
   let client: DatabaseReadinessClient | null = null;
 
   try {
-    config = readDatabaseConfig(input.env);
+    config = readOperatorDatabaseConfig(input.env);
     checks.config = "present";
   } catch (error) {
     checks.config = readConfigFailureState(error);
@@ -288,7 +289,7 @@ async function readMigrationReadiness(
 function readConfigFailureState(error: unknown): "missing" | "invalid" {
   if (
     error instanceof DatabaseConfigError &&
-    error.code === "missing_database_url"
+    ["missing_database_url", "missing_database_operator_url"].includes(error.code)
   ) {
     return "missing";
   }
