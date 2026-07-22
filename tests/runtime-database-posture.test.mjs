@@ -89,6 +89,19 @@ test("restricted runtime posture returns aggregate states only", async () => {
   assert.ok(calls[0].values[1].includes("access_validation_grants"));
   assert.match(calls[0].sql, /current_user = \$1 and session_user = \$1/);
   assert.match(calls[0].sql, /pg_has_role\(current_user, table_record\.relowner, 'MEMBER'\)/);
+  assert.match(
+    calls[0].sql,
+    /migration_record\.relnamespace = schema_record\.oid/,
+  );
+  assert.match(
+    calls[0].sql,
+    /has_table_privilege\(\s*current_user,\s*\(select migration_ledger_oid from drizzle_state\)/,
+  );
+  assert.doesNotMatch(calls[0].sql, /to_regclass\('drizzle\.__drizzle_migrations'\)/);
+  assert.doesNotMatch(
+    calls[0].sql,
+    /has_table_privilege\(\s*current_user,\s*'drizzle\.__drizzle_migrations'/,
+  );
   assert.doesNotMatch(calls[0].sql, new RegExp(expectedRole));
   assert.doesNotMatch(JSON.stringify(report), new RegExp(expectedRole));
 });

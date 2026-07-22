@@ -41,6 +41,17 @@ with current_role_state as (
   select oid, rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolbypassrls
   from pg_roles
   where rolname = current_user
+),
+drizzle_state as (
+  select
+    schema_record.oid as schema_oid,
+    migration_record.oid as migration_ledger_oid
+  from pg_namespace schema_record
+  left join pg_class migration_record
+    on migration_record.relnamespace = schema_record.oid
+    and migration_record.relname = '__drizzle_migrations'
+    and migration_record.relkind in ('r', 'p')
+  where schema_record.nspname = 'drizzle'
 )
 select
   current_user = $1 and session_user = $1 as expected_role_match,
@@ -55,13 +66,17 @@ select
     as database_create_absent,
   not has_schema_privilege(current_user, 'public', 'CREATE')
     as public_schema_create_absent,
-  case when to_regnamespace('drizzle') is null then true
-    else not has_schema_privilege(current_user, 'drizzle', 'USAGE')
+  case when (select schema_oid from drizzle_state) is null then true
+    else not has_schema_privilege(
+      current_user,
+      (select schema_oid from drizzle_state),
+      'USAGE'
+    )
   end as drizzle_schema_usage_absent,
-  case when to_regclass('drizzle.__drizzle_migrations') is null then true
+  case when (select migration_ledger_oid from drizzle_state) is null then true
     else not has_table_privilege(
       current_user,
-      'drizzle.__drizzle_migrations',
+      (select migration_ledger_oid from drizzle_state),
       'SELECT'
     )
   end as migration_ledger_select_absent,
