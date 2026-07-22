@@ -45,12 +45,12 @@ with current_role_state as (
 drizzle_state as (
   select
     schema_record.oid as schema_oid,
-    migration_record.oid as migration_ledger_oid
+    migration_record.oid as migration_ledger_oid,
+    migration_record.relkind as migration_ledger_relkind
   from pg_namespace schema_record
   left join pg_class migration_record
     on migration_record.relnamespace = schema_record.oid
     and migration_record.relname = '__drizzle_migrations'
-    and migration_record.relkind in ('r', 'p')
   where schema_record.nspname = 'drizzle'
 )
 select
@@ -73,12 +73,15 @@ select
       'USAGE'
     )
   end as drizzle_schema_usage_absent,
-  case when (select migration_ledger_oid from drizzle_state) is null then true
-    else not has_table_privilege(
+  case
+    when (select migration_ledger_oid from drizzle_state) is null then true
+    when (select migration_ledger_relkind from drizzle_state)
+      in ('r', 'p', 'v', 'm', 'f') then not has_table_privilege(
       current_user,
       (select migration_ledger_oid from drizzle_state),
       'SELECT'
     )
+    else false
   end as migration_ledger_select_absent,
   not exists (
     select 1 from pg_database database_record

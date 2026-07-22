@@ -93,6 +93,15 @@ test("restricted runtime posture returns aggregate states only", async () => {
     calls[0].sql,
     /migration_record\.relnamespace = schema_record\.oid/,
   );
+  assert.match(calls[0].sql, /migration_record\.relname = '__drizzle_migrations'/);
+  assert.match(
+    calls[0].sql,
+    /migration_record\.relkind as migration_ledger_relkind/,
+  );
+  assert.doesNotMatch(
+    calls[0].sql,
+    /migration_record\.relname = '__drizzle_migrations'[\s\S]*?and migration_record\.relkind/,
+  );
   assert.match(
     calls[0].sql,
     /has_table_privilege\(\s*current_user,\s*\(select migration_ledger_oid from drizzle_state\)/,
@@ -104,6 +113,50 @@ test("restricted runtime posture returns aggregate states only", async () => {
   );
   assert.doesNotMatch(calls[0].sql, new RegExp(expectedRole));
   assert.doesNotMatch(JSON.stringify(report), new RegExp(expectedRole));
+});
+
+test("migration ledger relation kinds are inspected or rejected fail closed", async (context) => {
+  let postureSql = "";
+  await inspectRuntimeDatabasePosture(
+    {
+      async query(sql) {
+        postureSql = sql;
+        return { rows: [{ ...passingRow }] };
+      },
+    },
+    expectedRole,
+  );
+
+  const supportedRelationKinds = [
+    ["ordinary table", "r"],
+    ["partitioned table", "p"],
+    ["view", "v"],
+    ["materialized view", "m"],
+    ["foreign table", "f"],
+  ];
+
+  for (const [name, relkind] of supportedRelationKinds) {
+    await context.test(`${name} uses the OID privilege check`, () => {
+      assert.match(
+        postureSql,
+        new RegExp(`migration_ledger_relkind[\\s\\S]*?in \\([^)]*'${relkind}'`),
+      );
+    });
+  }
+
+  await context.test("genuine relation absence remains safe", () => {
+    assert.match(
+      postureSql,
+      /when \(select migration_ledger_oid from drizzle_state\) is null then true/,
+    );
+  });
+
+  await context.test("unsupported exact-name relation kinds fail posture", () => {
+    assert.match(
+      postureSql,
+      /when \(select migration_ledger_relkind from drizzle_state\)[\s\S]*?then not has_table_privilege\([\s\S]*?else false\s+end as migration_ledger_select_absent/,
+    );
+  });
 });
 
 test("every prohibited runtime posture fails closed", async (context) => {
