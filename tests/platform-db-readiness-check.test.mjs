@@ -113,7 +113,7 @@ test("DB readiness reports schema not ready when platform tables are missing", a
   assert.equal(report.checks.reachability, "passed");
   assert.equal(report.checks.schema, "failed");
   assert.deepEqual(report.missingTables, ["sessions"]);
-  assert.match(output, /required_tables_present=12\/13/);
+  assert.match(output, /required_tables_present=13\/14/);
   assert.match(output, /missing_tables=sessions/);
   assertNoPrivateMaterial(output);
 });
@@ -138,11 +138,49 @@ test("DB readiness preserves missing tables when migration metadata is absent", 
   assert.equal(report.checks.schema, "failed");
   assert.equal(report.checks.migrations, "failed");
   assert.deepEqual(report.missingTables, [...REQUIRED_PLATFORM_TABLES]);
-  assert.match(output, /required_tables_present=0\/13/);
+  assert.match(output, /required_tables_present=0\/14/);
   assert.match(output, /missing_tables=users,provider_identities/);
   assertNoPrivateMaterial(output);
 });
 
+test("current ledger still fails readiness when access validation grants are absent", async () => {
+  const fixture = createFakeReadinessClient({
+    existingTables: REQUIRED_PLATFORM_TABLES.filter(
+      (table) => table !== "access_validation_grants",
+    ),
+  });
+  const report = await createDatabaseReadinessReport({
+    env: { DATABASE_URL: privateDatabaseUrl },
+    expectedMigrationState,
+    clientFactory() {
+      return fixture.client;
+    },
+  });
+
+  assert.equal(report.ok, false);
+  assert.equal(report.status, "schema_not_ready");
+  assert.equal(report.checks.migrations, "passed");
+  assert.deepEqual(report.missingTables, ["access_validation_grants"]);
+});
+
+test("production readiness fails closed without DATABASE_OPERATOR_URL", async () => {
+  let factoryCalls = 0;
+  const report = await createDatabaseReadinessReport({
+    env: {
+      NODE_ENV: "production",
+      DATABASE_URL: privateDatabaseUrl,
+    },
+    expectedMigrationState,
+    clientFactory() {
+      factoryCalls += 1;
+      throw new Error("client should not be created");
+    },
+  });
+
+  assert.equal(report.ok, false);
+  assert.equal(report.status, "db_config_missing");
+  assert.equal(factoryCalls, 0);
+});
 test("DB readiness reports schema not ready when migrations are behind the journal", async () => {
   const fixture = createFakeReadinessClient({
     latestMigrationCreatedAt: 1782651725342,

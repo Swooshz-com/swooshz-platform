@@ -38,7 +38,7 @@ This PR does not add a session-management UI. Security/session management remain
 3. Configure the OIDC client outside the repo with `https://swooshz.com/api/platform/auth/callback`.
 4. Store secrets and runtime env outside the repo in the hosting secret manager or process manager secret store.
 5. Build the platform application with `npm run build`.
-6. Run `npm run platform:readiness-check` as a dry-run env checklist before migration or server start. Hosted readiness requires `NODE_ENV=production`, HTTPS browser/provider-facing URLs, origin-only allowed origins, the reviewed callback path shape, and a valid Postgres-shaped `DATABASE_URL`; it does not connect to the database.
+6. Run `npm run platform:readiness-check` as a dry-run env checklist before migration or server start. Hosted readiness requires `NODE_ENV=production`, HTTPS browser/provider-facing URLs, origin-only allowed origins, the reviewed callback path shape, a valid Postgres-shaped `DATABASE_URL`, and a safe `DATABASE_EXPECTED_RUNTIME_ROLE`; it does not connect to the database.
 7. Optionally run `npm run platform:db-readiness-check` before migrations to verify that the configured database is reachable. A new or unmigrated database should report `schema_not_ready`, not `ready`.
 8. Take and verify a database backup before applying reviewed migrations.
 9. Apply reviewed migrations manually with `npm run db:migrate` only after setting `DATABASE_MIGRATIONS_CONFIRM=apply-reviewed-migrations`.
@@ -85,10 +85,10 @@ Deploy-time env categories:
 
 | Category | Env names | Coolify handling | Notes |
 | --- | --- | --- | --- |
-| Non-secret operator choices | `NODE_ENV`, `PLATFORM_HTTP_HOST`, `PLATFORM_HTTP_PORT`, `PLATFORM_PUBLIC_BASE_URL`, `PLATFORM_ALLOWED_ORIGINS`, `PLATFORM_COOKIE_SECURE`, `DATABASE_SSL_MODE`, `PLATFORM_AUTH_PROVIDER_MODE`, `AUTH_PROVIDER_KEY`, `AUTH_ISSUER_URL`, `AUTH_AUTHORIZATION_URL`, `AUTH_TOKEN_URL`, `AUTH_JWKS_URL`, `AUTH_USERINFO_URL`, `AUTH_CLIENT_ID`, `AUTH_REDIRECT_URI`, `AUTH_ALLOWED_DOMAINS`, `PLATFORM_SQAG_LAUNCH_MODE`, `PLATFORM_SQAG_APP_BASE_URL` | Set as reviewed environment entries. | Hosted runtime uses `NODE_ENV=production`, the exact canonical origins, HTTPS provider URLs, `PLATFORM_COOKIE_SECURE=true`, and `server_handoff` for the implemented separate-origin SQAG flow. |
+| Non-secret operator choices | `NODE_ENV`, `PLATFORM_HTTP_HOST`, `PLATFORM_HTTP_PORT`, `PLATFORM_PUBLIC_BASE_URL`, `PLATFORM_ALLOWED_ORIGINS`, `PLATFORM_COOKIE_SECURE`, `DATABASE_SSL_MODE`, `DATABASE_EXPECTED_RUNTIME_ROLE`, `PLATFORM_AUTH_PROVIDER_MODE`, `AUTH_PROVIDER_KEY`, `AUTH_ISSUER_URL`, `AUTH_AUTHORIZATION_URL`, `AUTH_TOKEN_URL`, `AUTH_JWKS_URL`, `AUTH_USERINFO_URL`, `AUTH_CLIENT_ID`, `AUTH_REDIRECT_URI`, `AUTH_ALLOWED_DOMAINS`, `PLATFORM_SQAG_LAUNCH_MODE`, `PLATFORM_SQAG_APP_BASE_URL` | Set as reviewed environment entries. | Hosted runtime uses `NODE_ENV=production`, the exact canonical origins, HTTPS provider URLs, `PLATFORM_COOKIE_SECURE=true`, and `server_handoff` for the implemented separate-origin SQAG flow. |
 | Secret values | `DATABASE_URL`, `SESSION_SECRET`, `CSRF_TOKEN_HASH_SECRET`, `AUTH_STATE_HASH_SECRET`, `APP_LAUNCH_TOKEN_HASH_SECRET`, `PLATFORM_SQAG_SERVICE_SECRET`, `AUTH_CLIENT_SECRET` | Inject through Coolify secret/env storage only. | Platform and SQAG receive the same service secret through their separate secret stores. Do not commit, print, screenshot, paste, or expose values in build logs, app logs, tickets, shell history, or PRs. |
 | Private allowlist values | `AUTH_ALLOWED_EMAILS` | Treat as private operational data, even though it is not a credential. | Keep real staff addresses outside the repo; use placeholders in docs and tickets. |
-| Migration-only values | `DATABASE_MIGRATIONS_CONFIRM` | Do not keep on the long-running Coolify app service. Set only for the reviewed one-off manual migration command when a future migration is approved. | The migrated Neon database should already return `ready` from `npm run platform:db-readiness-check` before app start. |
+| Operator-only database values | `DATABASE_OPERATOR_URL`, `DATABASE_MIGRATIONS_CONFIRM` | Do not keep on the long-running Coolify app service. Set only in a separately controlled operator process for readiness or a reviewed migration. | The migrated Neon database should already return `ready` from `npm run platform:db-readiness-check` before app start. |
 | Bootstrap-only values | `PLATFORM_SEED_CONFIRM`, `PLATFORM_SEED_USER_EMAIL`, `PLATFORM_SEED_WORKSPACE_SLUG`, `PLATFORM_SEED_WORKSPACE_NAME`, `PLATFORM_SEED_MEMBERSHIP_ROLE` | Do not keep on the long-running Coolify app service. Set only for a reviewed one-off bootstrap after real hosted auth creates the user. | These values must not become env-controlled business/admin state, default production data, or a fake login path. |
 | Product handoff configuration | `PLATFORM_SQAG_LAUNCH_MODE`, `PLATFORM_SQAG_APP_BASE_URL`, `PLATFORM_SQAG_SERVICE_SECRET` | Use `server_handoff`, exact `https://quote.swooshz.com`, and a shared secret injected separately into both services. | Platform stores launch checks/tokens and entitlements only; product workflow/runtime data remains outside Platform. |
 
@@ -149,18 +149,20 @@ Recommended Neon target, for operator setup outside this repo:
 - Project: `swooshz-platform`.
 - Region: `Singapore / aws-ap-southeast-1`.
 - Database: `swooshz_platform`.
-- Role/user: `platform_app`.
-- Runtime connection: pooled `DATABASE_URL` from the host secret store.
-- Direct URL only if migration tooling genuinely needs it. The current repo does not add or require a direct-URL env alias; keep any direct connection value outside source control unless a future reviewed migration tooling change proves it is needed.
+- Owner/migration role: `platform_app`.
+- Runtime role: the separately approved restricted role named by `DATABASE_EXPECTED_RUNTIME_ROLE`.
+- Runtime connection: pooled restricted-role `DATABASE_URL` from the host secret store.
+- Operator connection: separately controlled `DATABASE_OPERATOR_URL`; never keep it on the long-running Coolify application.
+- Use an unpooled/direct owner connection for `DATABASE_OPERATOR_URL` when required by reviewed migration tooling; keep it outside source control and the long-running application.
 
-The platform runtime app code uses `DATABASE_URL` as the pooled app connection. Do not add multiple database URL aliases for day-to-day runtime behavior. Do not commit `.env` files, connection strings, usernames with passwords, database hostnames with credentials, backup exports, table dumps, or provider console screenshots.
+The platform runtime app code uses only `DATABASE_URL` as the pooled restricted-role app connection and validates it against `DATABASE_EXPECTED_RUNTIME_ROLE` before listening. Migration and operator readiness commands use `DATABASE_OPERATOR_URL` in production. Do not add multiple database URL aliases for day-to-day runtime behavior. Do not commit `.env` files, connection strings, usernames with passwords, database hostnames with credentials, backup exports, table dumps, or provider console screenshots.
 
 The readiness path is split deliberately:
 
 - `npm run platform:readiness-check` validates hosted env shape only. It fails missing or malformed `DATABASE_URL` without printing the value and does not connect to Neon.
-- `npm run platform:db-readiness-check` builds the app, opens a PostgreSQL connection through `DATABASE_URL`, runs a basic reachability query, checks required platform tables, and checks the committed Drizzle migration journal against `drizzle.__drizzle_migrations`.
+- `npm run platform:db-readiness-check` builds the app, opens a PostgreSQL connection through `DATABASE_OPERATOR_URL`, runs a basic reachability query, checks required platform tables, and checks the committed Drizzle migration journal against `drizzle.__drizzle_migrations`.
 - DB readiness can report `db_config_missing`, `db_config_invalid`, `db_unreachable`, `schema_not_ready`, or `ready`.
-- `db_config_missing` means the hosted process has no usable `DATABASE_URL`.
+- `db_config_missing` means the operator process has no usable production `DATABASE_OPERATOR_URL`.
 - `db_unreachable` means a configured database could not be reached; the output must not include host, username, password, connection string, or low-level driver details.
 - `schema_not_ready` means the database is reachable but required platform tables or migration metadata are missing or behind the committed migration journal.
 - `ready` means the configured database is reachable and the required platform schema/migration state matches the committed code.
@@ -182,7 +184,7 @@ This evidence does not approve hosted deployment or full production readiness. H
 ## Migration Procedure
 
 1. Confirm the branch and migration files under review.
-2. Confirm the target database is the reviewed Neon database name `swooshz_platform` in project `swooshz-platform`, with runtime using the pooled `DATABASE_URL` secret value.
+2. Confirm the target database is the reviewed Neon database name `swooshz_platform` in project `swooshz-platform`, with runtime using the pooled restricted-role `DATABASE_URL` and the operator shell using `DATABASE_OPERATOR_URL`.
 3. Confirm no migration was added for this readiness-only PR.
 4. If a future reviewed PR adds migrations, review generated SQL before applying it.
 5. Run `npm run platform:readiness-check` and fix missing or malformed env before any database operation.
@@ -191,6 +193,7 @@ This evidence does not approve hosted deployment or full production readiness. H
 8. Set the migration guard only for the manual migration command:
 
 ```powershell
+$env:DATABASE_OPERATOR_URL="<owner-migration-url-from-operator-secret-store>"
 $env:DATABASE_MIGRATIONS_CONFIRM="apply-reviewed-migrations"
 npm run db:migrate
 ```
@@ -270,7 +273,9 @@ Stop and redact the log collection process if a log includes secret values, data
 | `PLATFORM_PUBLIC_BASE_URL` | Public HTTPS Platform base URL. | Required | `https://swooshz.com` | No | Production readiness requires this exact apex origin. |
 | `PLATFORM_ALLOWED_ORIGINS` | Allowed browser origin list for CSRF/origin checks. | Required | `https://swooshz.com` | No | Production readiness permits only the exact apex origin. |
 | `PLATFORM_COOKIE_SECURE` | Forces secure browser session cookies. | Required | `true` | No | Production requires `true`; false fails startup/readiness. |
-| `DATABASE_URL` | Pooled PostgreSQL app connection string from the secret store. | Required | `<database-url-from-secret-store>` | Yes | Required for live DB connection and migrations; hosted readiness rejects missing or malformed Postgres URL shape and never prints the value. |
+| `DATABASE_URL` | Pooled restricted-role PostgreSQL connection for the long-running app. | Required | `<runtime-database-url-from-secret-store>` | Yes | Used only by application runtime; production startup checks the connected role and privilege posture before listening. |
+| `DATABASE_EXPECTED_RUNTIME_ROLE` | Expected restricted PostgreSQL runtime role. | Required in production | `platform_runtime` | No | Must be a safe PostgreSQL identifier and exactly match `current_user`; mismatch or unsafe posture fails before listen. |
+| `DATABASE_OPERATOR_URL` | Owner/migration connection for operator readiness and migrations. | Required for production operator commands only | `<operator-database-url-from-secret-store>` | Yes | Never configure on the long-running Coolify app; production operator commands fail closed when absent. |
 | `DATABASE_SSL_MODE` | Optional DB SSL mode override. | Optional | `<require-or-disable-if-needed>` | No | When set, must be `require` or `disable`; invalid value fails readiness/startup. Use only when the hosted connection string or provider settings do not already enforce the intended SSL behavior. |
 | `DATABASE_MIGRATIONS_CONFIRM` | Manual migration confirmation guard. | Required for migrations only | `apply-reviewed-migrations` | No | Required only for `npm run db:migrate`; app startup never requires it. |
 | `SESSION_SECRET` | Session signing/encryption secret boundary. | Required | `<strong-random-placeholder>` | Yes | Must be strong and at least 32 characters; short/missing value fails readiness/auth config. |
@@ -307,7 +312,7 @@ Run the dry-run checker after env injection and before manual migrations or serv
 npm run platform:readiness-check
 ```
 
-The checker reports only env names, categories, missing/invalid status, and safe guidance. It enforces hosted-only production mode, HTTPS browser/provider-facing URLs, origin-only `PLATFORM_ALLOWED_ORIGINS`, callback URL shape, SQAG handoff base URL shape, and valid Postgres-shaped `DATABASE_URL`. It does not print values, connect to PostgreSQL, run migrations, start the server, call OIDC, call SQAG, read provider endpoints, or seed access.
+The checker reports only env names, categories, missing/invalid status, and safe guidance. It enforces hosted-only production mode, HTTPS browser/provider-facing URLs, origin-only `PLATFORM_ALLOWED_ORIGINS`, callback URL shape, SQAG handoff base URL shape, and valid Postgres-shaped `DATABASE_URL` plus a safe `DATABASE_EXPECTED_RUNTIME_ROLE`. It does not print values, connect to PostgreSQL, run migrations, start the server, call OIDC, call SQAG, read provider endpoints, or seed access.
 
 Passing readiness does not approve deployment. It only confirms the current shell has the required categories and safe URL shapes present for hosted internal-alpha review.
 
@@ -317,7 +322,7 @@ Run the live DB readiness checker only when the operator intentionally wants to 
 npm run platform:db-readiness-check
 ```
 
-This command uses `DATABASE_URL` to reach PostgreSQL, checks required Platform tables, and checks Drizzle migration metadata. It prints sanitized status only. It must not print the database URL, host, user, password, driver error details, table data, provider console values, or backup details. It exits non-zero for `db_config_missing`, `db_config_invalid`, `db_unreachable`, and `schema_not_ready`.
+This command uses `DATABASE_OPERATOR_URL` to reach PostgreSQL in production, checks required Platform tables, and checks Drizzle migration metadata. It prints sanitized status only. It must not print the database URL, host, user, password, driver error details, table data, provider console values, or backup details. It exits non-zero for `db_config_missing`, `db_config_invalid`, `db_unreachable`, and `schema_not_ready`.
 
 ## First Owner/Admin Bootstrap Sequence
 
@@ -430,3 +435,5 @@ Before actual hosted internal-alpha execution, operators still need reviewed dec
 - any infrastructure change approval required by the operator team.
 
 Track these approvals in `docs/hosted-internal-alpha-operator-decisions.md` using placeholders only. Do not deploy until every required decision is approved outside repo.
+
+Owner/migration credentials must never remain in the long-running Coolify application environment. Keep /healthz as liveness only; production startup posture validation occurs before the server listens, while migration readiness remains an explicit operator command.

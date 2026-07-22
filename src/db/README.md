@@ -19,10 +19,10 @@ Current scope:
 
 The pure domain core under `src/accounts`, `src/apps`, and `src/access` must remain storage-agnostic. Repository/service ports under `src/platform` also remain free of Drizzle and database implementation imports. Drizzle adapters under `src/db` map database rows to plain typed records before any domain access decision is made.
 
-`DATABASE_URL` is required for live database connections and migration execution. `DATABASE_SSL_MODE` may be set to `disable` or `require`; unsupported values are rejected without printing the database URL.
+`DATABASE_URL` is the restricted long-running runtime connection. Production startup also requires the non-secret `DATABASE_EXPECTED_RUNTIME_ROLE` and fails before listening unless the connected role matches and has the restricted posture. `DATABASE_SSL_MODE` may be set to `disable` or `require`; unsupported values are rejected without printing connection details.
 
-`npm run db:migrate` is operator-controlled and requires `DATABASE_MIGRATIONS_CONFIRM=apply-reviewed-migrations`. It does not run during package install, app startup, default CI, or `npm test`.
+`npm run db:migrate` is operator-controlled, uses `DATABASE_OPERATOR_URL` in production, and requires `DATABASE_MIGRATIONS_CONFIRM=apply-reviewed-migrations`. It does not run during package install, app startup, default CI, or `npm test`.
 
-`npm run platform:db-readiness-check` is a separate operator check for hosted Postgres readiness. It builds the app, validates `DATABASE_URL`, opens a PostgreSQL connection, checks basic reachability, verifies required platform tables, and checks Drizzle migration metadata. It prints sanitized status only: no connection strings, credentials, hostnames with credentials, table data, or driver error details.
+`npm run platform:db-readiness-check` is a separate operator check for hosted Postgres readiness. It builds the app, validates `DATABASE_OPERATOR_URL` in production, opens a PostgreSQL connection, checks basic reachability, verifies required platform tables, and checks Drizzle migration metadata. It prints sanitized status only: no connection strings, credentials, hostnames with credentials, table data, or driver error details.
 
 Generated migrations remain reviewable artifacts and are applied only through the explicit migration command.

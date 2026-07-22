@@ -99,6 +99,28 @@ test("hosted readiness requires production NODE_ENV", () => {
   }
 });
 
+test("hosted readiness requires a safe expected runtime role", () => {
+  const missing = reportWithOverride({ DATABASE_EXPECTED_RUNTIME_ROLE: "" });
+  assert.equal(missing.ok, false);
+  assert.ok(
+    missing.missingRequired.some(
+      (entry) => entry.name === "DATABASE_EXPECTED_RUNTIME_ROLE",
+    ),
+  );
+
+  for (const value of ["Platform_Runtime", "runtime-role", "9runtime"]) {
+    const report = reportWithOverride({
+      DATABASE_EXPECTED_RUNTIME_ROLE: value,
+    });
+
+    assert.equal(report.ok, false);
+    assertInvalid(
+      report,
+      "DATABASE_EXPECTED_RUNTIME_ROLE",
+      "invalid_postgres_role_identifier",
+    );
+  }
+});
 test("hosted readiness rejects malformed DATABASE_URL without echoing it", () => {
   const malformedUrls = [
     "not-a-postgres-url-with-private-pass",
@@ -325,6 +347,7 @@ function completeEnv() {
     PLATFORM_ALLOWED_ORIGINS: "https://swooshz.com",
     PLATFORM_COOKIE_SECURE: "true",
     DATABASE_URL: privateValues[0],
+    DATABASE_EXPECTED_RUNTIME_ROLE: "platform_runtime",
     DATABASE_SSL_MODE: "require",
     DATABASE_MIGRATIONS_CONFIRM: "apply-reviewed-migrations",
     SESSION_SECRET: privateValues[1],

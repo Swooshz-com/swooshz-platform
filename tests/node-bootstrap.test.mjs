@@ -160,6 +160,7 @@ test("invalid runtime config is privacy-safe", async () => {
     env: {
       PLATFORM_HTTP_PORT: "not-a-port-raw-session-token",
       DATABASE_URL: databaseUrl,
+      DATABASE_EXPECTED_RUNTIME_ROLE: "platform_runtime",
       CSRF_TOKEN_HASH_SECRET: csrfSecret,
     },
   });
@@ -176,6 +177,7 @@ test("invalid secret config is privacy-safe", async () => {
     env: {
       PLATFORM_HTTP_PORT: "4317",
       DATABASE_URL: databaseUrl,
+      DATABASE_EXPECTED_RUNTIME_ROLE: "platform_runtime",
       CSRF_TOKEN_HASH_SECRET: "short-secret",
     },
   });
@@ -219,6 +221,51 @@ test("bootstrap fails closed before listen when DATABASE_URL is malformed", asyn
   assert.equal(fixture.calls.serverFactory, 0);
 });
 
+test("production bootstrap requires an expected runtime role before DB or listen", async () => {
+  const fixture = createBootstrapFixture({
+    env: { DATABASE_EXPECTED_RUNTIME_ROLE: "" },
+  });
+  const bootstrap = createPlatformNodeBootstrap(fixture.input);
+
+  await assert.rejects(
+    () => bootstrap.start(),
+    assertPrivacySafeBootstrapError("database_posture_failed"),
+  );
+  assert.equal(fixture.calls.databaseClientFactory, 0);
+  assert.equal(fixture.calls.serverFactory, 0);
+  assert.equal(fixture.calls.listen, 0);
+  assert.equal(fixture.calls.closeDatabase, 0);
+});
+
+test("bootstrap closes DB and never listens when runtime posture is wrong", async () => {
+  const fixture = createBootstrapFixture({
+    postureRow: { expected_role_match: false },
+  });
+  const bootstrap = createPlatformNodeBootstrap(fixture.input);
+
+  await assert.rejects(
+    () => bootstrap.start(),
+    assertPrivacySafeBootstrapError("database_posture_failed"),
+  );
+  assert.equal(fixture.calls.postureQuery, 1);
+  assert.equal(fixture.calls.closeDatabase, 1);
+  assert.equal(fixture.calls.serverFactory, 0);
+  assert.equal(fixture.calls.listen, 0);
+});
+
+test("bootstrap closes DB and never listens when posture query fails", async () => {
+  const fixture = createBootstrapFixture({ failPostureQuery: true });
+  const bootstrap = createPlatformNodeBootstrap(fixture.input);
+
+  await assert.rejects(
+    () => bootstrap.start(),
+    assertPrivacySafeBootstrapError("database_posture_failed"),
+  );
+  assert.equal(fixture.calls.postureQuery, 1);
+  assert.equal(fixture.calls.closeDatabase, 1);
+  assert.equal(fixture.calls.serverFactory, 0);
+  assert.equal(fixture.calls.listen, 0);
+});
 test("production bootstrap rejects non-HTTPS provider URLs before DB or listen", async () => {
   const fixture = createBootstrapFixture({
     withGenericAuth: true,
@@ -715,6 +762,7 @@ function createBootstrapFixture(options = {}) {
     listenArgs: [],
     migrations: 0,
     query: 0,
+    postureQuery: 0,
     serverDependencies: [],
     authBuildAuthorizationUrl: 0,
     authExchangeCodeForTokens: 0,
@@ -815,6 +863,7 @@ function createBootstrapFixture(options = {}) {
     PLATFORM_COOKIE_SECURE: "true",
     NODE_ENV: "production",
     DATABASE_URL: databaseUrl,
+    DATABASE_EXPECTED_RUNTIME_ROLE: "platform_runtime",
     CSRF_TOKEN_HASH_SECRET: csrfSecret,
     APP_LAUNCH_TOKEN_HASH_SECRET: appLaunchTokenHashSecret,
     ...(options.withAuth
@@ -913,6 +962,31 @@ function createBootstrapFixture(options = {}) {
 
         return {
           db,
+          async query() {
+            calls.postureQuery += 1;
+            if (options.failPostureQuery) {
+              throw new Error(`posture failed ${databaseUrl} ${privateUrl}`);
+            }
+            return {
+              rows: [{
+                expected_role_match: true,
+                neon_superuser_membership_absent: true,
+                superuser_absent: true,
+                createdb_absent: true,
+                createrole_absent: true,
+                replication_absent: true,
+                bypassrls_absent: true,
+                database_create_absent: true,
+                public_schema_create_absent: true,
+                drizzle_schema_usage_absent: true,
+                migration_ledger_select_absent: true,
+                database_ownership_absent: true,
+                schema_ownership_absent: true,
+                application_table_ownership_absent: true,
+                ...options.postureRow,
+              }],
+            };
+          },
           async close() {
             calls.closeDatabase += 1;
           },

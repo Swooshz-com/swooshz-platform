@@ -16,6 +16,7 @@ export const HOSTED_READINESS_ENV_CHECKS = [
   required("PLATFORM_ALLOWED_ORIGINS", "allowed_origins", validateAllowedOrigins),
   required("PLATFORM_COOKIE_SECURE", "cookie_session", validateCookieSecure),
   required("DATABASE_URL", "database", validateDatabaseUrl, { secret: true }),
+  required("DATABASE_EXPECTED_RUNTIME_ROLE", "database", validateDatabaseRoleIdentifier),
   optional("DATABASE_SSL_MODE", "database", validateDatabaseSslMode),
   migrationOnly("DATABASE_MIGRATIONS_CONFIRM", "database", validateMigrationConfirm),
   required("SESSION_SECRET", "cookie_session", validateMinimumLength(32), { secret: true }),
@@ -289,6 +290,11 @@ function validateCookieSecure(value, env) {
   return ok();
 }
 
+function validateDatabaseRoleIdentifier(value) {
+  return /^[a-z_][a-z0-9_$]{0,62}$/.test(value)
+    ? ok()
+    : invalid("invalid_postgres_role_identifier");
+}
 function validateDatabaseSslMode(value) {
   return ["disable", "require"].includes(value) ? ok() : invalid("must_be_disable_or_require");
 }

@@ -41,14 +41,14 @@ test("hosted internal alpha runbook covers deployment operations", async () => {
     "Project: `swooshz-platform`",
     "Region: `Singapore / aws-ap-southeast-1`",
     "Database: `swooshz_platform`",
-    "Role/user: `platform_app`",
+    "Owner/migration role: `platform_app`",
     "pooled `DATABASE_URL`",
     "`npm run platform:db-readiness-check`",
     "`db_config_missing`",
     "`db_unreachable`",
     "`schema_not_ready`",
     "`ready`",
-    "Direct URL only if migration tooling genuinely needs it",
+    "Use an unpooled/direct owner connection for `DATABASE_OPERATOR_URL`",
     "readiness only, not full production readiness",
     "`AUTH_REDIRECT_URI` ends with `/api/platform/auth/callback`",
     "host-only cookie/finalization flow is smoke tested",
@@ -84,6 +84,8 @@ test("hosted internal alpha runbook has an env checklist with safe examples and 
     ["PLATFORM_ALLOWED_ORIGINS", "Required", "No"],
     ["PLATFORM_COOKIE_SECURE", "Required", "No"],
     ["DATABASE_URL", "Required", "Yes"],
+    ["DATABASE_EXPECTED_RUNTIME_ROLE", "Required in production", "No"],
+    ["DATABASE_OPERATOR_URL", "Required for production operator commands only", "Yes"],
     ["DATABASE_SSL_MODE", "Optional", "No"],
     ["DATABASE_MIGRATIONS_CONFIRM", "Required for migrations only", "No"],
     ["SESSION_SECRET", "Required", "Yes"],
@@ -115,7 +117,8 @@ test("hosted internal alpha runbook has an env checklist with safe examples and 
   }
 
   assert.match(runbook, /<strong-random-placeholder>/);
-  assert.match(runbook, /<database-url-from-secret-store>/);
+  assert.match(runbook, /<runtime-database-url-from-secret-store>/);
+  assert.match(runbook, /<operator-database-url-from-secret-store>/);
   assert.match(runbook, /<hosted-owner-admin-email-after-login>/);
   assert.match(runbook, /<comma-separated-allowlisted-emails>/);
 });
@@ -132,12 +135,12 @@ test("hosted internal alpha runbook covers Hostinger Coolify readiness without d
     "Non-secret operator choices",
     "Secret values",
     "Private allowlist values",
-    "Migration-only values",
+    "Operator-only database values",
     "Bootstrap-only values",
     "Product handoff configuration",
     "`PLATFORM_COOKIE_SECURE=true`",
     "explicit origins, not wildcard values",
-    "one-off manual migration command",
+    "separately controlled operator process",
     "must not become env-controlled business/admin state",
     "product workflow/runtime data remains outside Platform",
     "sanitized status `ready`",
