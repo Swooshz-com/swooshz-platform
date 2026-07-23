@@ -146,6 +146,11 @@ test("hosted runbook preserves the rollback-gated runtime activation contract", 
     "stop without retry",
     "RUNTIME_ACTIVATION_TEST_CONFIRM=disposable-only",
     "does not authorise or prove a production activation",
+    "immutable validated runtime-role target",
+    "fixture identity through both connection paths",
+    "cleanup is forbidden before complete fixture validation",
+    "wait for confirmed child termination",
+    "identity- or endpoint-overriding connection parameters",
   ];
 
   for (const phrase of requiredPhrases) {

@@ -5,6 +5,7 @@ import {
   RuntimeDatabasePostureError,
   assertRuntimeDatabasePosture,
   inspectRuntimeDatabasePosture,
+  inspectRuntimeDatabaseRoleAuthorityPosture,
   readExpectedRuntimeRole,
 } from "../dist/db/runtime-posture.js";
 
@@ -135,7 +136,7 @@ test("runtime posture traverses every SET-assumable role by catalog OID", async 
   assert.match(postureSql, /with recursive/i);
   assert.match(
     postureSql,
-    /pg_roles[\s\S]*?rolname = session_user/,
+    /pg_roles[\s\S]*?rolname = \$1/,
   );
   assert.match(
     postureSql,
@@ -164,6 +165,34 @@ test("runtime posture traverses every SET-assumable role by catalog OID", async 
     postureSql,
     /from pg_roles\s+where rolname = current_user/,
   );
+});
+
+test("operator-side dormant authority inspection reuses the exact recursive posture query", async () => {
+  let postureSql = "";
+  const report = await inspectRuntimeDatabaseRoleAuthorityPosture(
+    {
+      async query(sql, values) {
+        postureSql = sql;
+        assert.deepEqual(values[0], expectedRole);
+        return { rows: [{ ...passingRow, expected_role_match: false }] };
+      },
+    },
+    expectedRole,
+  );
+
+  assert.match(postureSql, /with recursive/i);
+  assert.match(postureSql, /pg_roles[\s\S]*?rolname = \$1/);
+  assert.match(postureSql, /membership\.set_option/);
+  assert.match(postureSql, /membership\.admin_option/);
+  assert.deepEqual(report, {
+    roleIdentityConclusive: "passed",
+    administrativeAttributesAbsent: "passed",
+    databaseAndSchemaCreateAbsent: "passed",
+    migrationLedgerAccessDenied: "passed",
+    databaseAndSchemaOwnershipAbsent: "passed",
+    applicationTableOwnershipAbsent: "passed",
+    runtimeRoleAuthorityPosture: "passed",
+  });
 });
 
 test("migration ledger relation kinds are inspected or rejected fail closed", async (context) => {

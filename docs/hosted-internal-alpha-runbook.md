@@ -197,32 +197,97 @@ a non-ASCII password. The reviewed Node helper avoids both defects by:
 - passing the operator URL to the child by environment name, never an argument;
 - writing the `\password` exchange as explicit UTF-8 bytes on stdin;
 - ignoring prompt stdout/stderr and deciding success only from the child exit;
-- clearing the password input buffer after the child terminates; and
+- using a unique Docker container name for each password operation;
+- on timeout, requesting termination, waiting through a bounded grace period,
+  escalating with forced container removal when necessary, and waiting for
+  both confirmed container removal and child close before returning;
+- leaving the operation unsettled and blocking database rollback if
+  termination remains inconclusive;
+- clearing the password input buffer only after confirmed child termination;
+  and
 - returning only `runtime_activation_failed` on failure.
+
+A future wrapper must create one immutable validated runtime-role target with
+`createRuntimeActivationTarget` after exact role-name preflight. Password
+installation, LOGIN enablement, runtime URL construction, identity checks,
+rollback, and dormant-baseline verification must all use that same target
+object. Do not accept or reconstruct another role identifier after mutation
+may have begun. For this programme the validated role remains
+`platform_runtime`, but rollback SQL must be obtained from
+`buildRuntimeRoleStatement(activationTarget, "rollback")`, never from a
+separately hardcoded role name or unsafe SQL interpolation.
+
+Before mutation, compare fixture identity through both connection paths. The
+operator connection and Docker/psql connection must return the same PostgreSQL
+control-system identifier plus current database OID. This identity is stronger
+than matching hostnames, database names, role names, or server versions and
+must stay out of logs and evidence. A mismatch, malformed response, query
+error, or cardinality error stops before password installation.
+
+Cleanup is forbidden before complete fixture validation. Track whether
+password installation began or may have begun. If dormant-role or fixture
+identity validation fails, teardown is read-only and must execute no
+`ALTER ROLE`, password reset, LOGIN change, or cleanup SQL. If mutation may
+have begun, cleanup must use only the immutable validated target and the exact
+fixture proven through both connection paths. Bind those identities to the
+mutation tracker with `fixtureValidated` before it can accept
+`passwordInstallationStarted`; immediately before cleanup, re-read the
+operator-side fixture identity and require `assertRollbackFixture` to pass.
+
+The complete dormant preflight uses the same reviewed PostgreSQL 17 recursive
+SET-assumable posture query as application startup, anchored to the exact
+validated target role OID. Before password installation it requires exact role
+identity, `NOLOGIN`, password null, no administrative attributes, no prohibited
+Neon membership, no unsafe direct or indirect SET-assumable role, no reachable
+`ADMIN OPTION`, reviewed grants, zero ownership, and the expected ledger,
+schema, table, and index state. Missing or inconclusive evidence fails before
+mutation.
+
+Runtime URL construction rejects identity- or endpoint-overriding connection parameters,
+aliases, duplicates, conflicts, arbitrary parameters, and options that can
+change role or session state. It preserves only the reviewed
+transport/security allowlist: `sslmode` with `require`, `verify-ca`, or
+`verify-full`, and `channel_binding=require`. The validated runtime role and
+password replace URL authority credentials while the reviewed host, port, and
+database remain unchanged.
 
 A separately authorised second attempt must use this order:
 
-1. Reconfirm exact repository, database, operator, runtime-role, PostgreSQL 17,
-   recovery-branch, grant-matrix, ownership, schema, ledger, table, and index
-   state before mutation.
-2. Start the activation journal and pass `dormant_role_preflight` only when the
-   role is `NOLOGIN`, its password is null, and every SET-assumable posture
-   assertion is conclusive and safe.
-3. Obtain one fresh password only through an approved hidden mechanism. Pass
-   it in protected process memory to `installRuntimePasswordWithDocker`; do
-   not use a PowerShell string-to-native pipeline.
-4. Verify password-present plus `NOLOGIN`, then enable only `LOGIN`.
-5. Build the restricted URL with `buildRuntimeDatabaseUrl`, preserving the
-   reviewed endpoint, port, database, and connection parameters.
-6. Start a runtime-only child with `DATABASE_URL` and
+1. Reconfirm the exact repository, database, operator, PostgreSQL 17, recovery
+   branches, grant matrix, ownership, schema, ledger, table, and index state.
+2. Create one immutable `activationTarget` for the exact expected
+   `platform_runtime` role. Compare the opaque control-system/database identity
+   from the operator connection with the Docker connection and require an
+   exact match.
+3. Run the shared operator-side recursive authority inspection and pass
+   `dormant_role_preflight` only when complete fixture identity, `NOLOGIN`,
+   password null, all prohibited-attribute and SET-assumable-role checks,
+   reviewed grants, ownership, and database-shape assertions are conclusive
+   and safe.
+4. Only after step 3, mark password mutation as possibly begun. Obtain one
+   fresh password through an approved hidden mechanism and pass it in protected
+   process memory to `installRuntimePasswordWithDocker` with the same
+   `activationTarget` and fixture identity. Do not use a PowerShell
+   string-to-native pipeline.
+5. If password installation times out, wait for confirmed child termination
+   and container removal before any rollback. Never start database rollback
+   while the mutation process may still be alive.
+6. Verify password-present plus `NOLOGIN`, then execute the LOGIN statement
+   generated from the same `activationTarget`.
+7. Build the restricted URL with `buildRuntimeDatabaseUrl` and the same target,
+   preserving only the reviewed endpoint, port, database, and allowlisted
+   transport/security parameters.
+8. Start a runtime-only child with `DATABASE_URL` and
    `DATABASE_EXPECTED_RUNTIME_ROLE`; explicitly remove
    `DATABASE_OPERATOR_URL`.
-7. Require exact runtime connection, `current_user`, `session_user`, recursive
+9. Require exact runtime connection, `current_user`, `session_user`, recursive
    SET-assumable posture, grant matrix, ownership, ledger, table, index, and
    schema invariants before success finalisation.
-8. On the first failed or inconclusive phase after mutation, record that phase,
-   run `ALTER ROLE platform_runtime NOLOGIN PASSWORD NULL`, verify the complete
-   dormant baseline, and stop without retry.
+10. On the first failed or inconclusive phase after mutation, record that
+    phase. If and only if the mutation process is confirmed stopped and the
+    mutation tracker requires rollback, execute the rollback statement
+    generated from the same immutable `activationTarget`, verify the complete
+    dormant baseline for that target, and stop without retry.
 
 The disposable PostgreSQL integration test
 `tests/platform-runtime-activation-postgres.test.mjs` exercises the same

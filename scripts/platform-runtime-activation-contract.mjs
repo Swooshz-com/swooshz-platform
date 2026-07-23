@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 
 export const PLATFORM_RUNTIME_ACTIVATION_PHASES = Object.freeze([
@@ -14,13 +15,23 @@ export const PLATFORM_RUNTIME_ACTIVATION_PHASES = Object.freeze([
 ]);
 
 const safeRoleIdentifier = /^[a-z_][a-z0-9_$]{0,62}$/;
+const safeFixtureIdentity = /^[0-9]+:[0-9]+$/;
 const phaseSet = new Set(PLATFORM_RUNTIME_ACTIVATION_PHASES);
+const targetRoles = new WeakMap();
+const fixtureIdentityValues = new WeakMap();
+const mutationErrorStates = new WeakMap();
+const fixtureMismatchExitCode = 86;
+const allowedConnectionParameters = new Map([
+  ["sslmode", new Set(["require", "verify-ca", "verify-full"])],
+  ["channel_binding", new Set(["require"])],
+]);
 
 export class PlatformRuntimeActivationError extends Error {
-  constructor() {
+  constructor({ mutationMayHaveBegun = false } = {}) {
     super("Runtime activation failed.");
     this.name = "PlatformRuntimeActivationError";
     this.code = "runtime_activation_failed";
+    mutationErrorStates.set(this, mutationMayHaveBegun === true);
   }
 }
 
@@ -99,13 +110,117 @@ export class PlatformRuntimeActivationPhaseJournal {
   }
 }
 
+export class PlatformRuntimeActivationMutationTracker {
+  #target;
+  #validatedFixtureIdentity = null;
+  #installationStarted = false;
+  #mutationMayHaveBegun = false;
+
+  constructor(target) {
+    targetRole(target);
+    this.#target = target;
+  }
+
+  fixtureValidated(target, directIdentity, dockerIdentity) {
+    this.#assertTarget(target);
+    if (this.#installationStarted || this.#validatedFixtureIdentity) {
+      throw new PlatformRuntimeActivationError();
+    }
+    assertMatchingPostgresFixtureIdentities(
+      directIdentity,
+      dockerIdentity,
+    );
+    this.#validatedFixtureIdentity = fixtureIdentityValue(directIdentity);
+  }
+
+  passwordInstallationStarted(target) {
+    this.#assertTarget(target);
+    if (
+      this.#installationStarted ||
+      !this.#validatedFixtureIdentity
+    ) {
+      throw new PlatformRuntimeActivationError();
+    }
+    this.#installationStarted = true;
+    this.#mutationMayHaveBegun = true;
+  }
+
+  passwordInstallationFailed(target, error) {
+    this.#assertTarget(target);
+    if (!this.#installationStarted) {
+      throw new PlatformRuntimeActivationError();
+    }
+    this.#mutationMayHaveBegun =
+      runtimeActivationMutationMayHaveBegun(error);
+  }
+
+  rollbackRequired(target) {
+    this.#assertTarget(target);
+    return this.#mutationMayHaveBegun;
+  }
+
+  assertRollbackFixture(target, currentIdentity) {
+    this.#assertTarget(target);
+    if (
+      !this.#mutationMayHaveBegun ||
+      !this.#validatedFixtureIdentity ||
+      fixtureIdentityValue(currentIdentity) !==
+        this.#validatedFixtureIdentity
+    ) {
+      throw new PlatformRuntimeActivationError();
+    }
+  }
+
+  rollbackCompleted(target) {
+    this.#assertTarget(target);
+    if (!this.#mutationMayHaveBegun) {
+      throw new PlatformRuntimeActivationError();
+    }
+    this.#mutationMayHaveBegun = false;
+  }
+
+  successFinalised(target) {
+    this.#assertTarget(target);
+    if (!this.#mutationMayHaveBegun) {
+      throw new PlatformRuntimeActivationError();
+    }
+    this.#mutationMayHaveBegun = false;
+  }
+
+  #assertTarget(target) {
+    if (target !== this.#target) {
+      throw new PlatformRuntimeActivationError();
+    }
+  }
+}
+
+export function createRuntimeActivationTarget(runtimeRole) {
+  if (!safeRoleIdentifier.test(runtimeRole)) {
+    throw new PlatformRuntimeActivationError();
+  }
+  const target = Object.freeze({});
+  targetRoles.set(target, runtimeRole);
+  return target;
+}
+
+export function runtimeActivationRole(target) {
+  return targetRole(target);
+}
+
+export function runtimeActivationMutationMayHaveBegun(error) {
+  return (
+    error instanceof PlatformRuntimeActivationError &&
+    mutationErrorStates.get(error) === true
+  );
+}
+
 export function buildRuntimeDatabaseUrl(
   operatorUrl,
-  runtimeRole,
+  target,
   runtimePassword,
 ) {
+  const runtimeRole = targetRole(target);
   if (
-    !safeRoleIdentifier.test(runtimeRole) ||
     typeof runtimePassword !== "string" ||
     runtimePassword.length === 0 ||
     containsLineBreakOrNull(runtimePassword)
@@ -114,107 +229,528 @@ export function buildRuntimeDatabaseUrl(
   }
 
   const parsed = parseOperatorUrl(operatorUrl);
+  const reviewedParameters = validateConnectionParameters(parsed);
 
   parsed.username = encodeURIComponent(runtimeRole);
   parsed.password = encodeURIComponent(runtimePassword);
+  parsed.hash = "";
+  parsed.search = "";
+  for (const [name, value] of reviewedParameters) {
+    parsed.searchParams.append(name, value);
+  }
   return parsed.toString();
 }
 
-export async function installRuntimePasswordWithDocker({
+export function buildRuntimeRoleStatement(target, operation) {
+  const runtimeRole = targetRole(target);
+  const quotedRole = `"${runtimeRole}"`;
+  if (operation === "enable_login") {
+    return `ALTER ROLE ${quotedRole} LOGIN`;
+  }
+  if (operation === "rollback") {
+    return `ALTER ROLE ${quotedRole} NOLOGIN PASSWORD NULL`;
+  }
+  throw new PlatformRuntimeActivationError();
+}
+
+export function assertRuntimeIdentity(
+  row,
+  target,
+  expectedDatabase,
+) {
+  const runtimeRole = targetRole(target);
+  if (
+    !row ||
+    typeof row !== "object" ||
+    typeof expectedDatabase !== "string" ||
+    expectedDatabase.length === 0 ||
+    row.current_database !== expectedDatabase ||
+    row.current_user !== runtimeRole ||
+    row.session_user !== runtimeRole
+  ) {
+    throw new PlatformRuntimeActivationError();
+  }
+}
+
+export async function readPostgresFixtureIdentity(client) {
+  let result;
+  try {
+    result = await client.query(
+      `
+        select
+          control.system_identifier::text as system_identifier,
+          database_record.oid::text as database_oid
+        from pg_control_system() control
+        join pg_database database_record
+          on database_record.datname = current_database()
+      `,
+      [],
+    );
+  } catch {
+    throw new PlatformRuntimeActivationError();
+  }
+  if (
+    !result ||
+    !Array.isArray(result.rows) ||
+    result.rows.length !== 1
+  ) {
+    throw new PlatformRuntimeActivationError();
+  }
+  return createFixtureIdentity(
+    result.rows[0].system_identifier,
+    result.rows[0].database_oid,
+  );
+}
+
+export async function readDockerPostgresFixtureIdentity({
   operatorUrl,
-  runtimeRole,
-  runtimePassword,
   dockerImage = "postgres:17",
   spawnImpl = spawn,
   timeoutMs = 30_000,
 }) {
+  validateDockerInputs({ operatorUrl, dockerImage, timeoutMs });
+  const containerName = dockerContainerName("identity");
+  const childEnvironment = dockerEnvironment(operatorUrl);
+  const input = Buffer.from(
+    [
+      "select control.system_identifier::text || ':' || database_record.oid::text",
+      "from pg_control_system() control",
+      "join pg_database database_record",
+      "  on database_record.datname = current_database();",
+      "\\q",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  try {
+    const output = await runReadOnlyDockerPsql({
+      childEnvironment,
+      containerName,
+      dockerImage,
+      input,
+      spawnImpl,
+      timeoutMs,
+    });
+    const value = output.trim();
+    if (!safeFixtureIdentity.test(value)) {
+      throw new PlatformRuntimeActivationError();
+    }
+    const [systemIdentifier, databaseOid] = value.split(":");
+    return createFixtureIdentity(systemIdentifier, databaseOid);
+  } catch {
+    throw new PlatformRuntimeActivationError();
+  } finally {
+    input.fill(0);
+  }
+}
+
+export function assertMatchingPostgresFixtureIdentities(
+  directIdentity,
+  dockerIdentity,
+) {
+  const directValue = fixtureIdentityValue(directIdentity);
+  const dockerValue = fixtureIdentityValue(dockerIdentity);
+  if (directValue !== dockerValue) {
+    throw new PlatformRuntimeActivationError();
+  }
+}
+
+export async function installRuntimePasswordWithDocker({
+  operatorUrl,
+  target,
+  runtimePassword,
+  expectedFixtureIdentity,
+  dockerImage = "postgres:17",
+  spawnImpl = spawn,
+  terminationSpawnImpl = spawn,
+  timeoutMs = 30_000,
+  terminationGraceMs = 5_000,
+  terminationRetryMs = 1_000,
+  terminationAttempts = 2,
+}) {
+  const runtimeRole = targetRole(target);
+  const fixtureIdentity = fixtureIdentityValue(expectedFixtureIdentity);
+  validateDockerInputs({ operatorUrl, dockerImage, timeoutMs });
   if (
-    typeof operatorUrl !== "string" ||
-    operatorUrl.length === 0 ||
-    !safeRoleIdentifier.test(runtimeRole) ||
     !isStrongRuntimePassword(runtimePassword) ||
-    dockerImage !== "postgres:17" ||
-    !Number.isInteger(timeoutMs) ||
-    timeoutMs < 1_000 ||
-    timeoutMs > 120_000
+    !Number.isInteger(terminationGraceMs) ||
+    terminationGraceMs < 1 ||
+    terminationGraceMs > 30_000 ||
+    !Number.isInteger(terminationRetryMs) ||
+    terminationRetryMs < 1 ||
+    terminationRetryMs > 30_000 ||
+    !Number.isInteger(terminationAttempts) ||
+    terminationAttempts < 1 ||
+    terminationAttempts > 5
   ) {
     throw new PlatformRuntimeActivationError();
   }
-  parseOperatorUrl(operatorUrl);
 
+  const containerName = dockerContainerName("password");
   const input = Buffer.from(
-    `\\password ${runtimeRole}\n${runtimePassword}\n${runtimePassword}\n\\q\n`,
+    [
+      "\\set ON_ERROR_STOP on",
+      `\\set expected_fixture_identity '${fixtureIdentity}'`,
+      "select (control.system_identifier::text || ':' || database_record.oid::text)",
+      "  = :'expected_fixture_identity' as fixture_matches",
+      "from pg_control_system() control",
+      "join pg_database database_record",
+      "  on database_record.datname = current_database()",
+      "\\gset",
+      "\\if :fixture_matches",
+      `\\password ${runtimeRole}`,
+      runtimePassword,
+      runtimePassword,
+      "\\else",
+      `\\quit ${fixtureMismatchExitCode}`,
+      "\\endif",
+      "\\q",
+      "",
+    ].join("\n"),
     "utf8",
   );
-  const childEnvironment = {
-    ...process.env,
-    DATABASE_OPERATOR_URL: operatorUrl,
-  };
-  delete childEnvironment.DATABASE_URL;
-  delete childEnvironment.NEONDB_SWOOSHZ_PLATFORM_DATABASE_OPERATOR_URL;
-  delete childEnvironment.NEONDB_SWOOSHZ_PLATFORM_DATABASE_RUNTIME_PASSWORD;
-  delete childEnvironment.NEONDB_SWOOSHZ_PLATFORM_DATABASE_URL;
+  const childEnvironment = dockerEnvironment(operatorUrl);
 
   try {
-    await new Promise((resolve, reject) => {
-      let settled = false;
-      const child = spawnImpl(
-        "docker",
-        [
-          "run",
-          "--rm",
-          "-i",
-          "--env",
-          "DATABASE_OPERATOR_URL",
-          dockerImage,
-          "sh",
-          "-lc",
-          'psql "$DATABASE_OPERATOR_URL" -X -v ON_ERROR_STOP=1',
-        ],
-        {
-          env: childEnvironment,
-          stdio: ["pipe", "ignore", "ignore"],
-          windowsHide: true,
-        },
-      );
+    await runMutationCapableDockerPsql({
+      childEnvironment,
+      containerName,
+      dockerImage,
+      input,
+      spawnImpl,
+      terminationAttempts,
+      terminationGraceMs,
+      terminationRetryMs,
+      terminationSpawnImpl,
+      timeoutMs,
+    });
+  } catch (error) {
+    input.fill(0);
+    if (error instanceof PlatformRuntimeActivationError) {
+      throw error;
+    }
+    throw new PlatformRuntimeActivationError({
+      mutationMayHaveBegun: true,
+    });
+  } finally {
+    input.fill(0);
+  }
+}
 
-      const timer = setTimeout(() => {
-        child.kill();
-        finish(true);
-      }, timeoutMs);
-      timer.unref?.();
+async function runReadOnlyDockerPsql({
+  childEnvironment,
+  containerName,
+  dockerImage,
+  input,
+  spawnImpl,
+  timeoutMs,
+}) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timedOut = false;
+    const output = [];
+    let outputLength = 0;
+    const child = spawnDockerPsql({
+      childEnvironment,
+      containerName,
+      dockerImage,
+      spawnImpl,
+      stdio: ["pipe", "pipe", "ignore"],
+    });
+    const finish = (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      input.fill(0);
+      if (error) {
+        reject(new PlatformRuntimeActivationError());
+      } else {
+        resolve(Buffer.concat(output).toString("utf8"));
+      }
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // The close/error path remains authoritative.
+      }
+    }, timeoutMs);
 
-      const finish = (error) => {
-        if (settled) {
+    child.once("error", () => finish(true));
+    child.once("close", (code, signal) =>
+      finish(timedOut || code !== 0 || signal !== null),
+    );
+    child.stdout.on("data", (chunk) => {
+      outputLength += chunk.length;
+      if (outputLength > 256) {
+        try {
+          child.kill("SIGTERM");
+        } catch {
+          // The close/error path remains authoritative.
+        }
+        return;
+      }
+      output.push(Buffer.from(chunk));
+    });
+    child.stdin.once("error", () => {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // The close/error path remains authoritative.
+      }
+    });
+    child.stdin.end(input);
+  });
+}
+
+async function runMutationCapableDockerPsql({
+  childEnvironment,
+  containerName,
+  dockerImage,
+  input,
+  spawnImpl,
+  terminationAttempts,
+  terminationGraceMs,
+  terminationRetryMs,
+  terminationSpawnImpl,
+  timeoutMs,
+}) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let terminationStarted = false;
+    let childClosed = false;
+    let cleanupConfirmed = false;
+    let cleanupAttempts = 0;
+    let graceTimer;
+    let retryTimer;
+
+    const child = spawnDockerPsql({
+      childEnvironment,
+      containerName,
+      dockerImage,
+      spawnImpl,
+      stdio: ["pipe", "ignore", "ignore"],
+    });
+
+    const finish = (error, mutationMayHaveBegun = false) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeoutTimer);
+      clearTimeout(graceTimer);
+      clearTimeout(retryTimer);
+      input.fill(0);
+      if (error) {
+        reject(
+          new PlatformRuntimeActivationError({
+            mutationMayHaveBegun,
+          }),
+        );
+      } else {
+        resolve();
+      }
+    };
+
+    const finishTimedOutWhenConfirmed = () => {
+      if (
+        !terminationStarted ||
+        !childClosed ||
+        !cleanupConfirmed
+      ) {
+        return;
+      }
+      finish(true, true);
+    };
+
+    const verifyContainerStopped = () => {
+      let verifyChild;
+      try {
+        verifyChild = terminationSpawnImpl(
+          "docker",
+          [
+            "ps",
+            "--quiet",
+            "--filter",
+            `name=^/${containerName}$`,
+          ],
+          {
+            stdio: ["ignore", "pipe", "ignore"],
+            windowsHide: true,
+          },
+        );
+      } catch {
+        scheduleCleanupRetry();
+        return;
+      }
+      let verificationFinished = false;
+      const output = [];
+      let outputLength = 0;
+      const verificationDone = (success) => {
+        if (verificationFinished || settled) {
           return;
         }
-        settled = true;
-        clearTimeout(timer);
-        input.fill(0);
-        if (error) {
-          reject(new PlatformRuntimeActivationError());
+        verificationFinished = true;
+        if (success && Buffer.concat(output).toString("utf8").trim() === "") {
+          cleanupConfirmed = true;
+          finishTimedOutWhenConfirmed();
         } else {
-          resolve();
+          scheduleCleanupRetry();
         }
       };
-
-      child.once("error", () => finish(true));
-      child.once("close", (code, signal) =>
-        finish(code !== 0 || signal !== null),
+      verifyChild.once("error", () => verificationDone(false));
+      verifyChild.once("close", (code, signal) =>
+        verificationDone(code === 0 && signal === null),
       );
-      child.stdin.once("error", () => finish(true));
-      child.stdin.end(input);
+      verifyChild.stdout.on("data", (chunk) => {
+        outputLength += chunk.length;
+        if (outputLength <= 256) {
+          output.push(Buffer.from(chunk));
+        }
+      });
+    };
+
+    const startCleanupAttempt = () => {
+      if (settled || cleanupConfirmed) {
+        return;
+      }
+      cleanupAttempts += 1;
+      let cleanupChild;
+      try {
+        cleanupChild = terminationSpawnImpl(
+          "docker",
+          ["rm", "--force", containerName],
+          {
+            stdio: ["ignore", "ignore", "ignore"],
+            windowsHide: true,
+          },
+        );
+      } catch {
+        verifyContainerStopped();
+        return;
+      }
+      let cleanupFinished = false;
+      const cleanupDone = () => {
+        if (cleanupFinished || settled) {
+          return;
+        }
+        cleanupFinished = true;
+        verifyContainerStopped();
+      };
+      cleanupChild.once("error", cleanupDone);
+      cleanupChild.once("close", cleanupDone);
+    };
+
+    const scheduleCleanupRetry = () => {
+      if (cleanupAttempts >= terminationAttempts || settled) {
+        return;
+      }
+      retryTimer = setTimeout(startCleanupAttempt, terminationRetryMs);
+    };
+
+    const escalateTermination = () => {
+      if (settled || cleanupConfirmed) {
+        return;
+      }
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // Docker removal remains the mutation-container authority.
+      }
+      startCleanupAttempt();
+    };
+
+    const beginTermination = () => {
+      if (terminationStarted || settled) {
+        return;
+      }
+      terminationStarted = true;
+      let requested = false;
+      try {
+        requested = child.kill("SIGTERM") === true;
+      } catch {
+        requested = false;
+      }
+      if (requested) {
+        graceTimer = setTimeout(escalateTermination, terminationGraceMs);
+      } else {
+        escalateTermination();
+      }
+    };
+
+    const timeoutTimer = setTimeout(beginTermination, timeoutMs);
+
+    child.once("error", () => {
+      if (!terminationStarted) {
+        finish(true, false);
+      }
     });
-  } catch {
-    input.fill(0);
-    throw new PlatformRuntimeActivationError();
-  }
+    child.once("close", (code, signal) => {
+      childClosed = true;
+      if (!terminationStarted) {
+        if (code === 0 && signal === null) {
+          finish(false);
+        } else {
+          finish(true, code !== fixtureMismatchExitCode);
+        }
+        return;
+      }
+      clearTimeout(graceTimer);
+      escalateTermination();
+      finishTimedOutWhenConfirmed();
+    });
+    child.stdin.once("error", beginTermination);
+    child.stdin.end(input);
+  });
+}
+
+function spawnDockerPsql({
+  childEnvironment,
+  containerName,
+  dockerImage,
+  spawnImpl,
+  stdio,
+}) {
+  return spawnImpl(
+    "docker",
+    [
+      "run",
+      "--rm",
+      "-i",
+      "--name",
+      containerName,
+      "--env",
+      "DATABASE_OPERATOR_URL",
+      dockerImage,
+      "sh",
+      "-lc",
+      'psql "$DATABASE_OPERATOR_URL" -X -A -t -v ON_ERROR_STOP=1',
+    ],
+    {
+      env: childEnvironment,
+      stdio,
+      windowsHide: true,
+    },
+  );
 }
 
 function assertPhase(phase) {
   if (!phaseSet.has(phase)) {
     throw new PlatformRuntimeActivationError();
   }
+}
+
+function targetRole(target) {
+  const runtimeRole =
+    target && typeof target === "object" ? targetRoles.get(target) : undefined;
+  if (!runtimeRole) {
+    throw new PlatformRuntimeActivationError();
+  }
+  return runtimeRole;
 }
 
 function parseOperatorUrl(value) {
@@ -227,11 +763,78 @@ function parseOperatorUrl(value) {
   if (
     !["postgres:", "postgresql:"].includes(parsed.protocol) ||
     !parsed.hostname ||
-    parsed.pathname.length <= 1
+    !parsed.username ||
+    parsed.pathname.length <= 1 ||
+    parsed.hash
   ) {
     throw new PlatformRuntimeActivationError();
   }
   return parsed;
+}
+
+function validateConnectionParameters(parsed) {
+  const seen = new Set();
+  const reviewed = [];
+  for (const [name, value] of parsed.searchParams.entries()) {
+    const allowedValues = allowedConnectionParameters.get(name);
+    if (!allowedValues || seen.has(name) || !allowedValues.has(value)) {
+      throw new PlatformRuntimeActivationError();
+    }
+    seen.add(name);
+    reviewed.push([name, value]);
+  }
+  return reviewed.sort(([left], [right]) => left.localeCompare(right));
+}
+
+function validateDockerInputs({ operatorUrl, dockerImage, timeoutMs }) {
+  if (
+    typeof operatorUrl !== "string" ||
+    operatorUrl.length === 0 ||
+    dockerImage !== "postgres:17" ||
+    !Number.isInteger(timeoutMs) ||
+    timeoutMs < 10 ||
+    timeoutMs > 120_000
+  ) {
+    throw new PlatformRuntimeActivationError();
+  }
+  parseOperatorUrl(operatorUrl);
+}
+
+function dockerEnvironment(operatorUrl) {
+  const childEnvironment = {
+    ...process.env,
+    DATABASE_OPERATOR_URL: operatorUrl,
+  };
+  delete childEnvironment.DATABASE_URL;
+  delete childEnvironment.NEONDB_SWOOSHZ_PLATFORM_DATABASE_OPERATOR_URL;
+  delete childEnvironment.NEONDB_SWOOSHZ_PLATFORM_DATABASE_RUNTIME_PASSWORD;
+  delete childEnvironment.NEONDB_SWOOSHZ_PLATFORM_DATABASE_URL;
+  return childEnvironment;
+}
+
+function dockerContainerName(purpose) {
+  return `swooshz-runtime-${purpose}-${randomUUID()}`;
+}
+
+function createFixtureIdentity(systemIdentifier, databaseOid) {
+  const value = `${systemIdentifier}:${databaseOid}`;
+  if (!safeFixtureIdentity.test(value)) {
+    throw new PlatformRuntimeActivationError();
+  }
+  const identity = Object.freeze({});
+  fixtureIdentityValues.set(identity, value);
+  return identity;
+}
+
+function fixtureIdentityValue(identity) {
+  const value =
+    identity && typeof identity === "object"
+      ? fixtureIdentityValues.get(identity)
+      : undefined;
+  if (!value) {
+    throw new PlatformRuntimeActivationError();
+  }
+  return value;
 }
 
 function containsLineBreakOrNull(value) {

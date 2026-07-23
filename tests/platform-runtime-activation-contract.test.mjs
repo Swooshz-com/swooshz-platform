@@ -6,10 +6,23 @@ import test from "node:test";
 import {
   PLATFORM_RUNTIME_ACTIVATION_PHASES,
   PlatformRuntimeActivationError,
+  PlatformRuntimeActivationMutationTracker,
   PlatformRuntimeActivationPhaseJournal,
+  assertMatchingPostgresFixtureIdentities,
+  assertRuntimeIdentity,
   buildRuntimeDatabaseUrl,
+  buildRuntimeRoleStatement,
+  createRuntimeActivationTarget,
   installRuntimePasswordWithDocker,
+  readDockerPostgresFixtureIdentity,
+  readPostgresFixtureIdentity,
+  runtimeActivationMutationMayHaveBegun,
+  runtimeActivationRole,
 } from "../scripts/platform-runtime-activation-contract.mjs";
+
+const operatorUrl =
+  "postgresql://operator:synthetic@db.example.test:5544/platform?sslmode=require&channel_binding=require";
+const runtimePassword = "SyntheticRuntime_2026!Lab_ExtraLength";
 
 test("activation phase contract covers the complete rollback-gated sequence", () => {
   assert.deepEqual(PLATFORM_RUNTIME_ACTIVATION_PHASES, [
@@ -78,31 +91,221 @@ test("activation phase journal marks rollback as not required on success", () =>
   assert.equal(report.phases.mandatory_rollback, "not_required");
 });
 
-test("runtime URL construction encodes credentials and preserves endpoint shape", () => {
+test("validated activation target binds every role-sensitive operation", async () => {
+  const target = createRuntimeActivationTarget("platform_runtime");
+  const otherTarget = createRuntimeActivationTarget("other_runtime");
+  const tracker = new PlatformRuntimeActivationMutationTracker(target);
+  const directIdentity = await fixtureIdentity("123456789", "16384");
+  const dockerIdentity = await fixtureIdentity("123456789", "16384");
+  const wrongIdentity = await fixtureIdentity("987654321", "16384");
+
+  assert.equal(runtimeActivationRole(target), "platform_runtime");
+  assert.equal(
+    buildRuntimeRoleStatement(target, "enable_login"),
+    'ALTER ROLE "platform_runtime" LOGIN',
+  );
+  assert.equal(
+    buildRuntimeRoleStatement(target, "rollback"),
+    'ALTER ROLE "platform_runtime" NOLOGIN PASSWORD NULL',
+  );
+  assert.throws(
+    () => tracker.passwordInstallationStarted(target),
+    PlatformRuntimeActivationError,
+  );
+  tracker.fixtureValidated(target, directIdentity, dockerIdentity);
+  tracker.passwordInstallationStarted(target);
+  assert.equal(tracker.rollbackRequired(target), true);
+  assert.doesNotThrow(() =>
+    tracker.assertRollbackFixture(target, directIdentity),
+  );
+  assert.throws(
+    () => tracker.assertRollbackFixture(target, wrongIdentity),
+    PlatformRuntimeActivationError,
+  );
+  assert.throws(
+    () => tracker.rollbackRequired(otherTarget),
+    PlatformRuntimeActivationError,
+  );
+  assert.throws(
+    () => buildRuntimeRoleStatement({}, "rollback"),
+    PlatformRuntimeActivationError,
+  );
+});
+
+test("failed initial validation causes zero mutation and zero cleanup", () => {
+  const target = createRuntimeActivationTarget("platform_runtime");
+  const tracker = new PlatformRuntimeActivationMutationTracker(target);
+  let mutationCount = 0;
+  let cleanupCount = 0;
+
+  assert.throws(() => {
+    throw new PlatformRuntimeActivationError();
+  }, PlatformRuntimeActivationError);
+  assert.throws(
+    () => tracker.passwordInstallationStarted(target),
+    PlatformRuntimeActivationError,
+  );
+  if (tracker.rollbackRequired(target)) {
+    cleanupCount += 1;
+  }
+
+  assert.equal(mutationCount, 0);
+  assert.equal(cleanupCount, 0);
+});
+
+test("runtime URL construction encodes credentials and preserves only reviewed transport parameters", () => {
+  const target = createRuntimeActivationTarget("platform_runtime");
   const result = buildRuntimeDatabaseUrl(
-    "postgresql://operator:ignored@db.example.test:5544/platform?sslmode=require&channel_binding=require",
-    "platform_runtime",
-    "Synthetic!éΩ:/?#[]@%",
+    operatorUrl,
+    target,
+    "Synthetic!éΩ:/?#[]@%_ExtraLength2026",
   );
   const parsed = new URL(result);
 
   assert.equal(decodeURIComponent(parsed.username), "platform_runtime");
-  assert.equal(decodeURIComponent(parsed.password), "Synthetic!éΩ:/?#[]@%");
+  assert.equal(
+    decodeURIComponent(parsed.password),
+    "Synthetic!éΩ:/?#[]@%_ExtraLength2026",
+  );
   assert.equal(parsed.hostname, "db.example.test");
   assert.equal(parsed.port, "5544");
   assert.equal(parsed.pathname, "/platform");
-  assert.equal(parsed.searchParams.get("sslmode"), "require");
-  assert.equal(parsed.searchParams.get("channel_binding"), "require");
+  assert.deepEqual([...parsed.searchParams.entries()], [
+    ["channel_binding", "require"],
+    ["sslmode", "require"],
+  ]);
+});
+
+test("runtime URL construction rejects identity, endpoint, session, unknown, and repeated parameters", () => {
+  const target = createRuntimeActivationTarget("platform_runtime");
+  const prohibitedParameters = [
+    "user=platform_app",
+    "password=operator-secret",
+    "host=other.example.test",
+    "hostaddr=192.0.2.10",
+    "port=6432",
+    "dbname=other_database",
+    "database=other_database",
+    "service=other-service",
+    "servicefile=other-service.conf",
+    "options=-csearch_path%3Dprivate",
+    "target_session_attrs=read-write",
+    "application_name=unsafe",
+    "sslmode=require&sslmode=verify-full",
+    "channel_binding=require&channel_binding=require",
+    "sslmode=disable",
+    "channel_binding=prefer",
+  ];
+
+  for (const parameters of prohibitedParameters) {
+    assert.throws(
+      () =>
+        buildRuntimeDatabaseUrl(
+          `postgresql://operator:synthetic@db.example.test:5544/platform?${parameters}`,
+          target,
+          runtimePassword,
+        ),
+      PlatformRuntimeActivationError,
+      parameters,
+    );
+  }
+});
+
+test("runtime identity assertion uses the immutable activation target", () => {
+  const target = createRuntimeActivationTarget("platform_runtime");
+  assert.doesNotThrow(() =>
+    assertRuntimeIdentity(
+      {
+        current_database: "runtime_posture_test",
+        current_user: "platform_runtime",
+        session_user: "platform_runtime",
+      },
+      target,
+      "runtime_posture_test",
+    ),
+  );
+  assert.throws(
+    () =>
+      assertRuntimeIdentity(
+        {
+          current_database: "runtime_posture_test",
+          current_user: "platform_app",
+          session_user: "platform_app",
+        },
+        target,
+        "runtime_posture_test",
+      ),
+    PlatformRuntimeActivationError,
+  );
+});
+
+test("fixture identities are opaque and require exact cluster and database identity", async () => {
+  const directIdentity = await fixtureIdentity("123456789", "16384");
+  const sameIdentity = await fixtureIdentity("123456789", "16384");
+  const differentCluster = await fixtureIdentity("987654321", "16384");
+  const differentDatabase = await fixtureIdentity("123456789", "16385");
+
+  assert.doesNotThrow(() =>
+    assertMatchingPostgresFixtureIdentities(directIdentity, sameIdentity),
+  );
+  assert.throws(
+    () =>
+      assertMatchingPostgresFixtureIdentities(
+        directIdentity,
+        differentCluster,
+      ),
+    PlatformRuntimeActivationError,
+  );
+  assert.throws(
+    () =>
+      assertMatchingPostgresFixtureIdentities(
+        directIdentity,
+        differentDatabase,
+      ),
+    PlatformRuntimeActivationError,
+  );
+  assert.deepEqual(Object.keys(directIdentity), []);
+});
+
+test("Docker fixture identity inspection keeps the URL out of arguments and output", async () => {
+  const captured = {};
+  const identity = await readDockerPostgresFixtureIdentity({
+    operatorUrl,
+    timeoutMs: 1_000,
+    spawnImpl(command, args, options) {
+      captured.command = command;
+      captured.args = args;
+      captured.options = options;
+      const child = fakeChild();
+      child.stdout = new EventEmitter();
+      queueMicrotask(() => {
+        child.stdout.emit("data", Buffer.from("123456789:16384\n"));
+        child.emit("close", 0, null);
+      });
+      return child;
+    },
+  });
+  const directIdentity = await fixtureIdentity("123456789", "16384");
+
+  assert.doesNotThrow(() =>
+    assertMatchingPostgresFixtureIdentities(directIdentity, identity),
+  );
+  assert.equal(captured.command, "docker");
+  assert.equal(captured.args.includes(operatorUrl), false);
+  assert.equal(captured.options.stdio[2], "ignore");
 });
 
 test("password transport rejects line breaks before spawning Docker", async () => {
+  const target = createRuntimeActivationTarget("platform_runtime");
+  const identity = await fixtureIdentity("123456789", "16384");
   let spawnCalled = false;
   await assert.rejects(
     () =>
       installRuntimePasswordWithDocker({
-        operatorUrl: "postgresql://operator:synthetic@db.example.test/platform",
-        runtimeRole: "platform_runtime",
+        operatorUrl,
+        target,
         runtimePassword: "SyntheticRuntime_2026!ExtraLength\n\\q",
+        expectedFixtureIdentity: identity,
         spawnImpl() {
           spawnCalled = true;
         },
@@ -112,86 +315,328 @@ test("password transport rejects line breaks before spawning Docker", async () =
   assert.equal(spawnCalled, false);
 });
 
-test("Docker password installation ignores prompt stderr and writes UTF-8 stdin", async () => {
+test("Docker password installation ignores prompts and writes the guarded UTF-8 exchange", async () => {
+  const target = createRuntimeActivationTarget("platform_runtime");
+  const identity = await fixtureIdentity("123456789", "16384");
   const captured = {};
-  const runtimePassword = "SyntheticRuntime_2026!éΩ漢字_ExtraLength";
+  const unicodePassword =
+    "SyntheticRuntime_2026!éΩ漢字_ExtraLength";
 
   await installRuntimePasswordWithDocker({
-    operatorUrl:
-      "postgresql://operator:synthetic@db.example.test/platform?sslmode=require",
-    runtimeRole: "platform_runtime",
-    runtimePassword,
+    operatorUrl,
+    target,
+    runtimePassword: unicodePassword,
+    expectedFixtureIdentity: identity,
     spawnImpl(command, args, options) {
       captured.command = command;
       captured.args = args;
       captured.options = options;
       captured.stdin = [];
-
-      const child = new EventEmitter();
-      child.kill = () => {};
-      child.stderr = new EventEmitter();
-      child.stdin = new Writable({
-        write(chunk, _encoding, callback) {
+      const child = fakeChild({
+        onWrite(chunk) {
           captured.stdin.push(Buffer.from(chunk));
-          callback();
         },
       });
-      queueMicrotask(() => {
-        child.stderr.emit(
-          "data",
-          Buffer.from('Enter new password for user "platform_runtime": '),
-        );
-        child.emit("close", 0, null);
-      });
+      queueMicrotask(() => child.emit("close", 0, null));
       return child;
     },
   });
 
+  const input = Buffer.concat(captured.stdin).toString("utf8");
   assert.equal(captured.command, "docker");
   assert.equal(captured.options.stdio[2], "ignore");
   assert.equal(captured.options.windowsHide, true);
-  assert.equal(
-    captured.args.includes(
-      "postgresql://operator:synthetic@db.example.test/platform?sslmode=require",
-    ),
-    false,
+  assert.equal(captured.args.includes(operatorUrl), false);
+  assert.equal(captured.args.includes(unicodePassword), false);
+  assert.match(input, /expected_fixture_identity '123456789:16384'/);
+  assert.match(input, /\\if :fixture_matches/);
+  assert.match(input, /\\password platform_runtime/);
+  assert.match(input, new RegExp(escapeRegExp(unicodePassword)));
+});
+
+test("fixture mismatch is classified as pre-mutation while later failure is mutation-possible", async () => {
+  const target = createRuntimeActivationTarget("platform_runtime");
+  const identity = await fixtureIdentity("123456789", "16384");
+
+  const mismatch = await captureFailure(() =>
+    installRuntimePasswordWithDocker({
+      operatorUrl,
+      target,
+      runtimePassword,
+      expectedFixtureIdentity: identity,
+      spawnImpl() {
+        const child = fakeChild();
+        queueMicrotask(() => child.emit("close", 86, null));
+        return child;
+      },
+    }),
   );
-  assert.equal(captured.args.includes(runtimePassword), false);
-  assert.equal(
-    Buffer.concat(captured.stdin).toString("utf8"),
-    `\\password platform_runtime\n${runtimePassword}\n${runtimePassword}\n\\q\n`,
+  const laterFailure = await captureFailure(() =>
+    installRuntimePasswordWithDocker({
+      operatorUrl,
+      target,
+      runtimePassword,
+      expectedFixtureIdentity: identity,
+      spawnImpl() {
+        const child = fakeChild();
+        queueMicrotask(() => child.emit("close", 1, null));
+        return child;
+      },
+    }),
+  );
+
+  assert.equal(runtimeActivationMutationMayHaveBegun(mismatch), false);
+  assert.equal(runtimeActivationMutationMayHaveBegun(laterFailure), true);
+});
+
+test("password installation exposes only a generic secret-safe failure", async () => {
+  const target = createRuntimeActivationTarget("platform_runtime");
+  const identity = await fixtureIdentity("123456789", "16384");
+  const error = await captureFailure(() =>
+    installRuntimePasswordWithDocker({
+      operatorUrl,
+      target,
+      runtimePassword,
+      expectedFixtureIdentity: identity,
+      spawnImpl() {
+        const child = fakeChild();
+        queueMicrotask(() => child.emit("close", 1, null));
+        return child;
+      },
+    }),
+  );
+
+  assert.equal(error.code, "runtime_activation_failed");
+  assert.equal(error.message, "Runtime activation failed.");
+  assert.doesNotMatch(
+    String(error),
+    /operator|synthetic|platform_runtime|postgresql:\/\//i,
   );
 });
 
-test("Docker password installation exposes only a generic failure", async () => {
-  const operatorUrl =
-    "postgresql://operator:synthetic@db.example.test/platform";
-  const runtimePassword = "SyntheticRuntime_2026!Lab_ExtraLength";
-
-  await assert.rejects(
-    () =>
-      installRuntimePasswordWithDocker({
-        operatorUrl,
-        runtimeRole: "platform_runtime",
-        runtimePassword,
-        spawnImpl() {
-          const child = new EventEmitter();
-          child.kill = () => {};
-          child.stdin = new Writable({
-            write(_chunk, _encoding, callback) {
-              callback();
-            },
-          });
-          queueMicrotask(() => child.emit("close", 1, null));
-          return child;
-        },
-      }),
-    (error) => {
-      assert.equal(error instanceof PlatformRuntimeActivationError, true);
-      assert.equal(error.code, "runtime_activation_failed");
-      assert.equal(error.message, "Runtime activation failed.");
-      assert.doesNotMatch(String(error), /operator|synthetic|platform_runtime/i);
+test("timeout waits for a normal child close during the termination grace period", async () => {
+  const harness = await timeoutHarness({
+    onKill(signal, child) {
+      if (signal === "SIGTERM") {
+        setTimeout(() => child.emit("close", 0, null), 20);
+      }
       return true;
     },
-  );
+    terminationGraceMs: 50,
+  });
+
+  await delay(15);
+  assert.equal(harness.settled(), false);
+  await assert.rejects(harness.promise, PlatformRuntimeActivationError);
+  assert.equal(harness.signals.includes("SIGTERM"), true);
+  assert.equal(harness.cleanupCalls(), 1);
+  assert.equal(harness.verificationCalls(), 1);
 });
+
+test("timeout escalation waits for container removal and child close", async () => {
+  const harness = await timeoutHarness({
+    onKill(signal, child) {
+      if (signal === "SIGKILL") {
+        setTimeout(() => child.emit("close", null, "SIGKILL"), 15);
+      }
+      return true;
+    },
+    onCleanup(cleanupChild) {
+      setTimeout(() => cleanupChild.emit("close", 0, null), 5);
+    },
+    terminationGraceMs: 10,
+  });
+
+  await delay(28);
+  assert.equal(harness.settled(), false);
+  await assert.rejects(harness.promise, PlatformRuntimeActivationError);
+  assert.deepEqual(harness.signals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(harness.cleanupCalls(), 1);
+});
+
+test("failed termination cleanup remains unsettled until a later conclusive child exit", async () => {
+  let finalVerification;
+  const harness = await timeoutHarness({
+    onKill() {
+      return true;
+    },
+    onCleanup(cleanupChild) {
+      queueMicrotask(() => cleanupChild.emit("close", 1, null));
+    },
+    onVerify(verifyChild, verificationCount) {
+      if (verificationCount === 1) {
+        queueMicrotask(() => {
+          verifyChild.stdout.emit("data", Buffer.from("still-running\n"));
+          verifyChild.emit("close", 0, null);
+        });
+      } else {
+        finalVerification = verifyChild;
+      }
+    },
+    terminationAttempts: 2,
+    terminationGraceMs: 10,
+    terminationRetryMs: 10,
+  });
+
+  await waitFor(() => harness.cleanupCalls() === 2);
+  assert.equal(harness.cleanupCalls(), 2);
+  assert.equal(harness.settled(), false);
+
+  harness.child.emit("close", 0, null);
+  await delay(0);
+  assert.equal(harness.settled(), false);
+  finalVerification.emit("close", 0, null);
+  await assert.rejects(harness.promise, PlatformRuntimeActivationError);
+});
+
+test("late child events cannot settle password installation twice", async () => {
+  const harness = await timeoutHarness({
+    onKill(signal, child) {
+      if (signal === "SIGTERM") {
+        setTimeout(() => {
+          child.emit("close", 0, null);
+          child.emit("close", 1, "SIGTERM");
+        }, 15);
+      }
+      return true;
+    },
+    terminationGraceMs: 50,
+  });
+
+  await assert.rejects(harness.promise, PlatformRuntimeActivationError);
+  assert.equal(harness.settlementCount(), 1);
+});
+
+async function timeoutHarness({
+  onKill,
+  onCleanup,
+  onVerify,
+  terminationAttempts = 2,
+  terminationGraceMs,
+  terminationRetryMs = 5,
+}) {
+  const target = createRuntimeActivationTarget("platform_runtime");
+  const identity = await fixtureIdentity("123456789", "16384");
+  const signals = [];
+  let cleanupCount = 0;
+  let verificationCount = 0;
+  let settled = false;
+  let settlementCount = 0;
+  const child = fakeChild();
+  child.kill = (signal) => {
+    signals.push(signal);
+    return onKill(signal, child);
+  };
+  const promise = installRuntimePasswordWithDocker({
+    operatorUrl,
+    target,
+    runtimePassword,
+    expectedFixtureIdentity: identity,
+    timeoutMs: 10,
+    terminationGraceMs,
+    terminationRetryMs,
+    terminationAttempts,
+    spawnImpl() {
+      return child;
+    },
+    terminationSpawnImpl(command, args, options) {
+      assert.equal(command, "docker");
+      if (args[0] === "rm") {
+        assert.deepEqual(args.slice(0, 2), ["rm", "--force"]);
+        assert.equal(options.stdio[2], "ignore");
+        const cleanupChild = new EventEmitter();
+        cleanupCount += 1;
+        if (onCleanup) {
+          onCleanup(cleanupChild);
+        } else {
+          queueMicrotask(() => cleanupChild.emit("close", 0, null));
+        }
+        return cleanupChild;
+      }
+      assert.deepEqual(args.slice(0, 3), [
+        "ps",
+        "--quiet",
+        "--filter",
+      ]);
+      assert.equal(options.stdio[1], "pipe");
+      const verifyChild = new EventEmitter();
+      verifyChild.stdout = new EventEmitter();
+      verificationCount += 1;
+      if (onVerify) {
+        onVerify(verifyChild, verificationCount);
+      } else {
+        queueMicrotask(() => verifyChild.emit("close", 0, null));
+      }
+      return verifyChild;
+    },
+  });
+  promise.then(
+    () => {
+      settled = true;
+      settlementCount += 1;
+    },
+    () => {
+      settled = true;
+      settlementCount += 1;
+    },
+  );
+  return {
+    child,
+    cleanupCalls: () => cleanupCount,
+    promise,
+    settled: () => settled,
+    settlementCount: () => settlementCount,
+    signals,
+    verificationCalls: () => verificationCount,
+  };
+}
+
+function fakeChild({ onWrite } = {}) {
+  const child = new EventEmitter();
+  child.kill = () => true;
+  child.stdin = new Writable({
+    write(chunk, _encoding, callback) {
+      onWrite?.(chunk);
+      callback();
+    },
+  });
+  return child;
+}
+
+async function fixtureIdentity(systemIdentifier, databaseOid) {
+  return readPostgresFixtureIdentity({
+    async query() {
+      return {
+        rows: [{ system_identifier: systemIdentifier, database_oid: databaseOid }],
+      };
+    },
+  });
+}
+
+async function captureFailure(callback) {
+  try {
+    await callback();
+  } catch (error) {
+    assert.equal(error instanceof PlatformRuntimeActivationError, true);
+    return error;
+  }
+  assert.fail("Expected activation failure.");
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function waitFor(predicate, timeoutMs = 1_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) {
+      assert.fail("Timed out waiting for the deterministic harness state.");
+    }
+    await delay(5);
+  }
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
