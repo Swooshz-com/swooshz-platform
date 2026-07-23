@@ -86,6 +86,13 @@ select
   not exists (
     select 1
     from set_assumable_roles assumable_role
+    join pg_auth_members membership
+      on membership.member = assumable_role.role_oid
+    where membership.admin_option
+  ) as role_membership_admin_absent,
+  not exists (
+    select 1
+    from set_assumable_roles assumable_role
     join pg_roles prohibited_role on prohibited_role.rolname = 'neon_superuser'
     where pg_has_role(assumable_role.role_oid, prohibited_role.oid, 'MEMBER')
   ) as neon_superuser_membership_absent,
@@ -223,6 +230,7 @@ export async function inspectRuntimeDatabasePosture(
   const expectedRoleMatch = boolean(row, "expected_role_match");
   const administrativeAttributesAbsent = all(row, [
     "role_assumption_state_conclusive",
+    "role_membership_admin_absent",
     "neon_superuser_membership_absent",
     "superuser_absent",
     "createdb_absent",

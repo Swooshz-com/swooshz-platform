@@ -13,6 +13,7 @@ const expectedRole = "platform_runtime";
 const passingRow = Object.freeze({
   expected_role_match: true,
   role_assumption_state_conclusive: true,
+  role_membership_admin_absent: true,
   neon_superuser_membership_absent: true,
   superuser_absent: true,
   createdb_absent: true,
@@ -145,6 +146,10 @@ test("runtime posture traverses every SET-assumable role by catalog OID", async 
   assert.match(postureSql, /role_assumption_state_conclusive/);
   assert.match(
     postureSql,
+    /pg_auth_members membership[\s\S]*?membership\.member = [a-z_.]+role_oid[\s\S]*?membership\.admin_option[\s\S]*?role_membership_admin_absent/,
+  );
+  assert.match(
+    postureSql,
     /has_database_privilege\(\s*[a-z_.]+role_oid,/,
   );
   assert.match(
@@ -209,6 +214,7 @@ test("every prohibited runtime posture fails closed", async (context) => {
   const cases = [
     ["wrong connected role", "expected_role_match"],
     ["inconclusive SET-role catalog state", "role_assumption_state_conclusive"],
+    ["administrative membership authority", "role_membership_admin_absent"],
     ["neon_superuser membership", "neon_superuser_membership_absent"],
     ["superuser", "superuser_absent"],
     ["createdb", "createdb_absent"],

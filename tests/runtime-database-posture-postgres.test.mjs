@@ -200,6 +200,24 @@ test(
         await assertPosturePasses(adminPool, runtime);
       });
 
+      await context.test(
+        "SET false membership with ADMIN authority fails before it can enable SET",
+        async () => {
+          const runtime = role("admin_option_runtime");
+          const dangerous = role("admin_option_createdb");
+          await createRole(adminPool, runtime);
+          await createRole(adminPool, dangerous, "createdb");
+          await grantRole(adminPool, dangerous, runtime, false, false, true);
+          await assertSetRole(adminPool, runtime, dangerous, false);
+          await assertPostureFails(
+            adminPool,
+            runtime,
+            "administrativeAttributesAbsent",
+          );
+          await assertCanEnableSetOption(adminPool, runtime, dangerous);
+        },
+      );
+
       await context.test("one SET false edge blocks a mixed chain", async () => {
         const runtime = role("mixed_runtime");
         const middle = role("mixed_middle");
@@ -279,11 +297,35 @@ async function ensureRole(pool, roleName) {
   return false;
 }
 
-async function grantRole(pool, grantedRole, memberRole, setOption, inheritOption) {
+async function grantRole(
+  pool,
+  grantedRole,
+  memberRole,
+  setOption,
+  inheritOption,
+  adminOption = false,
+) {
   await pool.query(
     `grant ${identifier(grantedRole)} to ${identifier(memberRole)} ` +
-      `with set ${setOption}, inherit ${inheritOption}`,
+      `with admin ${adminOption}, set ${setOption}, inherit ${inheritOption}`,
   );
+}
+
+async function assertCanEnableSetOption(pool, sessionRole, targetRole) {
+  const client = await pool.connect();
+  try {
+    await client.query(`set session authorization ${identifier(sessionRole)}`);
+    await client.query(
+      `grant ${identifier(targetRole)} to ${identifier(sessionRole)} with set true`,
+    );
+    await client.query(`set role ${identifier(targetRole)}`);
+    const identity = await client.query("select current_user, session_user");
+    assert.deepEqual(identity.rows, [
+      { current_user: targetRole, session_user: sessionRole },
+    ]);
+  } finally {
+    client.release(true);
+  }
 }
 
 async function assertSetRole(pool, sessionRole, targetRole, shouldSucceed) {
