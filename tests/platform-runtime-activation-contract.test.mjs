@@ -284,6 +284,14 @@ test("Docker fixture identity inspection keeps the URL out of arguments and outp
       });
       return child;
     },
+    terminationSpawnImpl(command, args) {
+      assert.equal(command, "docker");
+      assert.equal(args[0], "ps");
+      const verifyChild = new EventEmitter();
+      verifyChild.stdout = new EventEmitter();
+      queueMicrotask(() => verifyChild.emit("close", 0, null));
+      return verifyChild;
+    },
   });
   const directIdentity = await fixtureIdentity("123456789", "16384");
 
@@ -293,6 +301,223 @@ test("Docker fixture identity inspection keeps the URL out of arguments and outp
   assert.equal(captured.command, "docker");
   assert.equal(captured.args.includes(operatorUrl), false);
   assert.equal(captured.options.stdio[2], "ignore");
+  const nameIndex = captured.args.indexOf("--name");
+  assert.match(
+    captured.args[nameIndex + 1],
+    /^swooshz-runtime-identity-[0-9a-f-]{36}$/u,
+  );
+});
+
+test("read-only timeout waits for graceful close and confirmed container absence", async () => {
+  const harness = readOnlyTerminationHarness({
+    onKill(signal, child) {
+      if (signal === "SIGTERM") {
+        setTimeout(() => child.emit("close", 0, null), 15);
+      }
+      return true;
+    },
+    terminationGraceMs: 40,
+  });
+
+  await delay(12);
+  assert.equal(harness.settled(), false);
+  await waitFor(() => harness.verificationCalls() === 1);
+  assert.equal(harness.settled(), false);
+  harness.completeVerification();
+  await assert.rejects(harness.promise, PlatformRuntimeActivationError);
+  assert.deepEqual(harness.signals, ["SIGTERM"]);
+  assert.equal(harness.cleanupCalls(), 1);
+  assert.equal(harness.settlementCount(), 1);
+});
+
+test("read-only timeout escalates and waits for child close plus exact-name removal", async () => {
+  const harness = readOnlyTerminationHarness({
+    onKill() {
+      return true;
+    },
+    terminationGraceMs: 10,
+  });
+
+  await waitFor(() => harness.verificationCalls() === 1);
+  harness.completeVerification();
+  await delay(0);
+  assert.equal(harness.settled(), false);
+  harness.child.emit("close", null, "SIGKILL");
+  await waitFor(() => harness.verificationCalls() === 2);
+  assert.equal(harness.settled(), false);
+  harness.completeVerification();
+  await assert.rejects(harness.promise, PlatformRuntimeActivationError);
+  assert.deepEqual(harness.signals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(harness.cleanupCalls(), 2);
+  assert.equal(harness.settlementCount(), 1);
+});
+
+test("read-only Docker-client/container divergence forces exact-name cleanup", async () => {
+  const harness = readOnlyTerminationHarness({
+    onStart(child) {
+      queueMicrotask(() => child.emit("close", 1, null));
+    },
+  });
+
+  await waitFor(() => harness.verificationCalls() === 1);
+  assert.equal(harness.settled(), false);
+  harness.completeVerification();
+  await assert.rejects(harness.promise, PlatformRuntimeActivationError);
+  assert.equal(harness.cleanupCalls(), 1);
+  assert.equal(harness.cleanupName(), harness.containerName());
+  assert.equal(
+    harness.verificationFilter(),
+    `name=^/${harness.containerName()}$`,
+  );
+});
+
+test("inconclusive read-only cleanup remains fail closed after bounded retries", async () => {
+  const harness = readOnlyTerminationHarness({
+    onKill(_signal, child) {
+      queueMicrotask(() => child.emit("close", null, "SIGTERM"));
+      return true;
+    },
+    onVerify(verifyChild) {
+      queueMicrotask(() => {
+        verifyChild.stdout.emit("data", Buffer.from("still-running\n"));
+        verifyChild.emit("close", 0, null);
+      });
+    },
+    terminationAttempts: 2,
+    terminationRetryMs: 5,
+  });
+
+  await waitFor(() => harness.verificationCalls() === 2);
+  await delay(15);
+  assert.equal(harness.cleanupCalls(), 2);
+  assert.equal(harness.settled(), false);
+});
+
+test("read-only stdin and output failures use confirmed termination", async (t) => {
+  await t.test("stdin error", async () => {
+    const harness = readOnlyTerminationHarness({
+      onStart(child) {
+        queueMicrotask(() => child.stdin.emit("error", new Error("synthetic")));
+      },
+      onKill(_signal, child) {
+        queueMicrotask(() => child.emit("close", null, "SIGTERM"));
+        return true;
+      },
+    });
+    await waitFor(() => harness.verificationCalls() === 1);
+    harness.completeVerification();
+    await assert.rejects(harness.promise, PlatformRuntimeActivationError);
+  });
+
+  await t.test("synchronous stdin failure", async () => {
+    const harness = readOnlyTerminationHarness({
+      onStart(child) {
+        child.stdin.end = () => {
+          throw new Error("synthetic");
+        };
+      },
+      onKill(_signal, child) {
+        queueMicrotask(() => child.emit("close", null, "SIGTERM"));
+        return true;
+      },
+    });
+    await waitFor(() => harness.verificationCalls() === 1);
+    harness.completeVerification();
+    await assert.rejects(harness.promise, PlatformRuntimeActivationError);
+  });
+
+  await t.test("output overflow", async () => {
+    const harness = readOnlyTerminationHarness({
+      onStart(child) {
+        queueMicrotask(() => child.stdout.emit("data", Buffer.alloc(257, 65)));
+      },
+      onKill(_signal, child) {
+        queueMicrotask(() => child.emit("close", null, "SIGTERM"));
+        return true;
+      },
+    });
+    await waitFor(() => harness.verificationCalls() === 1);
+    harness.completeVerification();
+    await assert.rejects(harness.promise, PlatformRuntimeActivationError);
+  });
+});
+
+test("read-only cleanup and verification spawn errors retry without leaking secrets", async (t) => {
+  await t.test("cleanup spawn error", async () => {
+    const harness = readOnlyTerminationHarness({
+      cleanupSpawnErrors: 1,
+      onKill(_signal, child) {
+        queueMicrotask(() => child.emit("close", null, "SIGTERM"));
+        return true;
+      },
+      terminationAttempts: 2,
+    });
+    await waitFor(() => harness.verificationCalls() === 1);
+    harness.completeVerification();
+    await assert.rejects(harness.promise, PlatformRuntimeActivationError);
+    assert.equal(harness.cleanupCalls(), 1);
+  });
+
+  await t.test("verification spawn error", async () => {
+    const harness = readOnlyTerminationHarness({
+      verificationSpawnErrors: 1,
+      onKill(_signal, child) {
+        queueMicrotask(() => child.emit("close", null, "SIGTERM"));
+        return true;
+      },
+      terminationAttempts: 2,
+    });
+    await waitFor(() => harness.verificationCalls() === 2);
+    harness.completeVerification();
+    const error = await captureFailure(() => harness.promise);
+    assert.doesNotMatch(
+      String(error),
+      /operator|synthetic|platform_runtime|db\.example\.test|postgresql:\/\//iu,
+    );
+  });
+});
+
+test("read-only spawn, malformed, non-zero, signal, and duplicate events fail once", async (t) => {
+  await t.test("spawn failure", async () => {
+    const harness = readOnlyTerminationHarness({
+      spawnError: true,
+    });
+    await waitFor(() => harness.verificationCalls() === 1);
+    harness.completeVerification();
+    await assert.rejects(harness.promise, PlatformRuntimeActivationError);
+  });
+
+  for (const [name, onStart] of [
+    [
+      "malformed identity",
+      (child) => {
+        child.stdout.emit("data", Buffer.from("not-an-identity\n"));
+        child.emit("close", 0, null);
+      },
+    ],
+    ["non-zero exit", (child) => child.emit("close", 1, null)],
+    ["signal exit", (child) => child.emit("close", null, "SIGTERM")],
+    [
+      "duplicate events",
+      (child) => {
+        child.emit("error", new Error("synthetic"));
+        child.emit("close", 1, null);
+        child.emit("close", 0, null);
+      },
+    ],
+  ]) {
+    await t.test(name, async () => {
+      const harness = readOnlyTerminationHarness({
+        onStart(child) {
+          queueMicrotask(() => onStart(child));
+        },
+      });
+      await waitFor(() => harness.verificationCalls() === 1);
+      harness.completeVerification();
+      await assert.rejects(harness.promise, PlatformRuntimeActivationError);
+      assert.equal(harness.settlementCount(), 1);
+    });
+  }
 });
 
 test("password transport rejects line breaks before spawning Docker", async () => {
@@ -451,7 +676,7 @@ test("timeout escalation waits for container removal and child close", async () 
   assert.equal(harness.settled(), false);
   await assert.rejects(harness.promise, PlatformRuntimeActivationError);
   assert.deepEqual(harness.signals, ["SIGTERM", "SIGKILL"]);
-  assert.equal(harness.cleanupCalls(), 1);
+  assert.equal(harness.cleanupCalls(), 2);
 });
 
 test("failed termination cleanup remains unsettled until a later conclusive child exit", async () => {
@@ -553,8 +778,9 @@ async function timeoutHarness({
         }
         return cleanupChild;
       }
-      assert.deepEqual(args.slice(0, 3), [
+      assert.deepEqual(args.slice(0, 4), [
         "ps",
+        "--all",
         "--quiet",
         "--filter",
       ]);
@@ -588,6 +814,110 @@ async function timeoutHarness({
     settlementCount: () => settlementCount,
     signals,
     verificationCalls: () => verificationCount,
+  };
+}
+
+function readOnlyTerminationHarness({
+  cleanupSpawnErrors = 0,
+  onKill = (_signal, child) => {
+    queueMicrotask(() => child.emit("close", null, "SIGTERM"));
+    return true;
+  },
+  onStart,
+  onVerify,
+  spawnError = false,
+  terminationAttempts = 2,
+  terminationGraceMs = 10,
+  terminationRetryMs = 5,
+  verificationSpawnErrors = 0,
+} = {}) {
+  const signals = [];
+  let capturedContainerName;
+  let capturedCleanupName;
+  let capturedVerificationFilter;
+  let cleanupCount = 0;
+  let verificationCount = 0;
+  let pendingVerification;
+  let settled = false;
+  let settlementCount = 0;
+  const child = fakeChild();
+  child.stdout = new EventEmitter();
+  child.kill = (signal) => {
+    signals.push(signal);
+    return onKill(signal, child);
+  };
+
+  const promise = readDockerPostgresFixtureIdentity({
+    operatorUrl,
+    timeoutMs: 10,
+    terminationAttempts,
+    terminationGraceMs,
+    terminationRetryMs,
+    spawnImpl(_command, args) {
+      capturedContainerName = args[args.indexOf("--name") + 1];
+      if (spawnError) {
+        throw new Error("synthetic spawn failure");
+      }
+      onStart?.(child);
+      return child;
+    },
+    terminationSpawnImpl(command, args, options) {
+      assert.equal(command, "docker");
+      assert.equal(options.windowsHide, true);
+      if (args[0] === "rm") {
+        cleanupCount += 1;
+        capturedCleanupName = args[2];
+        if (cleanupCount <= cleanupSpawnErrors) {
+          throw new Error("synthetic cleanup spawn failure");
+        }
+        const cleanupChild = new EventEmitter();
+        queueMicrotask(() => cleanupChild.emit("close", 0, null));
+        return cleanupChild;
+      }
+      verificationCount += 1;
+      assert.deepEqual(args.slice(0, 4), [
+        "ps",
+        "--all",
+        "--quiet",
+        "--filter",
+      ]);
+      capturedVerificationFilter = args[4];
+      if (verificationCount <= verificationSpawnErrors) {
+        throw new Error("synthetic verification spawn failure");
+      }
+      const verifyChild = new EventEmitter();
+      verifyChild.stdout = new EventEmitter();
+      pendingVerification = verifyChild;
+      if (onVerify) {
+        onVerify(verifyChild, verificationCount);
+      }
+      return verifyChild;
+    },
+  });
+  promise.then(
+    () => {
+      settled = true;
+      settlementCount += 1;
+    },
+    () => {
+      settled = true;
+      settlementCount += 1;
+    },
+  );
+  return {
+    child,
+    cleanupCalls: () => cleanupCount,
+    cleanupName: () => capturedCleanupName,
+    completeVerification() {
+      pendingVerification.emit("close", 0, null);
+    },
+    containerName: () => capturedContainerName,
+    promise,
+    settled: () => settled,
+    settlementCount: () => settlementCount,
+    signals,
+    verificationCalls: () => verificationCount,
+    verificationFilter: () => capturedVerificationFilter,
   };
 }
 

@@ -306,9 +306,18 @@ export async function readDockerPostgresFixtureIdentity({
   operatorUrl,
   dockerImage = "postgres:17",
   spawnImpl = spawn,
+  terminationSpawnImpl = spawn,
   timeoutMs = 30_000,
+  terminationGraceMs = 5_000,
+  terminationRetryMs = 1_000,
+  terminationAttempts = 2,
 }) {
   validateDockerInputs({ operatorUrl, dockerImage, timeoutMs });
+  validateTerminationInputs({
+    terminationAttempts,
+    terminationGraceMs,
+    terminationRetryMs,
+  });
   const containerName = dockerContainerName("identity");
   const childEnvironment = dockerEnvironment(operatorUrl);
   const input = Buffer.from(
@@ -330,6 +339,10 @@ export async function readDockerPostgresFixtureIdentity({
       dockerImage,
       input,
       spawnImpl,
+      terminationAttempts,
+      terminationGraceMs,
+      terminationRetryMs,
+      terminationSpawnImpl,
       timeoutMs,
     });
     const value = output.trim();
@@ -372,18 +385,12 @@ export async function installRuntimePasswordWithDocker({
   const runtimeRole = targetRole(target);
   const fixtureIdentity = fixtureIdentityValue(expectedFixtureIdentity);
   validateDockerInputs({ operatorUrl, dockerImage, timeoutMs });
-  if (
-    !isStrongRuntimePassword(runtimePassword) ||
-    !Number.isInteger(terminationGraceMs) ||
-    terminationGraceMs < 1 ||
-    terminationGraceMs > 30_000 ||
-    !Number.isInteger(terminationRetryMs) ||
-    terminationRetryMs < 1 ||
-    terminationRetryMs > 30_000 ||
-    !Number.isInteger(terminationAttempts) ||
-    terminationAttempts < 1 ||
-    terminationAttempts > 5
-  ) {
+  validateTerminationInputs({
+    terminationAttempts,
+    terminationGraceMs,
+    terminationRetryMs,
+  });
+  if (!isStrongRuntimePassword(runtimePassword)) {
     throw new PlatformRuntimeActivationError();
   }
 
@@ -444,67 +451,325 @@ async function runReadOnlyDockerPsql({
   dockerImage,
   input,
   spawnImpl,
+  terminationAttempts,
+  terminationGraceMs,
+  terminationRetryMs,
+  terminationSpawnImpl,
   timeoutMs,
 }) {
   return new Promise((resolve, reject) => {
     let settled = false;
-    let timedOut = false;
     const output = [];
     let outputLength = 0;
-    const child = spawnDockerPsql({
-      childEnvironment,
-      containerName,
-      dockerImage,
-      spawnImpl,
-      stdio: ["pipe", "pipe", "ignore"],
-    });
+    let timeoutTimer;
+    let processSucceeded = false;
+
     const finish = (error) => {
       if (settled) {
         return;
       }
       settled = true;
-      clearTimeout(timer);
+      clearTimeout(timeoutTimer);
       input.fill(0);
+      delete childEnvironment.DATABASE_OPERATOR_URL;
+      const outputValue = error
+        ? undefined
+        : Buffer.concat(output).toString("utf8");
+      for (const chunk of output) {
+        chunk.fill(0);
+      }
       if (error) {
         reject(new PlatformRuntimeActivationError());
       } else {
-        resolve(Buffer.concat(output).toString("utf8"));
+        resolve(outputValue);
       }
     };
-    const timer = setTimeout(() => {
-      timedOut = true;
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        // The close/error path remains authoritative.
-      }
+
+    let child;
+    try {
+      child = spawnDockerPsql({
+        childEnvironment,
+        containerName,
+        dockerImage,
+        spawnImpl,
+        stdio: ["pipe", "pipe", "ignore"],
+      });
+    } catch {
+      const termination = createConfirmedDockerTermination({
+        child: null,
+        containerName,
+        onConfirmed: () => finish(true),
+        terminationAttempts,
+        terminationGraceMs,
+        terminationRetryMs,
+        terminationSpawnImpl,
+      });
+      termination.begin();
+      return;
+    }
+
+    const termination = createConfirmedDockerTermination({
+      child,
+      containerName,
+      onConfirmed: () => finish(!processSucceeded),
+      terminationAttempts,
+      terminationGraceMs,
+      terminationRetryMs,
+      terminationSpawnImpl,
+    });
+
+    timeoutTimer = setTimeout(() => {
+      processSucceeded = false;
+      termination.begin();
     }, timeoutMs);
 
-    child.once("error", () => finish(true));
-    child.once("close", (code, signal) =>
-      finish(timedOut || code !== 0 || signal !== null),
-    );
+    child.once("error", () => {
+      processSucceeded = false;
+      termination.begin();
+    });
+    child.once("close", (code, signal) => {
+      processSucceeded =
+        !termination.started() && code === 0 && signal === null;
+      termination.childDidClose();
+      if (processSucceeded && !termination.started()) {
+        termination.confirmAbsence();
+      } else {
+        termination.begin();
+      }
+    });
     child.stdout.on("data", (chunk) => {
+      if (termination.started()) {
+        return;
+      }
       outputLength += chunk.length;
       if (outputLength > 256) {
-        try {
-          child.kill("SIGTERM");
-        } catch {
-          // The close/error path remains authoritative.
-        }
+        processSucceeded = false;
+        termination.begin();
         return;
       }
       output.push(Buffer.from(chunk));
     });
     child.stdin.once("error", () => {
+      processSucceeded = false;
+      termination.begin();
+    });
+    try {
+      child.stdin.end(input);
+    } catch {
+      processSucceeded = false;
+      termination.begin();
+    }
+  });
+}
+
+function createConfirmedDockerTermination({
+  child,
+  containerName,
+  onConfirmed,
+  terminationAttempts,
+  terminationGraceMs,
+  terminationRetryMs,
+  terminationSpawnImpl,
+}) {
+  let terminationStarted = false;
+  let childClosed = child === null;
+  let cleanupConfirmed = false;
+  let cleanupAttempts = 0;
+  let cleanupInProgress = false;
+  let graceTimer;
+  let retryTimer;
+  const commandTimeoutMs = Math.max(
+    1_000,
+    terminationGraceMs,
+    terminationRetryMs,
+  );
+
+  const finishWhenConfirmed = () => {
+    if (!terminationStarted || !childClosed || !cleanupConfirmed) {
+      return;
+    }
+    clearTimeout(graceTimer);
+    clearTimeout(retryTimer);
+    onConfirmed();
+  };
+
+  const scheduleCleanupRetry = () => {
+    cleanupInProgress = false;
+    if (cleanupAttempts >= terminationAttempts || cleanupConfirmed) {
+      return;
+    }
+    retryTimer = setTimeout(startCleanupAttempt, terminationRetryMs);
+  };
+
+  const verifyContainerAbsent = () => {
+    let verifyChild;
+    try {
+      verifyChild = terminationSpawnImpl(
+        "docker",
+        [
+          "ps",
+          "--all",
+          "--quiet",
+          "--filter",
+          `name=^/${containerName}$`,
+        ],
+        {
+          stdio: ["ignore", "pipe", "ignore"],
+          windowsHide: true,
+        },
+      );
+    } catch {
+      scheduleCleanupRetry();
+      return;
+    }
+    let verificationFinished = false;
+    const verificationOutput = [];
+    let verificationOutputLength = 0;
+    const verificationDone = (success) => {
+      if (verificationFinished || cleanupConfirmed) {
+        return;
+      }
+      verificationFinished = true;
+      clearTimeout(verificationTimer);
+      const absent =
+        success &&
+        verificationOutputLength <= 256 &&
+        Buffer.concat(verificationOutput).toString("utf8").trim() === "";
+      for (const chunk of verificationOutput) {
+        chunk.fill(0);
+      }
+      if (absent && childClosed) {
+        cleanupInProgress = false;
+        cleanupConfirmed = true;
+        finishWhenConfirmed();
+      } else if (absent) {
+        cleanupInProgress = false;
+      } else {
+        scheduleCleanupRetry();
+      }
+    };
+    const verificationTimer = setTimeout(() => {
       try {
-        child.kill("SIGTERM");
+        verifyChild.kill?.("SIGKILL");
       } catch {
-        // The close/error path remains authoritative.
+        // The bounded verification result remains inconclusive.
+      }
+      verificationDone(false);
+    }, commandTimeoutMs);
+    verifyChild.once("error", () => verificationDone(false));
+    verifyChild.once("close", (code, signal) =>
+      verificationDone(code === 0 && signal === null),
+    );
+    verifyChild.stdout.on("data", (chunk) => {
+      verificationOutputLength += chunk.length;
+      if (verificationOutputLength <= 256) {
+        verificationOutput.push(Buffer.from(chunk));
       }
     });
-    child.stdin.end(input);
-  });
+  };
+
+  const startCleanupAttempt = () => {
+    if (cleanupInProgress || cleanupConfirmed) {
+      return;
+    }
+    cleanupInProgress = true;
+    cleanupAttempts += 1;
+    let cleanupChild;
+    try {
+      cleanupChild = terminationSpawnImpl(
+        "docker",
+        ["rm", "--force", containerName],
+        {
+          stdio: ["ignore", "ignore", "ignore"],
+          windowsHide: true,
+        },
+      );
+    } catch {
+      verifyContainerAbsent();
+      return;
+    }
+    let cleanupFinished = false;
+    const cleanupDone = () => {
+      if (cleanupFinished || cleanupConfirmed) {
+        return;
+      }
+      cleanupFinished = true;
+      clearTimeout(cleanupTimer);
+      verifyContainerAbsent();
+    };
+    const cleanupTimer = setTimeout(() => {
+      try {
+        cleanupChild.kill?.("SIGKILL");
+      } catch {
+        // Exact-name absence verification remains authoritative.
+      }
+      cleanupDone();
+    }, commandTimeoutMs);
+    cleanupChild.once("error", cleanupDone);
+    cleanupChild.once("close", cleanupDone);
+  };
+
+  const escalateTermination = () => {
+    if (cleanupConfirmed) {
+      return;
+    }
+    if (!childClosed && child) {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // Exact-name Docker removal remains authoritative.
+      }
+    }
+    startCleanupAttempt();
+  };
+
+  const begin = () => {
+    if (terminationStarted || cleanupConfirmed) {
+      return;
+    }
+    terminationStarted = true;
+    if (childClosed || !child) {
+      escalateTermination();
+      return;
+    }
+    let requested = false;
+    try {
+      requested = child.kill("SIGTERM") === true;
+    } catch {
+      requested = false;
+    }
+    if (requested) {
+      graceTimer = setTimeout(escalateTermination, terminationGraceMs);
+    } else {
+      escalateTermination();
+    }
+  };
+
+  const childDidClose = () => {
+    childClosed = true;
+    if (!terminationStarted) {
+      return;
+    }
+    clearTimeout(graceTimer);
+    startCleanupAttempt();
+    finishWhenConfirmed();
+  };
+
+  const confirmAbsence = () => {
+    if (terminationStarted || cleanupConfirmed) {
+      return;
+    }
+    terminationStarted = true;
+    cleanupInProgress = true;
+    verifyContainerAbsent();
+  };
+
+  return {
+    begin,
+    childDidClose,
+    confirmAbsence,
+    started: () => terminationStarted,
+  };
 }
 
 async function runMutationCapableDockerPsql({
@@ -521,12 +786,7 @@ async function runMutationCapableDockerPsql({
 }) {
   return new Promise((resolve, reject) => {
     let settled = false;
-    let terminationStarted = false;
-    let childClosed = false;
-    let cleanupConfirmed = false;
-    let cleanupAttempts = 0;
-    let graceTimer;
-    let retryTimer;
+    let terminationMutationMayHaveBegun = true;
 
     const child = spawnDockerPsql({
       childEnvironment,
@@ -542,9 +802,8 @@ async function runMutationCapableDockerPsql({
       }
       settled = true;
       clearTimeout(timeoutTimer);
-      clearTimeout(graceTimer);
-      clearTimeout(retryTimer);
       input.fill(0);
+      delete childEnvironment.DATABASE_OPERATOR_URL;
       if (error) {
         reject(
           new PlatformRuntimeActivationError({
@@ -556,142 +815,31 @@ async function runMutationCapableDockerPsql({
       }
     };
 
-    const finishTimedOutWhenConfirmed = () => {
-      if (
-        !terminationStarted ||
-        !childClosed ||
-        !cleanupConfirmed
-      ) {
-        return;
-      }
-      finish(true, true);
-    };
+    const termination = createConfirmedDockerTermination({
+      child,
+      containerName,
+      onConfirmed: () =>
+        finish(true, terminationMutationMayHaveBegun),
+      terminationAttempts,
+      terminationGraceMs,
+      terminationRetryMs,
+      terminationSpawnImpl,
+    });
 
-    const verifyContainerStopped = () => {
-      let verifyChild;
-      try {
-        verifyChild = terminationSpawnImpl(
-          "docker",
-          [
-            "ps",
-            "--quiet",
-            "--filter",
-            `name=^/${containerName}$`,
-          ],
-          {
-            stdio: ["ignore", "pipe", "ignore"],
-            windowsHide: true,
-          },
-        );
-      } catch {
-        scheduleCleanupRetry();
-        return;
-      }
-      let verificationFinished = false;
-      const output = [];
-      let outputLength = 0;
-      const verificationDone = (success) => {
-        if (verificationFinished || settled) {
-          return;
-        }
-        verificationFinished = true;
-        if (success && Buffer.concat(output).toString("utf8").trim() === "") {
-          cleanupConfirmed = true;
-          finishTimedOutWhenConfirmed();
-        } else {
-          scheduleCleanupRetry();
-        }
-      };
-      verifyChild.once("error", () => verificationDone(false));
-      verifyChild.once("close", (code, signal) =>
-        verificationDone(code === 0 && signal === null),
-      );
-      verifyChild.stdout.on("data", (chunk) => {
-        outputLength += chunk.length;
-        if (outputLength <= 256) {
-          output.push(Buffer.from(chunk));
-        }
-      });
-    };
-
-    const startCleanupAttempt = () => {
-      if (settled || cleanupConfirmed) {
-        return;
-      }
-      cleanupAttempts += 1;
-      let cleanupChild;
-      try {
-        cleanupChild = terminationSpawnImpl(
-          "docker",
-          ["rm", "--force", containerName],
-          {
-            stdio: ["ignore", "ignore", "ignore"],
-            windowsHide: true,
-          },
-        );
-      } catch {
-        verifyContainerStopped();
-        return;
-      }
-      let cleanupFinished = false;
-      const cleanupDone = () => {
-        if (cleanupFinished || settled) {
-          return;
-        }
-        cleanupFinished = true;
-        verifyContainerStopped();
-      };
-      cleanupChild.once("error", cleanupDone);
-      cleanupChild.once("close", cleanupDone);
-    };
-
-    const scheduleCleanupRetry = () => {
-      if (cleanupAttempts >= terminationAttempts || settled) {
-        return;
-      }
-      retryTimer = setTimeout(startCleanupAttempt, terminationRetryMs);
-    };
-
-    const escalateTermination = () => {
-      if (settled || cleanupConfirmed) {
-        return;
-      }
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // Docker removal remains the mutation-container authority.
-      }
-      startCleanupAttempt();
-    };
-
-    const beginTermination = () => {
-      if (terminationStarted || settled) {
-        return;
-      }
-      terminationStarted = true;
-      let requested = false;
-      try {
-        requested = child.kill("SIGTERM") === true;
-      } catch {
-        requested = false;
-      }
-      if (requested) {
-        graceTimer = setTimeout(escalateTermination, terminationGraceMs);
-      } else {
-        escalateTermination();
-      }
-    };
-
-    const timeoutTimer = setTimeout(beginTermination, timeoutMs);
+    const timeoutTimer = setTimeout(() => {
+      terminationMutationMayHaveBegun = true;
+      termination.begin();
+    }, timeoutMs);
 
     child.once("error", () => {
-      if (!terminationStarted) {
-        finish(true, false);
+      if (!termination.started()) {
+        terminationMutationMayHaveBegun = false;
+        termination.begin();
       }
     });
     child.once("close", (code, signal) => {
-      childClosed = true;
-      if (!terminationStarted) {
+      termination.childDidClose();
+      if (!termination.started()) {
         if (code === 0 && signal === null) {
           finish(false);
         } else {
@@ -699,12 +847,17 @@ async function runMutationCapableDockerPsql({
         }
         return;
       }
-      clearTimeout(graceTimer);
-      escalateTermination();
-      finishTimedOutWhenConfirmed();
     });
-    child.stdin.once("error", beginTermination);
-    child.stdin.end(input);
+    child.stdin.once("error", () => {
+      terminationMutationMayHaveBegun = true;
+      termination.begin();
+    });
+    try {
+      child.stdin.end(input);
+    } catch {
+      terminationMutationMayHaveBegun = true;
+      termination.begin();
+    }
   });
 }
 
@@ -798,6 +951,26 @@ function validateDockerInputs({ operatorUrl, dockerImage, timeoutMs }) {
     throw new PlatformRuntimeActivationError();
   }
   parseOperatorUrl(operatorUrl);
+}
+
+function validateTerminationInputs({
+  terminationAttempts,
+  terminationGraceMs,
+  terminationRetryMs,
+}) {
+  if (
+    !Number.isInteger(terminationGraceMs) ||
+    terminationGraceMs < 1 ||
+    terminationGraceMs > 30_000 ||
+    !Number.isInteger(terminationRetryMs) ||
+    terminationRetryMs < 1 ||
+    terminationRetryMs > 30_000 ||
+    !Number.isInteger(terminationAttempts) ||
+    terminationAttempts < 1 ||
+    terminationAttempts > 5
+  ) {
+    throw new PlatformRuntimeActivationError();
+  }
 }
 
 function dockerEnvironment(operatorUrl) {

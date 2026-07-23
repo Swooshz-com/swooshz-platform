@@ -224,6 +224,17 @@ than matching hostnames, database names, role names, or server versions and
 must stay out of logs and evidence. A mismatch, malformed response, query
 error, or cardinality error stops before password installation.
 
+The read-only Docker identity probe uses the same confirmed-termination
+boundary as the password operation. Each probe has a unique exact container
+name. Success requires child close plus an anchored all-container query proving
+daemon-side absence. Timeout, stdin failure, excessive output, child or spawn
+failure, and any inconclusive state request graceful termination, wait through
+a bounded grace period, escalate to `SIGKILL` where applicable, run exact-name
+`docker rm --force`, and re-check absence with bounded retries. The probe stays
+unsettled and activation remains blocked unless both local child close and
+daemon-side absence are proven. Operator URLs remain environment-only, output
+is bounded, stderr is ignored, and public failures remain generic.
+
 Cleanup is forbidden before complete fixture validation. Track whether
 password installation began or may have begun. If dormant-role or fixture
 identity validation fails, teardown is read-only and must execute no

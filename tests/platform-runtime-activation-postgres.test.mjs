@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 
@@ -369,6 +370,75 @@ test(
       await firstPool.end();
       await secondPool.end();
     }
+  },
+);
+
+test(
+  "read-only identity timeout confirms exact daemon-side container cleanup",
+  { skip: skipReason },
+  async () => {
+    let containerName;
+    const terminationArguments = [];
+
+    await assert.rejects(
+      () =>
+        readDockerPostgresFixtureIdentity({
+          operatorUrl: dockerOperatorUrl,
+          timeoutMs: 2_000,
+          terminationGraceMs: 500,
+          terminationRetryMs: 500,
+          terminationAttempts: 5,
+          spawnImpl(command, args, options) {
+            const delayedArgs = [...args];
+            containerName = delayedArgs[delayedArgs.indexOf("--name") + 1];
+            delayedArgs[delayedArgs.length - 1] =
+              `sleep 30; ${delayedArgs[delayedArgs.length - 1]}`;
+            assert.equal(delayedArgs.includes(dockerOperatorUrl), false);
+            return spawn(command, delayedArgs, options);
+          },
+          terminationSpawnImpl(command, args, options) {
+            terminationArguments.push([...args]);
+            assert.equal(args.includes(dockerOperatorUrl), false);
+            return spawn(command, args, options);
+          },
+        }),
+      /Runtime activation failed/,
+    );
+
+    assert.match(
+      containerName,
+      /^swooshz-runtime-identity-[0-9a-f-]{36}$/u,
+    );
+    assert.equal(
+      terminationArguments.some(
+        (args) =>
+          args[0] === "rm" &&
+          args[1] === "--force" &&
+          args[2] === containerName,
+      ),
+      true,
+    );
+    assert.equal(
+      terminationArguments.some(
+        (args) =>
+          args[0] === "ps" &&
+          args[1] === "--all" &&
+          args[2] === "--quiet" &&
+          args[3] === "--filter" &&
+          args[4] === `name=^/${containerName}$`,
+      ),
+      true,
+    );
+    assert.equal(
+      await readDockerOutput([
+        "ps",
+        "--all",
+        "--quiet",
+        "--filter",
+        `name=^/${containerName}$`,
+      ]),
+      "",
+    );
   },
 );
 
@@ -801,4 +871,29 @@ async function dropRole(pool, roleName) {
 
 function identifier(value) {
   return `"${value.replaceAll('"', '""')}"`;
+}
+
+function readDockerOutput(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("docker", args, {
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
+    });
+    const output = [];
+    let outputLength = 0;
+    child.once("error", () => reject(new Error("Docker query failed.")));
+    child.once("close", (code, signal) => {
+      if (code !== 0 || signal !== null || outputLength > 256) {
+        reject(new Error("Docker query failed."));
+        return;
+      }
+      resolve(Buffer.concat(output).toString("utf8").trim());
+    });
+    child.stdout.on("data", (chunk) => {
+      outputLength += chunk.length;
+      if (outputLength <= 256) {
+        output.push(Buffer.from(chunk));
+      }
+    });
+  });
 }
