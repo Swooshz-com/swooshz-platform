@@ -279,10 +279,17 @@ test(
   async () => {
     const adminPool = new Pool({ connectionString: operatorUrl, max: 1 });
     const mutation = new PlatformRuntimeActivationMutationTracker(target);
+    let fixtureValidated = false;
     let installationCalls = 0;
     let cleanupCalls = 0;
 
     try {
+      await assertDisposableFixtureIdentity(
+        adminPool,
+        target,
+        dockerOperatorUrl,
+      );
+      fixtureValidated = true;
       await adminPool.query(buildRuntimeRoleStatement(target, "enable_login"));
       await assert.rejects(
         () => assertCompleteDormantPreflight(adminPool, target),
@@ -299,7 +306,9 @@ test(
       assert.equal(installationCalls, 0);
       assert.equal(cleanupCalls, 0);
     } finally {
-      await adminPool.query(buildRuntimeRoleStatement(target, "rollback"));
+      if (fixtureValidated) {
+        await adminPool.query(buildRuntimeRoleStatement(target, "rollback"));
+      }
       await adminPool.end();
     }
   },
@@ -369,6 +378,7 @@ test(
   async (context) => {
     const adminPool = new Pool({ connectionString: operatorUrl, max: 2 });
     const createdRoles = [];
+    let fixtureValidated = false;
     const suffix = randomUUID().replaceAll("-", "").slice(0, 8);
     let roleSequence = 0;
     const role = (label) => {
@@ -392,6 +402,12 @@ test(
     };
 
     try {
+      await assertDisposableFixtureIdentity(
+        adminPool,
+        target,
+        dockerOperatorUrl,
+      );
+      fixtureValidated = true;
       for (const attribute of [
         "superuser",
         "createdb",
@@ -533,23 +549,41 @@ test(
         }
       });
     } finally {
-      await adminPool.query(buildRuntimeRoleStatement(target, "rollback"));
-      for (const createdRole of createdRoles.reverse()) {
-        await adminPool.query(
-          `drop role if exists ${identifier(createdRole)}`,
-        );
+      if (fixtureValidated) {
+        await adminPool.query(buildRuntimeRoleStatement(target, "rollback"));
+        for (const createdRole of createdRoles.reverse()) {
+          await adminPool.query(
+            `drop role if exists ${identifier(createdRole)}`,
+          );
+        }
+        await adminPool
+          .query(
+            `revoke ${identifier("neon_superuser")} from ${identifier(
+              runtimeActivationRole(target),
+            )}`,
+          )
+          .catch(() => {});
       }
-      await adminPool
-        .query(
-          `revoke ${identifier("neon_superuser")} from ${identifier(
-            runtimeActivationRole(target),
-          )}`,
-        )
-        .catch(() => {});
       await adminPool.end();
     }
   },
 );
+
+async function assertDisposableFixtureIdentity(
+  pool,
+  activationTarget,
+  dockerUrl,
+) {
+  await assertCompleteDormantPreflight(pool, activationTarget);
+  const directIdentity = await readPostgresFixtureIdentity(pool);
+  const dockerIdentity = await readDockerPostgresFixtureIdentity({
+    operatorUrl: dockerUrl,
+  });
+  assertMatchingPostgresFixtureIdentities(
+    directIdentity,
+    dockerIdentity,
+  );
+}
 
 async function assertCompleteDormantPreflight(pool, activationTarget) {
   const state = await inspectFixture(pool, activationTarget);
