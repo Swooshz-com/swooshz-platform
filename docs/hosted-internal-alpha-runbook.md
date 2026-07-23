@@ -159,6 +159,77 @@ The platform runtime app code uses only `DATABASE_URL` as the pooled restricted-
 
 The pre-listen runtime-posture gate begins from the exact PostgreSQL `session_user` catalog identity and recursively follows only PostgreSQL 17 membership edges with `pg_auth_members.set_option = true`. Recursive `UNION` de-duplicates catalog OIDs and terminates cycles. The gate evaluates the login role and every role it can assume through `SET ROLE`, including through `NOINHERIT` memberships, for the same prohibited administrative attributes, Neon membership, database/schema/ledger privileges, and ownership conditions. A `SET FALSE` edge blocks traversal, but `ADMIN OPTION` on any membership reachable from the login or an already assumable role is itself rejected because it could be used to re-grant `SET TRUE`. Missing or inconclusive catalog evidence fails closed through the existing aggregate `database_posture_failed` behavior without exposing role or ACL details.
 
+### Restricted Runtime Role Activation Contract
+
+Runtime-role activation is a separately authorised operator operation. This
+runbook does not authorise activation, password creation, provider changes, or
+deployment. A future activation wrapper must use the secret-safe primitives in
+`scripts/platform-runtime-activation-contract.mjs` rather than copying the
+former ad hoc PowerShell pipeline.
+
+The activation journal has exactly these ordered phases:
+
+1. `dormant_role_preflight`
+2. `password_installation`
+3. `login_enablement`
+4. `runtime_connection_construction`
+5. `runtime_connection_establishment`
+6. `runtime_identity`
+7. `recursive_set_role_posture`
+8. `grants_and_ownership_verification`
+9. `success_finalisation`
+10. `mandatory_rollback`
+
+Only phase names and `pending`, `in_progress`, `passed`, `failed`, or
+`not_required` may appear in operator evidence. Preserve the first failed
+phase before starting rollback. Rollback reporting must never overwrite that
+phase. Passwords, hashes, URLs, hosts embedded in secret URLs, role catalog
+details, ACLs, OIDs, and driver output remain excluded.
+
+For hidden `psql \password` input, do not merge native stderr into a Windows
+PowerShell 5.1 pipeline while `$ErrorActionPreference = "Stop"`. `psql` writes
+its hidden prompt to stderr; treating that prompt as a terminating PowerShell
+error aborts a valid password-installation phase. Windows PowerShell 5.1 also
+uses US-ASCII for native pipeline input by default, which can silently corrupt
+a non-ASCII password. The reviewed Node helper avoids both defects by:
+
+- spawning the official `postgres:17` Docker client directly;
+- passing the operator URL to the child by environment name, never an argument;
+- writing the `\password` exchange as explicit UTF-8 bytes on stdin;
+- ignoring prompt stdout/stderr and deciding success only from the child exit;
+- clearing the password input buffer after the child terminates; and
+- returning only `runtime_activation_failed` on failure.
+
+A separately authorised second attempt must use this order:
+
+1. Reconfirm exact repository, database, operator, runtime-role, PostgreSQL 17,
+   recovery-branch, grant-matrix, ownership, schema, ledger, table, and index
+   state before mutation.
+2. Start the activation journal and pass `dormant_role_preflight` only when the
+   role is `NOLOGIN`, its password is null, and every SET-assumable posture
+   assertion is conclusive and safe.
+3. Obtain one fresh password only through an approved hidden mechanism. Pass
+   it in protected process memory to `installRuntimePasswordWithDocker`; do
+   not use a PowerShell string-to-native pipeline.
+4. Verify password-present plus `NOLOGIN`, then enable only `LOGIN`.
+5. Build the restricted URL with `buildRuntimeDatabaseUrl`, preserving the
+   reviewed endpoint, port, database, and connection parameters.
+6. Start a runtime-only child with `DATABASE_URL` and
+   `DATABASE_EXPECTED_RUNTIME_ROLE`; explicitly remove
+   `DATABASE_OPERATOR_URL`.
+7. Require exact runtime connection, `current_user`, `session_user`, recursive
+   SET-assumable posture, grant matrix, ownership, ledger, table, index, and
+   schema invariants before success finalisation.
+8. On the first failed or inconclusive phase after mutation, record that phase,
+   run `ALTER ROLE platform_runtime NOLOGIN PASSWORD NULL`, verify the complete
+   dormant baseline, and stop without retry.
+
+The disposable PostgreSQL integration test
+`tests/platform-runtime-activation-postgres.test.mjs` exercises the same
+phase contract with synthetic credentials. It is skipped unless both
+lab-specific URLs and `RUNTIME_ACTIVATION_TEST_CONFIRM=disposable-only` are
+provided. Passing that lab does not authorise or prove a production activation.
+
 The readiness path is split deliberately:
 
 - `npm run platform:readiness-check` validates hosted env shape only. It fails missing or malformed `DATABASE_URL` without printing the value and does not connect to Neon.
