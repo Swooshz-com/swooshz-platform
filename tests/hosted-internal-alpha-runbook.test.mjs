@@ -123,6 +123,36 @@ test("hosted internal alpha runbook has an env checklist with safe examples and 
   assert.match(runbook, /<comma-separated-allowlisted-emails>/);
 });
 
+test("hosted runbook preserves the rollback-gated runtime activation contract", async () => {
+  const runbook = await readRunbook();
+  const requiredPhrases = [
+    "Restricted Runtime Role Activation Contract",
+    "scripts/platform-runtime-activation-contract.mjs",
+    "dormant_role_preflight",
+    "password_installation",
+    "login_enablement",
+    "runtime_connection_construction",
+    "runtime_connection_establishment",
+    "runtime_identity",
+    "recursive_set_role_posture",
+    "grants_and_ownership_verification",
+    "success_finalisation",
+    "mandatory_rollback",
+    "Preserve the first failed",
+    "phase before starting rollback",
+    "Windows PowerShell 5.1 also",
+    "uses US-ASCII for native pipeline input",
+    "writing the `\\password` exchange as explicit UTF-8 bytes",
+    "stop without retry",
+    "RUNTIME_ACTIVATION_TEST_CONFIRM=disposable-only",
+    "does not authorise or prove a production activation",
+  ];
+
+  for (const phrase of requiredPhrases) {
+    assert.match(runbook, new RegExp(escapeRegExp(phrase), "i"));
+  }
+});
+
 test("hosted internal alpha runbook covers Hostinger Coolify readiness without deployment config", async () => {
   const runbook = await readRunbook();
   const requiredPhrases = [
