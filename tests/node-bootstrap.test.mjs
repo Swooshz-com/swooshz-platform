@@ -970,6 +970,7 @@ function createBootstrapFixture(options = {}) {
             return {
               rows: [{
                 expected_role_match: true,
+                role_assumption_state_conclusive: true,
                 neon_superuser_membership_absent: true,
                 superuser_absent: true,
                 createdb_absent: true,

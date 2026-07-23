@@ -157,6 +157,8 @@ Recommended Neon target, for operator setup outside this repo:
 
 The platform runtime app code uses only `DATABASE_URL` as the pooled restricted-role app connection and validates it against `DATABASE_EXPECTED_RUNTIME_ROLE` before listening. Migration and operator readiness commands use `DATABASE_OPERATOR_URL` in production. Do not add multiple database URL aliases for day-to-day runtime behavior. Do not commit `.env` files, connection strings, usernames with passwords, database hostnames with credentials, backup exports, table dumps, or provider console screenshots.
 
+The pre-listen runtime-posture gate begins from the exact PostgreSQL `session_user` catalog identity and recursively follows only PostgreSQL 17 membership edges with `pg_auth_members.set_option = true`. Recursive `UNION` de-duplicates catalog OIDs and terminates cycles. The gate evaluates the login role and every role it can assume through `SET ROLE`, including through `NOINHERIT` memberships, for the same prohibited administrative attributes, Neon membership, database/schema/ledger privileges, and ownership conditions. A `SET FALSE` edge blocks traversal; missing or inconclusive catalog evidence fails closed through the existing aggregate `database_posture_failed` behavior without exposing role or ACL details.
+
 The readiness path is split deliberately:
 
 - `npm run platform:readiness-check` validates hosted env shape only. It fails missing or malformed `DATABASE_URL` without printing the value and does not connect to Neon.

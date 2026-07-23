@@ -12,6 +12,7 @@ const expectedRole = "platform_runtime";
 
 const passingRow = Object.freeze({
   expected_role_match: true,
+  role_assumption_state_conclusive: true,
   neon_superuser_membership_absent: true,
   superuser_absent: true,
   createdb_absent: true,
@@ -88,7 +89,10 @@ test("restricted runtime posture returns aggregate states only", async () => {
   assert.equal(calls[0].values[0], expectedRole);
   assert.ok(calls[0].values[1].includes("access_validation_grants"));
   assert.match(calls[0].sql, /current_user = \$1 and session_user = \$1/);
-  assert.match(calls[0].sql, /pg_has_role\(current_user, table_record\.relowner, 'MEMBER'\)/);
+  assert.match(
+    calls[0].sql,
+    /pg_has_role\(assumable_role\.role_oid, table_record\.relowner, 'USAGE'\)/,
+  );
   assert.match(
     calls[0].sql,
     /migration_record\.relnamespace = schema_record\.oid/,
@@ -104,7 +108,7 @@ test("restricted runtime posture returns aggregate states only", async () => {
   );
   assert.match(
     calls[0].sql,
-    /has_table_privilege\(\s*current_user,\s*\(select migration_ledger_oid from drizzle_state\)/,
+    /has_table_privilege\(\s*assumable_role\.role_oid,\s*\(select migration_ledger_oid from drizzle_state\)/,
   );
   assert.doesNotMatch(calls[0].sql, /to_regclass\('drizzle\.__drizzle_migrations'\)/);
   assert.doesNotMatch(
@@ -113,6 +117,48 @@ test("restricted runtime posture returns aggregate states only", async () => {
   );
   assert.doesNotMatch(calls[0].sql, new RegExp(expectedRole));
   assert.doesNotMatch(JSON.stringify(report), new RegExp(expectedRole));
+});
+
+test("runtime posture traverses every SET-assumable role by catalog OID", async () => {
+  let postureSql = "";
+  await inspectRuntimeDatabasePosture(
+    {
+      async query(sql) {
+        postureSql = sql;
+        return { rows: [{ ...passingRow }] };
+      },
+    },
+    expectedRole,
+  );
+
+  assert.match(postureSql, /with recursive/i);
+  assert.match(
+    postureSql,
+    /pg_roles[\s\S]*?rolname = session_user/,
+  );
+  assert.match(
+    postureSql,
+    /pg_auth_members[\s\S]*?member = [a-z_.]+role_oid[\s\S]*?set_option/,
+  );
+  assert.match(postureSql, /set_assumable_roles\(role_oid\)[\s\S]*?union\s+select membership\.roleid/);
+  assert.doesNotMatch(postureSql, /union all/i);
+  assert.match(postureSql, /role_assumption_state_conclusive/);
+  assert.match(
+    postureSql,
+    /has_database_privilege\(\s*[a-z_.]+role_oid,/,
+  );
+  assert.match(
+    postureSql,
+    /has_schema_privilege\(\s*[a-z_.]+role_oid,/,
+  );
+  assert.match(
+    postureSql,
+    /has_table_privilege\(\s*[a-z_.]+role_oid,/,
+  );
+  assert.doesNotMatch(
+    postureSql,
+    /from pg_roles\s+where rolname = current_user/,
+  );
 });
 
 test("migration ledger relation kinds are inspected or rejected fail closed", async (context) => {
@@ -154,7 +200,7 @@ test("migration ledger relation kinds are inspected or rejected fail closed", as
   await context.test("unsupported exact-name relation kinds fail posture", () => {
     assert.match(
       postureSql,
-      /when \(select migration_ledger_relkind from drizzle_state\)[\s\S]*?then not has_table_privilege\([\s\S]*?else false\s+end as migration_ledger_select_absent/,
+      /when \(select migration_ledger_relkind from drizzle_state\)[\s\S]*?then not exists \([\s\S]*?has_table_privilege\([\s\S]*?else false\s+end as migration_ledger_select_absent/,
     );
   });
 });
@@ -162,6 +208,7 @@ test("migration ledger relation kinds are inspected or rejected fail closed", as
 test("every prohibited runtime posture fails closed", async (context) => {
   const cases = [
     ["wrong connected role", "expected_role_match"],
+    ["inconclusive SET-role catalog state", "role_assumption_state_conclusive"],
     ["neon_superuser membership", "neon_superuser_membership_absent"],
     ["superuser", "superuser_absent"],
     ["createdb", "createdb_absent"],
@@ -214,6 +261,23 @@ test("database posture query failure and inconclusive rows fail closed", async (
         {
           async query() {
             return { rows: [] };
+          },
+        },
+        expectedRole,
+      ),
+    safePostureError,
+  );
+  await assert.rejects(
+    () =>
+      assertRuntimeDatabasePosture(
+        {
+          async query() {
+            return {
+              rows: [
+                { ...passingRow },
+                { ...passingRow, opaque_catalog_detail: "must-not-leak" },
+              ],
+            };
           },
         },
         expectedRole,

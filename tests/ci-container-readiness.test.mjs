@@ -22,6 +22,10 @@ test("CI workflow runs guardrails, install, typecheck, build, test, and containe
     "npm run typecheck",
     "npm run build",
     "npm test",
+    "image: postgres:17",
+    "POSTGRES_HOST_AUTH_METHOD: trust",
+    "RUNTIME_POSTURE_TEST_DATABASE_URL",
+    "RUNTIME_POSTURE_TEST_CONFIRM: disposable-only",
     "docker build --pull --tag swooshz-platform:ci .",
   ];
 
