@@ -57,6 +57,7 @@ const planningAttestation = createNeonProviderAttestation(
     database: "runtime_posture_test",
     endpoints: [
       {
+        branchId: "br-disposable-local-001",
         currentState: "active",
         database: "runtime_posture_test",
         disabled: false,
@@ -64,9 +65,11 @@ const planningAttestation = createNeonProviderAttestation(
         id: "ep-disposable-direct-001",
         kind: "direct",
         port: effectivePort(boundDirectOperatorUrl),
+        projectId: "disposable-local-123456",
         type: "read_write",
       },
       {
+        branchId: "br-disposable-local-001",
         currentState: "active",
         database: "runtime_posture_test",
         disabled: false,
@@ -74,6 +77,7 @@ const planningAttestation = createNeonProviderAttestation(
         id: "ep-disposable-docker-002",
         kind: "pooled",
         port: effectivePort(boundDockerOperatorUrl),
+        projectId: "disposable-local-123456",
         type: "read_write",
       },
     ],
@@ -106,6 +110,7 @@ const twoClusterPlanningAttestation = createNeonProviderAttestation(
     database: "runtime_posture_test",
     endpoints: [
       {
+        branchId: "br-disposable-local-001",
         currentState: "active",
         database: "runtime_posture_test",
         disabled: false,
@@ -113,9 +118,11 @@ const twoClusterPlanningAttestation = createNeonProviderAttestation(
         id: "ep-disposable-direct-001",
         kind: "direct",
         port: effectivePort(boundDirectOperatorUrl),
+        projectId: "disposable-local-123456",
         type: "read_write",
       },
       {
+        branchId: "br-disposable-local-001",
         currentState: "active",
         database: "runtime_posture_test",
         disabled: false,
@@ -123,6 +130,7 @@ const twoClusterPlanningAttestation = createNeonProviderAttestation(
         id: "ep-disposable-second-003",
         kind: "pooled",
         port: effectivePort(boundSecondDockerOperatorUrl),
+        projectId: "disposable-local-123456",
         type: "read_write",
       },
     ],
@@ -1076,6 +1084,7 @@ function providerPhaseAttestation(
       database: "runtime_posture_test",
       endpoints: [
         {
+          branchId,
           currentState: "active",
           database: "runtime_posture_test",
           disabled: false,
@@ -1083,9 +1092,11 @@ function providerPhaseAttestation(
           id: "ep-disposable-direct-001",
           kind: "direct",
           port: effectivePort(directUrl),
+          projectId: "disposable-local-123456",
           type: "read_write",
         },
         {
+          branchId,
           currentState: "active",
           database: "runtime_posture_test",
           disabled: false,
@@ -1093,6 +1104,7 @@ function providerPhaseAttestation(
           id: "ep-disposable-docker-002",
           kind: "pooled",
           port: effectivePort(dockerUrl),
+          projectId: "disposable-local-123456",
           type: "read_write",
         },
       ],

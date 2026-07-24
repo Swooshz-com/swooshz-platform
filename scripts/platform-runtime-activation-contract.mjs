@@ -30,6 +30,7 @@ const neonProviderEvidenceKeys = Object.freeze([
   "provider",
 ]);
 const neonEndpointEvidenceKeys = Object.freeze([
+  "branchId",
   "currentState",
   "database",
   "disabled",
@@ -37,6 +38,7 @@ const neonEndpointEvidenceKeys = Object.freeze([
   "id",
   "kind",
   "port",
+  "projectId",
   "type",
 ]);
 const neonEndpointKinds = new Set(["direct", "pooled"]);
@@ -1321,6 +1323,10 @@ function validateNeonProviderEvidence(evidence, now) {
       typeof endpoint !== "object" ||
       Array.isArray(endpoint) ||
       !hasExactKeys(endpoint, neonEndpointEvidenceKeys) ||
+      !safeNeonProjectId.test(endpoint.projectId) ||
+      !safeNeonBranchId.test(endpoint.branchId) ||
+      endpoint.projectId !== evidence.projectId ||
+      endpoint.branchId !== evidence.branchId ||
       !safeNeonEndpointId.test(endpoint.id) ||
       !neonEndpointKinds.has(endpoint.kind) ||
       !Number.isInteger(endpoint.port) ||
@@ -1340,6 +1346,7 @@ function validateNeonProviderEvidence(evidence, now) {
       available:
         endpoint.disabled === false &&
         ["active", "idle"].includes(endpoint.currentState),
+      branchId: endpoint.branchId,
       currentState: endpoint.currentState,
       database: endpoint.database,
       disabled: endpoint.disabled,
@@ -1347,6 +1354,7 @@ function validateNeonProviderEvidence(evidence, now) {
       id: endpoint.id,
       kind: endpoint.kind,
       port: endpoint.port,
+      projectId: endpoint.projectId,
       type: endpoint.type,
     });
     return normalizedEndpoint;
@@ -1370,12 +1378,14 @@ function validateNeonProviderEvidence(evidence, now) {
     normalized.endpoints.map((endpoint) =>
       Object.freeze({
         available: endpoint.available,
+        branchId: endpoint.branchId,
         database: endpoint.database,
         disabled: endpoint.disabled,
         host: endpoint.host,
         id: endpoint.id,
         kind: endpoint.kind,
         port: endpoint.port,
+        projectId: endpoint.projectId,
         type: endpoint.type,
       }),
     ),

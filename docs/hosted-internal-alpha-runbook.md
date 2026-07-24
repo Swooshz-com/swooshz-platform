@@ -234,6 +234,23 @@ window, the operator must perform official read-only Neon API observations:
 - attach only the reviewed direct/pooled variant and effective PostgreSQL port
   used by the corresponding operator path.
 
+The wrapper must map provider-returned `project_id` and `branch_id` directly
+to `projectId` and `branchId` on every endpoint evidence record. It must not
+copy expected or requested project/branch values into those fields, infer the
+association from a connection URL, hostname, endpoint ID, or database
+fingerprint, or silently fill a missing association from the attestation-level
+identity. Every endpoint-level project and branch must exactly match both the
+official response and the requested immutable target. A response associated
+with another project or branch is rejected before an attestation or phase
+capability can be created.
+
+The strict endpoint evidence record accepts exactly `branchId`,
+`currentState`, `database`, `disabled`, `host`, `id`, `kind`, `port`,
+`projectId`, and `type`. The first-party wrapper maps the reviewed provider
+fields into that record and adds only the independently reviewed database
+association, connection kind, and effective port. Any missing or extra field
+fails closed.
+
 The reducer accepts only its strict reviewed shape. Do not pass a raw API response object.
 Raw response bodies, bearer tokens, API credentials,
 connection strings, usernames, endpoint credentials, and passwords must never
@@ -253,7 +270,8 @@ observation and create a new opaque attestation. Each phase attestation must:
 - be strictly newer than the previously accepted planning or phase
   observation; and
 - preserve branch, database, endpoint ID, variant, host, effective port,
-  write capability, enabled state, and availability.
+  write capability, enabled state, availability, and each endpoint's
+  provider-returned project and branch association.
 
 Object identity is not reused or compared. A fresh equivalent attestation is
 accepted; an older or equal observation is rejected even if unexpired. A

@@ -423,7 +423,10 @@ test("fresh endpoint rebind blocks before mutation despite equal SQL identity an
   );
   const rebind = renewedAttestation(-30_000, {
     branchId: "br-recovery-branch-002",
-    endpoints: stableEndpoints,
+    endpoints: stableEndpoints.map((endpoint) => ({
+      ...endpoint,
+      branchId: "br-recovery-branch-002",
+    })),
   });
   const error = captureSyncFailure(
     () =>
@@ -452,6 +455,116 @@ test("fresh endpoint rebind blocks before mutation despite equal SQL identity an
   );
   installationCalls += 0;
   loginCalls += 0;
+});
+
+test("endpoint-reported rebind under the old top-level label fails before every executable boundary", async () => {
+  const { binding, target } = activationTarget();
+  const identity = await fixtureIdentity("123456789", "16384");
+  const tracker = new PlatformRuntimeActivationMutationTracker(target);
+  let installationCalls = 0;
+  let cleanupCalls = 0;
+  let loginSqlCalls = 0;
+  let rollbackSqlCalls = 0;
+
+  tracker.fixtureValidated(
+    target,
+    identity,
+    identity,
+    binding,
+    { now: providerNow },
+  );
+
+  const errors = [
+    endpointAssociationMismatchEvidence(-30_000),
+    endpointAssociationMismatchEvidence(-30_000, {
+      endpointBranchId: "br-production-main-001",
+      endpointProjectId: "other-project-654321",
+    }),
+  ].map((evidence) =>
+    captureSyncFailure(
+      () =>
+        createNeonProviderAttestation(evidence, {
+          now: providerNow,
+        }),
+      PlatformRuntimeActivationError,
+    ),
+  );
+  assert.throws(
+    () =>
+      tracker.authorisePasswordInstallation(
+        target,
+        null,
+        { now: providerNow },
+      ),
+    PlatformRuntimeActivationError,
+  );
+  await assert.rejects(
+    () =>
+      installRuntimePasswordWithDocker({
+        operatorUrl,
+        target,
+        runtimePassword,
+        expectedFixtureIdentity: identity,
+        spawnImpl() {
+          installationCalls += 1;
+        },
+      }),
+    PlatformRuntimeActivationError,
+  );
+  assert.throws(
+    () => {
+      const statement = buildRuntimeRoleStatement(target, "enable_login");
+      loginSqlCalls += 1;
+      return statement;
+    },
+    PlatformRuntimeActivationError,
+  );
+  assert.throws(
+    () =>
+      tracker.authoriseSuccessFinalisation(
+        target,
+        null,
+        { now: providerNow },
+      ),
+    PlatformRuntimeActivationError,
+  );
+  assert.throws(
+    () =>
+      tracker.assertRollbackFixture(
+        target,
+        identity,
+        null,
+        { now: providerNow },
+      ),
+    PlatformRuntimeActivationError,
+  );
+  assert.throws(
+    () => {
+      const statement = buildRuntimeRoleStatement(target, "rollback");
+      rollbackSqlCalls += 1;
+      return statement;
+    },
+    PlatformRuntimeActivationError,
+  );
+  if (tracker.rollbackRequired(target)) {
+    cleanupCalls += 1;
+  }
+
+  assert.equal(installationCalls, 0);
+  assert.equal(loginSqlCalls, 0);
+  assert.equal(rollbackSqlCalls, 0);
+  assert.equal(cleanupCalls, 0);
+  assert.equal(tracker.rollbackRequired(target), false);
+  assert.doesNotMatch(
+    JSON.stringify({
+      errors: errors.map((error) => ({
+        code: error.code,
+        message: error.message,
+      })),
+      safeReport: new PlatformRuntimeActivationPhaseJournal().safeReport(),
+    }),
+    /postgresql:\/\/|db\.example\.test|operator|SyntheticRuntime|api[_-]?key|bearer|rawResponse|private[_-]?env/iu,
+  );
 });
 
 test("fresh rebind after password installation blocks LOGIN generation", async () => {
@@ -487,9 +600,10 @@ test("fresh rebind after password installation blocks LOGIN generation", async (
     () =>
       tracker.authoriseLoginEnablement(
         target,
-        renewedAttestation(-20_000, {
-          branchId: "br-recovery-branch-002",
-        }),
+        createNeonProviderAttestation(
+          endpointAssociationMismatchEvidence(-20_000),
+          { now: providerNow },
+        ),
         { now: providerNow },
       ),
     PlatformRuntimeActivationError,
@@ -553,9 +667,10 @@ test("success finalisation requires a later unchanged attestation", async () => 
     () =>
       tracker.authoriseSuccessFinalisation(
         target,
-        renewedAttestation(-10_000, {
-          branchId: "br-recovery-branch-002",
-        }),
+        createNeonProviderAttestation(
+          endpointAssociationMismatchEvidence(-10_000),
+          { now: providerNow },
+        ),
         { now: providerNow },
       ),
     PlatformRuntimeActivationError,
@@ -608,9 +723,10 @@ test("rollback refuses a rebound endpoint and leaves manual cleanup required", a
       tracker.assertRollbackFixture(
         target,
         identity,
-        renewedAttestation(-20_000, {
-          branchId: "br-recovery-branch-002",
-        }),
+        createNeonProviderAttestation(
+          endpointAssociationMismatchEvidence(-20_000),
+          { now: providerNow },
+        ),
         { now: providerNow },
       ),
     PlatformRuntimeActivationError,
@@ -1096,7 +1212,10 @@ test("endpoint transfer after restore cannot reuse a stable connection authority
   });
   const reboundBinding = providerBinding({
     branchId: "br-restored-branch-003",
-    endpoints: stableEndpoints,
+    endpoints: stableEndpoints.map((endpoint) => ({
+      ...endpoint,
+      branchId: "br-restored-branch-003",
+    })),
   });
   const identity = await fixtureIdentity("123456789", "16384");
   const tracker = new PlatformRuntimeActivationMutationTracker(target);
@@ -1189,6 +1308,84 @@ test("Neon evidence validation rejects missing, malformed, stale, ambiguous, or 
         { now: providerNow },
       ),
     PlatformRuntimeActivationError,
+  );
+});
+
+test("endpoint associations are mandatory, provider-returned, consistent, and order-independent", () => {
+  const missingProject = { ...providerEndpoint() };
+  const missingBranch = { ...providerEndpoint() };
+  delete missingProject.projectId;
+  delete missingBranch.branchId;
+
+  const reboundEndpoint = providerEndpoint({
+    branchId: "br-recovery-branch-002",
+  });
+  const otherProjectEndpoint = providerEndpoint({
+    projectId: "other-project-654321",
+  });
+  const pooledEndpoint = providerEndpoint({
+    id: "ep-pooled-approved-002",
+    kind: "pooled",
+  });
+  const conflictingBranchSet = [
+    providerEndpoint(),
+    {
+      ...pooledEndpoint,
+      branchId: "br-recovery-branch-002",
+    },
+  ];
+  const conflictingProjectSet = [
+    providerEndpoint(),
+    {
+      ...pooledEndpoint,
+      projectId: "other-project-654321",
+    },
+  ];
+  const duplicateConflictingAssociation = [
+    providerEndpoint(),
+    {
+      ...providerEndpoint(),
+      branchId: "br-recovery-branch-002",
+    },
+  ];
+
+  for (const endpoints of [
+    [missingProject],
+    [missingBranch],
+    [providerEndpoint({ projectId: "project with spaces" })],
+    [providerEndpoint({ branchId: "branch-without-prefix" })],
+    [reboundEndpoint, pooledEndpoint],
+    [otherProjectEndpoint, pooledEndpoint],
+    conflictingBranchSet,
+    [...conflictingBranchSet].reverse(),
+    conflictingProjectSet,
+    [...conflictingProjectSet].reverse(),
+    duplicateConflictingAssociation,
+    [
+      {
+        ...providerEndpoint(),
+        requestedBranchId: "br-production-main-001",
+      },
+    ],
+  ]) {
+    assert.throws(
+      () =>
+        createNeonProviderAttestation(
+          providerEvidence({ endpoints }),
+          { now: providerNow },
+        ),
+      PlatformRuntimeActivationError,
+    );
+  }
+
+  const { target } = activationTarget();
+  const freshEquivalent = renewedAttestation(-30_000);
+  assert.doesNotThrow(() =>
+    assertRuntimeActivationProviderAttestation(
+      target,
+      freshEquivalent,
+      { now: providerNow },
+    ),
   );
 });
 
@@ -2051,6 +2248,7 @@ function fakeChild({ onWrite } = {}) {
 
 function providerEndpoint(overrides = {}) {
   return {
+    branchId: "br-production-main-001",
     currentState: "active",
     database: "platform",
     disabled: false,
@@ -2058,25 +2256,34 @@ function providerEndpoint(overrides = {}) {
     id: "ep-direct-approved-001",
     kind: "direct",
     port: 5544,
+    projectId: "project-alpha-123456",
     type: "read_write",
     ...overrides,
   };
 }
 
 function providerEvidence(overrides = {}, now = providerNow) {
-  return {
-    branchId: "br-production-main-001",
-    database: "platform",
-    endpoints: [
-      providerEndpoint(),
+  const branchId =
+    overrides.branchId ?? "br-production-main-001";
+  const projectId =
+    overrides.projectId ?? "project-alpha-123456";
+  const endpoints =
+    overrides.endpoints ?? [
+      providerEndpoint({ branchId, projectId }),
       providerEndpoint({
+        branchId,
         id: "ep-pooled-approved-002",
         kind: "pooled",
+        projectId,
       }),
-    ],
+    ];
+  return {
+    branchId,
+    database: "platform",
+    endpoints,
     expiresAt: new Date(now + 5 * 60_000).toISOString(),
     observedAt: new Date(now - 60_000).toISOString(),
-    projectId: "project-alpha-123456",
+    projectId,
     provider: "neon",
     ...overrides,
   };
@@ -2099,6 +2306,35 @@ function renewedAttestation(
       expiresAt: new Date(now + 5 * 60_000).toISOString(),
       observedAt: new Date(now + observedOffsetMs).toISOString(),
       ...overrides,
+    },
+    now,
+  );
+}
+
+function endpointAssociationMismatchEvidence(
+  observedOffsetMs,
+  {
+    endpointBranchId = "br-recovery-branch-002",
+    endpointProjectId = "project-alpha-123456",
+  } = {},
+  now = providerNow,
+) {
+  return providerEvidence(
+    {
+      endpoints: [
+        providerEndpoint({
+          branchId: endpointBranchId,
+          projectId: endpointProjectId,
+        }),
+        providerEndpoint({
+          branchId: endpointBranchId,
+          id: "ep-pooled-approved-002",
+          kind: "pooled",
+          projectId: endpointProjectId,
+        }),
+      ],
+      expiresAt: new Date(now + 5 * 60_000).toISOString(),
+      observedAt: new Date(now + observedOffsetMs).toISOString(),
     },
     now,
   );
