@@ -15,9 +15,32 @@ export const PLATFORM_RUNTIME_ACTIVATION_PHASES = Object.freeze([
 ]);
 
 const safeRoleIdentifier = /^[a-z_][a-z0-9_$]{0,62}$/;
+const safeDatabaseIdentifier = /^[a-z_][a-z0-9_$]{0,62}$/;
+const safeNeonProjectId = /^[a-z][a-z0-9-]{2,62}$/;
+const safeNeonBranchId = /^br-[a-z0-9][a-z0-9-]{2,61}$/;
+const safeNeonEndpointId = /^ep-[a-z0-9][a-z0-9-]{2,61}$/;
 const safeFixtureIdentity = /^[0-9]+:[0-9]+$/;
+const neonProviderEvidenceKeys = Object.freeze([
+  "branchId",
+  "database",
+  "endpoints",
+  "expiresAt",
+  "observedAt",
+  "projectId",
+  "provider",
+]);
+const neonEndpointEvidenceKeys = Object.freeze([
+  "database",
+  "host",
+  "id",
+  "kind",
+]);
+const neonEndpointKinds = new Set(["direct", "pooled"]);
+const maximumProviderEvidenceValidityMs = 15 * 60 * 1_000;
 const phaseSet = new Set(PLATFORM_RUNTIME_ACTIVATION_PHASES);
 const targetRoles = new WeakMap();
+const targetProviderValues = new WeakMap();
+const providerBindingValues = new WeakMap();
 const fixtureIdentityValues = new WeakMap();
 const mutationErrorStates = new WeakMap();
 const fixtureMismatchExitCode = 86;
@@ -113,6 +136,7 @@ export class PlatformRuntimeActivationPhaseJournal {
 export class PlatformRuntimeActivationMutationTracker {
   #target;
   #validatedFixtureIdentity = null;
+  #validatedProviderFingerprint = null;
   #installationStarted = false;
   #mutationMayHaveBegun = false;
 
@@ -121,23 +145,47 @@ export class PlatformRuntimeActivationMutationTracker {
     this.#target = target;
   }
 
-  fixtureValidated(target, directIdentity, dockerIdentity) {
+  fixtureValidated(
+    target,
+    directIdentity,
+    dockerIdentity,
+    currentProviderBinding,
+    { now = Date.now() } = {},
+  ) {
     this.#assertTarget(target);
-    if (this.#installationStarted || this.#validatedFixtureIdentity) {
+    if (
+      this.#installationStarted ||
+      this.#validatedFixtureIdentity ||
+      this.#validatedProviderFingerprint
+    ) {
       throw new PlatformRuntimeActivationError();
     }
     assertMatchingPostgresFixtureIdentities(
       directIdentity,
       dockerIdentity,
     );
+    const providerValue = matchingProviderBindingValue(
+      target,
+      currentProviderBinding,
+      { now },
+    );
     this.#validatedFixtureIdentity = fixtureIdentityValue(directIdentity);
+    this.#validatedProviderFingerprint = providerValue.fingerprint;
   }
 
-  passwordInstallationStarted(target) {
+  passwordInstallationStarted(target, { now = Date.now() } = {}) {
     this.#assertTarget(target);
     if (
       this.#installationStarted ||
-      !this.#validatedFixtureIdentity
+      !this.#validatedFixtureIdentity ||
+      !this.#validatedProviderFingerprint
+    ) {
+      throw new PlatformRuntimeActivationError();
+    }
+    const providerValue = activationTargetValue(target, { now });
+    if (
+      providerValue.providerFingerprint !==
+      this.#validatedProviderFingerprint
     ) {
       throw new PlatformRuntimeActivationError();
     }
@@ -159,13 +207,25 @@ export class PlatformRuntimeActivationMutationTracker {
     return this.#mutationMayHaveBegun;
   }
 
-  assertRollbackFixture(target, currentIdentity) {
+  assertRollbackFixture(
+    target,
+    currentIdentity,
+    currentProviderBinding,
+    { now = Date.now() } = {},
+  ) {
     this.#assertTarget(target);
+    const providerValue = matchingProviderBindingValue(
+      target,
+      currentProviderBinding,
+      { now },
+    );
     if (
       !this.#mutationMayHaveBegun ||
       !this.#validatedFixtureIdentity ||
+      !this.#validatedProviderFingerprint ||
       fixtureIdentityValue(currentIdentity) !==
-        this.#validatedFixtureIdentity
+        this.#validatedFixtureIdentity ||
+      providerValue.fingerprint !== this.#validatedProviderFingerprint
     ) {
       throw new PlatformRuntimeActivationError();
     }
@@ -179,9 +239,21 @@ export class PlatformRuntimeActivationMutationTracker {
     this.#mutationMayHaveBegun = false;
   }
 
-  successFinalised(target) {
+  successFinalised(
+    target,
+    currentProviderBinding,
+    { now = Date.now() } = {},
+  ) {
     this.#assertTarget(target);
-    if (!this.#mutationMayHaveBegun) {
+    const providerValue = matchingProviderBindingValue(
+      target,
+      currentProviderBinding,
+      { now },
+    );
+    if (
+      !this.#mutationMayHaveBegun ||
+      providerValue.fingerprint !== this.#validatedProviderFingerprint
+    ) {
       throw new PlatformRuntimeActivationError();
     }
     this.#mutationMayHaveBegun = false;
@@ -194,17 +266,132 @@ export class PlatformRuntimeActivationMutationTracker {
   }
 }
 
-export function createRuntimeActivationTarget(runtimeRole) {
-  if (!safeRoleIdentifier.test(runtimeRole)) {
+export function createNeonProviderTargetBinding(
+  evidence,
+  { now = Date.now() } = {},
+) {
+  const value = validateNeonProviderEvidence(evidence, now);
+  const binding = Object.freeze({});
+  providerBindingValues.set(binding, value);
+  return binding;
+}
+
+export function createRuntimeActivationTarget(
+  runtimeRole,
+  {
+    providerBinding,
+    directEndpointId,
+    directOperatorUrl,
+    dockerEndpointId,
+    dockerEndpointKind,
+    dockerOperatorUrl,
+    expectedDatabase,
+  } = {},
+  { now = Date.now() } = {},
+) {
+  if (
+    !safeRoleIdentifier.test(runtimeRole) ||
+    !safeDatabaseIdentifier.test(expectedDatabase)
+  ) {
     throw new PlatformRuntimeActivationError();
   }
+  const providerValue = providerBindingValue(providerBinding, { now });
+  const directEndpoint = providerEndpoint(
+    providerValue,
+    directEndpointId,
+    expectedDatabase,
+    "direct",
+  );
+  const dockerEndpoint = providerEndpoint(
+    providerValue,
+    dockerEndpointId,
+    expectedDatabase,
+    dockerEndpointKind,
+  );
+  if (
+    providerValue.database !== expectedDatabase ||
+    !directEndpoint ||
+    !dockerEndpoint
+  ) {
+    throw new PlatformRuntimeActivationError();
+  }
+  assertProviderConnectionUrl(
+    directOperatorUrl,
+    directEndpoint,
+    expectedDatabase,
+  );
+  assertProviderConnectionUrl(
+    dockerOperatorUrl,
+    dockerEndpoint,
+    expectedDatabase,
+  );
   const target = Object.freeze({});
   targetRoles.set(target, runtimeRole);
+  targetProviderValues.set(
+    target,
+    Object.freeze({
+      directEndpointId,
+      directEndpointHost: directEndpoint.host,
+      dockerEndpointId,
+      dockerEndpointKind,
+      dockerEndpointHost: dockerEndpoint.host,
+      expectedDatabase,
+      providerBinding,
+      providerFingerprint: providerValue.fingerprint,
+    }),
+  );
   return target;
 }
 
-export function runtimeActivationRole(target) {
+export function runtimeActivationRole(
+  target,
+  { now = Date.now() } = {},
+) {
+  activationTargetValue(target, { now });
   return targetRole(target);
+}
+
+export function runtimeActivationNonSecretProviderMetadata(target) {
+  const targetValue = activationTargetValue(target);
+  const providerValue = providerBindingValue(targetValue.providerBinding);
+  return Object.freeze({
+    classification: "non_secret_provider_target_metadata",
+    provider: providerValue.provider,
+    projectId: providerValue.projectId,
+    branchId: providerValue.branchId,
+    database: providerValue.database,
+    endpoints: Object.freeze(
+      providerValue.endpoints.map((endpoint) =>
+        Object.freeze({ id: endpoint.id, kind: endpoint.kind }),
+      ),
+    ),
+    observedAt: providerValue.observedAt,
+    expiresAt: providerValue.expiresAt,
+  });
+}
+
+export function assertRuntimeActivationProviderBinding(
+  target,
+  currentProviderBinding,
+  { now = Date.now() } = {},
+) {
+  matchingProviderBindingValue(target, currentProviderBinding, { now });
+}
+
+function matchingProviderBindingValue(
+  target,
+  currentProviderBinding,
+  { now = Date.now() } = {},
+) {
+  const targetValue = activationTargetValue(target, { now });
+  const currentValue = providerBindingValue(currentProviderBinding, { now });
+  if (
+    currentProviderBinding !== targetValue.providerBinding ||
+    currentValue.fingerprint !== targetValue.providerFingerprint
+  ) {
+    throw new PlatformRuntimeActivationError();
+  }
+  return currentValue;
 }
 
 export function runtimeActivationMutationMayHaveBegun(error) {
@@ -218,8 +405,10 @@ export function buildRuntimeDatabaseUrl(
   operatorUrl,
   target,
   runtimePassword,
+  { now = Date.now() } = {},
 ) {
   const runtimeRole = targetRole(target);
+  const targetValue = activationTargetValue(target, { now });
   if (
     typeof runtimePassword !== "string" ||
     runtimePassword.length === 0 ||
@@ -229,6 +418,8 @@ export function buildRuntimeDatabaseUrl(
   }
 
   const parsed = parseOperatorUrl(operatorUrl);
+  assertProviderConnectionHost(parsed, targetValue.directEndpointHost);
+  assertUrlDatabase(parsed, targetValue.expectedDatabase);
   const reviewedParameters = validateConnectionParameters(parsed);
 
   parsed.username = encodeURIComponent(runtimeRole);
@@ -241,7 +432,12 @@ export function buildRuntimeDatabaseUrl(
   return parsed.toString();
 }
 
-export function buildRuntimeRoleStatement(target, operation) {
+export function buildRuntimeRoleStatement(
+  target,
+  operation,
+  { now = Date.now() } = {},
+) {
+  activationTargetValue(target, { now });
   const runtimeRole = targetRole(target);
   const quotedRole = `"${runtimeRole}"`;
   if (operation === "enable_login") {
@@ -257,13 +453,16 @@ export function assertRuntimeIdentity(
   row,
   target,
   expectedDatabase,
+  { now = Date.now() } = {},
 ) {
   const runtimeRole = targetRole(target);
+  const targetValue = activationTargetValue(target, { now });
   if (
     !row ||
     typeof row !== "object" ||
     typeof expectedDatabase !== "string" ||
     expectedDatabase.length === 0 ||
+    expectedDatabase !== targetValue.expectedDatabase ||
     row.current_database !== expectedDatabase ||
     row.current_user !== runtimeRole ||
     row.session_user !== runtimeRole
@@ -304,6 +503,7 @@ export async function readPostgresFixtureIdentity(client) {
 
 export async function readDockerPostgresFixtureIdentity({
   operatorUrl,
+  target,
   dockerImage = "postgres:17",
   spawnImpl = spawn,
   terminationSpawnImpl = spawn,
@@ -311,8 +511,17 @@ export async function readDockerPostgresFixtureIdentity({
   terminationGraceMs = 5_000,
   terminationRetryMs = 1_000,
   terminationAttempts = 2,
+  now = Date.now(),
 }) {
+  const targetValue = activationTargetValue(target, { now });
   validateDockerInputs({ operatorUrl, dockerImage, timeoutMs });
+  const parsedOperatorUrl = parseOperatorUrl(operatorUrl);
+  assertProviderConnectionHost(
+    parsedOperatorUrl,
+    targetValue.dockerEndpointHost,
+  );
+  assertUrlDatabase(parsedOperatorUrl, targetValue.expectedDatabase);
+  validateConnectionParameters(parsedOperatorUrl);
   validateTerminationInputs({
     terminationAttempts,
     terminationGraceMs,
@@ -381,8 +590,10 @@ export async function installRuntimePasswordWithDocker({
   terminationGraceMs = 5_000,
   terminationRetryMs = 1_000,
   terminationAttempts = 2,
+  now = Date.now(),
 }) {
   const runtimeRole = targetRole(target);
+  const targetValue = activationTargetValue(target, { now });
   const fixtureIdentity = fixtureIdentityValue(expectedFixtureIdentity);
   validateDockerInputs({ operatorUrl, dockerImage, timeoutMs });
   validateTerminationInputs({
@@ -393,6 +604,13 @@ export async function installRuntimePasswordWithDocker({
   if (!isStrongRuntimePassword(runtimePassword)) {
     throw new PlatformRuntimeActivationError();
   }
+  const parsedOperatorUrl = parseOperatorUrl(operatorUrl);
+  assertProviderConnectionHost(
+    parsedOperatorUrl,
+    targetValue.dockerEndpointHost,
+  );
+  assertUrlDatabase(parsedOperatorUrl, targetValue.expectedDatabase);
+  validateConnectionParameters(parsedOperatorUrl);
 
   const containerName = dockerContainerName("password");
   const input = Buffer.from(
@@ -906,6 +1124,171 @@ function targetRole(target) {
   return runtimeRole;
 }
 
+function activationTargetValue(
+  target,
+  { now = Date.now() } = {},
+) {
+  targetRole(target);
+  const value =
+    target && typeof target === "object"
+      ? targetProviderValues.get(target)
+      : undefined;
+  if (!value) {
+    throw new PlatformRuntimeActivationError();
+  }
+  const providerValue = providerBindingValue(value.providerBinding, { now });
+  if (providerValue.fingerprint !== value.providerFingerprint) {
+    throw new PlatformRuntimeActivationError();
+  }
+  return value;
+}
+
+function validateNeonProviderEvidence(evidence, now) {
+  if (
+    !Number.isInteger(now) ||
+    !evidence ||
+    typeof evidence !== "object" ||
+    Array.isArray(evidence) ||
+    !hasExactKeys(evidence, neonProviderEvidenceKeys) ||
+    evidence.provider !== "neon" ||
+    !safeNeonProjectId.test(evidence.projectId) ||
+    !safeNeonBranchId.test(evidence.branchId) ||
+    !safeDatabaseIdentifier.test(evidence.database) ||
+    !Array.isArray(evidence.endpoints) ||
+    evidence.endpoints.length === 0 ||
+    evidence.endpoints.length > 8
+  ) {
+    throw new PlatformRuntimeActivationError();
+  }
+
+  const observedMs = parseEvidenceTimestamp(evidence.observedAt);
+  const expiresMs = parseEvidenceTimestamp(evidence.expiresAt);
+  if (
+    observedMs > now ||
+    expiresMs <= now ||
+    expiresMs <= observedMs ||
+    expiresMs - observedMs > maximumProviderEvidenceValidityMs
+  ) {
+    throw new PlatformRuntimeActivationError();
+  }
+
+  const endpointIdentities = new Set();
+  const endpoints = evidence.endpoints.map((endpoint) => {
+    const endpointIdentity = `${endpoint?.id}:${endpoint?.kind}`;
+    if (
+      !endpoint ||
+      typeof endpoint !== "object" ||
+      Array.isArray(endpoint) ||
+      !hasExactKeys(endpoint, neonEndpointEvidenceKeys) ||
+      !safeNeonEndpointId.test(endpoint.id) ||
+      !neonEndpointKinds.has(endpoint.kind) ||
+      !safeProviderHost(endpoint.host) ||
+      endpoint.database !== evidence.database ||
+      endpointIdentities.has(endpointIdentity)
+    ) {
+      throw new PlatformRuntimeActivationError();
+    }
+    endpointIdentities.add(endpointIdentity);
+    return Object.freeze({
+      database: endpoint.database,
+      host: endpoint.host.toLowerCase(),
+      id: endpoint.id,
+      kind: endpoint.kind,
+    });
+  });
+  endpoints.sort((left, right) =>
+    `${left.id}:${left.kind}`.localeCompare(`${right.id}:${right.kind}`),
+  );
+
+  const normalized = {
+    branchId: evidence.branchId,
+    database: evidence.database,
+    endpoints: Object.freeze(endpoints),
+    expiresAt: evidence.expiresAt,
+    expiresMs,
+    observedAt: evidence.observedAt,
+    observedMs,
+    projectId: evidence.projectId,
+    provider: evidence.provider,
+  };
+  return Object.freeze({
+    ...normalized,
+    fingerprint: JSON.stringify({
+      branchId: normalized.branchId,
+      database: normalized.database,
+      endpoints: normalized.endpoints,
+      expiresAt: normalized.expiresAt,
+      observedAt: normalized.observedAt,
+      projectId: normalized.projectId,
+      provider: normalized.provider,
+    }),
+  });
+}
+
+function providerBindingValue(
+  binding,
+  { now = Date.now() } = {},
+) {
+  const value =
+    binding && typeof binding === "object"
+      ? providerBindingValues.get(binding)
+      : undefined;
+  if (
+    !value ||
+    !Number.isInteger(now) ||
+    value.observedMs > now ||
+    value.expiresMs <= now
+  ) {
+    throw new PlatformRuntimeActivationError();
+  }
+  return value;
+}
+
+function providerEndpoint(
+  providerValue,
+  endpointId,
+  expectedDatabase,
+  expectedKind,
+) {
+  if (
+    !safeNeonEndpointId.test(endpointId) ||
+    !neonEndpointKinds.has(expectedKind)
+  ) {
+    return undefined;
+  }
+  const endpoint = providerValue.endpoints.find(
+    (candidate) =>
+      candidate.id === endpointId && candidate.kind === expectedKind,
+  );
+  return endpoint &&
+    endpoint.database === expectedDatabase &&
+    endpoint.kind === expectedKind
+    ? endpoint
+    : undefined;
+}
+
+function parseEvidenceTimestamp(value) {
+  if (typeof value !== "string") {
+    throw new PlatformRuntimeActivationError();
+  }
+  const milliseconds = Date.parse(value);
+  if (
+    !Number.isInteger(milliseconds) ||
+    new Date(milliseconds).toISOString() !== value
+  ) {
+    throw new PlatformRuntimeActivationError();
+  }
+  return milliseconds;
+}
+
+function hasExactKeys(value, expectedKeys) {
+  const keys = Object.keys(value).sort();
+  return (
+    keys.length === expectedKeys.length &&
+    keys.every((key, index) => key === expectedKeys[index])
+  );
+}
+
 function parseOperatorUrl(value) {
   let parsed;
   try {
@@ -923,6 +1306,49 @@ function parseOperatorUrl(value) {
     throw new PlatformRuntimeActivationError();
   }
   return parsed;
+}
+
+function assertUrlDatabase(parsed, expectedDatabase) {
+  let database;
+  try {
+    database = decodeURIComponent(parsed.pathname.slice(1));
+  } catch {
+    throw new PlatformRuntimeActivationError();
+  }
+  if (
+    parsed.pathname.includes("/", 1) ||
+    database !== expectedDatabase
+  ) {
+    throw new PlatformRuntimeActivationError();
+  }
+}
+
+function assertProviderConnectionUrl(
+  connectionUrl,
+  endpoint,
+  expectedDatabase,
+) {
+  const parsed = parseOperatorUrl(connectionUrl);
+  assertProviderConnectionHost(parsed, endpoint.host);
+  assertUrlDatabase(parsed, expectedDatabase);
+  validateConnectionParameters(parsed);
+}
+
+function assertProviderConnectionHost(parsed, expectedHost) {
+  if (parsed.hostname.toLowerCase() !== expectedHost) {
+    throw new PlatformRuntimeActivationError();
+  }
+}
+
+function safeProviderHost(value) {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 253 &&
+    value === value.toLowerCase() &&
+    /^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/u.test(value) &&
+    !value.includes("..")
+  );
 }
 
 function validateConnectionParameters(parsed) {

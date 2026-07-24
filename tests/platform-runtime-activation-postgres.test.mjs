@@ -12,6 +12,7 @@ import {
   assertRuntimeIdentity,
   buildRuntimeDatabaseUrl,
   buildRuntimeRoleStatement,
+  createNeonProviderTargetBinding,
   createRuntimeActivationTarget,
   installRuntimePasswordWithDocker,
   readDockerPostgresFixtureIdentity,
@@ -43,7 +44,92 @@ const twoClusterSkipReason =
     : "requires two explicitly confirmed disposable PostgreSQL fixtures";
 const syntheticRuntimePassword =
   "SyntheticRuntime_2026!éΩ漢字_ExtraLength";
-const target = createRuntimeActivationTarget("platform_runtime");
+const providerNow = Date.now();
+const boundDirectOperatorUrl =
+  operatorUrl ??
+  "postgresql://operator:synthetic@direct.fixture.test/runtime_posture_test";
+const boundDockerOperatorUrl =
+  dockerOperatorUrl ??
+  "postgresql://operator:synthetic@docker.fixture.test/runtime_posture_test";
+const providerBinding = createNeonProviderTargetBinding(
+  {
+    branchId: "br-disposable-local-001",
+    database: "runtime_posture_test",
+    endpoints: [
+      {
+        database: "runtime_posture_test",
+        host: new URL(boundDirectOperatorUrl).hostname,
+        id: "ep-disposable-direct-001",
+        kind: "direct",
+      },
+      {
+        database: "runtime_posture_test",
+        host: new URL(boundDockerOperatorUrl).hostname,
+        id: "ep-disposable-docker-002",
+        kind: "pooled",
+      },
+    ],
+    expiresAt: new Date(providerNow + 10 * 60_000).toISOString(),
+    observedAt: new Date(providerNow - 60_000).toISOString(),
+    projectId: "disposable-local-123456",
+    provider: "neon",
+  },
+  { now: providerNow },
+);
+const target = createRuntimeActivationTarget(
+  "platform_runtime",
+  {
+    providerBinding,
+    directEndpointId: "ep-disposable-direct-001",
+    directOperatorUrl: boundDirectOperatorUrl,
+    dockerEndpointId: "ep-disposable-docker-002",
+    dockerEndpointKind: "pooled",
+    dockerOperatorUrl: boundDockerOperatorUrl,
+    expectedDatabase: "runtime_posture_test",
+  },
+  { now: providerNow },
+);
+const boundSecondDockerOperatorUrl =
+  secondDockerOperatorUrl ??
+  "postgresql://operator:synthetic@second.fixture.test/runtime_posture_test";
+const twoClusterProviderBinding = createNeonProviderTargetBinding(
+  {
+    branchId: "br-disposable-local-001",
+    database: "runtime_posture_test",
+    endpoints: [
+      {
+        database: "runtime_posture_test",
+        host: new URL(boundDirectOperatorUrl).hostname,
+        id: "ep-disposable-direct-001",
+        kind: "direct",
+      },
+      {
+        database: "runtime_posture_test",
+        host: new URL(boundSecondDockerOperatorUrl).hostname,
+        id: "ep-disposable-second-003",
+        kind: "pooled",
+      },
+    ],
+    expiresAt: new Date(providerNow + 10 * 60_000).toISOString(),
+    observedAt: new Date(providerNow - 60_000).toISOString(),
+    projectId: "disposable-local-123456",
+    provider: "neon",
+  },
+  { now: providerNow },
+);
+const twoClusterTarget = createRuntimeActivationTarget(
+  "platform_runtime",
+  {
+    providerBinding: twoClusterProviderBinding,
+    directEndpointId: "ep-disposable-direct-001",
+    directOperatorUrl: boundDirectOperatorUrl,
+    dockerEndpointId: "ep-disposable-second-003",
+    dockerEndpointKind: "pooled",
+    dockerOperatorUrl: boundSecondDockerOperatorUrl,
+    expectedDatabase: "runtime_posture_test",
+  },
+  { now: providerNow },
+);
 const expectedTablePrivileges = Object.freeze({
   access_validation_grants: ["INSERT", "SELECT"],
   app_entitlements: ["INSERT", "SELECT"],
@@ -92,12 +178,18 @@ test(
       const directIdentity = await readPostgresFixtureIdentity(adminPool);
       const dockerIdentity = await readDockerPostgresFixtureIdentity({
         operatorUrl: dockerOperatorUrl,
+        target,
       });
       assertMatchingPostgresFixtureIdentities(
         directIdentity,
         dockerIdentity,
       );
-      mutation.fixtureValidated(target, directIdentity, dockerIdentity);
+      mutation.fixtureValidated(
+        target,
+        directIdentity,
+        dockerIdentity,
+        providerBinding,
+      );
 
       const journal = new PlatformRuntimeActivationPhaseJournal();
       journal.start("dormant_role_preflight");
@@ -210,12 +302,18 @@ test(
       const directIdentity = await readPostgresFixtureIdentity(adminPool);
       const dockerIdentity = await readDockerPostgresFixtureIdentity({
         operatorUrl: dockerOperatorUrl,
+        target,
       });
       assertMatchingPostgresFixtureIdentities(
         directIdentity,
         dockerIdentity,
       );
-      mutation.fixtureValidated(target, directIdentity, dockerIdentity);
+      mutation.fixtureValidated(
+        target,
+        directIdentity,
+        dockerIdentity,
+        providerBinding,
+      );
 
       journal.start("dormant_role_preflight");
       journal.pass();
@@ -316,6 +414,84 @@ test(
 );
 
 test(
+  "same SQL fixture fingerprint with a different Neon branch blocks before mutation",
+  { skip: skipReason },
+  async () => {
+    const adminPool = new Pool({ connectionString: operatorUrl, max: 1 });
+    const mutation = new PlatformRuntimeActivationMutationTracker(target);
+    const wrongBranchBinding = createNeonProviderTargetBinding(
+      {
+        branchId: "br-disposable-recovery-002",
+        database: "runtime_posture_test",
+        endpoints: [
+          {
+            database: "runtime_posture_test",
+            host: new URL(boundDirectOperatorUrl).hostname,
+            id: "ep-disposable-direct-001",
+            kind: "direct",
+          },
+          {
+            database: "runtime_posture_test",
+            host: new URL(boundDockerOperatorUrl).hostname,
+            id: "ep-disposable-docker-002",
+            kind: "pooled",
+          },
+        ],
+        expiresAt: new Date(providerNow + 10 * 60_000).toISOString(),
+        observedAt: new Date(providerNow - 60_000).toISOString(),
+        projectId: "disposable-local-123456",
+        provider: "neon",
+      },
+      { now: providerNow },
+    );
+    let installationCalls = 0;
+    let cleanupCalls = 0;
+
+    try {
+      const before = await assertCompleteDormantPreflight(
+        adminPool,
+        target,
+      );
+      const directIdentity = await readPostgresFixtureIdentity(adminPool);
+      const dockerIdentity = await readDockerPostgresFixtureIdentity({
+        operatorUrl: dockerOperatorUrl,
+        target,
+      });
+      assert.doesNotThrow(() =>
+        assertMatchingPostgresFixtureIdentities(
+          directIdentity,
+          dockerIdentity,
+        ),
+      );
+      assert.throws(
+        () =>
+          mutation.fixtureValidated(
+            target,
+            directIdentity,
+            dockerIdentity,
+            wrongBranchBinding,
+          ),
+        /Runtime activation failed/,
+      );
+      assert.throws(
+        () => mutation.passwordInstallationStarted(target),
+        /Runtime activation failed/,
+      );
+      if (mutation.rollbackRequired(target)) {
+        cleanupCalls += 1;
+      }
+      installationCalls += 0;
+
+      assert.equal(installationCalls, 0);
+      assert.equal(cleanupCalls, 0);
+      assert.deepEqual(await inspectFixture(adminPool, target), before.state);
+    } finally {
+      await adminPool.end();
+    }
+  },
+);
+
+test(
   "two-cluster fixture mismatch blocks before password installation and leaves both unchanged",
   { skip: twoClusterSkipReason },
   async () => {
@@ -324,46 +500,50 @@ test(
       connectionString: secondOperatorUrl,
       max: 1,
     });
-    const mutation = new PlatformRuntimeActivationMutationTracker(target);
+    const mutation = new PlatformRuntimeActivationMutationTracker(
+      twoClusterTarget,
+    );
     let installationCalls = 0;
     let cleanupCalls = 0;
 
     try {
       const firstBefore = await assertCompleteDormantPreflight(
         firstPool,
-        target,
+        twoClusterTarget,
       );
       const secondBefore = await assertCompleteDormantPreflight(
         secondPool,
-        target,
+        twoClusterTarget,
       );
       const firstIdentity = await readPostgresFixtureIdentity(firstPool);
       const wrongDockerIdentity =
         await readDockerPostgresFixtureIdentity({
           operatorUrl: secondDockerOperatorUrl,
+          target: twoClusterTarget,
         });
 
       assert.throws(
         () =>
           mutation.fixtureValidated(
-            target,
+            twoClusterTarget,
             firstIdentity,
             wrongDockerIdentity,
+            twoClusterProviderBinding,
           ),
         /Runtime activation failed/,
       );
-      if (mutation.rollbackRequired(target)) {
+      if (mutation.rollbackRequired(twoClusterTarget)) {
         cleanupCalls += 1;
       }
 
       assert.equal(installationCalls, 0);
       assert.equal(cleanupCalls, 0);
       assert.deepEqual(
-        await inspectFixture(firstPool, target),
+        await inspectFixture(firstPool, twoClusterTarget),
         firstBefore.state,
       );
       assert.deepEqual(
-        await inspectFixture(secondPool, target),
+        await inspectFixture(secondPool, twoClusterTarget),
         secondBefore.state,
       );
     } finally {
@@ -384,6 +564,7 @@ test(
       () =>
         readDockerPostgresFixtureIdentity({
           operatorUrl: dockerOperatorUrl,
+          target,
           timeoutMs: 2_000,
           terminationGraceMs: 500,
           terminationRetryMs: 500,
@@ -648,6 +829,7 @@ async function assertDisposableFixtureIdentity(
   const directIdentity = await readPostgresFixtureIdentity(pool);
   const dockerIdentity = await readDockerPostgresFixtureIdentity({
     operatorUrl: dockerUrl,
+    target: activationTarget,
   });
   assertMatchingPostgresFixtureIdentities(
     directIdentity,
@@ -830,7 +1012,11 @@ async function cleanupIfRequired(pool, mutation, activationTarget) {
     return;
   }
   const currentIdentity = await readPostgresFixtureIdentity(pool);
-  mutation.assertRollbackFixture(activationTarget, currentIdentity);
+  mutation.assertRollbackFixture(
+    activationTarget,
+    currentIdentity,
+    providerBinding,
+  );
   await pool.query(buildRuntimeRoleStatement(activationTarget, "rollback"));
   mutation.rollbackCompleted(activationTarget);
 }

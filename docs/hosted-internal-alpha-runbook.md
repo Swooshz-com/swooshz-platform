@@ -207,22 +207,49 @@ a non-ASCII password. The reviewed Node helper avoids both defects by:
   and
 - returning only `runtime_activation_failed` on failure.
 
-A future wrapper must create one immutable validated runtime-role target with
-`createRuntimeActivationTarget` after exact role-name preflight. Password
-installation, LOGIN enablement, runtime URL construction, identity checks,
-rollback, and dormant-baseline verification must all use that same target
-object. Do not accept or reconstruct another role identifier after mutation
-may have begun. For this programme the validated role remains
-`platform_runtime`, but rollback SQL must be obtained from
+A future wrapper must first obtain fresh endpoint evidence from the official
+Neon control plane during the separately authorised activation window. Reduce
+that response outside this repository to the strict
+`createNeonProviderTargetBinding` input: provider `neon`, exact project ID,
+exact branch ID, expected database, the approved direct and/or pooled compute
+endpoint IDs with their connection kind, provider-observed host, and database
+association, and bounded observation/expiry timestamps. The host is retained
+only inside the opaque binding so each supplied URL can be matched to its
+control-plane endpoint record; it never replaces project/branch identity. Raw
+provider responses, API credentials,
+connection strings, endpoint credentials, and passwords must never be passed
+to the binding factory, printed, logged, or retained as evidence. Missing,
+malformed, future-dated, expired, overlong, duplicate, conflicting, or
+inconclusive evidence fails closed.
+
+The wrapper must then create one immutable validated runtime-role target with
+`createRuntimeActivationTarget`, binding the exact role, expected database,
+direct/operator endpoint ID, Docker/psql endpoint ID, and the opaque provider
+binding. Password installation, LOGIN enablement, runtime URL construction,
+runtime identity validation, rollback, and dormant-baseline verification must
+all use that same target object. Do not accept or reconstruct another role,
+database, endpoint, project, branch, or target after mutation may have begun.
+For this programme the validated role remains `platform_runtime`, but rollback
+SQL must be obtained from
 `buildRuntimeRoleStatement(activationTarget, "rollback")`, never from a
 separately hardcoded role name or unsafe SQL interpolation.
 
-Before mutation, compare fixture identity through both connection paths. The
-operator connection and Docker/psql connection must return the same PostgreSQL
-control-system identifier plus current database OID. This identity is stronger
-than matching hostnames, database names, role names, or server versions and
-must stay out of logs and evidence. A mismatch, malformed response, query
-error, or cardinality error stops before password installation.
+Before mutation, prove through the trusted binding that both the
+direct/operator connection path and Docker/psql path use approved compute
+endpoint identities associated with the exact same Neon project, branch, and
+database. Distinct direct and pooled endpoint variants are permitted only when
+that binding maps both exact endpoint IDs to the same target. Hostnames,
+connection strings, database names, role names, PostgreSQL versions, system
+identifiers, and database OIDs are not branch identity by themselves; endpoint
+transfer during restore can preserve a hostname or connection-string authority
+while changing branches.
+
+Retain the database-side comparison as secondary evidence. The operator
+connection and Docker/psql connection must also return the same PostgreSQL
+control-system identifier plus current database OID. Provider mismatch or
+inconclusive provider evidence stops first; a SQL identity mismatch, malformed
+response, query error, or cardinality error also stops before password
+installation. SQL fingerprint values must stay out of logs and evidence.
 
 The read-only Docker identity probe uses the same confirmed-termination
 boundary as the password operation. Each probe has a unique exact container
@@ -235,15 +262,19 @@ unsettled and activation remains blocked unless both local child close and
 daemon-side absence are proven. Operator URLs remain environment-only, output
 is bounded, stderr is ignored, and public failures remain generic.
 
-Cleanup is forbidden before complete fixture validation. Track whether
+Cleanup is forbidden before complete provider and fixture validation. Track whether
 password installation began or may have begun. If dormant-role or fixture
 identity validation fails, teardown is read-only and must execute no
 `ALTER ROLE`, password reset, LOGIN change, or cleanup SQL. If mutation may
-have begun, cleanup must use only the immutable validated target and the exact
-fixture proven through both connection paths. Bind those identities to the
-mutation tracker with `fixtureValidated` before it can accept
-`passwordInstallationStarted`; immediately before cleanup, re-read the
-operator-side fixture identity and require `assertRollbackFixture` to pass.
+have begun, cleanup must use only the immutable provider-bound target and the
+exact fixture proven through both connection paths. Bind the provider target
+and SQL identities to the mutation tracker with `fixtureValidated` before it
+can accept `passwordInstallationStarted`. Immediately before cleanup, re-read
+the operator-side SQL fixture identity and require the same unexpired trusted
+provider binding to pass `assertRollbackFixture`. A changed database identity,
+project, branch, database association, endpoint association, expired binding,
+or substituted target refuses rollback and requires independent operator
+adjudication; connection-string stability never overrides provider identity.
 
 The complete dormant preflight uses the same reviewed PostgreSQL 17 recursive
 SET-assumable posture query as application startup, anchored to the exact
@@ -266,10 +297,13 @@ A separately authorised second attempt must use this order:
 
 1. Reconfirm the exact repository, database, operator, PostgreSQL 17, recovery
    branches, grant matrix, ownership, schema, ledger, table, and index state.
-2. Create one immutable `activationTarget` for the exact expected
-   `platform_runtime` role. Compare the opaque control-system/database identity
-   from the operator connection with the Docker connection and require an
-   exact match.
+2. Obtain fresh official Neon control-plane evidence and construct one opaque,
+   unexpired provider binding for the exact project, branch, database, and
+   approved direct/Docker endpoint IDs. Create one immutable
+   `activationTarget` for that binding and the exact expected
+   `platform_runtime` role. Then compare the opaque control-system/database
+   identity from the operator connection with the Docker connection and
+   require an exact match as secondary evidence.
 3. Run the shared operator-side recursive authority inspection and pass
    `dormant_role_preflight` only when complete fixture identity, `NOLOGIN`,
    password null, all prohibited-attribute and SET-assumable-role checks,
@@ -291,14 +325,17 @@ A separately authorised second attempt must use this order:
 8. Start a runtime-only child with `DATABASE_URL` and
    `DATABASE_EXPECTED_RUNTIME_ROLE`; explicitly remove
    `DATABASE_OPERATOR_URL`.
-9. Require exact runtime connection, `current_user`, `session_user`, recursive
-   SET-assumable posture, grant matrix, ownership, ledger, table, index, and
-   schema invariants before success finalisation.
+9. Require the same provider-bound target, expected database, exact runtime
+   connection, `current_user`, `session_user`, recursive SET-assumable posture,
+   grant matrix, ownership, ledger, table, index, and schema invariants before
+   success finalisation.
 10. On the first failed or inconclusive phase after mutation, record that
     phase. If and only if the mutation process is confirmed stopped and the
-    mutation tracker requires rollback, execute the rollback statement
-    generated from the same immutable `activationTarget`, verify the complete
-    dormant baseline for that target, and stop without retry.
+    mutation tracker requires rollback, revalidate both the operator-side SQL
+    fixture and the same unexpired provider project/branch/endpoint binding,
+    execute the rollback statement generated from the same immutable
+    `activationTarget`, verify the complete dormant baseline for that target,
+    and stop without retry.
 
 The disposable PostgreSQL integration test
 `tests/platform-runtime-activation-postgres.test.mjs` exercises the same
