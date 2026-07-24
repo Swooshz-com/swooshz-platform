@@ -26,31 +26,37 @@ import {
 } from "../dist/db/runtime-posture.js";
 
 const operatorUrl = process.env.RUNTIME_ACTIVATION_TEST_OPERATOR_URL;
-const dockerOperatorUrl =
-  process.env.RUNTIME_ACTIVATION_TEST_DOCKER_OPERATOR_URL;
 const secondOperatorUrl =
   process.env.RUNTIME_ACTIVATION_TEST_SECOND_OPERATOR_URL;
-const secondDockerOperatorUrl =
-  process.env.RUNTIME_ACTIVATION_TEST_SECOND_DOCKER_OPERATOR_URL;
+const dockerNetwork =
+  process.env.RUNTIME_ACTIVATION_TEST_DOCKER_NETWORK;
+const secondDockerNetwork =
+  process.env.RUNTIME_ACTIVATION_TEST_SECOND_DOCKER_NETWORK;
 const disposableConfirmed =
   process.env.RUNTIME_ACTIVATION_TEST_CONFIRM === "disposable-only";
 const skipReason =
-  operatorUrl && dockerOperatorUrl && disposableConfirmed
+  operatorUrl && dockerNetwork && disposableConfirmed
     ? false
     : "requires the explicitly confirmed disposable activation fixture";
 const twoClusterSkipReason =
-  !skipReason && secondOperatorUrl && secondDockerOperatorUrl
+  !skipReason &&
+  secondOperatorUrl && secondDockerNetwork
     ? false
     : "requires two explicitly confirmed disposable PostgreSQL fixtures";
+const primaryDockerSpawn = dockerSpawnOnNetwork(dockerNetwork);
+const secondaryDockerSpawn = dockerSpawnOnNetwork(secondDockerNetwork);
 const syntheticRuntimePassword =
   "SyntheticRuntime_2026!éΩ漢字_ExtraLength";
 const providerNow = Date.now();
+const disposableEndpointId = "ep-disposable-primary-001";
+const disposableDirectHost =
+  `${disposableEndpointId}.us-east-2.aws.neon.tech`;
+const disposablePooledHost =
+  `${disposableEndpointId}-pooler.us-east-2.aws.neon.tech`;
 const boundDirectOperatorUrl =
-  operatorUrl ??
-  "postgresql://operator:synthetic@direct.fixture.test/runtime_posture_test";
+  `postgresql://platform_app:synthetic@${disposableDirectHost}/runtime_posture_test`;
 const boundDockerOperatorUrl =
-  dockerOperatorUrl ??
-  "postgresql://operator:synthetic@docker.fixture.test/runtime_posture_test";
+  `postgresql://platform_app:synthetic@${disposablePooledHost}/runtime_posture_test`;
 const planningAttestation = createNeonProviderAttestation(
   {
     branchId: "br-disposable-local-001",
@@ -61,22 +67,9 @@ const planningAttestation = createNeonProviderAttestation(
         currentState: "active",
         database: "runtime_posture_test",
         disabled: false,
-        host: new URL(boundDirectOperatorUrl).hostname,
-        id: "ep-disposable-direct-001",
-        kind: "direct",
-        port: effectivePort(boundDirectOperatorUrl),
-        projectId: "disposable-local-123456",
-        type: "read_write",
-      },
-      {
-        branchId: "br-disposable-local-001",
-        currentState: "active",
-        database: "runtime_posture_test",
-        disabled: false,
-        host: new URL(boundDockerOperatorUrl).hostname,
-        id: "ep-disposable-docker-002",
-        kind: "pooled",
-        port: effectivePort(boundDockerOperatorUrl),
+        host: disposableDirectHost,
+        id: disposableEndpointId,
+        port: 5432,
         projectId: "disposable-local-123456",
         type: "read_write",
       },
@@ -92,18 +85,16 @@ const target = createRuntimeActivationTarget(
   "platform_runtime",
   {
     providerAttestation: planningAttestation,
-    directEndpointId: "ep-disposable-direct-001",
+    directEndpointId: disposableEndpointId,
     directOperatorUrl: boundDirectOperatorUrl,
-    dockerEndpointId: "ep-disposable-docker-002",
+    dockerEndpointId: disposableEndpointId,
     dockerEndpointKind: "pooled",
     dockerOperatorUrl: boundDockerOperatorUrl,
     expectedDatabase: "runtime_posture_test",
   },
   { now: providerNow },
 );
-const boundSecondDockerOperatorUrl =
-  secondDockerOperatorUrl ??
-  "postgresql://operator:synthetic@second.fixture.test/runtime_posture_test";
+const boundSecondDockerOperatorUrl = boundDockerOperatorUrl;
 const twoClusterPlanningAttestation = createNeonProviderAttestation(
   {
     branchId: "br-disposable-local-001",
@@ -114,22 +105,9 @@ const twoClusterPlanningAttestation = createNeonProviderAttestation(
         currentState: "active",
         database: "runtime_posture_test",
         disabled: false,
-        host: new URL(boundDirectOperatorUrl).hostname,
-        id: "ep-disposable-direct-001",
-        kind: "direct",
-        port: effectivePort(boundDirectOperatorUrl),
-        projectId: "disposable-local-123456",
-        type: "read_write",
-      },
-      {
-        branchId: "br-disposable-local-001",
-        currentState: "active",
-        database: "runtime_posture_test",
-        disabled: false,
-        host: new URL(boundSecondDockerOperatorUrl).hostname,
-        id: "ep-disposable-second-003",
-        kind: "pooled",
-        port: effectivePort(boundSecondDockerOperatorUrl),
+        host: disposableDirectHost,
+        id: disposableEndpointId,
+        port: 5432,
         projectId: "disposable-local-123456",
         type: "read_write",
       },
@@ -145,9 +123,9 @@ const twoClusterTarget = createRuntimeActivationTarget(
   "platform_runtime",
   {
     providerAttestation: twoClusterPlanningAttestation,
-    directEndpointId: "ep-disposable-direct-001",
+    directEndpointId: disposableEndpointId,
     directOperatorUrl: boundDirectOperatorUrl,
-    dockerEndpointId: "ep-disposable-second-003",
+    dockerEndpointId: disposableEndpointId,
     dockerEndpointKind: "pooled",
     dockerOperatorUrl: boundSecondDockerOperatorUrl,
     expectedDatabase: "runtime_posture_test",
@@ -202,7 +180,8 @@ test(
       const pre = await assertCompleteDormantPreflight(adminPool, target);
       const directIdentity = await readPostgresFixtureIdentity(adminPool);
       const dockerIdentity = await readDockerPostgresFixtureIdentity({
-        operatorUrl: dockerOperatorUrl,
+        operatorUrl: boundDockerOperatorUrl,
+        spawnImpl: primaryDockerSpawn,
         target,
       });
       assertMatchingPostgresFixtureIdentities(
@@ -229,7 +208,8 @@ test(
       );
       try {
         await installRuntimePasswordWithDocker({
-          operatorUrl: dockerOperatorUrl,
+          operatorUrl: boundDockerOperatorUrl,
+          spawnImpl: primaryDockerSpawn,
           target,
           runtimePassword: syntheticRuntimePassword,
           expectedFixtureIdentity: directIdentity,
@@ -264,14 +244,20 @@ test(
 
       journal.start("runtime_connection_construction");
       const runtimeUrl = buildRuntimeDatabaseUrl(
-        operatorUrl,
+        boundDirectOperatorUrl,
         target,
         syntheticRuntimePassword,
       );
       journal.pass();
 
       journal.start("runtime_connection_establishment");
-      runtimePool = new Pool({ connectionString: runtimeUrl, max: 1 });
+      runtimePool = new Pool({
+        connectionString: loopbackRuntimeTransport(
+          runtimeUrl,
+          operatorUrl,
+        ),
+        max: 1,
+      });
       const runtimeClient = await runtimePool.connect();
       journal.pass();
 
@@ -356,7 +342,8 @@ test(
       const pre = await assertCompleteDormantPreflight(adminPool, target);
       const directIdentity = await readPostgresFixtureIdentity(adminPool);
       const dockerIdentity = await readDockerPostgresFixtureIdentity({
-        operatorUrl: dockerOperatorUrl,
+        operatorUrl: boundDockerOperatorUrl,
+        spawnImpl: primaryDockerSpawn,
         target,
       });
       assertMatchingPostgresFixtureIdentities(
@@ -381,7 +368,8 @@ test(
       );
       try {
         await installRuntimePasswordWithDocker({
-          operatorUrl: dockerOperatorUrl,
+          operatorUrl: boundDockerOperatorUrl,
+          spawnImpl: primaryDockerSpawn,
           target,
           runtimePassword: syntheticRuntimePassword,
           expectedFixtureIdentity: directIdentity,
@@ -406,7 +394,11 @@ test(
       );
       journal.pass();
       journal.start("runtime_connection_construction");
-      buildRuntimeDatabaseUrl(operatorUrl, target, syntheticRuntimePassword);
+      buildRuntimeDatabaseUrl(
+        boundDirectOperatorUrl,
+        target,
+        syntheticRuntimePassword,
+      );
       journal.pass();
       journal.start("runtime_connection_establishment");
       journal.pass();
@@ -456,7 +448,8 @@ test(
       await assertDisposableFixtureIdentity(
         adminPool,
         target,
-        dockerOperatorUrl,
+        boundDockerOperatorUrl,
+        primaryDockerSpawn,
       );
       fixtureValidated = true;
       await adminPool.query(
@@ -508,7 +501,8 @@ test(
       );
       const directIdentity = await readPostgresFixtureIdentity(adminPool);
       const dockerIdentity = await readDockerPostgresFixtureIdentity({
-        operatorUrl: dockerOperatorUrl,
+        operatorUrl: boundDockerOperatorUrl,
+        spawnImpl: primaryDockerSpawn,
         target,
       });
       assert.doesNotThrow(() =>
@@ -577,7 +571,8 @@ test(
       const firstIdentity = await readPostgresFixtureIdentity(firstPool);
       const wrongDockerIdentity =
         await readDockerPostgresFixtureIdentity({
-          operatorUrl: secondDockerOperatorUrl,
+          operatorUrl: boundSecondDockerOperatorUrl,
+          spawnImpl: secondaryDockerSpawn,
           target: twoClusterTarget,
         });
 
@@ -622,23 +617,23 @@ test(
     await assert.rejects(
       () =>
         readDockerPostgresFixtureIdentity({
-          operatorUrl: dockerOperatorUrl,
+          operatorUrl: boundDockerOperatorUrl,
           target,
           timeoutMs: 2_000,
           terminationGraceMs: 500,
           terminationRetryMs: 500,
           terminationAttempts: 5,
           spawnImpl(command, args, options) {
-            const delayedArgs = [...args];
+            const delayedArgs = dockerArgsOnNetwork(args, dockerNetwork);
             containerName = delayedArgs[delayedArgs.indexOf("--name") + 1];
             delayedArgs[delayedArgs.length - 1] =
               `sleep 30; ${delayedArgs[delayedArgs.length - 1]}`;
-            assert.equal(delayedArgs.includes(dockerOperatorUrl), false);
+            assert.equal(delayedArgs.includes(boundDockerOperatorUrl), false);
             return spawn(command, delayedArgs, options);
           },
           terminationSpawnImpl(command, args, options) {
             terminationArguments.push([...args]);
-            assert.equal(args.includes(dockerOperatorUrl), false);
+            assert.equal(args.includes(boundDockerOperatorUrl), false);
             return spawn(command, args, options);
           },
         }),
@@ -715,7 +710,8 @@ test(
       await assertDisposableFixtureIdentity(
         adminPool,
         target,
-        dockerOperatorUrl,
+        boundDockerOperatorUrl,
+        primaryDockerSpawn,
       );
       fixtureValidated = true;
       for (const attribute of [
@@ -887,11 +883,13 @@ async function assertDisposableFixtureIdentity(
   pool,
   activationTarget,
   dockerUrl,
+  dockerSpawn,
 ) {
   await assertCompleteDormantPreflight(pool, activationTarget);
   const directIdentity = await readPostgresFixtureIdentity(pool);
   const dockerIdentity = await readDockerPostgresFixtureIdentity({
     operatorUrl: dockerUrl,
+    spawnImpl: dockerSpawn,
     target: activationTarget,
   });
   assertMatchingPostgresFixtureIdentities(
@@ -1074,8 +1072,6 @@ function providerPhaseAttestation(
   observedOffsetMs,
   {
     branchId = "br-disposable-local-001",
-    directUrl = boundDirectOperatorUrl,
-    dockerUrl = boundDockerOperatorUrl,
   } = {},
 ) {
   return createNeonProviderAttestation(
@@ -1088,22 +1084,9 @@ function providerPhaseAttestation(
           currentState: "active",
           database: "runtime_posture_test",
           disabled: false,
-          host: new URL(directUrl).hostname,
-          id: "ep-disposable-direct-001",
-          kind: "direct",
-          port: effectivePort(directUrl),
-          projectId: "disposable-local-123456",
-          type: "read_write",
-        },
-        {
-          branchId,
-          currentState: "active",
-          database: "runtime_posture_test",
-          disabled: false,
-          host: new URL(dockerUrl).hostname,
-          id: "ep-disposable-docker-002",
-          kind: "pooled",
-          port: effectivePort(dockerUrl),
+          host: disposableDirectHost,
+          id: disposableEndpointId,
+          port: 5432,
           projectId: "disposable-local-123456",
           type: "read_write",
         },
@@ -1117,11 +1100,6 @@ function providerPhaseAttestation(
     },
     { now: providerNow },
   );
-}
-
-function effectivePort(connectionUrl) {
-  const parsed = new URL(connectionUrl);
-  return parsed.port ? Number(parsed.port) : 5432;
 }
 
 async function cleanupIfRequired(pool, mutation, activationTarget) {
@@ -1204,4 +1182,40 @@ function readDockerOutput(args) {
       }
     });
   });
+}
+
+function dockerSpawnOnNetwork(network) {
+  return (command, args, options) =>
+    spawn(command, dockerArgsOnNetwork(args, network), options);
+}
+
+function dockerArgsOnNetwork(args, network) {
+  if (
+    !network ||
+    args[0] !== "run" ||
+    args.includes("--network")
+  ) {
+    throw new Error("Disposable Docker network is not configured.");
+  }
+  return ["run", "--network", network, ...args.slice(1)];
+}
+
+function loopbackRuntimeTransport(runtimeUrl, fixtureUrl) {
+  const logical = new URL(runtimeUrl);
+  const fixture = new URL(fixtureUrl);
+  if (
+    logical.hostname !== disposableDirectHost ||
+    effectiveTestPort(logical) !== 5432 ||
+    fixture.hostname !== "127.0.0.1" ||
+    !fixture.port
+  ) {
+    throw new Error("Disposable loopback transport is not configured.");
+  }
+  logical.hostname = fixture.hostname;
+  logical.port = fixture.port;
+  return logical.toString();
+}
+
+function effectiveTestPort(parsed) {
+  return parsed.port ? Number(parsed.port) : 5432;
 }

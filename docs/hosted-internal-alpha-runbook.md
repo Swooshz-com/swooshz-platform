@@ -212,8 +212,9 @@ renewable provider attestation.
 
 The immutable target is created once with `createRuntimeActivationTarget`. Its
 canonical identity contains provider `neon`, exact project ID, exact branch ID,
-expected database, approved compute endpoint IDs, direct or pooled connection
-variants, provider-observed hosts, effective PostgreSQL ports, endpoint
+expected database, one approved compute endpoint ID, its provider-observed
+canonical direct host, derived direct or pooled connection variants, effective
+PostgreSQL port,
 `read_write` capability, and enabled/available state. Observation and expiry
 timestamps are not part of this identity. The target also binds the exact
 runtime role and the direct/operator and Docker/psql paths. Password
@@ -225,14 +226,13 @@ Each provider observation is reduced separately with
 `createNeonProviderAttestation`. During a separately authorised activation
 window, the operator must perform official read-only Neon API observations:
 
-- retrieve each approved compute endpoint with
+- retrieve the approved compute endpoint with
   `GET /api/v2/projects/{project_id}/endpoints/{endpoint_id}`;
 - retain only endpoint `id`, `project_id`, `branch_id`, `host`, `type`,
   `current_state`, and `disabled`;
 - verify the expected database through the official branch database listing;
   and
-- attach only the reviewed direct/pooled variant and effective PostgreSQL port
-  used by the corresponding operator path.
+- associate the reviewed database and the fixed PostgreSQL port `5432`.
 
 The wrapper must map provider-returned `project_id` and `branch_id` directly
 to `projectId` and `branchId` on every endpoint evidence record. It must not
@@ -245,11 +245,27 @@ with another project or branch is rejected before an attestation or phase
 capability can be created.
 
 The strict endpoint evidence record accepts exactly `branchId`,
-`currentState`, `database`, `disabled`, `host`, `id`, `kind`, `port`,
-`projectId`, and `type`. The first-party wrapper maps the reviewed provider
-fields into that record and adds only the independently reviewed database
-association, connection kind, and effective port.
+`currentState`, `database`, `disabled`, `host`, `id`, `port`, `projectId`,
+and `type`. Evidence contains exactly one official compute endpoint, not
+separate caller-labelled direct and pooled endpoint records. The first-party
+wrapper maps the reviewed provider fields into that record and adds only the
+independently reviewed database association and fixed port `5432`.
 Any missing or extra field fails closed.
+
+For the currently documented AWS Neon authority, the official direct host
+must be exactly `<endpoint-id>.<region>.aws.neon.tech`. The first label must
+equal the complete endpoint ID, with no prefix, suffix, case, trailing-dot,
+empty-label, Unicode, IP, localhost, private/internal, example/test, arbitrary
+public-domain, or generic `neon.tech` alternative. The activation contract
+intentionally supports only the explicitly reviewed `.aws.neon.tech` suffix.
+If a separately authorised production observation returns another official
+suffix, stop and review that provider contract instead of widening validation.
+
+Pooled access is not another compute endpoint. It retains the same endpoint
+ID and exact suffix and changes only the first label to
+`<endpoint-id>-pooler`. A missing, doubled, or misspelt `-pooler`, another
+endpoint ID, another region/suffix, a second read-write compute ID, or any port other than `5432` fails closed. Direct-only and direct-plus-pooled paths
+are supported only when they bind the same provider compute identity.
 
 The reducer accepts only its strict reviewed shape. Do not pass a raw API response object.
 Raw response bodies, bearer tokens, API credentials,
@@ -269,7 +285,8 @@ observation and create a new opaque attestation. Each phase attestation must:
 - still be valid and no more than 60 seconds old;
 - be strictly newer than the previously accepted planning or phase
   observation; and
-- preserve branch, database, endpoint ID, variant, host, effective port,
+- preserve branch, database, endpoint ID, canonical direct host, derived
+  connection variant, effective port,
   write capability, enabled state, availability, and each endpoint's
   provider-returned project and branch association.
 
@@ -289,10 +306,10 @@ substituted, reused, cross-target, or wrong-phase capability fails before the
 executable boundary.
 
 Before mutation, prove through the trusted binding that both the
-direct/operator connection path and Docker/psql path use approved compute
-endpoint identities associated with the exact same Neon project, branch, and
-database. Distinct direct and pooled endpoint variants are permitted only when
-that binding maps both exact endpoint IDs to the same target. Hostnames,
+direct/operator connection path and Docker/psql path use the same approved
+compute endpoint associated with the exact Neon project, branch, and database.
+The pooled hostname is derived from that one endpoint; a separately supplied
+pooled endpoint identity is forbidden. Hostnames,
 connection strings, database names, role names, PostgreSQL versions, system
 identifiers, and database OIDs are not branch identity by themselves; endpoint
 transfer during restore can preserve a hostname or connection-string authority
@@ -349,6 +366,14 @@ transport/security allowlist: `sslmode` with `require`, `verify-ca`, or
 password replace URL authority credentials while the reviewed host, port, and
 database remain unchanged.
 
+Before creating any Docker environment, password input buffer, Docker command,
+or child process, and before consuming a password capability, parse the
+credential-bearing operator URL and require its exact host, effective port
+`5432`, expected database, non-empty user information, and reviewed
+TLS/channel-binding parameters to match the immutable direct or derived pooled
+authority. Authority failure is generic, consumes no capability, propagates
+no URL or child environment, and cannot make mutation or cleanup possible.
+
 A separately authorised second attempt must use this order:
 
 1. Reconfirm the exact repository, database, operator, PostgreSQL 17, recovery
@@ -356,7 +381,8 @@ A separately authorised second attempt must use this order:
 2. Obtain a planning observation with the official read-only endpoint and
    branch-database API reads above. Reduce only the reviewed fields to one
    opaque attestation and create one immutable `activationTarget` for the exact
-   project, branch, database, endpoint IDs, variants, hosts, effective ports,
+   project, branch, database, single endpoint ID, canonical direct host,
+   derived variants, port `5432`,
    write capability, availability, and `platform_runtime` role. Compare the
    opaque control-system/database identity from the operator connection with
    the Docker connection as secondary evidence.
@@ -405,8 +431,13 @@ A separately authorised second attempt must use this order:
 The disposable PostgreSQL integration test
 `tests/platform-runtime-activation-postgres.test.mjs` exercises the same
 phase contract with synthetic credentials. It is skipped unless both
-lab-specific URLs and `RUNTIME_ACTIVATION_TEST_CONFIRM=disposable-only` are
-provided. Passing that lab does not authorise or prove a production activation.
+exact loopback fixture URLs, exact private Docker network names, and
+`RUNTIME_ACTIVATION_TEST_CONFIRM=disposable-only` are provided. Its logical
+activation URLs remain canonical Neon-shaped `:5432` authorities. Explicit
+test-only runtime and Docker-network transports map those logical hosts to
+exact-name loopback-only fixture containers. The production reducer is
+unchanged; these transports add no production bypass switch and do not depend
+on `NODE_ENV=test`. Passing that lab does not authorise or prove a production activation.
 
 The readiness path is split deliberately:
 

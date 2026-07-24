@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { readFileSync } from "node:fs";
 import { Writable } from "node:stream";
 import test from "node:test";
 
@@ -25,8 +26,15 @@ import {
   runtimeActivationRole,
 } from "../scripts/platform-runtime-activation-contract.mjs";
 
+const endpointId = "ep-direct-approved-001";
+const directHost =
+  `${endpointId}.us-east-2.aws.neon.tech`;
+const pooledHost =
+  `${endpointId}-pooler.us-east-2.aws.neon.tech`;
 const operatorUrl =
-  "postgresql://operator:synthetic@db.example.test:5544/platform?sslmode=require&channel_binding=require";
+  `postgresql://operator:synthetic@${directHost}/platform?sslmode=require&channel_binding=require`;
+const pooledOperatorUrl =
+  `postgresql://operator:synthetic@${pooledHost}/platform?sslmode=require&channel_binding=require`;
 const runtimePassword = "SyntheticRuntime_2026!Lab_ExtraLength";
 const providerNow = Date.now();
 
@@ -241,8 +249,8 @@ test("runtime URL construction encodes credentials and preserves only reviewed t
     decodeURIComponent(parsed.password),
     "Synthetic!éΩ:/?#[]@%_ExtraLength2026",
   );
-  assert.equal(parsed.hostname, "db.example.test");
-  assert.equal(parsed.port, "5544");
+  assert.equal(parsed.hostname, directHost);
+  assert.equal(parsed.port, "");
   assert.equal(parsed.pathname, "/platform");
   assert.deepEqual([...parsed.searchParams.entries()], [
     ["channel_binding", "require"],
@@ -275,7 +283,7 @@ test("runtime URL construction rejects identity, endpoint, session, unknown, and
     assert.throws(
       () =>
         buildRuntimeDatabaseUrl(
-          `postgresql://operator:synthetic@db.example.test:5544/platform?${parameters}`,
+          `postgresql://operator:synthetic@${directHost}/platform?${parameters}`,
           target,
           runtimePassword,
         ),
@@ -389,20 +397,8 @@ test("fresh equivalent attestation replaces legacy exact-object rejection at the
 });
 
 test("fresh endpoint rebind blocks before mutation despite equal SQL identity and stable authority", async () => {
-  const stableAuthority =
-    "postgresql://operator:synthetic@stable.example.test/platform";
-  const stableEndpoints = [
-    providerEndpoint({
-      host: "stable.example.test",
-      port: 5432,
-    }),
-    providerEndpoint({
-      host: "stable.example.test",
-      id: "ep-pooled-approved-002",
-      kind: "pooled",
-      port: 5432,
-    }),
-  ];
+  const stableAuthority = operatorUrl;
+  const stableEndpoints = [providerEndpoint()];
   const { binding, target } = activationTarget("platform_runtime", {
     directOperatorUrl: stableAuthority,
     dockerOperatorUrl: stableAuthority,
@@ -855,11 +851,6 @@ test("renewed attestations reject every immutable provider identity drift", () =
   const { target } = activationTarget();
   const changedDatabaseEndpoints = [
     providerEndpoint({ database: "other_database" }),
-    providerEndpoint({
-      database: "other_database",
-      id: "ep-pooled-approved-002",
-      kind: "pooled",
-    }),
   ];
   const driftCases = [
     ["project", { projectId: "other-project-654321" }],
@@ -875,10 +866,10 @@ test("renewed attestations reject every immutable provider identity drift", () =
       "endpoint id",
       {
         endpoints: [
-          providerEndpoint({ id: "ep-other-approved-003" }),
           providerEndpoint({
-            id: "ep-pooled-approved-002",
-            kind: "pooled",
+            host:
+              "ep-other-approved-003.us-east-2.aws.neon.tech",
+            id: "ep-other-approved-003",
           }),
         ],
       },
@@ -887,10 +878,9 @@ test("renewed attestations reject every immutable provider identity drift", () =
       "host",
       {
         endpoints: [
-          providerEndpoint({ host: "other.example.test" }),
           providerEndpoint({
-            id: "ep-pooled-approved-002",
-            kind: "pooled",
+            host:
+              `${endpointId}.us-west-2.aws.neon.tech`,
           }),
         ],
       },
@@ -900,22 +890,6 @@ test("renewed attestations reject every immutable provider identity drift", () =
       {
         endpoints: [
           providerEndpoint({ port: 6432 }),
-          providerEndpoint({
-            id: "ep-pooled-approved-002",
-            kind: "pooled",
-          }),
-        ],
-      },
-    ],
-    [
-      "connection variant",
-      {
-        endpoints: [
-          providerEndpoint({ kind: "pooled" }),
-          providerEndpoint({
-            id: "ep-pooled-approved-002",
-            kind: "pooled",
-          }),
         ],
       },
     ],
@@ -924,10 +898,6 @@ test("renewed attestations reject every immutable provider identity drift", () =
       {
         endpoints: [
           providerEndpoint({ type: "read_only" }),
-          providerEndpoint({
-            id: "ep-pooled-approved-002",
-            kind: "pooled",
-          }),
         ],
       },
     ],
@@ -936,10 +906,6 @@ test("renewed attestations reject every immutable provider identity drift", () =
       {
         endpoints: [
           providerEndpoint({ disabled: true }),
-          providerEndpoint({
-            id: "ep-pooled-approved-002",
-            kind: "pooled",
-          }),
         ],
       },
     ],
@@ -948,10 +914,6 @@ test("renewed attestations reject every immutable provider identity drift", () =
       {
         endpoints: [
           providerEndpoint({ currentState: "init" }),
-          providerEndpoint({
-            id: "ep-pooled-approved-002",
-            kind: "pooled",
-          }),
         ],
       },
     ],
@@ -1096,28 +1058,8 @@ test("identical SQL fingerprints from different Neon projects fail closed", asyn
   assert.equal(tracker.rollbackRequired(target), false);
 });
 
-test("only provider-approved direct and pooled endpoint identities can bind activation paths", () => {
+test("direct and pooled paths bind one provider compute identity", () => {
   const { binding, target } = activationTarget();
-  const sharedComputeBinding = providerBinding({
-    endpoints: [
-      providerEndpoint(),
-      providerEndpoint({ kind: "pooled" }),
-    ],
-  });
-  const distinctVariantBinding = providerBinding({
-    endpoints: [
-      providerEndpoint({
-        host: "direct.example.test",
-        port: 5432,
-      }),
-      providerEndpoint({
-        host: "pooled.example.test",
-        id: "ep-pooled-approved-002",
-        kind: "pooled",
-        port: 5432,
-      }),
-    ],
-  });
 
   assert.doesNotThrow(() =>
     assertRuntimeActivationProviderBinding(target, binding, {
@@ -1130,7 +1072,7 @@ test("only provider-approved direct and pooled endpoint identities can bind acti
         "platform_runtime",
         {
           providerAttestation: binding,
-          directEndpointId: "ep-direct-approved-001",
+          directEndpointId: endpointId,
           directOperatorUrl: operatorUrl,
           dockerEndpointId: "ep-unlisted-999",
           dockerEndpointKind: "pooled",
@@ -1147,9 +1089,9 @@ test("only provider-approved direct and pooled endpoint identities can bind acti
         "platform_runtime",
         {
           providerAttestation: binding,
-          directEndpointId: "ep-direct-approved-001",
+          directEndpointId: endpointId,
           directOperatorUrl: operatorUrl,
-          dockerEndpointId: "ep-pooled-approved-002",
+          dockerEndpointId: endpointId,
           dockerEndpointKind: "pooled",
           dockerOperatorUrl:
             "postgresql://operator:synthetic@unapproved.example.test/platform",
@@ -1163,14 +1105,98 @@ test("only provider-approved direct and pooled endpoint identities can bind acti
     createRuntimeActivationTarget(
       "platform_runtime",
       {
-        providerAttestation: sharedComputeBinding,
-        directEndpointId: "ep-direct-approved-001",
+        providerAttestation: binding,
+        directEndpointId: endpointId,
         directOperatorUrl: operatorUrl,
-        dockerEndpointId: "ep-direct-approved-001",
+        dockerEndpointId: endpointId,
         dockerEndpointKind: "pooled",
-        dockerOperatorUrl: operatorUrl,
+        dockerOperatorUrl: pooledOperatorUrl,
         expectedDatabase: "platform",
       },
+      { now: providerNow },
+    ),
+  );
+  assert.throws(() =>
+    createRuntimeActivationTarget(
+      "platform_runtime",
+      {
+        providerAttestation: binding,
+        directEndpointId: endpointId,
+        directOperatorUrl: operatorUrl,
+        dockerEndpointId: "ep-pooled-approved-002",
+        dockerEndpointKind: "pooled",
+        dockerOperatorUrl: pooledOperatorUrl,
+        expectedDatabase: "platform",
+      },
+      { now: providerNow },
+    ),
+    PlatformRuntimeActivationError,
+  );
+});
+
+test("production evidence accepts only canonical Neon direct authority", () => {
+  const invalidEndpoints = [
+    providerEndpoint({ host: "db.example.test" }),
+    providerEndpoint({ host: "localhost" }),
+    providerEndpoint({ host: "127.0.0.1" }),
+    providerEndpoint({ host: "::1" }),
+    providerEndpoint({ host: `${endpointId}.example` }),
+    providerEndpoint({ host: `${endpointId}.example.test` }),
+    providerEndpoint({ host: `${endpointId}.internal` }),
+    providerEndpoint({ host: `${endpointId}.public.example.com` }),
+    providerEndpoint({ host: `${directHost}.` }),
+    providerEndpoint({ host: directHost.toUpperCase() }),
+    providerEndpoint({
+      host: `${endpointId}.us-\u0435ast-2.aws.neon.tech`,
+    }),
+    providerEndpoint({
+      host: `x${endpointId}.us-east-2.aws.neon.tech`,
+    }),
+    providerEndpoint({
+      host: `${endpointId}-other.us-east-2.aws.neon.tech`,
+    }),
+    providerEndpoint({
+      host: "ep-other-approved-003.us-east-2.aws.neon.tech",
+    }),
+    providerEndpoint({
+      host: `${endpointId}.attacker.neon.tech`,
+    }),
+    providerEndpoint({ id: "ep-other-approved-003" }),
+    providerEndpoint({ id: `${endpointId}-pooler` }),
+    providerEndpoint({ port: 5544 }),
+    { ...providerEndpoint(), kind: "direct" },
+  ];
+
+  for (const endpoint of invalidEndpoints) {
+    assert.throws(
+      () =>
+        createNeonProviderAttestation(
+          providerEvidence({ endpoints: [endpoint] }),
+          { now: providerNow },
+        ),
+      PlatformRuntimeActivationError,
+    );
+  }
+
+  assert.doesNotThrow(() => providerBinding());
+});
+
+test("operator URLs require exact direct or derived pooled Neon authority on port 5432", () => {
+  const binding = providerBinding();
+  const targetOptions = {
+    providerAttestation: binding,
+    directEndpointId: endpointId,
+    directOperatorUrl: operatorUrl,
+    dockerEndpointId: endpointId,
+    dockerEndpointKind: "pooled",
+    dockerOperatorUrl: pooledOperatorUrl,
+    expectedDatabase: "platform",
+  };
+
+  assert.doesNotThrow(() =>
+    createRuntimeActivationTarget(
+      "platform_runtime",
+      targetOptions,
       { now: providerNow },
     ),
   );
@@ -1178,33 +1204,143 @@ test("only provider-approved direct and pooled endpoint identities can bind acti
     createRuntimeActivationTarget(
       "platform_runtime",
       {
-        providerAttestation: distinctVariantBinding,
-        directEndpointId: "ep-direct-approved-001",
-        directOperatorUrl:
-          "postgresql://operator:synthetic@direct.example.test/platform",
-        dockerEndpointId: "ep-pooled-approved-002",
-        dockerEndpointKind: "pooled",
-        dockerOperatorUrl:
-          "postgresql://operator:synthetic@pooled.example.test/platform",
-        expectedDatabase: "platform",
+        ...targetOptions,
+        dockerEndpointKind: "direct",
+        dockerOperatorUrl: operatorUrl,
       },
       { now: providerNow },
     ),
   );
+
+  const invalidDirectUrls = [
+    `postgresql://operator:synthetic@${pooledHost}/platform`,
+    `postgresql://operator:synthetic@${directHost}:5544/platform`,
+    `postgresql://operator:synthetic@${directHost}/other_database`,
+    `postgresql://${directHost}/platform`,
+    `postgresql://operator:synthetic@${directHost.toUpperCase()}/platform`,
+    `postgresql://operator:synthetic@${directHost}./platform`,
+    "postgresql://operator:synthetic@127.0.0.1/platform",
+  ];
+  for (const directOperatorUrl of invalidDirectUrls) {
+    assert.throws(
+      () =>
+        createRuntimeActivationTarget(
+          "platform_runtime",
+          { ...targetOptions, directOperatorUrl },
+          { now: providerNow },
+        ),
+      PlatformRuntimeActivationError,
+    );
+  }
+
+  const invalidPooledUrls = [
+    operatorUrl,
+    `postgresql://operator:synthetic@${endpointId}-pooler-pooler.us-east-2.aws.neon.tech/platform`,
+    `postgresql://operator:synthetic@${endpointId}-pooled.us-east-2.aws.neon.tech/platform`,
+    "postgresql://operator:synthetic@ep-other-approved-003-pooler.us-east-2.aws.neon.tech/platform",
+    `postgresql://operator:synthetic@${endpointId}-pooler.us-west-2.aws.neon.tech/platform`,
+    `postgresql://operator:synthetic@${pooledHost}:6432/platform`,
+  ];
+  for (const dockerOperatorUrl of invalidPooledUrls) {
+    assert.throws(
+      () =>
+        createRuntimeActivationTarget(
+          "platform_runtime",
+          { ...targetOptions, dockerOperatorUrl },
+          { now: providerNow },
+        ),
+      PlatformRuntimeActivationError,
+    );
+  }
+});
+
+test("authority mismatch cannot consume a permit or propagate credentials to Docker", async () => {
+  const { binding, target } = activationTarget();
+  const identity = await fixtureIdentity("123456789", "16384");
+  const { phasePermit, tracker } = authorisePasswordForFixture({
+    binding,
+    identity,
+    target,
+  });
+  let spawnCalls = 0;
+  const error = await captureAsyncFailure(
+    () =>
+      installRuntimePasswordWithDocker({
+        operatorUrl:
+          "postgresql://operator:synthetic@private.internal/platform",
+        target,
+        runtimePassword,
+        expectedFixtureIdentity: identity,
+        phasePermit,
+        spawnImpl() {
+          spawnCalls += 1;
+        },
+      }),
+    PlatformRuntimeActivationError,
+  );
+
+  assert.equal(spawnCalls, 0);
+  assert.equal(tracker.rollbackRequired(target), false);
+  assert.deepEqual(
+    { code: error.code, message: error.message },
+    {
+      code: "runtime_activation_failed",
+      message: "Runtime activation failed.",
+    },
+  );
+
+  await installRuntimePasswordWithDocker({
+    operatorUrl,
+    target,
+    runtimePassword,
+    expectedFixtureIdentity: identity,
+    phasePermit,
+    spawnImpl() {
+      spawnCalls += 1;
+      const child = fakeChild();
+      queueMicrotask(() => child.emit("close", 0, null));
+      return child;
+    },
+  });
+  assert.equal(spawnCalls, 1);
+  assert.equal(tracker.rollbackRequired(target), true);
+
+  const source = readFileSync(
+    new URL(
+      "../scripts/platform-runtime-activation-contract.mjs",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const installation = source.slice(
+    source.indexOf("export async function installRuntimePasswordWithDocker"),
+    source.indexOf("async function runReadOnlyDockerPsql"),
+  );
+  assert.ok(
+    installation.indexOf("assertProviderConnectionEndpoint(") <
+      installation.indexOf("consumeRuntimeActivationPhasePermit("),
+  );
+  assert.ok(
+    installation.indexOf("consumeRuntimeActivationPhasePermit(") <
+      installation.indexOf("Buffer.from("),
+  );
+  assert.ok(
+    installation.indexOf("Buffer.from(") <
+      installation.indexOf("dockerEnvironment(operatorUrl)"),
+  );
+  assert.doesNotMatch(
+    JSON.stringify({
+      code: error.code,
+      message: error.message,
+      safeReport: new PlatformRuntimeActivationPhaseJournal().safeReport(),
+    }),
+    /postgresql:\/\/|private\.internal|operator|synthetic|DATABASE_OPERATOR_URL|childEnvironment/iu,
+  );
 });
 
 test("endpoint transfer after restore cannot reuse a stable connection authority", async () => {
-  const stableAuthority =
-    "postgresql://operator:synthetic@stable.example.test/platform";
-  const stableEndpoints = [
-    providerEndpoint({ host: "stable.example.test", port: 5432 }),
-    providerEndpoint({
-      host: "stable.example.test",
-      id: "ep-pooled-approved-002",
-      kind: "pooled",
-      port: 5432,
-    }),
-  ];
+  const stableAuthority = operatorUrl;
+  const stableEndpoints = [providerEndpoint()];
   const { target } = activationTarget("platform_runtime", {
     directOperatorUrl: stableAuthority,
     dockerOperatorUrl: stableAuthority,
@@ -1311,7 +1447,7 @@ test("Neon evidence validation rejects missing, malformed, stale, ambiguous, or 
   );
 });
 
-test("endpoint associations are mandatory, provider-returned, consistent, and order-independent", () => {
+test("endpoint associations are mandatory and evidence contains one compute endpoint", () => {
   const missingProject = { ...providerEndpoint() };
   const missingBranch = { ...providerEndpoint() };
   delete missingProject.projectId;
@@ -1325,7 +1461,11 @@ test("endpoint associations are mandatory, provider-returned, consistent, and or
   });
   const pooledEndpoint = providerEndpoint({
     id: "ep-pooled-approved-002",
-    kind: "pooled",
+    host: "ep-pooled-approved-002.us-east-2.aws.neon.tech",
+  });
+  const secondReadWriteCompute = providerEndpoint({
+    id: "ep-second-approved-003",
+    host: "ep-second-approved-003.us-east-2.aws.neon.tech",
   });
   const conflictingBranchSet = [
     providerEndpoint(),
@@ -1356,6 +1496,7 @@ test("endpoint associations are mandatory, provider-returned, consistent, and or
     [providerEndpoint({ branchId: "branch-without-prefix" })],
     [reboundEndpoint, pooledEndpoint],
     [otherProjectEndpoint, pooledEndpoint],
+    [providerEndpoint(), secondReadWriteCompute],
     conflictingBranchSet,
     [...conflictingBranchSet].reverse(),
     conflictingProjectSet,
@@ -1436,10 +1577,10 @@ test("rollback requires unchanged SQL identity, provider branch, evidence, endpo
     }),
     renewedAttestation(-20_000, {
       endpoints: [
-        providerEndpoint({ id: "ep-rebound-direct-003" }),
         providerEndpoint({
-          id: "ep-rebound-pooled-004",
-          kind: "pooled",
+          host:
+            "ep-rebound-direct-003.us-east-2.aws.neon.tech",
+          id: "ep-rebound-direct-003",
         }),
       ],
     }),
@@ -1527,15 +1668,8 @@ test("provider target metadata is opaque and only exposed through deliberate non
   assert.equal(metadata.branchId, "br-production-main-001");
   assert.deepEqual(metadata.endpoints, [
     {
-      id: "ep-direct-approved-001",
-      kind: "direct",
-      port: 5544,
-      type: "read_write",
-    },
-    {
-      id: "ep-pooled-approved-002",
-      kind: "pooled",
-      port: 5544,
+      id: endpointId,
+      port: 5432,
       type: "read_write",
     },
   ]);
@@ -2252,10 +2386,9 @@ function providerEndpoint(overrides = {}) {
     currentState: "active",
     database: "platform",
     disabled: false,
-    host: "db.example.test",
-    id: "ep-direct-approved-001",
-    kind: "direct",
-    port: 5544,
+    host: directHost,
+    id: endpointId,
+    port: 5432,
     projectId: "project-alpha-123456",
     type: "read_write",
     ...overrides,
@@ -2270,12 +2403,6 @@ function providerEvidence(overrides = {}, now = providerNow) {
   const endpoints =
     overrides.endpoints ?? [
       providerEndpoint({ branchId, projectId }),
-      providerEndpoint({
-        branchId,
-        id: "ep-pooled-approved-002",
-        kind: "pooled",
-        projectId,
-      }),
     ];
   return {
     branchId,
@@ -2326,12 +2453,6 @@ function endpointAssociationMismatchEvidence(
           branchId: endpointBranchId,
           projectId: endpointProjectId,
         }),
-        providerEndpoint({
-          branchId: endpointBranchId,
-          id: "ep-pooled-approved-002",
-          kind: "pooled",
-          projectId: endpointProjectId,
-        }),
       ],
       expiresAt: new Date(now + 5 * 60_000).toISOString(),
       observedAt: new Date(now + observedOffsetMs).toISOString(),
@@ -2343,10 +2464,10 @@ function endpointAssociationMismatchEvidence(
 function activationTarget(
   runtimeRole = "platform_runtime",
   {
-    directEndpointId = "ep-direct-approved-001",
+    directEndpointId = endpointId,
     directOperatorUrl = operatorUrl,
-    dockerEndpointId = "ep-pooled-approved-002",
-    dockerEndpointKind = "pooled",
+    dockerEndpointId = endpointId,
+    dockerEndpointKind = "direct",
     dockerOperatorUrl = operatorUrl,
     evidenceOverrides = {},
     expectedDatabase = "platform",
@@ -2421,6 +2542,16 @@ function captureSyncFailure(callback) {
     return error;
   }
   assert.fail("Expected activation failure.");
+}
+
+async function captureAsyncFailure(callback, ExpectedError) {
+  try {
+    await callback();
+  } catch (error) {
+    assert.ok(error instanceof ExpectedError);
+    return error;
+  }
+  assert.fail("Expected callback to reject.");
 }
 
 function delay(milliseconds) {

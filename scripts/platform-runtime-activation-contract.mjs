@@ -36,7 +36,6 @@ const neonEndpointEvidenceKeys = Object.freeze([
   "disabled",
   "host",
   "id",
-  "kind",
   "port",
   "projectId",
   "type",
@@ -392,29 +391,41 @@ export function createRuntimeActivationTarget(
     providerValue,
     directEndpointId,
     expectedDatabase,
-    "direct",
   );
   const dockerEndpoint = providerEndpoint(
     providerValue,
     dockerEndpointId,
     expectedDatabase,
-    dockerEndpointKind,
   );
   if (
     providerValue.database !== expectedDatabase ||
     !directEndpoint ||
-    !dockerEndpoint
+    !dockerEndpoint ||
+    directEndpoint !== dockerEndpoint ||
+    directEndpointId !== dockerEndpointId ||
+    !neonEndpointKinds.has(dockerEndpointKind)
   ) {
     throw new PlatformRuntimeActivationError();
   }
+  const directEndpointHost = directEndpoint.host;
+  const dockerEndpointHost =
+    dockerEndpointKind === "pooled"
+      ? pooledNeonHost(dockerEndpoint)
+      : directEndpointHost;
   assertProviderConnectionUrl(
     directOperatorUrl,
-    directEndpoint,
+    {
+      host: directEndpointHost,
+      port: directEndpoint.port,
+    },
     expectedDatabase,
   );
   assertProviderConnectionUrl(
     dockerOperatorUrl,
-    dockerEndpoint,
+    {
+      host: dockerEndpointHost,
+      port: dockerEndpoint.port,
+    },
     expectedDatabase,
   );
   const target = Object.freeze({});
@@ -423,10 +434,10 @@ export function createRuntimeActivationTarget(
     target,
     Object.freeze({
       directEndpointId,
-      directEndpointHost: directEndpoint.host,
+      directEndpointHost,
       dockerEndpointId,
       dockerEndpointKind,
-      dockerEndpointHost: dockerEndpoint.host,
+      dockerEndpointHost,
       dockerEndpointPort: dockerEndpoint.port,
       expectedDatabase,
       immutableProviderIdentity: providerValue.identity,
@@ -459,7 +470,6 @@ export function runtimeActivationNonSecretProviderMetadata(target) {
       providerValue.endpoints.map((endpoint) =>
         Object.freeze({
           id: endpoint.id,
-          kind: endpoint.kind,
           port: endpoint.port,
           type: endpoint.type,
         }),
@@ -1298,8 +1308,7 @@ function validateNeonProviderEvidence(evidence, now) {
     !safeNeonBranchId.test(evidence.branchId) ||
     !safeDatabaseIdentifier.test(evidence.database) ||
     !Array.isArray(evidence.endpoints) ||
-    evidence.endpoints.length === 0 ||
-    evidence.endpoints.length > 8
+    evidence.endpoints.length !== 1
   ) {
     throw new PlatformRuntimeActivationError();
   }
@@ -1315,9 +1324,7 @@ function validateNeonProviderEvidence(evidence, now) {
     throw new PlatformRuntimeActivationError();
   }
 
-  const endpointIdentities = new Set();
   const endpoints = evidence.endpoints.map((endpoint) => {
-    const endpointIdentity = `${endpoint?.id}:${endpoint?.kind}`;
     if (
       !endpoint ||
       typeof endpoint !== "object" ||
@@ -1328,20 +1335,15 @@ function validateNeonProviderEvidence(evidence, now) {
       endpoint.projectId !== evidence.projectId ||
       endpoint.branchId !== evidence.branchId ||
       !safeNeonEndpointId.test(endpoint.id) ||
-      !neonEndpointKinds.has(endpoint.kind) ||
-      !Number.isInteger(endpoint.port) ||
-      endpoint.port < 1 ||
-      endpoint.port > 65_535 ||
+      endpoint.port !== 5432 ||
       !neonEndpointTypes.has(endpoint.type) ||
       !neonEndpointStates.has(endpoint.currentState) ||
       typeof endpoint.disabled !== "boolean" ||
-      !safeProviderHost(endpoint.host) ||
-      endpoint.database !== evidence.database ||
-      endpointIdentities.has(endpointIdentity)
+      !canonicalNeonDirectHost(endpoint.host, endpoint.id) ||
+      endpoint.database !== evidence.database
     ) {
       throw new PlatformRuntimeActivationError();
     }
-    endpointIdentities.add(endpointIdentity);
     const normalizedEndpoint = Object.freeze({
       available:
         endpoint.disabled === false &&
@@ -1350,9 +1352,8 @@ function validateNeonProviderEvidence(evidence, now) {
       currentState: endpoint.currentState,
       database: endpoint.database,
       disabled: endpoint.disabled,
-      host: endpoint.host.toLowerCase(),
+      host: endpoint.host,
       id: endpoint.id,
-      kind: endpoint.kind,
       port: endpoint.port,
       projectId: endpoint.projectId,
       type: endpoint.type,
@@ -1360,7 +1361,7 @@ function validateNeonProviderEvidence(evidence, now) {
     return normalizedEndpoint;
   });
   endpoints.sort((left, right) =>
-    `${left.id}:${left.kind}`.localeCompare(`${right.id}:${right.kind}`),
+    left.id.localeCompare(right.id),
   );
 
   const normalized = {
@@ -1383,7 +1384,6 @@ function validateNeonProviderEvidence(evidence, now) {
         disabled: endpoint.disabled,
         host: endpoint.host,
         id: endpoint.id,
-        kind: endpoint.kind,
         port: endpoint.port,
         projectId: endpoint.projectId,
         type: endpoint.type,
@@ -1472,21 +1472,15 @@ function providerEndpoint(
   providerValue,
   endpointId,
   expectedDatabase,
-  expectedKind,
 ) {
-  if (
-    !safeNeonEndpointId.test(endpointId) ||
-    !neonEndpointKinds.has(expectedKind)
-  ) {
+  if (!safeNeonEndpointId.test(endpointId)) {
     return undefined;
   }
   const endpoint = providerValue.endpoints.find(
-    (candidate) =>
-      candidate.id === endpointId && candidate.kind === expectedKind,
+    (candidate) => candidate.id === endpointId,
   );
   return endpoint &&
     endpoint.database === expectedDatabase &&
-    endpoint.kind === expectedKind &&
     endpoint.type === "read_write" &&
     endpoint.disabled === false &&
     endpoint.available === true
@@ -1527,8 +1521,10 @@ function parseOperatorUrl(value) {
     !["postgres:", "postgresql:"].includes(parsed.protocol) ||
     !parsed.hostname ||
     !parsed.username ||
+    !parsed.password ||
     parsed.pathname.length <= 1 ||
-    parsed.hash
+    parsed.hash ||
+    rawUrlHostname(value) !== parsed.hostname
   ) {
     throw new PlatformRuntimeActivationError();
   }
@@ -1567,7 +1563,7 @@ function assertProviderConnectionEndpoint(
   expectedPort,
 ) {
   if (
-    parsed.hostname.toLowerCase() !== expectedHost ||
+    parsed.hostname !== expectedHost ||
     effectivePostgresPort(parsed) !== expectedPort
   ) {
     throw new PlatformRuntimeActivationError();
@@ -1585,15 +1581,54 @@ function effectivePostgresPort(parsed) {
   return port;
 }
 
-function safeProviderHost(value) {
+function canonicalNeonDirectHost(value, endpointId) {
+  if (
+    typeof value !== "string" ||
+    typeof endpointId !== "string" ||
+    value.length > 253 ||
+    endpointId.endsWith("-") ||
+    endpointId.endsWith("-pooler") ||
+    !/^[a-z0-9.-]+$/u.test(value)
+  ) {
+    return false;
+  }
+  const labels = value.split(".");
   return (
-    typeof value === "string" &&
-    value.length > 0 &&
-    value.length <= 253 &&
-    value === value.toLowerCase() &&
-    /^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/u.test(value) &&
-    !value.includes("..")
+    labels.length === 5 &&
+    labels[0] === endpointId &&
+    /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(labels[1]) &&
+    labels.slice(2).join(".") === "aws.neon.tech"
   );
+}
+
+function pooledNeonHost(endpoint) {
+  if (!canonicalNeonDirectHost(endpoint?.host, endpoint?.id)) {
+    throw new PlatformRuntimeActivationError();
+  }
+  const labels = endpoint.host.split(".");
+  labels[0] = `${endpoint.id}-pooler`;
+  return labels.join(".");
+}
+
+function rawUrlHostname(value) {
+  if (typeof value !== "string") {
+    throw new PlatformRuntimeActivationError();
+  }
+  const schemeEnd = value.indexOf("://");
+  if (schemeEnd < 0) {
+    throw new PlatformRuntimeActivationError();
+  }
+  const authorityStart = schemeEnd + 3;
+  const remainder = value.slice(authorityStart);
+  const delimiter = remainder.search(/[/?#]/u);
+  const authority =
+    delimiter < 0 ? remainder : remainder.slice(0, delimiter);
+  const hostPort = authority.slice(authority.lastIndexOf("@") + 1);
+  if (!hostPort || hostPort.startsWith("[")) {
+    return hostPort;
+  }
+  const colon = hostPort.lastIndexOf(":");
+  return colon < 0 ? hostPort : hostPort.slice(0, colon);
 }
 
 function validateConnectionParameters(parsed) {
