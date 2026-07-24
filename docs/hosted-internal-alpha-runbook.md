@@ -207,32 +207,68 @@ a non-ASCII password. The reviewed Node helper avoids both defects by:
   and
 - returning only `runtime_activation_failed` on failure.
 
-A future wrapper must first obtain fresh endpoint evidence from the official
-Neon control plane during the separately authorised activation window. Reduce
-that response outside this repository to the strict
-`createNeonProviderTargetBinding` input: provider `neon`, exact project ID,
-exact branch ID, expected database, the approved direct and/or pooled compute
-endpoint IDs with their connection kind, provider-observed host, and database
-association, and bounded observation/expiry timestamps. The host is retained
-only inside the opaque binding so each supplied URL can be matched to its
-control-plane endpoint record; it never replaces project/branch identity. Raw
-provider responses, API credentials,
-connection strings, endpoint credentials, and passwords must never be passed
-to the binding factory, printed, logged, or retained as evidence. Missing,
-malformed, future-dated, expired, overlong, duplicate, conflicting, or
-inconclusive evidence fails closed.
+The activation wrapper must keep immutable target identity separate from
+renewable provider attestation.
 
-The wrapper must then create one immutable validated runtime-role target with
-`createRuntimeActivationTarget`, binding the exact role, expected database,
-direct/operator endpoint ID, Docker/psql endpoint ID, and the opaque provider
-binding. Password installation, LOGIN enablement, runtime URL construction,
-runtime identity validation, rollback, and dormant-baseline verification must
-all use that same target object. Do not accept or reconstruct another role,
-database, endpoint, project, branch, or target after mutation may have begun.
-For this programme the validated role remains `platform_runtime`, but rollback
-SQL must be obtained from
-`buildRuntimeRoleStatement(activationTarget, "rollback")`, never from a
-separately hardcoded role name or unsafe SQL interpolation.
+The immutable target is created once with `createRuntimeActivationTarget`. Its
+canonical identity contains provider `neon`, exact project ID, exact branch ID,
+expected database, approved compute endpoint IDs, direct or pooled connection
+variants, provider-observed hosts, effective PostgreSQL ports, endpoint
+`read_write` capability, and enabled/available state. Observation and expiry
+timestamps are not part of this identity. The target also binds the exact
+runtime role and the direct/operator and Docker/psql paths. Password
+installation, LOGIN enablement, runtime URL construction, runtime identity
+validation, success finalisation, rollback, and dormant-baseline verification
+must retain that same opaque target object.
+
+Each provider observation is reduced separately with
+`createNeonProviderAttestation`. During a separately authorised activation
+window, the operator must perform official read-only Neon API observations:
+
+- retrieve each approved compute endpoint with
+  `GET /api/v2/projects/{project_id}/endpoints/{endpoint_id}`;
+- retain only endpoint `id`, `project_id`, `branch_id`, `host`, `type`,
+  `current_state`, and `disabled`;
+- verify the expected database through the official branch database listing;
+  and
+- attach only the reviewed direct/pooled variant and effective PostgreSQL port
+  used by the corresponding operator path.
+
+The reducer accepts only its strict reviewed shape. Do not pass a raw API response object.
+Raw response bodies, bearer tokens, API credentials,
+connection strings, usernames, endpoint credentials, and passwords must never
+enter the attestation, arguments, logs, safe reports, or public errors.
+Provider IDs and timestamps are non-secret metadata only when deliberately
+classified as such. Missing, malformed, future-dated, expired, overlong,
+duplicate, conflicting, disabled, unavailable, read-only, or inconclusive
+evidence fails closed.
+
+The planning attestation may create the immutable target, but it cannot
+authorise a later mutation phase. Immediately before password installation,
+LOGIN enablement, success finalisation, and rollback, obtain a new official
+observation and create a new opaque attestation. Each phase attestation must:
+
+- have the exact canonical immutable identity;
+- still be valid and no more than 60 seconds old;
+- be strictly newer than the previously accepted planning or phase
+  observation; and
+- preserve branch, database, endpoint ID, variant, host, effective port,
+  write capability, enabled state, and availability.
+
+Object identity is not reused or compared. A fresh equivalent attestation is
+accepted; an older or equal observation is rejected even if unexpired. A
+changed endpoint mapping is rejected even if endpoint ID, hostname,
+connection authority, system identifier, and database OID remain stable.
+
+Successful phase validation issues a single-use opaque capability bound to the
+exact target and phase. `installRuntimePasswordWithDocker` cannot spawn without
+the password-phase capability and the fixture identity it carries.
+`buildRuntimeRoleStatement` cannot generate LOGIN or rollback SQL without the
+matching capability. Success finalisation consumes its own capability.
+Rollback SQL is generated only after the unchanged SQL fixture and a fresh
+matching rollback attestation issue the rollback capability. A missing,
+substituted, reused, cross-target, or wrong-phase capability fails before the
+executable boundary.
 
 Before mutation, prove through the trusted binding that both the
 direct/operator connection path and Docker/psql path use approved compute
@@ -262,19 +298,21 @@ unsettled and activation remains blocked unless both local child close and
 daemon-side absence are proven. Operator URLs remain environment-only, output
 is bounded, stderr is ignored, and public failures remain generic.
 
-Cleanup is forbidden before complete provider and fixture validation. Track whether
-password installation began or may have begun. If dormant-role or fixture
+Cleanup is forbidden before complete provider and fixture validation. Track
+whether password installation began or may have begun. If dormant-role or fixture
 identity validation fails, teardown is read-only and must execute no
 `ALTER ROLE`, password reset, LOGIN change, or cleanup SQL. If mutation may
 have begun, cleanup must use only the immutable provider-bound target and the
 exact fixture proven through both connection paths. Bind the provider target
 and SQL identities to the mutation tracker with `fixtureValidated` before it
-can accept `passwordInstallationStarted`. Immediately before cleanup, re-read
-the operator-side SQL fixture identity and require the same unexpired trusted
-provider binding to pass `assertRollbackFixture`. A changed database identity,
-project, branch, database association, endpoint association, expired binding,
-or substituted target refuses rollback and requires independent operator
-adjudication; connection-string stability never overrides provider identity.
+can issue a password-installation capability from a fresh attestation.
+Immediately before cleanup, re-read the operator-side SQL fixture identity,
+obtain another strictly newer official observation, and require both to pass
+`assertRollbackFixture`. A changed database identity, project, branch,
+database association, endpoint identity, variant, host, effective port, write
+capability, enabled/available state, stale attestation, or substituted target
+refuses rollback. The safe outcome remains inconclusive/manual cleanup. Never retarget rollback
+to the newly observed branch.
 
 The complete dormant preflight uses the same reviewed PostgreSQL 17 recursive
 SET-assumable posture query as application startup, anchored to the exact
@@ -297,28 +335,32 @@ A separately authorised second attempt must use this order:
 
 1. Reconfirm the exact repository, database, operator, PostgreSQL 17, recovery
    branches, grant matrix, ownership, schema, ledger, table, and index state.
-2. Obtain fresh official Neon control-plane evidence and construct one opaque,
-   unexpired provider binding for the exact project, branch, database, and
-   approved direct/Docker endpoint IDs. Create one immutable
-   `activationTarget` for that binding and the exact expected
-   `platform_runtime` role. Then compare the opaque control-system/database
-   identity from the operator connection with the Docker connection and
-   require an exact match as secondary evidence.
+2. Obtain a planning observation with the official read-only endpoint and
+   branch-database API reads above. Reduce only the reviewed fields to one
+   opaque attestation and create one immutable `activationTarget` for the exact
+   project, branch, database, endpoint IDs, variants, hosts, effective ports,
+   write capability, availability, and `platform_runtime` role. Compare the
+   opaque control-system/database identity from the operator connection with
+   the Docker connection as secondary evidence.
 3. Run the shared operator-side recursive authority inspection and pass
    `dormant_role_preflight` only when complete fixture identity, `NOLOGIN`,
    password null, all prohibited-attribute and SET-assumable-role checks,
    reviewed grants, ownership, and database-shape assertions are conclusive
    and safe.
-4. Only after step 3, mark password mutation as possibly begun. Obtain one
-   fresh password through an approved hidden mechanism and pass it in protected
-   process memory to `installRuntimePasswordWithDocker` with the same
-   `activationTarget` and fixture identity. Do not use a PowerShell
-   string-to-native pipeline.
+4. Only after step 3, perform a new official read-only control-plane
+   observation. Require an exact, valid, at-most-60-second-old attestation that
+   is strictly newer than planning, then issue the single-use password-phase
+   capability. Obtain one fresh password through an approved hidden mechanism
+   and pass it in protected process memory to
+   `installRuntimePasswordWithDocker` with the same target, fixture identity,
+   and capability. The helper marks mutation as possible only when it consumes
+   that capability. Do not use a PowerShell string-to-native pipeline.
 5. If password installation times out, wait for confirmed child termination
    and container removal before any rollback. Never start database rollback
    while the mutation process may still be alive.
-6. Verify password-present plus `NOLOGIN`, then execute the LOGIN statement
-   generated from the same `activationTarget`.
+6. Verify password-present plus `NOLOGIN`, obtain another strictly newer fresh
+   official observation, and execute only the LOGIN statement generated from
+   the same target and its single-use LOGIN capability.
 7. Build the restricted URL with `buildRuntimeDatabaseUrl` and the same target,
    preserving only the reviewed endpoint, port, database, and allowlisted
    transport/security parameters.
@@ -328,14 +370,19 @@ A separately authorised second attempt must use this order:
 9. Require the same provider-bound target, expected database, exact runtime
    connection, `current_user`, `session_user`, recursive SET-assumable posture,
    grant matrix, ownership, ledger, table, index, and schema invariants before
-   success finalisation.
+   success finalisation. Then obtain another strictly newer fresh provider
+   attestation and consume the resulting success capability. Never reuse the
+   planning, password, or LOGIN observation.
 10. On the first failed or inconclusive phase after mutation, record that
     phase. If and only if the mutation process is confirmed stopped and the
-    mutation tracker requires rollback, revalidate both the operator-side SQL
-    fixture and the same unexpired provider project/branch/endpoint binding,
-    execute the rollback statement generated from the same immutable
-    `activationTarget`, verify the complete dormant baseline for that target,
-    and stop without retry.
+    mutation tracker requires rollback, revalidate the operator-side SQL
+    fixture, obtain another strictly newer official observation, and require
+    an exact fresh attestation before issuing a rollback capability. Execute
+    only the rollback statement generated from that capability and the same
+    immutable target. If provider lookup fails or shows any identity or
+    write-capability drift, do not run rollback against the changed target;
+    report only an inconclusive/manual-cleanup state and stop without retry.
+    Otherwise verify the complete dormant baseline and stop without retry.
 
 The disposable PostgreSQL integration test
 `tests/platform-runtime-activation-postgres.test.mjs` exercises the same

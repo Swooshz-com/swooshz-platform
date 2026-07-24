@@ -9,10 +9,12 @@ import {
   PlatformRuntimeActivationMutationTracker,
   PlatformRuntimeActivationPhaseJournal,
   assertMatchingPostgresFixtureIdentities,
+  assertRuntimeActivationProviderAttestation,
   assertRuntimeActivationProviderBinding,
   assertRuntimeIdentity,
   buildRuntimeDatabaseUrl,
   buildRuntimeRoleStatement,
+  createNeonProviderAttestation,
   createNeonProviderTargetBinding,
   createRuntimeActivationTarget,
   installRuntimePasswordWithDocker,
@@ -104,16 +106,21 @@ test("validated activation target binds every role-sensitive operation", async (
   const wrongIdentity = await fixtureIdentity("987654321", "16384");
 
   assert.equal(runtimeActivationRole(target), "platform_runtime");
-  assert.equal(
-    buildRuntimeRoleStatement(target, "enable_login"),
-    'ALTER ROLE "platform_runtime" LOGIN',
-  );
-  assert.equal(
-    buildRuntimeRoleStatement(target, "rollback"),
-    'ALTER ROLE "platform_runtime" NOLOGIN PASSWORD NULL',
+  assert.throws(
+    () => buildRuntimeRoleStatement(target, "enable_login"),
+    PlatformRuntimeActivationError,
   );
   assert.throws(
-    () => tracker.passwordInstallationStarted(target),
+    () => buildRuntimeRoleStatement(target, "rollback"),
+    PlatformRuntimeActivationError,
+  );
+  assert.throws(
+    () =>
+      tracker.authorisePasswordInstallation(
+        target,
+        renewedAttestation(-30_000),
+        { now: providerNow },
+      ),
     PlatformRuntimeActivationError,
   );
   assert.throws(
@@ -134,31 +141,47 @@ test("validated activation target binds every role-sensitive operation", async (
     binding,
     { now: providerNow },
   );
-  tracker.passwordInstallationStarted(target, { now: providerNow });
+  const passwordPermit = tracker.authorisePasswordInstallation(
+    target,
+    renewedAttestation(-30_000),
+    { now: providerNow },
+  );
+  await installRuntimePasswordWithDocker({
+    operatorUrl,
+    target,
+    runtimePassword,
+    expectedFixtureIdentity: directIdentity,
+    phasePermit: passwordPermit,
+    spawnImpl() {
+      const child = fakeChild();
+      queueMicrotask(() => child.emit("close", 0, null));
+      return child;
+    },
+  });
   assert.equal(tracker.rollbackRequired(target), true);
-  assert.doesNotThrow(() =>
-    tracker.assertRollbackFixture(
-      target,
-      directIdentity,
-      binding,
-      { now: providerNow },
-    ),
+  const loginPermit = tracker.authoriseLoginEnablement(
+    target,
+    renewedAttestation(-20_000),
+    { now: providerNow },
+  );
+  assert.equal(
+    buildRuntimeRoleStatement(target, "enable_login", {
+      phasePermit: loginPermit,
+    }),
+    'ALTER ROLE "platform_runtime" LOGIN',
   );
   assert.throws(
     () =>
       tracker.assertRollbackFixture(
         target,
         wrongIdentity,
-        binding,
+        renewedAttestation(-10_000),
         { now: providerNow },
       ),
     PlatformRuntimeActivationError,
   );
   assert.throws(
-    () =>
-      buildRuntimeRoleStatement(target, "rollback", {
-        now: providerNow + 10 * 60_000,
-      }),
+    () => buildRuntimeRoleStatement(target, "rollback"),
     PlatformRuntimeActivationError,
   );
   assert.throws(
@@ -169,7 +192,12 @@ test("validated activation target binds every role-sensitive operation", async (
     () => buildRuntimeRoleStatement({}, "rollback"),
     PlatformRuntimeActivationError,
   );
-  tracker.successFinalised(target, binding, { now: providerNow });
+  const successPermit = tracker.authoriseSuccessFinalisation(
+    target,
+    renewedAttestation(-10_000),
+    { now: providerNow },
+  );
+  tracker.successFinalised(target, successPermit);
   assert.equal(tracker.rollbackRequired(target), false);
 });
 
@@ -183,7 +211,12 @@ test("failed initial validation causes zero mutation and zero cleanup", () => {
     throw new PlatformRuntimeActivationError();
   }, PlatformRuntimeActivationError);
   assert.throws(
-    () => tracker.passwordInstallationStarted(target, { now: providerNow }),
+    () =>
+      tracker.authorisePasswordInstallation(
+        target,
+        renewedAttestation(-30_000),
+        { now: providerNow },
+      ),
     PlatformRuntimeActivationError,
   );
   if (tracker.rollbackRequired(target)) {
@@ -308,6 +341,564 @@ test("fixture identities are opaque and require exact cluster and database ident
   assert.deepEqual(Object.keys(directIdentity), []);
 });
 
+test("fresh equivalent attestation replaces legacy exact-object rejection at the password boundary", async () => {
+  const { binding: planningAttestation, target } = activationTarget();
+  const freshAttestation = renewedAttestation(-30_000);
+  const identity = await fixtureIdentity("123456789", "16384");
+  const tracker = new PlatformRuntimeActivationMutationTracker(target);
+  let installationCalls = 0;
+
+  assert.notEqual(freshAttestation, planningAttestation);
+  assert.equal(freshAttestation === planningAttestation, false);
+  assert.doesNotThrow(() =>
+    assertRuntimeActivationProviderAttestation(
+      target,
+      freshAttestation,
+      { now: providerNow },
+    ),
+  );
+
+  tracker.fixtureValidated(
+    target,
+    identity,
+    identity,
+    planningAttestation,
+    { now: providerNow },
+  );
+  const phasePermit = tracker.authorisePasswordInstallation(
+    target,
+    freshAttestation,
+    { now: providerNow },
+  );
+  await installRuntimePasswordWithDocker({
+    operatorUrl,
+    target,
+    runtimePassword,
+    expectedFixtureIdentity: identity,
+    phasePermit,
+    spawnImpl() {
+      installationCalls += 1;
+      const child = fakeChild();
+      queueMicrotask(() => child.emit("close", 0, null));
+      return child;
+    },
+  });
+
+  assert.equal(installationCalls, 1);
+  assert.equal(tracker.rollbackRequired(target), true);
+});
+
+test("fresh endpoint rebind blocks before mutation despite equal SQL identity and stable authority", async () => {
+  const stableAuthority =
+    "postgresql://operator:synthetic@stable.example.test/platform";
+  const stableEndpoints = [
+    providerEndpoint({
+      host: "stable.example.test",
+      port: 5432,
+    }),
+    providerEndpoint({
+      host: "stable.example.test",
+      id: "ep-pooled-approved-002",
+      kind: "pooled",
+      port: 5432,
+    }),
+  ];
+  const { binding, target } = activationTarget("platform_runtime", {
+    directOperatorUrl: stableAuthority,
+    dockerOperatorUrl: stableAuthority,
+    evidenceOverrides: { endpoints: stableEndpoints },
+  });
+  const identity = await fixtureIdentity("123456789", "16384");
+  const tracker = new PlatformRuntimeActivationMutationTracker(target);
+  let installationCalls = 0;
+  let loginCalls = 0;
+  let cleanupCalls = 0;
+
+  tracker.fixtureValidated(
+    target,
+    identity,
+    identity,
+    binding,
+    { now: providerNow },
+  );
+  const rebind = renewedAttestation(-30_000, {
+    branchId: "br-recovery-branch-002",
+    endpoints: stableEndpoints,
+  });
+  const error = captureSyncFailure(
+    () =>
+      tracker.authorisePasswordInstallation(
+        target,
+        rebind,
+        { now: providerNow },
+      ),
+    PlatformRuntimeActivationError,
+  );
+  if (tracker.rollbackRequired(target)) {
+    cleanupCalls += 1;
+  }
+
+  assert.equal(installationCalls, 0);
+  assert.equal(loginCalls, 0);
+  assert.equal(cleanupCalls, 0);
+  assert.equal(tracker.rollbackRequired(target), false);
+  assert.doesNotMatch(
+    JSON.stringify({
+      code: error.code,
+      message: error.message,
+      safeReport: new PlatformRuntimeActivationPhaseJournal().safeReport(),
+    }),
+    /postgresql:\/\/|operator|synthetic|project-alpha|br-recovery|ep-pooled/u,
+  );
+  installationCalls += 0;
+  loginCalls += 0;
+});
+
+test("fresh rebind after password installation blocks LOGIN generation", async () => {
+  const { binding, target } = activationTarget();
+  const identity = await fixtureIdentity("123456789", "16384");
+  const tracker = new PlatformRuntimeActivationMutationTracker(target);
+  tracker.fixtureValidated(
+    target,
+    identity,
+    identity,
+    binding,
+    { now: providerNow },
+  );
+  const passwordPermit = tracker.authorisePasswordInstallation(
+    target,
+    renewedAttestation(-30_000),
+    { now: providerNow },
+  );
+  await installRuntimePasswordWithDocker({
+    operatorUrl,
+    target,
+    runtimePassword,
+    expectedFixtureIdentity: identity,
+    phasePermit: passwordPermit,
+    spawnImpl() {
+      const child = fakeChild();
+      queueMicrotask(() => child.emit("close", 0, null));
+      return child;
+    },
+  });
+
+  assert.throws(
+    () =>
+      tracker.authoriseLoginEnablement(
+        target,
+        renewedAttestation(-20_000, {
+          branchId: "br-recovery-branch-002",
+        }),
+        { now: providerNow },
+      ),
+    PlatformRuntimeActivationError,
+  );
+  assert.throws(
+    () => buildRuntimeRoleStatement(target, "enable_login"),
+    PlatformRuntimeActivationError,
+  );
+  assert.equal(tracker.rollbackRequired(target), true);
+});
+
+test("success finalisation requires a later unchanged attestation", async () => {
+  const { binding, target } = activationTarget();
+  const identity = await fixtureIdentity("123456789", "16384");
+  const tracker = new PlatformRuntimeActivationMutationTracker(target);
+  tracker.fixtureValidated(
+    target,
+    identity,
+    identity,
+    binding,
+    { now: providerNow },
+  );
+  const passwordAttestation = renewedAttestation(-30_000);
+  const passwordPermit = tracker.authorisePasswordInstallation(
+    target,
+    passwordAttestation,
+    { now: providerNow },
+  );
+  await installRuntimePasswordWithDocker({
+    operatorUrl,
+    target,
+    runtimePassword,
+    expectedFixtureIdentity: identity,
+    phasePermit: passwordPermit,
+    spawnImpl() {
+      const child = fakeChild();
+      queueMicrotask(() => child.emit("close", 0, null));
+      return child;
+    },
+  });
+  const loginAttestation = renewedAttestation(-20_000);
+  const loginPermit = tracker.authoriseLoginEnablement(
+    target,
+    loginAttestation,
+    { now: providerNow },
+  );
+  buildRuntimeRoleStatement(target, "enable_login", {
+    phasePermit: loginPermit,
+  });
+
+  assert.throws(
+    () =>
+      tracker.authoriseSuccessFinalisation(
+        target,
+        loginAttestation,
+        { now: providerNow },
+      ),
+    PlatformRuntimeActivationError,
+  );
+  assert.throws(
+    () =>
+      tracker.authoriseSuccessFinalisation(
+        target,
+        renewedAttestation(-10_000, {
+          branchId: "br-recovery-branch-002",
+        }),
+        { now: providerNow },
+      ),
+    PlatformRuntimeActivationError,
+  );
+  assert.throws(
+    () => tracker.successFinalised(target, {}),
+    PlatformRuntimeActivationError,
+  );
+
+  const successPermit = tracker.authoriseSuccessFinalisation(
+    target,
+    renewedAttestation(-10_000),
+    { now: providerNow },
+  );
+  tracker.successFinalised(target, successPermit);
+  assert.equal(tracker.rollbackRequired(target), false);
+});
+
+test("rollback refuses a rebound endpoint and leaves manual cleanup required", async () => {
+  const { binding, target } = activationTarget();
+  const identity = await fixtureIdentity("123456789", "16384");
+  const tracker = new PlatformRuntimeActivationMutationTracker(target);
+  tracker.fixtureValidated(
+    target,
+    identity,
+    identity,
+    binding,
+    { now: providerNow },
+  );
+  const passwordPermit = tracker.authorisePasswordInstallation(
+    target,
+    renewedAttestation(-30_000),
+    { now: providerNow },
+  );
+  await installRuntimePasswordWithDocker({
+    operatorUrl,
+    target,
+    runtimePassword,
+    expectedFixtureIdentity: identity,
+    phasePermit: passwordPermit,
+    spawnImpl() {
+      const child = fakeChild();
+      queueMicrotask(() => child.emit("close", 0, null));
+      return child;
+    },
+  });
+
+  const error = captureSyncFailure(
+    () =>
+      tracker.assertRollbackFixture(
+        target,
+        identity,
+        renewedAttestation(-20_000, {
+          branchId: "br-recovery-branch-002",
+        }),
+        { now: providerNow },
+      ),
+    PlatformRuntimeActivationError,
+  );
+
+  assert.equal(tracker.rollbackRequired(target), true);
+  assert.throws(
+    () => buildRuntimeRoleStatement(target, "rollback"),
+    PlatformRuntimeActivationError,
+  );
+  assert.doesNotMatch(
+    JSON.stringify({
+      code: error.code,
+      message: error.message,
+      manualCleanupRequired: tracker.rollbackRequired(target),
+    }),
+    /postgresql:\/\/|operator|synthetic|project-alpha|br-recovery|ep-direct/u,
+  );
+});
+
+test("phase attestations are strictly ordered, fresh, valid, and single-use", async () => {
+  const { binding, target } = activationTarget();
+  const identity = await fixtureIdentity("123456789", "16384");
+  const tracker = new PlatformRuntimeActivationMutationTracker(target);
+  tracker.fixtureValidated(
+    target,
+    identity,
+    identity,
+    binding,
+    { now: providerNow },
+  );
+
+  for (const invalidAttestation of [
+    renewedAttestation(-70_000),
+    providerBinding(),
+    null,
+  ]) {
+    assert.throws(
+      () =>
+        tracker.authorisePasswordInstallation(
+          target,
+          invalidAttestation,
+          { now: providerNow },
+        ),
+      PlatformRuntimeActivationError,
+    );
+  }
+
+  const passwordAttestation = renewedAttestation(-30_000);
+  const passwordPermit = tracker.authorisePasswordInstallation(
+    target,
+    passwordAttestation,
+    { now: providerNow },
+  );
+  await installRuntimePasswordWithDocker({
+    operatorUrl,
+    target,
+    runtimePassword,
+    expectedFixtureIdentity: identity,
+    phasePermit: passwordPermit,
+    spawnImpl() {
+      const child = fakeChild();
+      queueMicrotask(() => child.emit("close", 0, null));
+      return child;
+    },
+  });
+  await assert.rejects(
+    () =>
+      installRuntimePasswordWithDocker({
+        operatorUrl,
+        target,
+        runtimePassword,
+        expectedFixtureIdentity: identity,
+        phasePermit: passwordPermit,
+        spawnImpl() {
+          throw new Error("must not spawn");
+        },
+      }),
+    PlatformRuntimeActivationError,
+  );
+  assert.throws(
+    () =>
+      tracker.authoriseLoginEnablement(
+        target,
+        passwordAttestation,
+        { now: providerNow },
+      ),
+    PlatformRuntimeActivationError,
+  );
+  assert.throws(
+    () =>
+      tracker.authoriseLoginEnablement(
+        target,
+        renewedAttestation(-30_000),
+        { now: providerNow },
+      ),
+    PlatformRuntimeActivationError,
+  );
+
+  for (const invalidEvidence of [
+    providerEvidence({
+      observedAt: new Date(providerNow + 1).toISOString(),
+    }),
+    providerEvidence({
+      expiresAt: new Date(providerNow - 1).toISOString(),
+      observedAt: new Date(providerNow - 20_000).toISOString(),
+    }),
+    providerEvidence({
+      expiresAt: new Date(
+        providerNow + 15 * 60_000 + 1_001,
+      ).toISOString(),
+      observedAt: new Date(providerNow - 1_000).toISOString(),
+    }),
+  ]) {
+    assert.throws(
+      () =>
+        createNeonProviderAttestation(invalidEvidence, {
+          now: providerNow,
+        }),
+      PlatformRuntimeActivationError,
+    );
+  }
+});
+
+test("renewed attestations reject every immutable provider identity drift", () => {
+  const { target } = activationTarget();
+  const changedDatabaseEndpoints = [
+    providerEndpoint({ database: "other_database" }),
+    providerEndpoint({
+      database: "other_database",
+      id: "ep-pooled-approved-002",
+      kind: "pooled",
+    }),
+  ];
+  const driftCases = [
+    ["project", { projectId: "other-project-654321" }],
+    ["branch", { branchId: "br-recovery-branch-002" }],
+    [
+      "database",
+      {
+        database: "other_database",
+        endpoints: changedDatabaseEndpoints,
+      },
+    ],
+    [
+      "endpoint id",
+      {
+        endpoints: [
+          providerEndpoint({ id: "ep-other-approved-003" }),
+          providerEndpoint({
+            id: "ep-pooled-approved-002",
+            kind: "pooled",
+          }),
+        ],
+      },
+    ],
+    [
+      "host",
+      {
+        endpoints: [
+          providerEndpoint({ host: "other.example.test" }),
+          providerEndpoint({
+            id: "ep-pooled-approved-002",
+            kind: "pooled",
+          }),
+        ],
+      },
+    ],
+    [
+      "port",
+      {
+        endpoints: [
+          providerEndpoint({ port: 6432 }),
+          providerEndpoint({
+            id: "ep-pooled-approved-002",
+            kind: "pooled",
+          }),
+        ],
+      },
+    ],
+    [
+      "connection variant",
+      {
+        endpoints: [
+          providerEndpoint({ kind: "pooled" }),
+          providerEndpoint({
+            id: "ep-pooled-approved-002",
+            kind: "pooled",
+          }),
+        ],
+      },
+    ],
+    [
+      "read capability",
+      {
+        endpoints: [
+          providerEndpoint({ type: "read_only" }),
+          providerEndpoint({
+            id: "ep-pooled-approved-002",
+            kind: "pooled",
+          }),
+        ],
+      },
+    ],
+    [
+      "disabled",
+      {
+        endpoints: [
+          providerEndpoint({ disabled: true }),
+          providerEndpoint({
+            id: "ep-pooled-approved-002",
+            kind: "pooled",
+          }),
+        ],
+      },
+    ],
+    [
+      "unavailable",
+      {
+        endpoints: [
+          providerEndpoint({ currentState: "init" }),
+          providerEndpoint({
+            id: "ep-pooled-approved-002",
+            kind: "pooled",
+          }),
+        ],
+      },
+    ],
+  ];
+
+  for (const [name, overrides] of driftCases) {
+    assert.throws(
+      () =>
+        assertRuntimeActivationProviderAttestation(
+          target,
+          renewedAttestation(-30_000, overrides),
+          { now: providerNow },
+        ),
+      PlatformRuntimeActivationError,
+      name,
+    );
+  }
+});
+
+test("opaque phase permits prevent direct password, LOGIN, success, and rollback bypass", async () => {
+  const { target } = activationTarget();
+  const identity = await fixtureIdentity("123456789", "16384");
+  let spawnCalled = false;
+
+  await assert.rejects(
+    () =>
+      installRuntimePasswordWithDocker({
+        operatorUrl,
+        target,
+        runtimePassword,
+        expectedFixtureIdentity: identity,
+        spawnImpl() {
+          spawnCalled = true;
+        },
+      }),
+    PlatformRuntimeActivationError,
+  );
+  assert.equal(spawnCalled, false);
+  assert.throws(
+    () => buildRuntimeRoleStatement(target, "enable_login"),
+    PlatformRuntimeActivationError,
+  );
+  assert.throws(
+    () => buildRuntimeRoleStatement(target, "rollback"),
+    PlatformRuntimeActivationError,
+  );
+  const tracker = new PlatformRuntimeActivationMutationTracker(target);
+  assert.throws(
+    () => tracker.successFinalised(target, {}),
+    PlatformRuntimeActivationError,
+  );
+  assert.throws(
+    () =>
+      tracker.assertRollbackFixture(
+        target,
+        identity,
+        renewedAttestation(-30_000),
+        { now: providerNow },
+      ),
+    PlatformRuntimeActivationError,
+  );
+});
+
 test("same SQL fingerprint from different Neon branches fails before mutation or cleanup", async () => {
   const { binding, target } = activationTarget();
   const otherBranchBinding = providerBinding({
@@ -341,7 +932,12 @@ test("same SQL fingerprint from different Neon branches fails before mutation or
     PlatformRuntimeActivationError,
   );
   assert.throws(
-    () => tracker.passwordInstallationStarted(target, { now: providerNow }),
+    () =>
+      tracker.authorisePasswordInstallation(
+        target,
+        renewedAttestation(-30_000),
+        { now: providerNow },
+      ),
     PlatformRuntimeActivationError,
   );
   if (tracker.rollbackRequired(target)) {
@@ -394,11 +990,15 @@ test("only provider-approved direct and pooled endpoint identities can bind acti
   });
   const distinctVariantBinding = providerBinding({
     endpoints: [
-      providerEndpoint({ host: "direct.example.test" }),
+      providerEndpoint({
+        host: "direct.example.test",
+        port: 5432,
+      }),
       providerEndpoint({
         host: "pooled.example.test",
         id: "ep-pooled-approved-002",
         kind: "pooled",
+        port: 5432,
       }),
     ],
   });
@@ -413,7 +1013,7 @@ test("only provider-approved direct and pooled endpoint identities can bind acti
       createRuntimeActivationTarget(
         "platform_runtime",
         {
-          providerBinding: binding,
+          providerAttestation: binding,
           directEndpointId: "ep-direct-approved-001",
           directOperatorUrl: operatorUrl,
           dockerEndpointId: "ep-unlisted-999",
@@ -430,7 +1030,7 @@ test("only provider-approved direct and pooled endpoint identities can bind acti
       createRuntimeActivationTarget(
         "platform_runtime",
         {
-          providerBinding: binding,
+          providerAttestation: binding,
           directEndpointId: "ep-direct-approved-001",
           directOperatorUrl: operatorUrl,
           dockerEndpointId: "ep-pooled-approved-002",
@@ -447,7 +1047,7 @@ test("only provider-approved direct and pooled endpoint identities can bind acti
     createRuntimeActivationTarget(
       "platform_runtime",
       {
-        providerBinding: sharedComputeBinding,
+        providerAttestation: sharedComputeBinding,
         directEndpointId: "ep-direct-approved-001",
         directOperatorUrl: operatorUrl,
         dockerEndpointId: "ep-direct-approved-001",
@@ -462,7 +1062,7 @@ test("only provider-approved direct and pooled endpoint identities can bind acti
     createRuntimeActivationTarget(
       "platform_runtime",
       {
-        providerBinding: distinctVariantBinding,
+        providerAttestation: distinctVariantBinding,
         directEndpointId: "ep-direct-approved-001",
         directOperatorUrl:
           "postgresql://operator:synthetic@direct.example.test/platform",
@@ -481,11 +1081,12 @@ test("endpoint transfer after restore cannot reuse a stable connection authority
   const stableAuthority =
     "postgresql://operator:synthetic@stable.example.test/platform";
   const stableEndpoints = [
-    providerEndpoint({ host: "stable.example.test" }),
+    providerEndpoint({ host: "stable.example.test", port: 5432 }),
     providerEndpoint({
       host: "stable.example.test",
       id: "ep-pooled-approved-002",
       kind: "pooled",
+      port: 5432,
     }),
   ];
   const { target } = activationTarget("platform_runtime", {
@@ -577,7 +1178,7 @@ test("Neon evidence validation rejects missing, malformed, stale, ambiguous, or 
       createRuntimeActivationTarget(
         "platform_runtime",
         {
-          providerBinding: binding,
+          providerAttestation: binding,
           directEndpointId: "ep-direct-approved-001",
           directOperatorUrl: operatorUrl,
           dockerEndpointId: "ep-pooled-approved-002",
@@ -604,21 +1205,39 @@ test("rollback requires unchanged SQL identity, provider branch, evidence, endpo
     binding,
     { now: providerNow },
   );
-  tracker.passwordInstallationStarted(target, { now: providerNow });
+  const passwordPermit = tracker.authorisePasswordInstallation(
+    target,
+    renewedAttestation(-30_000),
+    { now: providerNow },
+  );
+  await installRuntimePasswordWithDocker({
+    operatorUrl,
+    target,
+    runtimePassword,
+    expectedFixtureIdentity: identity,
+    phasePermit: passwordPermit,
+    spawnImpl() {
+      const child = fakeChild();
+      queueMicrotask(() => child.emit("close", 0, null));
+      return child;
+    },
+  });
 
   assert.throws(
     () =>
       tracker.assertRollbackFixture(
         target,
         changedIdentity,
-        binding,
+        renewedAttestation(-20_000),
         { now: providerNow },
       ),
     PlatformRuntimeActivationError,
   );
   for (const changedBinding of [
-    providerBinding({ branchId: "br-recovery-branch-002" }),
-    providerBinding({
+    renewedAttestation(-20_000, {
+      branchId: "br-recovery-branch-002",
+    }),
+    renewedAttestation(-20_000, {
       endpoints: [
         providerEndpoint({ id: "ep-rebound-direct-003" }),
         providerEndpoint({
@@ -644,8 +1263,14 @@ test("rollback requires unchanged SQL identity, provider branch, evidence, endpo
       tracker.assertRollbackFixture(
         target,
         identity,
-        binding,
-        { now: providerNow + 10 * 60_000 },
+        providerBinding(
+          {
+            expiresAt: new Date(providerNow + 1).toISOString(),
+            observedAt: new Date(providerNow - 20_000).toISOString(),
+          },
+          providerNow,
+        ),
+        { now: providerNow + 2 },
       ),
     PlatformRuntimeActivationError,
   );
@@ -653,14 +1278,26 @@ test("rollback requires unchanged SQL identity, provider branch, evidence, endpo
     () => tracker.rollbackRequired(substitutedTarget),
     PlatformRuntimeActivationError,
   );
-  assert.doesNotThrow(() =>
-    tracker.assertRollbackFixture(
-      target,
-      identity,
-      binding,
-      { now: providerNow },
-    ),
+  const rollbackPermit = tracker.assertRollbackFixture(
+    target,
+    identity,
+    renewedAttestation(-10_000),
+    { now: providerNow },
   );
+  assert.equal(
+    buildRuntimeRoleStatement(target, "rollback", {
+      phasePermit: rollbackPermit,
+    }),
+    'ALTER ROLE "platform_runtime" NOLOGIN PASSWORD NULL',
+  );
+  assert.throws(
+    () =>
+      buildRuntimeRoleStatement(target, "rollback", {
+        phasePermit: rollbackPermit,
+      }),
+    PlatformRuntimeActivationError,
+  );
+  tracker.rollbackCompleted(target);
 });
 
 test("provider target metadata is opaque and only exposed through deliberate non-secret classification", () => {
@@ -692,8 +1329,18 @@ test("provider target metadata is opaque and only exposed through deliberate non
   assert.equal(metadata.projectId, "project-alpha-123456");
   assert.equal(metadata.branchId, "br-production-main-001");
   assert.deepEqual(metadata.endpoints, [
-    { id: "ep-direct-approved-001", kind: "direct" },
-    { id: "ep-pooled-approved-002", kind: "pooled" },
+    {
+      id: "ep-direct-approved-001",
+      kind: "direct",
+      port: 5544,
+      type: "read_write",
+    },
+    {
+      id: "ep-pooled-approved-002",
+      kind: "pooled",
+      port: 5544,
+      type: "read_write",
+    },
   ]);
   assert.doesNotMatch(
     publicOutput,
@@ -977,8 +1624,13 @@ test("password transport rejects line breaks before spawning Docker", async () =
 });
 
 test("Docker password installation ignores prompts and writes the guarded UTF-8 exchange", async () => {
-  const { target } = activationTarget();
+  const { binding, target } = activationTarget();
   const identity = await fixtureIdentity("123456789", "16384");
+  const { phasePermit } = authorisePasswordForFixture({
+    binding,
+    identity,
+    target,
+  });
   const captured = {};
   const unicodePassword =
     "SyntheticRuntime_2026!éΩ漢字_ExtraLength";
@@ -988,6 +1640,7 @@ test("Docker password installation ignores prompts and writes the guarded UTF-8 
     target,
     runtimePassword: unicodePassword,
     expectedFixtureIdentity: identity,
+    phasePermit,
     spawnImpl(command, args, options) {
       captured.command = command;
       captured.args = args;
@@ -1016,15 +1669,27 @@ test("Docker password installation ignores prompts and writes the guarded UTF-8 
 });
 
 test("fixture mismatch is classified as pre-mutation while later failure is mutation-possible", async () => {
-  const { target } = activationTarget();
+  const mismatchTarget = activationTarget();
+  const laterTarget = activationTarget();
   const identity = await fixtureIdentity("123456789", "16384");
+  const mismatchPermit = authorisePasswordForFixture({
+    binding: mismatchTarget.binding,
+    identity,
+    target: mismatchTarget.target,
+  }).phasePermit;
+  const laterPermit = authorisePasswordForFixture({
+    binding: laterTarget.binding,
+    identity,
+    target: laterTarget.target,
+  }).phasePermit;
 
   const mismatch = await captureFailure(() =>
     installRuntimePasswordWithDocker({
       operatorUrl,
-      target,
+      target: mismatchTarget.target,
       runtimePassword,
       expectedFixtureIdentity: identity,
+      phasePermit: mismatchPermit,
       spawnImpl() {
         const child = fakeChild();
         queueMicrotask(() => child.emit("close", 86, null));
@@ -1035,9 +1700,10 @@ test("fixture mismatch is classified as pre-mutation while later failure is muta
   const laterFailure = await captureFailure(() =>
     installRuntimePasswordWithDocker({
       operatorUrl,
-      target,
+      target: laterTarget.target,
       runtimePassword,
       expectedFixtureIdentity: identity,
+      phasePermit: laterPermit,
       spawnImpl() {
         const child = fakeChild();
         queueMicrotask(() => child.emit("close", 1, null));
@@ -1051,14 +1717,20 @@ test("fixture mismatch is classified as pre-mutation while later failure is muta
 });
 
 test("password installation exposes only a generic secret-safe failure", async () => {
-  const { target } = activationTarget();
+  const { binding, target } = activationTarget();
   const identity = await fixtureIdentity("123456789", "16384");
+  const { phasePermit } = authorisePasswordForFixture({
+    binding,
+    identity,
+    target,
+  });
   const error = await captureFailure(() =>
     installRuntimePasswordWithDocker({
       operatorUrl,
       target,
       runtimePassword,
       expectedFixtureIdentity: identity,
+      phasePermit,
       spawnImpl() {
         const child = fakeChild();
         queueMicrotask(() => child.emit("close", 1, null));
@@ -1176,8 +1848,13 @@ async function timeoutHarness({
   terminationGraceMs,
   terminationRetryMs = 5,
 }) {
-  const { target } = activationTarget();
+  const { binding, target } = activationTarget();
   const identity = await fixtureIdentity("123456789", "16384");
+  const { phasePermit } = authorisePasswordForFixture({
+    binding,
+    identity,
+    target,
+  });
   const signals = [];
   let cleanupCount = 0;
   let verificationCount = 0;
@@ -1193,6 +1870,7 @@ async function timeoutHarness({
     target,
     runtimePassword,
     expectedFixtureIdentity: identity,
+    phasePermit,
     timeoutMs: 10,
     terminationGraceMs,
     terminationRetryMs,
@@ -1373,10 +2051,14 @@ function fakeChild({ onWrite } = {}) {
 
 function providerEndpoint(overrides = {}) {
   return {
+    currentState: "active",
     database: "platform",
+    disabled: false,
     host: "db.example.test",
     id: "ep-direct-approved-001",
     kind: "direct",
+    port: 5544,
+    type: "read_write",
     ...overrides,
   };
 }
@@ -1401,9 +2083,24 @@ function providerEvidence(overrides = {}, now = providerNow) {
 }
 
 function providerBinding(overrides = {}, now = providerNow) {
-  return createNeonProviderTargetBinding(
+  return createNeonProviderAttestation(
     providerEvidence(overrides, now),
     { now },
+  );
+}
+
+function renewedAttestation(
+  observedOffsetMs,
+  overrides = {},
+  now = providerNow,
+) {
+  return providerBinding(
+    {
+      expiresAt: new Date(now + 5 * 60_000).toISOString(),
+      observedAt: new Date(now + observedOffsetMs).toISOString(),
+      ...overrides,
+    },
+    now,
   );
 }
 
@@ -1424,7 +2121,7 @@ function activationTarget(
   const target = createRuntimeActivationTarget(
     runtimeRole,
     {
-      providerBinding: binding,
+      providerAttestation: binding,
       directEndpointId,
       directOperatorUrl,
       dockerEndpointId,
@@ -1435,6 +2132,29 @@ function activationTarget(
     { now },
   );
   return { binding, target };
+}
+
+function authorisePasswordForFixture({
+  binding,
+  identity,
+  now = providerNow,
+  observedOffsetMs = -30_000,
+  target,
+}) {
+  const tracker = new PlatformRuntimeActivationMutationTracker(target);
+  tracker.fixtureValidated(
+    target,
+    identity,
+    identity,
+    binding,
+    { now },
+  );
+  const phasePermit = tracker.authorisePasswordInstallation(
+    target,
+    renewedAttestation(observedOffsetMs, {}, now),
+    { now },
+  );
+  return { phasePermit, tracker };
 }
 
 async function fixtureIdentity(systemIdentifier, databaseOid) {

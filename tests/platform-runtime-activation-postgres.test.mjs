@@ -12,7 +12,7 @@ import {
   assertRuntimeIdentity,
   buildRuntimeDatabaseUrl,
   buildRuntimeRoleStatement,
-  createNeonProviderTargetBinding,
+  createNeonProviderAttestation,
   createRuntimeActivationTarget,
   installRuntimePasswordWithDocker,
   readDockerPostgresFixtureIdentity,
@@ -51,22 +51,30 @@ const boundDirectOperatorUrl =
 const boundDockerOperatorUrl =
   dockerOperatorUrl ??
   "postgresql://operator:synthetic@docker.fixture.test/runtime_posture_test";
-const providerBinding = createNeonProviderTargetBinding(
+const planningAttestation = createNeonProviderAttestation(
   {
     branchId: "br-disposable-local-001",
     database: "runtime_posture_test",
     endpoints: [
       {
+        currentState: "active",
         database: "runtime_posture_test",
+        disabled: false,
         host: new URL(boundDirectOperatorUrl).hostname,
         id: "ep-disposable-direct-001",
         kind: "direct",
+        port: effectivePort(boundDirectOperatorUrl),
+        type: "read_write",
       },
       {
+        currentState: "active",
         database: "runtime_posture_test",
+        disabled: false,
         host: new URL(boundDockerOperatorUrl).hostname,
         id: "ep-disposable-docker-002",
         kind: "pooled",
+        port: effectivePort(boundDockerOperatorUrl),
+        type: "read_write",
       },
     ],
     expiresAt: new Date(providerNow + 10 * 60_000).toISOString(),
@@ -79,7 +87,7 @@ const providerBinding = createNeonProviderTargetBinding(
 const target = createRuntimeActivationTarget(
   "platform_runtime",
   {
-    providerBinding,
+    providerAttestation: planningAttestation,
     directEndpointId: "ep-disposable-direct-001",
     directOperatorUrl: boundDirectOperatorUrl,
     dockerEndpointId: "ep-disposable-docker-002",
@@ -92,22 +100,30 @@ const target = createRuntimeActivationTarget(
 const boundSecondDockerOperatorUrl =
   secondDockerOperatorUrl ??
   "postgresql://operator:synthetic@second.fixture.test/runtime_posture_test";
-const twoClusterProviderBinding = createNeonProviderTargetBinding(
+const twoClusterPlanningAttestation = createNeonProviderAttestation(
   {
     branchId: "br-disposable-local-001",
     database: "runtime_posture_test",
     endpoints: [
       {
+        currentState: "active",
         database: "runtime_posture_test",
+        disabled: false,
         host: new URL(boundDirectOperatorUrl).hostname,
         id: "ep-disposable-direct-001",
         kind: "direct",
+        port: effectivePort(boundDirectOperatorUrl),
+        type: "read_write",
       },
       {
+        currentState: "active",
         database: "runtime_posture_test",
+        disabled: false,
         host: new URL(boundSecondDockerOperatorUrl).hostname,
         id: "ep-disposable-second-003",
         kind: "pooled",
+        port: effectivePort(boundSecondDockerOperatorUrl),
+        type: "read_write",
       },
     ],
     expiresAt: new Date(providerNow + 10 * 60_000).toISOString(),
@@ -120,7 +136,7 @@ const twoClusterProviderBinding = createNeonProviderTargetBinding(
 const twoClusterTarget = createRuntimeActivationTarget(
   "platform_runtime",
   {
-    providerBinding: twoClusterProviderBinding,
+    providerAttestation: twoClusterPlanningAttestation,
     directEndpointId: "ep-disposable-direct-001",
     directOperatorUrl: boundDirectOperatorUrl,
     dockerEndpointId: "ep-disposable-second-003",
@@ -172,6 +188,7 @@ test(
     const adminPool = new Pool({ connectionString: operatorUrl, max: 2 });
     const mutation = new PlatformRuntimeActivationMutationTracker(target);
     let runtimePool;
+    let successFinalised = false;
 
     try {
       const pre = await assertCompleteDormantPreflight(adminPool, target);
@@ -188,7 +205,8 @@ test(
         target,
         directIdentity,
         dockerIdentity,
-        providerBinding,
+        planningAttestation,
+        { now: providerNow },
       );
 
       const journal = new PlatformRuntimeActivationPhaseJournal();
@@ -196,13 +214,18 @@ test(
       journal.pass();
 
       journal.start("password_installation");
-      mutation.passwordInstallationStarted(target);
+      const passwordPermit = mutation.authorisePasswordInstallation(
+        target,
+        providerPhaseAttestation(-50_000),
+        { now: providerNow },
+      );
       try {
         await installRuntimePasswordWithDocker({
           operatorUrl: dockerOperatorUrl,
           target,
           runtimePassword: syntheticRuntimePassword,
           expectedFixtureIdentity: directIdentity,
+          phasePermit: passwordPermit,
         });
       } catch (error) {
         mutation.passwordInstallationFailed(target, error);
@@ -215,7 +238,16 @@ test(
       journal.pass();
 
       journal.start("login_enablement");
-      await adminPool.query(buildRuntimeRoleStatement(target, "enable_login"));
+      const loginPermit = mutation.authoriseLoginEnablement(
+        target,
+        providerPhaseAttestation(-40_000),
+        { now: providerNow },
+      );
+      await adminPool.query(
+        buildRuntimeRoleStatement(target, "enable_login", {
+          phasePermit: loginPermit,
+        }),
+      );
       const loginState = await inspectFixture(adminPool, target);
       assert.equal(loginState.login, true);
       assert.equal(loginState.password_null, false);
@@ -271,6 +303,13 @@ test(
       journal.pass();
 
       journal.start("success_finalisation");
+      const successPermit = mutation.authoriseSuccessFinalisation(
+        target,
+        providerPhaseAttestation(-30_000),
+        { now: providerNow },
+      );
+      mutation.successFinalised(target, successPermit);
+      successFinalised = true;
       journal.pass();
       journal.notRequired("mandatory_rollback");
 
@@ -281,7 +320,15 @@ test(
       assert.equal(safeReport.phases.mandatory_rollback, "not_required");
     } finally {
       await runtimePool?.end().catch(() => {});
-      await cleanupIfRequired(adminPool, mutation, target);
+      if (successFinalised) {
+        await adminPool.query(
+          `alter role ${identifier(
+            runtimeActivationRole(target),
+          )} nologin password null`,
+        );
+      } else {
+        await cleanupIfRequired(adminPool, mutation, target);
+      }
       const dormant = await inspectFixture(adminPool, target);
       assertDormantFixture(dormant);
       await adminPool.end();
@@ -312,19 +359,25 @@ test(
         target,
         directIdentity,
         dockerIdentity,
-        providerBinding,
+        planningAttestation,
+        { now: providerNow },
       );
 
       journal.start("dormant_role_preflight");
       journal.pass();
       journal.start("password_installation");
-      mutation.passwordInstallationStarted(target);
+      const passwordPermit = mutation.authorisePasswordInstallation(
+        target,
+        providerPhaseAttestation(-50_000),
+        { now: providerNow },
+      );
       try {
         await installRuntimePasswordWithDocker({
           operatorUrl: dockerOperatorUrl,
           target,
           runtimePassword: syntheticRuntimePassword,
           expectedFixtureIdentity: directIdentity,
+          phasePermit: passwordPermit,
         });
       } catch (error) {
         mutation.passwordInstallationFailed(target, error);
@@ -333,7 +386,16 @@ test(
       journal.pass();
 
       journal.start("login_enablement");
-      await adminPool.query(buildRuntimeRoleStatement(target, "enable_login"));
+      const loginPermit = mutation.authoriseLoginEnablement(
+        target,
+        providerPhaseAttestation(-40_000),
+        { now: providerNow },
+      );
+      await adminPool.query(
+        buildRuntimeRoleStatement(target, "enable_login", {
+          phasePermit: loginPermit,
+        }),
+      );
       journal.pass();
       journal.start("runtime_connection_construction");
       buildRuntimeDatabaseUrl(operatorUrl, target, syntheticRuntimePassword);
@@ -389,7 +451,9 @@ test(
         dockerOperatorUrl,
       );
       fixtureValidated = true;
-      await adminPool.query(buildRuntimeRoleStatement(target, "enable_login"));
+      await adminPool.query(
+        `alter role ${identifier(runtimeActivationRole(target))} login`,
+      );
       await assert.rejects(
         () => assertCompleteDormantPreflight(adminPool, target),
         assert.AssertionError,
@@ -406,7 +470,11 @@ test(
       assert.equal(cleanupCalls, 0);
     } finally {
       if (fixtureValidated) {
-        await adminPool.query(buildRuntimeRoleStatement(target, "rollback"));
+        await adminPool.query(
+          `alter role ${identifier(
+            runtimeActivationRole(target),
+          )} nologin password null`,
+        );
       }
       await adminPool.end();
     }
@@ -419,31 +487,9 @@ test(
   async () => {
     const adminPool = new Pool({ connectionString: operatorUrl, max: 1 });
     const mutation = new PlatformRuntimeActivationMutationTracker(target);
-    const wrongBranchBinding = createNeonProviderTargetBinding(
-      {
-        branchId: "br-disposable-recovery-002",
-        database: "runtime_posture_test",
-        endpoints: [
-          {
-            database: "runtime_posture_test",
-            host: new URL(boundDirectOperatorUrl).hostname,
-            id: "ep-disposable-direct-001",
-            kind: "direct",
-          },
-          {
-            database: "runtime_posture_test",
-            host: new URL(boundDockerOperatorUrl).hostname,
-            id: "ep-disposable-docker-002",
-            kind: "pooled",
-          },
-        ],
-        expiresAt: new Date(providerNow + 10 * 60_000).toISOString(),
-        observedAt: new Date(providerNow - 60_000).toISOString(),
-        projectId: "disposable-local-123456",
-        provider: "neon",
-      },
-      { now: providerNow },
-    );
+    const wrongBranchBinding = providerPhaseAttestation(-50_000, {
+      branchId: "br-disposable-recovery-002",
+    });
     let installationCalls = 0;
     let cleanupCalls = 0;
 
@@ -474,7 +520,12 @@ test(
         /Runtime activation failed/,
       );
       assert.throws(
-        () => mutation.passwordInstallationStarted(target),
+        () =>
+          mutation.authorisePasswordInstallation(
+            target,
+            providerPhaseAttestation(-50_000),
+            { now: providerNow },
+          ),
         /Runtime activation failed/,
       );
       if (mutation.rollbackRequired(target)) {
@@ -528,7 +579,7 @@ test(
             twoClusterTarget,
             firstIdentity,
             wrongDockerIdentity,
-            twoClusterProviderBinding,
+            twoClusterPlanningAttestation,
           ),
         /Runtime activation failed/,
       );
@@ -801,7 +852,11 @@ test(
       });
     } finally {
       if (fixtureValidated) {
-        await adminPool.query(buildRuntimeRoleStatement(target, "rollback"));
+        await adminPool.query(
+          `alter role ${identifier(
+            runtimeActivationRole(target),
+          )} nologin password null`,
+        );
         for (const createdRole of createdRoles.reverse()) {
           await adminPool.query(
             `drop role if exists ${identifier(createdRole)}`,
@@ -1007,17 +1062,72 @@ function invariants(state) {
   };
 }
 
+function providerPhaseAttestation(
+  observedOffsetMs,
+  {
+    branchId = "br-disposable-local-001",
+    directUrl = boundDirectOperatorUrl,
+    dockerUrl = boundDockerOperatorUrl,
+  } = {},
+) {
+  return createNeonProviderAttestation(
+    {
+      branchId,
+      database: "runtime_posture_test",
+      endpoints: [
+        {
+          currentState: "active",
+          database: "runtime_posture_test",
+          disabled: false,
+          host: new URL(directUrl).hostname,
+          id: "ep-disposable-direct-001",
+          kind: "direct",
+          port: effectivePort(directUrl),
+          type: "read_write",
+        },
+        {
+          currentState: "active",
+          database: "runtime_posture_test",
+          disabled: false,
+          host: new URL(dockerUrl).hostname,
+          id: "ep-disposable-docker-002",
+          kind: "pooled",
+          port: effectivePort(dockerUrl),
+          type: "read_write",
+        },
+      ],
+      expiresAt: new Date(providerNow + 10 * 60_000).toISOString(),
+      observedAt: new Date(
+        providerNow + observedOffsetMs,
+      ).toISOString(),
+      projectId: "disposable-local-123456",
+      provider: "neon",
+    },
+    { now: providerNow },
+  );
+}
+
+function effectivePort(connectionUrl) {
+  const parsed = new URL(connectionUrl);
+  return parsed.port ? Number(parsed.port) : 5432;
+}
+
 async function cleanupIfRequired(pool, mutation, activationTarget) {
   if (!mutation.rollbackRequired(activationTarget)) {
     return;
   }
   const currentIdentity = await readPostgresFixtureIdentity(pool);
-  mutation.assertRollbackFixture(
+  const rollbackPermit = mutation.assertRollbackFixture(
     activationTarget,
     currentIdentity,
-    providerBinding,
+    providerPhaseAttestation(-10_000),
+    { now: providerNow },
   );
-  await pool.query(buildRuntimeRoleStatement(activationTarget, "rollback"));
+  await pool.query(
+    buildRuntimeRoleStatement(activationTarget, "rollback", {
+      phasePermit: rollbackPermit,
+    }),
+  );
   mutation.rollbackCompleted(activationTarget);
 }
 

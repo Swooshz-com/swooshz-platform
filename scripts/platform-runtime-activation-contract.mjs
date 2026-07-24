@@ -30,17 +30,25 @@ const neonProviderEvidenceKeys = Object.freeze([
   "provider",
 ]);
 const neonEndpointEvidenceKeys = Object.freeze([
+  "currentState",
   "database",
+  "disabled",
   "host",
   "id",
   "kind",
+  "port",
+  "type",
 ]);
 const neonEndpointKinds = new Set(["direct", "pooled"]);
+const neonEndpointStates = new Set(["active", "idle", "init"]);
+const neonEndpointTypes = new Set(["read_only", "read_write"]);
 const maximumProviderEvidenceValidityMs = 15 * 60 * 1_000;
+const maximumPhaseAttestationAgeMs = 60 * 1_000;
 const phaseSet = new Set(PLATFORM_RUNTIME_ACTIVATION_PHASES);
 const targetRoles = new WeakMap();
 const targetProviderValues = new WeakMap();
-const providerBindingValues = new WeakMap();
+const providerAttestationValues = new WeakMap();
+const phasePermitValues = new WeakMap();
 const fixtureIdentityValues = new WeakMap();
 const mutationErrorStates = new WeakMap();
 const fixtureMismatchExitCode = 86;
@@ -136,7 +144,13 @@ export class PlatformRuntimeActivationPhaseJournal {
 export class PlatformRuntimeActivationMutationTracker {
   #target;
   #validatedFixtureIdentity = null;
-  #validatedProviderFingerprint = null;
+  #latestAcceptedObservedMs = null;
+  #passwordPermitIssued = false;
+  #loginPermitIssued = false;
+  #loginPermitConsumed = false;
+  #successPermitIssued = false;
+  #rollbackPermitIssued = false;
+  #rollbackPermitConsumed = false;
   #installationStarted = false;
   #mutationMayHaveBegun = false;
 
@@ -149,14 +163,14 @@ export class PlatformRuntimeActivationMutationTracker {
     target,
     directIdentity,
     dockerIdentity,
-    currentProviderBinding,
+    planningAttestation,
     { now = Date.now() } = {},
   ) {
     this.#assertTarget(target);
     if (
       this.#installationStarted ||
       this.#validatedFixtureIdentity ||
-      this.#validatedProviderFingerprint
+      this.#latestAcceptedObservedMs !== null
     ) {
       throw new PlatformRuntimeActivationError();
     }
@@ -164,33 +178,41 @@ export class PlatformRuntimeActivationMutationTracker {
       directIdentity,
       dockerIdentity,
     );
-    const providerValue = matchingProviderBindingValue(
+    const providerValue = matchingProviderAttestationValue(
       target,
-      currentProviderBinding,
+      planningAttestation,
       { now },
     );
     this.#validatedFixtureIdentity = fixtureIdentityValue(directIdentity);
-    this.#validatedProviderFingerprint = providerValue.fingerprint;
+    this.#latestAcceptedObservedMs = providerValue.observedMs;
   }
 
-  passwordInstallationStarted(target, { now = Date.now() } = {}) {
+  authorisePasswordInstallation(
+    target,
+    currentAttestation,
+    { now = Date.now() } = {},
+  ) {
     this.#assertTarget(target);
     if (
       this.#installationStarted ||
+      this.#passwordPermitIssued ||
       !this.#validatedFixtureIdentity ||
-      !this.#validatedProviderFingerprint
+      this.#latestAcceptedObservedMs === null
     ) {
       throw new PlatformRuntimeActivationError();
     }
-    const providerValue = activationTargetValue(target, { now });
-    if (
-      providerValue.providerFingerprint !==
-      this.#validatedProviderFingerprint
-    ) {
-      throw new PlatformRuntimeActivationError();
-    }
-    this.#installationStarted = true;
-    this.#mutationMayHaveBegun = true;
+    this.#acceptPhaseAttestation(target, currentAttestation, now);
+    this.#passwordPermitIssued = true;
+    return createRuntimeActivationPhasePermit({
+      fixtureIdentity: this.#validatedFixtureIdentity,
+      owner: this,
+      onConsume: () => {
+        this.#installationStarted = true;
+        this.#mutationMayHaveBegun = true;
+      },
+      phase: "password_installation",
+      target,
+    });
   }
 
   passwordInstallationFailed(target, error) {
@@ -202,6 +224,31 @@ export class PlatformRuntimeActivationMutationTracker {
       runtimeActivationMutationMayHaveBegun(error);
   }
 
+  authoriseLoginEnablement(
+    target,
+    currentAttestation,
+    { now = Date.now() } = {},
+  ) {
+    this.#assertTarget(target);
+    if (
+      !this.#installationStarted ||
+      !this.#mutationMayHaveBegun ||
+      this.#loginPermitIssued
+    ) {
+      throw new PlatformRuntimeActivationError();
+    }
+    this.#acceptPhaseAttestation(target, currentAttestation, now);
+    this.#loginPermitIssued = true;
+    return createRuntimeActivationPhasePermit({
+      owner: this,
+      onConsume: () => {
+        this.#loginPermitConsumed = true;
+      },
+      phase: "login_enablement",
+      target,
+    });
+  }
+
   rollbackRequired(target) {
     this.#assertTarget(target);
     return this.#mutationMayHaveBegun;
@@ -210,53 +257,86 @@ export class PlatformRuntimeActivationMutationTracker {
   assertRollbackFixture(
     target,
     currentIdentity,
-    currentProviderBinding,
+    currentAttestation,
     { now = Date.now() } = {},
   ) {
     this.#assertTarget(target);
-    const providerValue = matchingProviderBindingValue(
-      target,
-      currentProviderBinding,
-      { now },
-    );
     if (
       !this.#mutationMayHaveBegun ||
       !this.#validatedFixtureIdentity ||
-      !this.#validatedProviderFingerprint ||
+      this.#rollbackPermitIssued ||
       fixtureIdentityValue(currentIdentity) !==
-        this.#validatedFixtureIdentity ||
-      providerValue.fingerprint !== this.#validatedProviderFingerprint
+        this.#validatedFixtureIdentity
     ) {
       throw new PlatformRuntimeActivationError();
     }
+    this.#acceptPhaseAttestation(target, currentAttestation, now);
+    this.#rollbackPermitIssued = true;
+    return createRuntimeActivationPhasePermit({
+      owner: this,
+      onConsume: () => {
+        this.#rollbackPermitConsumed = true;
+      },
+      phase: "mandatory_rollback",
+      target,
+    });
   }
 
   rollbackCompleted(target) {
     this.#assertTarget(target);
-    if (!this.#mutationMayHaveBegun) {
+    if (!this.#mutationMayHaveBegun || !this.#rollbackPermitConsumed) {
       throw new PlatformRuntimeActivationError();
     }
     this.#mutationMayHaveBegun = false;
   }
 
-  successFinalised(
+  authoriseSuccessFinalisation(
     target,
-    currentProviderBinding,
+    currentAttestation,
     { now = Date.now() } = {},
   ) {
     this.#assertTarget(target);
-    const providerValue = matchingProviderBindingValue(
-      target,
-      currentProviderBinding,
-      { now },
-    );
     if (
       !this.#mutationMayHaveBegun ||
-      providerValue.fingerprint !== this.#validatedProviderFingerprint
+      !this.#loginPermitConsumed ||
+      this.#successPermitIssued
     ) {
       throw new PlatformRuntimeActivationError();
     }
+    this.#acceptPhaseAttestation(target, currentAttestation, now);
+    this.#successPermitIssued = true;
+    return createRuntimeActivationPhasePermit({
+      owner: this,
+      phase: "success_finalisation",
+      target,
+    });
+  }
+
+  successFinalised(target, phasePermit) {
+    this.#assertTarget(target);
+    if (!this.#mutationMayHaveBegun || !this.#successPermitIssued) {
+      throw new PlatformRuntimeActivationError();
+    }
+    consumeRuntimeActivationPhasePermit(
+      phasePermit,
+      target,
+      "success_finalisation",
+      this,
+    );
     this.#mutationMayHaveBegun = false;
+  }
+
+  #acceptPhaseAttestation(target, currentAttestation, now) {
+    const providerValue = matchingProviderAttestationValue(
+      target,
+      currentAttestation,
+      {
+        afterObservedMs: this.#latestAcceptedObservedMs,
+        maximumAgeMs: maximumPhaseAttestationAgeMs,
+        now,
+      },
+    );
+    this.#latestAcceptedObservedMs = providerValue.observedMs;
   }
 
   #assertTarget(target) {
@@ -266,20 +346,27 @@ export class PlatformRuntimeActivationMutationTracker {
   }
 }
 
-export function createNeonProviderTargetBinding(
+export function createNeonProviderAttestation(
   evidence,
   { now = Date.now() } = {},
 ) {
   const value = validateNeonProviderEvidence(evidence, now);
-  const binding = Object.freeze({});
-  providerBindingValues.set(binding, value);
-  return binding;
+  const attestation = Object.freeze({});
+  providerAttestationValues.set(attestation, value);
+  return attestation;
+}
+
+export function createNeonProviderTargetBinding(
+  evidence,
+  options,
+) {
+  return createNeonProviderAttestation(evidence, options);
 }
 
 export function createRuntimeActivationTarget(
   runtimeRole,
   {
-    providerBinding,
+    providerAttestation,
     directEndpointId,
     directOperatorUrl,
     dockerEndpointId,
@@ -295,7 +382,10 @@ export function createRuntimeActivationTarget(
   ) {
     throw new PlatformRuntimeActivationError();
   }
-  const providerValue = providerBindingValue(providerBinding, { now });
+  const providerValue = providerAttestationValue(
+    providerAttestation,
+    { now },
+  );
   const directEndpoint = providerEndpoint(
     providerValue,
     directEndpointId,
@@ -335,9 +425,12 @@ export function createRuntimeActivationTarget(
       dockerEndpointId,
       dockerEndpointKind,
       dockerEndpointHost: dockerEndpoint.host,
+      dockerEndpointPort: dockerEndpoint.port,
       expectedDatabase,
-      providerBinding,
-      providerFingerprint: providerValue.fingerprint,
+      immutableProviderIdentity: providerValue.identity,
+      immutableProviderIdentityFingerprint:
+        providerValue.identityFingerprint,
+      directEndpointPort: directEndpoint.port,
     }),
   );
   return target;
@@ -353,7 +446,7 @@ export function runtimeActivationRole(
 
 export function runtimeActivationNonSecretProviderMetadata(target) {
   const targetValue = activationTargetValue(target);
-  const providerValue = providerBindingValue(targetValue.providerBinding);
+  const providerValue = targetValue.immutableProviderIdentity;
   return Object.freeze({
     classification: "non_secret_provider_target_metadata",
     provider: providerValue.provider,
@@ -362,32 +455,60 @@ export function runtimeActivationNonSecretProviderMetadata(target) {
     database: providerValue.database,
     endpoints: Object.freeze(
       providerValue.endpoints.map((endpoint) =>
-        Object.freeze({ id: endpoint.id, kind: endpoint.kind }),
+        Object.freeze({
+          id: endpoint.id,
+          kind: endpoint.kind,
+          port: endpoint.port,
+          type: endpoint.type,
+        }),
       ),
     ),
-    observedAt: providerValue.observedAt,
-    expiresAt: providerValue.expiresAt,
   });
+}
+
+export function assertRuntimeActivationProviderAttestation(
+  target,
+  currentAttestation,
+  { now = Date.now() } = {},
+) {
+  matchingProviderAttestationValue(target, currentAttestation, { now });
 }
 
 export function assertRuntimeActivationProviderBinding(
   target,
-  currentProviderBinding,
-  { now = Date.now() } = {},
+  currentAttestation,
+  options,
 ) {
-  matchingProviderBindingValue(target, currentProviderBinding, { now });
+  assertRuntimeActivationProviderAttestation(
+    target,
+    currentAttestation,
+    options,
+  );
 }
 
-function matchingProviderBindingValue(
+function matchingProviderAttestationValue(
   target,
-  currentProviderBinding,
-  { now = Date.now() } = {},
+  currentAttestation,
+  {
+    afterObservedMs = null,
+    maximumAgeMs = null,
+    now = Date.now(),
+  } = {},
 ) {
-  const targetValue = activationTargetValue(target, { now });
-  const currentValue = providerBindingValue(currentProviderBinding, { now });
+  const targetValue = activationTargetValue(target);
+  const currentValue = providerAttestationValue(
+    currentAttestation,
+    { now },
+  );
   if (
-    currentProviderBinding !== targetValue.providerBinding ||
-    currentValue.fingerprint !== targetValue.providerFingerprint
+    currentValue.identityFingerprint !==
+      targetValue.immutableProviderIdentityFingerprint ||
+    (afterObservedMs !== null &&
+      currentValue.observedMs <= afterObservedMs) ||
+    (maximumAgeMs !== null &&
+      (!Number.isInteger(maximumAgeMs) ||
+        maximumAgeMs <= 0 ||
+        now - currentValue.observedMs > maximumAgeMs))
   ) {
     throw new PlatformRuntimeActivationError();
   }
@@ -418,7 +539,11 @@ export function buildRuntimeDatabaseUrl(
   }
 
   const parsed = parseOperatorUrl(operatorUrl);
-  assertProviderConnectionHost(parsed, targetValue.directEndpointHost);
+  assertProviderConnectionEndpoint(
+    parsed,
+    targetValue.directEndpointHost,
+    targetValue.directEndpointPort,
+  );
   assertUrlDatabase(parsed, targetValue.expectedDatabase);
   const reviewedParameters = validateConnectionParameters(parsed);
 
@@ -435,15 +560,25 @@ export function buildRuntimeDatabaseUrl(
 export function buildRuntimeRoleStatement(
   target,
   operation,
-  { now = Date.now() } = {},
+  { phasePermit } = {},
 ) {
-  activationTargetValue(target, { now });
+  activationTargetValue(target);
   const runtimeRole = targetRole(target);
   const quotedRole = `"${runtimeRole}"`;
   if (operation === "enable_login") {
+    consumeRuntimeActivationPhasePermit(
+      phasePermit,
+      target,
+      "login_enablement",
+    );
     return `ALTER ROLE ${quotedRole} LOGIN`;
   }
   if (operation === "rollback") {
+    consumeRuntimeActivationPhasePermit(
+      phasePermit,
+      target,
+      "mandatory_rollback",
+    );
     return `ALTER ROLE ${quotedRole} NOLOGIN PASSWORD NULL`;
   }
   throw new PlatformRuntimeActivationError();
@@ -516,9 +651,10 @@ export async function readDockerPostgresFixtureIdentity({
   const targetValue = activationTargetValue(target, { now });
   validateDockerInputs({ operatorUrl, dockerImage, timeoutMs });
   const parsedOperatorUrl = parseOperatorUrl(operatorUrl);
-  assertProviderConnectionHost(
+  assertProviderConnectionEndpoint(
     parsedOperatorUrl,
     targetValue.dockerEndpointHost,
+    targetValue.dockerEndpointPort,
   );
   assertUrlDatabase(parsedOperatorUrl, targetValue.expectedDatabase);
   validateConnectionParameters(parsedOperatorUrl);
@@ -583,6 +719,7 @@ export async function installRuntimePasswordWithDocker({
   target,
   runtimePassword,
   expectedFixtureIdentity,
+  phasePermit,
   dockerImage = "postgres:17",
   spawnImpl = spawn,
   terminationSpawnImpl = spawn,
@@ -593,7 +730,7 @@ export async function installRuntimePasswordWithDocker({
   now = Date.now(),
 }) {
   const runtimeRole = targetRole(target);
-  const targetValue = activationTargetValue(target, { now });
+  const targetValue = activationTargetValue(target);
   const fixtureIdentity = fixtureIdentityValue(expectedFixtureIdentity);
   validateDockerInputs({ operatorUrl, dockerImage, timeoutMs });
   validateTerminationInputs({
@@ -605,12 +742,21 @@ export async function installRuntimePasswordWithDocker({
     throw new PlatformRuntimeActivationError();
   }
   const parsedOperatorUrl = parseOperatorUrl(operatorUrl);
-  assertProviderConnectionHost(
+  assertProviderConnectionEndpoint(
     parsedOperatorUrl,
     targetValue.dockerEndpointHost,
+    targetValue.dockerEndpointPort,
   );
   assertUrlDatabase(parsedOperatorUrl, targetValue.expectedDatabase);
   validateConnectionParameters(parsedOperatorUrl);
+  const permitValue = consumeRuntimeActivationPhasePermit(
+    phasePermit,
+    target,
+    "password_installation",
+  );
+  if (permitValue.fixtureIdentity !== fixtureIdentity) {
+    throw new PlatformRuntimeActivationError();
+  }
 
   const containerName = dockerContainerName("password");
   const input = Buffer.from(
@@ -1126,7 +1272,6 @@ function targetRole(target) {
 
 function activationTargetValue(
   target,
-  { now = Date.now() } = {},
 ) {
   targetRole(target);
   const value =
@@ -1134,10 +1279,6 @@ function activationTargetValue(
       ? targetProviderValues.get(target)
       : undefined;
   if (!value) {
-    throw new PlatformRuntimeActivationError();
-  }
-  const providerValue = providerBindingValue(value.providerBinding, { now });
-  if (providerValue.fingerprint !== value.providerFingerprint) {
     throw new PlatformRuntimeActivationError();
   }
   return value;
@@ -1182,6 +1323,12 @@ function validateNeonProviderEvidence(evidence, now) {
       !hasExactKeys(endpoint, neonEndpointEvidenceKeys) ||
       !safeNeonEndpointId.test(endpoint.id) ||
       !neonEndpointKinds.has(endpoint.kind) ||
+      !Number.isInteger(endpoint.port) ||
+      endpoint.port < 1 ||
+      endpoint.port > 65_535 ||
+      !neonEndpointTypes.has(endpoint.type) ||
+      !neonEndpointStates.has(endpoint.currentState) ||
+      typeof endpoint.disabled !== "boolean" ||
       !safeProviderHost(endpoint.host) ||
       endpoint.database !== evidence.database ||
       endpointIdentities.has(endpointIdentity)
@@ -1189,12 +1336,20 @@ function validateNeonProviderEvidence(evidence, now) {
       throw new PlatformRuntimeActivationError();
     }
     endpointIdentities.add(endpointIdentity);
-    return Object.freeze({
+    const normalizedEndpoint = Object.freeze({
+      available:
+        endpoint.disabled === false &&
+        ["active", "idle"].includes(endpoint.currentState),
+      currentState: endpoint.currentState,
       database: endpoint.database,
+      disabled: endpoint.disabled,
       host: endpoint.host.toLowerCase(),
       id: endpoint.id,
       kind: endpoint.kind,
+      port: endpoint.port,
+      type: endpoint.type,
     });
+    return normalizedEndpoint;
   });
   endpoints.sort((left, right) =>
     `${left.id}:${left.kind}`.localeCompare(`${right.id}:${right.kind}`),
@@ -1211,27 +1366,41 @@ function validateNeonProviderEvidence(evidence, now) {
     projectId: evidence.projectId,
     provider: evidence.provider,
   };
+  const identityEndpoints = Object.freeze(
+    normalized.endpoints.map((endpoint) =>
+      Object.freeze({
+        available: endpoint.available,
+        database: endpoint.database,
+        disabled: endpoint.disabled,
+        host: endpoint.host,
+        id: endpoint.id,
+        kind: endpoint.kind,
+        port: endpoint.port,
+        type: endpoint.type,
+      }),
+    ),
+  );
+  const identity = Object.freeze({
+    branchId: normalized.branchId,
+    database: normalized.database,
+    endpoints: identityEndpoints,
+    projectId: normalized.projectId,
+    provider: normalized.provider,
+  });
   return Object.freeze({
     ...normalized,
-    fingerprint: JSON.stringify({
-      branchId: normalized.branchId,
-      database: normalized.database,
-      endpoints: normalized.endpoints,
-      expiresAt: normalized.expiresAt,
-      observedAt: normalized.observedAt,
-      projectId: normalized.projectId,
-      provider: normalized.provider,
-    }),
+    identity,
+    identityFingerprint: JSON.stringify(identity),
   });
 }
 
-function providerBindingValue(
-  binding,
+function providerAttestationValue(
+  attestation,
   { now = Date.now() } = {},
 ) {
   const value =
-    binding && typeof binding === "object"
-      ? providerBindingValues.get(binding)
+    attestation && typeof attestation === "object"
+      ? providerAttestationValues.get(attestation)
       : undefined;
   if (
     !value ||
@@ -1241,6 +1410,51 @@ function providerBindingValue(
   ) {
     throw new PlatformRuntimeActivationError();
   }
+  return value;
+}
+
+function createRuntimeActivationPhasePermit({
+  fixtureIdentity = null,
+  owner,
+  onConsume = null,
+  phase,
+  target,
+}) {
+  assertPhase(phase);
+  activationTargetValue(target);
+  const permit = Object.freeze({});
+  phasePermitValues.set(permit, {
+    consumed: false,
+    fixtureIdentity,
+    onConsume,
+    owner,
+    phase,
+    target,
+  });
+  return permit;
+}
+
+function consumeRuntimeActivationPhasePermit(
+  permit,
+  target,
+  phase,
+  expectedOwner = null,
+) {
+  const value =
+    permit && typeof permit === "object"
+      ? phasePermitValues.get(permit)
+      : undefined;
+  if (
+    !value ||
+    value.consumed ||
+    value.target !== target ||
+    value.phase !== phase ||
+    (expectedOwner !== null && value.owner !== expectedOwner)
+  ) {
+    throw new PlatformRuntimeActivationError();
+  }
+  value.consumed = true;
+  value.onConsume?.();
   return value;
 }
 
@@ -1262,7 +1476,10 @@ function providerEndpoint(
   );
   return endpoint &&
     endpoint.database === expectedDatabase &&
-    endpoint.kind === expectedKind
+    endpoint.kind === expectedKind &&
+    endpoint.type === "read_write" &&
+    endpoint.disabled === false &&
+    endpoint.available === true
     ? endpoint
     : undefined;
 }
@@ -1329,15 +1546,33 @@ function assertProviderConnectionUrl(
   expectedDatabase,
 ) {
   const parsed = parseOperatorUrl(connectionUrl);
-  assertProviderConnectionHost(parsed, endpoint.host);
+  assertProviderConnectionEndpoint(parsed, endpoint.host, endpoint.port);
   assertUrlDatabase(parsed, expectedDatabase);
   validateConnectionParameters(parsed);
 }
 
-function assertProviderConnectionHost(parsed, expectedHost) {
-  if (parsed.hostname.toLowerCase() !== expectedHost) {
+function assertProviderConnectionEndpoint(
+  parsed,
+  expectedHost,
+  expectedPort,
+) {
+  if (
+    parsed.hostname.toLowerCase() !== expectedHost ||
+    effectivePostgresPort(parsed) !== expectedPort
+  ) {
     throw new PlatformRuntimeActivationError();
   }
+}
+
+function effectivePostgresPort(parsed) {
+  if (!parsed.port) {
+    return 5432;
+  }
+  const port = Number(parsed.port);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new PlatformRuntimeActivationError();
+  }
+  return port;
 }
 
 function safeProviderHost(value) {
