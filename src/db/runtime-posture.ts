@@ -12,6 +12,16 @@ export interface RuntimeDatabasePostureReport {
   runtimePosture: RuntimeDatabasePostureCheckState;
 }
 
+export interface RuntimeDatabaseRoleAuthorityPostureReport {
+  roleIdentityConclusive: RuntimeDatabasePostureCheckState;
+  administrativeAttributesAbsent: RuntimeDatabasePostureCheckState;
+  databaseAndSchemaCreateAbsent: RuntimeDatabasePostureCheckState;
+  migrationLedgerAccessDenied: RuntimeDatabasePostureCheckState;
+  databaseAndSchemaOwnershipAbsent: RuntimeDatabasePostureCheckState;
+  applicationTableOwnershipAbsent: RuntimeDatabasePostureCheckState;
+  runtimeRoleAuthorityPosture: RuntimeDatabasePostureCheckState;
+}
+
 export interface RuntimeDatabasePostureClient {
   query(
     text: string,
@@ -40,7 +50,7 @@ const runtimeDatabasePostureSql = `
 with recursive login_role_state as (
   select oid
   from pg_roles
-  where rolname = session_user
+  where rolname = $1
 ),
 set_assumable_roles(role_oid) as (
   select login_role.oid
@@ -213,65 +223,63 @@ export async function inspectRuntimeDatabasePosture(
   client: RuntimeDatabasePostureClient,
   expectedRole: string,
 ): Promise<RuntimeDatabasePostureReport> {
-  let row: Record<string, unknown>;
-  try {
-    const result = await client.query(runtimeDatabasePostureSql, [
-      expectedRole,
-      [...REQUIRED_PLATFORM_TABLES],
-    ]);
-    if (result.rows.length !== 1) {
-      throw new RuntimeDatabasePostureError();
-    }
-    row = result.rows[0];
-  } catch {
-    throw new RuntimeDatabasePostureError();
-  }
-
+  const row = await inspectRuntimeDatabasePostureRow(client, expectedRole);
   const expectedRoleMatch = boolean(row, "expected_role_match");
-  const administrativeAttributesAbsent = all(row, [
-    "role_assumption_state_conclusive",
-    "role_membership_admin_absent",
-    "neon_superuser_membership_absent",
-    "superuser_absent",
-    "createdb_absent",
-    "createrole_absent",
-    "replication_absent",
-    "bypassrls_absent",
-  ]);
-  const databaseAndSchemaCreateAbsent = all(row, [
-    "database_create_absent",
-    "public_schema_create_absent",
-    "drizzle_schema_usage_absent",
-  ]);
-  const migrationLedgerAccessDenied = boolean(
-    row,
-    "migration_ledger_select_absent",
-  );
-  const databaseAndSchemaOwnershipAbsent = all(row, [
-    "database_ownership_absent",
-    "schema_ownership_absent",
-  ]);
-  const applicationTableOwnershipAbsent = boolean(
-    row,
-    "application_table_ownership_absent",
-  );
+  const checks = postureChecks(row);
   const passed = [
     expectedRoleMatch,
-    administrativeAttributesAbsent,
-    databaseAndSchemaCreateAbsent,
-    migrationLedgerAccessDenied,
-    databaseAndSchemaOwnershipAbsent,
-    applicationTableOwnershipAbsent,
+    checks.roleIdentityConclusive,
+    checks.administrativeAttributesAbsent,
+    checks.databaseAndSchemaCreateAbsent,
+    checks.migrationLedgerAccessDenied,
+    checks.databaseAndSchemaOwnershipAbsent,
+    checks.applicationTableOwnershipAbsent,
   ].every(Boolean);
 
   return {
     expectedRoleMatch: state(expectedRoleMatch),
-    administrativeAttributesAbsent: state(administrativeAttributesAbsent),
-    databaseAndSchemaCreateAbsent: state(databaseAndSchemaCreateAbsent),
-    migrationLedgerAccessDenied: state(migrationLedgerAccessDenied),
-    databaseAndSchemaOwnershipAbsent: state(databaseAndSchemaOwnershipAbsent),
-    applicationTableOwnershipAbsent: state(applicationTableOwnershipAbsent),
+    administrativeAttributesAbsent: state(
+      checks.roleIdentityConclusive &&
+        checks.administrativeAttributesAbsent,
+    ),
+    databaseAndSchemaCreateAbsent: state(
+      checks.databaseAndSchemaCreateAbsent,
+    ),
+    migrationLedgerAccessDenied: state(checks.migrationLedgerAccessDenied),
+    databaseAndSchemaOwnershipAbsent: state(
+      checks.databaseAndSchemaOwnershipAbsent,
+    ),
+    applicationTableOwnershipAbsent: state(
+      checks.applicationTableOwnershipAbsent,
+    ),
     runtimePosture: state(passed),
+  };
+}
+
+export async function inspectRuntimeDatabaseRoleAuthorityPosture(
+  client: RuntimeDatabasePostureClient,
+  expectedRole: string,
+): Promise<RuntimeDatabaseRoleAuthorityPostureReport> {
+  const row = await inspectRuntimeDatabasePostureRow(client, expectedRole);
+  const checks = postureChecks(row);
+  const passed = Object.values(checks).every(Boolean);
+
+  return {
+    roleIdentityConclusive: state(checks.roleIdentityConclusive),
+    administrativeAttributesAbsent: state(
+      checks.administrativeAttributesAbsent,
+    ),
+    databaseAndSchemaCreateAbsent: state(
+      checks.databaseAndSchemaCreateAbsent,
+    ),
+    migrationLedgerAccessDenied: state(checks.migrationLedgerAccessDenied),
+    databaseAndSchemaOwnershipAbsent: state(
+      checks.databaseAndSchemaOwnershipAbsent,
+    ),
+    applicationTableOwnershipAbsent: state(
+      checks.applicationTableOwnershipAbsent,
+    ),
+    runtimeRoleAuthorityPosture: state(passed),
   };
 }
 
@@ -284,6 +292,62 @@ export async function assertRuntimeDatabasePosture(
     throw new RuntimeDatabasePostureError();
   }
   return report;
+}
+
+async function inspectRuntimeDatabasePostureRow(
+  client: RuntimeDatabasePostureClient,
+  expectedRole: string,
+): Promise<Record<string, unknown>> {
+  if (!safePostgresRoleIdentifier.test(expectedRole)) {
+    throw new RuntimeDatabasePostureError();
+  }
+  try {
+    const result = await client.query(runtimeDatabasePostureSql, [
+      expectedRole,
+      [...REQUIRED_PLATFORM_TABLES],
+    ]);
+    if (result.rows.length !== 1) {
+      throw new RuntimeDatabasePostureError();
+    }
+    return result.rows[0];
+  } catch {
+    throw new RuntimeDatabasePostureError();
+  }
+}
+
+function postureChecks(row: Record<string, unknown>) {
+  return {
+    roleIdentityConclusive: boolean(
+      row,
+      "role_assumption_state_conclusive",
+    ),
+    administrativeAttributesAbsent: all(row, [
+      "role_membership_admin_absent",
+      "neon_superuser_membership_absent",
+      "superuser_absent",
+      "createdb_absent",
+      "createrole_absent",
+      "replication_absent",
+      "bypassrls_absent",
+    ]),
+    databaseAndSchemaCreateAbsent: all(row, [
+      "database_create_absent",
+      "public_schema_create_absent",
+      "drizzle_schema_usage_absent",
+    ]),
+    migrationLedgerAccessDenied: boolean(
+      row,
+      "migration_ledger_select_absent",
+    ),
+    databaseAndSchemaOwnershipAbsent: all(row, [
+      "database_ownership_absent",
+      "schema_ownership_absent",
+    ]),
+    applicationTableOwnershipAbsent: boolean(
+      row,
+      "application_table_ownership_absent",
+    ),
+  };
 }
 
 function all(row: Record<string, unknown>, fields: readonly string[]): boolean {
