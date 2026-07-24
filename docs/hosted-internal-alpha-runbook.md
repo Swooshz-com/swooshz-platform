@@ -248,8 +248,8 @@ The strict endpoint evidence record accepts exactly `branchId`,
 `currentState`, `database`, `disabled`, `host`, `id`, `kind`, `port`,
 `projectId`, and `type`. The first-party wrapper maps the reviewed provider
 fields into that record and adds only the independently reviewed database
-association, connection kind, and effective port. Any missing or extra field
-fails closed.
+association, connection kind, and effective port.
+Any missing or extra field fails closed.
 
 The reducer accepts only its strict reviewed shape. Do not pass a raw API response object.
 Raw response bodies, bearer tokens, API credentials,
