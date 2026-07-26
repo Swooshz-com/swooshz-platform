@@ -49,10 +49,12 @@ const syntheticRuntimePassword =
   "SyntheticRuntime_2026!éΩ漢字_ExtraLength";
 const providerNow = Date.now();
 const disposableEndpointId = "ep-disposable-primary-001";
+const disposableProxyHost = "us-east-2.aws.neon.tech";
+const disposableRegionId = "aws-us-east-2";
 const disposableDirectHost =
-  `${disposableEndpointId}.us-east-2.aws.neon.tech`;
+  `${disposableEndpointId}.${disposableProxyHost}`;
 const disposablePooledHost =
-  `${disposableEndpointId}-pooler.us-east-2.aws.neon.tech`;
+  `${disposableEndpointId}-pooler.${disposableProxyHost}`;
 const boundDirectOperatorUrl =
   `postgresql://platform_app:synthetic@${disposableDirectHost}/runtime_posture_test`;
 const boundDockerOperatorUrl =
@@ -71,6 +73,8 @@ const planningAttestation = createNeonProviderAttestation(
         id: disposableEndpointId,
         port: 5432,
         projectId: "disposable-local-123456",
+        proxyHost: disposableProxyHost,
+        regionId: disposableRegionId,
         type: "read_write",
       },
     ],
@@ -109,6 +113,8 @@ const twoClusterPlanningAttestation = createNeonProviderAttestation(
         id: disposableEndpointId,
         port: 5432,
         projectId: "disposable-local-123456",
+        proxyHost: disposableProxyHost,
+        regionId: disposableRegionId,
         type: "read_write",
       },
     ],
@@ -1088,6 +1094,8 @@ function providerPhaseAttestation(
           id: disposableEndpointId,
           port: 5432,
           projectId: "disposable-local-123456",
+          proxyHost: disposableProxyHost,
+          regionId: disposableRegionId,
           type: "read_write",
         },
       ],

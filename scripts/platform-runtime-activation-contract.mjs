@@ -19,7 +19,10 @@ const safeDatabaseIdentifier = /^[a-z_][a-z0-9_$]{0,62}$/;
 const safeNeonProjectId = /^[a-z][a-z0-9-]{2,62}$/;
 const safeNeonBranchId = /^br-[a-z0-9][a-z0-9-]{2,61}$/;
 const safeNeonEndpointId = /^ep-[a-z0-9][a-z0-9-]{2,61}$/;
+const safeNeonRegionId = /^aws-[a-z][a-z0-9-]{0,62}$/;
 const safeFixtureIdentity = /^[0-9]+:[0-9]+$/;
+const maxDnsLabelLength = 63;
+const maxDnsHostnameLength = 253;
 const neonProviderEvidenceKeys = Object.freeze([
   "branchId",
   "database",
@@ -38,6 +41,8 @@ const neonEndpointEvidenceKeys = Object.freeze([
   "id",
   "port",
   "projectId",
+  "proxyHost",
+  "regionId",
   "type",
 ]);
 const neonEndpointKinds = new Set(["direct", "pooled"]);
@@ -1339,7 +1344,13 @@ function validateNeonProviderEvidence(evidence, now) {
       !neonEndpointTypes.has(endpoint.type) ||
       !neonEndpointStates.has(endpoint.currentState) ||
       typeof endpoint.disabled !== "boolean" ||
-      !canonicalNeonDirectHost(endpoint.host, endpoint.id) ||
+      !safeNeonRegionId.test(endpoint.regionId) ||
+      !canonicalNeonProxyHost(endpoint.proxyHost, endpoint.regionId) ||
+      !canonicalNeonDirectHost(
+        endpoint.host,
+        endpoint.id,
+        endpoint.proxyHost,
+      ) ||
       endpoint.database !== evidence.database
     ) {
       throw new PlatformRuntimeActivationError();
@@ -1356,6 +1367,8 @@ function validateNeonProviderEvidence(evidence, now) {
       id: endpoint.id,
       port: endpoint.port,
       projectId: endpoint.projectId,
+      proxyHost: endpoint.proxyHost,
+      regionId: endpoint.regionId,
       type: endpoint.type,
     });
     return normalizedEndpoint;
@@ -1386,6 +1399,8 @@ function validateNeonProviderEvidence(evidence, now) {
         id: endpoint.id,
         port: endpoint.port,
         projectId: endpoint.projectId,
+        proxyHost: endpoint.proxyHost,
+        regionId: endpoint.regionId,
         type: endpoint.type,
       }),
     ),
@@ -1581,33 +1596,97 @@ function effectivePostgresPort(parsed) {
   return port;
 }
 
-function canonicalNeonDirectHost(value, endpointId) {
+function safeDnsLabel(value) {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= maxDnsLabelLength &&
+    /^[a-z0-9]$|^[a-z0-9][a-z0-9-]*[a-z0-9]$/u.test(value)
+  );
+}
+
+function canonicalNeonProxyHost(value, regionId) {
   if (
     typeof value !== "string" ||
-    typeof endpointId !== "string" ||
-    value.length > 253 ||
-    endpointId.endsWith("-") ||
-    endpointId.endsWith("-pooler") ||
+    typeof regionId !== "string" ||
+    value.length > maxDnsHostnameLength ||
     !/^[a-z0-9.-]+$/u.test(value)
   ) {
     return false;
   }
+  if (!safeNeonRegionId.test(regionId)) {
+    return false;
+  }
+  const derivedRegion = regionId.slice("aws-".length);
+  if (!safeDnsLabel(derivedRegion)) {
+    return false;
+  }
   const labels = value.split(".");
-  return (
-    labels.length === 5 &&
-    labels[0] === endpointId &&
-    /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(labels[1]) &&
-    labels.slice(2).join(".") === "aws.neon.tech"
-  );
+  if (
+    labels.length < 4 ||
+    labels.slice(-3).join(".") !== "aws.neon.tech" ||
+    labels.some((label) => label.length > maxDnsLabelLength)
+  ) {
+    return false;
+  }
+  const remainingLabels = labels.slice(0, -3);
+  if (
+    remainingLabels[remainingLabels.length - 1] !== derivedRegion
+  ) {
+    return false;
+  }
+  if (remainingLabels.length === 1) {
+    return true;
+  }
+  if (remainingLabels.length === 2) {
+    return (
+      remainingLabels[0].length <= maxDnsLabelLength &&
+      /^c-[1-9][0-9]*$/u.test(remainingLabels[0])
+    );
+  }
+  return false;
+}
+
+function canonicalNeonDirectHost(value, endpointId, proxyHost) {
+  if (
+    typeof value !== "string" ||
+    typeof endpointId !== "string" ||
+    typeof proxyHost !== "string" ||
+    value.length > maxDnsHostnameLength ||
+    endpointId.endsWith("-") ||
+    endpointId.endsWith("-pooler") ||
+    !/^[a-z0-9.-]+$/u.test(value) ||
+    value.split(".").some((label) => label.length > maxDnsLabelLength)
+  ) {
+    return false;
+  }
+  return value === `${endpointId}.${proxyHost}`;
 }
 
 function pooledNeonHost(endpoint) {
-  if (!canonicalNeonDirectHost(endpoint?.host, endpoint?.id)) {
+  if (
+    !canonicalNeonProxyHost(endpoint?.proxyHost, endpoint?.regionId)
+  ) {
     throw new PlatformRuntimeActivationError();
   }
-  const labels = endpoint.host.split(".");
-  labels[0] = `${endpoint.id}-pooler`;
-  return labels.join(".");
+  if (
+    !canonicalNeonDirectHost(
+      endpoint?.host,
+      endpoint?.id,
+      endpoint?.proxyHost,
+    )
+  ) {
+    throw new PlatformRuntimeActivationError();
+  }
+  const pooledLabel = `${endpoint.id}-pooler`;
+  if (pooledLabel.length > maxDnsLabelLength) {
+    throw new PlatformRuntimeActivationError();
+  }
+  const pooledAuthority = `${pooledLabel}.${endpoint.proxyHost}`;
+  if (pooledAuthority.length > maxDnsHostnameLength) {
+    throw new PlatformRuntimeActivationError();
+  }
+  return pooledAuthority;
 }
 
 function rawUrlHostname(value) {
