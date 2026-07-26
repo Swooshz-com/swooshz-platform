@@ -1430,6 +1430,178 @@ test("provider proxyHost or regionId drift between phases invalidates attestatio
   }
 });
 
+test("Neon proxy host rejects DNS-invalid region labels", () => {
+  const invalidRegions = [
+    { regionId: "aws-ap-", proxyHost: "ap-.aws.neon.tech" },
+    { regionId: "aws--east", proxyHost: "-east.aws.neon.tech" },
+    { regionId: "aws-east-", proxyHost: "east-.aws.neon.tech" },
+  ];
+
+  for (const { regionId: rid, proxyHost: ph } of invalidRegions) {
+    assert.throws(
+      () =>
+        createNeonProviderAttestation(
+          providerEvidence({
+            endpoints: [
+              providerEndpoint({
+                host: `${endpointId}.${ph}`,
+                proxyHost: ph,
+                regionId: rid,
+              }),
+            ],
+          }),
+          { now: providerNow },
+        ),
+      PlatformRuntimeActivationError,
+    );
+  }
+});
+
+test("Neon proxy host rejects oversize region and shard labels", () => {
+  const label64 = "a" + "b".repeat(62) + "c";
+  assert.equal(label64.length, 64);
+
+  const oversizedRegion = [
+    { regionId: `aws-${label64}`, proxyHost: `${label64}.aws.neon.tech` },
+  ];
+  for (const { regionId: rid, proxyHost: ph } of oversizedRegion) {
+    assert.throws(
+      () =>
+        createNeonProviderAttestation(
+          providerEvidence({
+            endpoints: [
+              providerEndpoint({
+                host: `${endpointId}.${ph}`,
+                proxyHost: ph,
+                regionId: rid,
+              }),
+            ],
+          }),
+          { now: providerNow },
+        ),
+      PlatformRuntimeActivationError,
+    );
+  }
+
+  const shard64 = "c-" + "1".repeat(62);
+  assert.equal(shard64.length, 64);
+  assert.throws(
+    () =>
+      createNeonProviderAttestation(
+        providerEvidence({
+          endpoints: [
+            providerEndpoint({
+              host: `${endpointId}.${shard64}.us-east-2.aws.neon.tech`,
+              proxyHost: `${shard64}.us-east-2.aws.neon.tech`,
+              regionId,
+            }),
+          ],
+        }),
+        { now: providerNow },
+      ),
+    PlatformRuntimeActivationError,
+  );
+});
+
+test("Neon direct and pooled authorities enforce hostname length bounds", () => {
+  const epShort55 = `ep-${"y".repeat(52)}`;
+  assert.equal(epShort55.length, 55);
+  const pooledLabel55 = `${epShort55}-pooler`;
+  assert.equal(pooledLabel55.length, 62);
+  assert.ok(pooledLabel55.length <= 63);
+
+  const region63 = "r" + "s".repeat(61) + "t";
+  assert.equal(region63.length, 63);
+  const region63Id = `aws-${region63}`;
+  const longProxy = `${region63}.aws.neon.tech`;
+  const directUnder = `${epShort55}.${longProxy}`;
+  const pooledUnder = `${epShort55}-pooler.${longProxy}`;
+  assert.ok(pooledUnder.length <= 253);
+
+  const overlongEndpoint = `ep-${"w".repeat(247)}`;
+  const directOver253 = `${overlongEndpoint}.${proxyHost}`;
+  assert.ok(directOver253.length > 253);
+  assert.throws(
+    () =>
+      createNeonProviderAttestation(
+        providerEvidence({
+          endpoints: [
+            providerEndpoint({
+              host: directOver253,
+              id: overlongEndpoint,
+              proxyHost,
+              regionId,
+            }),
+          ],
+        }),
+        { now: providerNow },
+      ),
+    PlatformRuntimeActivationError,
+  );
+
+  assert.doesNotThrow(() =>
+    createRuntimeActivationTarget(
+      "platform_runtime",
+      {
+        providerAttestation: providerBinding({
+          endpoints: [
+            providerEndpoint({
+              host: directUnder,
+              id: epShort55,
+              proxyHost: longProxy,
+              regionId: region63Id,
+            }),
+          ],
+        }),
+        directEndpointId: epShort55,
+        directOperatorUrl:
+          `postgresql://operator:synthetic@${directUnder}/platform?sslmode=require&channel_binding=require`,
+        dockerEndpointId: epShort55,
+        dockerEndpointKind: "pooled",
+        dockerOperatorUrl:
+          `postgresql://operator:synthetic@${pooledUnder}/platform?sslmode=require&channel_binding=require`,
+        expectedDatabase: "platform",
+      },
+      { now: providerNow },
+    ),
+  );
+});
+
+test("Neon endpoint ID exceeding 63-byte pooled label is rejected", () => {
+  const longEpId = `ep-${"z".repeat(59)}`;
+  assert.equal(longEpId.length, 62);
+  const pooledLabel = `${longEpId}-pooler`;
+  assert.equal(pooledLabel.length, 69);
+  assert.ok(pooledLabel.length > 63);
+
+  const directOk = `${longEpId}.${proxyHost}`;
+  assert.throws(
+    () =>
+      createRuntimeActivationTarget(
+        "platform_runtime",
+        {
+          providerAttestation: providerBinding({
+            endpoints: [
+              providerEndpoint({
+                host: directOk,
+                id: longEpId,
+              }),
+            ],
+          }),
+          directEndpointId: longEpId,
+          directOperatorUrl:
+            `postgresql://operator:synthetic@${directOk}/platform?sslmode=require&channel_binding=require`,
+          dockerEndpointId: longEpId,
+          dockerEndpointKind: "pooled",
+          dockerOperatorUrl: pooledOperatorUrl,
+          expectedDatabase: "platform",
+        },
+        { now: providerNow },
+      ),
+    PlatformRuntimeActivationError,
+  );
+});
+
 test("operator URLs require exact direct or derived pooled Neon authority on port 5432", () => {
   const binding = providerBinding();
   const targetOptions = {

@@ -19,8 +19,10 @@ const safeDatabaseIdentifier = /^[a-z_][a-z0-9_$]{0,62}$/;
 const safeNeonProjectId = /^[a-z][a-z0-9-]{2,62}$/;
 const safeNeonBranchId = /^br-[a-z0-9][a-z0-9-]{2,61}$/;
 const safeNeonEndpointId = /^ep-[a-z0-9][a-z0-9-]{2,61}$/;
-const safeNeonRegionId = /^aws-[a-z][a-z0-9-]{2,61}$/;
+const safeNeonRegionId = /^aws-[a-z][a-z0-9-]{0,62}$/;
 const safeFixtureIdentity = /^[0-9]+:[0-9]+$/;
+const maxDnsLabelLength = 63;
+const maxDnsHostnameLength = 253;
 const neonProviderEvidenceKeys = Object.freeze([
   "branchId",
   "database",
@@ -1594,11 +1596,20 @@ function effectivePostgresPort(parsed) {
   return port;
 }
 
+function safeDnsLabel(value) {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= maxDnsLabelLength &&
+    /^[a-z0-9]$|^[a-z0-9][a-z0-9-]*[a-z0-9]$/u.test(value)
+  );
+}
+
 function canonicalNeonProxyHost(value, regionId) {
   if (
     typeof value !== "string" ||
     typeof regionId !== "string" ||
-    value.length > 253 ||
+    value.length > maxDnsHostnameLength ||
     !/^[a-z0-9.-]+$/u.test(value)
   ) {
     return false;
@@ -1607,13 +1618,14 @@ function canonicalNeonProxyHost(value, regionId) {
     return false;
   }
   const derivedRegion = regionId.slice("aws-".length);
-  if (derivedRegion.length === 0) {
+  if (!safeDnsLabel(derivedRegion)) {
     return false;
   }
   const labels = value.split(".");
   if (
     labels.length < 4 ||
-    labels.slice(-3).join(".") !== "aws.neon.tech"
+    labels.slice(-3).join(".") !== "aws.neon.tech" ||
+    labels.some((label) => label.length > maxDnsLabelLength)
   ) {
     return false;
   }
@@ -1627,7 +1639,10 @@ function canonicalNeonProxyHost(value, regionId) {
     return true;
   }
   if (remainingLabels.length === 2) {
-    return /^c-[1-9][0-9]*$/u.test(remainingLabels[0]);
+    return (
+      remainingLabels[0].length <= maxDnsLabelLength &&
+      /^c-[1-9][0-9]*$/u.test(remainingLabels[0])
+    );
   }
   return false;
 }
@@ -1637,10 +1652,11 @@ function canonicalNeonDirectHost(value, endpointId, proxyHost) {
     typeof value !== "string" ||
     typeof endpointId !== "string" ||
     typeof proxyHost !== "string" ||
-    value.length > 253 ||
+    value.length > maxDnsHostnameLength ||
     endpointId.endsWith("-") ||
     endpointId.endsWith("-pooler") ||
-    !/^[a-z0-9.-]+$/u.test(value)
+    !/^[a-z0-9.-]+$/u.test(value) ||
+    value.split(".").some((label) => label.length > maxDnsLabelLength)
   ) {
     return false;
   }
@@ -1662,7 +1678,15 @@ function pooledNeonHost(endpoint) {
   ) {
     throw new PlatformRuntimeActivationError();
   }
-  return `${endpoint.id}-pooler.${endpoint.proxyHost}`;
+  const pooledLabel = `${endpoint.id}-pooler`;
+  if (pooledLabel.length > maxDnsLabelLength) {
+    throw new PlatformRuntimeActivationError();
+  }
+  const pooledAuthority = `${pooledLabel}.${endpoint.proxyHost}`;
+  if (pooledAuthority.length > maxDnsHostnameLength) {
+    throw new PlatformRuntimeActivationError();
+  }
+  return pooledAuthority;
 }
 
 function rawUrlHostname(value) {
