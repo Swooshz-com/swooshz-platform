@@ -228,8 +228,11 @@ window, the operator must perform official read-only Neon API observations:
 
 - retrieve the approved compute endpoint with
   `GET /api/v2/projects/{project_id}/endpoints/{endpoint_id}`;
-- retain only endpoint `id`, `project_id`, `branch_id`, `host`, `type`,
-  `current_state`, and `disabled`;
+- retain endpoint `id`, `project_id`, `branch_id`, `host`, `proxy_host`,
+  `region_id`, `type`, `current_state`, and `disabled`;
+- map `project_id`, `branch_id`, `proxy_host`, and `region_id` directly to
+  `projectId`, `branchId`, `proxyHost`, and `regionId` on every endpoint
+  evidence record — do not infer any of them from the hostname;
 - verify the expected database through the official branch database listing;
   and
 - associate the reviewed database and the fixed PostgreSQL port `5432`.
