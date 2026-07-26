@@ -27,14 +27,26 @@ import {
 } from "../scripts/platform-runtime-activation-contract.mjs";
 
 const endpointId = "ep-direct-approved-001";
+const proxyHost = "us-east-2.aws.neon.tech";
+const regionId = "aws-us-east-2";
 const directHost =
-  `${endpointId}.us-east-2.aws.neon.tech`;
+  `${endpointId}.${proxyHost}`;
 const pooledHost =
-  `${endpointId}-pooler.us-east-2.aws.neon.tech`;
+  `${endpointId}-pooler.${proxyHost}`;
+const shardProxyHost = "c-2.ap-southeast-1.aws.neon.tech";
+const shardRegionId = "aws-ap-southeast-1";
+const shardDirectHost =
+  `${endpointId}.${shardProxyHost}`;
+const shardPooledHost =
+  `${endpointId}-pooler.${shardProxyHost}`;
 const operatorUrl =
   `postgresql://operator:synthetic@${directHost}/platform?sslmode=require&channel_binding=require`;
 const pooledOperatorUrl =
   `postgresql://operator:synthetic@${pooledHost}/platform?sslmode=require&channel_binding=require`;
+const shardOperatorUrl =
+  `postgresql://operator:synthetic@${shardDirectHost}/platform?sslmode=require&channel_binding=require`;
+const shardPooledOperatorUrl =
+  `postgresql://operator:synthetic@${shardPooledHost}/platform?sslmode=require&channel_binding=require`;
 const runtimePassword = "SyntheticRuntime_2026!Lab_ExtraLength";
 const providerNow = Date.now();
 
@@ -1136,35 +1148,22 @@ test("direct and pooled paths bind one provider compute identity", () => {
 
 test("production evidence accepts only canonical Neon direct authority", () => {
   const invalidEndpoints = [
-    providerEndpoint({ host: "db.example.test" }),
-    providerEndpoint({ host: "localhost" }),
-    providerEndpoint({ host: "127.0.0.1" }),
-    providerEndpoint({ host: "::1" }),
-    providerEndpoint({ host: `${endpointId}.example` }),
-    providerEndpoint({ host: `${endpointId}.example.test` }),
-    providerEndpoint({ host: `${endpointId}.internal` }),
-    providerEndpoint({ host: `${endpointId}.public.example.com` }),
-    providerEndpoint({ host: `${directHost}.` }),
-    providerEndpoint({ host: directHost.toUpperCase() }),
+    providerEndpoint({ host: `${endpointId}.${proxyHost}.` }),
+    providerEndpoint({ host: `${endpointId}.${proxyHost}`.toUpperCase() }),
     providerEndpoint({
-      host: `${endpointId}.us-\u0435ast-2.aws.neon.tech`,
+      host: `x${endpointId}.${proxyHost}`,
     }),
     providerEndpoint({
-      host: `x${endpointId}.us-east-2.aws.neon.tech`,
+      host: `${endpointId}-other.${proxyHost}`,
     }),
     providerEndpoint({
-      host: `${endpointId}-other.us-east-2.aws.neon.tech`,
+      id: "xep-direct-approved-001",
     }),
-    providerEndpoint({
-      host: "ep-other-approved-003.us-east-2.aws.neon.tech",
-    }),
-    providerEndpoint({
-      host: `${endpointId}.attacker.neon.tech`,
-    }),
-    providerEndpoint({ id: "ep-other-approved-003" }),
     providerEndpoint({ id: `${endpointId}-pooler` }),
     providerEndpoint({ port: 5544 }),
-    { ...providerEndpoint(), kind: "direct" },
+    providerEndpoint({
+      host: `ep-other-approved-003.${proxyHost}`,
+    }),
   ];
 
   for (const endpoint of invalidEndpoints) {
@@ -1177,8 +1176,258 @@ test("production evidence accepts only canonical Neon direct authority", () => {
       PlatformRuntimeActivationError,
     );
   }
-
   assert.doesNotThrow(() => providerBinding());
+});
+
+test("production evidence accepts shard-qualified Neon direct authority", () => {
+  const shardEndpoint = providerEndpoint({
+    host: shardDirectHost,
+    proxyHost: shardProxyHost,
+    regionId: shardRegionId,
+  });
+  assert.doesNotThrow(() =>
+    createNeonProviderAttestation(
+      providerEvidence({ endpoints: [shardEndpoint] }),
+      { now: providerNow },
+    ),
+  );
+  assert.doesNotThrow(() =>
+    createRuntimeActivationTarget(
+      "platform_runtime",
+      {
+        providerAttestation: providerBinding({
+          endpoints: [shardEndpoint],
+        }),
+        directEndpointId: endpointId,
+        directOperatorUrl: shardOperatorUrl,
+        dockerEndpointId: endpointId,
+        dockerEndpointKind: "pooled",
+        dockerOperatorUrl: shardPooledOperatorUrl,
+        expectedDatabase: "platform",
+      },
+      { now: providerNow },
+    ),
+  );
+});
+
+test("Neon proxy host rejects non-Neon and malformed authorities", () => {
+  const invalid = [
+    providerEndpoint({ proxyHost: "db.example.test", regionId: "aws-us-east-2" }),
+    providerEndpoint({ proxyHost: "localhost", regionId: "aws-us-east-2" }),
+    providerEndpoint({ proxyHost: "127.0.0.1", regionId: "aws-us-east-2" }),
+    providerEndpoint({ proxyHost: "attacker.neon.tech", regionId: "aws-us-east-2" }),
+    providerEndpoint({ proxyHost: "neon.tech", regionId: "aws-us-east-2" }),
+    providerEndpoint({ proxyHost: `${proxyHost}.extra`, regionId: "aws-us-east-2" }),
+    providerEndpoint({ proxyHost: proxyHost.toUpperCase(), regionId: "aws-us-east-2" }),
+    providerEndpoint({ proxyHost: `${proxyHost}.`, regionId: "aws-us-east-2" }),
+    providerEndpoint({
+      proxyHost: `us-\u0435ast-2.aws.neon.tech`,
+      regionId: "aws-us-east-2",
+    }),
+  ];
+
+  for (const endpoint of invalid) {
+    assert.throws(
+      () =>
+        createNeonProviderAttestation(
+          providerEvidence({ endpoints: [endpoint] }),
+          { now: providerNow },
+        ),
+      PlatformRuntimeActivationError,
+    );
+  }
+});
+
+test("Neon proxy host requires exact regionId binding", () => {
+  const invalid = [
+    providerEndpoint({ proxyHost: "us-east-2.aws.neon.tech", regionId: "aws-us-west-2" }),
+    providerEndpoint({ proxyHost: "us-west-2.aws.neon.tech", regionId: "aws-us-east-2" }),
+    providerEndpoint({ proxyHost: "ap-southeast-1.aws.neon.tech", regionId: "aws-us-east-2" }),
+    providerEndpoint({ proxyHost: "c-3.ap-southeast-1.aws.neon.tech", regionId: "aws-ap-southeast-2" }),
+  ];
+
+  for (const endpoint of invalid) {
+    assert.throws(
+      () =>
+        createNeonProviderAttestation(
+          providerEvidence({ endpoints: [endpoint] }),
+          { now: providerNow },
+        ),
+      PlatformRuntimeActivationError,
+    );
+  }
+});
+
+test("Neon proxy host rejects invalid shard labels", () => {
+  const invalidShardHosts = [
+    "c-0.ap-southeast-1.aws.neon.tech",
+    "c-00.ap-southeast-1.aws.neon.tech",
+    "c.ap-southeast-1.aws.neon.tech",
+    "d-1.ap-southeast-1.aws.neon.tech",
+    "cx-1.ap-southeast-1.aws.neon.tech",
+    "c--1.ap-southeast-1.aws.neon.tech",
+    "c-1-2.ap-southeast-1.aws.neon.tech",
+  ];
+
+  for (const proxy of invalidShardHosts) {
+    assert.throws(
+      () =>
+        createNeonProviderAttestation(
+          providerEvidence({
+            endpoints: [
+              providerEndpoint({
+                host: `${endpointId}.${proxy}`,
+                proxyHost: proxy,
+                regionId: "aws-ap-southeast-1",
+              }),
+            ],
+          }),
+          { now: providerNow },
+        ),
+      PlatformRuntimeActivationError,
+    );
+  }
+});
+
+test("Neon proxy host rejects more than one shard label", () => {
+  const tooManyShards = [
+    "c-1.c-2.ap-southeast-1.aws.neon.tech",
+    "c-2.ap-southeast-1.ap-southeast-1.aws.neon.tech",
+  ];
+
+  for (const proxy of tooManyShards) {
+    assert.throws(
+      () =>
+        createNeonProviderAttestation(
+          providerEvidence({
+            endpoints: [
+              providerEndpoint({
+                host: `${endpointId}.${proxy}`,
+                proxyHost: proxy,
+                regionId: "aws-ap-southeast-1",
+              }),
+            ],
+          }),
+          { now: providerNow },
+        ),
+      PlatformRuntimeActivationError,
+    );
+  }
+});
+
+test("Neon direct host rejects proxyHost mismatch even with valid-looking host", () => {
+  assert.throws(
+    () =>
+      createNeonProviderAttestation(
+        providerEvidence({
+          endpoints: [
+            providerEndpoint({
+              host: `${endpointId}.c-2.ap-southeast-1.aws.neon.tech`,
+              proxyHost,
+              regionId,
+            }),
+          ],
+        }),
+        { now: providerNow },
+      ),
+    PlatformRuntimeActivationError,
+  );
+});
+
+test("Neon evidence rejects missing proxyHost and regionId fields", () => {
+  const missingProxy = { ...providerEndpoint() };
+  const missingRegion = { ...providerEndpoint() };
+  delete missingProxy.proxyHost;
+  delete missingRegion.regionId;
+
+  for (const endpoint of [missingProxy, missingRegion]) {
+    assert.throws(
+      () =>
+        createNeonProviderAttestation(
+          providerEvidence({ endpoints: [endpoint] }),
+          { now: providerNow },
+        ),
+      PlatformRuntimeActivationError,
+    );
+  }
+});
+
+test("Neon evidence rejects blank proxyHost and regionId", () => {
+  for (const endpoint of [
+    providerEndpoint({ proxyHost: "", regionId }),
+    providerEndpoint({ proxyHost, regionId: "" }),
+    providerEndpoint({ proxyHost: "", regionId: "" }),
+  ]) {
+    assert.throws(
+      () =>
+        createNeonProviderAttestation(
+          providerEvidence({ endpoints: [endpoint] }),
+          { now: providerNow },
+        ),
+      PlatformRuntimeActivationError,
+    );
+  }
+});
+
+test("Neon evidence rejects invalid regionId format", () => {
+  for (const rid of [
+    "us-east-2",
+    "aws-",
+    "AWS-us-east-2",
+    "aws_us_east_2",
+    "aws us east 2",
+  ]) {
+    assert.throws(
+      () =>
+        createNeonProviderAttestation(
+          providerEvidence({
+            endpoints: [
+              providerEndpoint({ proxyHost, regionId: rid }),
+            ],
+          }),
+          { now: providerNow },
+        ),
+      PlatformRuntimeActivationError,
+    );
+  }
+});
+
+test("provider proxyHost or regionId drift between phases invalidates attestation", () => {
+  const { binding, target } = activationTarget();
+  assert.doesNotThrow(() =>
+    assertRuntimeActivationProviderAttestation(
+      target,
+      renewedAttestation(-30_000),
+      { now: providerNow },
+    ),
+  );
+
+  for (const drifted of [
+    providerBinding({
+      endpoints: [
+        providerEndpoint({ proxyHost: shardProxyHost, regionId: shardRegionId, host: shardDirectHost }),
+      ],
+    }),
+    providerBinding({
+      endpoints: [
+        providerEndpoint({
+          proxyHost: "ap-southeast-1.aws.neon.tech",
+          regionId: "aws-ap-southeast-1",
+          host: `${endpointId}.ap-southeast-1.aws.neon.tech`,
+        }),
+      ],
+    }),
+  ]) {
+    assert.throws(
+      () =>
+        assertRuntimeActivationProviderAttestation(
+          target,
+          drifted,
+          { now: providerNow },
+        ),
+      PlatformRuntimeActivationError,
+    );
+  }
 });
 
 test("operator URLs require exact direct or derived pooled Neon authority on port 5432", () => {
@@ -2390,6 +2639,8 @@ function providerEndpoint(overrides = {}) {
     id: endpointId,
     port: 5432,
     projectId: "project-alpha-123456",
+    proxyHost,
+    regionId,
     type: "read_write",
     ...overrides,
   };

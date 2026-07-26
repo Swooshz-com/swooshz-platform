@@ -246,26 +246,55 @@ capability can be created.
 
 The strict endpoint evidence record accepts exactly `branchId`,
 `currentState`, `database`, `disabled`, `host`, `id`, `port`, `projectId`,
-and `type`. Evidence contains exactly one official compute endpoint, not
-separate caller-labelled direct and pooled endpoint records. The first-party
-wrapper maps the reviewed provider fields into that record and adds only the
-independently reviewed database association and fixed port `5432`.
-Any missing or extra field fails closed.
+`proxyHost`, `regionId`, and `type`. Evidence contains exactly one official
+compute endpoint, not separate caller-labelled direct and pooled endpoint
+records. The first-party wrapper maps the reviewed provider fields into that
+record and adds only the independently reviewed database association and fixed
+port `5432`. Any missing or extra field fails closed.
 
-For the currently documented AWS Neon authority, the official direct host
-must be exactly `<endpoint-id>.<region>.aws.neon.tech`. The first label must
-equal the complete endpoint ID, with no prefix, suffix, case, trailing-dot,
-empty-label, Unicode, IP, localhost, private/internal, example/test, arbitrary
-public-domain, or generic `neon.tech` alternative. The activation contract
-intentionally supports only the explicitly reviewed `.aws.neon.tech` suffix.
-If a separately authorised production observation returns another official
-suffix, stop and review that provider contract instead of widening validation.
+For the currently documented AWS Neon authority, every endpoint evidence record
+must carry two additional provider-attested fields beyond the existing contract:
+
+- `proxyHost` — the official proxy-host portion of the endpoint address, returned by
+  the provider as `proxy_host`;
+- `regionId` — the official provider region identifier, returned as `region_id`
+  and beginning with `aws-`.
+
+The endpoint hostname relationship is:
+
+```
+<endpoint-id>.<proxyHost>
+```
+
+where `proxyHost` is independently validated through `regionId` rather than
+inferred from the hostname alone.
+
+The canonical `proxyHost` is either:
+
+- `<region>.aws.neon.tech` (legacy, e.g., `us-east-2.aws.neon.tech`), or
+- `<provider-shard>.<region>.aws.neon.tech` (shard-qualified, e.g.,
+  `c-2.ap-southeast-1.aws.neon.tech`)
+
+where `<region>` is derived from `regionId` by stripping the `aws-` prefix.
+
+The exact direct host must equal `<endpoint-id>.<proxyHost>`. The pooled host is
+`<endpoint-id>-pooler.<proxyHost>`. Arbitrary label-count widening is prohibited:
+the validator accepts only the legacy and shard-qualified proxy-host forms, each
+bound to the provider-attested `regionId`. A proxy host whose region label does
+not match the derived region fails closed. A shard label must match `c-<positive
+decimal integer>`; other shard grammars, negative/zero values, and multiple
+shard labels are rejected.
+
+The activation contract intentionally supports only the explicitly reviewed `.aws.neon.tech` suffix. If a separately authorised production observation
+returns another official suffix, stop and review that provider contract
+instead of widening validation.
 
 Pooled access is not another compute endpoint. It retains the same endpoint
-ID and exact suffix and changes only the first label to
+ID and `proxyHost` and changes only the first label to
 `<endpoint-id>-pooler`. A missing, doubled, or misspelt `-pooler`, another
-endpoint ID, another region/suffix, a second read-write compute ID, or any port other than `5432` fails closed. Direct-only and direct-plus-pooled paths
-are supported only when they bind the same provider compute identity.
+endpoint ID, another `proxyHost` or `regionId`, a second read-write compute ID,
+or any port other than `5432` fails closed. Direct-only and direct-plus-pooled
+paths are supported only when they bind the same provider compute identity.
 
 The reducer accepts only its strict reviewed shape. Do not pass a raw API response object.
 Raw response bodies, bearer tokens, API credentials,
