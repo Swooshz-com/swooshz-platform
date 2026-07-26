@@ -158,6 +158,8 @@ export class PlatformRuntimeActivationMutationTracker {
   #rollbackPermitIssued = false;
   #rollbackPermitConsumed = false;
   #installationStarted = false;
+  #installationReportedSuccess = false;
+  #installationFailed = false;
   #mutationMayHaveBegun = false;
 
   constructor(target) {
@@ -207,9 +209,14 @@ export class PlatformRuntimeActivationMutationTracker {
     ) {
       throw new PlatformRuntimeActivationError();
     }
-    this.#acceptPhaseAttestation(target, currentAttestation, now);
+    const providerValue = this.#acceptPhaseAttestation(
+      target,
+      currentAttestation,
+      now,
+    );
     this.#passwordPermitIssued = true;
     return createRuntimeActivationPhasePermit({
+      expiresMs: providerValue.expiresMs,
       fixtureIdentity: this.#validatedFixtureIdentity,
       owner: this,
       onConsume: () => {
@@ -223,9 +230,10 @@ export class PlatformRuntimeActivationMutationTracker {
 
   passwordInstallationFailed(target, error) {
     this.#assertTarget(target);
-    if (!this.#installationStarted) {
+    if (!this.#installationStarted || this.#installationFailed) {
       throw new PlatformRuntimeActivationError();
     }
+    this.#installationFailed = true;
     this.#mutationMayHaveBegun =
       runtimeActivationMutationMayHaveBegun(error);
   }
@@ -238,14 +246,20 @@ export class PlatformRuntimeActivationMutationTracker {
     this.#assertTarget(target);
     if (
       !this.#installationStarted ||
+      this.#installationFailed ||
       !this.#mutationMayHaveBegun ||
       this.#loginPermitIssued
     ) {
       throw new PlatformRuntimeActivationError();
     }
-    this.#acceptPhaseAttestation(target, currentAttestation, now);
+    const providerValue = this.#acceptPhaseAttestation(
+      target,
+      currentAttestation,
+      now,
+    );
     this.#loginPermitIssued = true;
     return createRuntimeActivationPhasePermit({
+      expiresMs: providerValue.expiresMs,
       owner: this,
       onConsume: () => {
         this.#loginPermitConsumed = true;
@@ -276,9 +290,14 @@ export class PlatformRuntimeActivationMutationTracker {
     ) {
       throw new PlatformRuntimeActivationError();
     }
-    this.#acceptPhaseAttestation(target, currentAttestation, now);
+    const providerValue = this.#acceptPhaseAttestation(
+      target,
+      currentAttestation,
+      now,
+    );
     this.#rollbackPermitIssued = true;
     return createRuntimeActivationPhasePermit({
+      expiresMs: providerValue.expiresMs,
       owner: this,
       onConsume: () => {
         this.#rollbackPermitConsumed = true;
@@ -309,16 +328,25 @@ export class PlatformRuntimeActivationMutationTracker {
     ) {
       throw new PlatformRuntimeActivationError();
     }
-    this.#acceptPhaseAttestation(target, currentAttestation, now);
+    const providerValue = this.#acceptPhaseAttestation(
+      target,
+      currentAttestation,
+      now,
+    );
     this.#successPermitIssued = true;
     return createRuntimeActivationPhasePermit({
+      expiresMs: providerValue.expiresMs,
       owner: this,
       phase: "success_finalisation",
       target,
     });
   }
 
-  successFinalised(target, phasePermit) {
+  successFinalised(
+    target,
+    phasePermit,
+    { now = Date.now() } = {},
+  ) {
     this.#assertTarget(target);
     if (!this.#mutationMayHaveBegun || !this.#successPermitIssued) {
       throw new PlatformRuntimeActivationError();
@@ -328,6 +356,7 @@ export class PlatformRuntimeActivationMutationTracker {
       target,
       "success_finalisation",
       this,
+      { now },
     );
     this.#mutationMayHaveBegun = false;
   }
@@ -343,6 +372,7 @@ export class PlatformRuntimeActivationMutationTracker {
       },
     );
     this.#latestAcceptedObservedMs = providerValue.observedMs;
+    return providerValue;
   }
 
   #assertTarget(target) {
@@ -550,7 +580,8 @@ export function buildRuntimeDatabaseUrl(
   if (
     typeof runtimePassword !== "string" ||
     runtimePassword.length === 0 ||
-    containsLineBreakOrNull(runtimePassword)
+    containsLineBreakOrNull(runtimePassword) ||
+    !isWellFormedUnicode(runtimePassword)
   ) {
     throw new PlatformRuntimeActivationError();
   }
@@ -558,8 +589,8 @@ export function buildRuntimeDatabaseUrl(
   const parsed = parseOperatorUrl(operatorUrl);
   assertProviderConnectionEndpoint(
     parsed,
-    targetValue.directEndpointHost,
-    targetValue.directEndpointPort,
+    targetValue.dockerEndpointHost,
+    targetValue.dockerEndpointPort,
   );
   assertUrlDatabase(parsed, targetValue.expectedDatabase);
   const reviewedParameters = validateConnectionParameters(parsed);
@@ -577,7 +608,7 @@ export function buildRuntimeDatabaseUrl(
 export function buildRuntimeRoleStatement(
   target,
   operation,
-  { phasePermit } = {},
+  { phasePermit, now = Date.now() } = {},
 ) {
   activationTargetValue(target);
   const runtimeRole = targetRole(target);
@@ -587,6 +618,8 @@ export function buildRuntimeRoleStatement(
       phasePermit,
       target,
       "login_enablement",
+      null,
+      { now },
     );
     return `ALTER ROLE ${quotedRole} LOGIN`;
   }
@@ -595,6 +628,8 @@ export function buildRuntimeRoleStatement(
       phasePermit,
       target,
       "mandatory_rollback",
+      null,
+      { now },
     );
     return `ALTER ROLE ${quotedRole} NOLOGIN PASSWORD NULL`;
   }
@@ -770,6 +805,8 @@ export async function installRuntimePasswordWithDocker({
     phasePermit,
     target,
     "password_installation",
+    null,
+    { now },
   );
   if (permitValue.fixtureIdentity !== fixtureIdentity) {
     throw new PlatformRuntimeActivationError();
@@ -1439,6 +1476,7 @@ function providerAttestationValue(
 }
 
 function createRuntimeActivationPhasePermit({
+  expiresMs = null,
   fixtureIdentity = null,
   owner,
   onConsume = null,
@@ -1450,6 +1488,7 @@ function createRuntimeActivationPhasePermit({
   const permit = Object.freeze({});
   phasePermitValues.set(permit, {
     consumed: false,
+    expiresMs,
     fixtureIdentity,
     onConsume,
     owner,
@@ -1464,6 +1503,7 @@ function consumeRuntimeActivationPhasePermit(
   target,
   phase,
   expectedOwner = null,
+  { now = Date.now() } = {},
 ) {
   const value =
     permit && typeof permit === "object"
@@ -1475,6 +1515,12 @@ function consumeRuntimeActivationPhasePermit(
     value.target !== target ||
     value.phase !== phase ||
     (expectedOwner !== null && value.owner !== expectedOwner)
+  ) {
+    throw new PlatformRuntimeActivationError();
+  }
+  if (
+    value.expiresMs !== null &&
+    (!Number.isInteger(now) || now >= value.expiresMs)
   ) {
     throw new PlatformRuntimeActivationError();
   }
@@ -1799,11 +1845,34 @@ function containsLineBreakOrNull(value) {
   return /[\r\n\u0000]/u.test(value);
 }
 
+function isWellFormedUnicode(value) {
+  if (typeof value !== "string") {
+    return false;
+  }
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      if (
+        i + 1 >= value.length ||
+        value.charCodeAt(i + 1) < 0xdc00 ||
+        value.charCodeAt(i + 1) > 0xdfff
+      ) {
+        return false;
+      }
+      i += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function isStrongRuntimePassword(value) {
   return (
     typeof value === "string" &&
     value.length >= 32 &&
     !containsLineBreakOrNull(value) &&
+    isWellFormedUnicode(value) &&
     /[a-z]/u.test(value) &&
     /[A-Z]/u.test(value) &&
     /[0-9]/u.test(value) &&

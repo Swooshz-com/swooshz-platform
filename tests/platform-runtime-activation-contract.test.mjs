@@ -2592,6 +2592,626 @@ test("late child events cannot settle password installation twice", async () => 
   assert.equal(harness.settlementCount(), 1);
 });
 
+test("password-installation failure permanently blocks LOGIN authorisation", async () => {
+  const { binding, target } = activationTarget();
+  const identity = await fixtureIdentity("123456789", "16384");
+  const { phasePermit, tracker } = authorisePasswordForFixture({
+    binding,
+    identity,
+    target,
+  });
+
+  await installRuntimePasswordWithDocker({
+    operatorUrl,
+    target,
+    runtimePassword,
+    expectedFixtureIdentity: identity,
+    phasePermit,
+    now: providerNow,
+    spawnImpl() {
+      const child = fakeChild();
+      queueMicrotask(() => child.emit("close", 0, null));
+      return child;
+    },
+  });
+
+  tracker.passwordInstallationFailed(
+    target,
+    new PlatformRuntimeActivationError({ mutationMayHaveBegun: false }),
+  );
+
+  assert.throws(
+    () =>
+      tracker.authoriseLoginEnablement(
+        target,
+        renewedAttestation(-20_000),
+        { now: providerNow },
+      ),
+    PlatformRuntimeActivationError,
+  );
+  assert.equal(tracker.rollbackRequired(target), false);
+});
+
+test("password-installation failure blocks LOGIN even with mutationMayHaveBegun true", async () => {
+  const { binding, target } = activationTarget();
+  const identity = await fixtureIdentity("123456789", "16384");
+  const { phasePermit, tracker } = authorisePasswordForFixture({
+    binding,
+    identity,
+    target,
+  });
+
+  await installRuntimePasswordWithDocker({
+    operatorUrl,
+    target,
+    runtimePassword,
+    expectedFixtureIdentity: identity,
+    phasePermit,
+    now: providerNow,
+    spawnImpl() {
+      const child = fakeChild();
+      queueMicrotask(() => child.emit("close", 0, null));
+      return child;
+    },
+  });
+
+  tracker.passwordInstallationFailed(
+    target,
+    new PlatformRuntimeActivationError({ mutationMayHaveBegun: true }),
+  );
+
+  assert.throws(
+    () =>
+      tracker.authoriseLoginEnablement(
+        target,
+        renewedAttestation(-20_000),
+        { now: providerNow },
+      ),
+    PlatformRuntimeActivationError,
+  );
+  assert.equal(tracker.rollbackRequired(target), true);
+});
+
+test("duplicate password-installation failure calls fail closed", async () => {
+  const { binding, target } = activationTarget();
+  const identity = await fixtureIdentity("123456789", "16384");
+  const { phasePermit, tracker } = authorisePasswordForFixture({
+    binding,
+    identity,
+    target,
+  });
+
+  await installRuntimePasswordWithDocker({
+    operatorUrl,
+    target,
+    runtimePassword,
+    expectedFixtureIdentity: identity,
+    phasePermit,
+    now: providerNow,
+    spawnImpl() {
+      const child = fakeChild();
+      queueMicrotask(() => child.emit("close", 0, null));
+      return child;
+    },
+  });
+
+  tracker.passwordInstallationFailed(
+    target,
+    new PlatformRuntimeActivationError({ mutationMayHaveBegun: true }),
+  );
+  assert.throws(
+    () =>
+      tracker.passwordInstallationFailed(
+        target,
+        new PlatformRuntimeActivationError(),
+      ),
+    PlatformRuntimeActivationError,
+  );
+});
+
+test("runtime URL validates pooled endpoint authority", () => {
+  const { target } = activationTarget("platform_runtime", {
+    dockerEndpointKind: "pooled",
+    dockerOperatorUrl: pooledOperatorUrl,
+  });
+  const pooledAuthorityUrl =
+    `postgresql://operator:synthetic@${pooledHost}/platform?sslmode=require&channel_binding=require`;
+
+  assert.doesNotThrow(() =>
+    buildRuntimeDatabaseUrl(pooledAuthorityUrl, target, runtimePassword, {
+      now: providerNow,
+    }),
+  );
+
+  assert.throws(
+    () =>
+      buildRuntimeDatabaseUrl(operatorUrl, target, runtimePassword, {
+        now: providerNow,
+      }),
+    PlatformRuntimeActivationError,
+  );
+});
+
+test("runtime URL rejects direct endpoint authority when pooled is required", () => {
+  const { target } = activationTarget("platform_runtime", {
+    dockerEndpointKind: "pooled",
+    dockerOperatorUrl: pooledOperatorUrl,
+  });
+  assert.throws(
+    () =>
+      buildRuntimeDatabaseUrl(operatorUrl, target, runtimePassword, {
+        now: providerNow,
+      }),
+    PlatformRuntimeActivationError,
+  );
+  const pooledUrl =
+    `postgresql://operator:synthetic@${pooledHost}/platform?sslmode=require&channel_binding=require`;
+  assert.doesNotThrow(() =>
+    buildRuntimeDatabaseUrl(pooledUrl, target, runtimePassword, {
+      now: providerNow,
+    }),
+  );
+});
+
+test("runtime URL rejects every pooled authority and database substitution", () => {
+  const { target } = activationTarget("platform_runtime", {
+    dockerEndpointKind: "pooled",
+    dockerOperatorUrl: pooledOperatorUrl,
+  });
+  const invalidUrls = [
+    operatorUrl,
+    `postgresql://operator:synthetic@ep-other-approved-003-pooler.${proxyHost}/platform?sslmode=require&channel_binding=require`,
+    `postgresql://operator:synthetic@${endpointId}-pooler.us-west-2.aws.neon.tech/platform?sslmode=require&channel_binding=require`,
+    `postgresql://operator:synthetic@${pooledHost}/other_database?sslmode=require&channel_binding=require`,
+    `postgresql://operator:synthetic@${pooledHost}:6432/platform?sslmode=require&channel_binding=require`,
+  ];
+
+  for (const invalidUrl of invalidUrls) {
+    const error = captureSyncFailure(() =>
+      buildRuntimeDatabaseUrl(
+        invalidUrl,
+        target,
+        runtimePassword,
+        { now: providerNow },
+      ),
+    );
+    assert.equal(error.code, "runtime_activation_failed");
+    assert.equal(error.message, "Runtime activation failed.");
+    assert.doesNotMatch(
+      JSON.stringify({ code: error.code, message: error.message }),
+      /SyntheticRuntime|postgresql:\/\//u,
+    );
+  }
+
+  const result = new URL(
+    buildRuntimeDatabaseUrl(
+      pooledOperatorUrl,
+      target,
+      runtimePassword,
+      { now: providerNow },
+    ),
+  );
+  assert.equal(result.hostname, pooledHost);
+  assert.equal(result.port, "");
+  assert.equal(result.pathname, "/platform");
+});
+
+test("phase permits reject stale consumption after evidence expiry", async () => {
+  const { binding, target } = activationTarget();
+  const identity = await fixtureIdentity("123456789", "16384");
+  const tracker = new PlatformRuntimeActivationMutationTracker(target);
+  tracker.fixtureValidated(target, identity, identity, binding, {
+    now: providerNow,
+  });
+
+  const expiresAt = providerNow + 60_000;
+  const permit = tracker.authorisePasswordInstallation(
+    target,
+    renewedAttestation(-30_000, {
+      expiresAt: new Date(expiresAt).toISOString(),
+    }),
+    { now: providerNow },
+  );
+
+  await installRuntimePasswordWithDocker({
+    operatorUrl,
+    target,
+    runtimePassword,
+    expectedFixtureIdentity: identity,
+    phasePermit: permit,
+    spawnImpl() {
+      const child = fakeChild();
+      queueMicrotask(() => child.emit("close", 0, null));
+      return child;
+    },
+    now: expiresAt - 1,
+  });
+  assert.equal(tracker.rollbackRequired(target), true);
+});
+
+test("phase permit consumption fails immediately after evidence expiry", async () => {
+  const { binding, target } = activationTarget();
+  const identity = await fixtureIdentity("123456789", "16384");
+  const tracker = new PlatformRuntimeActivationMutationTracker(target);
+  tracker.fixtureValidated(target, identity, identity, binding, {
+    now: providerNow,
+  });
+
+  const expiresAt = providerNow + 60_000;
+  const permit = tracker.authorisePasswordInstallation(
+    target,
+    renewedAttestation(-30_000, {
+      expiresAt: new Date(expiresAt).toISOString(),
+    }),
+    { now: providerNow },
+  );
+
+  let spawnCalls = 0;
+  await assert.rejects(
+    () =>
+      installRuntimePasswordWithDocker({
+        operatorUrl,
+        target,
+        runtimePassword,
+        expectedFixtureIdentity: identity,
+        phasePermit: permit,
+        spawnImpl() {
+          spawnCalls += 1;
+          return fakeChild();
+        },
+        now: expiresAt,
+      }),
+    PlatformRuntimeActivationError,
+  );
+  assert.equal(spawnCalls, 0);
+  assert.equal(tracker.rollbackRequired(target), false);
+  assert.throws(
+    () =>
+      tracker.authorisePasswordInstallation(
+        target,
+        renewedAttestation(-20_000),
+        { now: providerNow },
+      ),
+    PlatformRuntimeActivationError,
+  );
+
+  await installRuntimePasswordWithDocker({
+    operatorUrl,
+    target,
+    runtimePassword,
+    expectedFixtureIdentity: identity,
+    phasePermit: permit,
+    spawnImpl() {
+      spawnCalls += 1;
+      const child = fakeChild();
+      queueMicrotask(() => child.emit("close", 0, null));
+      return child;
+    },
+    now: expiresAt - 1,
+  });
+  assert.equal(spawnCalls, 1);
+  assert.equal(tracker.rollbackRequired(target), true);
+
+  await assert.rejects(
+    () =>
+      installRuntimePasswordWithDocker({
+        operatorUrl,
+        target,
+        runtimePassword,
+        expectedFixtureIdentity: identity,
+        phasePermit: permit,
+        spawnImpl() {
+          spawnCalls += 1;
+          return fakeChild();
+        },
+        now: expiresAt - 1,
+      }),
+    PlatformRuntimeActivationError,
+  );
+  assert.equal(spawnCalls, 1);
+});
+
+test("expired permit does not consume and fresh attestation is required for a new permit", async () => {
+  const { binding, target } = activationTarget();
+  const identity = await fixtureIdentity("123456789", "16384");
+  const tracker = new PlatformRuntimeActivationMutationTracker(target);
+  tracker.fixtureValidated(target, identity, identity, binding, {
+    now: providerNow,
+  });
+
+  const expiresAt = providerNow + 60_000;
+  tracker.authorisePasswordInstallation(
+    target,
+    renewedAttestation(-30_000, {
+      expiresAt: new Date(expiresAt).toISOString(),
+    }),
+    { now: providerNow },
+  );
+
+  const staleAttestation = renewedAttestation(-10_000, {
+    expiresAt: new Date(providerNow + 120_000).toISOString(),
+    observedAt: new Date(providerNow - 10_000).toISOString(),
+  });
+  assert.throws(
+    () =>
+      tracker.authorisePasswordInstallation(target, staleAttestation, {
+        now: providerNow,
+      }),
+    PlatformRuntimeActivationError,
+  );
+});
+
+test("LOGIN permit freshness is enforced at statement construction", async () => {
+  const { target, tracker } = await trackerAfterPassword();
+  const expiresAt = providerNow + 60_000;
+  const permit = tracker.authoriseLoginEnablement(
+    target,
+    renewedAttestation(-40_000, {
+      expiresAt: new Date(expiresAt).toISOString(),
+    }),
+    { now: providerNow },
+  );
+
+  assert.throws(
+    () =>
+      buildRuntimeRoleStatement(target, "enable_login", {
+        phasePermit: permit,
+        now: expiresAt,
+      }),
+    PlatformRuntimeActivationError,
+  );
+  assert.throws(
+    () =>
+      tracker.authoriseSuccessFinalisation(
+        target,
+        renewedAttestation(-30_000),
+        { now: providerNow },
+      ),
+    PlatformRuntimeActivationError,
+  );
+  assert.throws(
+    () =>
+      tracker.authoriseLoginEnablement(
+        target,
+        renewedAttestation(-30_000),
+        { now: providerNow },
+      ),
+    PlatformRuntimeActivationError,
+  );
+
+  assert.equal(
+    buildRuntimeRoleStatement(target, "enable_login", {
+      phasePermit: permit,
+      now: expiresAt - 1,
+    }),
+    'ALTER ROLE "platform_runtime" LOGIN',
+  );
+  assert.throws(
+    () =>
+      buildRuntimeRoleStatement(target, "enable_login", {
+        phasePermit: permit,
+        now: expiresAt - 1,
+    }),
+    PlatformRuntimeActivationError,
+  );
+});
+
+test("rollback permit freshness is enforced at statement construction", async () => {
+  const { identity, target, tracker } = await trackerAfterPassword();
+  const expiresAt = providerNow + 60_000;
+  const permit = tracker.assertRollbackFixture(
+    target,
+    identity,
+    renewedAttestation(-40_000, {
+      expiresAt: new Date(expiresAt).toISOString(),
+    }),
+    { now: providerNow },
+  );
+
+  assert.throws(
+    () =>
+      buildRuntimeRoleStatement(target, "rollback", {
+        phasePermit: permit,
+        now: expiresAt,
+      }),
+    PlatformRuntimeActivationError,
+  );
+  assert.throws(
+    () => tracker.rollbackCompleted(target),
+    PlatformRuntimeActivationError,
+  );
+  assert.throws(
+    () =>
+      tracker.assertRollbackFixture(
+        target,
+        identity,
+        renewedAttestation(-30_000),
+        { now: providerNow },
+      ),
+    PlatformRuntimeActivationError,
+  );
+
+  assert.equal(
+    buildRuntimeRoleStatement(target, "rollback", {
+      phasePermit: permit,
+      now: expiresAt - 1,
+    }),
+    'ALTER ROLE "platform_runtime" NOLOGIN PASSWORD NULL',
+  );
+  assert.throws(
+    () =>
+      buildRuntimeRoleStatement(target, "rollback", {
+        phasePermit: permit,
+        now: expiresAt - 1,
+      }),
+    PlatformRuntimeActivationError,
+  );
+  tracker.rollbackCompleted(target);
+  assert.equal(tracker.rollbackRequired(target), false);
+});
+
+test("success permit freshness is enforced at finalisation", async () => {
+  const { target, tracker } = await trackerAfterPassword();
+  const loginPermit = tracker.authoriseLoginEnablement(
+    target,
+    renewedAttestation(-40_000),
+    { now: providerNow },
+  );
+  buildRuntimeRoleStatement(target, "enable_login", {
+    phasePermit: loginPermit,
+    now: providerNow,
+  });
+
+  const expiresAt = providerNow + 60_000;
+  const permit = tracker.authoriseSuccessFinalisation(
+    target,
+    renewedAttestation(-30_000, {
+      expiresAt: new Date(expiresAt).toISOString(),
+    }),
+    { now: providerNow },
+  );
+
+  assert.throws(
+    () =>
+      tracker.successFinalised(target, permit, {
+        now: expiresAt,
+      }),
+    PlatformRuntimeActivationError,
+  );
+  assert.equal(tracker.rollbackRequired(target), true);
+  assert.throws(
+    () =>
+      tracker.authoriseSuccessFinalisation(
+        target,
+        renewedAttestation(-20_000),
+        { now: providerNow },
+      ),
+    PlatformRuntimeActivationError,
+  );
+
+  tracker.successFinalised(target, permit, {
+    now: expiresAt - 1,
+  });
+  assert.equal(tracker.rollbackRequired(target), false);
+  assert.throws(
+    () =>
+      tracker.successFinalised(target, permit, {
+        now: expiresAt - 1,
+      }),
+    PlatformRuntimeActivationError,
+  );
+});
+
+test("malformed UTF-16 passwords are rejected before mutation, permit consumption, and URI encoding", () => {
+  const { target } = activationTarget();
+
+  const passwords = [
+    "SyntheticRuntime_2026!Lab\uD800ExtraLen",
+    "SyntheticRuntime_2026!Lab\uDC00ExtraLen",
+    "SyntheticRuntime_2026!Lab\uD800XExtraLen",
+  ];
+
+  for (const password of passwords) {
+    assert.throws(
+      () =>
+        buildRuntimeDatabaseUrl(
+          pooledOperatorUrl,
+          target,
+          password,
+          { now: providerNow },
+        ),
+      PlatformRuntimeActivationError,
+    );
+  }
+});
+
+test("valid supplementary Unicode pairs pass the password check", () => {
+  const { target } = activationTarget("platform_runtime", {
+    dockerEndpointKind: "pooled",
+    dockerOperatorUrl: pooledOperatorUrl,
+  });
+  const validPassword =
+    "SyntheticRuntime_2026!Lab\uD83D\uDE00ExtraLength";
+
+  assert.doesNotThrow(() =>
+    buildRuntimeDatabaseUrl(
+      pooledOperatorUrl,
+      target,
+      validPassword,
+      { now: providerNow },
+    ),
+  );
+});
+
+test("malformed UTF-16 passwords are rejected before Docker installation", async () => {
+  const { binding, target } = activationTarget();
+  const identity = await fixtureIdentity("123456789", "16384");
+  const { phasePermit } = authorisePasswordForFixture({
+    binding,
+    identity,
+    target,
+  });
+
+  let spawnCalls = 0;
+  const error = await captureAsyncFailure(
+    () =>
+      installRuntimePasswordWithDocker({
+        operatorUrl,
+        target,
+        runtimePassword:
+          "SyntheticRuntime_2026!Lab\uD800ExtraLength",
+        expectedFixtureIdentity: identity,
+        phasePermit,
+        spawnImpl() {
+          spawnCalls += 1;
+          return fakeChild();
+        },
+        now: providerNow,
+      }),
+    PlatformRuntimeActivationError,
+  );
+
+  assert.equal(spawnCalls, 0);
+  assert.equal(
+    error instanceof PlatformRuntimeActivationError,
+    true,
+  );
+  assert.equal(error.code, "runtime_activation_failed");
+  assert.equal(error.message, "Runtime activation failed.");
+
+  await installRuntimePasswordWithDocker({
+    operatorUrl,
+    target,
+    runtimePassword,
+    expectedFixtureIdentity: identity,
+    phasePermit,
+    spawnImpl() {
+      spawnCalls += 1;
+      const child = fakeChild();
+      queueMicrotask(() => child.emit("close", 0, null));
+      return child;
+    },
+    now: providerNow,
+  });
+  assert.equal(spawnCalls, 1);
+});
+
+test("malformed UTF-16 passwords do not cause native URIError", () => {
+  const { target } = activationTarget();
+  const password = "SyntheticRuntime_2026!Lab\uDC00ExtraLen";
+
+  let leaked = false;
+  try {
+    buildRuntimeDatabaseUrl(pooledOperatorUrl, target, password, {
+      now: providerNow,
+    });
+  } catch (error) {
+    leaked = error instanceof URIError;
+  }
+
+  assert.equal(leaked, false);
+});
+
 async function timeoutHarness({
   onKill,
   onCleanup,
@@ -2935,6 +3555,38 @@ function authorisePasswordForFixture({
     { now },
   );
   return { phasePermit, tracker };
+}
+
+async function trackerAfterPassword() {
+  const { binding, target } = activationTarget();
+  const identity = await fixtureIdentity("123456789", "16384");
+  const tracker = new PlatformRuntimeActivationMutationTracker(target);
+  tracker.fixtureValidated(
+    target,
+    identity,
+    identity,
+    binding,
+    { now: providerNow },
+  );
+  const passwordPermit = tracker.authorisePasswordInstallation(
+    target,
+    renewedAttestation(-50_000),
+    { now: providerNow },
+  );
+  await installRuntimePasswordWithDocker({
+    operatorUrl,
+    target,
+    runtimePassword,
+    expectedFixtureIdentity: identity,
+    phasePermit: passwordPermit,
+    spawnImpl() {
+      const child = fakeChild();
+      queueMicrotask(() => child.emit("close", 0, null));
+      return child;
+    },
+    now: providerNow,
+  });
+  return { identity, target, tracker };
 }
 
 async function fixtureIdentity(systemIdentifier, databaseOid) {

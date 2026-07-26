@@ -6,6 +6,7 @@ import test from "node:test";
 import { Pool } from "pg";
 
 import {
+  PlatformRuntimeActivationError,
   PlatformRuntimeActivationMutationTracker,
   PlatformRuntimeActivationPhaseJournal,
   assertMatchingPostgresFixtureIdentities,
@@ -220,6 +221,7 @@ test(
           runtimePassword: syntheticRuntimePassword,
           expectedFixtureIdentity: directIdentity,
           phasePermit: passwordPermit,
+          now: providerNow,
         });
       } catch (error) {
         mutation.passwordInstallationFailed(target, error);
@@ -240,6 +242,7 @@ test(
       await adminPool.query(
         buildRuntimeRoleStatement(target, "enable_login", {
           phasePermit: loginPermit,
+          now: providerNow,
         }),
       );
       const loginState = await inspectFixture(adminPool, target);
@@ -249,10 +252,31 @@ test(
       journal.pass();
 
       journal.start("runtime_connection_construction");
+      assert.throws(
+        () =>
+          buildRuntimeDatabaseUrl(
+            boundDirectOperatorUrl,
+            target,
+            syntheticRuntimePassword,
+            { now: providerNow },
+          ),
+        PlatformRuntimeActivationError,
+      );
       const runtimeUrl = buildRuntimeDatabaseUrl(
-        boundDirectOperatorUrl,
+        boundDockerOperatorUrl,
         target,
         syntheticRuntimePassword,
+        { now: providerNow },
+      );
+      const providerShapedRuntimeUrl = new URL(runtimeUrl);
+      assert.equal(
+        providerShapedRuntimeUrl.hostname,
+        disposablePooledHost,
+      );
+      assert.equal(effectiveTestPort(providerShapedRuntimeUrl), 5432);
+      assert.equal(
+        providerShapedRuntimeUrl.pathname,
+        "/runtime_posture_test",
       );
       journal.pass();
 
@@ -308,7 +332,9 @@ test(
         providerPhaseAttestation(-30_000),
         { now: providerNow },
       );
-      mutation.successFinalised(target, successPermit);
+      mutation.successFinalised(target, successPermit, {
+        now: providerNow,
+      });
       successFinalised = true;
       journal.pass();
       journal.notRequired("mandatory_rollback");
@@ -380,6 +406,7 @@ test(
           runtimePassword: syntheticRuntimePassword,
           expectedFixtureIdentity: directIdentity,
           phasePermit: passwordPermit,
+          now: providerNow,
         });
       } catch (error) {
         mutation.passwordInstallationFailed(target, error);
@@ -396,15 +423,18 @@ test(
       await adminPool.query(
         buildRuntimeRoleStatement(target, "enable_login", {
           phasePermit: loginPermit,
+          now: providerNow,
         }),
       );
       journal.pass();
       journal.start("runtime_connection_construction");
-      buildRuntimeDatabaseUrl(
-        boundDirectOperatorUrl,
+      const runtimeUrl = buildRuntimeDatabaseUrl(
+        boundDockerOperatorUrl,
         target,
         syntheticRuntimePassword,
+        { now: providerNow },
       );
+      assert.equal(new URL(runtimeUrl).hostname, disposablePooledHost);
       journal.pass();
       journal.start("runtime_connection_establishment");
       journal.pass();
@@ -1124,6 +1154,7 @@ async function cleanupIfRequired(pool, mutation, activationTarget) {
   await pool.query(
     buildRuntimeRoleStatement(activationTarget, "rollback", {
       phasePermit: rollbackPermit,
+      now: providerNow,
     }),
   );
   mutation.rollbackCompleted(activationTarget);
@@ -1212,7 +1243,7 @@ function loopbackRuntimeTransport(runtimeUrl, fixtureUrl) {
   const logical = new URL(runtimeUrl);
   const fixture = new URL(fixtureUrl);
   if (
-    logical.hostname !== disposableDirectHost ||
+    logical.hostname !== disposablePooledHost ||
     effectiveTestPort(logical) !== 5432 ||
     fixture.hostname !== "127.0.0.1" ||
     !fixture.port

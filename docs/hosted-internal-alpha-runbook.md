@@ -228,8 +228,11 @@ window, the operator must perform official read-only Neon API observations:
 
 - retrieve the approved compute endpoint with
   `GET /api/v2/projects/{project_id}/endpoints/{endpoint_id}`;
-- retain only endpoint `id`, `project_id`, `branch_id`, `host`, `type`,
-  `current_state`, and `disabled`;
+- retain endpoint `id`, `project_id`, `branch_id`, `host`, `proxy_host`,
+  `region_id`, `type`, `current_state`, and `disabled`;
+- map `project_id`, `branch_id`, `proxy_host`, and `region_id` directly to
+  `projectId`, `branchId`, `proxyHost`, and `regionId` on every endpoint
+  evidence record — do not infer any of them from the hostname;
 - verify the expected database through the official branch database listing;
   and
 - associate the reviewed database and the fixed PostgreSQL port `5432`.
@@ -333,6 +336,15 @@ Rollback SQL is generated only after the unchanged SQL fixture and a fresh
 matching rollback attestation issue the rollback capability. A missing,
 substituted, reused, cross-target, or wrong-phase capability fails before the
 executable boundary.
+
+Each capability retains the exact provider-evidence `expiresMs` that authorised
+it. Password installation, LOGIN statement construction, rollback statement
+construction, and success finalisation recheck that deadline at consumption.
+Production callers may use the default `Date.now()` clock; deterministic tests
+inject `now`. Consumption succeeds only while `now < expiresMs`. At
+`now >= expiresMs`, the generic failure occurs before SQL construction, Docker
+environment or password-buffer construction, spawn, mutation, consumption
+callback, or tracker state transition, and the capability remains unconsumed.
 
 Before mutation, prove through the trusted binding that both the
 direct/operator connection path and Docker/psql path use the same approved
