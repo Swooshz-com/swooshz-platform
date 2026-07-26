@@ -342,7 +342,11 @@ export class PlatformRuntimeActivationMutationTracker {
     });
   }
 
-  successFinalised(target, phasePermit) {
+  successFinalised(
+    target,
+    phasePermit,
+    { now = Date.now() } = {},
+  ) {
     this.#assertTarget(target);
     if (!this.#mutationMayHaveBegun || !this.#successPermitIssued) {
       throw new PlatformRuntimeActivationError();
@@ -352,6 +356,7 @@ export class PlatformRuntimeActivationMutationTracker {
       target,
       "success_finalisation",
       this,
+      { now },
     );
     this.#mutationMayHaveBegun = false;
   }
@@ -603,7 +608,7 @@ export function buildRuntimeDatabaseUrl(
 export function buildRuntimeRoleStatement(
   target,
   operation,
-  { phasePermit } = {},
+  { phasePermit, now = Date.now() } = {},
 ) {
   activationTargetValue(target);
   const runtimeRole = targetRole(target);
@@ -613,6 +618,8 @@ export function buildRuntimeRoleStatement(
       phasePermit,
       target,
       "login_enablement",
+      null,
+      { now },
     );
     return `ALTER ROLE ${quotedRole} LOGIN`;
   }
@@ -621,6 +628,8 @@ export function buildRuntimeRoleStatement(
       phasePermit,
       target,
       "mandatory_rollback",
+      null,
+      { now },
     );
     return `ALTER ROLE ${quotedRole} NOLOGIN PASSWORD NULL`;
   }

@@ -337,6 +337,15 @@ matching rollback attestation issue the rollback capability. A missing,
 substituted, reused, cross-target, or wrong-phase capability fails before the
 executable boundary.
 
+Each capability retains the exact provider-evidence `expiresMs` that authorised
+it. Password installation, LOGIN statement construction, rollback statement
+construction, and success finalisation recheck that deadline at consumption.
+Production callers may use the default `Date.now()` clock; deterministic tests
+inject `now`. Consumption succeeds only while `now < expiresMs`. At
+`now >= expiresMs`, the generic failure occurs before SQL construction, Docker
+environment or password-buffer construction, spawn, mutation, consumption
+callback, or tracker state transition, and the capability remains unconsumed.
+
 Before mutation, prove through the trusted binding that both the
 direct/operator connection path and Docker/psql path use the same approved
 compute endpoint associated with the exact Neon project, branch, and database.
