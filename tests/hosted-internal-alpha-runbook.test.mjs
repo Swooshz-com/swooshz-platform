@@ -209,6 +209,14 @@ test("hosted runbook preserves the rollback-gated runtime activation contract", 
     "never retarget rollback",
     "wait for confirmed child termination",
     "identity- or endpoint-overriding connection parameters",
+    "src/db/runtime-grant-contract.ts",
+    "exactly 39",
+    "direct, non-grantable records",
+    "Exact set equality is required",
+    "Record counts are diagnostic only",
+    "required no live `GRANT` or `REVOKE`",
+    "Activation remains blocked until",
+    "fresh provider-bound live dormant",
   ];
 
   for (const phrase of requiredPhrases) {

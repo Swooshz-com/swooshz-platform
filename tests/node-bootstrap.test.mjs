@@ -985,6 +985,10 @@ function createBootstrapFixture(options = {}) {
                 database_ownership_absent: true,
                 schema_ownership_absent: true,
                 application_table_ownership_absent: true,
+                role_membership_absent: true,
+                runtime_table_grant_option_absent: true,
+                runtime_table_grant_set_exact: true,
+                public_table_authority_absent: true,
                 ...options.postureRow,
               }],
             };

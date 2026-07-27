@@ -25,6 +25,9 @@ import {
   assertRuntimeDatabasePosture,
   inspectRuntimeDatabaseRoleAuthorityPosture,
 } from "../dist/db/runtime-posture.js";
+import {
+  RUNTIME_TABLE_GRANT_CONTRACT,
+} from "../dist/db/runtime-grant-contract.js";
 
 const operatorUrl = process.env.RUNTIME_ACTIVATION_TEST_OPERATOR_URL;
 const secondOperatorUrl =
@@ -139,40 +142,49 @@ const twoClusterTarget = createRuntimeActivationTarget(
   },
   { now: providerNow },
 );
-const expectedTablePrivileges = Object.freeze({
-  access_validation_grants: ["INSERT", "SELECT"],
-  app_entitlements: ["INSERT", "SELECT"],
-  app_launch_tokens: ["INSERT", "SELECT"],
-  apps: ["INSERT", "SELECT"],
-  audit_events: ["INSERT", "SELECT"],
-  auth_states: ["DELETE", "INSERT", "SELECT"],
-  csrf_tokens: ["DELETE", "INSERT", "SELECT", "UPDATE"],
-  invitations: ["INSERT", "SELECT", "UPDATE"],
-  memberships: ["DELETE", "INSERT", "SELECT", "UPDATE"],
-  provider_identities: ["INSERT", "SELECT", "UPDATE"],
-  sessions: ["INSERT", "SELECT", "UPDATE"],
-  users: ["INSERT", "SELECT", "UPDATE"],
-  workspace_membership_approvals: ["INSERT", "SELECT", "UPDATE"],
-  workspaces: ["INSERT", "SELECT", "UPDATE"],
-});
 const expectedPublicTables = Object.freeze(
-  Object.keys(expectedTablePrivileges).sort(),
+  [
+    ...new Set(
+      RUNTIME_TABLE_GRANT_CONTRACT.map((record) => record.objectName),
+    ),
+  ].sort(),
 );
 const expectedGrantMatrix = Object.freeze(
-  Object.entries(expectedTablePrivileges)
-    .flatMap(([tableName, privileges]) =>
-      privileges.map((privilege) => [
-        "platform_runtime",
-        "public",
-        tableName,
-        privilege,
-        "NO",
-      ]),
-    )
+  RUNTIME_TABLE_GRANT_CONTRACT
+    .map((record) => [
+      "platform_runtime",
+      record.schema,
+      record.objectName,
+      record.privilege,
+      record.grantOption ? "YES" : "NO",
+    ])
     .sort((left, right) =>
       left.join("\u0000").localeCompare(right.join("\u0000")),
     ),
 );
+
+test.before(async () => {
+  if (skipReason) {
+    return;
+  }
+  const primaryPool = new Pool({ connectionString: operatorUrl, max: 1 });
+  try {
+    await configureContractDerivedGrantFixture(primaryPool);
+  } finally {
+    await primaryPool.end();
+  }
+  if (!twoClusterSkipReason) {
+    const secondaryPool = new Pool({
+      connectionString: secondOperatorUrl,
+      max: 1,
+    });
+    try {
+      await configureContractDerivedGrantFixture(secondaryPool);
+    } finally {
+      await secondaryPool.end();
+    }
+  }
+});
 
 test(
   "PostgreSQL 17 completes every activation phase with secret-safe reporting",
@@ -810,7 +822,7 @@ test(
       });
 
       await context.test(
-        "PostgreSQL rejects membership cycles and preflight remains deterministic",
+        "PostgreSQL rejects membership cycles and preflight rejects the remaining membership",
         async () => {
           const first = role("cycle_first");
           const second = role("cycle_second");
@@ -829,7 +841,7 @@ test(
               grantRole(adminPool, first, second, true, false),
               (error) => error?.code === "0LP01",
             );
-            await assertCompleteDormantPreflight(adminPool, target);
+            await assertUnsafeBeforeInstall();
           } finally {
             await dropRole(adminPool, second);
             await dropRole(adminPool, first);
@@ -837,7 +849,7 @@ test(
         },
       );
 
-      await context.test("SET-disabled edge does not become assumable", async () => {
+      await context.test("SET-disabled membership remains prohibited", async () => {
         const blocked = role("set_disabled_createdb");
         await createRole(adminPool, blocked, "createdb");
         try {
@@ -848,7 +860,7 @@ test(
             false,
             false,
           );
-          await assertCompleteDormantPreflight(adminPool, target);
+          await assertUnsafeBeforeInstall();
         } finally {
           await dropRole(adminPool, blocked);
         }
@@ -915,6 +927,104 @@ test(
   },
 );
 
+test(
+  "PostgreSQL 17 detects missing, extra, and grant-option table drift and restores the fixture",
+  { skip: skipReason },
+  async () => {
+    const adminPool = new Pool({ connectionString: operatorUrl, max: 1 });
+    const roleName = runtimeActivationRole(target);
+    try {
+      await assertCompleteDormantPreflight(adminPool, target);
+
+      await withRolledBackGrantMutation(adminPool, async () => {
+        await adminPool.query(
+          `revoke select on table public.access_validation_grants from ${identifier(roleName)}`,
+        );
+        const report = await inspectRuntimeDatabaseRoleAuthorityPosture(
+          adminPool,
+          roleName,
+        );
+        assert.equal(report.runtimeTableGrantsExact, "failed");
+        assert.equal(report.runtimeRoleAuthorityPosture, "failed");
+      });
+
+      await withRolledBackGrantMutation(adminPool, async () => {
+        await adminPool.query(
+          `grant update on table public.users to ${identifier(roleName)}`,
+        );
+        const report = await inspectRuntimeDatabaseRoleAuthorityPosture(
+          adminPool,
+          roleName,
+        );
+        assert.equal(report.runtimeTableGrantsExact, "failed");
+        assert.equal(report.runtimeRoleAuthorityPosture, "failed");
+      });
+
+      await withRolledBackGrantMutation(adminPool, async () => {
+        await adminPool.query(
+          `grant select on table public.access_validation_grants to ${identifier(roleName)} with grant option`,
+        );
+        const report = await inspectRuntimeDatabaseRoleAuthorityPosture(
+          adminPool,
+          roleName,
+        );
+        assert.equal(report.runtimeTableGrantsExact, "failed");
+        assert.equal(report.runtimeRoleAuthorityPosture, "failed");
+      });
+
+      await assertCompleteDormantPreflight(adminPool, target);
+    } finally {
+      await adminPool.end();
+    }
+  },
+);
+
+async function configureContractDerivedGrantFixture(pool) {
+  const roleName = runtimeActivationRole(target);
+  const guard = await pool.query(
+    `
+      select
+        current_database() = 'runtime_posture_test' as database_is_disposable,
+        current_setting('server_version_num')::integer / 10000 = 17
+          as server_is_postgresql_17,
+        (select count(*) = 1 from pg_roles where rolname = $1)
+          as runtime_role_exists
+    `,
+    [roleName],
+  );
+  assert.deepEqual(guard.rows, [
+    {
+      database_is_disposable: true,
+      server_is_postgresql_17: true,
+      runtime_role_exists: true,
+    },
+  ]);
+
+  await pool.query(
+    `revoke all privileges on all tables in schema public from ${identifier(roleName)}`,
+  );
+  const privilegesByTable = new Map();
+  for (const record of RUNTIME_TABLE_GRANT_CONTRACT) {
+    const privileges = privilegesByTable.get(record.objectName) ?? [];
+    privileges.push(record.privilege);
+    privilegesByTable.set(record.objectName, privileges);
+  }
+  for (const [tableName, privileges] of privilegesByTable) {
+    await pool.query(
+      `grant ${privileges.join(", ")} on table public.${identifier(tableName)} to ${identifier(roleName)}`,
+    );
+  }
+}
+
+async function withRolledBackGrantMutation(pool, operation) {
+  await pool.query("begin");
+  try {
+    await operation();
+  } finally {
+    await pool.query("rollback");
+  }
+}
+
 async function assertDisposableFixtureIdentity(
   pool,
   activationTarget,
@@ -948,6 +1058,7 @@ async function assertCompleteDormantPreflight(pool, activationTarget) {
     migrationLedgerAccessDenied: "passed",
     databaseAndSchemaOwnershipAbsent: "passed",
     applicationTableOwnershipAbsent: "passed",
+    runtimeTableGrantsExact: "passed",
     runtimeRoleAuthorityPosture: "passed",
   });
   return { authority, state };

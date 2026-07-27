@@ -1,4 +1,5 @@
 import { REQUIRED_PLATFORM_TABLES } from "./readiness.js";
+import { RUNTIME_TABLE_GRANT_CONTRACT } from "./runtime-grant-contract.js";
 
 export type RuntimeDatabasePostureCheckState = "passed" | "failed";
 
@@ -9,6 +10,7 @@ export interface RuntimeDatabasePostureReport {
   migrationLedgerAccessDenied: RuntimeDatabasePostureCheckState;
   databaseAndSchemaOwnershipAbsent: RuntimeDatabasePostureCheckState;
   applicationTableOwnershipAbsent: RuntimeDatabasePostureCheckState;
+  runtimeTableGrantsExact: RuntimeDatabasePostureCheckState;
   runtimePosture: RuntimeDatabasePostureCheckState;
 }
 
@@ -19,6 +21,7 @@ export interface RuntimeDatabaseRoleAuthorityPostureReport {
   migrationLedgerAccessDenied: RuntimeDatabasePostureCheckState;
   databaseAndSchemaOwnershipAbsent: RuntimeDatabasePostureCheckState;
   applicationTableOwnershipAbsent: RuntimeDatabasePostureCheckState;
+  runtimeTableGrantsExact: RuntimeDatabasePostureCheckState;
   runtimeRoleAuthorityPosture: RuntimeDatabasePostureCheckState;
 }
 
@@ -45,6 +48,13 @@ export class RuntimeDatabasePostureError extends Error {
 }
 
 const safePostgresRoleIdentifier = /^[a-z_][a-z0-9_$]{0,62}$/;
+const runtimeTableGrantExpectationJson = JSON.stringify(
+  RUNTIME_TABLE_GRANT_CONTRACT.map((record) => ({
+    schema_name: record.schema,
+    table_name: record.objectName,
+    privilege_type: record.privilege,
+  })),
+);
 
 const runtimeDatabasePostureSql = `
 with recursive login_role_state as (
@@ -62,6 +72,37 @@ set_assumable_roles(role_oid) as (
   from set_assumable_roles assumable_role
   join pg_auth_members membership on membership.member = assumable_role.role_oid
   where membership.set_option
+),
+expected_runtime_table_grants as (
+  select
+    expected.schema_name,
+    expected.table_name,
+    expected.privilege_type
+  from jsonb_to_recordset($3::jsonb) as expected(
+    schema_name text,
+    table_name text,
+    privilege_type text
+  )
+),
+direct_runtime_table_grants as (
+  select
+    table_schema.nspname::text as schema_name,
+    table_record.relname::text as table_name,
+    upper(grant_record.privilege_type)::text as privilege_type,
+    grant_record.is_grantable
+  from login_role_state runtime_role
+  join pg_class table_record
+    on table_record.relkind in ('r', 'p')
+  join pg_namespace table_schema
+    on table_schema.oid = table_record.relnamespace
+  cross join lateral aclexplode(
+    coalesce(
+      table_record.relacl,
+      acldefault('r', table_record.relowner)
+    )
+  ) grant_record
+  where table_schema.nspname = 'public'
+    and grant_record.grantee = runtime_role.oid
 ),
 current_database_state as (
   select oid, datdba
@@ -93,6 +134,12 @@ select
       left join pg_roles role_record on role_record.oid = assumable_role.role_oid
       where role_record.oid is null
     ) as role_assumption_state_conclusive,
+  not exists (
+    select 1
+    from login_role_state runtime_role
+    join pg_auth_members membership
+      on membership.member = runtime_role.oid
+  ) as role_membership_absent,
   not exists (
     select 1
     from set_assumable_roles assumable_role
@@ -200,6 +247,44 @@ select
       and table_record.relname = any($2::name[])
       and pg_has_role(assumable_role.role_oid, table_record.relowner, 'USAGE')
   ) as application_table_ownership_absent
+  ,
+  not exists (
+    select 1
+    from direct_runtime_table_grants
+    where is_grantable
+  ) as runtime_table_grant_option_absent,
+  not exists (
+    (
+      select schema_name, table_name, privilege_type
+      from expected_runtime_table_grants
+      except
+      select schema_name, table_name, privilege_type
+      from direct_runtime_table_grants
+    )
+    union
+    (
+      select schema_name, table_name, privilege_type
+      from direct_runtime_table_grants
+      except
+      select schema_name, table_name, privilege_type
+      from expected_runtime_table_grants
+    )
+  ) as runtime_table_grant_set_exact,
+  not exists (
+    select 1
+    from pg_class table_record
+    join pg_namespace table_schema
+      on table_schema.oid = table_record.relnamespace
+    cross join lateral aclexplode(
+      coalesce(
+        table_record.relacl,
+        acldefault('r', table_record.relowner)
+      )
+    ) grant_record
+    where table_schema.nspname = 'public'
+      and table_record.relkind in ('r', 'p')
+      and grant_record.grantee = 0
+  ) as public_table_authority_absent
 `;
 
 export function readExpectedRuntimeRole(
@@ -234,6 +319,7 @@ export async function inspectRuntimeDatabasePosture(
     checks.migrationLedgerAccessDenied,
     checks.databaseAndSchemaOwnershipAbsent,
     checks.applicationTableOwnershipAbsent,
+    checks.runtimeTableGrantsExact,
   ].every(Boolean);
 
   return {
@@ -252,6 +338,7 @@ export async function inspectRuntimeDatabasePosture(
     applicationTableOwnershipAbsent: state(
       checks.applicationTableOwnershipAbsent,
     ),
+    runtimeTableGrantsExact: state(checks.runtimeTableGrantsExact),
     runtimePosture: state(passed),
   };
 }
@@ -279,6 +366,7 @@ export async function inspectRuntimeDatabaseRoleAuthorityPosture(
     applicationTableOwnershipAbsent: state(
       checks.applicationTableOwnershipAbsent,
     ),
+    runtimeTableGrantsExact: state(checks.runtimeTableGrantsExact),
     runtimeRoleAuthorityPosture: state(passed),
   };
 }
@@ -305,6 +393,7 @@ async function inspectRuntimeDatabasePostureRow(
     const result = await client.query(runtimeDatabasePostureSql, [
       expectedRole,
       [...REQUIRED_PLATFORM_TABLES],
+      runtimeTableGrantExpectationJson,
     ]);
     if (result.rows.length !== 1) {
       throw new RuntimeDatabasePostureError();
@@ -322,6 +411,7 @@ function postureChecks(row: Record<string, unknown>) {
       "role_assumption_state_conclusive",
     ),
     administrativeAttributesAbsent: all(row, [
+      "role_membership_absent",
       "role_membership_admin_absent",
       "neon_superuser_membership_absent",
       "superuser_absent",
@@ -347,6 +437,11 @@ function postureChecks(row: Record<string, unknown>) {
       row,
       "application_table_ownership_absent",
     ),
+    runtimeTableGrantsExact: all(row, [
+      "runtime_table_grant_option_absent",
+      "runtime_table_grant_set_exact",
+      "public_table_authority_absent",
+    ]),
   };
 }
 

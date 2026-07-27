@@ -28,6 +28,10 @@ const passingRow = Object.freeze({
   database_ownership_absent: true,
   schema_ownership_absent: true,
   application_table_ownership_absent: true,
+  role_membership_absent: true,
+  runtime_table_grant_option_absent: true,
+  runtime_table_grant_set_exact: true,
+  public_table_authority_absent: true,
 });
 
 test("expected runtime role is required only in production", () => {
@@ -85,11 +89,29 @@ test("restricted runtime posture returns aggregate states only", async () => {
     migrationLedgerAccessDenied: "passed",
     databaseAndSchemaOwnershipAbsent: "passed",
     applicationTableOwnershipAbsent: "passed",
+    runtimeTableGrantsExact: "passed",
     runtimePosture: "passed",
   });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].values[0], expectedRole);
   assert.ok(calls[0].values[1].includes("access_validation_grants"));
+  const expectedGrants = JSON.parse(calls[0].values[2]);
+  assert.equal(expectedGrants.length, 39);
+  assert.ok(
+    expectedGrants.some(
+      (record) =>
+        record.table_name === "access_validation_grants" &&
+        record.privilege_type === "UPDATE",
+    ),
+  );
+  assert.equal(
+    expectedGrants.some(
+      (record) =>
+        record.table_name === "csrf_tokens" &&
+        record.privilege_type === "UPDATE",
+    ),
+    false,
+  );
   assert.match(calls[0].sql, /current_user = \$1 and session_user = \$1/);
   assert.match(
     calls[0].sql,
@@ -119,6 +141,11 @@ test("restricted runtime posture returns aggregate states only", async () => {
   );
   assert.doesNotMatch(calls[0].sql, new RegExp(expectedRole));
   assert.doesNotMatch(JSON.stringify(report), new RegExp(expectedRole));
+  assert.match(calls[0].sql, /jsonb_to_recordset\(\$3::jsonb\)/);
+  assert.match(calls[0].sql, /aclexplode\(/);
+  assert.match(calls[0].sql, /runtime_table_grant_set_exact/);
+  assert.match(calls[0].sql, /runtime_table_grant_option_absent/);
+  assert.match(calls[0].sql, /public_table_authority_absent/);
 });
 
 test("runtime posture traverses every SET-assumable role by catalog OID", async () => {
@@ -191,6 +218,7 @@ test("operator-side dormant authority inspection reuses the exact recursive post
     migrationLedgerAccessDenied: "passed",
     databaseAndSchemaOwnershipAbsent: "passed",
     applicationTableOwnershipAbsent: "passed",
+    runtimeTableGrantsExact: "passed",
     runtimeRoleAuthorityPosture: "passed",
   });
 });
@@ -244,6 +272,7 @@ test("every prohibited runtime posture fails closed", async (context) => {
     ["wrong connected role", "expected_role_match"],
     ["inconclusive SET-role catalog state", "role_assumption_state_conclusive"],
     ["administrative membership authority", "role_membership_admin_absent"],
+    ["direct role membership", "role_membership_absent"],
     ["neon_superuser membership", "neon_superuser_membership_absent"],
     ["superuser", "superuser_absent"],
     ["createdb", "createdb_absent"],
@@ -257,6 +286,9 @@ test("every prohibited runtime posture fails closed", async (context) => {
     ["database ownership", "database_ownership_absent"],
     ["schema ownership", "schema_ownership_absent"],
     ["application table ownership", "application_table_ownership_absent"],
+    ["missing or extra runtime table grant", "runtime_table_grant_set_exact"],
+    ["runtime table grant option", "runtime_table_grant_option_absent"],
+    ["PUBLIC table authority", "public_table_authority_absent"],
   ];
 
   for (const [name, field] of cases) {

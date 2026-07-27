@@ -399,6 +399,25 @@ Neon membership, no unsafe direct or indirect SET-assumable role, no reachable
 schema, table, and index state. Missing or inconclusive evidence fails before
 mutation.
 
+The canonical repository authority for restricted runtime table privileges is
+`src/db/runtime-grant-contract.ts`. Its accepted matrix contains exactly 39
+direct, non-grantable records on `public` tables. Dormant activation preflight,
+runtime startup posture, disposable PostgreSQL fixture setup and read-back,
+production-adapter traceability, and public-safe expected-grant receipts must
+all consume that same contract. Exact set equality is required: a missing,
+additional, wrong-object, wrong-privilege, inherited, membership-derived,
+ownership-derived, duplicate, or grant-option record fails closed.
+Record counts are diagnostic only; they never substitute for set equality.
+Database and schema privileges, `PUBLIC` authority, routines, sequences,
+memberships, ownership, and migration-ledger denial remain separate posture
+categories outside the 39-record table set.
+
+This repository correction required no live `GRANT` or `REVOKE`.
+Activation remains blocked until the correction is independently reviewed and
+merged, canonical `main` is read back, and a fresh provider-bound live dormant
+inspection proves exact equality with the merged contract while the runtime
+role remains `NOLOGIN` with no password.
+
 Runtime URL construction rejects identity- or endpoint-overriding connection parameters,
 aliases, duplicates, conflicts, arbitrary parameters, and options that can
 change role or session state. It preserves only the reviewed
