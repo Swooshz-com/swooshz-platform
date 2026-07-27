@@ -213,6 +213,44 @@ if (builtInImportAuthority.size !== builtInImportAuthorityRecords.length) {
   );
 }
 
+const globalNetworkPrimitiveNames = new Set([
+  "fetch",
+  "WebSocket",
+  "EventSource",
+]);
+
+const globalNetworkCapabilityRecords = [
+  {
+    sourcePath: "src/auth/generic-oidc-provider-adapter.ts",
+    primitive: "fetch",
+    globalObjectForm: "globalThis.fetch",
+    acquisitionForm: "const_binding",
+    localBinding: "fetchImplementation",
+    referenceCount: 1,
+    capability: "network",
+    sourceShapeDigest:
+      "527be9eb33354ebc1f359692b3211c9def7254a46c7610362cccadf289464724",
+  },
+];
+
+const globalNetworkCapabilityAuthority = new Map(
+  globalNetworkCapabilityRecords.map((record) => [
+    globalNetworkCapabilityKey(record),
+    Object.freeze({ ...record }),
+  ]),
+);
+
+if (
+  globalNetworkCapabilityAuthority.size !==
+  globalNetworkCapabilityRecords.length
+) {
+  throw new RuntimeGrantContractError(
+    "runtime_grant_inventory_unclassified",
+  );
+}
+
+const globalObjectIdentifiers = new Set(["globalThis", "global"]);
+
 const databaseExternalImportAuthority = new Set([
   databaseExternalImportKey(
     "src/db/access-validation-grant-repository.ts",
@@ -1249,6 +1287,70 @@ async function assertProductionRuntimeImportAuthority({
   for (const facadePath of databaseCapabilityFacadePaths) {
     assertDatabaseCapabilityFacadeOnly(sourceFiles.get(facadePath));
   }
+
+  const allObservedGlobalNetworkKeys = new Set();
+  for (const [sourcePath, sourceFile] of sourceFiles) {
+    const observedMap = detectGlobalNetworkCapabilities(
+      sourcePath,
+      sourceFile,
+    );
+    for (const [key, observed] of observedMap) {
+      if (allObservedGlobalNetworkKeys.has(key)) {
+        throw new RuntimeGrantContractError(
+          "runtime_grant_inventory_unclassified",
+        );
+      }
+      allObservedGlobalNetworkKeys.add(key);
+
+      const authority = globalNetworkCapabilityAuthority.get(key);
+      if (authority) {
+        if (observed.referenceCount !== authority.referenceCount) {
+          throw new RuntimeGrantContractError(
+            "runtime_grant_inventory_unclassified",
+          );
+        }
+      }
+    }
+  }
+
+  assertGlobalNetworkCapabilityEquality(
+    allObservedGlobalNetworkKeys,
+    globalNetworkCapabilityAuthority,
+  );
+
+  for (const key of allObservedGlobalNetworkKeys) {
+    const authority = globalNetworkCapabilityAuthority.get(key);
+    if (!authority) {
+      throw new RuntimeGrantContractError(
+        "runtime_grant_inventory_unclassified",
+      );
+    }
+    if (authority.sourceShapeDigest) {
+      const source = await sourceText(
+        authority.sourcePath,
+        sourceOverrides,
+      );
+      if (sourceShapeDigest(source) !== authority.sourceShapeDigest) {
+        throw new RuntimeGrantContractError(
+          "runtime_grant_inventory_unclassified",
+        );
+      }
+    }
+  }
+
+  for (const [authKey, authority] of globalNetworkCapabilityAuthority) {
+    if (authority.sourceShapeDigest && sourceFiles.has(authority.sourcePath)) {
+      const source = await sourceText(
+        authority.sourcePath,
+        sourceOverrides,
+      );
+      if (sourceShapeDigest(source) !== authority.sourceShapeDigest) {
+        throw new RuntimeGrantContractError(
+          "runtime_grant_inventory_unclassified",
+        );
+      }
+    }
+  }
 }
 
 async function readRuntimeDependencyAuthority(sourceOverrides) {
@@ -1552,6 +1654,23 @@ function builtInImportAuthorityRecord({
     capability,
     sourceShapeDigest,
   });
+}
+
+function globalNetworkCapabilityKey(record) {
+  return [
+    record.sourcePath,
+    record.primitive,
+    record.globalObjectForm,
+    record.acquisitionForm,
+    record.localBinding ?? "",
+  ].join("\u0000");
+}
+
+function assertGlobalNetworkCapabilityEquality(
+  observed,
+  expected,
+) {
+  assertExactAuthoritySet(observed, new Set([...expected.keys()]));
 }
 
 function databaseExternalImportKey(
@@ -1922,6 +2041,615 @@ function parseSourceFile(filePath, source, errorCode) {
     throw new RuntimeGrantContractError(errorCode);
   }
   return sourceFile;
+}
+
+function detectGlobalNetworkCapabilities(sourcePath, sourceFile) {
+  const observedKeys = new Map();
+  const scopes = [{ bindings: new Map(), globalAliases: new Set(), node: null }];
+
+  addModuleScopeBindings(sourceFile, scopes[0].bindings);
+
+  walkNetworkCapabilityNodes(sourcePath, sourceFile, scopes, observedKeys);
+
+  for (const [key, observed] of observedKeys) {
+    if (
+      observed.acquisitionForm === "const_binding" &&
+      observed.localBinding
+    ) {
+      observed.referenceCount = countBindingCallSites(
+        sourceFile,
+        observed.localBinding,
+      );
+    }
+  }
+
+  return observedKeys;
+}
+
+function addModuleScopeBindings(sourceFile, rootBindings) {
+  for (const statement of sourceFile.statements) {
+    if (ts.isImportDeclaration(statement)) {
+      const bindings = runtimeImportBindings(statement);
+      for (const b of bindings) {
+        if (b.kind !== "side_effect") {
+          rootBindings.set(b.local, "import");
+        }
+      }
+    } else if (ts.isFunctionDeclaration(statement) && statement.name) {
+      rootBindings.set(statement.name.text, "function");
+    } else if (ts.isClassDeclaration(statement) && statement.name) {
+      rootBindings.set(statement.name.text, "class");
+    } else if (ts.isVariableStatement(statement)) {
+      for (const decl of statement.declarationList.declarations) {
+        addDeclarationBindings(decl, rootBindings);
+      }
+    }
+  }
+}
+
+function addDeclarationBindings(declaration, bindings) {
+  if (ts.isIdentifier(declaration.name)) {
+    bindings.set(declaration.name.text, "variable");
+  } else if (ts.isObjectBindingPattern(declaration.name)) {
+    for (const element of declaration.name.elements) {
+      if (ts.isIdentifier(element.name)) {
+        bindings.set(element.name.text, "variable");
+      }
+    }
+  } else if (ts.isArrayBindingPattern(declaration.name)) {
+    for (const element of declaration.name.elements) {
+      if (ts.isIdentifier(element.name)) {
+        bindings.set(element.name.text, "variable");
+      }
+    }
+  }
+}
+
+function isScopeNode(node) {
+  return (
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isArrowFunction(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isGetAccessor(node) ||
+    ts.isSetAccessor(node) ||
+    ts.isConstructorDeclaration(node) ||
+    ts.isBlock(node) ||
+    ts.isCatchClause(node) ||
+    ts.isForStatement(node) ||
+    ts.isForInStatement(node) ||
+    ts.isForOfStatement(node) ||
+    ts.isIfStatement(node) ||
+    ts.isWhileStatement(node) ||
+    ts.isDoStatement(node) ||
+    ts.isSwitchStatement(node) ||
+    ts.isModuleDeclaration(node) ||
+    ts.isSourceFile(node)
+  );
+}
+
+function addScopeBindings(node, bindings) {
+  if (
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isArrowFunction(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isConstructorDeclaration(node)
+  ) {
+    if (node.name && ts.isIdentifier(node.name)) {
+      bindings.set(node.name.text, "function");
+    }
+    for (const param of node.parameters) {
+      const paramBindings = new Set();
+      collectParameterBindings(param, paramBindings);
+      for (const name of paramBindings) {
+        bindings.set(name, "parameter");
+      }
+    }
+  }
+  if (ts.isCatchClause(node) && node.variableDeclaration) {
+    const name = node.variableDeclaration.name;
+    if (ts.isIdentifier(name)) {
+      bindings.set(name.text, "catch");
+    }
+  }
+}
+
+function collectParameterBindings(param, names) {
+  if (ts.isIdentifier(param.name)) {
+    names.add(param.name.text);
+  } else if (ts.isObjectBindingPattern(param.name)) {
+    for (const element of param.name.elements) {
+      if (ts.isIdentifier(element.name)) {
+        names.add(element.name.text);
+      }
+    }
+  } else if (ts.isArrayBindingPattern(param.name)) {
+    for (const element of param.name.elements) {
+      if (ts.isIdentifier(element.name)) {
+        names.add(element.name.text);
+      }
+    }
+  }
+}
+
+function isLocallyBound(name, scopes) {
+  for (let i = scopes.length - 1; i >= 0; i--) {
+    if (scopes[i].bindings.has(name)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function walkNetworkCapabilityNodes(sourcePath, node, scopes, observedKeys) {
+  rejectProhibitedNetworkMutation(node, scopes);
+  rejectDynamicGlobalAccess(node, scopes);
+  rejectReflectiveGlobalAccess(node, scopes);
+
+  if (ts.isPropertyAccessExpression(node) || ts.isPropertyAccessChain(node)) {
+    checkGlobalPropertyAccess(sourcePath, node, scopes, observedKeys);
+  }
+
+  if (ts.isElementAccessExpression(node)) {
+    checkGlobalElementAccess(sourcePath, node, scopes, observedKeys);
+  }
+
+  if (ts.isVariableDeclaration(node) && node.initializer) {
+    checkGlobalDestructuring(sourcePath, node, scopes, observedKeys);
+    checkBareGlobalAssignment(sourcePath, node, scopes, observedKeys);
+    checkGlobalObjectAlias(node, scopes);
+  }
+
+  if (ts.isCallExpression(node)) {
+    checkBareGlobalCall(sourcePath, node, scopes, observedKeys);
+  }
+
+  const isScope = isScopeNode(node);
+
+  if (isScope) {
+    const newScope = { bindings: new Map(), globalAliases: new Set(), node };
+    addScopeBindings(node, newScope.bindings);
+    scopes.push(newScope);
+  }
+
+  ts.forEachChild(node, (child) =>
+    walkNetworkCapabilityNodes(sourcePath, child, scopes, observedKeys),
+  );
+
+  if (isScope) {
+    scopes.pop();
+  }
+}
+
+function checkGlobalPropertyAccess(sourcePath, node, scopes, observedKeys) {
+  const objectName = resolveGlobalObjectName(node.expression, scopes);
+  if (!objectName) {
+    return;
+  }
+
+  const propName = node.name.text;
+  if (!globalNetworkPrimitiveNames.has(propName)) {
+    return;
+  }
+
+  if (node.questionDotToken) {
+    return;
+  }
+
+  observeGlobalNetworkCapability({
+    sourcePath,
+    primitive: propName,
+    globalObjectForm: `${objectName}.${propName}`,
+    acquisitionForm:
+      "property_access",
+    localBinding: "",
+    observedKeys,
+    node,
+  });
+}
+
+function checkGlobalElementAccess(sourcePath, node, scopes, observedKeys) {
+  const objectName = resolveGlobalObjectName(node.expression, scopes);
+  if (!objectName) {
+    return;
+  }
+
+  if (!ts.isStringLiteral(node.argumentExpression)) {
+    return;
+  }
+
+  const propName = node.argumentExpression.text;
+  if (!globalNetworkPrimitiveNames.has(propName)) {
+    return;
+  }
+
+  observeGlobalNetworkCapability({
+    sourcePath,
+    primitive: propName,
+    globalObjectForm: `${objectName}["${propName}"]`,
+    acquisitionForm: "element_access",
+    localBinding: "",
+    observedKeys,
+    node,
+  });
+}
+
+function checkGlobalDestructuring(sourcePath, node, scopes, observedKeys) {
+  if (
+    !ts.isObjectBindingPattern(node.name) &&
+    !ts.isArrayBindingPattern(node.name)
+  ) {
+    return;
+  }
+
+  const objectName = resolveGlobalObjectName(node.initializer, scopes);
+  if (!objectName) {
+    return;
+  }
+
+  if (ts.isObjectBindingPattern(node.name)) {
+    for (const element of node.name.elements) {
+      const exportedName =
+        element.propertyName && ts.isIdentifier(element.propertyName)
+          ? element.propertyName.text
+          : ts.isIdentifier(element.name)
+            ? element.name.text
+            : null;
+      const localName = ts.isIdentifier(element.name)
+        ? element.name.text
+        : null;
+
+      if (
+        exportedName &&
+        localName &&
+        globalNetworkPrimitiveNames.has(exportedName)
+      ) {
+        const localBinding = exportedName !== localName ? localName : exportedName;
+        observeGlobalNetworkCapability({
+          sourcePath,
+          primitive: exportedName,
+          globalObjectForm: `${objectName}.${exportedName}`,
+          acquisitionForm: "destructuring",
+          localBinding,
+          observedKeys,
+          node,
+        });
+      }
+    }
+  }
+}
+
+function checkBareGlobalCall(sourcePath, node, scopes, observedKeys) {
+  if (!ts.isIdentifier(node.expression)) {
+    return;
+  }
+
+  const name = node.expression.text;
+  if (
+    !globalNetworkPrimitiveNames.has(name) &&
+    !globalObjectIdentifiers.has(name)
+  ) {
+    return;
+  }
+
+  if (globalObjectIdentifiers.has(name) && !isLocallyBound(name, scopes)) {
+    return;
+  }
+
+  if (isLocallyBound(name, scopes)) {
+    return;
+  }
+
+  observeGlobalNetworkCapability({
+    sourcePath,
+    primitive: name,
+    globalObjectForm: name,
+    acquisitionForm: "bare_call",
+    localBinding: "",
+    observedKeys,
+    node,
+  });
+}
+
+function checkBareGlobalAssignment(sourcePath, node, scopes, observedKeys) {
+  if (!ts.isIdentifier(node.initializer)) {
+    return;
+  }
+
+  const name = node.initializer.text;
+  if (!globalNetworkPrimitiveNames.has(name)) {
+    return;
+  }
+
+  if (isLocallyBound(name, scopes)) {
+    return;
+  }
+
+  let localBinding = "";
+  if (ts.isIdentifier(node.name)) {
+    localBinding = node.name.text;
+  }
+
+  observeGlobalNetworkCapability({
+    sourcePath,
+    primitive: name,
+    globalObjectForm: name,
+    acquisitionForm: "const_binding",
+    localBinding,
+    observedKeys,
+    node,
+  });
+}
+
+function resolveGlobalObjectName(expression, scopes) {
+  if (ts.isIdentifier(expression)) {
+    const name = expression.text;
+    if (globalObjectIdentifiers.has(name) && !isLocallyBound(name, scopes)) {
+      return name;
+    }
+    if (isGlobalObjectAlias(name, scopes)) {
+      return name;
+    }
+    return null;
+  }
+
+  if (ts.isPropertyAccessExpression(expression)) {
+    return null;
+  }
+
+  if (
+    ts.isParenthesizedExpression(expression) ||
+    ts.isNonNullExpression(expression) ||
+    ts.isAsExpression(expression)
+  ) {
+    return resolveGlobalObjectName(expression.expression, scopes);
+  }
+
+  return null;
+}
+
+function isGlobalObjectAlias(name, scopes) {
+  for (let i = scopes.length - 1; i >= 0; i--) {
+    if (scopes[i].globalAliases.has(name)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function checkGlobalObjectAlias(node, scopes) {
+  if (!ts.isIdentifier(node.initializer)) {
+    return;
+  }
+
+  const initializerName = node.initializer.text;
+  if (
+    !globalObjectIdentifiers.has(initializerName) ||
+    isLocallyBound(initializerName, scopes)
+  ) {
+    return;
+  }
+
+  if (!ts.isIdentifier(node.name)) {
+    return;
+  }
+
+  const currentScope = scopes[scopes.length - 1];
+  currentScope.globalAliases.add(node.name.text);
+}
+
+function rejectProhibitedNetworkMutation(node, scopes) {
+  if (ts.isBinaryExpression(node)) {
+    if (
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isPropertyAccessExpression(node.left)
+    ) {
+      const objectName = resolveGlobalObjectName(
+        node.left.expression,
+        scopes,
+      );
+      if (
+        objectName &&
+        globalNetworkPrimitiveNames.has(node.left.name.text)
+      ) {
+        throw new RuntimeGrantContractError(
+          "runtime_grant_inventory_unclassified",
+        );
+      }
+    }
+  }
+
+  if (
+    ts.isDeleteExpression(node) &&
+    ts.isPropertyAccessExpression(node.expression)
+  ) {
+    const objectName = resolveGlobalObjectName(
+      node.expression.expression,
+      scopes,
+    );
+    if (
+      objectName &&
+      globalNetworkPrimitiveNames.has(node.expression.name.text)
+    ) {
+      throw new RuntimeGrantContractError(
+        "runtime_grant_inventory_unclassified",
+      );
+    }
+  }
+
+  if (
+    ts.isCallExpression(node) &&
+    ts.isPropertyAccessExpression(node.expression) &&
+    node.expression.name.text === "defineProperty" &&
+    ts.isIdentifier(node.expression.expression) &&
+    node.expression.expression.text === "Object" &&
+    !isLocallyBound("Object", scopes) &&
+    node.arguments.length >= 2
+  ) {
+    const targetArg = node.arguments[0];
+    const propArg = node.arguments[1];
+    const targetName = resolveGlobalObjectName(targetArg, scopes);
+    if (
+      targetName &&
+      ts.isStringLiteral(propArg) &&
+      globalNetworkPrimitiveNames.has(propArg.text)
+    ) {
+      throw new RuntimeGrantContractError(
+        "runtime_grant_inventory_unclassified",
+      );
+    }
+  }
+}
+
+function rejectDynamicGlobalAccess(node, scopes) {
+  if (ts.isElementAccessExpression(node)) {
+    const objectName = resolveGlobalObjectName(node.expression, scopes);
+    if (objectName && !ts.isStringLiteral(node.argumentExpression)) {
+      throw new RuntimeGrantContractError(
+        "runtime_grant_inventory_unclassified",
+      );
+    }
+  }
+}
+
+function rejectReflectiveGlobalAccess(node, scopes) {
+  if (
+    ts.isCallExpression(node) &&
+    ts.isPropertyAccessExpression(node.expression) &&
+    (node.expression.name.text === "get" ||
+      node.expression.name.text === "getOwnPropertyDescriptor") &&
+    ts.isIdentifier(node.expression.expression) &&
+    node.expression.expression.text === "Reflect" &&
+    !isLocallyBound("Reflect", scopes) &&
+    node.arguments.length > 0
+  ) {
+    const targetName = resolveGlobalObjectName(node.arguments[0], scopes);
+    if (targetName) {
+      throw new RuntimeGrantContractError(
+        "runtime_grant_inventory_unclassified",
+      );
+    }
+  }
+}
+
+function observeGlobalNetworkCapability({
+  sourcePath,
+  primitive,
+  globalObjectForm,
+  acquisitionForm,
+  localBinding,
+  observedKeys,
+  node,
+}) {
+  let effectiveAcquisitionForm = acquisitionForm;
+  let effectiveLocalBinding = localBinding;
+
+  if (
+    acquisitionForm === "property_access" &&
+    node.parent &&
+    ts.isVariableDeclaration(node.parent) &&
+    ts.isIdentifier(node.parent.name)
+  ) {
+    effectiveAcquisitionForm = "const_binding";
+    effectiveLocalBinding = node.parent.name.text;
+  }
+
+  const key = globalNetworkCapabilityKey({
+    sourcePath,
+    primitive,
+    globalObjectForm,
+    acquisitionForm: effectiveAcquisitionForm,
+    localBinding: effectiveLocalBinding,
+  });
+
+  if (observedKeys.has(key)) {
+    return;
+  }
+
+  observedKeys.set(key, {
+    key,
+    sourcePath,
+    primitive,
+    globalObjectForm,
+    acquisitionForm: effectiveAcquisitionForm,
+    localBinding: effectiveLocalBinding,
+    referenceCount: effectiveAcquisitionForm === "bare_call" ? 1 : 0,
+  });
+}
+
+function countBindingCallSites(sourceFile, bindingName) {
+  let count = 0;
+
+  const visit = (node) => {
+    if (
+      ts.isIdentifier(node) &&
+      node.text === bindingName
+    ) {
+      if (
+        node.parent &&
+        ts.isVariableDeclaration(node.parent) &&
+        node.parent.name === node
+      ) {
+        return;
+      }
+
+      if (
+        node.parent &&
+        ts.isCallExpression(node.parent) &&
+        node.parent.expression === node
+      ) {
+        count++;
+        return;
+      }
+
+      if (
+        node.parent &&
+        ts.isPropertyAccessExpression(node.parent) &&
+        node.parent.name === node
+      ) {
+        return;
+      }
+
+      if (
+        node.parent &&
+        ts.isParameter(node.parent) &&
+        node.parent.name === node
+      ) {
+        return;
+      }
+
+      if (
+        node.parent &&
+        ts.isBindingElement(node.parent) &&
+        node.parent.name === node
+      ) {
+        return;
+      }
+
+      if (
+        node.parent &&
+        ts.isExportAssignment(node.parent) &&
+        node.parent.expression === node
+      ) {
+        count++;
+        return;
+      }
+
+      if (
+        node.parent &&
+        ts.isReturnStatement(node.parent) &&
+        node.parent.expression === node
+      ) {
+        count++;
+        return;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+
+  visit(sourceFile);
+  return count;
 }
 
 function operationSourceKey(record) {

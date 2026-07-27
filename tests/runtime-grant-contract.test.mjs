@@ -1104,6 +1104,450 @@ test("exact grant-set validation rejects every drift category", () => {
   }
 });
 
+const globalNetworkRejectionCode = "runtime_grant_inventory_unclassified";
+const oidcAdapterPath = "src/auth/generic-oidc-provider-adapter.ts";
+
+test("no-import runtime network Fetch authority rejects a neutral new Fetch source", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/neutral-fetch.ts",
+            `export async function relay(target) {
+  const response = await globalThis.fetch(target);
+  return response.json();
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import runtime network authority rejects bare global Fetch", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/bare-fetch.ts",
+            `export async function relay(target) {
+  const response = await fetch(target);
+  return response.json();
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import runtime network authority rejects node global Fetch", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/global-fetch.ts",
+            `export async function relay(target) {
+  const response = await global.fetch(target);
+  return response.json();
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import runtime network authority rejects static element access", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/element-fetch.ts",
+            `export async function relay(target) {
+  const response = await globalThis["fetch"](target);
+  return response.json();
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import runtime network authority rejects destructured Fetch", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/destructured-fetch.ts",
+            `const { fetch: send } = globalThis;
+export async function relay(target) {
+  const response = await send(target);
+  return response.json();
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import runtime network authority rejects global-object alias chain", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/alias-fetch.ts",
+            `const runtimeGlobal = globalThis;
+const send = runtimeGlobal.fetch;
+export async function relay(target) {
+  const response = await send(target);
+  return response.json();
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import runtime network authority rejects exported network wrapper", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/wrapper-fetch.ts",
+            `export function send(url) {
+  return globalThis.fetch(url);
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import runtime network authority rejects capability exported as a value", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/exported-fetch.ts",
+            `export const send = globalThis.fetch;`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import authority rejects additional Fetch reference in approved OIDC source", async () => {
+  const oidcSource = await readFile(oidcAdapterPath, "utf8");
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            oidcAdapterPath,
+            `${oidcSource}
+export function extraNetworkAccess(target) {
+  const direct = globalThis.fetch;
+  return direct(target);
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import authority rejects alias change in approved OIDC source", async () => {
+  const oidcSource = await readFile(oidcAdapterPath, "utf8");
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            oidcAdapterPath,
+            oidcSource
+              .replace(
+                "const fetchImplementation = globalThis.fetch;",
+                "const renamedFetch = globalThis.fetch;",
+              )
+              .replaceAll("fetchImplementation(", "renamedFetch("),
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import authority rejects approved-source wrapper drift", async () => {
+  const oidcSource = await readFile(oidcAdapterPath, "utf8");
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            oidcAdapterPath,
+            oidcSource.replace(
+              "const fetchImplementation = globalThis.fetch;",
+              `function getHttpClient() { return globalThis.fetch; }
+const fetchImplementation = getHttpClient();`,
+            ),
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import authority rejects computed dynamic global-property access", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/dynamic-fetch.ts",
+            `const propertyName = "fetch";
+export async function relay(target) {
+  const response = await globalThis[propertyName](target);
+  return response.json();
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import authority rejects reflective access", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/reflect-fetch.ts",
+            `const propertyName = "fetch";
+export async function relay(target) {
+  const fn = Reflect.get(globalThis, propertyName);
+  return fn(target);
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import authority rejects global WebSocket usage", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/ws-transport.ts",
+            `export function connect(target) {
+  const socket = new globalThis.WebSocket(target);
+  return socket;
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import authority rejects global EventSource usage", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/event-transport.ts",
+            `export function connect(target) {
+  const source = new globalThis.EventSource(target);
+  return source;
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import authority rejects global-primitive mutation", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/mutate-fetch.ts",
+            `globalThis.fetch = () => {
+  throw new Error("blocked");
+};`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import authority rejects missing authority after source override removes OIDC Fetch", async () => {
+  const oidcSource = await readFile(oidcAdapterPath, "utf8");
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            oidcAdapterPath,
+            oidcSource.replace(
+              "const fetchImplementation = globalThis.fetch;",
+              "const fetchImplementation = (() => { throw new Error('unavailable'); }) as unknown as typeof globalThis.fetch;",
+            ),
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import approved OIDC network path passes exact authority", async () => {
+  const inventory = await inspectProductionDatabaseAccessInventory();
+  assert.equal(inventory.length, 11);
+});
+
+test("no-import approved OIDC path passes with comment-only variant", async () => {
+  const oidcSource = await readFile(oidcAdapterPath, "utf8");
+  const inventory = await inspectProductionDatabaseAccessInventory({
+    sourceOverrides: new Map([
+      [oidcAdapterPath, `// OIDC HTTP transport\n${oidcSource}`],
+    ]),
+  });
+  assert.equal(inventory.length, 11);
+});
+
+test("no-import approved OIDC path passes with LF line ending", async () => {
+  const oidcSource = await readFile(oidcAdapterPath, "utf8");
+  const inventory = await inspectProductionDatabaseAccessInventory({
+    sourceOverrides: new Map([
+      [oidcAdapterPath, oidcSource.replace(/\r\n?/gu, "\n")],
+    ]),
+  });
+  assert.equal(inventory.length, 11);
+});
+
+test("no-import approved OIDC path passes with CRLF line ending", async () => {
+  const oidcSource = await readFile(oidcAdapterPath, "utf8");
+  const inventory = await inspectProductionDatabaseAccessInventory({
+    sourceOverrides: new Map([
+      [oidcAdapterPath, oidcSource.replace(/\r\n?/gu, "\n").replace(/\n/gu, "\r\n")],
+    ]),
+  });
+  assert.equal(inventory.length, 11);
+});
+
+test("no-import shadowed function parameter is not classified as global Fetch", async () => {
+  const source = `export function execute(fetch: (url: string) => Promise<unknown>) {
+  return fetch("synthetic");
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/shadow-fetch.ts", source],
+        ]),
+      }),
+    "a source with a shadowed fetch parameter must not be classified as global Fetch",
+  );
+});
+
+test("no-import shadowed local variable is not classified as global Fetch", async () => {
+  const source = `const fetch = (url: string) => Promise.resolve();
+export function execute() {
+  return fetch("synthetic");
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/shadow-local-fetch.ts", source],
+        ]),
+      }),
+    "a source with a local shadow must not be classified as global Fetch",
+  );
+});
+
+test("no-import imported local binding named fetch does not trigger false positive", async () => {
+  const importedSource = `export const fetch = (url: string) => Promise.resolve();`;
+  const consumerSource = `import { fetch as injectedClient } from "./local-client.js";
+export function execute() {
+  return injectedClient("synthetic");
+}`;
+  const inventory = await inspectProductionDatabaseAccessInventory({
+    sourceOverrides: new Map([
+      ["src/platform/local-client.ts", importedSource],
+      ["src/platform/imported-fetch.ts", consumerSource],
+    ]),
+  });
+  assert.equal(inventory.length, 11);
+});
+
+test("no-import authority preserves existing 11-source inventory", async () => {
+  const inventory = await inspectProductionDatabaseAccessInventory();
+  assert.equal(inventory.length, 11);
+});
+
+test("no-import authority preserves existing 59 operation-source tuples", async () => {
+  const operations = await extractProductionAdapterOperations();
+  assert.equal(operations.length, 59);
+  assert.doesNotThrow(() =>
+    assertProductionAdapterGrantEquality(
+      RUNTIME_TABLE_GRANT_CONTRACT,
+      operations,
+    ),
+  );
+});
+
+test("no-import authority preserves existing 39 grant records and digest", async () => {
+  assert.equal(RUNTIME_TABLE_GRANT_CONTRACT.length, 39);
+  assert.equal(
+    RUNTIME_TABLE_GRANT_DIGEST,
+    "9474972215869ec9b194f537c3b2400d8701aa8f00494bcfc0ede849dd94bf65",
+  );
+});
+
+test("no-import authority preserves existing built-in import authority", async () => {
+  const inventory = await inspectProductionDatabaseAccessInventory();
+  assert.equal(inventory.length, 11);
+
+  const nodeServer = await readFile("src/http/node-server.ts", "utf8");
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/http/node-server.ts",
+            nodeServer.replace(
+              'import { createServer, type Server } from "node:http";',
+              'import { createServer, request as send, type Server } from "node:http";',
+            ),
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
 function cloneRecord(record) {
   return {
     ...record,
