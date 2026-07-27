@@ -1548,6 +1548,472 @@ test("no-import authority preserves existing built-in import authority", async (
   );
 });
 
+test("no-import authority rejects bare WebSocket constructor", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/ws-bare.ts",
+            `export function connect(url) {
+  const socket = new WebSocket(url);
+  return socket;
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import authority rejects bare EventSource constructor", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/es-bare.ts",
+            `export function connect(url) {
+  const source = new EventSource(url);
+  return source;
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import authority rejects parenthesised bare constructor", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/ws-paren.ts",
+            `export function connect(url) {
+  const socket = new (WebSocket)(url);
+  return socket;
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import authority rejects constructor exported through a wrapper", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/ws-wrapper.ts",
+            `export function createWebSocket(url) {
+  return new WebSocket(url);
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import authority rejects qualified WebSocket constructor", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/ws-qualified.ts",
+            `export function connect(url) {
+  const socket = new globalThis.WebSocket(url);
+  return socket;
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import shadowed WebSocket parameter is not classified as global", async () => {
+  const source = `export function connect(WebSocket: { new(url: string): unknown }) {
+  return new WebSocket("wss://example.com");
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/ws-shadow.ts", source]]),
+      }),
+    "a source with a shadowed WebSocket parameter must not be classified as global",
+  );
+});
+
+test("no-import imported WebSocket is not classified as global constructor", async () => {
+  const importedSource = `export class WebSocket { constructor(url: string) {} }`;
+  const consumerSource = `import { WebSocket } from "./local-ws.js";
+export function connect(url: string) {
+  return new WebSocket(url);
+}`;
+  const inventory = await inspectProductionDatabaseAccessInventory({
+    sourceOverrides: new Map([
+      ["src/platform/local-ws.ts", importedSource],
+      ["src/platform/ws-imported.ts", consumerSource],
+    ]),
+  });
+  assert.equal(inventory.length, 11);
+});
+
+test("no-import local WebSocket class shadow is not classified as global", async () => {
+  const source = `export function connect() {
+  class WebSocket { constructor() {} }
+  return new WebSocket();
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/ws-class.ts", source]]),
+      }),
+    "a source with a local WebSocket class must not be classified as global",
+  );
+});
+
+test("no-import authority rejects optional global-object Fetch access", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/optional-fetch.ts",
+            `export async function relay(target) {
+  const response = await globalThis?.fetch(target);
+  return response.json();
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import authority rejects optional invocation of global Fetch", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/optional-invoke.ts",
+            `export async function relay(target) {
+  const response = await globalThis.fetch?.(target);
+  return response.json();
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import authority rejects optional static element access", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/optional-element.ts",
+            `export async function relay(target) {
+  const response = await globalThis?.["fetch"](target);
+  return response.json();
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import authority rejects two-level alias chain", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/alias-two.ts",
+            `const first = globalThis;
+const second = first;
+export async function relay(target) {
+  const response = await second.fetch(target);
+  return response.json();
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import authority rejects three-level alias chain", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/alias-three.ts",
+            `const first = globalThis;
+const second = first;
+const third = second;
+export async function relay(target) {
+  const response = await third.fetch(target);
+  return response.json();
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import shadowed global-object alias parameter is not classified as global", async () => {
+  const source = `const runtimeGlobal = globalThis;
+export function execute(runtimeGlobal: { fetch: (url: string) => Promise<unknown> }) {
+  return runtimeGlobal.fetch("synthetic");
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/alias-shadow.ts", source]]),
+      }),
+    "a source with a shadowed alias parameter must not be classified as global",
+  );
+});
+
+test("no-import shadowed block-local alias is not classified as global", async () => {
+  const source = `const runtimeGlobal = globalThis;
+export function execute() {
+  const runtimeGlobal = { fetch: (url: string) => Promise.resolve() };
+  return runtimeGlobal.fetch("synthetic");
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/alias-block.ts", source]]),
+      }),
+    "a source with a shadowed block-local alias must not be classified as global",
+  );
+});
+
+test("no-import authority rejects Object.getOwnPropertyDescriptor on global", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/obj-descriptor.ts",
+            `export function inspect() {
+  const desc = Object.getOwnPropertyDescriptor(globalThis, "fetch");
+  return desc;
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import authority rejects Object.getOwnPropertyDescriptors on global", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/obj-descriptors.ts",
+            `export function inspect() {
+  const descs = Object.getOwnPropertyDescriptors(globalThis);
+  return descs;
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import authority rejects dynamic Object.defineProperty on global", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/obj-define-dynamic.ts",
+            `export function patch(name, desc) {
+  Object.defineProperty(globalThis, name, desc);
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import authority rejects Object.defineProperties on global", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/obj-define-props.ts",
+            `export function patch(descs) {
+  Object.defineProperties(globalThis, descs);
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import authority rejects Reflect.defineProperty on global", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/reflect-define.ts",
+            `export function patch() {
+  Reflect.defineProperty(globalThis, "fetch", { value: null });
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import authority rejects deletion via element access", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/delete-element.ts",
+            `export function clear() {
+  delete globalThis["fetch"];
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import locally shadowed Object is not rejected for getOwnPropertyDescriptor", async () => {
+  const source = `export function execute(Object: { getOwnPropertyDescriptor(o: object, p: string): unknown }) {
+  return Object.getOwnPropertyDescriptor({}, "fetch");
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/obj-shadow.ts", source]]),
+      }),
+    "a source with a locally shadowed Object must not be rejected",
+  );
+});
+
+test("no-import locally shadowed Reflect is not rejected for get", async () => {
+  const source = `const Reflect = { get: (o: object, p: string) => o[p] };
+export function execute(val: Record<string, unknown>) {
+  return Reflect.get(val, "fetch");
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/reflect-shadow.ts", source]]),
+      }),
+    "a source with a locally shadowed Reflect must not be rejected",
+  );
+});
+
+test("no-import function-local Fetch shadow is not classified as global", async () => {
+  const source = `export function execute() {
+  const fetch = (url: string) => Promise.resolve();
+  return fetch("synthetic");
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/fn-local-fetch.ts", source]]),
+      }),
+    "a source with function-local fetch shadow must not be classified as global",
+  );
+});
+
+test("no-import function-local function declaration shadow is not classified as global", async () => {
+  const source = `export function execute() {
+  function fetch(url: string) {
+    return Promise.resolve();
+  }
+  return fetch("synthetic");
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/fn-decl-fetch.ts", source]]),
+      }),
+    "a source with function-local function declaration must not be classified as global",
+  );
+});
+
+test("no-import block-local Fetch shadow is not classified as global", async () => {
+  const source = `export function execute() {
+  {
+    const fetch = (url: string) => Promise.resolve();
+    fetch("synthetic");
+  }
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/block-fetch.ts", source]]),
+      }),
+    "a source with block-local fetch shadow must not be classified as global",
+  );
+});
+
+test("no-import destructured parameter Fetch is not classified as global", async () => {
+  const source = `export function execute({ fetch }: { fetch: (url: string) => Promise<unknown> }) {
+  return fetch("synthetic");
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/destructured-param.ts", source]]),
+      }),
+    "a source with destructured fetch parameter must not be classified as global",
+  );
+});
+
+test("no-import unshadowed global Fetch inside nested blocks is rejected", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/nested-global.ts",
+            `export function execute() {
+  {
+    {
+      return fetch("unshadowed");
+    }
+  }
+}`,
+          ],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
 function cloneRecord(record) {
   return {
     ...record,
