@@ -113,11 +113,105 @@ const databaseSourceShapeAuthority = new Map([
   ],
 ]);
 
-const approvedNonDatabaseExternalModules = new Set([
-  "node:crypto",
-  "node:fs/promises",
-  "node:http",
+const builtInCapabilityClassifications = new Set([
+  "non_network_cryptographic",
+  "filesystem",
+  "network",
 ]);
+
+const builtInImportAuthorityRecords = [
+  builtInImportAuthorityRecord({
+    sourcePath: "src/auth/auth-state-crypto.ts",
+    moduleName: "node:crypto",
+    capability: "non_network_cryptographic",
+    bindings: [
+      namedBuiltInBinding("createHmac"),
+      namedBuiltInBinding("randomBytes"),
+      namedBuiltInBinding("timingSafeEqual"),
+    ],
+  }),
+  builtInImportAuthorityRecord({
+    sourcePath: "src/auth/generic-oidc-jwks-verifier.ts",
+    moduleName: "node:crypto",
+    capability: "non_network_cryptographic",
+    bindings: [
+      namedBuiltInBinding("createPublicKey"),
+      namedBuiltInBinding("createVerify"),
+    ],
+  }),
+  builtInImportAuthorityRecord({
+    sourcePath: "src/auth/platform-identity-crypto.ts",
+    moduleName: "node:crypto",
+    capability: "non_network_cryptographic",
+    bindings: [
+      namedBuiltInBinding("randomBytes"),
+    ],
+  }),
+  builtInImportAuthorityRecord({
+    sourcePath: "src/http/csrf-token-crypto.ts",
+    moduleName: "node:crypto",
+    capability: "non_network_cryptographic",
+    bindings: [
+      namedBuiltInBinding("createHmac"),
+      namedBuiltInBinding("randomBytes"),
+    ],
+  }),
+  builtInImportAuthorityRecord({
+    sourcePath: "src/http/node-server.ts",
+    moduleName: "node:http",
+    capability: "network",
+    bindings: [
+      namedBuiltInBinding("createServer"),
+    ],
+    sourceShapeDigest:
+      "bf0c6776283c22736b439c2b20e507c1225f0974c623ef1acfbac550e37eba4b",
+  }),
+  builtInImportAuthorityRecord({
+    sourcePath: "src/http/public-site-assets.ts",
+    moduleName: "node:fs/promises",
+    capability: "filesystem",
+    bindings: [
+      namedBuiltInBinding("readFile"),
+    ],
+  }),
+  builtInImportAuthorityRecord({
+    sourcePath: "src/platform/app-launch-token-crypto.ts",
+    moduleName: "node:crypto",
+    capability: "non_network_cryptographic",
+    bindings: [
+      namedBuiltInBinding("createHash"),
+      namedBuiltInBinding("createHmac"),
+      namedBuiltInBinding("randomBytes"),
+      namedBuiltInBinding("timingSafeEqual"),
+    ],
+  }),
+  builtInImportAuthorityRecord({
+    sourcePath: "src/platform/workspace-admin-id-crypto.ts",
+    moduleName: "node:crypto",
+    capability: "non_network_cryptographic",
+    bindings: [
+      namedBuiltInBinding("randomBytes"),
+    ],
+  }),
+];
+
+const builtInImportAuthority = new Map(
+  builtInImportAuthorityRecords.map((record) => [
+    builtInImportKey(
+      record.sourcePath,
+      record.moduleName,
+      record.importKind,
+      record.bindings,
+    ),
+    record,
+  ]),
+);
+
+if (builtInImportAuthority.size !== builtInImportAuthorityRecords.length) {
+  throw new RuntimeGrantContractError(
+    "runtime_grant_inventory_unclassified",
+  );
+}
 
 const databaseExternalImportAuthority = new Set([
   databaseExternalImportKey(
@@ -1001,6 +1095,7 @@ async function assertProductionRuntimeImportAuthority({
   const discoveredSources = new Set(sourcePaths);
   const internalEdges = [];
   const observedDatabaseImports = new Set();
+  const observedBuiltInImports = new Set();
   const externalDatabaseSources = new Set();
   const sourceFiles = new Map();
 
@@ -1041,7 +1136,27 @@ async function assertProductionRuntimeImportAuthority({
       }
 
       if (moduleName.startsWith("node:")) {
-        if (!approvedNonDatabaseExternalModules.has(moduleName)) {
+        const importKey = builtInImportKeyFromReference(
+          sourcePath,
+          moduleName,
+          reference,
+        );
+        const authority = builtInImportAuthority.get(importKey);
+        if (!authority) {
+          throw new RuntimeGrantContractError(
+            "runtime_grant_inventory_unclassified",
+          );
+        }
+        if (observedBuiltInImports.has(importKey)) {
+          throw new RuntimeGrantContractError(
+            "runtime_grant_inventory_unclassified",
+          );
+        }
+        observedBuiltInImports.add(importKey);
+        if (
+          authority.capability === "network" &&
+          sourceShapeDigest(source) !== authority.sourceShapeDigest
+        ) {
           throw new RuntimeGrantContractError(
             "runtime_grant_inventory_unclassified",
           );
@@ -1077,6 +1192,7 @@ async function assertProductionRuntimeImportAuthority({
     observedDatabaseImports,
     databaseExternalImportAuthority,
   );
+  assertExactBuiltInImportAuthority(observedBuiltInImports);
 
   const databaseCapableSources = new Set([
     ...databaseAccessInventory.keys(),
@@ -1268,7 +1384,7 @@ function rejectUnsupportedRuntimeModuleLoading(sourceFile) {
         node.expression.kind === ts.SyntaxKind.ImportKeyword ||
         (
           ts.isIdentifier(node.expression) &&
-          ["eval", "require"].includes(node.expression.text)
+          ["eval", "Function", "require"].includes(node.expression.text)
         ) ||
         (
           ts.isPropertyAccessExpression(node.expression) &&
@@ -1360,6 +1476,84 @@ function databaseExternalImportKeyFromReference(
   );
 }
 
+function builtInImportKeyFromReference(
+  sourcePath,
+  moduleName,
+  reference,
+) {
+  if (
+    reference.kind !== "import" ||
+    !ts.isImportDeclaration(reference.statement)
+  ) {
+    return `${sourcePath}\u0000${moduleName}\u0000${reference.kind}\u0000unsupported`;
+  }
+  return builtInImportKey(
+    sourcePath,
+    moduleName,
+    reference.kind,
+    runtimeImportBindings(reference.statement),
+  );
+}
+
+function builtInImportKey(
+  sourcePath,
+  moduleName,
+  importKind,
+  bindings,
+) {
+  const signature = bindings
+    .map(
+      (binding) =>
+        `${binding.kind}:${binding.exported}:${binding.local}`,
+    )
+    .sort(compare)
+    .join(",");
+  return `${sourcePath}\u0000${moduleName}\u0000${importKind}\u0000${signature}`;
+}
+
+function namedBuiltInBinding(exported, local = exported) {
+  return Object.freeze({
+    exported,
+    local,
+    kind: "named",
+  });
+}
+
+function builtInImportAuthorityRecord({
+  sourcePath,
+  moduleName,
+  capability,
+  bindings,
+  sourceShapeDigest = null,
+}) {
+  if (!builtInCapabilityClassifications.has(capability)) {
+    throw new RuntimeGrantContractError(
+      "runtime_grant_inventory_unclassified",
+    );
+  }
+  if (
+    capability === "network" &&
+    !/^[a-f0-9]{64}$/u.test(sourceShapeDigest ?? "")
+  ) {
+    throw new RuntimeGrantContractError(
+      "runtime_grant_inventory_unclassified",
+    );
+  }
+  if (capability !== "network" && sourceShapeDigest !== null) {
+    throw new RuntimeGrantContractError(
+      "runtime_grant_inventory_unclassified",
+    );
+  }
+  return Object.freeze({
+    sourcePath,
+    moduleName,
+    importKind: "import",
+    bindings: Object.freeze([...bindings]),
+    capability,
+    sourceShapeDigest,
+  });
+}
+
 function databaseExternalImportKey(
   sourcePath,
   moduleName,
@@ -1394,7 +1588,7 @@ function runtimeImportBindings(statement) {
     });
   }
   const namedBindings = importClause.namedBindings;
-  if (ts.isNamespaceImport(namedBindings)) {
+  if (namedBindings && ts.isNamespaceImport(namedBindings)) {
     bindings.push({
       exported: "*",
       local: namedBindings.name.text,
@@ -1484,6 +1678,18 @@ function assertExactStringRecord(observed, expected) {
 function assertExactAuthoritySet(observed, expected) {
   const observedValues = [...observed].sort(compare);
   const expectedValues = [...expected].sort(compare);
+  if (
+    JSON.stringify(observedValues) !== JSON.stringify(expectedValues)
+  ) {
+    throw new RuntimeGrantContractError(
+      "runtime_grant_inventory_unclassified",
+    );
+  }
+}
+
+function assertExactBuiltInImportAuthority(observed) {
+  const observedValues = [...observed].sort(compare);
+  const expectedValues = [...builtInImportAuthority.keys()].sort(compare);
   if (
     JSON.stringify(observedValues) !== JSON.stringify(expectedValues)
   ) {

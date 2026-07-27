@@ -36,6 +36,10 @@ test("canonical runtime table-grant contract is a deterministic closed 39-record
   assert.match(RUNTIME_TABLE_GRANT_DIGEST, /^[a-f0-9]{64}$/);
   assert.equal(
     RUNTIME_TABLE_GRANT_DIGEST,
+    "9474972215869ec9b194f537c3b2400d8701aa8f00494bcfc0ede849dd94bf65",
+  );
+  assert.equal(
+    RUNTIME_TABLE_GRANT_DIGEST,
     createHash("sha256")
       .update(
         RUNTIME_TABLE_GRANT_CONTRACT.map(runtimeTableGrantKey).join("\n"),
@@ -190,6 +194,337 @@ test("production database access inventory is recursive, explicit, and closed", 
     ["src/runtime/node-bootstrap.ts", "operational_control_plane"],
     ["src/runtime/platform-runtime-dependencies.ts", "runtime_data_adapter"],
   ]);
+});
+
+const nodeServerPath = "src/http/node-server.ts";
+const builtInImportAuthorityError =
+  "runtime_grant_inventory_unclassified";
+const builtInSourceShapeError =
+  "runtime_grant_inventory_unclassified";
+
+const builtInImportRejectionCases = [
+  [
+    "a neutral new source importing node:http request",
+    () =>
+      new Map([
+        [
+          "src/platform/transport.ts",
+          `import { request } from "node:http";
+export function relay(target) {
+  return request(target);
+}`,
+        ],
+      ]),
+    builtInImportAuthorityError,
+  ],
+  [
+    "a neutral internal wrapper around an unapproved network source",
+    () =>
+      new Map([
+        [
+          "src/platform/transport-core.ts",
+          `import { request as send } from "node:http";
+export function relay(target) {
+  return send(target);
+}`,
+        ],
+        [
+          "src/platform/transport-wrapper.ts",
+          `import { relay } from "./transport-core.js";
+export function forward(target) {
+  return relay(target);
+}`,
+        ],
+      ]),
+    builtInImportAuthorityError,
+  ],
+  [
+    "a renamed local network binding",
+    (nodeServer) =>
+      new Map([
+        [
+          nodeServerPath,
+          nodeServer
+            .replace(
+              'import { createServer, type Server } from "node:http";',
+              'import { createServer as openTransport, type Server } from "node:http";',
+            )
+            .replace("return createServer(", "return openTransport("),
+        ],
+      ]),
+    builtInImportAuthorityError,
+  ],
+  [
+    "an additional imported network binding",
+    (nodeServer) =>
+      new Map([
+        [
+          nodeServerPath,
+          nodeServer.replace(
+            'import { createServer, type Server } from "node:http";',
+            'import { createServer, request as send, type Server } from "node:http";',
+          ),
+        ],
+      ]),
+    builtInImportAuthorityError,
+  ],
+  [
+    "a namespace network import",
+    (nodeServer) =>
+      new Map([
+        [
+          nodeServerPath,
+          nodeServer
+            .replace(
+              'import { createServer, type Server } from "node:http";',
+              'import * as transport from "node:http";\nimport type { Server } from "node:http";',
+            )
+            .replace("return createServer(", "return transport.createServer("),
+        ],
+      ]),
+    builtInImportAuthorityError,
+  ],
+  [
+    "a default network import",
+    (nodeServer) =>
+      new Map([
+        [
+          nodeServerPath,
+          nodeServer
+            .replace(
+              'import { createServer, type Server } from "node:http";',
+              'import transport from "node:http";\nimport type { Server } from "node:http";',
+            )
+            .replace("return createServer(", "return transport.createServer("),
+        ],
+      ]),
+    builtInImportAuthorityError,
+  ],
+  [
+    "a side-effect network import",
+    () =>
+      new Map([
+        [
+          "src/platform/transport-side-effect.ts",
+          `import "node:http";
+export const transportMarker = true;`,
+        ],
+      ]),
+    builtInImportAuthorityError,
+  ],
+  [
+    "an approved network binding from the wrong source path",
+    () =>
+      new Map([
+        [
+          "src/platform/transport-server.ts",
+          `import { createServer } from "node:http";
+export function openTransport(handler) {
+  return createServer(handler);
+}`,
+        ],
+      ]),
+    builtInImportAuthorityError,
+  ],
+  [
+    "a re-export of an approved network binding",
+    () =>
+      new Map([
+        [
+          "src/platform/transport-export.ts",
+          `export { createServer } from "node:http";`,
+        ],
+      ]),
+    builtInImportAuthorityError,
+  ],
+  [
+    "network source API-shape drift after an approved import",
+    (nodeServer) =>
+      new Map([
+        [
+          nodeServerPath,
+          `${nodeServer}
+export const networkAuthorityDrift = true;
+`,
+        ],
+      ]),
+    builtInSourceShapeError,
+  ],
+  [
+    "an undeclared Node built-in",
+    () =>
+      new Map([
+        [
+          "src/platform/transport-net.ts",
+          `import { connect as openTransport } from "node:net";
+export function relay(target) {
+  return openTransport(target);
+}`,
+        ],
+      ]),
+    builtInImportAuthorityError,
+  ],
+  [
+    "an undeclared network-capable built-in subpath",
+    () =>
+      new Map([
+        [
+          "src/platform/transport-subpath.ts",
+          `import { request as openTransport } from "node:http/promises";
+export function relay(target) {
+  return openTransport(target);
+}`,
+        ],
+      ]),
+    builtInImportAuthorityError,
+  ],
+];
+
+for (const [name, sourceOverrides, expectedCode] of builtInImportRejectionCases) {
+  test(`built-in import authority rejects ${name}`, async () => {
+    const nodeServer = await readFile(nodeServerPath, "utf8");
+    await assert.rejects(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: sourceOverrides(nodeServer),
+        }),
+      contractError(expectedCode),
+    );
+  });
+}
+
+test("non-network built-in authority is also exact by source and binding", async () => {
+  const cryptoPath = "src/auth/platform-identity-crypto.ts";
+  const cryptoSource = await readFile(cryptoPath, "utf8");
+  const assetPath = "src/http/public-site-assets.ts";
+  const assetSource = await readFile(assetPath, "utf8");
+  const cases = [
+    [
+      "crypto binding from the wrong source",
+      new Map([
+        [
+          "src/platform/crypto-control.ts",
+          `import { randomBytes } from "node:crypto";
+export function createValue() {
+  return randomBytes(16);
+}`,
+        ],
+      ]),
+    ],
+    [
+      "crypto alias from the approved source",
+      new Map([
+        [
+          cryptoPath,
+          cryptoSource
+            .replace(
+              'import { randomBytes } from "node:crypto";',
+              'import { randomBytes as createValue } from "node:crypto";',
+            )
+            .replaceAll("randomBytes(", "createValue("),
+        ],
+      ]),
+    ],
+    [
+      "filesystem binding from the wrong source",
+      new Map([
+        [
+          "src/platform/file-control.ts",
+          `import { readFile } from "node:fs/promises";
+export function load(path) {
+  return readFile(path);
+}`,
+        ],
+      ]),
+    ],
+    [
+      "filesystem alias from the approved source",
+      new Map([
+        [
+          assetPath,
+          assetSource
+            .replace(
+              'import { readFile } from "node:fs/promises";',
+              'import { readFile as loadAsset } from "node:fs/promises";',
+            )
+            .replaceAll("readFile(", "loadAsset("),
+        ],
+      ]),
+    ],
+  ];
+
+  for (const [name, sourceOverrides] of cases) {
+    await assert.rejects(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides,
+        }),
+      contractError(builtInImportAuthorityError),
+      name,
+    );
+  }
+});
+
+test("exact approved built-in imports preserve semantic formatting controls", async () => {
+  const baseline = await inspectProductionDatabaseAccessInventory();
+  assert.equal(baseline.length, 11);
+
+  const cryptoPath = "src/auth/platform-identity-crypto.ts";
+  const cryptoSource = await readFile(cryptoPath, "utf8");
+  const assetPath = "src/http/public-site-assets.ts";
+  const assetSource = await readFile(assetPath, "utf8");
+  const nodeServer = await readFile(nodeServerPath, "utf8");
+  const approvedOverrides = [
+    new Map([[cryptoPath, `// approved cryptographic capability\n${cryptoSource}`]]),
+    new Map([[assetPath, `// approved filesystem capability\n${assetSource}`]]),
+    new Map([
+      [
+        nodeServerPath,
+        `/* approved network capability */\n${nodeServer}`.replace(
+          "return createServer(",
+          "return createServer  (",
+        ),
+      ],
+    ]),
+    new Map([[nodeServerPath, nodeServer.replace(/\r\n?/gu, "\n")]]),
+    new Map([
+      [
+        nodeServerPath,
+        nodeServer.replace(/\r\n?/gu, "\n").replace(/\n/gu, "\r\n"),
+      ],
+    ]),
+  ];
+
+  for (const sourceOverrides of approvedOverrides) {
+    const inventory = await inspectProductionDatabaseAccessInventory({
+      sourceOverrides,
+    });
+    assert.equal(inventory.length, 11);
+  }
+});
+
+test("dynamic runtime built-in loading forms remain prohibited", async () => {
+  const cases = [
+    `export async function load() { return import("node:http"); }`,
+    `export function load() { return require("node:http"); }`,
+    `import transport = require("node:http"); export const load = transport;`,
+    `export function load() { return eval("1"); }`,
+    `export function load() { return Function("return 1"); }`,
+    `export function load() { return new Function("return 1"); }`,
+    `export function load() { return process.getBuiltinModule("http"); }`,
+  ];
+
+  for (const [index, source] of cases.entries()) {
+    await assert.rejects(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([
+            [`src/platform/dynamic-transport-${index}.ts`, source],
+          ]),
+        }),
+      contractError("runtime_grant_inventory_unclassified"),
+    );
+  }
 });
 
 test("production dependency and import admission is mechanically closed", async () => {
@@ -416,14 +751,14 @@ export function unsupportedApprovedClientShape(store) {
     "runtime lock closure drift",
   );
 
+  const cryptoPath = "src/auth/platform-identity-crypto.ts";
+  const cryptoSource = await readFile(cryptoPath, "utf8");
   const inventory = await inspectProductionDatabaseAccessInventory({
     sourceOverrides: new Map([
       [
-        "src/platform/non-database-control.ts",
-        `import { randomUUID } from "node:crypto";
-export function createReference() {
-  return randomUUID();
-}`,
+        cryptoPath,
+        `// approved non-network capability control
+${cryptoSource}`,
       ],
     ]),
   });
