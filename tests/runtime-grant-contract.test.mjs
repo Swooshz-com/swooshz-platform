@@ -192,30 +192,262 @@ test("production database access inventory is recursive, explicit, and closed", 
   ]);
 });
 
-test("production adapter extraction detects an undeclared operation structurally", async () => {
-  const path = "src/db/repositories.ts";
-  const original = await readFile(path, "utf8");
-  const operations = await extractProductionAdapterOperations({
+test("production dependency and import admission is mechanically closed", async () => {
+  const unapprovedExternalCases = [
+    [
+      "unknown constructor and method",
+      `import { Archive } from "unknown-database-package";
+const store = new Archive({});
+export function modifyUser() {
+  return store.persistTable("users");
+}`,
+    ],
+    [
+      "neutral store with updateTable",
+      `import { Kysely } from "unknown-database-package";
+const store = new Kysely({});
+export function modifyUser() {
+  return store.updateTable("users").set({ status: "active" }).execute();
+}`,
+    ],
+    [
+      "unknown query-builder vocabulary",
+      `import { DataEngine } from "unknown-database-package";
+const store = new DataEngine({});
+export function modifyUser() {
+  return store.mutateRows("users", { status: "active" });
+}`,
+    ],
+    [
+      "namespace import",
+      `import * as storage from "unknown-database-package";
+const store = new storage.Engine({});
+export function modifyUser() {
+  return store.persistRows("users");
+}`,
+    ],
+    [
+      "default import",
+      `import Storage from "unknown-database-package";
+const store = new Storage({});
+export function modifyUser() {
+  return store.persistRows("users");
+}`,
+    ],
+    [
+      "dynamic import",
+      `export async function modifyUser() {
+  const storage = await import("unknown-database-package");
+  const store = new storage.Engine({});
+  return store.persistRows("users");
+}`,
+    ],
+    [
+      "approved database package under neutral aliases",
+      `import { Pool as StorageEngine } from "pg";
+const store = new StorageEngine({});
+export function modifyUser() {
+  return store.persistRows("users");
+}`,
+    ],
+  ];
+
+  for (const [name, source] of unapprovedExternalCases) {
+    await assert.rejects(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([
+            ["src/platform/unknown-storage.ts", source],
+          ]),
+        }),
+      contractError("runtime_grant_inventory_unclassified"),
+      name,
+    );
+  }
+
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/storage-bridge.ts",
+            `import { createDatabasePool } from "../db/client.js";
+export function openStorage(configuration) {
+  const store = createDatabasePool(configuration);
+  return store.persistRows("users");
+}`,
+          ],
+        ]),
+      }),
+    contractError("runtime_grant_inventory_unclassified"),
+    "neutral internal wrapper around an approved database client",
+  );
+
+  const nodeBootstrapPath = "src/runtime/node-bootstrap.ts";
+  const nodeBootstrap = await readFile(nodeBootstrapPath, "utf8");
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/platform/neutral-storage-wrapper.ts",
+            `export function persistRows(store) {
+  return store.persistRows("users");
+}`,
+          ],
+          [
+            nodeBootstrapPath,
+            `import { persistRows } from "../platform/neutral-storage-wrapper.js";
+${nodeBootstrap}
+export function unsupportedNeutralWrapper(databaseClient) {
+  return persistRows(databaseClient);
+}`,
+          ],
+        ]),
+      }),
+    contractError("runtime_grant_inventory_unclassified"),
+    "classified database module importing a neutral wrapper",
+  );
+
+  const packageManifest = JSON.parse(
+    await readFile("package.json", "utf8"),
+  );
+  const packageLock = JSON.parse(
+    await readFile("package-lock.json", "utf8"),
+  );
+  packageManifest.dependencies["unknown-runtime-package"] = "1.0.0";
+  packageLock.packages[""].dependencies["unknown-runtime-package"] =
+    "1.0.0";
+  packageLock.packages["node_modules/unknown-runtime-package"] = {
+    version: "1.0.0",
+  };
+  const dependencyCases = [
+    [
+      "package and lockfile dependency",
+      new Map([
+        ["package.json", JSON.stringify(packageManifest)],
+        ["package-lock.json", JSON.stringify(packageLock)],
+      ]),
+    ],
+    [
+      "package-only dependency",
+      new Map([
+        ["package.json", JSON.stringify(packageManifest)],
+      ]),
+    ],
+    [
+      "lockfile-only dependency",
+      new Map([
+        ["package-lock.json", JSON.stringify(packageLock)],
+      ]),
+    ],
+  ];
+  for (const [name, sourceOverrides] of dependencyCases) {
+    await assert.rejects(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides,
+        }),
+      contractError("runtime_grant_inventory_unclassified"),
+      `${name} without recognizable database syntax`,
+    );
+  }
+
+  const clientPath = "src/db/client.ts";
+  const clientSource = await readFile(clientPath, "utf8");
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            clientPath,
+            clientSource.replace(
+              'import { Pool } from "pg";',
+              'import { Client, Pool } from "pg";',
+            ),
+          ],
+        ]),
+      }),
+    contractError("runtime_grant_inventory_unclassified"),
+    "new constructor from an approved database package",
+  );
+
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            clientPath,
+            `${clientSource}
+export function unsupportedApprovedClientShape(store) {
+  return store.persistRows();
+}
+`,
+          ],
+        ]),
+      }),
+    contractError("runtime_grant_inventory_unclassified"),
+    "new API shape inside an approved database module",
+  );
+
+  const runtimeLockDrift = JSON.parse(
+    await readFile("package-lock.json", "utf8"),
+  );
+  runtimeLockDrift.packages["node_modules/pg"].integrity += "-drift";
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["package-lock.json", JSON.stringify(runtimeLockDrift)],
+        ]),
+      }),
+    contractError("runtime_grant_inventory_unclassified"),
+    "runtime lock closure drift",
+  );
+
+  const inventory = await inspectProductionDatabaseAccessInventory({
     sourceOverrides: new Map([
       [
-        path,
-        original.replace(
-          "async findById(id) {",
-          `async syntheticUndeclaredRuntimeOperation() {
-        return db.update(users);
-      },
-      async findById(id) {`,
-        ),
+        "src/platform/non-database-control.ts",
+        `import { randomUUID } from "node:crypto";
+export function createReference() {
+  return randomUUID();
+}`,
       ],
     ]),
   });
-  assert.throws(
+  assert.equal(inventory.length, 11);
+
+  const operations = await extractProductionAdapterOperations();
+  assert.equal(operations.length, 59);
+  assert.doesNotThrow(() =>
+    assertProductionAdapterGrantEquality(
+      RUNTIME_TABLE_GRANT_CONTRACT,
+      operations,
+    ),
+  );
+});
+
+test("database source authority rejects an undeclared operation before equality", async () => {
+  const path = "src/db/repositories.ts";
+  const original = await readFile(path, "utf8");
+  await assert.rejects(
     () =>
-      assertProductionAdapterGrantEquality(
-        RUNTIME_TABLE_GRANT_CONTRACT,
-        operations,
-      ),
-    contractError("runtime_grant_source_extra"),
+      extractProductionAdapterOperations({
+        sourceOverrides: new Map([
+          [
+            path,
+            original.replace(
+              "async findById(id) {",
+              `async syntheticUndeclaredRuntimeOperation() {
+        return db.update(users);
+      },
+      async findById(id) {`,
+            ),
+          ],
+        ]),
+      }),
+    contractError("runtime_grant_inventory_unclassified"),
   );
 });
 
@@ -368,6 +600,13 @@ test("recursive source discovery rejects every unsupported database-access shape
         "runUnknown(db, accessValidationGrants)",
       ),
     ],
+    [
+      "unknown query-builder method",
+      repository.replace(
+        "db.insert(accessValidationGrants)",
+        'db.updateTable("access_validation_grants")',
+      ),
+    ],
   ];
 
   for (const [name, source] of adapterCases) {
@@ -376,7 +615,7 @@ test("recursive source discovery rejects every unsupported database-access shape
         extractProductionAdapterOperations({
           sourceOverrides: new Map([[repositoryPath, source]]),
         }),
-      contractError("runtime_grant_adapter_unsupported"),
+      contractError("runtime_grant_inventory_unclassified"),
       name,
     );
   }
@@ -395,7 +634,7 @@ export function unsupportedExportedAccess(db) {
           ],
         ]),
       }),
-    contractError("runtime_grant_adapter_unsupported"),
+    contractError("runtime_grant_inventory_unclassified"),
     "unclassified access hidden inside an otherwise classified adapter",
   );
 
@@ -413,7 +652,7 @@ export function unsupportedDirectRuntimeAccess(input) {
           ],
         ]),
       }),
-    contractError("runtime_grant_adapter_unsupported"),
+    contractError("runtime_grant_inventory_unclassified"),
     "direct access hidden inside a classified composition module",
   );
 });

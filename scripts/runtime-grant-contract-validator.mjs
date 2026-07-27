@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -11,6 +12,8 @@ import {
 const productionSourceDirectory = "src";
 const schemaPath = "src/db/schema.ts";
 const migrationDirectory = "drizzle/migrations";
+const packageManifestPath = "package.json";
+const packageLockPath = "package-lock.json";
 
 const runtimeAdapterPaths = new Set([
   "src/db/access-validation-grant-repository.ts",
@@ -40,6 +43,222 @@ const databaseAccessInventory = new Map([
     "runtime_data_adapter",
   ],
 ]);
+
+const runtimeDependencyAuthority = new Map([
+  [
+    "drizzle-orm",
+    {
+      classification: "database_capable",
+      manifestSpecifier: "^0.45.2",
+    },
+  ],
+  [
+    "pg",
+    {
+      classification: "database_capable",
+      manifestSpecifier: "^8.22.0",
+    },
+  ],
+]);
+
+// SHA-256 over the canonical production (non-dev) package-lock entries.
+const productionDependencyLockDigest =
+  "277034001943bbfcd1033820f2764d06dce5d565ce0fdf6111e12836a645f84a";
+
+// SHA-256 over TypeScript tokens (comments and formatting are ignored).
+const databaseSourceShapeAuthority = new Map([
+  [
+    "src/db/access-validation-grant-repository.ts",
+    "5f9434df56a9f5bc67468ed8c17ea9fbf60c765c0fa6a88d6902a22d7b9a4271",
+  ],
+  [
+    "src/db/app-launch-token-repository.ts",
+    "0eb3ee642d25f6f25c56910f22fb82355a21ef302fa8d53b71728915ecd62d13",
+  ],
+  [
+    "src/db/auth-state-repository.ts",
+    "b97f92148ff07fcd9934590485a0b2a0d467575214d7ffc31d1e78cd09ec27e6",
+  ],
+  [
+    "src/db/client.ts",
+    "07876e4bae44cb9faf63ee84d9a2db2e8add283308fe5f1e6debddc692aa4836",
+  ],
+  [
+    "src/db/csrf-token-repository.ts",
+    "cd1974c88c1c2c00f3237d79c26dfd272dfd81e6165a44570e9968568625324c",
+  ],
+  [
+    "src/db/readiness.ts",
+    "a94315aea15dcaf2d9d74278d491a7752b4eda76b3623147d7d63b3349a7d8ca",
+  ],
+  [
+    "src/db/repositories.ts",
+    "0fcba5cbb615dd52e7063d506df51d150a7ea67bee3ec01e0815c5143448655c",
+  ],
+  [
+    "src/db/runtime-posture.ts",
+    "d6bc17f7b0718c6461ec556c92a776c392f8ce7b3f46d55e99b55adc3c8e0b08",
+  ],
+  [
+    "src/db/schema.ts",
+    "d2b5a7f17c8569a3bf2b54e8f3be5aaaa06f6cfc7866827eaf52f27d18f89200",
+  ],
+  [
+    "src/runtime/node-bootstrap.ts",
+    "c752bf40ac0e0efde65e248e48d7b491b5855665cd583e3fde93825a98aac972",
+  ],
+  [
+    "src/runtime/platform-runtime-dependencies.ts",
+    "bb95698a2ba31e621f4ab6f6e31aad7a31fd94e0c9fd24cffaf523e086b55dd6",
+  ],
+]);
+
+const approvedNonDatabaseExternalModules = new Set([
+  "node:crypto",
+  "node:fs/promises",
+  "node:http",
+]);
+
+const databaseExternalImportAuthority = new Set([
+  databaseExternalImportKey(
+    "src/db/access-validation-grant-repository.ts",
+    "drizzle-orm",
+    ["and", "eq", "isNull"],
+  ),
+  databaseExternalImportKey(
+    "src/db/app-launch-token-repository.ts",
+    "drizzle-orm",
+    ["and", "eq", "isNull"],
+  ),
+  databaseExternalImportKey(
+    "src/db/auth-state-repository.ts",
+    "drizzle-orm",
+    ["and", "eq", "isNotNull", "isNull", "lte", "or"],
+  ),
+  databaseExternalImportKey(
+    "src/db/client.ts",
+    "drizzle-orm/node-postgres",
+    ["drizzle"],
+  ),
+  databaseExternalImportKey(
+    "src/db/client.ts",
+    "pg",
+    ["Pool"],
+  ),
+  databaseExternalImportKey(
+    "src/db/csrf-token-repository.ts",
+    "drizzle-orm",
+    ["and", "eq", "gt", "inArray", "isNotNull", "isNull", "lte", "or"],
+  ),
+  databaseExternalImportKey(
+    "src/db/repositories.ts",
+    "drizzle-orm",
+    ["and", "eq", "isNull"],
+  ),
+  databaseExternalImportKey(
+    "src/db/schema.ts",
+    "drizzle-orm",
+    ["sql"],
+  ),
+  databaseExternalImportKey(
+    "src/db/schema.ts",
+    "drizzle-orm/pg-core",
+    [
+      "index",
+      "jsonb",
+      "pgEnum",
+      "pgTable",
+      "text",
+      "timestamp",
+      "uniqueIndex",
+    ],
+  ),
+]);
+
+const databaseCapabilityFacadePaths = new Set([
+  "src/index.ts",
+]);
+
+const internalDatabaseImportAuthority = new Set(
+  [
+    [
+      "src/db/access-validation-grant-repository.ts",
+      ["src/db/mappers.ts", "src/db/schema.ts"],
+    ],
+    [
+      "src/db/app-launch-token-repository.ts",
+      ["src/db/mappers.ts", "src/db/schema.ts"],
+    ],
+    [
+      "src/db/auth-state-repository.ts",
+      ["src/db/mappers.ts", "src/db/schema.ts"],
+    ],
+    [
+      "src/db/client.ts",
+      ["src/db/repositories.ts", "src/db/schema.ts"],
+    ],
+    [
+      "src/db/csrf-token-repository.ts",
+      ["src/db/mappers.ts", "src/db/schema.ts"],
+    ],
+    ["src/db/readiness.ts", ["src/db/client.ts"]],
+    [
+      "src/db/repositories.ts",
+      ["src/db/mappers.ts", "src/db/schema.ts"],
+    ],
+    [
+      "src/db/runtime-posture.ts",
+      ["src/db/runtime-grant-contract.ts"],
+    ],
+    [
+      "src/index.ts",
+      [
+        "src/db/runtime-posture.ts",
+        "src/runtime/node-bootstrap.ts",
+        "src/runtime/platform-runtime-dependencies.ts",
+      ],
+    ],
+    [
+      "src/runtime/node-bootstrap.ts",
+      [
+        "src/auth/config.ts",
+        "src/db/client.ts",
+        "src/db/runtime-posture.ts",
+        "src/http/csrf-token-crypto.ts",
+        "src/http/node-server.ts",
+        "src/http/runtime-config.ts",
+        "src/platform/app-launch-token-crypto.ts",
+        "src/runtime/bootstrap-config.ts",
+        "src/runtime/platform-runtime-dependencies.ts",
+        "src/runtime/runtime-secrets.ts",
+      ],
+    ],
+    [
+      "src/runtime/platform-runtime-dependencies.ts",
+      [
+        "src/auth/auth-state-crypto.ts",
+        "src/auth/generic-oidc-jwks-verifier.ts",
+        "src/auth/generic-oidc-provider-adapter.ts",
+        "src/auth/platform-identity-resolver.ts",
+        "src/db/access-validation-grant-repository.ts",
+        "src/db/app-launch-token-repository.ts",
+        "src/db/auth-state-repository.ts",
+        "src/db/csrf-token-repository.ts",
+        "src/db/repositories.ts",
+        "src/http/auth-handlers.ts",
+        "src/http/csrf-token-crypto.ts",
+        "src/http/csrf-token-service.ts",
+        "src/platform/app-launch-token-crypto.ts",
+        "src/platform/workspace-admin-id-crypto.ts",
+        "src/runtime/runtime-secrets.ts",
+      ],
+    ],
+  ].flatMap(([sourcePath, targetPaths]) =>
+    targetPaths.map((targetPath) =>
+      internalImportKey(sourcePath, targetPath),
+    ),
+  ),
+);
 
 const operationPrivileges = new Map([
   ["from", "SELECT"],
@@ -85,6 +304,11 @@ export async function inspectProductionDatabaseAccessInventory({
       );
     }
   }
+
+  await assertProductionRuntimeImportAuthority({
+    sourceOverrides: normalizedOverrides,
+    sourcePaths,
+  });
 
   const inventory = [];
   for (const sourcePath of sourcePaths) {
@@ -763,6 +987,550 @@ function containsDatabaseIdentifier(node) {
   return found;
 }
 
+async function assertProductionRuntimeImportAuthority({
+  sourceOverrides,
+  sourcePaths,
+}) {
+  assertExactAuthoritySet(
+    new Set(databaseSourceShapeAuthority.keys()),
+    new Set(databaseAccessInventory.keys()),
+  );
+  const dependencyAuthority = await readRuntimeDependencyAuthority(
+    sourceOverrides,
+  );
+  const discoveredSources = new Set(sourcePaths);
+  const internalEdges = [];
+  const observedDatabaseImports = new Set();
+  const externalDatabaseSources = new Set();
+  const sourceFiles = new Map();
+
+  for (const sourcePath of sourcePaths) {
+    const source = await sourceText(sourcePath, sourceOverrides);
+    const sourceFile = parseSourceFile(
+      sourcePath,
+      source,
+      "runtime_grant_inventory_unclassified",
+    );
+    const expectedSourceShape =
+      databaseSourceShapeAuthority.get(sourcePath);
+    if (
+      expectedSourceShape &&
+      sourceShapeDigest(source) !== expectedSourceShape
+    ) {
+      throw new RuntimeGrantContractError(
+        "runtime_grant_inventory_unclassified",
+      );
+    }
+    sourceFiles.set(sourcePath, sourceFile);
+    rejectUnsupportedRuntimeModuleLoading(sourceFile);
+
+    for (const reference of runtimeModuleReferences(sourceFile)) {
+      const moduleName = reference.moduleName;
+      if (moduleName.startsWith(".")) {
+        const targetPath = resolveInternalModulePath(
+          sourcePath,
+          moduleName,
+        );
+        if (!discoveredSources.has(targetPath)) {
+          throw new RuntimeGrantContractError(
+            "runtime_grant_inventory_unclassified",
+          );
+        }
+        internalEdges.push({ sourcePath, targetPath });
+        continue;
+      }
+
+      if (moduleName.startsWith("node:")) {
+        if (!approvedNonDatabaseExternalModules.has(moduleName)) {
+          throw new RuntimeGrantContractError(
+            "runtime_grant_inventory_unclassified",
+          );
+        }
+        continue;
+      }
+
+      const packageName = externalPackageName(moduleName);
+      const authority = dependencyAuthority.get(packageName);
+      if (!authority) {
+        throw new RuntimeGrantContractError(
+          "runtime_grant_inventory_unclassified",
+        );
+      }
+      if (authority.classification === "database_capable") {
+        const importKey = databaseExternalImportKeyFromReference(
+          sourcePath,
+          moduleName,
+          reference,
+        );
+        if (!databaseExternalImportAuthority.has(importKey)) {
+          throw new RuntimeGrantContractError(
+            "runtime_grant_inventory_unclassified",
+          );
+        }
+        observedDatabaseImports.add(importKey);
+        externalDatabaseSources.add(sourcePath);
+      }
+    }
+  }
+
+  assertExactAuthoritySet(
+    observedDatabaseImports,
+    databaseExternalImportAuthority,
+  );
+
+  const databaseCapableSources = new Set([
+    ...databaseAccessInventory.keys(),
+    ...externalDatabaseSources,
+  ]);
+  const observedInternalDatabaseEdges = new Set();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const edge of internalEdges) {
+      const importsDatabaseCapability =
+        databaseCapableSources.has(edge.targetPath);
+      const leavesDatabaseBoundary =
+        databaseAccessInventory.has(edge.sourcePath);
+      if (!importsDatabaseCapability && !leavesDatabaseBoundary) {
+        continue;
+      }
+      const edgeKey = internalImportKey(
+        edge.sourcePath,
+        edge.targetPath,
+      );
+      if (!internalDatabaseImportAuthority.has(edgeKey)) {
+        throw new RuntimeGrantContractError(
+          "runtime_grant_inventory_unclassified",
+        );
+      }
+      observedInternalDatabaseEdges.add(edgeKey);
+      if (
+        importsDatabaseCapability &&
+        !databaseCapableSources.has(edge.sourcePath)
+      ) {
+        databaseCapableSources.add(edge.sourcePath);
+        changed = true;
+      }
+    }
+  }
+
+  assertExactAuthoritySet(
+    observedInternalDatabaseEdges,
+    internalDatabaseImportAuthority,
+  );
+
+  for (const sourcePath of databaseCapableSources) {
+    if (
+      !databaseAccessInventory.has(sourcePath) &&
+      !databaseCapabilityFacadePaths.has(sourcePath)
+    ) {
+      throw new RuntimeGrantContractError(
+        "runtime_grant_inventory_unclassified",
+      );
+    }
+  }
+
+  for (const facadePath of databaseCapabilityFacadePaths) {
+    assertDatabaseCapabilityFacadeOnly(sourceFiles.get(facadePath));
+  }
+}
+
+async function readRuntimeDependencyAuthority(sourceOverrides) {
+  const packageManifest = parseJsonObject(
+    await sourceText(packageManifestPath, sourceOverrides),
+  );
+  const packageLock = parseJsonObject(
+    await sourceText(packageLockPath, sourceOverrides),
+  );
+  const manifestDependencies = stringRecord(
+    packageManifest.dependencies,
+  );
+  const lockPackages = plainRecord(packageLock.packages);
+  const lockRoot = plainRecord(lockPackages[""]);
+  const lockDependencies = stringRecord(lockRoot.dependencies);
+
+  assertExactStringRecord(
+    manifestDependencies,
+    lockDependencies,
+  );
+
+  const authorityDependencies = Object.fromEntries(
+    [...runtimeDependencyAuthority]
+      .sort(([left], [right]) => compare(left, right))
+      .map(([dependency, authority]) => [
+        dependency,
+        authority.manifestSpecifier,
+      ]),
+  );
+  assertExactStringRecord(
+    manifestDependencies,
+    authorityDependencies,
+  );
+
+  for (const dependency of Object.keys(manifestDependencies)) {
+    const installedPath = `node_modules/${dependency}`;
+    if (!plainRecord(lockPackages[installedPath])) {
+      throw new RuntimeGrantContractError(
+        "runtime_grant_inventory_unclassified",
+      );
+    }
+  }
+
+  const productionLockPackages = Object.fromEntries(
+    Object.entries(lockPackages)
+      .filter(
+        ([packagePath, packageRecord]) =>
+          packagePath && plainRecord(packageRecord).dev !== true,
+      )
+      .sort(([left], [right]) => compare(left, right)),
+  );
+  if (
+    sha256(canonicalJson(productionLockPackages)) !==
+    productionDependencyLockDigest
+  ) {
+    throw new RuntimeGrantContractError(
+      "runtime_grant_inventory_unclassified",
+    );
+  }
+
+  return runtimeDependencyAuthority;
+}
+
+function runtimeModuleReferences(sourceFile) {
+  const references = [];
+  for (const statement of sourceFile.statements) {
+    if (
+      ts.isImportDeclaration(statement) &&
+      ts.isStringLiteral(statement.moduleSpecifier) &&
+      hasRuntimeImport(statement)
+    ) {
+      references.push({
+        kind: "import",
+        moduleName: statement.moduleSpecifier.text,
+        statement,
+      });
+      continue;
+    }
+    if (
+      ts.isExportDeclaration(statement) &&
+      statement.moduleSpecifier &&
+      ts.isStringLiteral(statement.moduleSpecifier) &&
+      hasRuntimeExport(statement)
+    ) {
+      references.push({
+        kind: "export",
+        moduleName: statement.moduleSpecifier.text,
+        statement,
+      });
+      continue;
+    }
+    if (
+      ts.isImportEqualsDeclaration(statement) &&
+      !statement.isTypeOnly
+    ) {
+      throw new RuntimeGrantContractError(
+        "runtime_grant_inventory_unclassified",
+      );
+    }
+  }
+  return references;
+}
+
+function assertDatabaseCapabilityFacadeOnly(sourceFile) {
+  if (!sourceFile) {
+    throw new RuntimeGrantContractError(
+      "runtime_grant_inventory_unclassified",
+    );
+  }
+  for (const statement of sourceFile.statements) {
+    if (
+      (
+        ts.isImportDeclaration(statement) &&
+        hasRuntimeImport(statement)
+      ) ||
+      (
+        ts.isImportEqualsDeclaration(statement) &&
+        !statement.isTypeOnly
+      )
+    ) {
+      throw new RuntimeGrantContractError(
+        "runtime_grant_inventory_unclassified",
+      );
+    }
+  }
+}
+
+function rejectUnsupportedRuntimeModuleLoading(sourceFile) {
+  const visit = (node) => {
+    if (
+      ts.isCallExpression(node) &&
+      (
+        node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+        (
+          ts.isIdentifier(node.expression) &&
+          ["eval", "require"].includes(node.expression.text)
+        ) ||
+        (
+          ts.isPropertyAccessExpression(node.expression) &&
+          ts.isIdentifier(node.expression.expression) &&
+          node.expression.expression.text === "process" &&
+          node.expression.name.text === "getBuiltinModule"
+        )
+      )
+    ) {
+      throw new RuntimeGrantContractError(
+        "runtime_grant_inventory_unclassified",
+      );
+    }
+    if (
+      ts.isNewExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "Function"
+    ) {
+      throw new RuntimeGrantContractError(
+        "runtime_grant_inventory_unclassified",
+      );
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+}
+
+function resolveInternalModulePath(sourcePath, moduleName) {
+  const resolved = normalizePath(
+    path.posix.normalize(
+      path.posix.join(path.posix.dirname(sourcePath), moduleName),
+    ),
+  );
+  if (resolved.endsWith(".js")) {
+    return `${resolved.slice(0, -3)}.ts`;
+  }
+  if (resolved.endsWith(".ts")) {
+    return resolved;
+  }
+  throw new RuntimeGrantContractError(
+    "runtime_grant_inventory_unclassified",
+  );
+}
+
+function externalPackageName(moduleName) {
+  if (
+    !moduleName ||
+    moduleName.startsWith("/") ||
+    moduleName.startsWith("#") ||
+    moduleName.includes("\\") ||
+    moduleName.includes(":")
+  ) {
+    throw new RuntimeGrantContractError(
+      "runtime_grant_inventory_unclassified",
+    );
+  }
+  const parts = moduleName.split("/");
+  const packageName = moduleName.startsWith("@")
+    ? parts.slice(0, 2).join("/")
+    : parts[0];
+  if (
+    !packageName ||
+    (moduleName.startsWith("@") && parts.length < 2)
+  ) {
+    throw new RuntimeGrantContractError(
+      "runtime_grant_inventory_unclassified",
+    );
+  }
+  return packageName;
+}
+
+function databaseExternalImportKeyFromReference(
+  sourcePath,
+  moduleName,
+  reference,
+) {
+  if (
+    reference.kind !== "import" ||
+    !ts.isImportDeclaration(reference.statement)
+  ) {
+    return `${sourcePath}\u0000${moduleName}\u0000unsupported`;
+  }
+  const bindings = runtimeImportBindings(reference.statement);
+  return databaseExternalImportKey(
+    sourcePath,
+    moduleName,
+    bindings.map((binding) => binding.exported),
+    bindings,
+  );
+}
+
+function databaseExternalImportKey(
+  sourcePath,
+  moduleName,
+  exportedNames,
+  bindings = exportedNames.map((name) => ({
+    exported: name,
+    local: name,
+    kind: "named",
+  })),
+) {
+  const signature = bindings
+    .map(
+      (binding) =>
+        `${binding.kind}:${binding.exported}:${binding.local}`,
+    )
+    .sort(compare)
+    .join(",");
+  return `${sourcePath}\u0000${moduleName}\u0000${signature}`;
+}
+
+function runtimeImportBindings(statement) {
+  const importClause = statement.importClause;
+  if (!importClause) {
+    return [{ exported: "", local: "", kind: "side_effect" }];
+  }
+  const bindings = [];
+  if (importClause.name) {
+    bindings.push({
+      exported: "default",
+      local: importClause.name.text,
+      kind: "default",
+    });
+  }
+  const namedBindings = importClause.namedBindings;
+  if (ts.isNamespaceImport(namedBindings)) {
+    bindings.push({
+      exported: "*",
+      local: namedBindings.name.text,
+      kind: "namespace",
+    });
+  } else if (namedBindings) {
+    for (const element of namedBindings.elements) {
+      if (element.isTypeOnly) {
+        continue;
+      }
+      bindings.push({
+        exported: element.propertyName?.text ?? element.name.text,
+        local: element.name.text,
+        kind: "named",
+      });
+    }
+  }
+  return bindings;
+}
+
+function hasRuntimeExport(statement) {
+  if (statement.isTypeOnly) {
+    return false;
+  }
+  const exportClause = statement.exportClause;
+  if (!exportClause || ts.isNamespaceExport(exportClause)) {
+    return true;
+  }
+  return exportClause.elements.some((element) => !element.isTypeOnly);
+}
+
+function internalImportKey(sourcePath, targetPath) {
+  return `${sourcePath}\u0000${targetPath}`;
+}
+
+function parseJsonObject(source) {
+  try {
+    return plainRecord(JSON.parse(source));
+  } catch {
+    throw new RuntimeGrantContractError(
+      "runtime_grant_inventory_unclassified",
+    );
+  }
+}
+
+function plainRecord(value) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value)
+  ) {
+    throw new RuntimeGrantContractError(
+      "runtime_grant_inventory_unclassified",
+    );
+  }
+  return value;
+}
+
+function stringRecord(value) {
+  const record = plainRecord(value);
+  if (
+    Object.values(record).some(
+      (entry) => typeof entry !== "string",
+    )
+  ) {
+    throw new RuntimeGrantContractError(
+      "runtime_grant_inventory_unclassified",
+    );
+  }
+  return record;
+}
+
+function assertExactStringRecord(observed, expected) {
+  const observedEntries = Object.entries(observed).sort(
+    ([left], [right]) => compare(left, right),
+  );
+  const expectedEntries = Object.entries(expected).sort(
+    ([left], [right]) => compare(left, right),
+  );
+  if (JSON.stringify(observedEntries) !== JSON.stringify(expectedEntries)) {
+    throw new RuntimeGrantContractError(
+      "runtime_grant_inventory_unclassified",
+    );
+  }
+}
+
+function assertExactAuthoritySet(observed, expected) {
+  const observedValues = [...observed].sort(compare);
+  const expectedValues = [...expected].sort(compare);
+  if (
+    JSON.stringify(observedValues) !== JSON.stringify(expectedValues)
+  ) {
+    throw new RuntimeGrantContractError(
+      "runtime_grant_inventory_unclassified",
+    );
+  }
+}
+
+function sourceShapeDigest(source) {
+  const scanner = ts.createScanner(
+    ts.ScriptTarget.Latest,
+    true,
+    ts.LanguageVariant.Standard,
+    source,
+  );
+  const tokens = [];
+  for (
+    let token = scanner.scan();
+    token !== ts.SyntaxKind.EndOfFileToken;
+    token = scanner.scan()
+  ) {
+    tokens.push(`${token}:${scanner.getTokenText()}`);
+  }
+  return sha256(tokens.join("\n"));
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort(compare)
+      .map(
+        (key) =>
+          `${JSON.stringify(key)}:${canonicalJson(value[key])}`,
+      )
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
 function isDatabaseAccessCandidate(sourceFile) {
   let candidate = false;
   const valueImports = new Set();
@@ -849,7 +1617,10 @@ function databaseModule(moduleName) {
 
 function hasRuntimeImport(statement) {
   const importClause = statement.importClause;
-  if (!importClause || importClause.isTypeOnly) {
+  if (!importClause) {
+    return true;
+  }
+  if (importClause.isTypeOnly) {
     return false;
   }
   if (importClause.name) {
