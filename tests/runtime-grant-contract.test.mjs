@@ -2014,6 +2014,297 @@ test("no-import unshadowed global Fetch inside nested blocks is rejected", async
   );
 });
 
+test("no-import rejects object shorthand fetch", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/shorthand.ts",
+            `export function create() { const client = { fetch }; return client; }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import rejects named property fetch", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/named-prop.ts",
+            `export function create() { const client = { request: fetch }; return client; }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import rejects fetch passed as argument", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/arg-fetch.ts",
+            `export function use(fn: Function) { return fn("url"); } export function relay() { return use(fetch, "url"); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import rejects fetch.bind", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/bind-fetch.ts",
+            `export function relay() { const f = fetch.bind(globalThis); return f("url"); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import rejects fetch as typeof fetch", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/cast-fetch.ts",
+            `export function relay() { const f = fetch as typeof fetch; return f("url"); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import rejects comma-expression invocation", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/comma-fetch.ts",
+            `export function relay(url: string) { return (0, fetch)(url); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import rejects cast-wrapped WebSocket constructor", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/cast-ws.ts",
+            `export function connect(url: string) { return new (WebSocket as any)(url); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import rejects comma-wrapped WebSocket constructor", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/comma-ws.ts",
+            `export function connect(url: string) { return new (0, WebSocket)(url); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import rejects assignment-created global alias", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/assign-alias.ts",
+            `let runtimeGlobal; runtimeGlobal = globalThis; export async function relay(url: string) { return runtimeGlobal.fetch(url); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import rejects reassignment of proven alias", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/reassign-alias.ts",
+            `const runtimeGlobal = globalThis; runtimeGlobal = {} as typeof globalThis; export async function relay(url: string) { return runtimeGlobal.fetch(url); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import rejects mutable let global alias", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/let-alias.ts",
+            `let runtimeGlobal = globalThis; export async function relay(url: string) { return runtimeGlobal.fetch(url); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import loop-local let fetch then real global call is rejected", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/loop-let-fetch.ts",
+            `export function execute(url: string) { for (let fetch = (u: string) => Promise.resolve(); false; ) { void fetch; } return fetch(url); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import function-scoped var fetch is a valid shadow", async () => {
+  const source = `export function execute(url: string) {
+  {
+    var fetch = (u: string) => Promise.resolve();
+  }
+  return fetch(url);
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/var-fetch.ts", source]]),
+      }),
+    "function-scoped var fetch must shadow the global",
+  );
+});
+
+test("no-import recursive binding patterns are resolved correctly", async () => {
+  const source = `export function execute({ a: { b: { fetch } } }: { a: { b: { fetch: (u: string) => Promise<unknown> } } }) {
+  return fetch("synthetic");
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/recursive-pattern.ts", source]]),
+      }),
+    "recursive binding pattern must resolve correctly",
+  );
+});
+
+test("no-import switch-local bindings are scoped correctly", async () => {
+  const source = `export function execute(url: string) {
+  switch (url) { case "x": { const fetch = (u: string) => Promise.resolve(); fetch(url); } }
+  return fetch(url);
+}`;
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/switch-fetch.ts", source]]),
+      }),
+    contractError(globalNetworkRejectionCode),
+    "switch case block fetch must shadow only inside the case, global fetch must still be detected",
+  );
+});
+
+test("no-import rejects Reflect.set on global", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/reflect-set.ts",
+            `export function patch() { Reflect.set(globalThis, "fetch", () => null); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import rejects Object.assign on global", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/obj-assign.ts",
+            `export function patch() { Object.assign(globalThis, { fetch() { return null; } }); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import rejects computed Object defineProperty mutation", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/computed-define.ts",
+            `export function patch() { Object["defineProperty"](globalThis, "fetch", { value: null }); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import rejects destructured defineProperty mutation", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/destructured-define.ts",
+            `const { defineProperty } = Object; export function patch() { defineProperty(globalThis, "fetch", { value: null }); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import rejects spread of globalThis", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/spread-global.ts",
+            `export function clone() { return { ...globalThis }; }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import rejects rest-copy of globalThis", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/rest-global.ts",
+            `export function clone() { const { ...clone } = globalThis; return clone; }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("no-import rejects passing globalThis to unclassified helper", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/pass-global.ts",
+            `function helper(g: typeof globalThis) { return g.fetch("url"); } export function relay() { return helper(globalThis); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
 function cloneRecord(record) {
   return {
     ...record,
