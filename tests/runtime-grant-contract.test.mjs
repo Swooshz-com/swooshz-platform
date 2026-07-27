@@ -14,6 +14,7 @@ import {
 import {
   assertProductionAdapterGrantEquality,
   extractProductionAdapterOperations,
+  inspectProductionDatabaseAccessInventory,
   readCanonicalMigrationObjects,
 } from "../scripts/runtime-grant-contract-validator.mjs";
 
@@ -123,6 +124,20 @@ test("contract validation rejects duplicate, non-canonical, and invalid records"
       ]),
     contractError("runtime_grant_contract_schema"),
   );
+  assert.throws(
+    () =>
+      validateRuntimeTableGrantContract([
+        {
+          ...valid[0],
+          operationSources: [
+            valid[0].operationSources[0],
+            valid[0].operationSources[0],
+          ],
+        },
+        ...valid.slice(1),
+      ]),
+    contractError("runtime_grant_source_duplicate"),
+  );
 });
 
 test("canonical migration provenance contains every contracted object", async () => {
@@ -146,13 +161,35 @@ test("canonical migration provenance contains every contracted object", async ()
 
 test("production adapter operations exactly equal the canonical contract", async () => {
   const operations = await extractProductionAdapterOperations();
-  assert.equal(operations.length, 39);
+  const declaredSourceCount = RUNTIME_TABLE_GRANT_CONTRACT.reduce(
+    (count, record) => count + record.operationSources.length,
+    0,
+  );
+  assert.equal(operations.length, declaredSourceCount);
   assert.doesNotThrow(() =>
     assertProductionAdapterGrantEquality(
       RUNTIME_TABLE_GRANT_CONTRACT,
       operations,
     ),
   );
+});
+
+test("production database access inventory is recursive, explicit, and closed", async () => {
+  const inventory = await inspectProductionDatabaseAccessInventory();
+
+  assert.deepEqual(inventory, [
+    ["src/db/access-validation-grant-repository.ts", "runtime_data_adapter"],
+    ["src/db/app-launch-token-repository.ts", "runtime_data_adapter"],
+    ["src/db/auth-state-repository.ts", "runtime_data_adapter"],
+    ["src/db/client.ts", "operational_control_plane"],
+    ["src/db/csrf-token-repository.ts", "runtime_data_adapter"],
+    ["src/db/readiness.ts", "operational_control_plane"],
+    ["src/db/repositories.ts", "runtime_data_adapter"],
+    ["src/db/runtime-posture.ts", "operational_control_plane"],
+    ["src/db/schema.ts", "runtime_data_adapter"],
+    ["src/runtime/node-bootstrap.ts", "operational_control_plane"],
+    ["src/runtime/platform-runtime-dependencies.ts", "runtime_data_adapter"],
+  ]);
 });
 
 test("production adapter extraction detects an undeclared operation structurally", async () => {
@@ -162,34 +199,222 @@ test("production adapter extraction detects an undeclared operation structurally
     sourceOverrides: new Map([
       [
         path,
-        `${original}
-export function syntheticUndeclaredRuntimeOperation(db) {
-  return db.update(users);
-}
-`,
+        original.replace(
+          "async findById(id) {",
+          `async syntheticUndeclaredRuntimeOperation() {
+        return db.update(users);
+      },
+      async findById(id) {`,
+        ),
       ],
     ]),
   });
-
   assert.throws(
     () =>
       assertProductionAdapterGrantEquality(
         RUNTIME_TABLE_GRANT_CONTRACT,
         operations,
       ),
-    contractError("runtime_grant_adapter_extra"),
+    contractError("runtime_grant_source_extra"),
   );
 });
 
-test("adapter equality rejects contract authority unused by production operations", async () => {
+test("exact operation-source equality rejects every mismatch category", async () => {
   const operations = await extractProductionAdapterOperations();
-  assert.throws(
-    () =>
-      assertProductionAdapterGrantEquality(
-        RUNTIME_TABLE_GRANT_CONTRACT,
-        operations.slice(1),
+  const first = operations[0];
+  const cases = [
+    [
+      "missing source",
+      operations.slice(1),
+      "runtime_grant_source_missing",
+    ],
+    [
+      "extra source",
+      [
+        ...operations,
+        { ...first, sourceId: "src/db/repositories.ts#users.syntheticExtra" },
+      ],
+      "runtime_grant_source_extra",
+    ],
+    [
+      "duplicate source tuple",
+      [...operations, { ...first }],
+      "runtime_grant_source_duplicate",
+    ],
+    [
+      "wrong source name",
+      [
+        { ...first, sourceId: `${first.sourceId}Renamed` },
+        ...operations.slice(1),
+      ],
+      "runtime_grant_source_mismatch",
+    ],
+    [
+      "correct source on wrong relation",
+      [
+        { ...first, objectName: "users" },
+        ...operations.slice(1),
+      ],
+      "runtime_grant_source_mismatch",
+    ],
+    [
+      "correct source on wrong privilege",
+      [
+        {
+          ...first,
+          privilege: first.privilege === "SELECT" ? "INSERT" : "SELECT",
+        },
+        ...operations.slice(1),
+      ],
+      "runtime_grant_source_mismatch",
+    ],
+  ];
+
+  for (const [name, candidate, code] of cases) {
+    assert.throws(
+      () =>
+        assertProductionAdapterGrantEquality(
+          RUNTIME_TABLE_GRANT_CONTRACT,
+          candidate,
+        ),
+      contractError(code),
+      name,
+    );
+  }
+});
+
+test("recursive source discovery rejects every unsupported database-access shape", async () => {
+  const repositoryPath = "src/db/access-validation-grant-repository.ts";
+  const repository = await readFile(repositoryPath, "utf8");
+  const compositionPath = "src/runtime/platform-runtime-dependencies.ts";
+  const composition = await readFile(compositionPath, "utf8");
+  const cases = [
+    [
+      "off-pattern adapter",
+      "src/db/token-store.ts",
+      adapterSource("db.update(users)"),
+      "runtime_grant_inventory_unclassified",
+    ],
+    [
+      "nested adapter",
+      "src/db/nested/token-store.ts",
+      adapterSource("db.update(users)"),
+      "runtime_grant_inventory_unclassified",
+    ],
+    [
+      "unsupported raw query",
+      "src/platform/raw-store.ts",
+      `export function run(client) { return client.query("select * from users"); }`,
+      "runtime_grant_inventory_unclassified",
+    ],
+    [
+      "alternative unclassified client",
+      "src/platform/alternative-store.ts",
+      `export function run(database) { return database.execute("select 1"); }`,
+      "runtime_grant_inventory_unclassified",
+    ],
+    [
+      "imported schema binding without attribution",
+      "src/platform/schema-consumer.ts",
+      `import { users } from "../db/schema.js"; export const table = users;`,
+      "runtime_grant_inventory_unclassified",
+    ],
+  ];
+
+  for (const [name, path, source, code] of cases) {
+    await assert.rejects(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([[path, source]]),
+        }),
+      contractError(code),
+      name,
+    );
+  }
+
+  const adapterCases = [
+    [
+      "unsupported method",
+      repository.replace(
+        "db.insert(accessValidationGrants)",
+        "db.execute(accessValidationGrants)",
       ),
-    contractError("runtime_grant_adapter_missing"),
+    ],
+    [
+      "dynamic table argument",
+      repository.replace(
+        "db.insert(accessValidationGrants)",
+        "db.insert(record.table)",
+      ),
+    ],
+    [
+      "computed database method",
+      repository.replace(
+        "db.insert(accessValidationGrants)",
+        'db["insert"](accessValidationGrants)',
+      ),
+    ],
+    [
+      "unresolved database alias",
+      repository.replace(
+        "const rows = await db.insert(accessValidationGrants)",
+        "const alias = db; const rows = await alias.insert(accessValidationGrants)",
+      ),
+    ],
+    [
+      "unknown database wrapper",
+      repository.replace(
+        "db.insert(accessValidationGrants)",
+        "runUnknown(db, accessValidationGrants)",
+      ),
+    ],
+  ];
+
+  for (const [name, source] of adapterCases) {
+    await assert.rejects(
+      () =>
+        extractProductionAdapterOperations({
+          sourceOverrides: new Map([[repositoryPath, source]]),
+        }),
+      contractError("runtime_grant_adapter_unsupported"),
+      name,
+    );
+  }
+
+  await assert.rejects(
+    () =>
+      extractProductionAdapterOperations({
+        sourceOverrides: new Map([
+          [
+            repositoryPath,
+            `${repository}
+export function unsupportedExportedAccess(db) {
+  return db.update(accessValidationGrants);
+}
+`,
+          ],
+        ]),
+      }),
+    contractError("runtime_grant_adapter_unsupported"),
+    "unclassified access hidden inside an otherwise classified adapter",
+  );
+
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            compositionPath,
+            `${composition}
+export function unsupportedDirectRuntimeAccess(input) {
+  return input.db.execute("select 1");
+}
+`,
+          ],
+        ]),
+      }),
+    contractError("runtime_grant_adapter_unsupported"),
+    "direct access hidden inside a classified composition module",
   );
 });
 
@@ -254,6 +479,24 @@ test("exact grant-set validation rejects every drift category", () => {
       "runtime_grant_set_authority",
     ],
     [
+      "correct relation authority in the wrong schema",
+      [
+        { ...observed[0], schema: "runtime_extra" },
+        ...observed.slice(1),
+      ],
+      {},
+      "runtime_grant_set_authority",
+    ],
+    [
+      "view-like relation authority",
+      [
+        { ...observed[0], objectClass: "view" },
+        ...observed.slice(1),
+      ],
+      {},
+      "runtime_grant_set_authority",
+    ],
+    [
       "membership-derived authority",
       observed,
       { membershipDerived: true },
@@ -305,4 +548,13 @@ function contractError(code) {
     );
     return true;
   };
+}
+
+function adapterSource(operation) {
+  return `
+import { users } from "./schema.js";
+export function createStore(db) {
+  return { async run() { return ${operation}; } };
+}
+`;
 }

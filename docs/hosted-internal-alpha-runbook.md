@@ -408,9 +408,30 @@ all consume that same contract. Exact set equality is required: a missing,
 additional, wrong-object, wrong-privilege, inherited, membership-derived,
 ownership-derived, duplicate, or grant-option record fails closed.
 Record counts are diagnostic only; they never substitute for set equality.
-Database and schema privileges, `PUBLIC` authority, routines, sequences,
-memberships, ownership, and migration-ledger denial remain separate posture
-categories outside the 39-record table set.
+The direct relation inventory is catalogue-OID bound and spans ordinary and
+partitioned tables, views, materialized views, and foreign tables in every
+schema. The only accepted tuples remain the 39 `public` table records. Explicit
+`PUBLIC` relation and column ACLs are rejected within `public`, `drizzle`, and
+any non-system schema usable by the runtime role; PostgreSQL system namespaces
+are explicitly excluded from that application boundary.
+
+Column ACLs in `pg_attribute.attacl` and future-relation defaults in
+`pg_default_acl` are separate fail-closed categories. The accepted contract
+contains neither, so runtime-role authority, `PUBLIC` authority, and grant
+options fail dormant and startup posture. Database and schema privileges,
+direct routine and sequence ACLs, and runtime ownership of non-system
+relations, routines, and sequences remain separate denied posture categories
+alongside memberships and migration-ledger denial. PostgreSQL catalogue
+defaults and provider-owned defaults are not expanded into explicit object ACL
+drift; system namespaces are excluded by a closed allow/deny boundary.
+
+Production TypeScript database access is recursively inventoried. Each detected
+source is classified as runtime data access or operational/control-plane
+access; unclassified files, raw runtime SQL, alternative clients, dynamic table
+arguments, computed methods, unknown wrappers, and unresolved aliases fail
+validation. Every declared `operationSources` entry is compared bidirectionally
+with AST evidence using the exact object class, schema, relation, privilege,
+and stable repository-operation identifier.
 
 This repository correction required no live `GRANT` or `REVOKE`.
 Activation remains blocked until the correction is independently reviewed and

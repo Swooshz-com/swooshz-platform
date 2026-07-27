@@ -40,6 +40,12 @@ export type RuntimeGrantContractErrorCode =
   | "runtime_grant_adapter_missing"
   | "runtime_grant_adapter_extra"
   | "runtime_grant_adapter_ambiguous"
+  | "runtime_grant_adapter_unsupported"
+  | "runtime_grant_inventory_unclassified"
+  | "runtime_grant_source_missing"
+  | "runtime_grant_source_extra"
+  | "runtime_grant_source_duplicate"
+  | "runtime_grant_source_mismatch"
   | "runtime_grant_set_missing"
   | "runtime_grant_set_extra"
   | "runtime_grant_set_mismatch"
@@ -211,7 +217,9 @@ const runtimeTableGrantContract = runtimeTableSpecifications
         authoritySource: "direct" as const,
         grantOption: false as const,
         migrationFile: table.migrationFile,
-        operationSources: Object.freeze([...(operationSources ?? [])]),
+        operationSources: Object.freeze(
+          [...(operationSources ?? [])].sort(compareRuntimeTableGrantKeys),
+        ),
       }),
     ),
   )
@@ -273,6 +281,21 @@ export function validateRuntimeTableGrantContract(
       migrationObjects.get(record.objectName) !== record.migrationFile
     ) {
       throw new RuntimeGrantContractError("runtime_grant_contract_migration");
+    }
+    const sortedSources = [...record.operationSources].sort(
+      compareRuntimeTableGrantKeys,
+    );
+    if (
+      new Set(record.operationSources).size !== record.operationSources.length
+    ) {
+      throw new RuntimeGrantContractError("runtime_grant_source_duplicate");
+    }
+    if (
+      record.operationSources.some(
+        (source: string, index: number) => source !== sortedSources[index],
+      )
+    ) {
+      throw new RuntimeGrantContractError("runtime_grant_contract_order");
     }
     keys.push(runtimeTableGrantKey(record));
   }
