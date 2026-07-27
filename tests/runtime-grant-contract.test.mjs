@@ -2305,6 +2305,400 @@ test("no-import rejects passing globalThis to unclassified helper", async () => 
   );
 });
 
+// --- Design Lock A: primitive receiver classification ---
+// The generic classifier must classify every unbound `fetch`, `WebSocket`,
+// or `EventSource` used as a runtime value, including when the identifier
+// is the receiver of property/element access. These tests reproduce the
+// finding recorded in PRRT_kwDOS-kliM6UFqJr.
+
+test("run-16: no-import rejects fetch.bind with null receiver", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run16-bind-null.ts",
+            `export function relay() { const f = fetch.bind(null); return f("url"); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-16: no-import rejects fetch.call with null receiver", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run16-call-null.ts",
+            `export function relay() { return fetch.call(null, "url"); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-16: no-import rejects fetch.apply with null receiver", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run16-apply-null.ts",
+            `export function relay() { return fetch.apply(null, ["url"]); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-16: no-import rejects fetch computed bind with null receiver", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run16-bracket-bind.ts",
+            `export function relay() { const f = fetch["bind"](null); return f("url"); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-16: no-import rejects fetch.bind property access alone", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run16-bind-prop.ts",
+            `export function relay() { const m = fetch.bind; return m; }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-16: no-import rejects WebSocket.prototype property access", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run16-ws-proto.ts",
+            `export function relay() { return WebSocket.prototype; }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-16: no-import rejects EventSource.prototype property access", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run16-es-proto.ts",
+            `export function relay() { return EventSource.prototype; }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-16: no-import rejects parenthesised fetch.bind", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run16-parens-bind.ts",
+            `export function relay() { const f = (fetch).bind(null); return f("url"); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-16: no-import rejects non-null fetch.bind", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run16-nonnull-bind.ts",
+            `export function relay() { const f = fetch!.bind(null); return f("url"); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-16: no-import does not reject local fetch.bind shadow", async () => {
+  const source = `export function relay() {
+  const fetch = (u: string) => Promise.resolve();
+  const f = fetch.bind(null);
+  return f("url");
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/run16-local-bind.ts", source]]),
+      }),
+    "locally declared fetch must shadow the global",
+  );
+});
+
+test("run-16: no-import does not reject imported fetch.bind", async () => {
+  const importedSource = `export const fetch = (u: string) => Promise.resolve();`;
+  const consumerSource = `import { fetch as injectedClient } from "./run16-local-fetch.js";
+export function relay() {
+  const f = injectedClient.bind(null);
+  return f("url");
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run16-local-fetch.ts", importedSource],
+          ["src/platform/run16-imported-bind.ts", consumerSource],
+        ]),
+      }),
+    "imported fetch must shadow the global",
+  );
+});
+
+test("run-16: no-import does not reject parameter fetch.bind", async () => {
+  const source = `export function relay(fetch: (u: string) => Promise<unknown>) {
+  const f = fetch.bind(null);
+  return f("url");
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/run16-param-bind.ts", source]]),
+      }),
+    "parameter fetch must shadow the global",
+  );
+});
+
+// --- Design Lock B: recursive global-object escape closure ---
+// The global object or a proven alias must not escape inside any structural
+// wrapper when passed, returned, exported, assigned, spread, or used as an
+// unclassified call target/source. These tests reproduce the finding recorded
+// in PRRT_kwDOS-kliM6UC1vp.
+
+test("run-16: no-import rejects object property value holding global", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run16-wrap-global.ts",
+            `function helper(_o: { runtimeGlobal: typeof globalThis }) {}
+export function relay() { return helper({ runtimeGlobal: globalThis }); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-16: no-import rejects nested object property value holding global", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run16-nest-global.ts",
+            `function helper(_o: { nested: { runtimeGlobal: typeof globalThis } }) {}
+export function relay() { return helper({ nested: { runtimeGlobal: globalThis } }); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-16: no-import rejects conditional with global as call argument", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run16-cond-global.ts",
+            `function helper(_g: typeof globalThis) {}
+export function relay(c: boolean) { return helper(c ? globalThis : { fetch: () => null }); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-16: no-import rejects proven alias inside nested wrapper", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run16-alias-nest.ts",
+            `const runtimeGlobal = globalThis;
+function helper(_o: { runtimeGlobal: typeof globalThis }) {}
+export function relay() { return helper({ runtimeGlobal: runtimeGlobal }); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-16: no-import rejects returning object literal holding global", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run16-return-obj.ts",
+            `export function relay() { return { runtimeGlobal: globalThis }; }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-16: no-import rejects array envelope holding alias in object", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run16-envelope-alias.ts",
+            `const alias = globalThis;
+const local = { ok: true };
+export function relay() {
+  const envelope = [local, { runtimeGlobal: alias }];
+  return envelope;
+}`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-16: no-import accepts helper call with normal object value", async () => {
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run16-normal-obj.ts",
+            `function helper(_o: { a: string }) {}
+export function relay() { return helper({ a: "value" }); }`],
+        ]),
+      }),
+    "helper call with normal object value must not be rejected",
+  );
+});
+
+test("run-16: no-import accepts helper call with local-shadowed object", async () => {
+  const source = `const g = { a: 1 };
+function helper(_o: { a: number }) {}
+export function relay() { return helper(g); }`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/run16-shadow-control.ts", source]]),
+      }),
+    "local-shadowed object must not be rejected",
+  );
+});
+
+// --- Design Lock C: exact type-only positions ---
+// Pure TypeScript type references must not be classified as runtime capability
+// use. TypeQueryNode contexts (typeof X) are type-only and the inner identifier
+// must not be classified. Runtime assertions/satisfies must still be classified.
+
+test("run-16: no-import accepts type alias of typeof fetch", async () => {
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run16-typeof-typealias.ts",
+            `export type FetchType = typeof fetch;
+export const value: FetchType = (() => undefined) as unknown as FetchType;`],
+        ]),
+      }),
+    "type alias of typeof fetch must not be classified as runtime",
+  );
+});
+
+test("run-16: no-import accepts type alias of typeof WebSocket", async () => {
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run16-typeof-ws.ts",
+            `export type WebSocketType = typeof WebSocket;
+export const value: WebSocketType = (() => undefined) as unknown as WebSocketType;`],
+        ]),
+      }),
+    "type alias of typeof WebSocket must not be classified as runtime",
+  );
+});
+
+test("run-16: no-import accepts type alias of typeof EventSource", async () => {
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run16-typeof-es.ts",
+            `export type EventSourceType = typeof EventSource;
+export const value: EventSourceType = (() => undefined) as unknown as EventSourceType;`],
+        ]),
+      }),
+    "type alias of typeof EventSource must not be classified as runtime",
+  );
+});
+
+test("run-16: no-import accepts interface property of typeof fetch", async () => {
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run16-typeof-iface.ts",
+            `export interface Holder { fetcher: typeof fetch; }
+export const _value: Holder = {} as Holder;`],
+        ]),
+      }),
+    "interface property of typeof fetch must not be classified as runtime",
+  );
+});
+
+test("run-16: no-import accepts nested type alias containing typeof fetch", async () => {
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run16-typeof-nest.ts",
+            `export type Outer = { value: typeof fetch };
+export const _value: Outer = {} as Outer;`],
+        ]),
+      }),
+    "nested type alias containing typeof fetch must not be classified as runtime",
+  );
+});
+
+test("run-16: no-import accepts generic type context with typeof fetch default", async () => {
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run16-typeof-generic.ts",
+            `export type Outer<T = typeof fetch> = T;
+export const _value: Outer = {} as Outer;`],
+        ]),
+      }),
+    "generic type context with typeof fetch default must not be classified as runtime",
+  );
+});
+
+test("run-16: no-import still rejects runtime WebSocket satisfies typeof WebSocket", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run16-runtime-satisfies.ts",
+            `export function relay() { const s = WebSocket satisfies typeof WebSocket; return s; }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
 function cloneRecord(record) {
   return {
     ...record,

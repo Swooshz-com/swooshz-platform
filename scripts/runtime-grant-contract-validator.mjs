@@ -2213,11 +2213,9 @@ function isRuntimeValueIdentifierReference(node, scopes) {
   if (!parent) return true;
 
   if (ts.isQualifiedName(parent) && parent.left === node) return false;
-  if (ts.isPropertyAccessExpression(parent) && parent.expression === node) return false;
-  if (ts.isPropertyAccessChain(parent) && parent.expression === node) return false;
-  if (ts.isElementAccessExpression(parent) && parent.expression === node) return false;
   if (ts.isPropertyAccessExpression(parent) && parent.name === node) return false;
   if (ts.isPropertyAccessChain(parent) && parent.name === node) return false;
+  if (ts.isElementAccessExpression(parent) && parent.argumentExpression === node) return false;
   if ((ts.isImportSpecifier(parent) || ts.isExportSpecifier(parent)) && parent.propertyName !== node) return false;
   if ((ts.isImportSpecifier(parent) || ts.isExportSpecifier(parent)) && parent.propertyName === node) return false;
   if (ts.isBindingElement(parent) && parent.propertyName === node) return false;
@@ -2236,14 +2234,119 @@ function isRuntimeValueIdentifierReference(node, scopes) {
   if (ts.isParameter(parent) && parent.name === node) return false;
   if (ts.isCatchClause(parent) && parent.variableDeclaration && parent.variableDeclaration.name === node) return false;
   if (ts.isLabeledStatement(parent) && parent.label === node) return false;
-  if (ts.isTypeAliasDeclaration(parent)) return false;
   if (ts.isEnumDeclaration(parent) && parent.name === node) return false;
   if (ts.isModuleDeclaration(parent) && parent.name === node) return false;
   if (ts.isExpressionWithTypeArguments(parent) && parent.expression === node) return false;
   if (ts.isNamespaceImport(parent) && parent.name === node) return false;
   if (ts.isImportEqualsDeclaration(parent) && parent.name === node) return false;
 
+  if (isInTypePosition(node)) return false;
+
   return true;
+}
+
+function isInTypePosition(node) {
+  let current = node.parent;
+  while (current) {
+    if (ts.isTypeQueryNode(current)) return true;
+    if (ts.isTypeAliasDeclaration(current)) return true;
+    if (ts.isInterfaceDeclaration(current)) return true;
+    if (ts.isTypeParameterDeclaration(current)) return true;
+    current = current.parent;
+  }
+  return false;
+}
+
+function isDirectGlobalObjectReference(expression, scopes) {
+  if (!expression) return false;
+  if (ts.isIdentifier(expression)) {
+    return resolveGlobalObjectName(expression, scopes) !== null;
+  }
+  if (ts.isParenthesizedExpression(expression) || ts.isNonNullExpression(expression)) {
+    return isDirectGlobalObjectReference(expression.expression, scopes);
+  }
+  if (ts.isAsExpression(expression) || ts.isTypeAssertionExpression(expression) || ts.isSatisfiesExpression(expression)) {
+    return isDirectGlobalObjectReference(expression.expression, scopes);
+  }
+  return false;
+}
+
+function expressionContainsGlobalObject(expression, scopes) {
+  if (!expression) return false;
+  if (isDirectGlobalObjectReference(expression, scopes)) return true;
+
+  if (ts.isObjectLiteralExpression(expression)) {
+    for (const property of expression.properties) {
+      if (ts.isPropertyAssignment(property)) {
+        if (expressionContainsGlobalObject(property.initializer, scopes)) return true;
+        if (property.name && ts.isComputedPropertyName(property.name)) {
+          if (expressionContainsGlobalObject(property.name.expression, scopes)) return true;
+        }
+      } else if (ts.isShorthandPropertyAssignment(property)) {
+        if (expressionContainsGlobalObject(property.name, scopes)) return true;
+      } else if (ts.isSpreadElement(property) || ts.isSpreadAssignment(property)) {
+        if (expressionContainsGlobalObject(property.expression, scopes)) return true;
+      }
+    }
+    return false;
+  }
+
+  if (ts.isArrayLiteralExpression(expression)) {
+    for (const element of expression.elements) {
+      if (ts.isSpreadElement(element)) {
+        if (expressionContainsGlobalObject(element.expression, scopes)) return true;
+      } else if (expressionContainsGlobalObject(element, scopes)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  if (ts.isElementAccessExpression(expression)) {
+    return expressionContainsGlobalObject(expression.expression, scopes);
+  }
+
+  if (ts.isConditionalExpression(expression)) {
+    return (
+      expressionContainsGlobalObject(expression.whenTrue, scopes) ||
+      expressionContainsGlobalObject(expression.whenFalse, scopes)
+    );
+  }
+
+  if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.CommaToken) {
+    return (
+      expressionContainsGlobalObject(expression.left, scopes) ||
+      expressionContainsGlobalObject(expression.right, scopes)
+    );
+  }
+
+  if (ts.isCallExpression(expression) || ts.isNewExpression(expression)) {
+    for (const arg of expression.arguments) {
+      if (ts.isSpreadElement(arg)) {
+        if (expressionContainsGlobalObject(arg.expression, scopes)) return true;
+      } else if (expressionContainsGlobalObject(arg, scopes)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  if (ts.isTemplateExpression(expression)) {
+    for (const span of expression.templateSpans) {
+      if (expressionContainsGlobalObject(span.expression, scopes)) return true;
+    }
+    return false;
+  }
+
+  if (ts.isTaggedTemplateExpression(expression)) {
+    return expressionContainsGlobalObject(expression.template, scopes);
+  }
+
+  if (ts.isArrowFunction(expression) || ts.isFunctionExpression(expression)) {
+    return false;
+  }
+
+  return false;
 }
 
 function walkNetworkCapabilityNodes(sourcePath, node, scopes, observedKeys) {
@@ -2421,40 +2524,31 @@ function checkGlobalObjectAlias(node, scopes) {
       ? false : !(parent.flags & ts.NodeFlags.Let);
   }
 
-  if (ts.isIdentifier(node.initializer)) {
-    const initName = node.initializer.text;
-
-    if (globalObjectIdentifiers.has(initName) && !isLocallyBound(initName, scopes)) {
-      if (isConst) {
-        const currentScope = scopes[scopes.length - 1];
-        currentScope.globalAliases.add(declName);
-      } else {
-        throw new RuntimeGrantContractError("runtime_grant_inventory_unclassified");
-      }
-      return;
+  if (isDirectGlobalObjectReference(node.initializer, scopes)) {
+    if (isConst) {
+      const currentScope = scopes[scopes.length - 1];
+      currentScope.globalAliases.add(declName);
+    } else {
+      throw new RuntimeGrantContractError("runtime_grant_inventory_unclassified");
     }
+    return;
+  }
 
-    if (isGlobalObjectAlias(initName, scopes)) {
-      if (isConst) {
-        const currentScope = scopes[scopes.length - 1];
-        currentScope.globalAliases.add(declName);
-      } else {
-        throw new RuntimeGrantContractError("runtime_grant_inventory_unclassified");
-      }
-    }
+  if (expressionContainsGlobalObject(node.initializer, scopes)) {
+    throw new RuntimeGrantContractError("runtime_grant_inventory_unclassified");
   }
 }
 
 function rejectGlobalObjectEscape(sourcePath, node, scopes) {
   if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-    if (resolveGlobalObjectName(node.right, scopes)) {
+    if (expressionContainsGlobalObject(node.right, scopes)) {
       throw new RuntimeGrantContractError("runtime_grant_inventory_unclassified");
     }
   }
 
   if (ts.isSpreadElement(node) || ts.isSpreadAssignment(node)) {
     const expression = node.expression;
-    if (expression && resolveGlobalObjectName(expression, scopes)) {
+    if (expression && expressionContainsGlobalObject(expression, scopes)) {
       throw new RuntimeGrantContractError("runtime_grant_inventory_unclassified");
     }
   }
@@ -2462,28 +2556,59 @@ function rejectGlobalObjectEscape(sourcePath, node, scopes) {
   if (ts.isCallExpression(node) && node.arguments.length > 0) {
     if (ts.isIdentifier(node.expression) && !isLocallyBound(node.expression.text, scopes)) return;
     for (const arg of node.arguments) {
-      if (!ts.isSpreadElement(arg) && resolveGlobalObjectName(arg, scopes)) {
+      if (ts.isSpreadElement(arg)) {
+        if (expressionContainsGlobalObject(arg.expression, scopes)) {
+          throw new RuntimeGrantContractError("runtime_grant_inventory_unclassified");
+        }
+      } else if (expressionContainsGlobalObject(arg, scopes)) {
         throw new RuntimeGrantContractError("runtime_grant_inventory_unclassified");
       }
     }
   }
 
   if (ts.isReturnStatement(node) && node.expression) {
-    if (resolveGlobalObjectName(node.expression, scopes)) {
+    if (expressionContainsGlobalObject(node.expression, scopes)) {
       throw new RuntimeGrantContractError("runtime_grant_inventory_unclassified");
     }
   }
 
   if (ts.isExportAssignment(node) && !node.isExportEquals && node.expression) {
-    if (resolveGlobalObjectName(node.expression, scopes)) {
+    if (expressionContainsGlobalObject(node.expression, scopes)) {
       throw new RuntimeGrantContractError("runtime_grant_inventory_unclassified");
     }
   }
 
   if (ts.isArrayLiteralExpression(node)) {
     for (const element of node.elements) {
-      if (!ts.isSpreadElement(element) && resolveGlobalObjectName(element, scopes)) {
+      if (ts.isSpreadElement(element)) {
+        if (expressionContainsGlobalObject(element.expression, scopes)) {
+          throw new RuntimeGrantContractError("runtime_grant_inventory_unclassified");
+        }
+      } else if (expressionContainsGlobalObject(element, scopes)) {
         throw new RuntimeGrantContractError("runtime_grant_inventory_unclassified");
+      }
+    }
+  }
+
+  if (ts.isObjectLiteralExpression(node)) {
+    for (const property of node.properties) {
+      if (ts.isPropertyAssignment(property)) {
+        if (expressionContainsGlobalObject(property.initializer, scopes)) {
+          throw new RuntimeGrantContractError("runtime_grant_inventory_unclassified");
+        }
+        if (property.name && ts.isComputedPropertyName(property.name)) {
+          if (expressionContainsGlobalObject(property.name.expression, scopes)) {
+            throw new RuntimeGrantContractError("runtime_grant_inventory_unclassified");
+          }
+        }
+      } else if (ts.isShorthandPropertyAssignment(property)) {
+        if (expressionContainsGlobalObject(property.name, scopes)) {
+          throw new RuntimeGrantContractError("runtime_grant_inventory_unclassified");
+        }
+      } else if (ts.isSpreadElement(property) || ts.isSpreadAssignment(property)) {
+        if (expressionContainsGlobalObject(property.expression, scopes)) {
+          throw new RuntimeGrantContractError("runtime_grant_inventory_unclassified");
+        }
       }
     }
   }
