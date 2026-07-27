@@ -355,6 +355,17 @@ export function unsupportedNeutralWrapper(databaseClient) {
 
   const clientPath = "src/db/client.ts";
   const clientSource = await readFile(clientPath, "utf8");
+  const newlineNormalizedInventory =
+    await inspectProductionDatabaseAccessInventory({
+      sourceOverrides: new Map([
+        [
+          clientPath,
+          clientSource.replace(/\r\n?/gu, "\n"),
+        ],
+      ]),
+    });
+  assert.equal(newlineNormalizedInventory.length, 11);
+
   await assert.rejects(
     () =>
       inspectProductionDatabaseAccessInventory({

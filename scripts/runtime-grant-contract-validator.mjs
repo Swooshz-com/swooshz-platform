@@ -81,7 +81,7 @@ const databaseSourceShapeAuthority = new Map([
   ],
   [
     "src/db/client.ts",
-    "07876e4bae44cb9faf63ee84d9a2db2e8add283308fe5f1e6debddc692aa4836",
+    "ef50968061d83e2c7217a215b68067eca27aae5c30005aec1b48ba4e3c377189",
   ],
   [
     "src/db/csrf-token-repository.ts",
@@ -89,7 +89,7 @@ const databaseSourceShapeAuthority = new Map([
   ],
   [
     "src/db/readiness.ts",
-    "a94315aea15dcaf2d9d74278d491a7752b4eda76b3623147d7d63b3349a7d8ca",
+    "f12f570935e42867de9fd8bb94bb12b9ba8139b8dfecfc2d8c5bd3a4d012c7e3",
   ],
   [
     "src/db/repositories.ts",
@@ -97,11 +97,11 @@ const databaseSourceShapeAuthority = new Map([
   ],
   [
     "src/db/runtime-posture.ts",
-    "d6bc17f7b0718c6461ec556c92a776c392f8ce7b3f46d55e99b55adc3c8e0b08",
+    "26e76abd42e40dda4905db1ae29acdaf4424408974a6e21c2063147418c1dbd9",
   ],
   [
     "src/db/schema.ts",
-    "d2b5a7f17c8569a3bf2b54e8f3be5aaaa06f6cfc7866827eaf52f27d18f89200",
+    "1f05ac9ec79a25b4d0fb49cd01af7d44fdad8fedbeedd9c1544803ee8beecfeb",
   ],
   [
     "src/runtime/node-bootstrap.ts",
@@ -1494,11 +1494,12 @@ function assertExactAuthoritySet(observed, expected) {
 }
 
 function sourceShapeDigest(source) {
+  const normalizedSource = source.replace(/\r\n?/gu, "\n");
   const scanner = ts.createScanner(
     ts.ScriptTarget.Latest,
     true,
     ts.LanguageVariant.Standard,
-    source,
+    normalizedSource,
   );
   const tokens = [];
   for (
