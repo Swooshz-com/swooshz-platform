@@ -25,6 +25,9 @@ import {
   assertRuntimeDatabasePosture,
   inspectRuntimeDatabaseRoleAuthorityPosture,
 } from "../dist/db/runtime-posture.js";
+import {
+  RUNTIME_TABLE_GRANT_CONTRACT,
+} from "../dist/db/runtime-grant-contract.js";
 
 const operatorUrl = process.env.RUNTIME_ACTIVATION_TEST_OPERATOR_URL;
 const secondOperatorUrl =
@@ -139,40 +142,49 @@ const twoClusterTarget = createRuntimeActivationTarget(
   },
   { now: providerNow },
 );
-const expectedTablePrivileges = Object.freeze({
-  access_validation_grants: ["INSERT", "SELECT"],
-  app_entitlements: ["INSERT", "SELECT"],
-  app_launch_tokens: ["INSERT", "SELECT"],
-  apps: ["INSERT", "SELECT"],
-  audit_events: ["INSERT", "SELECT"],
-  auth_states: ["DELETE", "INSERT", "SELECT"],
-  csrf_tokens: ["DELETE", "INSERT", "SELECT", "UPDATE"],
-  invitations: ["INSERT", "SELECT", "UPDATE"],
-  memberships: ["DELETE", "INSERT", "SELECT", "UPDATE"],
-  provider_identities: ["INSERT", "SELECT", "UPDATE"],
-  sessions: ["INSERT", "SELECT", "UPDATE"],
-  users: ["INSERT", "SELECT", "UPDATE"],
-  workspace_membership_approvals: ["INSERT", "SELECT", "UPDATE"],
-  workspaces: ["INSERT", "SELECT", "UPDATE"],
-});
 const expectedPublicTables = Object.freeze(
-  Object.keys(expectedTablePrivileges).sort(),
+  [
+    ...new Set(
+      RUNTIME_TABLE_GRANT_CONTRACT.map((record) => record.objectName),
+    ),
+  ].sort(),
 );
 const expectedGrantMatrix = Object.freeze(
-  Object.entries(expectedTablePrivileges)
-    .flatMap(([tableName, privileges]) =>
-      privileges.map((privilege) => [
-        "platform_runtime",
-        "public",
-        tableName,
-        privilege,
-        "NO",
-      ]),
-    )
+  RUNTIME_TABLE_GRANT_CONTRACT
+    .map((record) => [
+      "platform_runtime",
+      record.schema,
+      record.objectName,
+      record.privilege,
+      record.grantOption ? "YES" : "NO",
+    ])
     .sort((left, right) =>
       left.join("\u0000").localeCompare(right.join("\u0000")),
     ),
 );
+
+test.before(async () => {
+  if (skipReason) {
+    return;
+  }
+  const primaryPool = new Pool({ connectionString: operatorUrl, max: 1 });
+  try {
+    await configureContractDerivedGrantFixture(primaryPool);
+  } finally {
+    await primaryPool.end();
+  }
+  if (!twoClusterSkipReason) {
+    const secondaryPool = new Pool({
+      connectionString: secondOperatorUrl,
+      max: 1,
+    });
+    try {
+      await configureContractDerivedGrantFixture(secondaryPool);
+    } finally {
+      await secondaryPool.end();
+    }
+  }
+});
 
 test(
   "PostgreSQL 17 completes every activation phase with secret-safe reporting",
@@ -810,7 +822,7 @@ test(
       });
 
       await context.test(
-        "PostgreSQL rejects membership cycles and preflight remains deterministic",
+        "PostgreSQL rejects membership cycles and preflight rejects the remaining membership",
         async () => {
           const first = role("cycle_first");
           const second = role("cycle_second");
@@ -829,7 +841,7 @@ test(
               grantRole(adminPool, first, second, true, false),
               (error) => error?.code === "0LP01",
             );
-            await assertCompleteDormantPreflight(adminPool, target);
+            await assertUnsafeBeforeInstall();
           } finally {
             await dropRole(adminPool, second);
             await dropRole(adminPool, first);
@@ -837,7 +849,7 @@ test(
         },
       );
 
-      await context.test("SET-disabled edge does not become assumable", async () => {
+      await context.test("SET-disabled membership remains prohibited", async () => {
         const blocked = role("set_disabled_createdb");
         await createRole(adminPool, blocked, "createdb");
         try {
@@ -848,7 +860,7 @@ test(
             false,
             false,
           );
-          await assertCompleteDormantPreflight(adminPool, target);
+          await assertUnsafeBeforeInstall();
         } finally {
           await dropRole(adminPool, blocked);
         }
@@ -915,6 +927,478 @@ test(
   },
 );
 
+test(
+  "PostgreSQL 17 detects missing, extra, and grant-option table drift and restores the fixture",
+  { skip: skipReason },
+  async () => {
+    const adminPool = new Pool({ connectionString: operatorUrl, max: 1 });
+    const roleName = runtimeActivationRole(target);
+    try {
+      await assertCompleteDormantPreflight(adminPool, target);
+
+      await withRolledBackGrantMutation(adminPool, async () => {
+        await adminPool.query(
+          `revoke select on table public.access_validation_grants from ${identifier(roleName)}`,
+        );
+        const report = await inspectRuntimeDatabaseRoleAuthorityPosture(
+          adminPool,
+          roleName,
+        );
+        assert.equal(report.runtimeTableGrantsExact, "failed");
+        assert.equal(report.runtimeRoleAuthorityPosture, "failed");
+      });
+
+      await withRolledBackGrantMutation(adminPool, async () => {
+        await adminPool.query(
+          `grant update on table public.users to ${identifier(roleName)}`,
+        );
+        const report = await inspectRuntimeDatabaseRoleAuthorityPosture(
+          adminPool,
+          roleName,
+        );
+        assert.equal(report.runtimeTableGrantsExact, "failed");
+        assert.equal(report.runtimeRoleAuthorityPosture, "failed");
+      });
+
+      await withRolledBackGrantMutation(adminPool, async () => {
+        await adminPool.query(
+          `grant select on table public.access_validation_grants to ${identifier(roleName)} with grant option`,
+        );
+        const report = await inspectRuntimeDatabaseRoleAuthorityPosture(
+          adminPool,
+          roleName,
+        );
+        assert.equal(report.runtimeTableGrantsExact, "failed");
+        assert.equal(report.runtimeRoleAuthorityPosture, "failed");
+      });
+
+      await assertCompleteDormantPreflight(adminPool, target);
+    } finally {
+      await adminPool.end();
+    }
+  },
+);
+
+test(
+  "PostgreSQL 17 rejects complete relation, column, default, routine, and sequence authority drift",
+  { skip: skipReason },
+  async (context) => {
+    const adminPool = new Pool({ connectionString: operatorUrl, max: 1 });
+    const roleName = runtimeActivationRole(target);
+    const unrelatedRole =
+      `rt_unrelated_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+
+    try {
+      await assertCompleteDormantPreflight(adminPool, target);
+
+      const relationCases = [
+        [
+          "runtime SELECT on an unexpected public view",
+          [
+            "create view public.runtime_unexpected_view as select id from public.users",
+            `grant select on public.runtime_unexpected_view to ${identifier(roleName)}`,
+          ],
+        ],
+        [
+          "runtime SELECT on an unexpected public materialized view",
+          [
+            "create materialized view public.runtime_unexpected_matview as select id from public.users with no data",
+            `grant select on public.runtime_unexpected_matview to ${identifier(roleName)}`,
+          ],
+        ],
+        [
+          "runtime SELECT on an unexpected synthetic foreign table",
+          [
+            "create foreign data wrapper runtime_synthetic_fdw no handler",
+            "create server runtime_synthetic_server foreign data wrapper runtime_synthetic_fdw",
+            "create foreign table public.runtime_unexpected_foreign (id integer) server runtime_synthetic_server",
+            `grant select on public.runtime_unexpected_foreign to ${identifier(roleName)}`,
+          ],
+        ],
+        [
+          "PUBLIC authority on a view-like relation",
+          [
+            "create view public.runtime_public_view as select id from public.users",
+            "grant select on public.runtime_public_view to public",
+          ],
+        ],
+        [
+          "runtime direct authority in another non-system schema",
+          [
+            "create schema runtime_extra_schema",
+            "create table runtime_extra_schema.runtime_extra_table (id integer)",
+            `grant usage on schema runtime_extra_schema to ${identifier(roleName)}`,
+            `grant select on runtime_extra_schema.runtime_extra_table to ${identifier(roleName)}`,
+          ],
+        ],
+        [
+          "correct relation and privilege in the wrong schema",
+          [
+            "create schema runtime_wrong_schema",
+            "create table runtime_wrong_schema.access_validation_grants (id integer)",
+            `grant select on runtime_wrong_schema.access_validation_grants to ${identifier(roleName)}`,
+          ],
+        ],
+      ];
+
+      for (const [name, statements] of relationCases) {
+        await context.test(name, async () => {
+          await withRolledBackAuthorityMutation(adminPool, async () => {
+            for (const statement of statements) {
+              await adminPool.query(statement);
+            }
+            await assertAuthorityCategoryFails(
+              adminPool,
+              roleName,
+              "runtimeTableGrantsExact",
+            );
+          });
+        });
+      }
+
+      await context.test(
+        "runtime ownership of an unexpected view is denied outside direct ACL equality",
+        async () => {
+          await withRolledBackAuthorityMutation(adminPool, async () => {
+            await adminPool.query(
+              "create view public.runtime_owned_view as select id from public.users",
+            );
+            await adminPool.query(
+              `alter view public.runtime_owned_view owner to ${identifier(roleName)}`,
+            );
+            const report = await inspectRuntimeDatabaseRoleAuthorityPosture(
+              adminPool,
+              roleName,
+            );
+            assert.equal(report.applicationTableOwnershipAbsent, "failed");
+            assert.equal(report.runtimeTableGrantsExact, "passed");
+            assert.equal(report.runtimeRoleAuthorityPosture, "failed");
+          });
+        },
+      );
+
+      await context.test(
+        "schema authority and relation authority remain separate posture categories",
+        async () => {
+          await withRolledBackAuthorityMutation(adminPool, async () => {
+            await adminPool.query(
+              `grant create on schema public to ${identifier(roleName)}`,
+            );
+            const report = await inspectRuntimeDatabaseRoleAuthorityPosture(
+              adminPool,
+              roleName,
+            );
+            assert.equal(report.databaseAndSchemaCreateAbsent, "failed");
+            assert.equal(report.runtimeTableGrantsExact, "passed");
+            assert.equal(report.runtimeRoleAuthorityPosture, "failed");
+          });
+        },
+      );
+
+      const columnCases = [
+        [
+          "runtime column SELECT",
+          `grant select (id) on public.users to ${identifier(roleName)}`,
+        ],
+        [
+          "runtime column UPDATE",
+          `grant update (id) on public.users to ${identifier(roleName)}`,
+        ],
+        [
+          "runtime column REFERENCES",
+          `grant references (id) on public.users to ${identifier(roleName)}`,
+        ],
+        [
+          "runtime column grant option",
+          `grant select (id) on public.users to ${identifier(roleName)} with grant option`,
+        ],
+        [
+          "PUBLIC column authority",
+          "grant select (id) on public.users to public",
+        ],
+      ];
+
+      for (const [name, statement] of columnCases) {
+        await context.test(name, async () => {
+          await withRolledBackAuthorityMutation(adminPool, async () => {
+            await adminPool.query(statement);
+            await assertAuthorityCategoryFails(
+              adminPool,
+              roleName,
+              "runtimeColumnAuthorityAbsent",
+            );
+          });
+        });
+      }
+
+      await context.test(
+        "column authority on a supported view-like object",
+        async () => {
+          await withRolledBackAuthorityMutation(adminPool, async () => {
+            await adminPool.query(
+              "create view public.runtime_column_view as select id from public.users",
+            );
+            await adminPool.query(
+              `grant select (id) on public.runtime_column_view to ${identifier(roleName)}`,
+            );
+            await assertAuthorityCategoryFails(
+              adminPool,
+              roleName,
+              "runtimeColumnAuthorityAbsent",
+            );
+          });
+        },
+      );
+
+      await context.test(
+        "unrelated non-member role column authority does not falsely fail",
+        async () => {
+          await withRolledBackAuthorityMutation(adminPool, async () => {
+            await createRole(adminPool, unrelatedRole);
+            await adminPool.query(
+              `grant select (id) on public.users to ${identifier(unrelatedRole)}`,
+            );
+            await assertCompleteDormantPreflight(adminPool, target);
+          });
+        },
+      );
+
+      const defaultAclCases = [
+        [
+          "owner global default SELECT to runtime",
+          `alter default privileges grant select on tables to ${identifier(roleName)}`,
+        ],
+        [
+          "owner global default UPDATE to runtime",
+          `alter default privileges grant update on tables to ${identifier(roleName)}`,
+        ],
+        [
+          "default relation privilege with grant option",
+          `alter default privileges grant select on tables to ${identifier(roleName)} with grant option`,
+        ],
+        [
+          "global default relation privilege to PUBLIC",
+          "alter default privileges grant select on tables to public",
+        ],
+        [
+          "schema-specific default ACL",
+          `alter default privileges in schema public grant select on tables to ${identifier(roleName)}`,
+        ],
+      ];
+
+      for (const [name, statement] of defaultAclCases) {
+        await context.test(name, async () => {
+          await withRolledBackAuthorityMutation(adminPool, async () => {
+            await adminPool.query(statement);
+            await assertAuthorityCategoryFails(
+              adminPool,
+              roleName,
+              "runtimeDefaultRelationAuthorityAbsent",
+            );
+          });
+        });
+      }
+
+      await context.test(
+        "unrelated default ACL to a non-member role does not falsely fail",
+        async () => {
+          await withRolledBackAuthorityMutation(adminPool, async () => {
+            await createRole(adminPool, unrelatedRole);
+            await adminPool.query(
+              `alter default privileges grant select on tables to ${identifier(unrelatedRole)}`,
+            );
+            await assertCompleteDormantPreflight(adminPool, target);
+          });
+        },
+      );
+
+      await context.test(
+        "runtime routine and sequence authority remain separate denied categories",
+        async () => {
+          await withRolledBackAuthorityMutation(adminPool, async () => {
+            await adminPool.query(
+              "create function public.runtime_unexpected_function() returns integer language sql as 'select 1'",
+            );
+            await adminPool.query(
+              "revoke all on function public.runtime_unexpected_function() from public",
+            );
+            await adminPool.query(
+              `grant execute on function public.runtime_unexpected_function() to ${identifier(roleName)}`,
+            );
+            await adminPool.query(
+              "create sequence public.runtime_unexpected_sequence",
+            );
+            await adminPool.query(
+              `grant usage on sequence public.runtime_unexpected_sequence to ${identifier(roleName)}`,
+            );
+            const report = await inspectRuntimeDatabaseRoleAuthorityPosture(
+              adminPool,
+              roleName,
+            );
+            assert.equal(report.runtimeRoutineAuthorityAbsent, "failed");
+            assert.equal(report.runtimeSequenceAuthorityAbsent, "failed");
+            assert.equal(report.runtimeRoleAuthorityPosture, "failed");
+          });
+        },
+      );
+
+      await context.test(
+        "runtime routine and sequence ownership remain separate denied categories",
+        async () => {
+          await withRolledBackAuthorityMutation(adminPool, async () => {
+            await adminPool.query(
+              "create function public.runtime_owned_function() returns integer language sql as 'select 1'",
+            );
+            await adminPool.query(
+              "revoke all on function public.runtime_owned_function() from public",
+            );
+            await adminPool.query(
+              `alter function public.runtime_owned_function() owner to ${identifier(roleName)}`,
+            );
+            await adminPool.query(
+              "create sequence public.runtime_owned_sequence",
+            );
+            await adminPool.query(
+              `alter sequence public.runtime_owned_sequence owner to ${identifier(roleName)}`,
+            );
+            const report = await inspectRuntimeDatabaseRoleAuthorityPosture(
+              adminPool,
+              roleName,
+            );
+            assert.equal(report.runtimeRoutineAuthorityAbsent, "failed");
+            assert.equal(report.runtimeSequenceAuthorityAbsent, "failed");
+            assert.equal(report.runtimeRoleAuthorityPosture, "failed");
+          });
+        },
+      );
+
+      await context.test(
+        "provider-like object defaults are not misclassified as explicit application ACL drift",
+        async () => {
+          await withRolledBackAuthorityMutation(adminPool, async () => {
+            await adminPool.query(
+              "create schema runtime_provider_defaults",
+            );
+            await adminPool.query(
+              `grant usage on schema runtime_provider_defaults to ${identifier(roleName)}`,
+            );
+            await adminPool.query(
+              "create table runtime_provider_defaults.provider_table (id integer)",
+            );
+            await adminPool.query(
+              "create view runtime_provider_defaults.provider_view as select id from runtime_provider_defaults.provider_table",
+            );
+            await adminPool.query(
+              "create function runtime_provider_defaults.provider_function() returns integer language sql as 'select 1'",
+            );
+            await assertCompleteDormantPreflight(adminPool, target);
+          });
+        },
+      );
+
+      await assertCompleteDormantPreflight(adminPool, target);
+      const cleanup = await adminPool.query(
+        `
+          select
+            not exists (
+              select 1 from pg_roles
+              where rolname = $2
+            ) as unrelated_role_absent,
+            not exists (
+              select 1 from pg_namespace
+              where nspname like 'runtime_%schema'
+            ) as synthetic_schemas_absent,
+            not exists (
+              select 1
+              from pg_class
+              where relname like 'runtime_unexpected_%'
+                 or relname = 'runtime_public_view'
+                 or relname = 'runtime_column_view'
+                 or relname = 'runtime_owned_view'
+                 or relname = 'runtime_owned_sequence'
+            ) as synthetic_relations_absent,
+            not exists (
+              select 1
+              from pg_default_acl default_acl
+              cross join lateral aclexplode(default_acl.defaclacl) grant_record
+              join pg_roles runtime_role on runtime_role.rolname = $1
+              where default_acl.defaclobjtype = 'r'
+                and grant_record.grantee in (0, runtime_role.oid)
+            ) as prohibited_default_acls_absent
+        `,
+        [roleName, unrelatedRole],
+      );
+      assert.deepEqual(cleanup.rows, [
+        {
+          unrelated_role_absent: true,
+          synthetic_schemas_absent: true,
+          synthetic_relations_absent: true,
+          prohibited_default_acls_absent: true,
+        },
+      ]);
+    } finally {
+      await adminPool.end();
+    }
+  },
+);
+
+async function configureContractDerivedGrantFixture(pool) {
+  const roleName = runtimeActivationRole(target);
+  const guard = await pool.query(
+    `
+      select
+        current_database() = 'runtime_posture_test' as database_is_disposable,
+        current_setting('server_version_num')::integer / 10000 = 17
+          as server_is_postgresql_17,
+        (select count(*) = 1 from pg_roles where rolname = $1)
+          as runtime_role_exists
+    `,
+    [roleName],
+  );
+  assert.deepEqual(guard.rows, [
+    {
+      database_is_disposable: true,
+      server_is_postgresql_17: true,
+      runtime_role_exists: true,
+    },
+  ]);
+
+  await pool.query(
+    `revoke all privileges on all tables in schema public from ${identifier(roleName)}`,
+  );
+  const privilegesByTable = new Map();
+  for (const record of RUNTIME_TABLE_GRANT_CONTRACT) {
+    const privileges = privilegesByTable.get(record.objectName) ?? [];
+    privileges.push(record.privilege);
+    privilegesByTable.set(record.objectName, privileges);
+  }
+  for (const [tableName, privileges] of privilegesByTable) {
+    await pool.query(
+      `grant ${privileges.join(", ")} on table public.${identifier(tableName)} to ${identifier(roleName)}`,
+    );
+  }
+}
+
+async function withRolledBackAuthorityMutation(pool, operation) {
+  await pool.query("begin");
+  try {
+    await operation();
+  } finally {
+    await pool.query("rollback");
+  }
+}
+
+const withRolledBackGrantMutation = withRolledBackAuthorityMutation;
+
+async function assertAuthorityCategoryFails(pool, roleName, category) {
+  const report = await inspectRuntimeDatabaseRoleAuthorityPosture(
+    pool,
+    roleName,
+  );
+  assert.equal(report[category], "failed");
+  assert.equal(report.runtimeRoleAuthorityPosture, "failed");
+}
+
 async function assertDisposableFixtureIdentity(
   pool,
   activationTarget,
@@ -948,6 +1432,11 @@ async function assertCompleteDormantPreflight(pool, activationTarget) {
     migrationLedgerAccessDenied: "passed",
     databaseAndSchemaOwnershipAbsent: "passed",
     applicationTableOwnershipAbsent: "passed",
+    runtimeTableGrantsExact: "passed",
+    runtimeColumnAuthorityAbsent: "passed",
+    runtimeDefaultRelationAuthorityAbsent: "passed",
+    runtimeRoutineAuthorityAbsent: "passed",
+    runtimeSequenceAuthorityAbsent: "passed",
     runtimeRoleAuthorityPosture: "passed",
   });
   return { authority, state };

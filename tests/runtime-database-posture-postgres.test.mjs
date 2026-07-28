@@ -190,14 +190,18 @@ test(
         await assertPostureFails(adminPool, runtime, "administrativeAttributesAbsent");
       });
 
-      await context.test("SET false membership is not treated as assumable", async () => {
+      await context.test("SET false membership is still prohibited", async () => {
         const runtime = role("set_false_runtime");
         const blocked = role("set_false_createdb");
         await createRole(adminPool, runtime);
         await createRole(adminPool, blocked, "createdb");
         await grantRole(adminPool, blocked, runtime, false, false);
         await assertSetRole(adminPool, runtime, blocked, false);
-        await assertPosturePasses(adminPool, runtime);
+        await assertPostureFails(
+          adminPool,
+          runtime,
+          "administrativeAttributesAbsent",
+        );
       });
 
       await context.test(
@@ -218,7 +222,7 @@ test(
         },
       );
 
-      await context.test("one SET false edge blocks a mixed chain", async () => {
+      await context.test("a mixed membership chain remains prohibited", async () => {
         const runtime = role("mixed_runtime");
         const middle = role("mixed_middle");
         const blocked = role("mixed_bypassrls");
@@ -229,7 +233,11 @@ test(
         await grantRole(adminPool, blocked, middle, false, false);
         await assertSetRole(adminPool, runtime, middle, true);
         await assertSetRole(adminPool, runtime, blocked, false);
-        await assertPosturePasses(adminPool, runtime);
+        await assertPostureFails(
+          adminPool,
+          runtime,
+          "administrativeAttributesAbsent",
+        );
       });
 
       await context.test("cycle guard terminates and de-duplicates deterministically", async () => {
@@ -250,14 +258,18 @@ test(
         assert.deepEqual(result.rows, [{ role_oids: [1, 2, 3] }]);
       });
 
-      await context.test("a safe SET-assumable role passes", async () => {
+      await context.test("even a non-administrative SET membership is prohibited", async () => {
         const runtime = role("safe_runtime");
         const safe = role("safe_role");
         await createRole(adminPool, runtime);
         await createRole(adminPool, safe);
         await grantRole(adminPool, safe, runtime, true, false);
         await assertSetRole(adminPool, runtime, safe, true);
-        await assertPosturePasses(adminPool, runtime);
+        await assertPostureFails(
+          adminPool,
+          runtime,
+          "administrativeAttributesAbsent",
+        );
       });
     } finally {
       await adminPool.query("alter database runtime_posture_test owner to postgres").catch(() => {});

@@ -28,6 +28,22 @@ const passingRow = Object.freeze({
   database_ownership_absent: true,
   schema_ownership_absent: true,
   application_table_ownership_absent: true,
+  role_membership_absent: true,
+  runtime_table_grant_option_absent: true,
+  runtime_table_grant_set_exact: true,
+  public_table_authority_absent: true,
+  runtime_column_authority_absent: true,
+  runtime_column_grant_option_absent: true,
+  public_column_authority_absent: true,
+  runtime_default_relation_authority_absent: true,
+  runtime_default_relation_grant_option_absent: true,
+  public_default_relation_authority_absent: true,
+  runtime_routine_authority_absent: true,
+  public_routine_authority_absent: true,
+  runtime_routine_ownership_absent: true,
+  runtime_sequence_authority_absent: true,
+  public_sequence_authority_absent: true,
+  runtime_sequence_ownership_absent: true,
 });
 
 test("expected runtime role is required only in production", () => {
@@ -85,11 +101,32 @@ test("restricted runtime posture returns aggregate states only", async () => {
     migrationLedgerAccessDenied: "passed",
     databaseAndSchemaOwnershipAbsent: "passed",
     applicationTableOwnershipAbsent: "passed",
+    runtimeTableGrantsExact: "passed",
+    runtimeColumnAuthorityAbsent: "passed",
+    runtimeDefaultRelationAuthorityAbsent: "passed",
+    runtimeRoutineAuthorityAbsent: "passed",
+    runtimeSequenceAuthorityAbsent: "passed",
     runtimePosture: "passed",
   });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].values[0], expectedRole);
-  assert.ok(calls[0].values[1].includes("access_validation_grants"));
+  const expectedGrants = JSON.parse(calls[0].values[1]);
+  assert.equal(expectedGrants.length, 39);
+  assert.ok(
+    expectedGrants.some(
+      (record) =>
+        record.table_name === "access_validation_grants" &&
+        record.privilege_type === "UPDATE",
+    ),
+  );
+  assert.equal(
+    expectedGrants.some(
+      (record) =>
+        record.table_name === "csrf_tokens" &&
+        record.privilege_type === "UPDATE",
+    ),
+    false,
+  );
   assert.match(calls[0].sql, /current_user = \$1 and session_user = \$1/);
   assert.match(
     calls[0].sql,
@@ -119,6 +156,45 @@ test("restricted runtime posture returns aggregate states only", async () => {
   );
   assert.doesNotMatch(calls[0].sql, new RegExp(expectedRole));
   assert.doesNotMatch(JSON.stringify(report), new RegExp(expectedRole));
+  assert.match(calls[0].sql, /jsonb_to_recordset\(\$2::jsonb\)/);
+  assert.match(calls[0].sql, /aclexplode\(/);
+  assert.match(calls[0].sql, /runtime_table_grant_set_exact/);
+  assert.match(calls[0].sql, /runtime_table_grant_option_absent/);
+  assert.match(calls[0].sql, /public_table_authority_absent/);
+  assert.match(calls[0].sql, /pg_attribute/);
+  assert.match(calls[0].sql, /attnum > 0/);
+  assert.match(calls[0].sql, /not column_record\.attisdropped/);
+  assert.match(calls[0].sql, /pg_default_acl/);
+  assert.match(calls[0].sql, /defaclobjtype = 'r'/);
+  assert.match(calls[0].sql, /pg_proc/);
+  assert.match(calls[0].sql, /relkind = 'S'/);
+  assert.match(calls[0].sql, /relkind in \('r', 'p', 'v', 'm', 'f'\)/);
+  assert.match(calls[0].sql, /runtime_column_authority_absent/);
+  assert.match(calls[0].sql, /public_column_authority_absent/);
+  assert.match(calls[0].sql, /runtime_default_relation_authority_absent/);
+  assert.match(calls[0].sql, /public_default_relation_authority_absent/);
+  assert.match(calls[0].sql, /runtime_routine_authority_absent/);
+  assert.match(calls[0].sql, /runtime_sequence_authority_absent/);
+  assert.match(calls[0].sql, /runtime_routine_ownership_absent/);
+  assert.match(calls[0].sql, /runtime_sequence_ownership_absent/);
+  assert.match(
+    calls[0].sql,
+    /nspname not in \('pg_catalog', 'information_schema'\)/,
+  );
+  assert.match(calls[0].sql, /nspname !~ '\^pg_\(\?:toast\|temp\)/);
+  const publicRoutineInventory = calls[0].sql.match(
+    /public_routine_grants as \(([\s\S]*?)\n\),\nruntime_sequence_grants/,
+  )?.[1];
+  assert.equal(typeof publicRoutineInventory, "string");
+  assert.doesNotMatch(publicRoutineInventory, /acldefault/);
+  const directRelationInventory = calls[0].sql.match(
+    /direct_runtime_table_grants as \(([\s\S]*?)\n\),\nruntime_column_grants/,
+  )?.[1];
+  assert.equal(typeof directRelationInventory, "string");
+  assert.doesNotMatch(
+    directRelationInventory,
+    /table_schema\.nspname = 'public'/,
+  );
 });
 
 test("runtime posture traverses every SET-assumable role by catalog OID", async () => {
@@ -191,6 +267,11 @@ test("operator-side dormant authority inspection reuses the exact recursive post
     migrationLedgerAccessDenied: "passed",
     databaseAndSchemaOwnershipAbsent: "passed",
     applicationTableOwnershipAbsent: "passed",
+    runtimeTableGrantsExact: "passed",
+    runtimeColumnAuthorityAbsent: "passed",
+    runtimeDefaultRelationAuthorityAbsent: "passed",
+    runtimeRoutineAuthorityAbsent: "passed",
+    runtimeSequenceAuthorityAbsent: "passed",
     runtimeRoleAuthorityPosture: "passed",
   });
 });
@@ -244,6 +325,7 @@ test("every prohibited runtime posture fails closed", async (context) => {
     ["wrong connected role", "expected_role_match"],
     ["inconclusive SET-role catalog state", "role_assumption_state_conclusive"],
     ["administrative membership authority", "role_membership_admin_absent"],
+    ["direct role membership", "role_membership_absent"],
     ["neon_superuser membership", "neon_superuser_membership_absent"],
     ["superuser", "superuser_absent"],
     ["createdb", "createdb_absent"],
@@ -257,6 +339,30 @@ test("every prohibited runtime posture fails closed", async (context) => {
     ["database ownership", "database_ownership_absent"],
     ["schema ownership", "schema_ownership_absent"],
     ["application table ownership", "application_table_ownership_absent"],
+    ["missing or extra runtime table grant", "runtime_table_grant_set_exact"],
+    ["runtime table grant option", "runtime_table_grant_option_absent"],
+    ["PUBLIC table authority", "public_table_authority_absent"],
+    ["runtime column authority", "runtime_column_authority_absent"],
+    ["runtime column grant option", "runtime_column_grant_option_absent"],
+    ["PUBLIC column authority", "public_column_authority_absent"],
+    [
+      "runtime default relation authority",
+      "runtime_default_relation_authority_absent",
+    ],
+    [
+      "runtime default relation grant option",
+      "runtime_default_relation_grant_option_absent",
+    ],
+    [
+      "PUBLIC default relation authority",
+      "public_default_relation_authority_absent",
+    ],
+    ["runtime routine authority", "runtime_routine_authority_absent"],
+    ["PUBLIC routine authority", "public_routine_authority_absent"],
+    ["runtime routine ownership", "runtime_routine_ownership_absent"],
+    ["runtime sequence authority", "runtime_sequence_authority_absent"],
+    ["PUBLIC sequence authority", "public_sequence_authority_absent"],
+    ["runtime sequence ownership", "runtime_sequence_ownership_absent"],
   ];
 
   for (const [name, field] of cases) {
