@@ -2050,7 +2050,7 @@ function parseSourceFile(filePath, source, errorCode) {
 
 function detectGlobalNetworkCapabilities(sourcePath, sourceFile) {
   const observedKeys = new Map();
-  const rootScope = { bindings: new Map(), globalAliases: new Set(), node: null, varScope: null };
+  const rootScope = { bindings: new Map(), globalAliases: new Set(), callableBindings: new Map(), node: null, varScope: null };
   rootScope.varScope = rootScope;
   const scopes = [rootScope];
 
@@ -2342,11 +2342,127 @@ function expressionContainsGlobalObject(expression, scopes) {
     return expressionContainsGlobalObject(expression.template, scopes);
   }
 
-  if (ts.isArrowFunction(expression) || ts.isFunctionExpression(expression)) {
+  if (ts.isCallExpression(expression) || ts.isNewExpression(expression)) {
+    if (callResultResolvesToGlobalObject(expression, scopes)) return true;
     return false;
   }
 
+  if (ts.isArrowFunction(expression) || ts.isFunctionExpression(expression)) {
+    return analyzeCallableBody(expression, scopes);
+  }
+
   return false;
+}
+
+function callResultResolvesToGlobalObject(callExpression, scopes) {
+  const callee = callExpression.expression;
+  const resolved = resolveCallableExpression(callee, scopes);
+  if (!resolved) return false;
+  return analyzeCallableBody(resolved, scopes);
+}
+
+function resolveCallableExpression(node, scopes) {
+  while (ts.isParenthesizedExpression(node) || ts.isNonNullExpression(node)) {
+    node = node.expression;
+  }
+  if (ts.isIdentifier(node)) {
+    const name = node.text;
+    for (let i = scopes.length - 1; i >= 0; i--) {
+      const scope = scopes[i];
+      if (scope.callableBindings && scope.callableBindings.has(name)) {
+        return scope.callableBindings.get(name);
+      }
+      if (scope.bindings.has(name)) {
+        return null;
+      }
+    }
+    return null;
+  }
+  if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
+    return node;
+  }
+  return null;
+}
+
+function analyzeCallableBody(callable, outerScopes) {
+  if (ts.isArrowFunction(callable)) {
+    if (!callable.body) return false;
+    const fnScope = {
+      bindings: new Map(),
+      globalAliases: new Set(),
+      callableBindings: new Map(),
+      node: callable,
+      varScope: null,
+    };
+    fnScope.varScope = fnScope;
+    addNodeScopeDeclarations(callable, fnScope);
+    if (!ts.isBlock(callable.body)) {
+      return expressionContainsGlobalObject(callable.body, [...outerScopes, fnScope]);
+    }
+    return blockContainsGlobalObjectWithScope(callable.body, fnScope, outerScopes);
+  }
+  if (callable.body) {
+    const fnScope = {
+      bindings: new Map(),
+      globalAliases: new Set(),
+      callableBindings: new Map(),
+      node: callable,
+      varScope: null,
+    };
+    fnScope.varScope = fnScope;
+    addNodeScopeDeclarations(callable, fnScope);
+    return blockContainsGlobalObjectWithScope(callable.body, fnScope, outerScopes);
+  }
+  return false;
+}
+
+function blockContainsGlobalObjectWithScope(block, parentScope, outerScopes) {
+  const blockScope = {
+    bindings: new Map(),
+    globalAliases: new Set(),
+    callableBindings: new Map(),
+    node: block,
+    varScope: parentScope,
+  };
+  addNodeScopeDeclarations(block, blockScope);
+  const scopes = [...outerScopes, parentScope, blockScope];
+  return blockContainsGlobalObject(block, blockScope, scopes);
+}
+
+function blockContainsGlobalObject(block, currentScope, scopes) {
+  for (const stmt of block.statements) {
+    if (ts.isVariableStatement(stmt)) {
+      for (const decl of stmt.declarationList.declarations) {
+        if (decl.initializer && ts.isIdentifier(decl.name)) {
+          if (isDirectGlobalObjectReference(decl.initializer, scopes)) {
+            currentScope.globalAliases.add(decl.name.text);
+          }
+        }
+      }
+    }
+  }
+
+  let found = false;
+  const visit = (node) => {
+    if (found) return;
+    if (ts.isReturnStatement(node) && node.expression) {
+      if (expressionContainsGlobalObject(node.expression, scopes)) {
+        found = true;
+        return;
+      }
+    }
+    if (ts.isExpressionStatement(node)) {
+      if (expressionContainsGlobalObject(node.expression, scopes)) {
+        found = true;
+        return;
+      }
+    }
+    ts.forEachChild(node, (child) => {
+      if (!found) visit(child);
+    });
+  };
+  visit(block);
+  return found;
 }
 
 function walkNetworkCapabilityNodes(sourcePath, node, scopes, observedKeys) {
@@ -2370,6 +2486,12 @@ function walkNetworkCapabilityNodes(sourcePath, node, scopes, observedKeys) {
       checkBareGlobalAssignment(sourcePath, node, scopes, observedKeys);
     }
     checkGlobalObjectAlias(node, scopes);
+    if (ts.isIdentifier(node.name)) {
+      if (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer)) {
+        const currentScope = scopes[scopes.length - 1];
+        currentScope.callableBindings.set(node.name.text, node.initializer);
+      }
+    }
   }
 
   if (ts.isSpreadElement(node) || ts.isSpreadAssignment(node)) {
@@ -2384,7 +2506,7 @@ function walkNetworkCapabilityNodes(sourcePath, node, scopes, observedKeys) {
   const isScope = isScopeNode(node);
 
   if (isScope) {
-    const newScope = { bindings: new Map(), globalAliases: new Set(), node, varScope: null };
+    const newScope = { bindings: new Map(), globalAliases: new Set(), callableBindings: new Map(), node, varScope: null };
     newScope.varScope = scopes[scopes.length - 1].varScope || scopes[scopes.length - 1];
     addNodeScopeDeclarations(node, newScope);
     scopes.push(newScope);
@@ -2629,6 +2751,10 @@ function resolveGlobalObjectName(expression, scopes) {
   if (ts.isPropertyAccessExpression(expression) || ts.isPropertyAccessChain(expression)) return null;
   if (ts.isParenthesizedExpression(expression) || ts.isNonNullExpression(expression) || ts.isAsExpression(expression)) {
     return resolveGlobalObjectName(expression.expression, scopes);
+  }
+  if (ts.isCallExpression(expression) || ts.isNewExpression(expression)) {
+    if (callResultResolvesToGlobalObject(expression, scopes)) return "globalThis";
+    return null;
   }
   return null;
 }

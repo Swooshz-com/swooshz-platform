@@ -2699,6 +2699,335 @@ test("run-16: no-import still rejects runtime WebSocket satisfies typeof WebSock
   );
 });
 
+// --- Run 17: callable-wrapper closure ---
+// Arrow and function expressions that capture, return, package or expose the
+// global object or a proven immutable alias must be treated as an escape. The
+// structural global-object classifier currently returns false for every
+// ArrowFunction and FunctionExpression, and resolveGlobalObjectName does not
+// recognise call-results, so `getGlobal().fetch(url)` evades the authority.
+// These tests reproduce the finding recorded in PRRT_kwDOS-kliM6UJMzx.
+
+test("run-17: no-import rejects concise arrow returning globalThis", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run17-arrow-global.ts",
+            `export function relay() { const getGlobal = () => globalThis; return getGlobal().fetch("url"); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-17: no-import rejects concise arrow returning global", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run17-arrow-global-alias.ts",
+            `export function relay() { const getGlobal = () => global; return getGlobal().fetch("url"); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-17: no-import rejects concise arrow returning proven alias", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run17-arrow-alias.ts",
+            `const alias = globalThis;
+export function relay() { const getAlias = () => alias; return getAlias().fetch("url"); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-17: no-import rejects block-bodied arrow returning globalThis", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run17-block-arrow.ts",
+            `export function relay() { const getGlobal = () => { return globalThis; }; return getGlobal().fetch("url"); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-17: no-import rejects block-bodied arrow returning alias through local", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run17-block-arrow-alias.ts",
+            `export function relay() { const getGlobal = () => { const g = globalThis; return g; }; return getGlobal().fetch("url"); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-17: no-import rejects function expression returning globalThis", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run17-fn-expr.ts",
+            `export function relay() { const getGlobal = function () { return globalThis; }; return getGlobal().fetch("url"); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-17: no-import rejects async arrow returning globalThis", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run17-async-arrow.ts",
+            `export async function relay() { const getGlobal = async () => globalThis; return getGlobal().WebSocket; }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-17: no-import rejects async function expression returning globalThis", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run17-async-fn.ts",
+            `export async function relay() { const getGlobal = async function () { return globalThis; }; return getGlobal().WebSocket; }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-17: no-import rejects callable passed as an argument", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run17-callable-arg.ts",
+            `function use(fn: () => typeof globalThis) { return fn(); }
+export function relay() { return use(() => globalThis).fetch("url"); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-17: no-import rejects callable nested inside an object", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run17-callable-object.ts",
+            `export function relay() { const holder = { getGlobal: () => globalThis }; return holder.getGlobal().fetch("url"); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-17: no-import rejects callable nested inside an array", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run17-callable-array.ts",
+            `export function relay() { const wrappers = [() => globalThis]; return wrappers[0]().fetch("url"); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-17: no-import rejects conditional callable", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run17-conditional-callable.ts",
+            `export function relay(c: boolean) { const f = c ? () => globalThis : () => ({ fetch: () => null }); return f().fetch("url"); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-17: no-import rejects spread-nested callable", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run17-spread-callable.ts",
+            `export function relay() { const base = { g: () => globalThis }; return { ...base }.g().fetch("url"); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-17: no-import rejects returned callable", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run17-returned-callable.ts",
+            `export function make() { return () => globalThis; }
+export function relay() { return make().fetch("url"); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-17: no-import rejects IIFE call-result receiver", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run17-iife-receiver.ts",
+            `export function relay() { return (() => globalThis)().fetch("url"); }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-17: no-import rejects alias-returning callable followed by WebSocket access", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run17-alias-callable-ws.ts",
+            `const alias = globalThis;
+export function relay() { const getAlias = () => alias; return getAlias().WebSocket; }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-17: no-import rejects alias-returning callable followed by EventSource access", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run17-alias-callable-es.ts",
+            `const alias = globalThis;
+export function relay() { const getAlias = () => alias; return getAlias().EventSource; }`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+// --- Run 17: callable-wrapper GREEN controls ---
+// Valid local shadows and normal callbacks must not be rejected.
+
+test("run-17: no-import accepts parameter-shadowed globalThis", async () => {
+  const source = `export function relay(fetch: (u: string) => Promise<unknown>) {
+  const getGlobal = (globalThis: typeof globalThis) => globalThis;
+  return fetch("synthetic");
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/run17-param-global.ts", source]]),
+      }),
+    "parameter-shadowed globalThis must not be treated as the global object",
+  );
+});
+
+test("run-17: no-import accepts parameter-shadowed global", async () => {
+  const source = `export function relay(fetch: (u: string) => Promise<unknown>, global: typeof globalThis) {
+  return fetch("synthetic");
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/run17-param-global-alias.ts", source]]),
+      }),
+    "parameter-shadowed global must not be treated as the global object",
+  );
+});
+
+test("run-17: no-import accepts function-local shadowing inside arrow", async () => {
+  const source = `export function relay() {
+  const getGlobal = () => {
+    const globalThis = { fetch: (u: string) => Promise.resolve() };
+    return globalThis;
+  };
+  return getGlobal().fetch("synthetic");
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/run17-fn-local-shadow.ts", source]]),
+      }),
+    "function-local shadowing inside arrow must not be rejected",
+  );
+});
+
+test("run-17: no-import accepts normal callback without global authority", async () => {
+  const source = `function use(fn: (u: string) => Promise<unknown>, u: string) { return fn(u); }
+export function relay() { return use((u) => Promise.resolve(u), "synthetic"); }`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/run17-normal-callback.ts", source]]),
+      }),
+    "normal callback without global authority must not be rejected",
+  );
+});
+
+test("run-17: no-import accepts local fetch shadow inside arrow", async () => {
+  const source = `export function relay() {
+  const getClient = () => {
+    const fetch = (u: string) => Promise.resolve();
+    return fetch;
+  };
+  return getClient()("synthetic");
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/run17-local-fetch-arrow.ts", source]]),
+      }),
+    "local fetch shadow inside arrow must not be classified as global",
+  );
+});
+
+test("run-17: no-import accepts imported fetch shadow inside arrow", async () => {
+  const importedSource = `export const fetch = (u: string) => Promise.resolve();`;
+  const consumerSource = `import { fetch as injectedClient } from "./run17-local-fetch.js";
+export function relay() {
+  const getClient = () => injectedClient;
+  return getClient()("synthetic");
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run17-local-fetch.ts", importedSource],
+          ["src/platform/run17-imported-arrow.ts", consumerSource],
+        ]),
+      }),
+    "imported fetch shadow inside arrow must not be classified as global",
+  );
+});
+
 function cloneRecord(record) {
   return {
     ...record,
