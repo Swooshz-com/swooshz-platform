@@ -3028,6 +3028,237 @@ export function relay() {
   );
 });
 
+// --- Run 18: nested-callable scope RED controls ---
+// Nested callables that genuinely escape the global object must still be rejected.
+
+test("run-18: no-import rejects nested function declaration returning real globalThis", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run18-nested-fndecl-global.ts",
+            `export function relay() {
+  function getGlobal() { return globalThis; }
+  return getGlobal().fetch("url");
+}`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-18: no-import rejects nested function declaration returning real global", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run18-nested-fndecl-global-alias.ts",
+            `export function relay() {
+  function getGlobal() { return global; }
+  return getGlobal().fetch("url");
+}`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-18: no-import rejects nested function expression returning proven alias", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run18-nested-fnexpr-alias.ts",
+            `const alias = globalThis;
+export function relay() {
+  const getAlias = function () { return alias; };
+  return getAlias().fetch("url");
+}`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-18: no-import rejects nested callable packaging global in object", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run18-nested-package-object.ts",
+            `export function relay() {
+  function pack() { return { g: globalThis }; }
+  return pack().g.fetch("url");
+}`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-18: no-import rejects nested callable packaging global in array", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run18-nested-package-array.ts",
+            `export function relay() {
+  function pack() { return [globalThis]; }
+  return pack()[0].fetch("url");
+}`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-18: no-import rejects nested callable result used as network receiver", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run18-nested-receiver.ts",
+            `export function relay() {
+  function getWs() { return new WebSocket("ws://example.com"); }
+  return getWs();
+}`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+// --- Run 18: nested-callable scope GREEN controls ---
+// Valid nested scopes with shadowed globals must not be rejected.
+
+test("run-18: no-import accepts nested function declaration with parameter-shadowed globalThis", async () => {
+  const source = `export function relay(localClient: { fetch(u: string): Promise<unknown> }) {
+  const wrapper = () => {
+    function local(globalThis: typeof localClient) {
+      return globalThis;
+    }
+    return local(localClient);
+  };
+  return wrapper().fetch("synthetic");
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/run18-nested-fndecl-shadow.ts", source]]),
+      }),
+    "nested function declaration with parameter-shadowed globalThis must not be rejected",
+  );
+});
+
+test("run-18: no-import accepts nested function expression with parameter-shadowed global", async () => {
+  const source = `export function relay(localClient: { fetch(u: string): Promise<unknown> }) {
+  const wrapper = () => {
+    const local = function (global: typeof localClient) {
+      return global;
+    };
+    return local(localClient);
+  };
+  return wrapper().fetch("synthetic");
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/run18-nested-fnexpr-shadow.ts", source]]),
+      }),
+    "nested function expression with parameter-shadowed global must not be rejected",
+  );
+});
+
+test("run-18: no-import accepts nested arrow with destructured local authority", async () => {
+  const source = `export function relay(injected: { fetch: (u: string) => Promise<unknown> }) {
+  const wrapper = () => {
+    const handler = ({ fetch }: { fetch: (u: string) => Promise<unknown> }) => fetch;
+    return handler(injected);
+  };
+  return wrapper()("synthetic");
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/run18-nested-destructured-shadow.ts", source]]),
+      }),
+    "nested arrow with destructured local authority must not be rejected",
+  );
+});
+
+test("run-18: no-import accepts nested block-local shadow of globalThis", async () => {
+  const source = `export function relay(localClient: { fetch(u: string): Promise<unknown> }) {
+  const wrapper = () => {
+    {
+      const globalThis = localClient;
+      return globalThis;
+    }
+  };
+  return wrapper().fetch("synthetic");
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/run18-nested-block-shadow.ts", source]]),
+      }),
+    "nested block-local shadow of globalThis must not be rejected",
+  );
+});
+
+test("run-18: no-import accepts nested function and class declarations shadowing primitives", async () => {
+  const source = `export function relay() {
+  const wrapper = () => {
+    function fetch(url: string) { return Promise.resolve(url); }
+    class WebSocket { constructor(_u: string) {} }
+    return fetch("synthetic");
+  };
+  return wrapper();
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/run18-nested-fn-class-shadow.ts", source]]),
+      }),
+    "nested function and class declarations shadowing primitives must not be rejected",
+  );
+});
+
+test("run-18: no-import accepts nested callable returning local object with fetch property", async () => {
+  const source = `export function relay() {
+  const wrapper = () => {
+    function makeClient() {
+      return { fetch: (u: string) => Promise.resolve(u) };
+    }
+    return makeClient();
+  };
+  return wrapper().fetch("synthetic");
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/run18-nested-local-fetch-object.ts", source]]),
+      }),
+    "nested callable returning local object with fetch property must not be rejected",
+  );
+});
+
+test("run-18: no-import accepts normal nested callback without global authority", async () => {
+  const source = `function map<T, U>(arr: T[], fn: (item: T) => U): U[] {
+  return arr.map(fn);
+}
+export function relay() {
+  function transform(x: number) { return x * 2; }
+  return map([1, 2, 3], transform);
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/run18-normal-nested-callback.ts", source]]),
+      }),
+    "normal nested callback without global authority must not be rejected",
+  );
+});
+
 function cloneRecord(record) {
   return {
     ...record,

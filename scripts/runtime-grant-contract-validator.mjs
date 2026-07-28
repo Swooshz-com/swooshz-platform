@@ -2445,6 +2445,91 @@ function blockContainsGlobalObject(block, currentScope, scopes) {
   let found = false;
   const visit = (node) => {
     if (found) return;
+
+    if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node)) {
+      if (analyzeCallableBody(node, scopes)) {
+        found = true;
+      }
+      return;
+    }
+
+    if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
+      for (const member of node.members) {
+        if (found) return;
+        if (
+          ts.isMethodDeclaration(member) ||
+          ts.isConstructorDeclaration(member) ||
+          ts.isGetAccessor(member) ||
+          ts.isSetAccessor(member)
+        ) {
+          if (analyzeCallableBody(member, scopes)) {
+            found = true;
+          }
+        }
+      }
+      return;
+    }
+
+    if (ts.isBlock(node) && node !== block) {
+      const nestedScope = {
+        bindings: new Map(),
+        globalAliases: new Set(),
+        callableBindings: new Map(),
+        node,
+        varScope: scopes[scopes.length - 1],
+      };
+      addNodeScopeDeclarations(node, nestedScope);
+      if (blockContainsGlobalObject(node, nestedScope, [...scopes, nestedScope])) {
+        found = true;
+      }
+      return;
+    }
+
+    if (ts.isCatchClause(node)) {
+      const catchScope = {
+        bindings: new Map(),
+        globalAliases: new Set(),
+        callableBindings: new Map(),
+        node,
+        varScope: scopes[scopes.length - 1],
+      };
+      addNodeScopeDeclarations(node, catchScope);
+      if (node.block && blockContainsGlobalObject(node.block, catchScope, [...scopes, catchScope])) {
+        found = true;
+      }
+      return;
+    }
+
+    if (ts.isForStatement(node) || ts.isForInStatement(node) || ts.isForOfStatement(node)) {
+      const loopScope = {
+        bindings: new Map(),
+        globalAliases: new Set(),
+        callableBindings: new Map(),
+        node,
+        varScope: scopes[scopes.length - 1],
+      };
+      addNodeScopeDeclarations(node, loopScope);
+      const loopScopes = [...scopes, loopScope];
+      if (node.statement) {
+        if (ts.isBlock(node.statement)) {
+          const nestedScope = {
+            bindings: new Map(),
+            globalAliases: new Set(),
+            callableBindings: new Map(),
+            node: node.statement,
+            varScope: loopScope,
+          };
+          addNodeScopeDeclarations(node.statement, nestedScope);
+          if (blockContainsGlobalObject(node.statement, nestedScope, [...loopScopes, nestedScope])) {
+            found = true;
+          }
+        } else {
+          visit(node.statement);
+        }
+      }
+      return;
+    }
+
     if (ts.isReturnStatement(node) && node.expression) {
       if (expressionContainsGlobalObject(node.expression, scopes)) {
         found = true;
