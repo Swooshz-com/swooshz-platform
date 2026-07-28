@@ -3259,6 +3259,202 @@ export function relay() {
   );
 });
 
+// --- Run 19: non-block loop scope RED controls ---
+// Loop bodies that genuinely escape the global object must still be rejected.
+
+test("run-19: no-import rejects loop body returning real globalThis", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run19-loop-return-global.ts",
+            `export function relay(clients: unknown[]) {
+  for (const c of clients) return globalThis;
+}`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-19: no-import rejects loop body returning real global", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run19-loop-return-global-alias.ts",
+            `export function relay(clients: unknown[]) {
+  for (const c of clients) return global;
+}`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-19: no-import rejects loop body returning proven alias", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run19-loop-return-alias.ts",
+            `const alias = globalThis;
+export function relay(clients: unknown[]) {
+  for (const c of clients) return alias;
+}`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-19: no-import rejects loop body packaging global in object", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run19-loop-package-object.ts",
+            `export function relay(clients: unknown[]) {
+  for (const c of clients) return { g: globalThis };
+}`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-19: no-import rejects loop body using real fetch authority", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run19-loop-use-fetch.ts",
+            `export function relay(urls: string[]) {
+  for (const u of urls) return globalThis.fetch(u);
+}`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+test("run-19: no-import rejects loop body using real WebSocket authority", async () => {
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          ["src/platform/run19-loop-use-ws.ts",
+            `export function relay(urls: string[]) {
+  for (const u of urls) return new globalThis.WebSocket(u);
+}`],
+        ]),
+      }),
+    contractError(globalNetworkRejectionCode),
+  );
+});
+
+// --- Run 19: non-block loop scope GREEN controls ---
+// Valid loop-local shadows must not be rejected.
+
+test("run-19: no-import accepts non-block for-of with loop-local globalThis", async () => {
+  const source = `export function relay(clients: { fetch(u: string): Promise<unknown> }[]) {
+  for (const globalThis of clients) return globalThis;
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/run19-forof-shadow.ts", source]]),
+      }),
+    "non-block for-of with loop-local globalThis must not be rejected",
+  );
+});
+
+test("run-19: no-import accepts non-block for-in with loop-local global", async () => {
+  const source = `export function relay(map: Record<string, { fetch(u: string): Promise<unknown> }>) {
+  for (const global in map) return map[global];
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/run19-forin-shadow.ts", source]]),
+      }),
+    "non-block for-in with loop-local global must not be rejected",
+  );
+});
+
+test("run-19: no-import accepts non-block classic for with loop-local fetch", async () => {
+  const source = `export function relay(clients: { fetch(u: string): Promise<unknown> }[]) {
+  for (let i = 0; i < clients.length; i) return clients[i];
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/run19-for-shadow.ts", source]]),
+      }),
+    "non-block classic for with loop-local binding must not be rejected",
+  );
+});
+
+test("run-19: no-import accepts destructured for-of binding with loop-local globalThis", async () => {
+  const source = `export function relay(pairs: { client: { fetch(u: string): Promise<unknown> } }[]) {
+  for (const { client: globalThis } of pairs) return globalThis;
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/run19-forof-destructured-shadow.ts", source]]),
+      }),
+    "destructured for-of binding with loop-local globalThis must not be rejected",
+  );
+});
+
+test("run-19: no-import accepts block-bodied for-of with loop-local globalThis", async () => {
+  const source = `export function relay(clients: { fetch(u: string): Promise<unknown> }[]) {
+  for (const globalThis of clients) {
+    return globalThis;
+  }
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/run19-forof-block-shadow.ts", source]]),
+      }),
+    "block-bodied for-of with loop-local globalThis must not be rejected",
+  );
+});
+
+test("run-19: no-import accepts nested loop with inner locally shadowed primitive", async () => {
+  const source = `export function relay(matrix: { fetch(u: string): Promise<unknown> }[][]) {
+  for (const row of matrix) {
+    for (const fetch of row) {
+      return fetch;
+    }
+  }
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/run19-nested-loop-shadow.ts", source]]),
+      }),
+    "nested loop with inner locally shadowed primitive must not be rejected",
+  );
+});
+
+test("run-19: no-import accepts normal loop with no global authority", async () => {
+  const source = `export function relay(items: number[]) {
+  let sum = 0;
+  for (const item of items) sum += item;
+  return sum;
+}`;
+  await assert.doesNotReject(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([["src/platform/run19-normal-loop.ts", source]]),
+      }),
+    "normal loop with no global authority must not be rejected",
+  );
+});
+
 function cloneRecord(record) {
   return {
     ...record,

@@ -2443,11 +2443,12 @@ function blockContainsGlobalObject(block, currentScope, scopes) {
   }
 
   let found = false;
-  const visit = (node) => {
+  const visit = (node, visitScopes) => {
     if (found) return;
+    const effectiveScopes = visitScopes || scopes;
 
     if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node)) {
-      if (analyzeCallableBody(node, scopes)) {
+      if (analyzeCallableBody(node, effectiveScopes)) {
         found = true;
       }
       return;
@@ -2462,7 +2463,7 @@ function blockContainsGlobalObject(block, currentScope, scopes) {
           ts.isGetAccessor(member) ||
           ts.isSetAccessor(member)
         ) {
-          if (analyzeCallableBody(member, scopes)) {
+          if (analyzeCallableBody(member, effectiveScopes)) {
             found = true;
           }
         }
@@ -2476,10 +2477,10 @@ function blockContainsGlobalObject(block, currentScope, scopes) {
         globalAliases: new Set(),
         callableBindings: new Map(),
         node,
-        varScope: scopes[scopes.length - 1],
+        varScope: effectiveScopes[effectiveScopes.length - 1],
       };
       addNodeScopeDeclarations(node, nestedScope);
-      if (blockContainsGlobalObject(node, nestedScope, [...scopes, nestedScope])) {
+      if (blockContainsGlobalObject(node, nestedScope, [...effectiveScopes, nestedScope])) {
         found = true;
       }
       return;
@@ -2491,10 +2492,10 @@ function blockContainsGlobalObject(block, currentScope, scopes) {
         globalAliases: new Set(),
         callableBindings: new Map(),
         node,
-        varScope: scopes[scopes.length - 1],
+        varScope: effectiveScopes[effectiveScopes.length - 1],
       };
       addNodeScopeDeclarations(node, catchScope);
-      if (node.block && blockContainsGlobalObject(node.block, catchScope, [...scopes, catchScope])) {
+      if (node.block && blockContainsGlobalObject(node.block, catchScope, [...effectiveScopes, catchScope])) {
         found = true;
       }
       return;
@@ -2506,10 +2507,10 @@ function blockContainsGlobalObject(block, currentScope, scopes) {
         globalAliases: new Set(),
         callableBindings: new Map(),
         node,
-        varScope: scopes[scopes.length - 1],
+        varScope: effectiveScopes[effectiveScopes.length - 1],
       };
       addNodeScopeDeclarations(node, loopScope);
-      const loopScopes = [...scopes, loopScope];
+      const loopScopes = [...effectiveScopes, loopScope];
       if (node.statement) {
         if (ts.isBlock(node.statement)) {
           const nestedScope = {
@@ -2524,26 +2525,26 @@ function blockContainsGlobalObject(block, currentScope, scopes) {
             found = true;
           }
         } else {
-          visit(node.statement);
+          visit(node.statement, loopScopes);
         }
       }
       return;
     }
 
     if (ts.isReturnStatement(node) && node.expression) {
-      if (expressionContainsGlobalObject(node.expression, scopes)) {
+      if (expressionContainsGlobalObject(node.expression, effectiveScopes)) {
         found = true;
         return;
       }
     }
     if (ts.isExpressionStatement(node)) {
-      if (expressionContainsGlobalObject(node.expression, scopes)) {
+      if (expressionContainsGlobalObject(node.expression, effectiveScopes)) {
         found = true;
         return;
       }
     }
     ts.forEachChild(node, (child) => {
-      if (!found) visit(child);
+      if (!found) visit(child, effectiveScopes);
     });
   };
   visit(block);
