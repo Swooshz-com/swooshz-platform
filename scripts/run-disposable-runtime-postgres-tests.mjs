@@ -484,7 +484,7 @@ async function startOwnedContainer(spawnImpl) {
 }
 
 async function waitForPostgres(connectionString) {
-  for (let attempt = 0; attempt < 60; attempt += 1) {
+  for (let attempt = 0; attempt < 240; attempt += 1) {
     const pool = new Pool({ connectionString, max: 1, connectionTimeoutMillis: 1_000 });
     try {
       await pool.query("select 1");
