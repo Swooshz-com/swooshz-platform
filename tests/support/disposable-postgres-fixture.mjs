@@ -6,18 +6,42 @@ import {
 
 const phases = new Set(["initialization", "final_start"]);
 const safeIdentifier = /^[a-z_][a-z0-9_$]{0,62}$/u;
-const safeContainerAlias = /^[a-z0-9][a-z0-9_.-]{0,62}$/u;
 const loopbackHosts = new Set(["127.0.0.1", "::1"]);
-const validPort = (value) => /^\d{1,5}$/u.test(value) && Number(value) >= 1 && Number(value) <= 65535;
+const validPort = (value) =>
+  /^\d{1,5}$/u.test(value) && Number(value) >= 1 && Number(value) <= 65535;
+
+// These brands never leave this module. Tokens are empty frozen objects and
+// their authority data is available only through these WeakMaps.
+const constructionAggregateBrand = Symbol("construction-aggregate");
+const provisioningTargetBrand = Symbol("provisioning-target");
+const configuredAggregateBrand = Symbol("configured-aggregate");
+const configuredTargetBrand = Symbol("configured-target");
+const mutationTargetBrand = Symbol("mutation-target");
 const managedTransportValues = new WeakMap();
 const parsedUrlValues = new WeakMap();
-const admissionValues = new WeakMap();
-const mutationClientValues = new WeakMap();
+const constructionAggregateValues = new WeakMap();
+const provisioningTargetValues = new WeakMap();
+const configuredAggregateValues = new WeakMap();
+const configuredTargetValues = new WeakMap();
+const mutationTargetValues = new WeakMap();
 
 const mutationKeyword =
   /\b(?:grant|revoke|alter|create|drop|truncate|insert|update|delete|merge|copy|vacuum|refresh)\b/iu;
 const sessionMutationKeyword =
   /\bset\s+(?:role|session\s+authorization|session_replication_role)\b/iu;
+
+const identitySql = `
+  select
+    current_database() = $1 as database_matches,
+    session_user = $2 as user_matches,
+    current_setting('server_version_num')::integer / 10000 = 17
+      as postgres17,
+    not pg_is_in_recovery() as non_recovery,
+    (select system_identifier::text from pg_control_system())
+      as catalog_fingerprint,
+    (select oid::text from pg_database where datname = current_database())
+      as lifecycle_fingerprint
+`;
 
 export class DisposablePostgresFixtureAdmissionError extends Error {
   constructor() {
@@ -25,26 +49,6 @@ export class DisposablePostgresFixtureAdmissionError extends Error {
     this.name = "DisposablePostgresFixtureAdmissionError";
     this.code = "disposable_fixture_admission_failed";
   }
-}
-
-export function createManagedContainerTransportAttestation({
-  alias,
-  image,
-  phase,
-} = {}) {
-  if (
-    typeof alias !== "string" ||
-    !safeContainerAlias.test(alias) ||
-    alias.toLowerCase() === "localhost" ||
-    loopbackHosts.has(alias) ||
-    image !== "postgres:17" ||
-    !phases.has(phase)
-  ) {
-    throw new DisposablePostgresFixtureAdmissionError();
-  }
-  const attestation = Object.freeze({});
-  managedTransportValues.set(attestation, Object.freeze({ alias, image, phase }));
-  return attestation;
 }
 
 export function parseDisposablePostgresUrl(
@@ -71,6 +75,7 @@ export function parseDisposablePostgresUrl(
     const parsed = new URL(connectionString);
     if (
       !["postgres:", "postgresql:"].includes(parsed.protocol) ||
+      parsed.password ||
       parsed.hash ||
       parsed.search
     ) {
@@ -98,10 +103,12 @@ export function parseDisposablePostgresUrl(
       throw new Error();
     }
 
+    let transportIdentity;
     if (transportKind === "loopback") {
       if (!loopbackHosts.has(hostname)) {
         throw new Error();
       }
+      transportIdentity = `loopback:${hostname}:${port}`;
     } else if (transportKind === "managed-container") {
       const value = managedTransportValues.get(transport.attestation);
       if (
@@ -112,77 +119,165 @@ export function parseDisposablePostgresUrl(
       ) {
         throw new Error();
       }
+      transportIdentity = `managed-container:${value.alias}:${port}:${value.image}`;
     } else {
       throw new Error();
     }
 
     const token = Object.freeze({});
-    parsedUrlValues.set(token, Object.freeze({
-      database,
-      hostname,
-      phase,
-      transportKind,
-      username,
-    }));
+    parsedUrlValues.set(
+      token,
+      Object.freeze({
+        database,
+        hostname,
+        phase,
+        port,
+        transportIdentity,
+        transportKind,
+        username,
+      }),
+    );
     return token;
   } catch {
     throw new DisposablePostgresFixtureAdmissionError();
   }
 }
 
+export async function admitDisposablePostgresConstructionTargets(
+  targets,
+  { readOnlyProbe, clientFactory } = {},
+) {
+  try {
+    if (!Array.isArray(targets) || targets.length < 2) {
+      throw new Error();
+    }
+    const names = new Set();
+    const normalizedTargets = [];
+    for (const target of targets) {
+      const normalized = normalizeConstructionTarget(target);
+      if (names.has(normalized.name)) {
+        throw new Error();
+      }
+      names.add(normalized.name);
+      normalizedTargets.push(normalized);
+    }
+
+    const admittedTargets = new Map();
+    for (const target of normalizedTargets) {
+      const evidence = await probeTarget({
+        target,
+        readOnlyProbe: readOnlyProbe ?? defaultConstructionProbe,
+        builtInProbe: !readOnlyProbe,
+        clientFactory,
+      });
+      admittedTargets.set(
+        target.name,
+        Object.freeze({
+          evidence,
+          target,
+        }),
+      );
+    }
+
+    const aggregate = Object.freeze({});
+    constructionAggregateValues.set(aggregate, {
+      admittedTargets,
+      brand: constructionAggregateBrand,
+      phase: "initialization",
+      provisioningTargets: new Set(),
+      valid: true,
+    });
+    return aggregate;
+  } catch (error) {
+    if (error instanceof DisposablePostgresFixtureAdmissionError) {
+      throw error;
+    }
+    throw new DisposablePostgresFixtureAdmissionError();
+  }
+}
+
+export function deriveDisposablePostgresProvisioningAuthority(
+  aggregate,
+  targetName,
+) {
+  try {
+    const value = requireConstructionAggregate(aggregate);
+    if (
+      typeof targetName !== "string" ||
+      value.provisioningTargets.has(targetName)
+    ) {
+      throw new Error();
+    }
+    const target = value.admittedTargets.get(targetName);
+    if (!target) {
+      throw new Error();
+    }
+    value.provisioningTargets.add(targetName);
+    const authority = Object.freeze({});
+    provisioningTargetValues.set(authority, {
+      authority,
+      boundConnections: new WeakSet(),
+      brand: provisioningTargetBrand,
+      consumed: false,
+      phase: "initialization",
+      targetName,
+      target,
+      valid: true,
+    });
+    return authority;
+  } catch (error) {
+    if (error instanceof DisposablePostgresFixtureAdmissionError) {
+      throw error;
+    }
+    throw new DisposablePostgresFixtureAdmissionError();
+  }
+}
+
+export function createAuthorizedProvisioningPool(pool, authority, options = {}) {
+  try {
+    const value = requireProvisioningTarget(authority);
+    if (
+      value.consumed ||
+      value.boundPool ||
+      !pool ||
+      typeof pool.connect !== "function" ||
+      !poolConnectionMatchesTarget(pool, value.target)
+    ) {
+      throw new Error();
+    }
+    value.consumed = true;
+    value.boundPool = pool;
+    value.valid = true;
+    const revalidate = createMutationRevalidator(options);
+    return createAuthorizedPoolWrapper(pool, value.target, value, revalidate);
+  } catch (error) {
+    if (error instanceof DisposablePostgresFixtureAdmissionError) {
+      throw error;
+    }
+    throw new DisposablePostgresFixtureAdmissionError();
+  }
+}
+
 export async function admitDisposablePostgresFixture(
   fixture,
-  {
-    readOnlyProbe,
-    postureInspector = inspectRuntimeDatabaseRoleAuthorityPosture,
-  } = {},
+  { readOnlyProbe, postureInspector = inspectRuntimeDatabaseRoleAuthorityPosture } = {},
 ) {
   try {
     const normalized = normalizeFixture(fixture);
-    const parsedUrl = parseDisposablePostgresUrl(
-      normalized.connectionString,
-      normalized,
-    );
-    const customProbe = readOnlyProbe ?? normalized.readOnlyProbe;
-    let client = normalized.client;
-    let ownedPool = null;
-
-    if (!client && !customProbe) {
-      ownedPool = new Pool({
-        connectionString: normalized.connectionString,
-        max: 1,
-      });
-      client = await ownedPool.connect();
-    }
-    if (!client) {
-      client = {
-        query() {
-          throw new Error();
-        },
-      };
-    }
-
-    try {
-      const probe = customProbe ?? defaultReadOnlyProbe;
-      const result = await probe({
-        client: readOnlyClient(client, normalized),
-        fixture: normalized,
-        parsedUrl,
-        postureInspector,
-      });
-      assertProbeResult(result);
-      const token = Object.freeze({});
-      admissionValues.set(token, Object.freeze({
-        fixtureName: normalized.name,
-        phase: normalized.phase,
-      }));
-      return token;
-    } finally {
-      if (ownedPool) {
-        client.release();
-        await ownedPool.end();
-      }
-    }
+    const evidence = await probeTarget({
+      target: normalized,
+      readOnlyProbe: readOnlyProbe ?? ((args) =>
+        defaultConfiguredProbe({ ...args, postureInspector })),
+      builtInProbe: !readOnlyProbe,
+    });
+    const token = Object.freeze({});
+    configuredTargetValues.set(token, {
+      brand: configuredTargetBrand,
+      evidence,
+      phase: normalized.phase,
+      target: normalized,
+    });
+    return token;
   } catch (error) {
     if (error instanceof DisposablePostgresFixtureAdmissionError) {
       throw error;
@@ -196,28 +291,48 @@ export async function admitDisposablePostgresFixtures(
   options = {},
 ) {
   try {
-    if (!Array.isArray(fixtures) || fixtures.length === 0) {
+    if (!Array.isArray(fixtures) || fixtures.length < 2) {
       throw new Error();
     }
     const names = new Set();
-    const targetTokens = new Map();
+    const targets = new Map();
+    let phase;
     for (const fixture of fixtures) {
       const normalized = normalizeFixture(fixture);
       if (names.has(normalized.name)) {
         throw new Error();
       }
       names.add(normalized.name);
-      const token = await admitDisposablePostgresFixture(normalized, {
-        postureInspector: options.postureInspector,
-        readOnlyProbe: options.readOnlyProbe,
+      if (phase && normalized.phase !== phase) {
+        throw new Error();
+      }
+      phase ??= normalized.phase;
+      const evidence = await probeTarget({
+        target: normalized,
+        readOnlyProbe: options.readOnlyProbe ?? ((args) =>
+          defaultConfiguredProbe({
+            ...args,
+            postureInspector: options.postureInspector ??
+              inspectRuntimeDatabaseRoleAuthorityPosture,
+          })),
+        builtInProbe: !options.readOnlyProbe,
+        clientFactory: options.clientFactory,
       });
-      targetTokens.set(normalized.name, token);
+      targets.set(
+        normalized.name,
+        Object.freeze({ evidence, target: normalized }),
+      );
     }
+
     const aggregate = Object.freeze({});
-    admissionValues.set(aggregate, Object.freeze({
-      fixtureNames: Object.freeze([...names]),
-      targetTokens,
-    }));
+    configuredAggregateValues.set(aggregate, {
+      brand: configuredAggregateBrand,
+      phase,
+      targetNames: Object.freeze([...names]),
+      targets,
+      valid: true,
+      mutationPools: new Map(),
+    });
     return aggregate;
   } catch (error) {
     if (error instanceof DisposablePostgresFixtureAdmissionError) {
@@ -237,7 +352,11 @@ export async function withDisposablePostgresFixturesAdmitted(
       throw new Error();
     }
     const admission = await admitDisposablePostgresFixtures(fixtures, options);
-    return await mutation(admission);
+    try {
+      return await mutation(admission);
+    } finally {
+      invalidateDisposablePostgresAdmission(admission);
+    }
   } catch (error) {
     if (error instanceof DisposablePostgresFixtureAdmissionError) {
       throw error;
@@ -247,66 +366,47 @@ export async function withDisposablePostgresFixturesAdmitted(
 }
 
 export function requireDisposablePostgresAdmission(token) {
-  if (!token || typeof token !== "object" || !admissionValues.has(token)) {
-    throw new DisposablePostgresFixtureAdmissionError();
-  }
+  requireConfiguredAggregate(token);
 }
 
-export function createAdmittedMutationClient(client, admission) {
+export function deriveDisposablePostgresTargetAuthority(
+  admission,
+  targetName,
+  pool,
+  options = {},
+) {
   try {
-    requireDisposablePostgresAdmission(admission);
-    if (!client || typeof client.query !== "function") {
-      throw new Error();
-    }
-    const wrapper = Object.freeze({
-      query(text, values = []) {
-        if (typeof text !== "string" || !Array.isArray(values)) {
-          throw new DisposablePostgresFixtureAdmissionError();
-        }
-        return client.query(text, values);
-      },
-    });
-    mutationClientValues.set(wrapper, admission);
-    return wrapper;
-  } catch (error) {
-    if (error instanceof DisposablePostgresFixtureAdmissionError) {
-      throw error;
-    }
-    throw new DisposablePostgresFixtureAdmissionError();
-  }
-}
-
-export function createAdmittedMutationPool(pool, admission) {
-  try {
-    requireDisposablePostgresAdmission(admission);
+    const value = requireConfiguredAggregate(admission);
     if (
+      typeof targetName !== "string" ||
       !pool ||
-      typeof pool.query !== "function" ||
-      typeof pool.connect !== "function"
+      typeof pool.connect !== "function" ||
+      value.mutationPools.has(pool)
     ) {
       throw new Error();
     }
-    const wrapper = Object.freeze({
-      query(text, values = []) {
-        if (typeof text !== "string" || !Array.isArray(values)) {
-          throw new DisposablePostgresFixtureAdmissionError();
-        }
-        return pool.query(text, values);
-      },
-      async connect() {
-        const client = await pool.connect();
-        const admittedClient = createAdmittedMutationClient(client, admission);
-        return Object.freeze({
-          query: admittedClient.query,
-          release: (...args) => client.release(...args),
-        });
-      },
-      end(...args) {
-        return pool.end(...args);
-      },
+    const target = value.targets.get(targetName);
+    if (!target) {
+      throw new Error();
+    }
+    if (!poolConnectionMatchesTarget(pool, target)) {
+      throw new Error();
+    }
+    const authority = Object.freeze({});
+    mutationTargetValues.set(authority, {
+      authority,
+      boundConnections: new WeakSet(),
+      brand: mutationTargetBrand,
+      boundClient: null,
+      boundPool: pool,
+      phase: value.phase,
+      revalidate: createMutationRevalidator(options),
+      targetName,
+      target,
+      valid: true,
     });
-    mutationClientValues.set(wrapper, admission);
-    return wrapper;
+    value.mutationPools.set(pool, authority);
+    return authority;
   } catch (error) {
     if (error instanceof DisposablePostgresFixtureAdmissionError) {
       throw error;
@@ -315,43 +415,352 @@ export function createAdmittedMutationPool(pool, admission) {
   }
 }
 
-async function defaultReadOnlyProbe({
-  client,
-  fixture,
-  postureInspector,
-}) {
-  if (!client) {
-    throw new Error();
+export function createAdmittedMutationClient(client, authority) {
+  try {
+    const value = requireMutationTarget(authority);
+    if (
+      value.boundClient ||
+      !client ||
+      typeof client.query !== "function" ||
+      !clientConnectionMatchesTarget(client, value.target)
+    ) {
+      throw new Error();
+    }
+    value.boundClient = client;
+    return createMutationClientWrapper(client, value, value.revalidate);
+  } catch (error) {
+    if (error instanceof DisposablePostgresFixtureAdmissionError) {
+      throw error;
+    }
+    throw new DisposablePostgresFixtureAdmissionError();
   }
+}
 
-  const identityResult = await client.query(
-    `
-      select
-        current_database() = $1 as database_matches,
-        current_user = $2 and session_user = $2 as user_matches,
-        current_setting('server_version_num')::integer / 10000 = 17
-          as postgres17,
-        not pg_is_in_recovery() as non_recovery,
-        (select count(*) = 1 from pg_control_system())
-          as catalog_identity_present,
-        (select count(*) = 1 from pg_database
-          where datname = current_database()) as lifecycle_identity_present,
-        (select count(*) = 1 from pg_roles where rolname = $3)
-          as runtime_role_present
-    `,
-    [fixture.expectedDatabase, fixture.expectedUser, fixture.expectedRuntimeRole],
+export function createAdmittedMutationPool(
+  pool,
+  admission,
+  targetName,
+  options = {},
+) {
+  try {
+    const authority = deriveDisposablePostgresTargetAuthority(
+      admission,
+      targetName,
+      pool,
+      options,
+    );
+    const value = requireMutationTarget(authority);
+    return createAuthorizedPoolWrapper(pool, value.target, value, value.revalidate);
+  } catch (error) {
+    if (error instanceof DisposablePostgresFixtureAdmissionError) {
+      throw error;
+    }
+    throw new DisposablePostgresFixtureAdmissionError();
+  }
+}
+
+export function invalidateDisposablePostgresAdmission(admission) {
+  const value = requireConfiguredAggregate(admission);
+  value.valid = false;
+  for (const authority of value.mutationPools.values()) {
+    const target = mutationTargetValues.get(authority);
+    if (target) target.valid = false;
+  }
+}
+
+function createAuthorizedPoolWrapper(pool, target, authority, revalidate) {
+  return Object.freeze({
+    async query(text, values = []) {
+      if (typeof text !== "string" || !Array.isArray(values)) {
+        throw new DisposablePostgresFixtureAdmissionError();
+      }
+      const client = await connectAndRevalidate(pool, target, authority, revalidate);
+      try {
+        if (
+          !authority.valid ||
+          !authority.boundConnections.has(client) ||
+          !clientConnectionMatchesTarget(client, target)
+        ) {
+          throw new DisposablePostgresFixtureAdmissionError();
+        }
+        return await client.query(text, values);
+      } finally {
+        client.release();
+      }
+    },
+    async connect() {
+      const client = await connectAndRevalidate(pool, target, authority, revalidate);
+      return Object.freeze({
+        async query(text, values = []) {
+          try {
+            if (
+              typeof text !== "string" ||
+              !Array.isArray(values) ||
+              !authority.valid ||
+              !authority.boundConnections.has(client) ||
+              !clientConnectionMatchesTarget(client, target)
+            ) {
+              throw new Error();
+            }
+            return await client.query(text, values);
+          } catch {
+            throw new DisposablePostgresFixtureAdmissionError();
+          }
+        },
+        release: (...args) => client.release(...args),
+      });
+    },
+    end(...args) {
+      return pool.end(...args);
+    },
+  });
+}
+
+async function connectAndRevalidate(pool, target, authority, revalidate) {
+  try {
+    if (
+      !authority.valid ||
+      !pool ||
+      authority.boundPool !== pool ||
+      !poolConnectionMatchesTarget(pool, target)
+    ) {
+      throw new Error();
+    }
+    const client = await pool.connect();
+    try {
+      if (!clientConnectionMatchesTarget(client, target)) {
+        throw new Error();
+      }
+      await revalidate({ client, target });
+      authority.boundConnections.add(client);
+      return client;
+    } catch {
+      client.release(true);
+      throw new Error();
+    }
+  } catch {
+    throw new DisposablePostgresFixtureAdmissionError();
+  }
+}
+
+function createMutationClientWrapper(client, authority, revalidate) {
+  return Object.freeze({
+    async query(text, values = []) {
+      if (typeof text !== "string" || !Array.isArray(values)) {
+        throw new DisposablePostgresFixtureAdmissionError();
+      }
+      try {
+        if (
+          !authority.valid ||
+          authority.boundClient !== client ||
+          !clientConnectionMatchesTarget(client, authority.target)
+        ) {
+          throw new Error();
+        }
+        await revalidate({ client, target: authority.target });
+        return await client.query(text, values);
+      } catch {
+        throw new DisposablePostgresFixtureAdmissionError();
+      }
+    },
+    release: (...args) => client.release(...args),
+  });
+}
+
+function createMutationRevalidator(options) {
+  const additionalRevalidate = options?.revalidateMutationConnection;
+  return async ({ client, target }) => {
+    await defaultMutationConnectionRevalidator({ client, target });
+    if (additionalRevalidate) {
+      await additionalRevalidate({ client, target });
+    }
+  };
+}
+
+function clientConnectionMatchesTarget(client, targetRecord) {
+  try {
+    const binding = targetConnectionBinding(targetRecord);
+      const parameters = client?.connectionParameters;
+    if (!parameters || typeof parameters !== "object") return false;
+    if (parameters.password) return false;
+    const hostname = String(parameters.host ?? "").toLowerCase();
+    const port = String(parameters.port ?? "5432");
+    return (
+      String(parameters.user ?? "") === binding.expectedUser &&
+      String(parameters.database ?? "") === binding.expectedDatabase &&
+      hostname === binding.hostname &&
+      port === binding.port &&
+      binding.transportIdentity === transportIdentityFor(
+        targetRecord,
+        hostname,
+        port,
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+function poolConnectionMatchesTarget(pool, targetRecord) {
+  try {
+    const binding = targetConnectionBinding(targetRecord);
+    const configured = pool?.options?.connectionString;
+    if (typeof configured === "string") {
+      const parsed = new URL(configured);
+      if (
+        !["postgres:", "postgresql:"].includes(parsed.protocol) ||
+        parsed.password ||
+        parsed.search ||
+        parsed.hash
+      ) {
+        return false;
+      }
+      const username = decodeURIComponent(parsed.username);
+      const database = decodeURIComponent(parsed.pathname.slice(1));
+      const hostname = parsed.hostname.replace(/^\[|\]$/gu, "").toLowerCase();
+      const port = parsed.port || "5432";
+      return (
+        username === binding.expectedUser &&
+        database === binding.expectedDatabase &&
+        hostname === binding.hostname &&
+        port === binding.port &&
+        binding.transportIdentity === transportIdentityFor(
+          targetRecord,
+          hostname,
+          port,
+        )
+      );
+    }
+
+    const parameters = pool?.options?.connectionParameters;
+    if (!parameters || typeof parameters !== "object") return false;
+    if (parameters.password) return false;
+    const hostname = String(parameters.host ?? "").toLowerCase();
+    const port = String(parameters.port ?? "5432");
+    return (
+      String(parameters.user ?? "") === binding.expectedUser &&
+      String(parameters.database ?? "") === binding.expectedDatabase &&
+      hostname === binding.hostname &&
+      port === binding.port &&
+      binding.transportIdentity === transportIdentityFor(
+        targetRecord,
+        hostname,
+        port,
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+function targetConnectionBinding(targetRecord) {
+  const target = targetRecord?.target;
+  if (!target || !target.parsedUrl) throw new Error();
+  const parsed = parsedUrlValues.get(
+    target.mutationBinding?.parsedUrl ?? target.parsedUrl,
   );
-  const identity = oneRow(identityResult);
-  requireTrue(identity, [
-    "database_matches",
-    "user_matches",
-    "postgres17",
-    "non_recovery",
-    "catalog_identity_present",
-    "lifecycle_identity_present",
-    "runtime_role_present",
-  ]);
+  if (!parsed) throw new Error();
+  return {
+    expectedDatabase:
+      target.mutationBinding?.expectedDatabase ?? target.expectedDatabase,
+    expectedUser: target.mutationBinding?.expectedUser ?? target.expectedUser,
+    hostname: parsed.hostname,
+    port: parsed.port,
+    transportIdentity:
+      target.mutationBinding?.transportIdentity ?? parsed.transportIdentity,
+  };
+}
 
+function transportIdentityFor(targetRecord, hostname, port) {
+  const target = targetRecord?.target;
+  const parsed = parsedUrlValues.get(
+    target?.mutationBinding?.parsedUrl ?? target?.parsedUrl,
+  );
+  if (!parsed) throw new Error();
+  if (parsed.transportKind === "loopback") {
+    return `loopback:${hostname}:${port}`;
+  }
+  const transport = target.mutationBinding
+    ? target.mutationTransport ?? target.operatorTransport ?? target.transport
+    : target.transport;
+  const transportValue = managedTransportValues.get(transport?.attestation);
+  if (!transportValue) throw new Error();
+  return `managed-container:${transportValue.alias}:${port}:${transportValue.image}`;
+}
+
+async function probeTarget({
+  target,
+  readOnlyProbe,
+  builtInProbe = false,
+  clientFactory,
+}) {
+  try {
+    const parsedUrl = parsedUrlValues.get(target.parsedUrl);
+    if (!parsedUrl) throw new Error();
+    const customProbe = readOnlyProbe ?? target.readOnlyProbe;
+    let client = target.client;
+    let ownedPool = null;
+    if (!client && (builtInProbe || !customProbe)) {
+      if (clientFactory) {
+        client = await clientFactory(target);
+      } else {
+        ownedPool = new Pool({ connectionString: target.connectionString, max: 1 });
+        client = await ownedPool.connect();
+      }
+    }
+    if (!client) {
+      client = { query() { throw new Error(); } };
+    }
+    try {
+      const result = await customProbe({
+        client: readOnlyClient(client, target),
+        fixture: target,
+        parsedUrl,
+        postureInspector: target.postureInspector,
+      });
+      assertProbeResult(result, target.mode === "construction");
+      return Object.freeze({
+        catalogFingerprint: result.catalogFingerprint,
+        databaseMatches: true,
+        lifecycleFingerprint: result.lifecycleFingerprint,
+        nonRecovery: true,
+        postgres17: true,
+        userMatches: true,
+      });
+    } finally {
+      if (ownedPool) {
+        client.release();
+        await ownedPool.end();
+      }
+    }
+  } catch (error) {
+    if (error instanceof DisposablePostgresFixtureAdmissionError) {
+      throw error;
+    }
+    throw new DisposablePostgresFixtureAdmissionError();
+  }
+}
+
+async function defaultConstructionProbe({ client, fixture }) {
+  const identity = await readIdentity(client, fixture);
+  return {
+    ...identity,
+    catalogIdentityPresent: true,
+    databaseMatches: true,
+    expectedObjectsPresent: true,
+    lifecycleIdentityPresent: true,
+    nonRecovery: true,
+    ownershipAbsent: true,
+    postgres17: true,
+    runtimePosturePassed: true,
+    targetDatabasePresent: true,
+    userMatches: true,
+  };
+}
+
+async function defaultConfiguredProbe({ client, fixture, postureInspector }) {
+  if (!postureInspector) throw new Error();
+  const identity = await readIdentity(client, fixture);
   const posture = await postureInspector(client, fixture.expectedRuntimeRole);
   if (posture?.runtimeRoleAuthorityPosture !== "passed") {
     throw new Error();
@@ -453,6 +862,7 @@ async function defaultReadOnlyProbe({
   ]);
 
   return {
+    ...identity,
     catalogIdentityPresent: true,
     databaseMatches: true,
     expectedObjectsPresent: true,
@@ -465,6 +875,76 @@ async function defaultReadOnlyProbe({
   };
 }
 
+async function readIdentity(client, fixture) {
+  const result = await client.query(identitySql, [
+    fixture.expectedDatabase,
+    fixture.expectedUser,
+  ]);
+  const row = oneRow(result);
+  requireTrue(row, [
+    "database_matches",
+    "user_matches",
+    "postgres17",
+    "non_recovery",
+  ]);
+  const catalogFingerprint = requireFingerprint(row.catalog_fingerprint);
+  const lifecycleFingerprint = requireFingerprint(row.lifecycle_fingerprint);
+  return { catalogFingerprint, lifecycleFingerprint };
+}
+
+async function defaultMutationConnectionRevalidator({ client, target }) {
+  const binding = targetConnectionBinding(target);
+  const result = await client.query(identitySql, [
+    binding.expectedDatabase,
+    binding.expectedUser,
+  ]);
+  const row = oneRow(result);
+  requireTrue(row, [
+    "database_matches",
+    "user_matches",
+    "postgres17",
+    "non_recovery",
+  ]);
+  if (
+    requireFingerprint(row.catalog_fingerprint) !==
+      requireFingerprint(target.evidence.catalogFingerprint) ||
+    requireFingerprint(row.lifecycle_fingerprint) !==
+      requireFingerprint(target.evidence.lifecycleFingerprint)
+  ) {
+    throw new Error();
+  }
+}
+
+function normalizeConstructionTarget(target) {
+  if (!target || typeof target !== "object") throw new Error();
+  const normalized = {
+    ...target,
+    connectionString: target.connectionString ?? target.operatorUrl,
+    expectedDatabase: target.expectedDatabase,
+    expectedUser: target.expectedUser ?? "postgres",
+    mode: "construction",
+    name: target.name,
+    phase: target.phase ?? "initialization",
+    transport: target.transport,
+  };
+  if (
+    typeof normalized.name !== "string" ||
+    !safeIdentifier.test(normalized.name) ||
+    !safeIdentifier.test(normalized.expectedDatabase) ||
+    !safeIdentifier.test(normalized.expectedUser) ||
+    normalized.phase !== "initialization" ||
+    !normalized.transport ||
+    normalized.transport.phase !== normalized.phase
+  ) {
+    throw new Error();
+  }
+  normalized.parsedUrl = parseDisposablePostgresUrl(
+    normalized.connectionString,
+    normalized,
+  );
+  return normalized;
+}
+
 function normalizeFixture(fixture) {
   if (!fixture || typeof fixture !== "object") {
     throw new Error();
@@ -475,6 +955,7 @@ function normalizeFixture(fixture) {
     expectedDatabase: fixture.expectedDatabase,
     expectedUser: fixture.expectedUser,
     expectedRuntimeRole: fixture.expectedRuntimeRole,
+    mode: "configured",
     name: fixture.name,
     phase: fixture.phase ?? fixture.transport?.phase,
     transport: fixture.transport,
@@ -482,6 +963,9 @@ function normalizeFixture(fixture) {
   if (
     typeof normalized.name !== "string" ||
     !safeIdentifier.test(normalized.name) ||
+    !safeIdentifier.test(normalized.expectedDatabase) ||
+    !safeIdentifier.test(normalized.expectedUser) ||
+    !safeIdentifier.test(normalized.expectedRuntimeRole) ||
     !normalized.transport ||
     normalized.transport.phase !== normalized.phase ||
     !phases.has(normalized.phase)
@@ -489,6 +973,39 @@ function normalizeFixture(fixture) {
     throw new Error();
   }
   normalizeExpectedObjects(normalized.expectedObjects);
+  normalized.parsedUrl = parseDisposablePostgresUrl(
+    normalized.connectionString,
+    normalized,
+  );
+
+  const mutationConnectionString =
+    fixture.mutationConnectionString ??
+    fixture.operatorConnectionString ??
+    fixture.operatorUrl ??
+    normalized.connectionString;
+  const mutationUser =
+    fixture.expectedMutationUser ??
+    fixture.expectedOperatorUser ??
+    fixture.expectedUser;
+  const mutationTransport =
+    fixture.mutationTransport ??
+    fixture.operatorTransport ??
+    normalized.transport;
+  const mutationParsedUrl = parseDisposablePostgresUrl(
+    mutationConnectionString,
+    {
+      expectedDatabase: normalized.expectedDatabase,
+      expectedUser: mutationUser,
+      phase: normalized.phase,
+      transport: mutationTransport,
+    },
+  );
+  normalized.mutationBinding = Object.freeze({
+    expectedDatabase: normalized.expectedDatabase,
+    expectedUser: mutationUser,
+    parsedUrl: mutationParsedUrl,
+    transportIdentity: parsedUrlValues.get(mutationParsedUrl).transportIdentity,
+  });
   return normalized;
 }
 
@@ -563,12 +1080,15 @@ function assertReadOnlySql(text) {
   const withoutLiterals = text
     .replace(/'(?:''|[^'])*'/gu, "''")
     .replace(/--[^\r\n]*/gu, "");
-  if (mutationKeyword.test(withoutLiterals) || sessionMutationKeyword.test(withoutLiterals)) {
+  if (
+    mutationKeyword.test(withoutLiterals) ||
+    sessionMutationKeyword.test(withoutLiterals)
+  ) {
     throw new Error();
   }
 }
 
-function assertProbeResult(result) {
+function assertProbeResult(result, construction) {
   if (!result || typeof result !== "object") throw new Error();
   requireTrue(result, [
     "databaseMatches",
@@ -581,6 +1101,58 @@ function assertProbeResult(result) {
     "ownershipAbsent",
     "expectedObjectsPresent",
   ]);
+  if (construction) requireTrue(result, ["targetDatabasePresent"]);
+  requireFingerprint(result.catalogFingerprint);
+  requireFingerprint(result.lifecycleFingerprint);
+}
+
+function requireConstructionAggregate(token) {
+  const value = constructionAggregateValues.get(token);
+  if (!value || value.brand !== constructionAggregateBrand || !value.valid) {
+    throw new DisposablePostgresFixtureAdmissionError();
+  }
+  return value;
+}
+
+function requireProvisioningTarget(token) {
+  const value = provisioningTargetValues.get(token);
+  if (
+    !value ||
+    value.brand !== provisioningTargetBrand ||
+    !value.valid ||
+    !value.target ||
+    !value.target.target
+  ) {
+    throw new DisposablePostgresFixtureAdmissionError();
+  }
+  return value;
+}
+
+function requireConfiguredAggregate(token) {
+  const value = configuredAggregateValues.get(token);
+  if (!value || value.brand !== configuredAggregateBrand || !value.valid) {
+    throw new DisposablePostgresFixtureAdmissionError();
+  }
+  return value;
+}
+
+function requireMutationTarget(token) {
+  const value = mutationTargetValues.get(token);
+  if (!value || value.brand !== mutationTargetBrand || !value.valid) {
+    throw new DisposablePostgresFixtureAdmissionError();
+  }
+  return value;
+}
+
+function requireFingerprint(value) {
+  if (
+    (typeof value !== "string" && typeof value !== "number") ||
+    String(value).trim().length === 0 ||
+    String(value) === "0"
+  ) {
+    throw new Error();
+  }
+  return String(value);
 }
 
 function oneRow(result) {

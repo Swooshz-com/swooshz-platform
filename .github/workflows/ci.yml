@@ -32,20 +32,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: guardrails
 
-    services:
-      postgres:
-        image: postgres:17
-        env:
-          POSTGRES_DB: runtime_posture_test
-          POSTGRES_HOST_AUTH_METHOD: trust
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready --username postgres --dbname runtime_posture_test"
-          --health-interval 2s
-          --health-timeout 5s
-          --health-retries 15
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -69,10 +55,8 @@ jobs:
         run: npm test
 
       - name: PostgreSQL 17 disposable runtime posture tests
-        env:
-          RUNTIME_POSTURE_TEST_DATABASE_URL: postgres://platform_app@127.0.0.1:5432/runtime_posture_test
-          RUNTIME_POSTURE_TEST_OPERATOR_URL: postgres://postgres@127.0.0.1:5432/runtime_posture_test
-          RUNTIME_POSTURE_TEST_CONFIRM: disposable-only
+        # The runner owns the exact codex-platform127-pg17 postgres:17 fixture and listener.
+        # Its disposable container uses POSTGRES_HOST_AUTH_METHOD=trust only locally.
         run: npm run test:disposable-runtime-postgres
 
   container:

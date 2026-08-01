@@ -554,6 +554,50 @@ test("unbound process built-in acquisition is rejected through aliases, computed
   }
 });
 
+test("unbound process acquisition rejects value-producing comma expressions", async () => {
+  const cases = [
+    `export function load() { return (0, globalThis).process.getBuiltinModule("fs"); }`,
+    `export function load() { const g = (0, globalThis); return g.process.getBuiltinModule("fs"); }`,
+    `export function load() { return (0, globalThis)["process"]["getBuiltinModule"]("fs"); }`,
+    `export function load() { return (0, globalThis)?.process?.getBuiltinModule?.("fs"); }`,
+    `export function load() { const { process: p } = (0, globalThis); return p.getBuiltinModule("fs"); }`,
+    `export function load() { const get = (0, globalThis).process.getBuiltinModule; return get("fs"); }`,
+    `export function load() { return (0, process).getBuiltinModule("fs"); }`,
+    `export function load() { return Reflect.get((0, globalThis), (0, "process")); }`,
+  ];
+
+  for (const [index, source] of cases.entries()) {
+    await assert.rejects(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([
+            [`src/platform/run05-sequence-process-${index}.ts`, source],
+          ]),
+        }),
+      contractError(globalNetworkRejectionCode),
+    );
+  }
+});
+
+test("sequence-expression scanner keeps discarded left operands from becoming authority", async () => {
+  const safeCases = [
+    `export function load(value) { return (globalThis, value); }`,
+    `export function load(value) { return ((0, globalThis), value); }`,
+    `export function load(value) { return (globalThis, value.fetch()); }`,
+  ];
+
+  for (const [index, source] of safeCases.entries()) {
+    await assert.doesNotReject(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([
+            [`src/platform/run05-sequence-discarded-${index}.ts`, source],
+          ]),
+        }),
+    );
+  }
+});
+
 test("process scanner preserves local shadowing and type-only references", async () => {
   const cases = [
     `export function load(process) { return process.getBuiltinModule("fs"); }`,

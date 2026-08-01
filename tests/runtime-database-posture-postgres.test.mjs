@@ -16,10 +16,16 @@ import {
 
 const databaseUrl = process.env.RUNTIME_POSTURE_TEST_DATABASE_URL;
 const operatorUrl = process.env.RUNTIME_POSTURE_TEST_OPERATOR_URL;
+const secondaryDatabaseUrl = process.env.RUNTIME_POSTURE_TEST_SECONDARY_DATABASE_URL;
+const secondaryOperatorUrl = process.env.RUNTIME_POSTURE_TEST_SECONDARY_OPERATOR_URL;
 const disposableConfirmed =
   process.env.RUNTIME_POSTURE_TEST_CONFIRM === "disposable-only";
 const skipReason =
-  databaseUrl && operatorUrl && disposableConfirmed
+  databaseUrl &&
+  operatorUrl &&
+  secondaryDatabaseUrl &&
+  secondaryOperatorUrl &&
+  disposableConfirmed
     ? false
     : "requires the explicitly confirmed disposable PostgreSQL fixture";
 
@@ -29,27 +35,20 @@ test(
   async (context) => {
     const rawAdminPool = new Pool({ connectionString: operatorUrl, max: 4 });
     const admission = await admitDisposablePostgresFixtures([
-      {
-        name: "primary",
-        connectionString: databaseUrl,
-        expectedDatabase: "runtime_posture_test",
-        expectedUser: "platform_app",
-        expectedRuntimeRole: "platform_runtime",
-        expectedObjects: {
-          schemas: ["public", "drizzle"],
-          relations: [
-            { schema: "drizzle", name: "__drizzle_migrations", kind: "r" },
-            { schema: "public", name: "users", kind: "r" },
-          ],
-          sequences: [],
-          routines: [],
-        },
-        transport: { kind: "loopback", phase: "final_start" },
-      },
+      fixtureDefinition("primary", databaseUrl, operatorUrl),
+      fixtureDefinition("secondary", secondaryDatabaseUrl, secondaryOperatorUrl),
     ]);
-    const adminPool = createAdmittedMutationPool(rawAdminPool, admission);
+    const adminPool = createAdmittedMutationPool(
+      rawAdminPool,
+      admission,
+      "primary",
+    );
     const roles = [];
     const schemas = [];
+    const relations = [];
+    const sequences = [];
+    const routines = [];
+    const extensions = [];
     const suffix = randomUUID().replaceAll("-", "").slice(0, 10);
     let sequence = 0;
     let neonSuperuserCreated = false;
@@ -64,6 +63,24 @@ test(
     const schema = (label) => {
       const value = `rt_${label}_${suffix}`;
       schemas.push(value);
+      return value;
+    };
+
+    const relation = (label) => {
+      const value = `rt_${label}_${suffix}`;
+      relations.push(value);
+      return value;
+    };
+
+    const sequenceName = (label) => {
+      const value = `rt_${label}_${suffix}`;
+      sequences.push(value);
+      return value;
+    };
+
+    const routine = (label) => {
+      const value = `rt_${label}_${suffix}`;
+      routines.push(value);
       return value;
     };
 
@@ -82,6 +99,332 @@ test(
       ]);
 
       neonSuperuserCreated = await ensureRole(adminPool, "neon_superuser");
+
+      await context.test(
+        "extension-managed non-system schema CREATE is denied",
+        async () => {
+          const runtime = role("extension_runtime");
+          const extensionSchema = schema("extension_schema");
+          await createRole(adminPool, runtime);
+          await adminPool.query(
+            `create schema ${identifier(extensionSchema)} authorization postgres`,
+          );
+          await adminPool.query(
+            `create extension hstore schema ${identifier(extensionSchema)}`,
+          );
+          extensions.push("hstore");
+          await adminPool.query(
+            `grant create on schema ${identifier(extensionSchema)} to ${identifier(runtime)}`,
+          );
+          await assertPostureFails(
+            adminPool,
+            runtime,
+            "databaseAndSchemaCreateAbsent",
+          );
+          await adminPool.query(
+            `revoke create on schema ${identifier(extensionSchema)} from ${identifier(runtime)}`,
+          );
+        },
+      );
+
+      await context.test("direct schema CREATE is denied", async () => {
+        const runtime = role("direct_schema_runtime");
+        const targetSchema = schema("direct_schema");
+        await createRole(adminPool, runtime);
+        await adminPool.query(
+          `create schema ${identifier(targetSchema)} authorization postgres`,
+        );
+        await adminPool.query(
+          `grant create on schema ${identifier(targetSchema)} to ${identifier(runtime)}`,
+        );
+        await assertPostureFails(
+          adminPool,
+          runtime,
+          "databaseAndSchemaCreateAbsent",
+        );
+      });
+
+      await context.test("PUBLIC schema CREATE is denied", async () => {
+        const runtime = role("public_schema_runtime");
+        await createRole(adminPool, runtime);
+        await adminPool.query(
+          `grant create on schema public to ${identifier(runtime)}`,
+        );
+        await assertPostureFails(
+          adminPool,
+          runtime,
+          "databaseAndSchemaCreateAbsent",
+        );
+        await adminPool.query(
+          `revoke create on schema public from ${identifier(runtime)}`,
+        );
+      });
+
+      await context.test("inherited-role schema CREATE is denied", async () => {
+        const runtime = role("inherited_schema_runtime");
+        const inherited = role("inherited_schema_role");
+        const targetSchema = schema("inherited_schema");
+        await createRole(adminPool, runtime);
+        await createRole(adminPool, inherited);
+        await grantRole(adminPool, inherited, runtime, false, true);
+        await adminPool.query(
+          `create schema ${identifier(targetSchema)} authorization postgres`,
+        );
+        await adminPool.query(
+          `grant create on schema ${identifier(targetSchema)} to ${identifier(inherited)}`,
+        );
+        await assertPostureFails(
+          adminPool,
+          runtime,
+          "databaseAndSchemaCreateAbsent",
+        );
+      });
+
+      await context.test("SET-assumable schema CREATE is denied", async () => {
+        const runtime = role("set_schema_runtime");
+        const assumable = role("set_schema_role");
+        const targetSchema = schema("set_schema");
+        await createRole(adminPool, runtime);
+        await createRole(adminPool, assumable);
+        await grantRole(adminPool, assumable, runtime, true, false);
+        await adminPool.query(
+          `create schema ${identifier(targetSchema)} authorization postgres`,
+        );
+        await adminPool.query(
+          `grant create on schema ${identifier(targetSchema)} to ${identifier(assumable)}`,
+        );
+        await assertPostureFails(
+          adminPool,
+          runtime,
+          "databaseAndSchemaCreateAbsent",
+        );
+      });
+
+      await context.test("schema-owner authority is denied", async () => {
+        const runtime = role("owner_schema_runtime");
+        const owner = role("owner_schema_role");
+        const targetSchema = schema("owner_schema");
+        await createRole(adminPool, runtime);
+        await createRole(adminPool, owner);
+        await grantRole(adminPool, owner, runtime, false, true);
+        await adminPool.query(
+          `create schema ${identifier(targetSchema)} authorization ${identifier(owner)}`,
+        );
+        await assertPostureFails(
+          adminPool,
+          runtime,
+          "databaseAndSchemaCreateAbsent",
+        );
+      });
+
+      await context.test(
+        "inherited-role default-ACL grantee is denied",
+        async () => {
+          const runtime = role("inherited_default_runtime");
+          const grantee = role("inherited_default_grantee");
+          const creator = role("inherited_default_creator");
+          await createRole(adminPool, runtime);
+          await createRole(adminPool, grantee);
+          await createRole(adminPool, creator);
+          await adminPool.query(`alter role ${identifier(runtime)} inherit`);
+          await grantRole(adminPool, grantee, runtime, false, true);
+          await adminPool.query(
+            `alter default privileges for role ${identifier(creator)} grant select on tables to ${identifier(grantee)}`,
+          );
+          await assertPostureFails(
+            adminPool,
+            runtime,
+            "runtimeDefaultRelationAuthorityAbsent",
+          );
+          await adminPool.query(
+            `alter default privileges for role ${identifier(creator)} revoke select on tables from ${identifier(grantee)}`,
+          );
+        },
+      );
+
+      await context.test(
+        "SET-assumable default-ACL grantee is denied",
+        async () => {
+          const runtime = role("set_default_runtime");
+          const grantee = role("set_default_grantee");
+          const creator = role("set_default_creator");
+          await createRole(adminPool, runtime);
+          await createRole(adminPool, grantee);
+          await createRole(adminPool, creator);
+          await grantRole(adminPool, grantee, runtime, true, false);
+          await adminPool.query(
+            `alter default privileges for role ${identifier(creator)} grant usage on sequences to ${identifier(grantee)}`,
+          );
+          await assertPostureFails(
+            adminPool,
+            runtime,
+            "runtimeSequenceAuthorityAbsent",
+          );
+          await adminPool.query(
+            `alter default privileges for role ${identifier(creator)} revoke usage on sequences from ${identifier(grantee)}`,
+          );
+        },
+      );
+
+      await context.test("PUBLIC relation defaults are denied", async () => {
+        const runtime = role("public_relation_default_runtime");
+        const creator = role("public_relation_default_creator");
+        await createRole(adminPool, runtime);
+        await createRole(adminPool, creator);
+        await adminPool.query(
+          `alter default privileges for role ${identifier(creator)} grant select on tables to public`,
+        );
+        await assertPostureFails(
+          adminPool,
+          runtime,
+          "runtimeDefaultRelationAuthorityAbsent",
+        );
+        await adminPool.query(
+          `alter default privileges for role ${identifier(creator)} revoke select on tables from public`,
+        );
+      });
+
+      await context.test("PUBLIC sequence defaults are denied", async () => {
+        const runtime = role("public_sequence_default_runtime");
+        const creator = role("public_sequence_default_creator");
+        await createRole(adminPool, runtime);
+        await createRole(adminPool, creator);
+        await adminPool.query(
+          `alter default privileges for role ${identifier(creator)} grant usage on sequences to public`,
+        );
+        await assertPostureFails(
+          adminPool,
+          runtime,
+          "runtimeSequenceAuthorityAbsent",
+        );
+        await adminPool.query(
+          `alter default privileges for role ${identifier(creator)} revoke usage on sequences from public`,
+        );
+      });
+
+      await context.test("PUBLIC routine defaults are denied", async () => {
+        const runtime = role("public_routine_default_runtime");
+        const creator = role("public_routine_default_creator");
+        await createRole(adminPool, runtime);
+        await createRole(adminPool, creator);
+        await adminPool.query(
+          `alter default privileges for role ${identifier(creator)} grant execute on functions to public`,
+        );
+        await assertPostureFails(
+          adminPool,
+          runtime,
+          "runtimeRoutineAuthorityAbsent",
+        );
+        await adminPool.query(
+          `alter default privileges for role ${identifier(creator)} revoke execute on functions from public`,
+        );
+      });
+
+      await context.test("relation grant options are denied", async () => {
+        const runtime = role("relation_grant_option_runtime");
+        const tableName = relation("relation_grant_option");
+        await createRole(adminPool, runtime);
+        await adminPool.query(
+          `create table public.${identifier(tableName)} (id integer)`,
+        );
+        await adminPool.query(
+          `grant select on table public.${identifier(tableName)} to ${identifier(runtime)} with grant option`,
+        );
+        await assertPostureFails(adminPool, runtime, "runtimeTableGrantsExact");
+      });
+
+      await context.test("sequence grant options are denied", async () => {
+        const runtime = role("sequence_grant_option_runtime");
+        const sequence = sequenceName("sequence_grant_option");
+        await createRole(adminPool, runtime);
+        await adminPool.query(`create sequence public.${identifier(sequence)}`);
+        await adminPool.query(
+          `grant usage on sequence public.${identifier(sequence)} to ${identifier(runtime)} with grant option`,
+        );
+        await assertPostureFails(
+          adminPool,
+          runtime,
+          "runtimeSequenceAuthorityAbsent",
+        );
+      });
+
+      await context.test("routine grant options are denied", async () => {
+        const runtime = role("routine_grant_option_runtime");
+        const routineName = routine("routine_grant_option");
+        await createRole(adminPool, runtime);
+        await adminPool.query(
+          `create function public.${identifier(routineName)}() returns integer language sql immutable as $$ select 1 $$`,
+        );
+        await adminPool.query(
+          `grant execute on function public.${identifier(routineName)}() to ${identifier(runtime)} with grant option`,
+        );
+        await assertPostureFails(
+          adminPool,
+          runtime,
+          "runtimeRoutineAuthorityAbsent",
+        );
+      });
+
+      await context.test("global default replacement is enforced", async () => {
+        const runtime = role("global_default_runtime");
+        const creator = role("global_default_creator");
+        await createRole(adminPool, runtime);
+        await createRole(adminPool, creator);
+        await adminPool.query(
+          `alter default privileges for role ${identifier(creator)} revoke select on tables from public`,
+        );
+        await adminPool.query(
+          `alter default privileges for role ${identifier(creator)} grant select on tables to ${identifier(runtime)}`,
+        );
+        await assertPostureFails(
+          adminPool,
+          runtime,
+          "runtimeDefaultRelationAuthorityAbsent",
+        );
+        await adminPool.query(
+          `alter default privileges for role ${identifier(creator)} revoke select on tables from ${identifier(runtime)}`,
+        );
+      });
+
+      await context.test("per-schema default additions are enforced", async () => {
+        const runtime = role("schema_default_runtime");
+        const creator = role("schema_default_creator");
+        await createRole(adminPool, runtime);
+        await createRole(adminPool, creator);
+        await adminPool.query(
+          `alter default privileges for role ${identifier(creator)} in schema drizzle grant select on tables to ${identifier(runtime)}`,
+        );
+        await assertPostureFails(
+          adminPool,
+          runtime,
+          "runtimeDefaultRelationAuthorityAbsent",
+        );
+        await adminPool.query(
+          `alter default privileges for role ${identifier(creator)} in schema drizzle revoke select on tables from ${identifier(runtime)}`,
+        );
+      });
+
+      await context.test("hard-wired default behavior is enforced", async () => {
+        const runtime = role("hardwired_runtime");
+        const creator = role("hardwired_creator");
+        const targetSchema = schema("hardwired_schema");
+        await createRole(adminPool, runtime);
+        await createRole(adminPool, creator);
+        await adminPool.query(
+          `create schema ${identifier(targetSchema)} authorization postgres`,
+        );
+        await adminPool.query(
+          `grant create on schema ${identifier(targetSchema)} to ${identifier(creator)}`,
+        );
+        await assertPostureFails(
+          adminPool,
+          runtime,
+          "runtimeRoutineAuthorityAbsent",
+        );
+        await adminPool.query(
+          `revoke create on schema ${identifier(targetSchema)} from ${identifier(creator)}`,
+        );
+      });
 
       await context.test(
         "direct, PUBLIC, inherited, SET-role, and owner CREATE fail for every non-system schema",
@@ -531,6 +874,18 @@ test(
       await adminPool.query("alter database runtime_posture_test owner to postgres").catch(() => {});
       await adminPool.query("alter schema drizzle owner to postgres").catch(() => {});
       await adminPool.query("alter table public.users owner to postgres").catch(() => {});
+      for (const extension of extensions.reverse()) {
+        await adminPool.query(`drop extension if exists ${identifier(extension)} cascade`).catch(() => {});
+      }
+      for (const routineName of routines.reverse()) {
+        await adminPool.query(`drop function if exists public.${identifier(routineName)}() cascade`).catch(() => {});
+      }
+      for (const sequence of sequences.reverse()) {
+        await adminPool.query(`drop sequence if exists public.${identifier(sequence)} cascade`).catch(() => {});
+      }
+      for (const relationName of relations.reverse()) {
+        await adminPool.query(`drop table if exists public.${identifier(relationName)} cascade`).catch(() => {});
+      }
       for (const schemaName of schemas.reverse()) {
         await adminPool.query(`drop schema if exists ${identifier(schemaName)} cascade`).catch(() => {});
       }
@@ -557,6 +912,32 @@ async function createRole(pool, roleName, attribute = "") {
     `create role ${identifier(roleName)} nologin noinherit nosuperuser ` +
       `${createdb} ${createrole} noreplication ${bypassrls}`,
   );
+}
+
+function fixtureDefinition(name, connectionString, operatorConnectionString) {
+  const expectedDatabase = name === "primary"
+    ? "runtime_posture_test"
+    : "runtime_posture_test_secondary";
+  return {
+    name,
+    connectionString,
+    expectedDatabase,
+    expectedUser: "platform_app",
+    expectedMutationUser: "postgres",
+    operatorUrl: operatorConnectionString,
+    expectedRuntimeRole: "platform_runtime",
+    expectedObjects: {
+      schemas: ["public", "drizzle"],
+      relations: [
+        { schema: "drizzle", name: "__drizzle_migrations", kind: "r" },
+        { schema: "public", name: "users", kind: "r" },
+      ],
+      sequences: [],
+      routines: [],
+    },
+    operatorTransport: { kind: "loopback", phase: "final_start" },
+    transport: { kind: "loopback", phase: "final_start" },
+  };
 }
 
 async function ensureRole(pool, roleName) {

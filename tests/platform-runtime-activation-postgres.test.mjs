@@ -49,8 +49,11 @@ const approvedAdmissionFixtureUrls = [
 ].filter(Boolean);
 const skipReason =
   operatorUrl &&
+  secondOperatorUrl &&
   dockerNetwork &&
+  secondDockerNetwork &&
   disposableConfirmed &&
+  approvedAdmissionFixtureUrls.length >= 2 &&
   approvedAdmissionFixtureUrls.every(isApprovedFixtureUrl)
     ? false
     : "requires explicitly confirmed loopback disposable activation fixtures";
@@ -191,7 +194,11 @@ test.before(async () => {
   const primaryPool = new Pool({ connectionString: operatorUrl, max: 1 });
   try {
     await configureContractDerivedGrantFixture(
-      createAdmittedMutationPool(primaryPool, disposableFixtureAdmission),
+      createAdmittedMutationPool(
+        primaryPool,
+        disposableFixtureAdmission,
+        "primary",
+      ),
     );
   } finally {
     await primaryPool.end();
@@ -203,7 +210,11 @@ test.before(async () => {
     });
     try {
       await configureContractDerivedGrantFixture(
-        createAdmittedMutationPool(secondaryPool, disposableFixtureAdmission),
+        createAdmittedMutationPool(
+          secondaryPool,
+          disposableFixtureAdmission,
+          "secondary",
+        ),
       );
     } finally {
       await secondaryPool.end();
@@ -1732,6 +1743,7 @@ function admittedOperatorPool(connectionString, max) {
   return createAdmittedMutationPool(
     new Pool({ connectionString, max }),
     disposableFixtureAdmission,
+    connectionString === secondOperatorUrl ? "secondary" : "primary",
   );
 }
 

@@ -163,22 +163,44 @@ The gate enumerates every usable schema except exact `information_schema` and na
 
 ### Disposable PostgreSQL Fixture Admission
 
-The disposable runner admits every primary and secondary fixture before any
-`GRANT`, `REVOKE`, role, or ownership mutation. Provisioning a freshly created
-local test container is a fixture-construction step; once the expected fixture
-exists, the runner performs read-only admission for every target before it
-starts any mutation test.
+The disposable runner has two closed phases. Container and database
+construction establishes the exact local targets; raw-target admission then
+read-only binds both primary and secondary targets before any `GRANT`,
+`REVOKE`, `ALTER ROLE`, `CREATE ROLE`, ownership transfer, or application
+object configuration. Only the complete raw aggregate can derive one-use,
+target-specific provisioning authorities. After provisioning, both configured
+fixtures are independently re-admitted in the final-start phase before focused
+mutation tests begin. Construction and role/grant configuration are not one
+admission phase.
+The primary and secondary fixture are both part of this proof.
+Initialization and final-start transport attestations are distinct.
+The pre-mutation proof remains before any
+`GRANT`, `REVOKE`, role, or ownership mutation.
 
-Admission parses each URL without output and binds the expected database and
-user. It requires PostgreSQL 17, non-recovery state, an approved loopback
-transport or an independently attested managed-container alias, catalog and
-lifecycle identities, the restricted runtime posture, absent runtime
-ownership, and the expected schemas, relations, sequences, and routines.
-Initialization and final-start transport attestations are distinct. A
-successful aggregate is an opaque in-process token, and mutation clients are
-constructed only from that token. If any secondary target fails, no mutation callback is entered. Ambiguous `localhost`, remote hosts, unmanaged sockets,
-unattested container aliases, connection-derived errors, and forged admission
-objects fail closed without revealing connection material.
+Admission parses each URL without output and binds normalized transport,
+database, expected user, PostgreSQL 17, non-recovery state, non-vacuous
+catalogue and lifecycle fingerprints, and the exact target phase. Aggregate,
+configured, provisioning, and mutation authorities have distinct internal
+brands and opaque in-process contents. A target authority is bound to the
+exact pool or client and target connection identity; the actual mutation
+connection revalidates database, session user, PostgreSQL version, recovery
+state, and fingerprints immediately before use. Wrong pools or connections,
+partial or replayed authorities, changed targets, target substitution, stale
+tokens, vacuous zero-row evidence, and caller-shaped managed-container
+attestations fail closed without revealing connection material.
+The complete aggregate is one opaque in-process token; if any secondary target fails, no mutation callback is entered.
+
+The runner owns only the exact `codex-platform127-pg17` PostgreSQL 17
+container, its designated local listener, the two fixture databases, fixture
+roles, focused-test temporary roles, schemas, objects, and focused-test child process. The Docker daemon and
+the container's default `postgres` database are caller-managed and untouched.
+Caller-supplied fixture URLs are rejected because they cannot satisfy this
+runner's lifecycle ownership and absence proof. An authorised `finally`
+harness removes exact runner-owned databases, roles, schemas, objects, child
+process, container, and listener, then proves exact container and port absence
+after success and every failure path. Cleanup command failure or inconclusive
+process/listener absence fails closed; hosted-service cleanup is not a
+substitute for this local proof.
 
 The repository proof command is `npm run test:disposable-runtime-postgres`.
 It uses only disposable PostgreSQL 17 fixtures and keeps operator URLs out of

@@ -3,9 +3,14 @@ import test from "node:test";
 
 import {
   DisposablePostgresFixtureAdmissionError,
+  admitDisposablePostgresConstructionTargets,
+  admitDisposablePostgresFixture,
   admitDisposablePostgresFixtures,
   createAdmittedMutationClient,
-  createManagedContainerTransportAttestation,
+  createAdmittedMutationPool,
+  deriveDisposablePostgresProvisioningAuthority,
+  deriveDisposablePostgresTargetAuthority,
+  invalidateDisposablePostgresAdmission,
   parseDisposablePostgresUrl,
   requireDisposablePostgresAdmission,
   withDisposablePostgresFixturesAdmitted,
@@ -39,6 +44,9 @@ const passingProbe = async () => ({
   runtimePosturePassed: true,
   ownershipAbsent: true,
   expectedObjectsPresent: true,
+  targetDatabasePresent: true,
+  catalogFingerprint: "catalog-1",
+  lifecycleFingerprint: "lifecycle-1",
 });
 
 test("disposable fixture admission rejects ambiguous, remote, socket, and unattested targets", () => {
@@ -96,12 +104,7 @@ test("initialization and final-start transports are distinct admission phases", 
     safeAdmissionError,
   );
 
-  const attestation = createManagedContainerTransportAttestation({
-    alias: "postgres-primary",
-    image: "postgres:17",
-    phase: "final_start",
-  });
-  assert.doesNotThrow(() =>
+  assert.throws(() =>
     parseDisposablePostgresUrl(
       "postgres://platform_app@postgres-primary:5432/runtime_posture_test",
       {
@@ -111,10 +114,11 @@ test("initialization and final-start transports are distinct admission phases", 
         transport: {
           kind: "managed-container",
           phase: "final_start",
-          attestation,
+          attestation: Object.freeze({}),
         },
       },
     ),
+    safeAdmissionError,
   );
 });
 
@@ -153,9 +157,18 @@ test("every target is admitted before mutation and a secondary failure permits z
 });
 
 test("mutation clients require an opaque aggregate admission token", async () => {
-  const admission = await admitDisposablePostgresFixtures([baseFixture], {
+  const secondary = {
+    ...baseFixture,
+    name: "secondary",
+    connectionString:
+      "postgres://platform_app@127.0.0.1:5433/runtime_posture_test",
+  };
+  const admission = await admitDisposablePostgresFixtures(
+    [baseFixture, secondary],
+    {
     readOnlyProbe: passingProbe,
-  });
+    },
+  );
   assert.equal(Object.keys(admission).length, 0);
   assert.doesNotThrow(() => requireDisposablePostgresAdmission(admission));
   assert.throws(
@@ -164,23 +177,255 @@ test("mutation clients require an opaque aggregate admission token", async () =>
   );
 
   const calls = [];
+  const identity = {
+    database_matches: true,
+    user_matches: true,
+    postgres17: true,
+    non_recovery: true,
+    catalog_fingerprint: "catalog-1",
+    lifecycle_fingerprint: "lifecycle-1",
+  };
+  const pool = {
+    options: { connectionString: baseFixture.connectionString },
+    async connect() {
+      return {
+        release() {},
+        async query() {
+          return { rows: [] };
+        },
+      };
+    },
+  };
+  const authority = deriveDisposablePostgresTargetAuthority(
+    admission,
+    "primary",
+    pool,
+    { revalidateMutationConnection: async () => {} },
+  );
   const mutationClient = createAdmittedMutationClient(
     {
+      connectionParameters: {
+        host: "127.0.0.1",
+        port: 5432,
+        database: "runtime_posture_test",
+        user: "platform_app",
+      },
       async query(text, values) {
+        if (text.includes("current_database()")) {
+          return { rows: [identity] };
+        }
         calls.push({ text, values });
         return { rows: [] };
       },
     },
-    admission,
+    authority,
   );
   await mutationClient.query("grant select on table public.users to platform_runtime", []);
   assert.equal(calls.length, 1);
+  assert.throws(
+    () => createAdmittedMutationClient(
+      {
+        connectionParameters: {
+          host: "127.0.0.1",
+          port: 5433,
+          database: "runtime_posture_test",
+          user: "platform_app",
+        },
+        async query() {
+          return { rows: [identity] };
+        },
+      },
+      authority,
+    ),
+    safeAdmissionError,
+  );
+});
+
+test("single-target configured admission cannot satisfy aggregate authority", async () => {
+  const singleTarget = await admitDisposablePostgresFixture(baseFixture, {
+    readOnlyProbe: passingProbe,
+  });
+  assert.throws(
+    () => requireDisposablePostgresAdmission(singleTarget),
+    safeAdmissionError,
+  );
+
+  const construction = await admitDisposablePostgresConstructionTargets(
+    [
+      {
+        name: "primary",
+        connectionString:
+          "postgres://postgres@127.0.0.1:5432/runtime_posture_test",
+        expectedDatabase: "runtime_posture_test",
+        expectedUser: "postgres",
+        phase: "initialization",
+        transport: { kind: "loopback", phase: "initialization" },
+      },
+      {
+        name: "secondary",
+        connectionString:
+          "postgres://postgres@127.0.0.1:5433/runtime_posture_test",
+        expectedDatabase: "runtime_posture_test",
+        expectedUser: "postgres",
+        phase: "initialization",
+        transport: { kind: "loopback", phase: "initialization" },
+      },
+    ],
+    { readOnlyProbe: passingProbe },
+  );
+  const provisioning = deriveDisposablePostgresProvisioningAuthority(
+    construction,
+    "primary",
+  );
+  assert.throws(
+    () => deriveDisposablePostgresProvisioningAuthority(singleTarget, "primary"),
+    safeAdmissionError,
+  );
+  assert.equal(Object.keys(provisioning).length, 0);
+});
+
+test("target authority rejects wrong pool, connection substitution, replay, stale, and vacuous evidence", async () => {
+  const secondary = {
+    ...baseFixture,
+    name: "secondary",
+    connectionString:
+      "postgres://platform_app@127.0.0.1:5433/runtime_posture_test",
+  };
+  const admission = await admitDisposablePostgresFixtures(
+    [baseFixture, secondary],
+    { readOnlyProbe: passingProbe },
+  );
+  const pool = {
+    options: { connectionString: baseFixture.connectionString },
+    async connect() {
+      return {
+        release() {},
+        async query() {
+          return { rows: [] };
+        },
+      };
+    },
+  };
+  const mutationPool = (connectionString) => ({
+    options: { connectionString },
+    async connect() {
+      return {
+        release() {},
+        async query() {
+          return { rows: [] };
+        },
+      };
+    },
+  });
+  const authority = deriveDisposablePostgresTargetAuthority(
+    admission,
+    "primary",
+    pool,
+    { revalidateMutationConnection: async () => {} },
+  );
+  assert.throws(
+    () => createAdmittedMutationPool(
+      mutationPool(baseFixture.connectionString),
+      admission,
+      "secondary",
+      { revalidateMutationConnection: async () => {} },
+    ),
+    safeAdmissionError,
+  );
+  assert.throws(
+    () => deriveDisposablePostgresTargetAuthority(
+      admission,
+      "primary",
+      pool,
+      { revalidateMutationConnection: async () => {} },
+    ),
+    safeAdmissionError,
+  );
+  const secondaryPool = {
+    options: { connectionString: secondary.connectionString },
+    async connect() {
+      return { release() {}, async query() { return { rows: [] }; } };
+    },
+  };
+  const wrongAuthority = deriveDisposablePostgresTargetAuthority(
+    admission,
+    "secondary",
+    secondaryPool,
+    { revalidateMutationConnection: async () => {} },
+  );
+  assert.equal(Object.keys(wrongAuthority).length, 0);
+  assert.doesNotThrow(() => wrongAuthority);
+  assert.throws(
+    () => createAdmittedMutationPool(
+      mutationPool(secondary.connectionString),
+      admission,
+      "primary",
+      { revalidateMutationConnection: async () => {} },
+    ),
+    safeAdmissionError,
+  );
+  invalidateDisposablePostgresAdmission(admission);
+  assert.throws(
+    () => createAdmittedMutationPool(
+      secondaryPool,
+      admission,
+      "secondary",
+      { revalidateMutationConnection: async () => {} },
+    ),
+    safeAdmissionError,
+  );
+  void authority;
+});
+
+test("managed transport and non-vacuous fingerprints cannot be caller-spoofed", async () => {
+  assert.throws(
+    () =>
+      parseDisposablePostgresUrl(
+        "postgres://platform_app@postgres-primary:5432/runtime_posture_test",
+        {
+          expectedDatabase: "runtime_posture_test",
+          expectedUser: "platform_app",
+          phase: "final_start",
+          transport: {
+            kind: "managed-container",
+            phase: "final_start",
+            attestation: {
+              alias: "postgres-primary",
+              image: "postgres:17",
+              phase: "final_start",
+            },
+          },
+        },
+      ),
+    safeAdmissionError,
+  );
+  for (const field of ["catalogFingerprint", "lifecycleFingerprint"]) {
+    await assert.rejects(
+      () =>
+        admitDisposablePostgresFixtures(
+          [baseFixture, { ...baseFixture, name: "secondary" }],
+          {
+            readOnlyProbe: async () => ({
+              ...(await passingProbe()),
+              [field]: "0",
+            }),
+          },
+        ),
+      safeAdmissionError,
+    );
+  }
 });
 
 test("fixture probes cannot mutate before aggregate admission", async () => {
+  const secondary = {
+    ...baseFixture,
+    name: "secondary",
+    connectionString:
+      "postgres://platform_app@127.0.0.1:5433/runtime_posture_test",
+  };
   await assert.rejects(
     () =>
-      admitDisposablePostgresFixtures([baseFixture], {
+      admitDisposablePostgresFixtures([baseFixture, secondary], {
         readOnlyProbe: async ({ client }) => {
           await client.query("grant select on table public.users to platform_runtime");
           return passingProbe();

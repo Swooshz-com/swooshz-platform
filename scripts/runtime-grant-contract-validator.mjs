@@ -1630,8 +1630,8 @@ function unboundProcessReferenceIsAuthority(node) {
 
 function globalObjectElementCanReachProcess(node) {
   if (!node.argumentExpression) return true;
-  return !ts.isStringLiteral(node.argumentExpression) ||
-    node.argumentExpression.text === "process";
+  const argument = valueProducingExpression(node.argumentExpression);
+  return !ts.isStringLiteral(argument) || argument.text === "process";
 }
 
 function bindingPatternCanReachProcess(pattern) {
@@ -1687,7 +1687,7 @@ function reflectiveProcessAcquisition(call, scopes) {
   const target = call.arguments[0];
   if (!target || !resolveGlobalObjectName(target, scopes)) return false;
   if (call.arguments.length < 2) return true;
-  const property = call.arguments[1];
+  const property = valueProducingExpression(call.arguments[1]);
   return !ts.isStringLiteral(property) || property.text === "process";
 }
 
@@ -2439,6 +2439,10 @@ function isInTypePosition(node) {
 
 function isDirectGlobalObjectReference(expression, scopes) {
   if (!expression) return false;
+  const valueExpression = valueProducingExpression(expression);
+  if (valueExpression !== expression) {
+    return isDirectGlobalObjectReference(valueExpression, scopes);
+  }
   if (ts.isIdentifier(expression)) {
     return resolveGlobalObjectName(expression, scopes) !== null;
   }
@@ -2494,10 +2498,9 @@ function expressionContainsGlobalObject(expression, scopes) {
   }
 
   if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.CommaToken) {
-    return (
-      expressionContainsGlobalObject(expression.left, scopes) ||
-      expressionContainsGlobalObject(expression.right, scopes)
-    );
+    // Only the right operand is the value produced by a comma expression.
+    // The discarded left operand cannot become the resulting authority.
+    return expressionContainsGlobalObject(expression.right, scopes);
   }
 
   if (ts.isCallExpression(expression) || ts.isNewExpression(expression)) {
@@ -2542,9 +2545,7 @@ function callResultResolvesToGlobalObject(callExpression, scopes) {
 }
 
 function resolveCallableExpression(node, scopes) {
-  while (ts.isParenthesizedExpression(node) || ts.isNonNullExpression(node)) {
-    node = node.expression;
-  }
+  node = valueProducingExpression(node);
   if (ts.isIdentifier(node)) {
     const name = node.text;
     for (let i = scopes.length - 1; i >= 0; i--) {
@@ -3003,6 +3004,7 @@ function rejectGlobalObjectEscape(sourcePath, node, scopes) {
 }
 
 function resolveGlobalObjectName(expression, scopes) {
+  expression = valueProducingExpression(expression);
   if (ts.isIdentifier(expression)) {
     const name = expression.text;
     if (globalObjectIdentifiers.has(name) && !isLocallyBound(name, scopes)) return name;
@@ -3015,14 +3017,36 @@ function resolveGlobalObjectName(expression, scopes) {
     return null;
   }
   if (ts.isPropertyAccessExpression(expression) || ts.isPropertyAccessChain(expression)) return null;
-  if (ts.isParenthesizedExpression(expression) || ts.isNonNullExpression(expression) || ts.isAsExpression(expression)) {
-    return resolveGlobalObjectName(expression.expression, scopes);
-  }
   if (ts.isCallExpression(expression) || ts.isNewExpression(expression)) {
     if (callResultResolvesToGlobalObject(expression, scopes)) return "globalThis";
     return null;
   }
   return null;
+}
+
+function valueProducingExpression(expression) {
+  let current = expression;
+  while (current) {
+    if (
+      ts.isParenthesizedExpression(current) ||
+      ts.isNonNullExpression(current) ||
+      ts.isAsExpression(current) ||
+      ts.isTypeAssertionExpression(current) ||
+      ts.isSatisfiesExpression(current)
+    ) {
+      current = current.expression;
+      continue;
+    }
+    if (
+      ts.isBinaryExpression(current) &&
+      current.operatorToken.kind === ts.SyntaxKind.CommaToken
+    ) {
+      current = current.right;
+      continue;
+    }
+    break;
+  }
+  return current;
 }
 
 function checkAliasReassignment(identifier) {
