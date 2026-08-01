@@ -83,6 +83,45 @@ set_assumable_roles(role_oid) as (
   join pg_auth_members membership on membership.member = assumable_role.role_oid
   where membership.set_option
 ),
+inherited_roles(role_oid) as (
+  select login_role.oid
+  from login_role_state login_role
+
+  union
+
+  select membership.roleid
+  from inherited_roles inherited_role
+  join pg_roles member_role
+    on member_role.oid = inherited_role.role_oid
+  join pg_auth_members membership
+    on membership.member = inherited_role.role_oid
+  where member_role.rolinherit
+    and membership.inherit_option
+),
+effective_runtime_roles(role_oid) as (
+  select login_role.oid
+  from login_role_state login_role
+
+  union
+
+  select membership.roleid
+  from effective_runtime_roles effective_member
+  join pg_roles member_role
+    on member_role.oid = effective_member.role_oid
+  join pg_auth_members membership
+    on membership.member = effective_member.role_oid
+  where membership.set_option
+    or (member_role.rolinherit and membership.inherit_option)
+),
+non_system_schemas as (
+  select
+    schema_record.oid,
+    schema_record.nspname,
+    schema_record.nspowner
+  from pg_namespace schema_record
+  where schema_record.nspname <> 'information_schema'
+    and schema_record.nspname !~ '^pg_'
+),
 expected_runtime_table_grants as (
   select
     expected.object_class,
@@ -179,12 +218,77 @@ public_column_grants as (
     and not column_record.attisdropped
     and grant_record.grantee = 0
 ),
-default_relation_grants as (
+default_acl_object_types(object_type) as (
+  values ('r'::"char"), ('S'::"char"), ('f'::"char")
+),
+default_acl_creators(role_oid) as (
+  select role_record.oid
+  from pg_roles role_record
+  cross join non_system_schemas schema_record
+  where has_schema_privilege(
+    role_record.oid,
+    schema_record.oid,
+    'CREATE'
+  )
+
+  union
+
+  select nspowner from non_system_schemas
+
+  union
+
+  select relation_record.relowner
+  from pg_class relation_record
+  join non_system_schemas schema_record
+    on schema_record.oid = relation_record.relnamespace
+  where relation_record.relkind in ('r', 'p', 'v', 'm', 'f', 'S')
+
+  union
+
+  select routine_record.proowner
+  from pg_proc routine_record
+  join non_system_schemas schema_record
+    on schema_record.oid = routine_record.pronamespace
+
+  union
+
+  select default_acl.defaclrole
+  from pg_default_acl default_acl
+  where default_acl.defaclobjtype in ('r', 'S', 'f')
+),
+default_acl_context as (
   select
-    default_acl.defaclrole as owner_oid,
-    default_owner.rolname::text as owner_name,
-    default_acl.defaclnamespace as schema_oid,
-    default_schema.nspname::text as schema_name,
+    default_creator.role_oid as creator_oid,
+    schema_record.oid as schema_oid,
+    schema_record.nspname::text as schema_name,
+    object_type.object_type,
+    coalesce(
+      global_default.defaclacl,
+      acldefault(object_type.object_type, default_creator.role_oid)
+    ) || coalesce(
+      schema_default.defaclacl,
+      '{}'::aclitem[]
+    ) as effective_acl
+  from default_acl_creators default_creator
+  cross join non_system_schemas schema_record
+  cross join default_acl_object_types object_type
+  left join pg_default_acl global_default
+    on global_default.defaclrole = default_creator.role_oid
+    and global_default.defaclnamespace = 0
+    and global_default.defaclobjtype in ('r', 'S', 'f')
+    and global_default.defaclobjtype = object_type.object_type
+  left join pg_default_acl schema_default
+    on schema_default.defaclrole = default_creator.role_oid
+    and schema_default.defaclnamespace = schema_record.oid
+    and schema_default.defaclobjtype in ('r', 'S', 'f')
+    and schema_default.defaclobjtype = object_type.object_type
+),
+default_acl_grants as (
+  select
+    default_context.creator_oid,
+    default_context.schema_oid,
+    default_context.schema_name,
+    default_context.object_type,
     grant_record.grantee as grantee_oid,
     case
       when grant_record.grantee = 0 then 'PUBLIC'
@@ -192,15 +296,20 @@ default_relation_grants as (
     end as grantee_name,
     upper(grant_record.privilege_type)::text as privilege_type,
     grant_record.is_grantable
-  from pg_default_acl default_acl
-  join pg_roles default_owner
-    on default_owner.oid = default_acl.defaclrole
-  left join pg_namespace default_schema
-    on default_schema.oid = default_acl.defaclnamespace
-  cross join lateral aclexplode(default_acl.defaclacl) grant_record
+  from default_acl_context default_context
+  cross join lateral aclexplode(default_context.effective_acl) grant_record
   left join pg_roles grantee_role
     on grantee_role.oid = grant_record.grantee
-  where default_acl.defaclobjtype = 'r'
+),
+prohibited_default_acl_grants as (
+  select default_grant.*
+  from default_acl_grants default_grant
+  where default_grant.grantee_oid = 0
+    or exists (
+      select 1
+      from effective_runtime_roles effective_role
+      where effective_role.role_oid = default_grant.grantee_oid
+    )
 ),
 runtime_routine_grants as (
   select
@@ -289,6 +398,7 @@ select
     from login_role_state runtime_role
     join pg_auth_members membership
       on membership.member = runtime_role.oid
+      or membership.roleid = runtime_role.oid
   ) as role_membership_absent,
   not exists (
     select 1
@@ -330,20 +440,34 @@ select
   ) as bypassrls_absent,
   not exists (
     select 1
-    from set_assumable_roles assumable_role
-    cross join current_database_state database_record
+    from effective_runtime_roles effective_role
     where has_database_privilege(
-      assumable_role.role_oid,
-      database_record.oid,
+      effective_role.role_oid,
+      (select oid from current_database_state),
       'CREATE'
     )
   ) as database_create_absent,
+  not exists (
+    select 1
+    from effective_runtime_roles effective_role
+    cross join non_system_schemas schema_record
+    where has_schema_privilege(
+      effective_role.role_oid,
+      schema_record.oid,
+      'CREATE'
+    )
+    or pg_has_role(
+      effective_role.role_oid,
+      schema_record.nspowner,
+      'USAGE'
+    )
+  ) as all_non_system_schema_create_absent,
   case when (select oid from public_schema_state) is null then false
     else not exists (
       select 1
-      from set_assumable_roles assumable_role
+      from effective_runtime_roles effective_role
       where has_schema_privilege(
-        assumable_role.role_oid,
+        effective_role.role_oid,
         (select oid from public_schema_state),
         'CREATE'
       )
@@ -352,9 +476,9 @@ select
   case when (select schema_oid from drizzle_state) is null then true
     else not exists (
       select 1
-      from set_assumable_roles assumable_role
+      from effective_runtime_roles effective_role
       where has_schema_privilege(
-        assumable_role.role_oid,
+        effective_role.role_oid,
         (select schema_oid from drizzle_state),
         'USAGE'
       )
@@ -365,9 +489,9 @@ select
     when (select migration_ledger_relkind from drizzle_state)
       in ('r', 'p', 'v', 'm', 'f') then not exists (
       select 1
-      from set_assumable_roles assumable_role
+      from effective_runtime_roles effective_role
       where has_table_privilege(
-        assumable_role.role_oid,
+        effective_role.role_oid,
         (select migration_ledger_oid from drizzle_state),
         'SELECT'
       )
@@ -377,25 +501,27 @@ select
   not exists (
     select 1
     from current_database_state database_record
-    cross join set_assumable_roles assumable_role
-    where pg_has_role(assumable_role.role_oid, database_record.datdba, 'USAGE')
+    cross join effective_runtime_roles effective_role
+    where pg_has_role(effective_role.role_oid, database_record.datdba, 'USAGE')
   ) as database_ownership_absent,
   not exists (
     select 1
-    from pg_namespace schema_record
-    cross join set_assumable_roles assumable_role
-    where schema_record.nspname = any(array['public', 'drizzle']::name[])
-      and pg_has_role(assumable_role.role_oid, schema_record.nspowner, 'USAGE')
+    from non_system_schemas schema_record
+    cross join effective_runtime_roles effective_role
+    where pg_has_role(
+      effective_role.role_oid,
+      schema_record.nspowner,
+      'USAGE'
+    )
   ) as schema_ownership_absent,
   not exists (
     select 1
     from pg_class table_record
-    join pg_namespace table_schema on table_schema.oid = table_record.relnamespace
-    cross join set_assumable_roles assumable_role
-    where table_schema.nspname not in ('pg_catalog', 'information_schema')
-      and table_schema.nspname !~ '^pg_(?:toast|temp)(?:_|$)'
-      and table_record.relkind in ('r', 'p', 'v', 'm', 'f', 'S')
-      and pg_has_role(assumable_role.role_oid, table_record.relowner, 'USAGE')
+    join non_system_schemas table_schema
+      on table_schema.oid = table_record.relnamespace
+    cross join effective_runtime_roles effective_role
+    where table_record.relkind in ('r', 'p', 'v', 'm', 'f', 'S')
+      and pg_has_role(effective_role.role_oid, table_record.relowner, 'USAGE')
   ) as application_table_ownership_absent
   ,
   not exists (
@@ -484,22 +610,48 @@ select
   ) as public_column_authority_absent,
   not exists (
     select 1
-    from default_relation_grants default_grant
-    join login_role_state runtime_role
-      on runtime_role.oid = default_grant.grantee_oid
+    from prohibited_default_acl_grants default_grant
+    where default_grant.object_type = 'r'
   ) as runtime_default_relation_authority_absent,
   not exists (
     select 1
-    from default_relation_grants default_grant
-    join login_role_state runtime_role
-      on runtime_role.oid = default_grant.grantee_oid
-    where default_grant.is_grantable
+    from default_acl_grants default_grant
+    where default_grant.object_type = 'r'
+      and default_grant.is_grantable
   ) as runtime_default_relation_grant_option_absent,
   not exists (
     select 1
-    from default_relation_grants
-    where grantee_oid = 0
+    from default_acl_grants
+    where object_type = 'r'
+      and grantee_oid = 0
   ) as public_default_relation_authority_absent,
+  not exists (
+    select 1
+    from prohibited_default_acl_grants
+    where object_type = 'S'
+  ) as runtime_default_sequence_authority_absent,
+  not exists (
+    select 1
+    from default_acl_grants
+    where object_type = 'S'
+      and grantee_oid = 0
+  ) as public_default_sequence_authority_absent,
+  not exists (
+    select 1
+    from prohibited_default_acl_grants
+    where object_type = 'f'
+  ) as runtime_default_routine_authority_absent,
+  not exists (
+    select 1
+    from default_acl_grants
+    where object_type = 'f'
+      and grantee_oid = 0
+  ) as public_default_routine_authority_absent,
+  not exists (
+    select 1
+    from default_acl_grants
+    where is_grantable
+  ) as default_acl_grant_option_absent,
   not exists (
     select 1 from runtime_routine_grants
   ) as runtime_routine_authority_absent,
@@ -509,12 +661,14 @@ select
   not exists (
     select 1
     from pg_proc routine_record
-    join pg_namespace routine_schema
+    join non_system_schemas routine_schema
       on routine_schema.oid = routine_record.pronamespace
-    cross join set_assumable_roles assumable_role
-    where routine_schema.nspname not in ('pg_catalog', 'information_schema')
-      and routine_schema.nspname !~ '^pg_(?:toast|temp)(?:_|$)'
-      and pg_has_role(assumable_role.role_oid, routine_record.proowner, 'USAGE')
+    cross join effective_runtime_roles effective_role
+    where pg_has_role(
+      effective_role.role_oid,
+      routine_record.proowner,
+      'USAGE'
+    )
   ) as runtime_routine_ownership_absent,
   not exists (
     select 1 from runtime_sequence_grants
@@ -525,13 +679,15 @@ select
   not exists (
     select 1
     from pg_class sequence_record
-    join pg_namespace sequence_schema
+    join non_system_schemas sequence_schema
       on sequence_schema.oid = sequence_record.relnamespace
-    cross join set_assumable_roles assumable_role
+    cross join effective_runtime_roles effective_role
     where sequence_record.relkind = 'S'
-      and sequence_schema.nspname not in ('pg_catalog', 'information_schema')
-      and sequence_schema.nspname !~ '^pg_(?:toast|temp)(?:_|$)'
-      and pg_has_role(assumable_role.role_oid, sequence_record.relowner, 'USAGE')
+      and pg_has_role(
+        effective_role.role_oid,
+        sequence_record.relowner,
+        'USAGE'
+      )
   ) as runtime_sequence_ownership_absent
 `;
 
@@ -697,6 +853,7 @@ function postureChecks(row: Record<string, unknown>) {
     ]),
     databaseAndSchemaCreateAbsent: all(row, [
       "database_create_absent",
+      "all_non_system_schema_create_absent",
       "public_schema_create_absent",
       "drizzle_schema_usage_absent",
     ]),
@@ -726,16 +883,23 @@ function postureChecks(row: Record<string, unknown>) {
       "runtime_default_relation_authority_absent",
       "runtime_default_relation_grant_option_absent",
       "public_default_relation_authority_absent",
+      "default_acl_grant_option_absent",
     ]),
     runtimeRoutineAuthorityAbsent: all(row, [
       "runtime_routine_authority_absent",
       "public_routine_authority_absent",
       "runtime_routine_ownership_absent",
+      "runtime_default_routine_authority_absent",
+      "public_default_routine_authority_absent",
+      "default_acl_grant_option_absent",
     ]),
     runtimeSequenceAuthorityAbsent: all(row, [
       "runtime_sequence_authority_absent",
       "public_sequence_authority_absent",
       "runtime_sequence_ownership_absent",
+      "runtime_default_sequence_authority_absent",
+      "public_default_sequence_authority_absent",
+      "default_acl_grant_option_absent",
     ]),
   };
 }

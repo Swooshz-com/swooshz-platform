@@ -230,6 +230,36 @@ test("hosted runbook preserves the rollback-gated runtime activation contract", 
   }
 });
 
+test("hosted runbook records the locked runtime posture and fixture admission invariants", async () => {
+  const runbook = await readRunbook();
+  const requiredPhrases = [
+    "Disposable PostgreSQL Fixture Admission",
+    "every `pg_auth_members` row",
+    "either `member` or `roleid`",
+    "`admin_option`, `inherit_option`, and `set_option` never",
+    "exact `information_schema`",
+    "names beginning with `pg_`",
+    "relations (`r`), sequences (`S`), and routines (`f`)",
+    "global replacement",
+    "per-schema additive defaults",
+    "actual `aclexplode()` grantees",
+    "extension-managed non-system schemas receive no automatic exemption",
+    "primary and secondary fixture",
+    "before any\n`GRANT`, `REVOKE`, role, or ownership mutation",
+    "PostgreSQL 17",
+    "non-recovery state",
+    "Initialization and final-start transport attestations are distinct",
+    "opaque in-process token",
+    "If any secondary target fails",
+    "no mutation callback is entered",
+    "npm run test:disposable-runtime-postgres",
+  ];
+
+  for (const phrase of requiredPhrases) {
+    assert.match(runbook, new RegExp(escapeRegExp(phrase), "i"));
+  }
+});
+
 test("hosted internal alpha runbook covers Hostinger Coolify readiness without deployment config", async () => {
   const runbook = await readRunbook();
   const requiredPhrases = [

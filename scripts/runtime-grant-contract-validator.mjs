@@ -97,7 +97,7 @@ const databaseSourceShapeAuthority = new Map([
   ],
   [
     "src/db/runtime-posture.ts",
-    "26e76abd42e40dda4905db1ae29acdaf4424408974a6e21c2063147418c1dbd9",
+    "ba35c50483c3b60e0be47606b004f4cf687710b12ac85f2a67cdc280864719da",
   ],
   [
     "src/db/schema.ts",
@@ -255,6 +255,7 @@ if (
 }
 
 const globalObjectIdentifiers = new Set(["globalThis", "global"]);
+const processIdentifierNames = new Set(["process"]);
 
 const databaseExternalImportAuthority = new Set([
   databaseExternalImportKey(
@@ -1484,6 +1485,8 @@ function assertDatabaseCapabilityFacadeOnly(sourceFile) {
 }
 
 function rejectUnsupportedRuntimeModuleLoading(sourceFile) {
+  rejectUnboundGlobalProcessAuthority(sourceFile);
+
   const visit = (node) => {
     if (
       ts.isCallExpression(node) &&
@@ -1492,12 +1495,6 @@ function rejectUnsupportedRuntimeModuleLoading(sourceFile) {
         (
           ts.isIdentifier(node.expression) &&
           ["eval", "Function", "require"].includes(node.expression.text)
-        ) ||
-        (
-          ts.isPropertyAccessExpression(node.expression) &&
-          ts.isIdentifier(node.expression.expression) &&
-          node.expression.expression.text === "process" &&
-          node.expression.name.text === "getBuiltinModule"
         )
       )
     ) {
@@ -1517,6 +1514,181 @@ function rejectUnsupportedRuntimeModuleLoading(sourceFile) {
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
+}
+
+function rejectUnboundGlobalProcessAuthority(sourceFile) {
+  const reject = (node) => {
+    throw new RuntimeGrantContractError("runtime_grant_inventory_unclassified");
+  };
+  const rootScope = {
+    bindings: new Map(),
+    globalAliases: new Set(),
+    callableBindings: new Map(),
+    node: null,
+    varScope: null,
+  };
+  rootScope.varScope = rootScope;
+  addModuleScopeDeclarations(sourceFile, rootScope);
+
+  const scopes = [rootScope];
+  const visit = (node) => {
+    if (
+      isRuntimeValueIdentifierReferenceForName(
+        node,
+        scopes,
+        processIdentifierNames,
+    )
+      && unboundProcessReferenceIsAuthority(node)
+    ) {
+      reject(node);
+    }
+
+    if (
+      (ts.isPropertyAccessExpression(node) ||
+        ts.isPropertyAccessChain(node)) &&
+      node.name.text === "process" &&
+      resolveGlobalObjectName(node.expression, scopes)
+    ) {
+      reject(node);
+    }
+
+    if (
+      ts.isElementAccessExpression(node) &&
+      resolveGlobalObjectName(node.expression, scopes) &&
+      globalObjectElementCanReachProcess(node)
+    ) {
+      throw new RuntimeGrantContractError(
+        "runtime_grant_inventory_unclassified",
+      );
+    }
+
+    if (ts.isVariableDeclaration(node) && node.initializer) {
+      if (
+        (ts.isObjectBindingPattern(node.name) ||
+          ts.isArrayBindingPattern(node.name)) &&
+        isDirectGlobalObjectReference(node.initializer, scopes) &&
+        bindingPatternCanReachProcess(node.name)
+      ) {
+        reject(node);
+      }
+      checkGlobalObjectAlias(node, scopes);
+    }
+
+    if (
+      ts.isCallExpression(node) &&
+      reflectiveProcessAcquisition(node, scopes)
+    ) {
+      throw new RuntimeGrantContractError(
+        "runtime_grant_inventory_unclassified",
+      );
+    }
+
+    const isScope = isScopeNode(node);
+    if (isScope) {
+      const newScope = {
+        bindings: new Map(),
+        globalAliases: new Set(),
+        callableBindings: new Map(),
+        node,
+        varScope: null,
+      };
+      newScope.varScope =
+        scopes[scopes.length - 1].varScope || scopes[scopes.length - 1];
+      addNodeScopeDeclarations(node, newScope);
+      scopes.push(newScope);
+    }
+
+    ts.forEachChild(node, visit);
+
+    if (isScope) {
+      scopes.pop();
+    }
+  };
+
+  visit(sourceFile);
+}
+
+function unboundProcessReferenceIsAuthority(node) {
+  const parent = node.parent;
+  if (!parent) return true;
+
+  if (
+    (ts.isPropertyAccessExpression(parent) ||
+      ts.isPropertyAccessChain(parent)) &&
+    parent.expression === node
+  ) {
+    return parent.name.text === "getBuiltinModule";
+  }
+
+  if (ts.isElementAccessExpression(parent) && parent.expression === node) {
+    return true;
+  }
+
+  if (ts.isTypeOfExpression(parent)) return false;
+  return true;
+}
+
+function globalObjectElementCanReachProcess(node) {
+  if (!node.argumentExpression) return true;
+  return !ts.isStringLiteral(node.argumentExpression) ||
+    node.argumentExpression.text === "process";
+}
+
+function bindingPatternCanReachProcess(pattern) {
+  if (ts.isArrayBindingPattern(pattern)) return true;
+  for (const element of pattern.elements) {
+    if (ts.isOmittedExpression(element)) continue;
+    if (element.dotDotDotToken) return true;
+    if (
+      element.propertyName &&
+      ts.isIdentifier(element.propertyName) &&
+      element.propertyName.text === "process"
+    ) {
+      return true;
+    }
+    if (
+      !element.propertyName &&
+      ts.isIdentifier(element.name) &&
+      element.name.text === "process"
+    ) {
+      return true;
+    }
+    if (
+      (ts.isObjectBindingPattern(element.name) ||
+        ts.isArrayBindingPattern(element.name)) &&
+      bindingPatternCanReachProcess(element.name)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function reflectiveProcessAcquisition(call, scopes) {
+  if (!ts.isPropertyAccessExpression(call.expression) &&
+      !ts.isPropertyAccessChain(call.expression)) {
+    return false;
+  }
+
+  const receiver = call.expression.expression;
+  const method = call.expression.name.text;
+  const receiverName =
+    ts.isIdentifier(receiver) && !isLocallyBound(receiver.text, scopes)
+      ? receiver.text
+      : null;
+  if (!receiverName ||
+      !((receiverName === "Reflect" &&
+        ["get", "getOwnPropertyDescriptor"].includes(method)) ||
+        (receiverName === "Object" &&
+          ["getOwnPropertyDescriptor", "getOwnPropertyDescriptors"].includes(method)))) {
+    return false;
+  }
+
+  const target = call.arguments[0];
+  if (!target || !resolveGlobalObjectName(target, scopes)) return false;
+  if (call.arguments.length < 2) return true;
+  const property = call.arguments[1];
+  return !ts.isStringLiteral(property) || property.text === "process";
 }
 
 function resolveInternalModulePath(sourcePath, moduleName) {
@@ -2204,9 +2376,17 @@ function isLocallyBound(name, scopes) {
 }
 
 function isRuntimeValueIdentifierReference(node, scopes) {
+  return isRuntimeValueIdentifierReferenceForName(
+    node,
+    scopes,
+    globalNetworkPrimitiveNames,
+  );
+}
+
+function isRuntimeValueIdentifierReferenceForName(node, scopes, names) {
   if (!ts.isIdentifier(node)) return false;
   const name = node.text;
-  if (!globalNetworkPrimitiveNames.has(name)) return false;
+  if (!names.has(name)) return false;
   if (isLocallyBound(name, scopes)) return false;
 
   const parent = node.parent;

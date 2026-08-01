@@ -9,12 +9,17 @@ import {
   assertRuntimeDatabasePosture,
   inspectRuntimeDatabasePosture,
 } from "../dist/db/runtime-posture.js";
+import {
+  admitDisposablePostgresFixtures,
+  createAdmittedMutationPool,
+} from "./support/disposable-postgres-fixture.mjs";
 
 const databaseUrl = process.env.RUNTIME_POSTURE_TEST_DATABASE_URL;
+const operatorUrl = process.env.RUNTIME_POSTURE_TEST_OPERATOR_URL;
 const disposableConfirmed =
   process.env.RUNTIME_POSTURE_TEST_CONFIRM === "disposable-only";
 const skipReason =
-  databaseUrl && disposableConfirmed
+  databaseUrl && operatorUrl && disposableConfirmed
     ? false
     : "requires the explicitly confirmed disposable PostgreSQL fixture";
 
@@ -22,8 +27,29 @@ test(
   "PostgreSQL 17 rejects authority reachable through SET ROLE",
   { skip: skipReason },
   async (context) => {
-    const adminPool = new Pool({ connectionString: databaseUrl, max: 4 });
+    const rawAdminPool = new Pool({ connectionString: operatorUrl, max: 4 });
+    const admission = await admitDisposablePostgresFixtures([
+      {
+        name: "primary",
+        connectionString: databaseUrl,
+        expectedDatabase: "runtime_posture_test",
+        expectedUser: "platform_app",
+        expectedRuntimeRole: "platform_runtime",
+        expectedObjects: {
+          schemas: ["public", "drizzle"],
+          relations: [
+            { schema: "drizzle", name: "__drizzle_migrations", kind: "r" },
+            { schema: "public", name: "users", kind: "r" },
+          ],
+          sequences: [],
+          routines: [],
+        },
+        transport: { kind: "loopback", phase: "final_start" },
+      },
+    ]);
+    const adminPool = createAdmittedMutationPool(rawAdminPool, admission);
     const roles = [];
+    const schemas = [];
     const suffix = randomUUID().replaceAll("-", "").slice(0, 10);
     let sequence = 0;
     let neonSuperuserCreated = false;
@@ -32,6 +58,12 @@ test(
       sequence += 1;
       const value = `rt_${label}_${sequence}_${suffix}`;
       roles.push(value);
+      return value;
+    };
+
+    const schema = (label) => {
+      const value = `rt_${label}_${suffix}`;
+      schemas.push(value);
       return value;
     };
 
@@ -49,15 +81,239 @@ test(
         },
       ]);
 
-      await adminPool.query("revoke create on schema public from public");
-      await adminPool.query("drop schema if exists drizzle cascade");
-      await adminPool.query("drop table if exists public.users cascade");
-      await adminPool.query("create schema drizzle authorization postgres");
-      await adminPool.query(
-        "create table drizzle.__drizzle_migrations (id integer primary key)",
-      );
-      await adminPool.query("create table public.users (id integer primary key)");
       neonSuperuserCreated = await ensureRole(adminPool, "neon_superuser");
+
+      await context.test(
+        "direct, PUBLIC, inherited, SET-role, and owner CREATE fail for every non-system schema",
+        async () => {
+          const directRuntime = role("schema_direct_runtime");
+          const directSchema = schema("direct_create");
+          await createRole(adminPool, directRuntime);
+          await adminPool.query(
+            `create schema ${identifier(directSchema)} authorization postgres`,
+          );
+          await adminPool.query(
+            `grant create on schema ${identifier(directSchema)} to ${identifier(directRuntime)}`,
+          );
+          await assertPostureFails(
+            adminPool,
+            directRuntime,
+            "databaseAndSchemaCreateAbsent",
+          );
+          await adminPool.query(
+            `revoke create on schema ${identifier(directSchema)} from ${identifier(directRuntime)}`,
+          );
+
+          const publicRuntime = role("schema_public_runtime");
+          await createRole(adminPool, publicRuntime);
+          await adminPool.query(
+            `grant create on schema ${identifier(directSchema)} to public`,
+          );
+          await assertPostureFails(
+            adminPool,
+            publicRuntime,
+            "databaseAndSchemaCreateAbsent",
+          );
+          await adminPool.query(
+            `revoke create on schema ${identifier(directSchema)} from public`,
+          );
+
+          const inheritedRuntime = role("schema_inherited_runtime");
+          const inheritedRole = role("schema_inherited_role");
+          await createRole(adminPool, inheritedRuntime);
+          await createRole(adminPool, inheritedRole);
+          await grantRole(adminPool, inheritedRole, inheritedRuntime, false, true);
+          await adminPool.query(
+            `grant create on schema ${identifier(directSchema)} to ${identifier(inheritedRole)}`,
+          );
+          await assertPostureFails(
+            adminPool,
+            inheritedRuntime,
+            "databaseAndSchemaCreateAbsent",
+          );
+          await adminPool.query(
+            `revoke create on schema ${identifier(directSchema)} from ${identifier(inheritedRole)}`,
+          );
+
+          const setRuntime = role("schema_set_runtime");
+          const setRole = role("schema_set_role");
+          await createRole(adminPool, setRuntime);
+          await createRole(adminPool, setRole);
+          await grantRole(adminPool, setRole, setRuntime, true, false);
+          await adminPool.query(
+            `grant create on schema ${identifier(directSchema)} to ${identifier(setRole)}`,
+          );
+          await assertPostureFails(
+            adminPool,
+            setRuntime,
+            "databaseAndSchemaCreateAbsent",
+          );
+          await adminPool.query(
+            `revoke create on schema ${identifier(directSchema)} from ${identifier(setRole)}`,
+          );
+
+          const ownerRuntime = role("schema_owner_runtime");
+          const ownerRole = role("schema_owner_role");
+          const ownedSchema = schema("owned_schema");
+          await createRole(adminPool, ownerRuntime);
+          await createRole(adminPool, ownerRole);
+          await grantRole(adminPool, ownerRole, ownerRuntime, false, true);
+          await adminPool.query(
+            `create schema ${identifier(ownedSchema)} authorization ${identifier(ownerRole)}`,
+          );
+          await assertPostureFails(
+            adminPool,
+            ownerRuntime,
+            "databaseAndSchemaCreateAbsent",
+          );
+        },
+      );
+
+      await context.test(
+        "global and per-schema relation defaults reject runtime and PUBLIC authority",
+        async () => {
+          const runtime = role("default_relation_runtime");
+          const creator = role("default_relation_creator");
+          await createRole(adminPool, runtime);
+          await createRole(adminPool, creator);
+
+          await adminPool.query(
+            `alter default privileges for role ${identifier(creator)} grant select on tables to ${identifier(runtime)}`,
+          );
+          await assertPostureFails(
+            adminPool,
+            runtime,
+            "runtimeDefaultRelationAuthorityAbsent",
+          );
+          await adminPool.query(
+            `alter default privileges for role ${identifier(creator)} revoke select on tables from ${identifier(runtime)}`,
+          );
+
+          await adminPool.query(
+            `alter default privileges for role ${identifier(creator)} in schema drizzle grant select on tables to ${identifier(runtime)}`,
+          );
+          await assertPostureFails(
+            adminPool,
+            runtime,
+            "runtimeDefaultRelationAuthorityAbsent",
+          );
+          await adminPool.query(
+            `alter default privileges for role ${identifier(creator)} in schema drizzle revoke select on tables from ${identifier(runtime)}`,
+          );
+
+          await adminPool.query(
+            `alter default privileges for role ${identifier(creator)} grant select on tables to public`,
+          );
+          await assertPostureFails(
+            adminPool,
+            runtime,
+            "runtimeDefaultRelationAuthorityAbsent",
+          );
+          await adminPool.query(
+            `alter default privileges for role ${identifier(creator)} revoke select on tables from public`,
+          );
+        },
+      );
+
+      await context.test(
+        "sequence, routine, and grant-option defaults are rejected",
+        async () => {
+          const runtime = role("default_object_runtime");
+          const creator = role("default_object_creator");
+          await createRole(adminPool, runtime);
+          await createRole(adminPool, creator);
+
+          await adminPool.query(
+            `alter default privileges for role ${identifier(creator)} grant usage on sequences to ${identifier(runtime)}`,
+          );
+          await assertPostureFails(
+            adminPool,
+            runtime,
+            "runtimeSequenceAuthorityAbsent",
+          );
+          await adminPool.query(
+            `alter default privileges for role ${identifier(creator)} revoke usage on sequences from ${identifier(runtime)}`,
+          );
+
+          await adminPool.query(
+            `alter default privileges for role ${identifier(creator)} grant execute on functions to ${identifier(runtime)}`,
+          );
+          await assertPostureFails(
+            adminPool,
+            runtime,
+            "runtimeRoutineAuthorityAbsent",
+          );
+          await adminPool.query(
+            `alter default privileges for role ${identifier(creator)} revoke execute on functions from ${identifier(runtime)}`,
+          );
+
+          await adminPool.query(
+            `alter default privileges for role ${identifier(creator)} grant select on tables to ${identifier(runtime)} with grant option`,
+          );
+          await assertPostureFails(
+            adminPool,
+            runtime,
+            "runtimeDefaultRelationAuthorityAbsent",
+          );
+          await adminPool.query(
+            `alter default privileges for role ${identifier(creator)} revoke select on tables from ${identifier(runtime)}`,
+          );
+        },
+      );
+
+      await context.test(
+        "every membership edge is prohibited in both directions for all option combinations",
+        async () => {
+          for (const [setOption, inheritOption, adminOption] of [
+            [false, false, false],
+            [false, false, true],
+            [false, true, false],
+            [false, true, true],
+            [true, false, false],
+            [true, false, true],
+            [true, true, false],
+            [true, true, true],
+          ]) {
+            const first = role("membership_first");
+            const second = role("membership_second");
+            await createRole(adminPool, first);
+            await createRole(adminPool, second);
+            await grantRole(
+              adminPool,
+              second,
+              first,
+              setOption,
+              inheritOption,
+              adminOption,
+            );
+            await assertPostureFails(
+              adminPool,
+              first,
+              "administrativeAttributesAbsent",
+            );
+            await adminPool.query(
+              `revoke ${identifier(second)} from ${identifier(first)}`,
+            );
+
+            await grantRole(
+              adminPool,
+              first,
+              second,
+              setOption,
+              inheritOption,
+              adminOption,
+            );
+            await assertPostureFails(
+              adminPool,
+              first,
+              "administrativeAttributesAbsent",
+            );
+            await adminPool.query(
+              `revoke ${identifier(first)} from ${identifier(second)}`,
+            );
+          }
+        },
+      );
 
       await context.test("direct SET-capable CREATEDB membership fails", async () => {
         const runtime = role("direct_runtime");
@@ -275,6 +531,9 @@ test(
       await adminPool.query("alter database runtime_posture_test owner to postgres").catch(() => {});
       await adminPool.query("alter schema drizzle owner to postgres").catch(() => {});
       await adminPool.query("alter table public.users owner to postgres").catch(() => {});
+      for (const schemaName of schemas.reverse()) {
+        await adminPool.query(`drop schema if exists ${identifier(schemaName)} cascade`).catch(() => {});
+      }
       await adminPool.query("drop schema if exists drizzle cascade").catch(() => {});
       await adminPool.query("drop table if exists public.users cascade").catch(() => {});
       for (const roleName of roles.reverse()) {
@@ -283,7 +542,7 @@ test(
       if (neonSuperuserCreated) {
         await adminPool.query("drop role if exists neon_superuser").catch(() => {});
       }
-      await adminPool.end();
+      await rawAdminPool.end();
     }
   },
 );

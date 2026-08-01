@@ -157,7 +157,33 @@ Recommended Neon target, for operator setup outside this repo:
 
 The platform runtime app code uses only `DATABASE_URL` as the pooled restricted-role app connection and validates it against `DATABASE_EXPECTED_RUNTIME_ROLE` before listening. Migration and operator readiness commands use `DATABASE_OPERATOR_URL` in production. Do not add multiple database URL aliases for day-to-day runtime behavior. Do not commit `.env` files, connection strings, usernames with passwords, database hostnames with credentials, backup exports, table dumps, or provider console screenshots.
 
-The pre-listen runtime-posture gate begins from the exact PostgreSQL `session_user` catalog identity and recursively follows only PostgreSQL 17 membership edges with `pg_auth_members.set_option = true`. Recursive `UNION` de-duplicates catalog OIDs and terminates cycles. The gate evaluates the login role and every role it can assume through `SET ROLE`, including through `NOINHERIT` memberships, for the same prohibited administrative attributes, Neon membership, database/schema/ledger privileges, and ownership conditions. A `SET FALSE` edge blocks traversal, but `ADMIN OPTION` on any membership reachable from the login or an already assumable role is itself rejected because it could be used to re-grant `SET TRUE`. Missing or inconclusive catalog evidence fails closed through the existing aggregate `database_posture_failed` behavior without exposing role or ACL details.
+The pre-listen runtime-posture gate begins from the exact PostgreSQL `session_user` catalog identity. It rejects every `pg_auth_members` row where the restricted runtime role appears as either `member` or `roleid`; `admin_option`, `inherit_option`, and `set_option` never make that direct edge acceptable. Recursive `UNION` traversals still de-duplicate catalog OIDs and terminate cycles while evaluating inherited and SET-assumable roles for prohibited administrative attributes, Neon membership, database/schema/ledger privileges, and ownership conditions. A `SET FALSE` edge blocks SET traversal, but `ADMIN OPTION` on any membership reachable from the login or an already assumable role is itself rejected because it could be used to re-grant `SET TRUE`. Missing or inconclusive catalog evidence fails closed through the existing aggregate `database_posture_failed` behavior without exposing role or ACL details.
+
+The gate enumerates every usable schema except exact `information_schema` and names beginning with `pg_`. It rejects effective `CREATE` from direct ACLs, `PUBLIC`, inherited roles, SET-assumable roles, and schema ownership; extension-managed non-system schemas receive no automatic exemption. Database-level `CREATE` remains a separate denial. Future-object checks inspect `pg_default_acl` for relations (`r`), sequences (`S`), and routines (`f`), using PostgreSQL hard-wired defaults, global replacement, per-schema additive defaults, actual `aclexplode()` grantees, all relevant creators and owners, and grant options. Runtime, inherited, SET-assumable, `PUBLIC`, and grant-option authority fails closed.
+
+### Disposable PostgreSQL Fixture Admission
+
+The disposable runner admits every primary and secondary fixture before any
+`GRANT`, `REVOKE`, role, or ownership mutation. Provisioning a freshly created
+local test container is a fixture-construction step; once the expected fixture
+exists, the runner performs read-only admission for every target before it
+starts any mutation test.
+
+Admission parses each URL without output and binds the expected database and
+user. It requires PostgreSQL 17, non-recovery state, an approved loopback
+transport or an independently attested managed-container alias, catalog and
+lifecycle identities, the restricted runtime posture, absent runtime
+ownership, and the expected schemas, relations, sequences, and routines.
+Initialization and final-start transport attestations are distinct. A
+successful aggregate is an opaque in-process token, and mutation clients are
+constructed only from that token. If any secondary target fails, no mutation callback is entered. Ambiguous `localhost`, remote hosts, unmanaged sockets,
+unattested container aliases, connection-derived errors, and forged admission
+objects fail closed without revealing connection material.
+
+The repository proof command is `npm run test:disposable-runtime-postgres`.
+It uses only disposable PostgreSQL 17 fixtures and keeps operator URLs out of
+test output. This lab does not authorise Neon/provider access, production role
+changes, deployment, or hosted readiness.
 
 ### Restricted Runtime Role Activation Contract
 

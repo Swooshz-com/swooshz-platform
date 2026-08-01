@@ -527,6 +527,55 @@ test("dynamic runtime built-in loading forms remain prohibited", async () => {
   }
 });
 
+test("unbound process built-in acquisition is rejected through aliases, computed access, destructuring, and reflection", async () => {
+  const cases = [
+    `export function load() { return process.getBuiltinModule("fs"); }`,
+    `export function load() { const p = process; return p.getBuiltinModule("fs"); }`,
+    `export function load() { return globalThis.process.getBuiltinModule("fs"); }`,
+    `export function load() { return globalThis["process"]["getBuiltinModule"]("fs"); }`,
+    `export function load() { return globalThis?.process?.getBuiltinModule?.("fs"); }`,
+    `export function load() { const { process: p } = globalThis; return p.getBuiltinModule("fs"); }`,
+    `export function load() { const { getBuiltinModule } = process; return getBuiltinModule("fs"); }`,
+    `export function load() { const get = process.getBuiltinModule; return get("fs"); }`,
+    `export function load() { const g = globalThis; return Reflect.get(g, "process").getBuiltinModule("fs"); }`,
+    `export function load() { return Reflect.get(globalThis, "process"); }`,
+  ];
+
+  for (const [index, source] of cases.entries()) {
+    await assert.rejects(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([
+            [`src/platform/process-authority-${index}.ts`, source],
+          ]),
+        }),
+      contractError(globalNetworkRejectionCode),
+    );
+  }
+});
+
+test("process scanner preserves local shadowing and type-only references", async () => {
+  const cases = [
+    `export function load(process) { return process.getBuiltinModule("fs"); }`,
+    `export function load(globalThis) { return globalThis.process; }`,
+    `export function load() { const process = { getBuiltinModule() {} }; return process.getBuiltinModule(); }`,
+    `import type { Process } from "node:process";
+type RuntimeProcess = typeof process;
+export function load(value: Process): RuntimeProcess | undefined { return undefined; }`,
+  ];
+
+  for (const [index, source] of cases.entries()) {
+    await assert.doesNotReject(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([
+            [`src/platform/process-shadow-${index}.ts`, source],
+          ]),
+        }),
+    );
+  }
+});
+
 test("production dependency and import admission is mechanically closed", async () => {
   const unapprovedExternalCases = [
     [

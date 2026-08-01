@@ -66,10 +66,14 @@ jobs:
         run: npm run build
 
       - name: Test
-        env:
-          RUNTIME_POSTURE_TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/runtime_posture_test
-          RUNTIME_POSTURE_TEST_CONFIRM: disposable-only
         run: npm test
+
+      - name: PostgreSQL 17 disposable runtime posture tests
+        env:
+          RUNTIME_POSTURE_TEST_DATABASE_URL: postgres://platform_app@127.0.0.1:5432/runtime_posture_test
+          RUNTIME_POSTURE_TEST_OPERATOR_URL: postgres://postgres@127.0.0.1:5432/runtime_posture_test
+          RUNTIME_POSTURE_TEST_CONFIRM: disposable-only
+        run: npm run test:disposable-runtime-postgres
 
   container:
     name: Container build

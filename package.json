@@ -12,6 +12,7 @@
     "platform:start": "node scripts/platform-start.mjs",
     "platform:sqag-smoke-readiness": "npm run build && node scripts/verify-platform-sqag-smoke-readiness.mjs",
     "platform:seed-internal-access": "node scripts/platform-seed-internal-access.mjs",
+    "test:disposable-runtime-postgres": "node scripts/run-disposable-runtime-postgres-tests.mjs",
     "typecheck": "node scripts/generate-public-asset-manifest.mjs --check && tsc --noEmit -p tsconfig.json",
     "test": "npm run build && node --test tests/*.test.mjs",
     "evidence:public-site": "node scripts/capture-public-site-evidence.mjs",

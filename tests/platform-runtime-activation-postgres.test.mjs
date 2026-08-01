@@ -28,6 +28,10 @@ import {
 import {
   RUNTIME_TABLE_GRANT_CONTRACT,
 } from "../dist/db/runtime-grant-contract.js";
+import {
+  admitDisposablePostgresFixtures,
+  createAdmittedMutationPool,
+} from "./support/disposable-postgres-fixture.mjs";
 
 const operatorUrl = process.env.RUNTIME_ACTIVATION_TEST_OPERATOR_URL;
 const secondOperatorUrl =
@@ -38,10 +42,18 @@ const secondDockerNetwork =
   process.env.RUNTIME_ACTIVATION_TEST_SECOND_DOCKER_NETWORK;
 const disposableConfirmed =
   process.env.RUNTIME_ACTIVATION_TEST_CONFIRM === "disposable-only";
+const loopbackFixtureHosts = new Set(["127.0.0.1", "::1"]);
+const approvedAdmissionFixtureUrls = [
+  operatorUrl,
+  secondOperatorUrl,
+].filter(Boolean);
 const skipReason =
-  operatorUrl && dockerNetwork && disposableConfirmed
+  operatorUrl &&
+  dockerNetwork &&
+  disposableConfirmed &&
+  approvedAdmissionFixtureUrls.every(isApprovedFixtureUrl)
     ? false
-    : "requires the explicitly confirmed disposable activation fixture";
+    : "requires explicitly confirmed loopback disposable activation fixtures";
 const twoClusterSkipReason =
   !skipReason &&
   secondOperatorUrl && secondDockerNetwork
@@ -49,6 +61,7 @@ const twoClusterSkipReason =
     : "requires two explicitly confirmed disposable PostgreSQL fixtures";
 const primaryDockerSpawn = dockerSpawnOnNetwork(dockerNetwork);
 const secondaryDockerSpawn = dockerSpawnOnNetwork(secondDockerNetwork);
+let disposableFixtureAdmission = null;
 const syntheticRuntimePassword =
   "SyntheticRuntime_2026!éΩ漢字_ExtraLength";
 const providerNow = Date.now();
@@ -167,9 +180,19 @@ test.before(async () => {
   if (skipReason) {
     return;
   }
+  disposableFixtureAdmission = await admitDisposablePostgresFixtures(
+    approvedAdmissionFixtureUrls.map((connectionString, index) =>
+      activationFixtureDefinition(
+        index === 0 ? "primary" : "secondary",
+        connectionString,
+      ),
+    ),
+  );
   const primaryPool = new Pool({ connectionString: operatorUrl, max: 1 });
   try {
-    await configureContractDerivedGrantFixture(primaryPool);
+    await configureContractDerivedGrantFixture(
+      createAdmittedMutationPool(primaryPool, disposableFixtureAdmission),
+    );
   } finally {
     await primaryPool.end();
   }
@@ -179,7 +202,9 @@ test.before(async () => {
       max: 1,
     });
     try {
-      await configureContractDerivedGrantFixture(secondaryPool);
+      await configureContractDerivedGrantFixture(
+        createAdmittedMutationPool(secondaryPool, disposableFixtureAdmission),
+      );
     } finally {
       await secondaryPool.end();
     }
@@ -190,7 +215,7 @@ test(
   "PostgreSQL 17 completes every activation phase with secret-safe reporting",
   { skip: skipReason },
   async () => {
-    const adminPool = new Pool({ connectionString: operatorUrl, max: 2 });
+    const adminPool = admittedOperatorPool(operatorUrl, 2);
     const mutation = new PlatformRuntimeActivationMutationTracker(target);
     let runtimePool;
     let successFinalised = false;
@@ -378,7 +403,7 @@ test(
   "PostgreSQL 17 preserves the failed phase and verifies mandatory rollback",
   { skip: skipReason },
   async () => {
-    const adminPool = new Pool({ connectionString: operatorUrl, max: 1 });
+    const adminPool = admittedOperatorPool(operatorUrl, 1);
     const mutation = new PlatformRuntimeActivationMutationTracker(target);
     const journal = new PlatformRuntimeActivationPhaseJournal();
 
@@ -486,7 +511,7 @@ test(
   "failed initial fixture validation causes zero activation or cleanup mutation",
   { skip: skipReason },
   async () => {
-    const adminPool = new Pool({ connectionString: operatorUrl, max: 1 });
+    const adminPool = admittedOperatorPool(operatorUrl, 1);
     const mutation = new PlatformRuntimeActivationMutationTracker(target);
     let fixtureValidated = false;
     let installationCalls = 0;
@@ -534,7 +559,7 @@ test(
   "same SQL fixture fingerprint with a different Neon branch blocks before mutation",
   { skip: skipReason },
   async () => {
-    const adminPool = new Pool({ connectionString: operatorUrl, max: 1 });
+    const adminPool = admittedOperatorPool(operatorUrl, 1);
     const mutation = new PlatformRuntimeActivationMutationTracker(target);
     const wrongBranchBinding = providerPhaseAttestation(-50_000, {
       branchId: "br-disposable-recovery-002",
@@ -596,11 +621,8 @@ test(
   "two-cluster fixture mismatch blocks before password installation and leaves both unchanged",
   { skip: twoClusterSkipReason },
   async () => {
-    const firstPool = new Pool({ connectionString: operatorUrl, max: 1 });
-    const secondPool = new Pool({
-      connectionString: secondOperatorUrl,
-      max: 1,
-    });
+    const firstPool = admittedOperatorPool(operatorUrl, 1);
+    const secondPool = admittedOperatorPool(secondOperatorUrl, 1);
     const mutation = new PlatformRuntimeActivationMutationTracker(
       twoClusterTarget,
     );
@@ -729,7 +751,7 @@ test(
   "dormant preflight rejects prohibited attributes and SET-assumable authority before password installation",
   { skip: skipReason },
   async (context) => {
-    const adminPool = new Pool({ connectionString: operatorUrl, max: 2 });
+    const adminPool = admittedOperatorPool(operatorUrl, 2);
     const createdRoles = [];
     let fixtureValidated = false;
     const suffix = randomUUID().replaceAll("-", "").slice(0, 8);
@@ -931,7 +953,7 @@ test(
   "PostgreSQL 17 detects missing, extra, and grant-option table drift and restores the fixture",
   { skip: skipReason },
   async () => {
-    const adminPool = new Pool({ connectionString: operatorUrl, max: 1 });
+    const adminPool = admittedOperatorPool(operatorUrl, 1);
     const roleName = runtimeActivationRole(target);
     try {
       await assertCompleteDormantPreflight(adminPool, target);
@@ -983,7 +1005,7 @@ test(
   "PostgreSQL 17 rejects complete relation, column, default, routine, and sequence authority drift",
   { skip: skipReason },
   async (context) => {
-    const adminPool = new Pool({ connectionString: operatorUrl, max: 1 });
+    const adminPool = admittedOperatorPool(operatorUrl, 1);
     const roleName = runtimeActivationRole(target);
     const unrelatedRole =
       `rt_unrelated_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
@@ -1681,6 +1703,55 @@ async function grantRole(
 
 async function dropRole(pool, roleName) {
   await pool.query(`drop role if exists ${identifier(roleName)}`);
+}
+
+function activationFixtureDefinition(name, connectionString) {
+  return {
+    name,
+    connectionString,
+    expectedDatabase: "runtime_posture_test",
+    expectedUser: "platform_app",
+    expectedRuntimeRole: "platform_runtime",
+    expectedObjects: {
+      schemas: ["public", "drizzle"],
+      relations: [
+        { schema: "drizzle", name: "__drizzle_migrations", kind: "r" },
+        { schema: "public", name: "users", kind: "r" },
+      ],
+      sequences: [],
+      routines: [],
+    },
+    transport: { kind: "loopback", phase: "initialization" },
+  };
+}
+
+function admittedOperatorPool(connectionString, max) {
+  if (!disposableFixtureAdmission) {
+    throw new Error("Disposable fixture admission is required.");
+  }
+  return createAdmittedMutationPool(
+    new Pool({ connectionString, max }),
+    disposableFixtureAdmission,
+  );
+}
+
+function isApprovedFixtureUrl(connectionString) {
+  try {
+    const parsed = new URL(connectionString);
+    const hostname = parsed.hostname
+      .replace(/^\[|\]$/gu, "")
+      .toLowerCase();
+    return (
+      ["postgres:", "postgresql:"].includes(parsed.protocol) &&
+      parsed.username === "platform_app" &&
+      loopbackFixtureHosts.has(hostname) &&
+      parsed.pathname === "/runtime_posture_test" &&
+      !parsed.search &&
+      !parsed.hash
+    );
+  } catch {
+    return false;
+  }
 }
 
 function identifier(value) {
