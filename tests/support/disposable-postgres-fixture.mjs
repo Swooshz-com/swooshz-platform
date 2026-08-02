@@ -49,7 +49,8 @@ const creationIdentitySql = `
   select
     current_database() = $1 as database_matches,
     session_user = $2 as user_matches,
-    server_version_num::integer / 10000 = 17 as postgres17,
+    current_setting('server_version_num')::integer / 10000 = 17
+      as postgres17,
     not pg_is_in_recovery() as non_recovery,
     (select system_identifier::text from pg_control_system())
       as catalog_fingerprint,
