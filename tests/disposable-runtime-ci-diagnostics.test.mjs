@@ -23,6 +23,50 @@ test("summary parser accepts Node 22 TAP and Node 24 spec markers", () => {
   );
 });
 
+test("summary parser bounds duration_ms as a canonical finite number", () => {
+  for (const duration_ms of ["0", "1", "222.2646", "120000"]) {
+    assert.deepEqual(
+      parseDisposableRuntimeTestSummary(nativeSummary("#", { duration_ms })),
+      {
+        cancelled: 0,
+        failed: 0,
+        passed: 53,
+        skipped: 0,
+        todo: 0,
+        total: 53,
+      },
+      duration_ms,
+    );
+  }
+
+  const rejectedDurations = [
+    "120000.0001",
+    "120001",
+    "999999999999999999999999",
+    "9007199254740992",
+    "1e3",
+    "1E3",
+    "+1",
+    "-1",
+    ".1",
+    "1.",
+    "01",
+    "00.1",
+    "1.2300",
+    "0.10000000000000001",
+    "0.12345678901234567890",
+    "Infinity",
+    "NaN",
+  ];
+  for (const duration_ms of rejectedDurations) {
+    assert.equal(
+      parseDisposableRuntimeTestSummary(nativeSummary("#", { duration_ms })),
+      null,
+      duration_ms,
+    );
+  }
+});
+
 test("summary parser requires one exact coherent 53/53/0 terminal block", () => {
   const rejected = [
     nativeSummary("#", { pass: 52, fail: 1 }),

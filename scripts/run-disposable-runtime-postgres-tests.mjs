@@ -26,6 +26,7 @@ const secondaryDatabaseName = "runtime_posture_test_secondary";
 const ownedContainerName = "codex-platform127-pg17";
 const ownedPort = 55432;
 const maxChildOutputBytes = 64 * 1024;
+const maxChildDurationMs = 120_000;
 const expectedPostgresTestCount = 53;
 const safeIdentifier = /^[a-z_][a-z0-9_$]{0,62}$/u;
 const loopbackHosts = new Set(["127.0.0.1", "::1"]);
@@ -385,7 +386,17 @@ export function parseDisposableRuntimeTestSummary(output) {
   ) {
     return null;
   }
-  if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(fields.get("duration_ms"))) {
+  const durationText = fields.get("duration_ms");
+  if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(durationText)) {
+    return null;
+  }
+  const durationMs = Number(durationText);
+  if (
+    !Number.isFinite(durationMs) ||
+    durationMs < 0 ||
+    durationMs > maxChildDurationMs ||
+    String(durationMs) !== durationText
+  ) {
     return null;
   }
   return {

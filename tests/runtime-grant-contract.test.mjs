@@ -527,6 +527,89 @@ test("dynamic runtime built-in loading forms remain prohibited", async () => {
   }
 });
 
+test("global dynamic constructor authority rejects direct aliases and static wrappers", async () => {
+  const cases = [
+    `export function load() { return globalThis.Function("return process")().getBuiltinModule("fs"); }`,
+    `export function load() { return globalThis["Function"]("return process")(); }`,
+    `export function load() {
+  const runtimeGlobal = globalThis;
+  const Constructor = runtimeGlobal.Function;
+  return Constructor("return process")();
+}`,
+    `export function load() {
+  const { Function: Constructor } = globalThis;
+  return Constructor("return process")();
+}`,
+    `export function load() {
+  const Constructor = globalThis.Function.bind(globalThis);
+  return Constructor("return process")();
+}`,
+    `export function load() {
+  const getGlobal = () => globalThis;
+  const Constructor = getGlobal().Function;
+  return Constructor("return process")();
+}`,
+    `export function load() {
+  return Reflect.get(globalThis, "Function")("return process")();
+}`,
+    `export function load() {
+  return Object.getOwnPropertyDescriptor(globalThis, "Function").value("return process")();
+}`,
+    `export function load() {
+  return (0, globalThis)["Function"]("return process")();
+}`,
+    `export function load() {
+  return globalThis?.Function?.("return process")?.();
+}`,
+    `export function load() { return globalThis.constructor.constructor("return process")(); }`,
+    `export function load() { return globalThis.Object.constructor("return process")(); }`,
+    `export function load() { return globalThis["Object"]["constructor"]("return process")(); }`,
+    `export function load() { return Object.constructor("return process")(); }`,
+    `export function load() { const O = globalThis.Object; return O.constructor("return process")(); }`,
+    `export function load() { const { Object: O } = globalThis; return O.constructor("return process")(); }`,
+    `export function load() { let O; ({ Object: O } = globalThis); return O.constructor("return process")(); }`,
+    `export function load() { return globalThis?.["Function"]?.("return process")?.(); }`,
+  ];
+
+  for (const [index, source] of cases.entries()) {
+    await assert.rejects(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([
+            [`src/platform/global-constructor-authority-${index}.ts`, source],
+          ]),
+        }),
+      contractError("runtime_grant_inventory_unclassified"),
+    );
+  }
+});
+
+    `export function load(Object) { return Object.constructor("return 1"); }`,
+    `export function load(globalThis) { return globalThis?.["Function"]("return 1"); }`,
+    `export function load() { return globalThis.Math.constructor("return 1"); }`,
+    `export function load() { const O = globalThis.Object; return O(1); }`,
+test("global dynamic constructor authority preserves local shadows and non-authority controls", async () => {
+  const cases = [
+    `export function load(Function) { return Function("return 1"); }`,
+    `export function load(globalThis) { return globalThis.Function("return 1"); }`,
+    `export function load() { return typeof globalThis.Function; }`,
+    `export type Constructor = typeof globalThis.Function;
+export function load() { return 1; }`,
+    `export function load() { return globalThis.Array(1); }`,
+  ];
+
+  for (const [index, source] of cases.entries()) {
+    await assert.doesNotReject(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([
+            [`src/platform/global-constructor-control-${index}.ts`, source],
+          ]),
+        }),
+    );
+  }
+});
+
 test("unbound process built-in acquisition is rejected through aliases, computed access, destructuring, and reflection", async () => {
   const cases = [
     `export function load() { return process.getBuiltinModule("fs"); }`,

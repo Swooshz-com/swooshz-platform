@@ -256,6 +256,49 @@ if (
 
 const globalObjectIdentifiers = new Set(["globalThis", "global"]);
 const processIdentifierNames = new Set(["process"]);
+const dynamicConstructorIdentifierNames = new Set(["Function"]);
+const globalConstructorIdentifierNames = new Set([
+  "AbortController",
+  "AbortSignal",
+  "Array",
+  "ArrayBuffer",
+  "BigInt",
+  "BigInt64Array",
+  "BigUint64Array",
+  "Boolean",
+  "DataView",
+  "Date",
+  "Error",
+  "EvalError",
+  "Float32Array",
+  "Float64Array",
+  "Function",
+  "Int8Array",
+  "Int16Array",
+  "Int32Array",
+  "Map",
+  "Number",
+  "Object",
+  "Promise",
+  "Proxy",
+  "RangeError",
+  "ReferenceError",
+  "RegExp",
+  "Set",
+  "String",
+  "Symbol",
+  "SyntaxError",
+  "TypeError",
+  "Uint8Array",
+  "Uint8ClampedArray",
+  "Uint16Array",
+  "Uint32Array",
+  "URIError",
+  "URL",
+  "URLSearchParams",
+  "WeakMap",
+  "WeakSet",
+]);
 
 const databaseExternalImportAuthority = new Set([
   databaseExternalImportKey(
@@ -1485,6 +1528,7 @@ function assertDatabaseCapabilityFacadeOnly(sourceFile) {
 }
 
 function rejectUnsupportedRuntimeModuleLoading(sourceFile) {
+  rejectGlobalDynamicConstructorAuthority(sourceFile);
   rejectUnboundGlobalProcessAuthority(sourceFile);
 
   const visit = (node) => {
@@ -1494,18 +1538,9 @@ function rejectUnsupportedRuntimeModuleLoading(sourceFile) {
         node.expression.kind === ts.SyntaxKind.ImportKeyword ||
         (
           ts.isIdentifier(node.expression) &&
-          ["eval", "Function", "require"].includes(node.expression.text)
+          ["eval", "require"].includes(node.expression.text)
         )
       )
-    ) {
-      throw new RuntimeGrantContractError(
-        "runtime_grant_inventory_unclassified",
-      );
-    }
-    if (
-      ts.isNewExpression(node) &&
-      ts.isIdentifier(node.expression) &&
-      node.expression.text === "Function"
     ) {
       throw new RuntimeGrantContractError(
         "runtime_grant_inventory_unclassified",
@@ -1514,6 +1549,335 @@ function rejectUnsupportedRuntimeModuleLoading(sourceFile) {
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
+}
+
+function rejectGlobalDynamicConstructorAuthority(sourceFile) {
+  const reject = () => {
+    throw new RuntimeGrantContractError("runtime_grant_inventory_unclassified");
+  };
+  const rootScope = {
+    bindings: new Map(),
+    globalAliases: new Set(),
+    globalConstructorAliases: new Set(),
+    callableBindings: new Map(),
+    node: null,
+    varScope: null,
+  };
+  rootScope.varScope = rootScope;
+  addModuleScopeDeclarations(sourceFile, rootScope);
+
+  const scopes = [rootScope];
+  const visit = (node) => {
+    if (
+      isRuntimeValueIdentifierReferenceForName(
+        node,
+        scopes,
+        dynamicConstructorIdentifierNames,
+      ) &&
+      dynamicConstructorReferenceIsAuthority(node)
+    ) {
+      reject();
+    }
+
+    if (
+      dynamicConstructorPropertyAccess(node, scopes) &&
+      dynamicConstructorReferenceIsAuthority(node)
+    ) {
+      reject();
+    }
+
+    if (ts.isVariableDeclaration(node) && node.initializer) {
+      if (
+        (ts.isObjectBindingPattern(node.name) ||
+          ts.isArrayBindingPattern(node.name)) &&
+        isDirectGlobalObjectReference(node.initializer, scopes) &&
+        bindingPatternCanReachDynamicConstructor(node.name)
+      ) {
+        reject();
+      }
+      recordGlobalConstructorAlias(node, scopes);
+      checkGlobalObjectAlias(node, scopes);
+    }
+
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      isAssignmentDestructuringPattern(node.left) &&
+      isDirectGlobalObjectReference(node.right, scopes) &&
+      bindingPatternCanReachDynamicConstructor(node.left)
+    ) {
+      reject();
+    }
+
+    if (
+      ts.isCallExpression(node) &&
+      reflectiveDynamicConstructorAcquisition(node, scopes)
+    ) {
+      reject();
+    }
+
+    const isScope = isScopeNode(node);
+    if (isScope) {
+      const newScope = {
+        bindings: new Map(),
+        globalAliases: new Set(),
+        callableBindings: new Map(),
+        globalConstructorAliases: new Set(),
+        node,
+        varScope: null,
+      };
+      newScope.varScope =
+        scopes[scopes.length - 1].varScope || scopes[scopes.length - 1];
+      addNodeScopeDeclarations(node, newScope);
+      scopes.push(newScope);
+    }
+
+    ts.forEachChild(node, visit);
+
+    if (isScope) {
+      scopes.pop();
+    }
+  };
+
+  visit(sourceFile);
+}
+
+function dynamicConstructorReferenceIsAuthority(node) {
+  if (isInTypePosition(node)) return false;
+  const parent = node.parent;
+  return !(
+    parent &&
+    ts.isTypeOfExpression(parent) &&
+    parent.expression === node
+  );
+}
+
+function dynamicConstructorPropertyAccess(node, scopes) {
+  const access = staticPropertyAccessParts(node);
+  if (!access) return false;
+
+  const { objectExpression, propertyExpression } = access;
+  const propertyName = staticPropertyName(propertyExpression);
+  if (propertyName === null) {
+    return Boolean(resolveGlobalObjectName(objectExpression, scopes));
+  }
+  if (
+    propertyName === "Function" &&
+    resolveGlobalObjectName(objectExpression, scopes)
+  ) {
+    return true;
+  }
+  return (
+    propertyName === "constructor" &&
+    globalConstructorValueReference(objectExpression, scopes)
+  );
+}
+
+function staticPropertyAccessParts(node) {
+  if (
+    ts.isPropertyAccessExpression(node) ||
+    ts.isPropertyAccessChain(node)
+  ) {
+    return {
+      objectExpression: node.expression,
+      propertyExpression: node.name,
+    };
+  }
+  if (
+    ts.isElementAccessExpression(node) ||
+    (typeof ts.isElementAccessChain === "function" &&
+      ts.isElementAccessChain(node))
+  ) {
+    return {
+      objectExpression: node.expression,
+      propertyExpression: node.argumentExpression,
+    };
+  }
+  return null;
+}
+
+function globalConstructorValueReference(expression, scopes) {
+  expression = valueProducingExpression(expression);
+  if (!expression) return false;
+
+  if (ts.isIdentifier(expression)) {
+    if (isLocallyBound(expression.text, scopes)) {
+      return isGlobalConstructorAlias(expression.text, scopes);
+    }
+    return globalConstructorIdentifierNames.has(expression.text);
+  }
+
+  const access = staticPropertyAccessParts(expression);
+  if (!access) return false;
+  const objectReference = access.objectExpression;
+  const propertyName = staticPropertyName(access.propertyExpression);
+  if (propertyName === "constructor") {
+    return (
+      Boolean(resolveGlobalObjectName(objectReference, scopes)) ||
+      globalConstructorValueReference(objectReference, scopes)
+    );
+  }
+  return (
+    Boolean(resolveGlobalObjectName(objectReference, scopes)) &&
+    propertyName !== null &&
+    globalConstructorIdentifierNames.has(propertyName)
+  );
+}
+
+function isGlobalConstructorAlias(name, scopes) {
+  for (let i = scopes.length - 1; i >= 0; i--) {
+    if (scopes[i].globalConstructorAliases?.has(name)) return true;
+    if (scopes[i].bindings.has(name)) return false;
+  }
+  return false;
+}
+
+function recordGlobalConstructorAlias(node, scopes) {
+  const currentScope = scopes[scopes.length - 1];
+  if (ts.isIdentifier(node.name)) {
+    if (globalConstructorValueReference(node.initializer, scopes)) {
+      currentScope.globalConstructorAliases.add(node.name.text);
+    }
+    return;
+  }
+  if (
+    (ts.isObjectBindingPattern(node.name) ||
+      ts.isArrayBindingPattern(node.name)) &&
+    isDirectGlobalObjectReference(node.initializer, scopes)
+  ) {
+    recordGlobalConstructorBindingPattern(node.name, currentScope);
+  }
+}
+
+function recordGlobalConstructorBindingPattern(pattern, scope) {
+  if (!ts.isObjectBindingPattern(pattern)) return;
+  for (const element of pattern.elements) {
+    if (ts.isOmittedExpression(element) || element.dotDotDotToken) continue;
+    const propertyName =
+      element.propertyName && staticPropertyName(element.propertyName);
+    const sourceName =
+      propertyName ||
+      (ts.isIdentifier(element.name) ? element.name.text : null);
+    if (
+      sourceName === null ||
+      (!globalConstructorIdentifierNames.has(sourceName) &&
+        sourceName !== "constructor")
+    ) {
+      continue;
+    }
+    addBindingPatternNamesToSet(element.name, scope.globalConstructorAliases);
+  }
+}
+
+function addBindingPatternNamesToSet(pattern, target) {
+  if (ts.isIdentifier(pattern)) {
+    target.add(pattern.text);
+    return;
+  }
+  if (
+    ts.isObjectBindingPattern(pattern) ||
+    ts.isArrayBindingPattern(pattern)
+  ) {
+    for (const element of pattern.elements) {
+      if (!ts.isOmittedExpression(element) && !element.dotDotDotToken) {
+        addBindingPatternNamesToSet(element.name, target);
+      }
+    }
+  }
+}
+
+function bindingPatternCanReachDynamicConstructor(pattern) {
+  if (ts.isArrayBindingPattern(pattern) || ts.isArrayLiteralExpression(pattern)) {
+    return true;
+  }
+
+  const elements =
+    ts.isObjectBindingPattern(pattern) || ts.isArrayBindingPattern(pattern)
+      ? pattern.elements
+      : null;
+  if (elements) {
+    for (const element of elements) {
+      if (ts.isOmittedExpression(element) || element.dotDotDotToken) return true;
+      if (
+        element.propertyName &&
+        staticPropertyName(element.propertyName) === null
+      ) {
+        return true;
+      }
+      if (
+        (element.propertyName &&
+          staticPropertyName(element.propertyName) === "Function") ||
+        (!element.propertyName &&
+          ts.isIdentifier(element.name) &&
+          element.name.text === "Function")
+      ) {
+        return true;
+      }
+      if (
+        (ts.isObjectBindingPattern(element.name) ||
+          ts.isArrayBindingPattern(element.name)) &&
+        bindingPatternCanReachDynamicConstructor(element.name)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  if (ts.isObjectLiteralExpression(pattern)) {
+    for (const property of pattern.properties) {
+      if (ts.isSpreadAssignment(property)) return true;
+      if (ts.isShorthandPropertyAssignment(property)) {
+        if (staticPropertyName(property.name) === "Function") return true;
+        continue;
+      }
+      if (!ts.isPropertyAssignment(property)) continue;
+      const propertyName = staticPropertyName(property.name);
+      if (propertyName === null || propertyName === "Function") return true;
+      if (
+        isAssignmentDestructuringPattern(property.initializer) &&
+        bindingPatternCanReachDynamicConstructor(property.initializer)
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function reflectiveDynamicConstructorAcquisition(call, scopes) {
+  if (
+    !ts.isPropertyAccessExpression(call.expression) &&
+    !ts.isPropertyAccessChain(call.expression)
+  ) {
+    return false;
+  }
+
+  const receiver = call.expression.expression;
+  const method = call.expression.name.text;
+  const receiverName =
+    ts.isIdentifier(receiver) && !isLocallyBound(receiver.text, scopes)
+      ? receiver.text
+      : null;
+  if (
+    !receiverName ||
+    !(
+      (receiverName === "Reflect" &&
+        ["get", "getOwnPropertyDescriptor"].includes(method)) ||
+      (receiverName === "Object" &&
+        ["getOwnPropertyDescriptor", "getOwnPropertyDescriptors"].includes(
+          method,
+        ))
+    )
+  ) {
+    return false;
+  }
+
+  const target = call.arguments[0];
+  if (!target || !resolveGlobalObjectName(target, scopes)) return false;
+  if (call.arguments.length < 2) return true;
+  const propertyName = staticPropertyName(call.arguments[1]);
+  return propertyName === null || propertyName === "Function";
 }
 
 function rejectUnboundGlobalProcessAuthority(sourceFile) {
