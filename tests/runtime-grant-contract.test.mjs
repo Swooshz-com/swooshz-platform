@@ -579,6 +579,53 @@ test("unbound process acquisition rejects value-producing comma expressions", as
   }
 });
 
+test("process authority scanner closes computed global destructuring and assignment patterns", async () => {
+  const rejected = [
+    `export function load() { const {["process"]: p} = globalThis; return p.getBuiltinModule("node:net"); }`,
+    `export function load() { const {[(0, "process")]: p} = (0, globalThis); return p.getBuiltinModule("node:http"); }`,
+    "export function load() { const {[`process`]: p} = globalThis; return p.getBuiltinModule(\"node:module\"); }",
+    `export function load() { const {["pro" + "cess"]: p} = globalThis; return p.getBuiltinModule("node:net"); }`,
+    `export function load() { const {outer: {["process"]: p}} = globalThis; return p.getBuiltinModule("node:http"); }`,
+    `export function load() { const g = globalThis; const {["process"]: p} = g; return p.getBuiltinModule("node:module"); }`,
+    `export function load() { let p; ({[(0, "process")]: p} = (0, globalThis)); return p.getBuiltinModule("node:net"); }`,
+    `export function load() { const g = globalThis; let p; ({["process"]: p} = g); const get = p.getBuiltinModule; return get("node:http"); }`,
+    `export function load() { const key = process.env.PROPERTY; const {[key]: p} = globalThis; return p.getBuiltinModule("node:net"); }`,
+  ];
+
+  for (const [index, source] of rejected.entries()) {
+    await assert.rejects(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([
+            [`src/platform/run08-computed-process-${index}.ts`, source],
+          ]),
+        }),
+      contractError(globalNetworkRejectionCode),
+    );
+  }
+});
+
+test("computed process destructuring keeps local and discarded controls safe", async () => {
+  const safeCases = [
+    `export function load() { const local = {["process"]: { getBuiltinModule() {} }}; const { ["process"]: p } = local; return p.getBuiltinModule(); }`,
+    `export function load(globalThis) { const {["process"]: p} = globalThis; return p.getBuiltinModule(); }`,
+    `export function load() { const value = {}; const {["other"]: p} = globalThis; return value ?? p; }`,
+    `export function load() { const value = {}; return (globalThis, value); }`,
+    `type GlobalShape = typeof globalThis; export function load(): GlobalShape | undefined { return undefined; }`,
+  ];
+
+  for (const [index, source] of safeCases.entries()) {
+    await assert.doesNotReject(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([
+            [`src/platform/run08-computed-process-safe-${index}.ts`, source],
+          ]),
+        }),
+    );
+  }
+});
+
 test("sequence-expression scanner keeps discarded left operands from becoming authority", async () => {
   const safeCases = [
     `export function load(value) { return (globalThis, value); }`,

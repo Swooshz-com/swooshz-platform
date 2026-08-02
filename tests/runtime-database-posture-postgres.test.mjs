@@ -29,6 +29,26 @@ const skipReason =
     ? false
     : "requires the explicitly confirmed disposable PostgreSQL fixture";
 
+const requiredPostgresMatrixCategories = Object.freeze([
+  "extension_managed_non_system_schema",
+  "direct_schema_create",
+  "public_schema_create",
+  "inherited_role_schema_create",
+  "set_assumable_schema_create",
+  "schema_owner_authority",
+  "inherited_default_acl_grantee",
+  "set_assumable_default_acl_grantee",
+  "public_relation_defaults",
+  "public_sequence_defaults",
+  "public_routine_defaults",
+  "relation_grant_options",
+  "sequence_grant_options",
+  "routine_grant_options",
+  "global_default_replacement",
+  "per_schema_additive_defaults",
+  "hard_wired_defaults",
+]);
+
 test(
   "PostgreSQL 17 rejects authority reachable through SET ROLE",
   { skip: skipReason },
@@ -49,6 +69,7 @@ test(
     const sequences = [];
     const routines = [];
     const extensions = [];
+    const executedCategories = new Set();
     const suffix = randomUUID().replaceAll("-", "").slice(0, 10);
     let sequence = 0;
     let neonSuperuserCreated = false;
@@ -100,6 +121,7 @@ test(
 
       neonSuperuserCreated = await ensureRole(adminPool, "neon_superuser");
 
+      markPostgresMatrixCategory(executedCategories, "extension_managed_non_system_schema");
       await context.test(
         "extension-managed non-system schema CREATE is denied",
         async () => {
@@ -127,6 +149,7 @@ test(
         },
       );
 
+      markPostgresMatrixCategory(executedCategories, "direct_schema_create");
       await context.test("direct schema CREATE is denied", async () => {
         const runtime = role("direct_schema_runtime");
         const targetSchema = schema("direct_schema");
@@ -144,6 +167,7 @@ test(
         );
       });
 
+      markPostgresMatrixCategory(executedCategories, "public_schema_create");
       await context.test("PUBLIC schema CREATE is denied", async () => {
         const runtime = role("public_schema_runtime");
         await createRole(adminPool, runtime);
@@ -160,6 +184,7 @@ test(
         );
       });
 
+      markPostgresMatrixCategory(executedCategories, "inherited_role_schema_create");
       await context.test("inherited-role schema CREATE is denied", async () => {
         const runtime = role("inherited_schema_runtime");
         const inherited = role("inherited_schema_role");
@@ -180,6 +205,7 @@ test(
         );
       });
 
+      markPostgresMatrixCategory(executedCategories, "set_assumable_schema_create");
       await context.test("SET-assumable schema CREATE is denied", async () => {
         const runtime = role("set_schema_runtime");
         const assumable = role("set_schema_role");
@@ -200,6 +226,7 @@ test(
         );
       });
 
+      markPostgresMatrixCategory(executedCategories, "schema_owner_authority");
       await context.test("schema-owner authority is denied", async () => {
         const runtime = role("owner_schema_runtime");
         const owner = role("owner_schema_role");
@@ -217,6 +244,7 @@ test(
         );
       });
 
+      markPostgresMatrixCategory(executedCategories, "inherited_default_acl_grantee");
       await context.test(
         "inherited-role default-ACL grantee is denied",
         async () => {
@@ -242,6 +270,7 @@ test(
         },
       );
 
+      markPostgresMatrixCategory(executedCategories, "set_assumable_default_acl_grantee");
       await context.test(
         "SET-assumable default-ACL grantee is denied",
         async () => {
@@ -266,6 +295,7 @@ test(
         },
       );
 
+      markPostgresMatrixCategory(executedCategories, "public_relation_defaults");
       await context.test("PUBLIC relation defaults are denied", async () => {
         const runtime = role("public_relation_default_runtime");
         const creator = role("public_relation_default_creator");
@@ -284,6 +314,7 @@ test(
         );
       });
 
+      markPostgresMatrixCategory(executedCategories, "public_sequence_defaults");
       await context.test("PUBLIC sequence defaults are denied", async () => {
         const runtime = role("public_sequence_default_runtime");
         const creator = role("public_sequence_default_creator");
@@ -302,6 +333,7 @@ test(
         );
       });
 
+      markPostgresMatrixCategory(executedCategories, "public_routine_defaults");
       await context.test("PUBLIC routine defaults are denied", async () => {
         const runtime = role("public_routine_default_runtime");
         const creator = role("public_routine_default_creator");
@@ -320,6 +352,7 @@ test(
         );
       });
 
+      markPostgresMatrixCategory(executedCategories, "relation_grant_options");
       await context.test("relation grant options are denied", async () => {
         const runtime = role("relation_grant_option_runtime");
         const tableName = relation("relation_grant_option");
@@ -333,6 +366,7 @@ test(
         await assertPostureFails(adminPool, runtime, "runtimeTableGrantsExact");
       });
 
+      markPostgresMatrixCategory(executedCategories, "sequence_grant_options");
       await context.test("sequence grant options are denied", async () => {
         const runtime = role("sequence_grant_option_runtime");
         const sequence = sequenceName("sequence_grant_option");
@@ -348,6 +382,7 @@ test(
         );
       });
 
+      markPostgresMatrixCategory(executedCategories, "routine_grant_options");
       await context.test("routine grant options are denied", async () => {
         const runtime = role("routine_grant_option_runtime");
         const routineName = routine("routine_grant_option");
@@ -365,6 +400,7 @@ test(
         );
       });
 
+      markPostgresMatrixCategory(executedCategories, "global_default_replacement");
       await context.test("global default replacement is enforced", async () => {
         const runtime = role("global_default_runtime");
         const creator = role("global_default_creator");
@@ -386,6 +422,7 @@ test(
         );
       });
 
+      markPostgresMatrixCategory(executedCategories, "per_schema_additive_defaults");
       await context.test("per-schema default additions are enforced", async () => {
         const runtime = role("schema_default_runtime");
         const creator = role("schema_default_creator");
@@ -404,6 +441,7 @@ test(
         );
       });
 
+      markPostgresMatrixCategory(executedCategories, "hard_wired_defaults");
       await context.test("hard-wired default behavior is enforced", async () => {
         const runtime = role("hardwired_runtime");
         const creator = role("hardwired_creator");
@@ -870,6 +908,10 @@ test(
           "administrativeAttributesAbsent",
         );
       });
+      assert.deepEqual(
+        [...executedCategories].sort(),
+        [...requiredPostgresMatrixCategories].sort(),
+      );
     } finally {
       await adminPool.query("alter database runtime_posture_test owner to postgres").catch(() => {});
       await adminPool.query("alter schema drizzle owner to postgres").catch(() => {});
@@ -901,6 +943,12 @@ test(
     }
   },
 );
+
+function markPostgresMatrixCategory(executed, category) {
+  assert.equal(requiredPostgresMatrixCategories.includes(category), true);
+  assert.equal(executed.has(category), false);
+  executed.add(category);
+}
 
 async function createRole(pool, roleName, attribute = "") {
   const supportedAttributes = new Set(["", "createdb", "createrole", "bypassrls"]);

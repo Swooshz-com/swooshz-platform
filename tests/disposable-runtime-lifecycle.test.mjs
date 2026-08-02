@@ -14,6 +14,7 @@ test("lifecycle harness cleans owned resources after normal success", async () =
     "raw-admission",
     "secondary-admission",
     "authority",
+    "database-create",
     "provision",
     "configured-admission",
     "tests",
@@ -48,6 +49,15 @@ test("secondary-target admission failure runs no provisioning and still cleans",
   );
   assert.equal(events.includes("provision"), false);
   assert.deepEqual(events.slice(-2), ["cleanup", "absence"]);
+  for (const failure of ["raw-admission", "authority"]) {
+    const events = [];
+    await assert.rejects(
+      () => runScenario(events, { failure }),
+      safeLifecycleError,
+    );
+    assert.equal(events.includes("database-create"), false, failure);
+    assert.equal(events.includes("provision"), false, failure);
+  }
 });
 
 test("lifecycle harness cleans after provisioning failure", async () => {
@@ -94,9 +104,11 @@ async function runScenario(events, options = {}) {
     },
     deriveProvisioning: async () => {
       events.push("authority");
+      if (options.failure === "authority") throw new Error();
       return {};
     },
     provision: async () => {
+      events.push("database-create");
       events.push("provision");
       if (options.failure === "provision") throw new Error();
     },

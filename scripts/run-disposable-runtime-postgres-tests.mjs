@@ -12,9 +12,12 @@ import {
 import {
   admitDisposablePostgresConstructionTargets,
   admitDisposablePostgresFixtures,
+  createAuthorizedDatabaseCreationPool,
   createAuthorizedProvisioningPool,
+  deriveDisposablePostgresDatabaseCreationAuthority,
   deriveDisposablePostgresProvisioningAuthority,
   invalidateDisposablePostgresAdmission,
+  invalidateDisposablePostgresConstructionAdmission,
 } from "../tests/support/disposable-postgres-fixture.mjs";
 import { runDisposableRuntimeLifecycle } from "./disposable-runtime-lifecycle.mjs";
 
@@ -22,6 +25,8 @@ const databaseName = "runtime_posture_test";
 const secondaryDatabaseName = "runtime_posture_test_secondary";
 const ownedContainerName = "codex-platform127-pg17";
 const ownedPort = 55432;
+const maxChildOutputBytes = 64 * 1024;
+const expectedPostgresTestCount = 53;
 const safeIdentifier = /^[a-z_][a-z0-9_$]{0,62}$/u;
 const loopbackHosts = new Set(["127.0.0.1", "::1"]);
 const failurePhases = new Set([
@@ -137,16 +142,6 @@ export async function run({
         await waitForPostgres(urls.primaryOperatorUrl);
         resources.postgresReady = true;
       });
-      await runAt(
-        resources,
-        "construct",
-        "secondary_database_creation",
-        () => ensureDatabase(
-          urls.primaryOperatorUrl,
-          secondaryDatabaseName,
-          resources,
-        ),
-      );
       return urls;
     },
 
@@ -157,7 +152,11 @@ export async function run({
       async () => {
         const admission = await admitDisposablePostgresConstructionTargets([
           constructionTargetDefinition("primary", urls.primaryOperatorUrl),
-          constructionTargetDefinition("secondary", urls.secondaryOperatorUrl),
+          constructionTargetDefinition(
+            "secondary",
+            urls.secondaryOperatorUrl,
+            urls.rootOperatorUrl,
+          ),
         ]);
         resources.constructionAdmission = true;
         return admission;
@@ -179,7 +178,18 @@ export async function run({
             ),
           );
         }
-        return authorities;
+        return {
+          authorities,
+          creationAuthorities: new Map([
+            [
+              "secondary",
+              deriveDisposablePostgresDatabaseCreationAuthority(
+                constructionAuthority,
+                "secondary",
+              ),
+            ],
+          ]),
+        };
       },
     ),
 
@@ -187,11 +197,22 @@ export async function run({
       await runAt(
         lifecycleResources,
         "provision",
+        "secondary_database_creation",
+        () => ensureDatabase(
+          urls.rootOperatorUrl,
+          secondaryDatabaseName,
+          authorities.creationAuthorities.get("secondary"),
+          lifecycleResources,
+        ),
+      );
+      await runAt(
+        lifecycleResources,
+        "provision",
         "primary_provisioning",
         () => provisionFixture(
           urls.primaryOperatorUrl,
           databaseName,
-          authorities.get("primary"),
+          authorities.authorities.get("primary"),
           lifecycleResources,
         ),
       );
@@ -202,7 +223,7 @@ export async function run({
         () => provisionFixture(
           urls.secondaryOperatorUrl,
           secondaryDatabaseName,
-          authorities.get("secondary"),
+          authorities.authorities.get("secondary"),
           lifecycleResources,
         ),
       );
@@ -292,18 +313,88 @@ export function formatDisposableRuntimeFailureReceipt(resources = {}) {
 }
 
 export function parseDisposableRuntimeTestSummary(output) {
-  const normalised = String(output).replace(
-    /\u001b\[[0-?]*[ -/]*[@-~]/gu,
-    "",
-  );
-  const match = normalised.match(
-    /(?:^|\r?\n)\s*(?:ℹ|#) tests (\d+)[\s\S]*?(?:^|\r?\n)\s*(?:ℹ|#) pass (\d+)[\s\S]*?(?:^|\r?\n)\s*(?:ℹ|#) skipped (\d+)/mu,
-  );
-  if (!match) return null;
+  if (typeof output !== "string" || Buffer.byteLength(output, "utf8") > maxChildOutputBytes) {
+    return null;
+  }
+  const normalised = output
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "")
+    .replace(/\r\n?/gu, "\n");
+  const lines = normalised.split("\n");
+  while (lines.at(-1) === "") lines.pop();
+  if (lines.length === 0) return null;
+
+  const fieldPattern = /^\s*([#ℹ])\s+(tests|suites|pass|fail|cancelled|skipped|todo|duration_ms)(?:\s+([^\s].*?))?\s*$/u;
+  const summaryStarts = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = lines[index].match(fieldPattern);
+    if (match?.[2] === "tests") summaryStarts.push(index);
+  }
+  if (summaryStarts.length !== 1) return null;
+  const start = summaryStarts[0];
+  const fields = new Map();
+  let marker = null;
+  let expectedIndex = 0;
+  const expectedFields = [
+    "tests",
+    "suites",
+    "pass",
+    "fail",
+    "cancelled",
+    "skipped",
+    "todo",
+    "duration_ms",
+  ];
+  for (let index = start; index < lines.length; index += 1) {
+    const match = lines[index].match(fieldPattern);
+    if (!match || (marker !== null && match[1] !== marker)) return null;
+    marker ??= match[1];
+    if (match[2] !== expectedFields[expectedIndex] || fields.has(match[2])) {
+      return null;
+    }
+    if (typeof match[3] !== "string" || match[3].length === 0) return null;
+    fields.set(match[2], match[3]);
+    expectedIndex += 1;
+    if (match[2] === "duration_ms") {
+      if (index !== lines.length - 1) return null;
+      break;
+    }
+  }
+  if (expectedIndex !== expectedFields.length) return null;
+  if (start > 0) {
+    for (const line of lines.slice(0, start)) {
+      if (fieldPattern.test(line)) return null;
+    }
+  }
+
+  const counts = {};
+  for (const field of ["tests", "suites", "pass", "fail", "cancelled", "skipped", "todo"]) {
+    const value = fields.get(field);
+    if (!/^(?:0|[1-9]\d*)$/u.test(value)) return null;
+    const count = Number(value);
+    if (!Number.isSafeInteger(count)) return null;
+    counts[field] = count;
+  }
+  if (
+    counts.tests !== expectedPostgresTestCount ||
+    counts.pass !== expectedPostgresTestCount ||
+    counts.fail !== 0 ||
+    counts.skipped !== 0 ||
+    counts.cancelled !== 0 ||
+    counts.todo !== 0 ||
+    counts.pass + counts.fail + counts.skipped + counts.cancelled + counts.todo !== counts.tests
+  ) {
+    return null;
+  }
+  if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(fields.get("duration_ms"))) {
+    return null;
+  }
   return {
-    total: Number(match[1]),
-    passed: Number(match[2]),
-    skipped: Number(match[3]),
+    cancelled: counts.cancelled,
+    failed: counts.fail,
+    passed: counts.pass,
+    skipped: counts.skipped,
+    todo: counts.todo,
+    total: counts.tests,
   };
 }
 
@@ -322,6 +413,7 @@ async function runAt(resources, phase, category, operation) {
 
 function fixtureUrls() {
   return {
+    rootOperatorUrl: buildUrl("postgres", "postgres"),
     primaryTargetUrl: buildUrl("platform_app", databaseName),
     primaryOperatorUrl: buildUrl("postgres", databaseName),
     secondaryTargetUrl: buildUrl("platform_app", secondaryDatabaseName),
@@ -336,13 +428,24 @@ function buildUrl(user, database) {
   return `postgres://${user}@127.0.0.1:${ownedPort}/${database}`;
 }
 
-function constructionTargetDefinition(name, connectionString) {
+function constructionTargetDefinition(
+  name,
+  connectionString,
+  creationConnectionString,
+) {
   const expectedDatabase = name === "primary"
     ? databaseName
     : secondaryDatabaseName;
   return {
     name,
     connectionString,
+    ...(creationConnectionString
+      ? {
+          allowDatabaseCreation: true,
+          creationConnectionString,
+          databaseMayBeAbsent: true,
+        }
+      : {}),
     expectedDatabase,
     expectedUser: "postgres",
     phase: "initialization",
@@ -374,15 +477,24 @@ function fixtureDefinition(name, urls) {
   };
 }
 
-async function ensureDatabase(operatorUrl, expectedDatabase, resources) {
+async function ensureDatabase(
+  operatorUrl,
+  expectedDatabase,
+  creationAuthority,
+  resources,
+) {
   const operatorPool = new Pool({ connectionString: operatorUrl, max: 1 });
   try {
-    const result = await operatorPool.query(
+    const authorizedPool = createAuthorizedDatabaseCreationPool(
+      operatorPool,
+      creationAuthority,
+    );
+    const result = await authorizedPool.query(
       "select 1 from pg_database where datname = $1",
       [expectedDatabase],
     );
     if (result.rows.length === 0) {
-      await operatorPool.query(`create database ${quoteIdentifier(expectedDatabase)}`);
+      await authorizedPool.query(`create database ${quoteIdentifier(expectedDatabase)}`);
       resources.ownedDatabases.add(expectedDatabase);
       resources.runnerOwned.add(`database:${expectedDatabase}`);
     } else {
@@ -575,6 +687,15 @@ function markChildFailure(resources, category) {
 
 async function cleanupRunnerResources(resources, spawnImpl) {
   let firstError = null;
+  try {
+    if (resources.constructionAuthority) {
+      invalidateDisposablePostgresConstructionAdmission(
+        resources.constructionAuthority,
+      );
+    }
+  } catch {
+    firstError ??= new Error();
+  }
   try {
     if (resources.configuredAdmission) {
       invalidateDisposablePostgresAdmission(resources.configuredAdmission);
@@ -770,7 +891,7 @@ async function runCommand(spawnImpl, command, args) {
     });
     child.stdout?.on("data", (chunk) => {
       outputLength += chunk.length;
-      if (outputLength <= 1_024) output.push(Buffer.from(chunk));
+      if (outputLength <= maxChildOutputBytes) output.push(Buffer.from(chunk));
     });
   });
 }

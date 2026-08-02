@@ -14,6 +14,7 @@ const validPort = (value) =>
 // their authority data is available only through these WeakMaps.
 const constructionAggregateBrand = Symbol("construction-aggregate");
 const provisioningTargetBrand = Symbol("provisioning-target");
+const databaseCreationTargetBrand = Symbol("database-creation-target");
 const configuredAggregateBrand = Symbol("configured-aggregate");
 const configuredTargetBrand = Symbol("configured-target");
 const mutationTargetBrand = Symbol("mutation-target");
@@ -21,6 +22,7 @@ const managedTransportValues = new WeakMap();
 const parsedUrlValues = new WeakMap();
 const constructionAggregateValues = new WeakMap();
 const provisioningTargetValues = new WeakMap();
+const databaseCreationTargetValues = new WeakMap();
 const configuredAggregateValues = new WeakMap();
 const configuredTargetValues = new WeakMap();
 const mutationTargetValues = new WeakMap();
@@ -41,6 +43,23 @@ const identitySql = `
       as catalog_fingerprint,
     (select oid::text from pg_database where datname = current_database())
       as lifecycle_fingerprint
+`;
+
+const creationIdentitySql = `
+  select
+    current_database() = $1 as database_matches,
+    session_user = $2 as user_matches,
+    server_version_num::integer / 10000 = 17 as postgres17,
+    not pg_is_in_recovery() as non_recovery,
+    (select system_identifier::text from pg_control_system())
+      as catalog_fingerprint,
+    coalesce(
+      (select oid::text from pg_database where datname = $3),
+      'absent:' || $3
+    ) as lifecycle_fingerprint,
+    not exists (
+      select 1 from pg_database where datname = $3
+    ) as target_database_absent
 `;
 
 export class DisposablePostgresFixtureAdmissionError extends Error {
@@ -184,7 +203,10 @@ export async function admitDisposablePostgresConstructionTargets(
       admittedTargets,
       brand: constructionAggregateBrand,
       phase: "initialization",
+      creationAuthorities: new Set(),
+      creationTargets: new Set(),
       provisioningTargets: new Set(),
+      provisioningAuthorities: new Set(),
       valid: true,
     });
     return aggregate;
@@ -224,7 +246,91 @@ export function deriveDisposablePostgresProvisioningAuthority(
       target,
       valid: true,
     });
+    value.provisioningAuthorities.add(authority);
     return authority;
+  } catch (error) {
+    if (error instanceof DisposablePostgresFixtureAdmissionError) {
+      throw error;
+    }
+    throw new DisposablePostgresFixtureAdmissionError();
+  }
+}
+
+export function deriveDisposablePostgresDatabaseCreationAuthority(
+  aggregate,
+  targetName,
+) {
+  try {
+    const value = requireConstructionAggregate(aggregate);
+    if (
+      typeof targetName !== "string" ||
+      value.creationTargets.has(targetName)
+    ) {
+      throw new Error();
+    }
+    const target = value.admittedTargets.get(targetName);
+    if (!target || !target.target.allowDatabaseCreation ||
+        !target.target.creationBinding) {
+      throw new Error();
+    }
+    value.creationTargets.add(targetName);
+    const authority = Object.freeze({});
+    databaseCreationTargetValues.set(authority, {
+      aggregate,
+      authority,
+      boundConnections: new WeakSet(),
+      boundPool: null,
+      brand: databaseCreationTargetBrand,
+      consumed: false,
+      phase: "initialization",
+      targetName,
+      target,
+      valid: true,
+    });
+    value.creationAuthorities.add(authority);
+    return authority;
+  } catch (error) {
+    if (error instanceof DisposablePostgresFixtureAdmissionError) {
+      throw error;
+    }
+    throw new DisposablePostgresFixtureAdmissionError();
+  }
+}
+
+export function createAuthorizedDatabaseCreationPool(pool, authority) {
+  try {
+    const value = requireDatabaseCreationTarget(authority);
+    if (
+      value.consumed ||
+      value.boundPool ||
+      !pool ||
+      typeof pool.connect !== "function" ||
+      !poolConnectionMatchesTarget(pool, value.target, "creation")
+    ) {
+      throw new Error();
+    }
+    value.consumed = true;
+    value.boundPool = pool;
+    const base = createAuthorizedPoolWrapper(
+      pool,
+      value.target,
+      value,
+      defaultCreationConnectionRevalidator,
+      "creation",
+    );
+    return Object.freeze({
+      async query(text, values = []) {
+        assertDatabaseCreationQuery(text, values, value.target);
+        const result = await base.query(text, values);
+        if (/^\s*create\s+database\b/iu.test(text)) {
+          value.valid = false;
+        }
+        return result;
+      },
+      end(...args) {
+        return pool.end(...args);
+      },
+    });
   } catch (error) {
     if (error instanceof DisposablePostgresFixtureAdmissionError) {
       throw error;
@@ -468,18 +574,43 @@ export function invalidateDisposablePostgresAdmission(admission) {
   }
 }
 
-function createAuthorizedPoolWrapper(pool, target, authority, revalidate) {
+export function invalidateDisposablePostgresConstructionAdmission(admission) {
+  const value = requireConstructionAggregate(admission);
+  value.valid = false;
+  for (const authority of value.provisioningAuthorities) {
+    const target = provisioningTargetValues.get(authority);
+    if (target) target.valid = false;
+  }
+  for (const authority of value.creationAuthorities) {
+    const target = databaseCreationTargetValues.get(authority);
+    if (target) target.valid = false;
+  }
+}
+
+function createAuthorizedPoolWrapper(
+  pool,
+  target,
+  authority,
+  revalidate,
+  bindingMode = "target",
+) {
   return Object.freeze({
     async query(text, values = []) {
       if (typeof text !== "string" || !Array.isArray(values)) {
         throw new DisposablePostgresFixtureAdmissionError();
       }
-      const client = await connectAndRevalidate(pool, target, authority, revalidate);
+      const client = await connectAndRevalidate(
+        pool,
+        target,
+        authority,
+        revalidate,
+        bindingMode,
+      );
       try {
         if (
           !authority.valid ||
           !authority.boundConnections.has(client) ||
-          !clientConnectionMatchesTarget(client, target)
+          !clientConnectionMatchesTarget(client, target, bindingMode)
         ) {
           throw new DisposablePostgresFixtureAdmissionError();
         }
@@ -489,7 +620,13 @@ function createAuthorizedPoolWrapper(pool, target, authority, revalidate) {
       }
     },
     async connect() {
-      const client = await connectAndRevalidate(pool, target, authority, revalidate);
+      const client = await connectAndRevalidate(
+        pool,
+        target,
+        authority,
+        revalidate,
+        bindingMode,
+      );
       return Object.freeze({
         async query(text, values = []) {
           try {
@@ -498,7 +635,7 @@ function createAuthorizedPoolWrapper(pool, target, authority, revalidate) {
               !Array.isArray(values) ||
               !authority.valid ||
               !authority.boundConnections.has(client) ||
-              !clientConnectionMatchesTarget(client, target)
+              !clientConnectionMatchesTarget(client, target, bindingMode)
             ) {
               throw new Error();
             }
@@ -516,19 +653,25 @@ function createAuthorizedPoolWrapper(pool, target, authority, revalidate) {
   });
 }
 
-async function connectAndRevalidate(pool, target, authority, revalidate) {
+async function connectAndRevalidate(
+  pool,
+  target,
+  authority,
+  revalidate,
+  bindingMode = "target",
+) {
   try {
     if (
       !authority.valid ||
       !pool ||
       authority.boundPool !== pool ||
-      !poolConnectionMatchesTarget(pool, target)
+      !poolConnectionMatchesTarget(pool, target, bindingMode)
     ) {
       throw new Error();
     }
     const client = await pool.connect();
     try {
-      if (!clientConnectionMatchesTarget(client, target)) {
+      if (!clientConnectionMatchesTarget(client, target, bindingMode)) {
         throw new Error();
       }
       await revalidate({ client, target });
@@ -577,9 +720,9 @@ function createMutationRevalidator(options) {
   };
 }
 
-function clientConnectionMatchesTarget(client, targetRecord) {
+function clientConnectionMatchesTarget(client, targetRecord, bindingMode = "target") {
   try {
-    const binding = targetConnectionBinding(targetRecord);
+    const binding = targetConnectionBinding(targetRecord, bindingMode);
       const parameters = client?.connectionParameters;
     if (!parameters || typeof parameters !== "object") return false;
     if (parameters.password) return false;
@@ -594,6 +737,7 @@ function clientConnectionMatchesTarget(client, targetRecord) {
         targetRecord,
         hostname,
         port,
+        bindingMode,
       )
     );
   } catch {
@@ -601,9 +745,9 @@ function clientConnectionMatchesTarget(client, targetRecord) {
   }
 }
 
-function poolConnectionMatchesTarget(pool, targetRecord) {
+function poolConnectionMatchesTarget(pool, targetRecord, bindingMode = "target") {
   try {
-    const binding = targetConnectionBinding(targetRecord);
+    const binding = targetConnectionBinding(targetRecord, bindingMode);
     const configured = pool?.options?.connectionString;
     if (typeof configured === "string") {
       const parsed = new URL(configured);
@@ -628,6 +772,7 @@ function poolConnectionMatchesTarget(pool, targetRecord) {
           targetRecord,
           hostname,
           port,
+          bindingMode,
         )
       );
     }
@@ -646,6 +791,7 @@ function poolConnectionMatchesTarget(pool, targetRecord) {
         targetRecord,
         hostname,
         port,
+        bindingMode,
       )
     );
   } catch {
@@ -653,34 +799,46 @@ function poolConnectionMatchesTarget(pool, targetRecord) {
   }
 }
 
-function targetConnectionBinding(targetRecord) {
+function targetConnectionBinding(targetRecord, bindingMode = "target") {
   const target = targetRecord?.target;
   if (!target || !target.parsedUrl) throw new Error();
+  const selectedBinding = bindingMode === "creation"
+    ? target.creationBinding
+    : target.mutationBinding;
   const parsed = parsedUrlValues.get(
-    target.mutationBinding?.parsedUrl ?? target.parsedUrl,
+    selectedBinding?.parsedUrl ?? target.parsedUrl,
   );
   if (!parsed) throw new Error();
   return {
     expectedDatabase:
-      target.mutationBinding?.expectedDatabase ?? target.expectedDatabase,
-    expectedUser: target.mutationBinding?.expectedUser ?? target.expectedUser,
+      selectedBinding?.expectedDatabase ?? target.expectedDatabase,
+    expectedUser: selectedBinding?.expectedUser ?? target.expectedUser,
     hostname: parsed.hostname,
     port: parsed.port,
     transportIdentity:
-      target.mutationBinding?.transportIdentity ?? parsed.transportIdentity,
+      selectedBinding?.transportIdentity ?? parsed.transportIdentity,
   };
 }
 
-function transportIdentityFor(targetRecord, hostname, port) {
+function transportIdentityFor(
+  targetRecord,
+  hostname,
+  port,
+  bindingMode = "target",
+) {
   const target = targetRecord?.target;
   const parsed = parsedUrlValues.get(
-    target?.mutationBinding?.parsedUrl ?? target?.parsedUrl,
+    (bindingMode === "creation"
+      ? target?.creationBinding?.parsedUrl
+      : target?.mutationBinding?.parsedUrl) ?? target?.parsedUrl,
   );
   if (!parsed) throw new Error();
   if (parsed.transportKind === "loopback") {
     return `loopback:${hostname}:${port}`;
   }
-  const transport = target.mutationBinding
+  const transport = bindingMode === "creation"
+    ? target.creationTransport ?? target.operatorTransport ?? target.transport
+    : target.mutationBinding
     ? target.mutationTransport ?? target.operatorTransport ?? target.transport
     : target.transport;
   const transportValue = managedTransportValues.get(transport?.attestation);
@@ -704,7 +862,10 @@ async function probeTarget({
       if (clientFactory) {
         client = await clientFactory(target);
       } else {
-        ownedPool = new Pool({ connectionString: target.connectionString, max: 1 });
+        ownedPool = new Pool({
+          connectionString: target.probeConnectionString ?? target.connectionString,
+          max: 1,
+        });
         client = await ownedPool.connect();
       }
     }
@@ -718,7 +879,7 @@ async function probeTarget({
         parsedUrl,
         postureInspector: target.postureInspector,
       });
-      assertProbeResult(result, target.mode === "construction");
+      assertProbeResult(result, target.mode === "construction", target);
       return Object.freeze({
         catalogFingerprint: result.catalogFingerprint,
         databaseMatches: true,
@@ -742,7 +903,9 @@ async function probeTarget({
 }
 
 async function defaultConstructionProbe({ client, fixture }) {
-  const identity = await readIdentity(client, fixture);
+  const identity = fixture.databaseMayBeAbsent
+    ? await readCreationIdentity(client, fixture)
+    : await readIdentity(client, fixture);
   return {
     ...identity,
     catalogIdentityPresent: true,
@@ -753,7 +916,7 @@ async function defaultConstructionProbe({ client, fixture }) {
     ownershipAbsent: true,
     postgres17: true,
     runtimePosturePassed: true,
-    targetDatabasePresent: true,
+    targetDatabasePresent: identity.targetDatabasePresent ?? true,
     userMatches: true,
   };
 }
@@ -892,6 +1055,55 @@ async function readIdentity(client, fixture) {
   return { catalogFingerprint, lifecycleFingerprint };
 }
 
+async function readCreationIdentity(client, fixture) {
+  const binding = targetConnectionBinding({ target: fixture }, "creation");
+  const result = await client.query(creationIdentitySql, [
+    binding.expectedDatabase,
+    binding.expectedUser,
+    fixture.expectedDatabase,
+  ]);
+  const row = oneRow(result);
+  requireTrue(row, [
+    "database_matches",
+    "user_matches",
+    "postgres17",
+    "non_recovery",
+    "target_database_absent",
+  ]);
+  const catalogFingerprint = requireFingerprint(row.catalog_fingerprint);
+  const lifecycleFingerprint = requireFingerprint(row.lifecycle_fingerprint);
+  return {
+    catalogFingerprint,
+    lifecycleFingerprint,
+    targetDatabasePresent: false,
+  };
+}
+
+async function defaultCreationConnectionRevalidator({ client, target }) {
+  const binding = targetConnectionBinding(target, "creation");
+  const result = await client.query(creationIdentitySql, [
+    binding.expectedDatabase,
+    binding.expectedUser,
+    target.target.expectedDatabase,
+  ]);
+  const row = oneRow(result);
+  requireTrue(row, [
+    "database_matches",
+    "user_matches",
+    "postgres17",
+    "non_recovery",
+    "target_database_absent",
+  ]);
+  if (
+    requireFingerprint(row.catalog_fingerprint) !==
+      requireFingerprint(target.evidence.catalogFingerprint) ||
+    requireFingerprint(row.lifecycle_fingerprint) !==
+      requireFingerprint(target.evidence.lifecycleFingerprint)
+  ) {
+    throw new Error();
+  }
+}
+
 async function defaultMutationConnectionRevalidator({ client, target }) {
   const binding = targetConnectionBinding(target);
   const result = await client.query(identitySql, [
@@ -920,8 +1132,10 @@ function normalizeConstructionTarget(target) {
   const normalized = {
     ...target,
     connectionString: target.connectionString ?? target.operatorUrl,
+    creationConnectionString: target.creationConnectionString,
     expectedDatabase: target.expectedDatabase,
     expectedUser: target.expectedUser ?? "postgres",
+    allowDatabaseCreation: target.allowDatabaseCreation === true,
     mode: "construction",
     name: target.name,
     phase: target.phase ?? "initialization",
@@ -942,6 +1156,35 @@ function normalizeConstructionTarget(target) {
     normalized.connectionString,
     normalized,
   );
+  if (normalized.allowDatabaseCreation) {
+    if (typeof normalized.creationConnectionString !== "string") {
+      throw new Error();
+    }
+    const creationExpectedDatabase = normalized.creationExpectedDatabase ?? "postgres";
+    const creationExpectedUser = normalized.creationExpectedUser ?? normalized.expectedUser;
+    const creationTransport = normalized.creationTransport ?? normalized.transport;
+    const creationParsedUrl = parseDisposablePostgresUrl(
+      normalized.creationConnectionString,
+      {
+        expectedDatabase: creationExpectedDatabase,
+        expectedUser: creationExpectedUser,
+        phase: normalized.phase,
+        transport: creationTransport,
+      },
+    );
+    normalized.creationBinding = Object.freeze({
+      expectedDatabase: creationExpectedDatabase,
+      expectedUser: creationExpectedUser,
+      parsedUrl: creationParsedUrl,
+      transportIdentity: parsedUrlValues.get(creationParsedUrl).transportIdentity,
+    });
+    normalized.creationTransport = creationTransport;
+    normalized.probeConnectionString = normalized.creationConnectionString;
+    normalized.databaseMayBeAbsent = normalized.databaseMayBeAbsent === true;
+    if (!normalized.databaseMayBeAbsent) {
+      throw new Error();
+    }
+  }
   return normalized;
 }
 
@@ -1088,7 +1331,7 @@ function assertReadOnlySql(text) {
   }
 }
 
-function assertProbeResult(result, construction) {
+function assertProbeResult(result, construction, target) {
   if (!result || typeof result !== "object") throw new Error();
   requireTrue(result, [
     "databaseMatches",
@@ -1101,7 +1344,12 @@ function assertProbeResult(result, construction) {
     "ownershipAbsent",
     "expectedObjectsPresent",
   ]);
-  if (construction) requireTrue(result, ["targetDatabasePresent"]);
+  if (construction) {
+    if (typeof result.targetDatabasePresent !== "boolean") throw new Error();
+    if (!result.targetDatabasePresent && !target?.allowDatabaseCreation) {
+      throw new Error();
+    }
+  }
   requireFingerprint(result.catalogFingerprint);
   requireFingerprint(result.lifecycleFingerprint);
 }
@@ -1120,6 +1368,23 @@ function requireProvisioningTarget(token) {
     !value ||
     value.brand !== provisioningTargetBrand ||
     !value.valid ||
+    !value.target ||
+    !value.target.target
+  ) {
+    throw new DisposablePostgresFixtureAdmissionError();
+  }
+  return value;
+}
+
+function requireDatabaseCreationTarget(token) {
+  const value = databaseCreationTargetValues.get(token);
+  const aggregate = value?.aggregate && constructionAggregateValues.get(value.aggregate);
+  if (
+    !value ||
+    value.brand !== databaseCreationTargetBrand ||
+    !value.valid ||
+    !aggregate ||
+    !aggregate.valid ||
     !value.target ||
     !value.target.target
   ) {
@@ -1153,6 +1418,25 @@ function requireFingerprint(value) {
     throw new Error();
   }
   return String(value);
+}
+
+function assertDatabaseCreationQuery(text, values, targetRecord) {
+  if (typeof text !== "string" || !Array.isArray(values)) throw new Error();
+  const normalized = text.replace(/\s+/gu, " ").trim();
+  if (/^select 1 from pg_database where datname = \$1$/iu.test(normalized)) {
+    if (values.length !== 1 || values[0] !== targetRecord.target.expectedDatabase) {
+      throw new Error();
+    }
+    return;
+  }
+  const createMatch = normalized.match(/^create database\s+"([a-z_][a-z0-9_$]{0,62})"$/iu);
+  if (
+    !createMatch ||
+    createMatch[1] !== targetRecord.target.expectedDatabase ||
+    values.length !== 0
+  ) {
+    throw new Error();
+  }
 }
 
 function oneRow(result) {

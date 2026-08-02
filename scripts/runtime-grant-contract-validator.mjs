@@ -1575,6 +1575,16 @@ function rejectUnboundGlobalProcessAuthority(sourceFile) {
     }
 
     if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      isAssignmentDestructuringPattern(node.left) &&
+      isDirectGlobalObjectReference(node.right, scopes) &&
+      bindingPatternCanReachProcess(node.left)
+    ) {
+      reject(node);
+    }
+
+    if (
       ts.isCallExpression(node) &&
       reflectiveProcessAcquisition(node, scopes)
     ) {
@@ -1636,14 +1646,31 @@ function globalObjectElementCanReachProcess(node) {
 
 function bindingPatternCanReachProcess(pattern) {
   if (ts.isArrayBindingPattern(pattern)) return true;
+  if (ts.isArrayLiteralExpression(pattern)) return true;
+  if (ts.isObjectLiteralExpression(pattern)) {
+    for (const property of pattern.properties) {
+      if (ts.isSpreadAssignment(property)) return true;
+      if (ts.isShorthandPropertyAssignment(property)) {
+        if (property.name.text === "process") return true;
+        continue;
+      }
+      if (!ts.isPropertyAssignment(property)) continue;
+      const propertyName = staticPropertyName(property.name);
+      if (propertyName === null || propertyName === "process") return true;
+      if (isAssignmentDestructuringPattern(property.initializer) &&
+          bindingPatternCanReachProcess(property.initializer)) {
+        return true;
+      }
+    }
+    return false;
+  }
   for (const element of pattern.elements) {
     if (ts.isOmittedExpression(element)) continue;
     if (element.dotDotDotToken) return true;
-    if (
-      element.propertyName &&
-      ts.isIdentifier(element.propertyName) &&
-      element.propertyName.text === "process"
-    ) {
+    if (element.propertyName && staticPropertyName(element.propertyName) === null) {
+      return true;
+    }
+    if (element.propertyName && staticPropertyName(element.propertyName) === "process") {
       return true;
     }
     if (
@@ -1662,6 +1689,44 @@ function bindingPatternCanReachProcess(pattern) {
     }
   }
   return false;
+}
+
+function isAssignmentDestructuringPattern(node) {
+  return ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node);
+}
+
+function staticPropertyName(node) {
+  if (!node) return null;
+  if (ts.isIdentifier(node) || ts.isStringLiteral(node) || ts.isNumericLiteral(node)) {
+    return node.text;
+  }
+  const expression = ts.isComputedPropertyName(node) ? node.expression : node;
+  return staticStringValue(expression);
+}
+
+function staticStringValue(expression) {
+  const value = valueProducingExpression(expression);
+  if (ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value)) {
+    return value.text;
+  }
+  if (
+    ts.isBinaryExpression(value) &&
+    value.operatorToken.kind === ts.SyntaxKind.PlusToken
+  ) {
+    const left = staticStringValue(value.left);
+    const right = staticStringValue(value.right);
+    return left !== null && right !== null ? left + right : null;
+  }
+  if (ts.isTemplateExpression(value)) {
+    let result = value.head.text;
+    for (const span of value.templateSpans) {
+      const expressionValue = staticStringValue(span.expression);
+      if (expressionValue === null) return null;
+      result += expressionValue + span.literal.text;
+    }
+    return result;
+  }
+  return null;
 }
 
 function reflectiveProcessAcquisition(call, scopes) {

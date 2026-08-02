@@ -6,11 +6,14 @@ import {
   admitDisposablePostgresConstructionTargets,
   admitDisposablePostgresFixture,
   admitDisposablePostgresFixtures,
+  createAuthorizedDatabaseCreationPool,
   createAdmittedMutationClient,
   createAdmittedMutationPool,
+  deriveDisposablePostgresDatabaseCreationAuthority,
   deriveDisposablePostgresProvisioningAuthority,
   deriveDisposablePostgresTargetAuthority,
   invalidateDisposablePostgresAdmission,
+  invalidateDisposablePostgresConstructionAdmission,
   parseDisposablePostgresUrl,
   requireDisposablePostgresAdmission,
   withDisposablePostgresFixturesAdmitted,
@@ -282,6 +285,83 @@ test("single-target configured admission cannot satisfy aggregate authority", as
     safeAdmissionError,
   );
   assert.equal(Object.keys(provisioning).length, 0);
+  const creationSecondary = {
+    name: "secondary",
+    connectionString: "postgres://postgres@127.0.0.1:5432/runtime_posture_test_secondary",
+    creationConnectionString: "postgres://postgres@127.0.0.1:5432/postgres",
+    creationExpectedDatabase: "postgres",
+    databaseMayBeAbsent: true,
+    allowDatabaseCreation: true,
+    expectedDatabase: "runtime_posture_test_secondary",
+    expectedUser: "postgres",
+    phase: "initialization",
+    transport: { kind: "loopback", phase: "initialization" },
+  };
+  const creationConstruction = await admitDisposablePostgresConstructionTargets(
+    [constructionTarget("primary", "runtime_posture_test"), creationSecondary],
+    {
+      readOnlyProbe: async ({ fixture }) => ({
+        ...(await passingProbe()),
+        lifecycleFingerprint: fixture.name === "secondary"
+          ? "absent:runtime_posture_test_secondary"
+          : "lifecycle-1",
+        targetDatabasePresent: fixture.name !== "secondary",
+      }),
+    },
+  );
+  const authority = deriveDisposablePostgresDatabaseCreationAuthority(creationConstruction, "secondary");
+  const queries = [];
+  const rootPool = {
+    options: { connectionString: creationSecondary.creationConnectionString },
+    async connect() {
+      return {
+        connectionParameters: {
+          host: "127.0.0.1",
+          port: 5432,
+          database: "postgres",
+          user: "postgres",
+        },
+        release() {},
+        async query(text, values) {
+          queries.push({ text, values });
+          if (text.includes("target_database_absent")) {
+            return {
+              rows: [{
+                database_matches: true,
+                user_matches: true,
+                postgres17: true,
+                non_recovery: true,
+                catalog_fingerprint: "catalog-1",
+                lifecycle_fingerprint: "absent:runtime_posture_test_secondary",
+                target_database_absent: true,
+              }],
+            };
+          }
+          return { rows: [] };
+        },
+      };
+    },
+    async end() {},
+  };
+  const authorized = createAuthorizedDatabaseCreationPool(rootPool, authority);
+  await authorized.query("select 1 from pg_database where datname = $1", [
+    "runtime_posture_test_secondary",
+  ]);
+  await authorized.query('create database "runtime_posture_test_secondary"');
+  assert.equal(queries.length, 4);
+  assert.throws(
+    () => createAuthorizedDatabaseCreationPool(rootPool, authority),
+    safeAdmissionError,
+  );
+  assert.throws(
+    () => deriveDisposablePostgresDatabaseCreationAuthority(creationConstruction, "secondary"),
+    safeAdmissionError,
+  );
+  invalidateDisposablePostgresConstructionAdmission(creationConstruction);
+  assert.throws(
+    () => createAuthorizedDatabaseCreationPool(rootPool, authority),
+    safeAdmissionError,
+  );
 });
 
 test("target authority rejects wrong pool, connection substitution, replay, stale, and vacuous evidence", async () => {
@@ -444,4 +524,15 @@ function safeAdmissionError(error) {
   );
   assert.doesNotMatch(error.message, /postgres|platform_|runtime_|127|5432|localhost/i);
   return true;
+}
+
+function constructionTarget(name, database) {
+  return {
+    name,
+    connectionString: `postgres://postgres@127.0.0.1:5432/${database}`,
+    expectedDatabase: database,
+    expectedUser: "postgres",
+    phase: "initialization",
+    transport: { kind: "loopback", phase: "initialization" },
+  };
 }
