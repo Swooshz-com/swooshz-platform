@@ -206,6 +206,7 @@ export async function admitDisposablePostgresConstructionTargets(
       phase: "initialization",
       creationAuthorities: new Set(),
       creationTargets: new Set(),
+      createdTargets: new Map(),
       provisioningTargets: new Set(),
       provisioningAuthorities: new Set(),
       valid: true,
@@ -239,9 +240,14 @@ export function deriveDisposablePostgresProvisioningAuthority(
     const authority = Object.freeze({});
     provisioningTargetValues.set(authority, {
       authority,
+      aggregate,
       boundConnections: new WeakSet(),
       brand: provisioningTargetBrand,
       consumed: false,
+      catalogFingerprint: requireFingerprint(target.evidence.catalogFingerprint),
+      lifecycleFingerprint: target.target.databaseMayBeAbsent
+        ? null
+        : requireFingerprint(target.evidence.lifecycleFingerprint),
       phase: "initialization",
       targetName,
       target,
@@ -324,6 +330,16 @@ export function createAuthorizedDatabaseCreationPool(pool, authority) {
         assertDatabaseCreationQuery(text, values, value.target);
         const result = await base.query(text, values);
         if (/^\s*create\s+database\b/iu.test(text)) {
+          const createdIdentity = await readCreatedDatabaseIdentity(
+            pool,
+            value.target,
+          );
+          const aggregate = constructionAggregateValues.get(value.aggregate);
+          if (!aggregate?.valid) throw new Error();
+          aggregate.createdTargets.set(
+            value.targetName,
+            Object.freeze(createdIdentity),
+          );
           value.valid = false;
         }
         return result;
@@ -355,7 +371,7 @@ export function createAuthorizedProvisioningPool(pool, authority, options = {}) 
     value.consumed = true;
     value.boundPool = pool;
     value.valid = true;
-    const revalidate = createMutationRevalidator(options);
+    const revalidate = createMutationRevalidator(options, value);
     return createAuthorizedPoolWrapper(pool, value.target, value, revalidate);
   } catch (error) {
     if (error instanceof DisposablePostgresFixtureAdmissionError) {
@@ -711,10 +727,14 @@ function createMutationClientWrapper(client, authority, revalidate) {
   });
 }
 
-function createMutationRevalidator(options) {
+function createMutationRevalidator(options, authorityValue = null) {
   const additionalRevalidate = options?.revalidateMutationConnection;
   return async ({ client, target }) => {
-    await defaultMutationConnectionRevalidator({ client, target });
+    await defaultMutationConnectionRevalidator({
+      authorityValue,
+      client,
+      target,
+    });
     if (additionalRevalidate) {
       await additionalRevalidate({ client, target });
     }
@@ -1105,7 +1125,45 @@ async function defaultCreationConnectionRevalidator({ client, target }) {
   }
 }
 
-async function defaultMutationConnectionRevalidator({ client, target }) {
+async function readCreatedDatabaseIdentity(pool, target) {
+  const client = await pool.connect();
+  try {
+    if (!clientConnectionMatchesTarget(client, target, "creation")) {
+      throw new Error();
+    }
+    const binding = targetConnectionBinding(target, "creation");
+    const result = await client.query(creationIdentitySql, [
+      binding.expectedDatabase,
+      binding.expectedUser,
+      target.target.expectedDatabase,
+    ]);
+    const row = oneRow(result);
+    requireTrue(row, [
+      "database_matches",
+      "user_matches",
+      "postgres17",
+      "non_recovery",
+    ]);
+    if (row.target_database_absent !== false) throw new Error();
+    const catalogFingerprint = requireFingerprint(row.catalog_fingerprint);
+    const lifecycleFingerprint = requireFingerprint(row.lifecycle_fingerprint);
+    if (
+      catalogFingerprint !== requireFingerprint(target.evidence.catalogFingerprint) ||
+      lifecycleFingerprint.startsWith("absent:")
+    ) {
+      throw new Error();
+    }
+    return { catalogFingerprint, lifecycleFingerprint };
+  } finally {
+    client.release();
+  }
+}
+
+async function defaultMutationConnectionRevalidator({
+  authorityValue = null,
+  client,
+  target,
+}) {
   const binding = targetConnectionBinding(target);
   const result = await client.query(identitySql, [
     binding.expectedDatabase,
@@ -1118,11 +1176,33 @@ async function defaultMutationConnectionRevalidator({ client, target }) {
     "postgres17",
     "non_recovery",
   ]);
+  const catalogFingerprint = requireFingerprint(row.catalog_fingerprint);
+  const lifecycleFingerprint = requireFingerprint(row.lifecycle_fingerprint);
   if (
-    requireFingerprint(row.catalog_fingerprint) !==
-      requireFingerprint(target.evidence.catalogFingerprint) ||
-    requireFingerprint(row.lifecycle_fingerprint) !==
-      requireFingerprint(target.evidence.lifecycleFingerprint)
+    catalogFingerprint !==
+      requireFingerprint(target.evidence.catalogFingerprint)
+  ) {
+    throw new Error();
+  }
+  if (authorityValue?.target?.target?.databaseMayBeAbsent) {
+    const aggregate = constructionAggregateValues.get(authorityValue.aggregate);
+    const created = aggregate?.createdTargets.get(authorityValue.targetName);
+    if (
+      !aggregate?.valid ||
+      !created ||
+      created.catalogFingerprint !== catalogFingerprint ||
+      created.lifecycleFingerprint !== lifecycleFingerprint
+    ) {
+      throw new Error();
+    }
+    if (authorityValue.lifecycleFingerprint === null) {
+      authorityValue.lifecycleFingerprint = lifecycleFingerprint;
+    }
+  }
+  if (
+    lifecycleFingerprint !==
+      requireFingerprint(authorityValue?.lifecycleFingerprint ??
+        target.evidence.lifecycleFingerprint)
   ) {
     throw new Error();
   }

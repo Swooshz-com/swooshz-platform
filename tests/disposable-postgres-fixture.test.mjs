@@ -7,6 +7,7 @@ import {
   admitDisposablePostgresFixture,
   admitDisposablePostgresFixtures,
   createAuthorizedDatabaseCreationPool,
+  createAuthorizedProvisioningPool,
   createAdmittedMutationClient,
   createAdmittedMutationPool,
   deriveDisposablePostgresDatabaseCreationAuthority,
@@ -310,7 +311,12 @@ test("single-target configured admission cannot satisfy aggregate authority", as
     },
   );
   const authority = deriveDisposablePostgresDatabaseCreationAuthority(creationConstruction, "secondary");
+  const provisioningAuthority = deriveDisposablePostgresProvisioningAuthority(
+    creationConstruction,
+    "secondary",
+  );
   const queries = [];
+  let created = false;
   const rootPool = {
     options: { connectionString: creationSecondary.creationConnectionString },
     async connect() {
@@ -324,6 +330,10 @@ test("single-target configured admission cannot satisfy aggregate authority", as
         release() {},
         async query(text, values) {
           queries.push({ text, values });
+          if (/^create database\b/iu.test(text)) {
+            created = true;
+            return { rows: [] };
+          }
           if (text.includes("target_database_absent")) {
             return {
               rows: [{
@@ -332,8 +342,10 @@ test("single-target configured admission cannot satisfy aggregate authority", as
                 postgres17: true,
                 non_recovery: true,
                 catalog_fingerprint: "catalog-1",
-                lifecycle_fingerprint: "absent:runtime_posture_test_secondary",
-                target_database_absent: true,
+                lifecycle_fingerprint: created
+                  ? "lifecycle-2"
+                  : "absent:runtime_posture_test_secondary",
+                target_database_absent: !created,
               }],
             };
           }
@@ -348,7 +360,43 @@ test("single-target configured admission cannot satisfy aggregate authority", as
     "runtime_posture_test_secondary",
   ]);
   await authorized.query('create database "runtime_posture_test_secondary"');
-  assert.equal(queries.length, 4);
+  assert.equal(queries.length, 5);
+  const targetPool = {
+    options: { connectionString: creationSecondary.connectionString },
+    async connect() {
+      return {
+        connectionParameters: {
+          host: "127.0.0.1",
+          port: 5432,
+          database: "runtime_posture_test_secondary",
+          user: "postgres",
+        },
+        release() {},
+        async query(text) {
+          if (text.includes("current_database()")) {
+            return {
+              rows: [{
+                database_matches: true,
+                user_matches: true,
+                postgres17: true,
+                non_recovery: true,
+                catalog_fingerprint: "catalog-1",
+                lifecycle_fingerprint: "lifecycle-2",
+              }],
+            };
+          }
+          return { rows: [] };
+        },
+      };
+    },
+  };
+  const authorizedProvisioning = createAuthorizedProvisioningPool(
+    targetPool,
+    provisioningAuthority,
+  );
+  await authorizedProvisioning.query(
+    "grant connect on database runtime_posture_test_secondary to platform_app",
+  );
   assert.throws(
     () => createAuthorizedDatabaseCreationPool(rootPool, authority),
     safeAdmissionError,
