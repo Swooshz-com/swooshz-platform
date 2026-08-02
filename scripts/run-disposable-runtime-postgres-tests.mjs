@@ -24,12 +24,45 @@ const ownedContainerName = "codex-platform127-pg17";
 const ownedPort = 55432;
 const safeIdentifier = /^[a-z_][a-z0-9_$]{0,62}$/u;
 const loopbackHosts = new Set(["127.0.0.1", "::1"]);
+const failurePhases = new Set([
+  "construct",
+  "admitConstruction",
+  "deriveProvisioning",
+  "provision",
+  "admitConfigured",
+  "runFocusedTests",
+  "cleanup",
+  "absenceVerification",
+]);
+const failureCategories = new Set([
+  "container_preexistence",
+  "container_start",
+  "postgres_readiness",
+  "secondary_database_creation",
+  "construction_target_admission",
+  "provisioning_authority",
+  "primary_provisioning",
+  "secondary_provisioning",
+  "configured_fixture_admission",
+  "child_test_spawn",
+  "child_test_failure",
+  "child_output_overflow",
+  "child_summary_parse",
+  "child_signal",
+  "cleanup",
+  "absence_verification",
+  "ci_environment_unclassified",
+]);
 
 if (
   process.argv[1] &&
   fileURLToPath(import.meta.url) === resolve(process.argv[1])
 ) {
-  run().catch(() => {
+  run().catch((error) => {
+    process.stderr.write(
+      `${error?.runtimeFailureReceipt ?? formatDisposableRuntimeFailureReceipt()}` +
+        "\n",
+    );
     process.stderr.write("Disposable fixture test runner failed.\n");
     process.exitCode = 1;
   });
@@ -41,10 +74,26 @@ export async function run({
 } = {}) {
   let resources = null;
 
-  return runDisposableRuntimeLifecycle({
+  try {
+    return await runDisposableRuntimeLifecycle({
     construct: async (lifecycleResources) => {
       resources = lifecycleResources;
       Object.assign(resources, {
+        phase: "construct",
+        failurePhase: null,
+        failureCategory: null,
+        childExitCode: null,
+        childSignal: false,
+        childOutputOverflow: false,
+        childSummaryParsed: false,
+        containerStarted: false,
+        postgresReady: false,
+        constructionAdmission: false,
+        provisioningComplete: false,
+        configuredAdmission: false,
+        childTestsStarted: false,
+        cleanupComplete: false,
+        absenceVerified: false,
         containerStartAttempted: false,
         ownedContainer: false,
         containerRemoved: false,
@@ -65,11 +114,15 @@ export async function run({
           "postgres default database",
         ]),
       });
-      assertNoCallerSuppliedFixture(env);
-      await assertExactContainerAbsent(spawnImpl);
+      await runAt(resources, "construct", "container_preexistence", async () => {
+        assertNoCallerSuppliedFixture(env);
+        await assertExactContainerAbsent(spawnImpl);
+      });
       resources.containerStartAttempted = true;
-      await startOwnedContainer(spawnImpl);
+      await runAt(resources, "construct", "container_start", () =>
+        startOwnedContainer(spawnImpl));
       resources.ownedContainer = true;
+      resources.containerStarted = true;
       resources.runnerOwned.add(`container:${ownedContainerName}`);
       resources.runnerOwned.add(`listener:127.0.0.1:${ownedPort}`);
 
@@ -80,70 +133,191 @@ export async function run({
       ]);
       resources.ownedDatabases.add(databaseName);
 
-      await waitForPostgres(urls.primaryOperatorUrl);
-      await ensureDatabase(
-        urls.primaryOperatorUrl,
-        secondaryDatabaseName,
+      await runAt(resources, "construct", "postgres_readiness", async () => {
+        await waitForPostgres(urls.primaryOperatorUrl);
+        resources.postgresReady = true;
+      });
+      await runAt(
         resources,
+        "construct",
+        "secondary_database_creation",
+        () => ensureDatabase(
+          urls.primaryOperatorUrl,
+          secondaryDatabaseName,
+          resources,
+        ),
       );
       return urls;
     },
 
-    admitConstruction: async (urls) =>
-      admitDisposablePostgresConstructionTargets([
-        constructionTargetDefinition("primary", urls.primaryOperatorUrl),
-        constructionTargetDefinition("secondary", urls.secondaryOperatorUrl),
-      ]),
+    admitConstruction: async (urls) => runAt(
+      resources,
+      "admitConstruction",
+      "construction_target_admission",
+      async () => {
+        const admission = await admitDisposablePostgresConstructionTargets([
+          constructionTargetDefinition("primary", urls.primaryOperatorUrl),
+          constructionTargetDefinition("secondary", urls.secondaryOperatorUrl),
+        ]);
+        resources.constructionAdmission = true;
+        return admission;
+      },
+    ),
 
-    deriveProvisioning: async (constructionAuthority) => {
-      const authorities = new Map();
-      for (const targetName of ["primary", "secondary"]) {
-        authorities.set(
-          targetName,
-          deriveDisposablePostgresProvisioningAuthority(
-            constructionAuthority,
+    deriveProvisioning: async (constructionAuthority) => runAt(
+      resources,
+      "deriveProvisioning",
+      "provisioning_authority",
+      async () => {
+        const authorities = new Map();
+        for (const targetName of ["primary", "secondary"]) {
+          authorities.set(
             targetName,
-          ),
-        );
-      }
-      return authorities;
-    },
+            deriveDisposablePostgresProvisioningAuthority(
+              constructionAuthority,
+              targetName,
+            ),
+          );
+        }
+        return authorities;
+      },
+    ),
 
     provision: async (authorities, urls, lifecycleResources) => {
-      await provisionFixture(
-        urls.primaryOperatorUrl,
-        databaseName,
-        authorities.get("primary"),
+      await runAt(
         lifecycleResources,
+        "provision",
+        "primary_provisioning",
+        () => provisionFixture(
+          urls.primaryOperatorUrl,
+          databaseName,
+          authorities.get("primary"),
+          lifecycleResources,
+        ),
       );
-      await provisionFixture(
-        urls.secondaryOperatorUrl,
-        secondaryDatabaseName,
-        authorities.get("secondary"),
+      await runAt(
         lifecycleResources,
+        "provision",
+        "secondary_provisioning",
+        () => provisionFixture(
+          urls.secondaryOperatorUrl,
+          secondaryDatabaseName,
+          authorities.get("secondary"),
+          lifecycleResources,
+        ),
       );
+      lifecycleResources.provisioningComplete = true;
     },
 
-    admitConfigured: async (urls) =>
-      admitDisposablePostgresFixtures([
-        fixtureDefinition("primary", urls),
-        fixtureDefinition("secondary", urls),
-      ]),
+    admitConfigured: async (urls) => runAt(
+      resources,
+      "admitConfigured",
+      "configured_fixture_admission",
+      async () => {
+        const admission = await admitDisposablePostgresFixtures([
+          fixtureDefinition("primary", urls),
+          fixtureDefinition("secondary", urls),
+        ]);
+        resources.configuredAdmission = true;
+        return admission;
+      },
+    ),
 
-    runFocusedTests: async (admission, lifecycleResources) =>
-      runFocusedTests({
+    runFocusedTests: async (admission, lifecycleResources) => runAt(
+      lifecycleResources,
+      "runFocusedTests",
+      "child_test_failure",
+      () => runFocusedTests({
         admission,
         urls: lifecycleResources.construction,
         spawnImpl,
         resources: lifecycleResources,
       }),
+    ),
 
-    cleanup: async (lifecycleResources) =>
-      cleanupRunnerResources(lifecycleResources, spawnImpl),
+    cleanup: async (lifecycleResources) => runAt(
+      lifecycleResources,
+      "cleanup",
+      "cleanup",
+      async () => {
+        await cleanupRunnerResources(lifecycleResources, spawnImpl);
+        lifecycleResources.cleanupComplete = true;
+      },
+    ),
 
-    verifyAbsence: async (lifecycleResources) =>
-      verifyRunnerAbsence(lifecycleResources, spawnImpl),
-  });
+    verifyAbsence: async (lifecycleResources) => runAt(
+      lifecycleResources,
+      "absenceVerification",
+      "absence_verification",
+      async () => {
+        await verifyRunnerAbsence(lifecycleResources, spawnImpl);
+        lifecycleResources.absenceVerified = true;
+      },
+    ),
+    });
+  } catch (error) {
+    const failure = error instanceof Error ? error : new Error();
+    Object.defineProperty(failure, "runtimeFailureReceipt", {
+      configurable: true,
+      value: formatDisposableRuntimeFailureReceipt(resources),
+    });
+    throw failure;
+  }
+}
+
+export function formatDisposableRuntimeFailureReceipt(resources = {}) {
+  const receipt = {
+    phase: failurePhases.has(resources.failurePhase)
+      ? resources.failurePhase
+      : "construct",
+    category: failureCategories.has(resources.failureCategory)
+      ? resources.failureCategory
+      : "ci_environment_unclassified",
+    childExitCode: Number.isInteger(resources.childExitCode)
+      ? resources.childExitCode
+      : null,
+    childSignal: resources.childSignal === true,
+    outputOverflow: resources.childOutputOverflow === true,
+    summaryParsed: resources.childSummaryParsed === true,
+    containerStarted: resources.containerStarted === true,
+    postgresReady: resources.postgresReady === true,
+    constructionAdmission: resources.constructionAdmission === true,
+    provisioningComplete: resources.provisioningComplete === true,
+    configuredAdmission: resources.configuredAdmission === true,
+    childTestsStarted: resources.childTestsStarted === true,
+    cleanupComplete: resources.cleanupComplete === true,
+    absenceVerified: resources.absenceVerified === true,
+  };
+  return `Disposable fixture failure receipt: ${JSON.stringify(receipt)}`;
+}
+
+export function parseDisposableRuntimeTestSummary(output) {
+  const normalised = String(output).replace(
+    /\u001b\[[0-?]*[ -/]*[@-~]/gu,
+    "",
+  );
+  const match = normalised.match(
+    /(?:^|\r?\n)\s*(?:ℹ|#) tests (\d+)[\s\S]*?(?:^|\r?\n)\s*(?:ℹ|#) pass (\d+)[\s\S]*?(?:^|\r?\n)\s*(?:ℹ|#) skipped (\d+)/mu,
+  );
+  if (!match) return null;
+  return {
+    total: Number(match[1]),
+    passed: Number(match[2]),
+    skipped: Number(match[3]),
+  };
+}
+
+async function runAt(resources, phase, category, operation) {
+  resources.phase = phase;
+  try {
+    return await operation();
+  } catch (error) {
+    if (!resources.failureCategory) {
+      resources.failurePhase = phase;
+      resources.failureCategory = category;
+    }
+    throw error;
+  }
 }
 
 function fixtureUrls() {
@@ -320,18 +494,25 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
     const output = [];
     let outputLength = 0;
     let outputOverflow = false;
-    const child = spawnImpl(
-      process.execPath,
-      [
-        "--test",
-        "tests/disposable-postgres-fixture.test.mjs",
-        "tests/disposable-runtime-lifecycle.test.mjs",
-        "tests/runtime-database-posture-postgres.test.mjs",
-      ],
-      { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
-    );
+    let child;
+    try {
+      child = spawnImpl(
+        process.execPath,
+        [
+          "--test",
+          "tests/disposable-postgres-fixture.test.mjs",
+          "tests/disposable-runtime-lifecycle.test.mjs",
+          "tests/runtime-database-posture-postgres.test.mjs",
+        ],
+        { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
+      );
+    } catch (error) {
+      markChildFailure(resources, "child_test_spawn");
+      throw error;
+    }
     resources.childProcess = child;
     resources.childExited = false;
+    resources.childTestsStarted = true;
     child.stdout?.on("data", (chunk) => {
       outputLength += chunk.length;
       if (outputLength <= 64 * 1024) {
@@ -341,28 +522,55 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
       }
     });
     child.stderr?.resume();
-    child.once("error", () => reject(new Error()));
+    child.once("error", (error) => {
+      markChildFailure(resources, "child_test_spawn");
+      reject(error);
+    });
     child.once("close", (code, signal) => {
       resources.childExited = true;
+      resources.childExitCode = Number.isInteger(code) ? code : null;
+      resources.childSignal = signal !== null;
+      if (resources.childSignal) {
+        markChildFailure(resources, "child_signal");
+        reject(new Error());
+        return;
+      }
+      if (outputOverflow) {
+        resources.childOutputOverflow = true;
+        markChildFailure(resources, "child_output_overflow");
+        reject(new Error());
+        return;
+      }
+      if (code !== 0) {
+        markChildFailure(resources, "child_test_failure");
+        reject(new Error());
+        return;
+      }
       if (code === 0 && signal === null && !outputOverflow) {
-        const summary = Buffer.concat(output).toString("utf8");
-        const match = summary.match(
-          /ℹ tests (\d+)[\s\S]*?ℹ pass (\d+)[\s\S]*?ℹ skipped (\d+)/u,
+        const summary = parseDisposableRuntimeTestSummary(
+          Buffer.concat(output).toString("utf8"),
         );
-        if (!match) {
+        if (!summary) {
+          markChildFailure(resources, "child_summary_parse");
           reject(new Error());
           return;
         }
+        resources.childSummaryParsed = true;
         process.stdout.write(
-          `Disposable PostgreSQL 17 tests: ${match[1]} total, ${match[2]} passed, ${match[3]} skipped.\n`,
+          `Disposable PostgreSQL 17 tests: ${summary.total} total, ${summary.passed} passed, ${summary.skipped} skipped.\n`,
         );
         resolvePromise();
-      } else {
-        reject(new Error());
       }
     });
   });
   void admission;
+}
+
+function markChildFailure(resources, category) {
+  if (!resources.failureCategory) {
+    resources.failurePhase = "runFocusedTests";
+    resources.failureCategory = category;
+  }
 }
 
 async function cleanupRunnerResources(resources, spawnImpl) {
