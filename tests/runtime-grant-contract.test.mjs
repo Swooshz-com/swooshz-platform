@@ -3717,3 +3717,82 @@ export function createStore(db) {
 }
 `;
 }
+test("callable constructor-chain authority rejects known callable values and bounded aliases", async () => {
+  const sourcePath = "src/platform/run20-callable-constructor-chain.ts";
+  const rejected = [
+    ["function declaration", `function callable() {}
+callable.constructor;`],
+    ["function expression", `(function callable() {}).constructor;`],
+    ["arrow expression", `(() => {}).constructor;`],
+    ["async arrow expression", `(async () => {}).constructor;`],
+    ["generator expression", `(function* callable() {}).constructor;`],
+    ["class declaration", `class Callable {}
+Callable.constructor;`],
+    ["class expression", `(class Callable {}).constructor;`],
+    ["callable binding", `const callable = function () {};
+callable.constructor;`],
+    ["callable alias", `const callable = function () {};
+const alias = callable;
+alias.constructor;`],
+    ["wrapped callable alias", `const callable = function () {};
+const alias = ((callable));
+(alias).constructor;`],
+    ["computed static constructor property", `const callable = function () {};
+callable["constr" + "uctor"];`],
+    ["repeated constructor chain", `const callable = () => {};
+callable.constructor.constructor;`],
+    ["callable assignment", `let callable;
+callable = function () {};
+callable.constructor;`],
+    ["unsupported call-result base", `function getValue() { return {}; }
+getValue().constructor;`],
+    ["callable constructor destructuring", `const callable = function () {};
+const { constructor: dynamicConstructor } = callable;
+dynamicConstructor;`],
+  ];
+
+  for (const [name, source] of rejected) {
+    await assert.rejects(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([[sourcePath, source]]),
+        }),
+      contractError(globalNetworkRejectionCode),
+      name,
+    );
+  }
+});
+
+test("callable constructor-chain controls preserve ordinary objects, shadows, type-only uses, and discarded operands", async () => {
+  const sourcePath = "src/platform/run20-callable-constructor-controls.ts";
+  const safeCases = [
+    ["ordinary local object", `const object = {};
+object.constructor;`],
+    ["custom non-authority constructor data", `const object = { constructor: 1 };
+object.constructor;`],
+    ["local shadow of global constructor name", `const Function = {};
+Function.constructor;`],
+    ["type-only reference", `type ConstructorType = typeof Function;
+const value: ConstructorType | null = null;`],
+    ["typeof inspection", `const kind = typeof Function;
+void kind;`],
+    ["discarded callable constructor access", `const object = ((() => {}).constructor, {});
+object.constructor;`],
+    ["benign static property inspection", `const object = {};
+object["other"];`],
+    ["constructor-related text", `const text = "constructor Function";
+const template = \`constructor Function\`;
+void text;
+void template;`],
+  ];
+
+  for (const [name, source] of safeCases) {
+    await assert.doesNotReject(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([[sourcePath, source]]),
+        }),
+      name,
+    );
+  }
+});

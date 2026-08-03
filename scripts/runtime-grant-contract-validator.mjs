@@ -1560,6 +1560,7 @@ function rejectGlobalDynamicConstructorAuthority(sourceFile) {
     globalAliases: new Set(),
     globalConstructorAliases: new Set(),
     callableBindings: new Map(),
+    valueBindings: new Map(),
     node: null,
     varScope: null,
   };
@@ -1568,6 +1569,8 @@ function rejectGlobalDynamicConstructorAuthority(sourceFile) {
 
   const scopes = [rootScope];
   const visit = (node) => {
+    recordStaticValueBinding(node, scopes);
+    recordStaticValueAssignment(node, scopes);
     if (
       isRuntimeValueIdentifierReferenceForName(
         node,
@@ -1587,6 +1590,13 @@ function rejectGlobalDynamicConstructorAuthority(sourceFile) {
     }
 
     if (ts.isVariableDeclaration(node) && node.initializer) {
+      if (
+        (ts.isObjectBindingPattern(node.name) || ts.isArrayBindingPattern(node.name)) &&
+        staticallyKnownCallableValueKind(node.initializer, scopes) === "callable" &&
+        callableBindingPatternCanReachConstructor(node.name)
+      ) {
+        reject();
+      }
       if (
         (ts.isObjectBindingPattern(node.name) ||
           ts.isArrayBindingPattern(node.name)) &&
@@ -1622,6 +1632,7 @@ function rejectGlobalDynamicConstructorAuthority(sourceFile) {
         bindings: new Map(),
         globalAliases: new Set(),
         callableBindings: new Map(),
+        valueBindings: new Map(),
         globalConstructorAliases: new Set(),
         node,
         varScope: null,
@@ -1643,6 +1654,7 @@ function rejectGlobalDynamicConstructorAuthority(sourceFile) {
 }
 
 function dynamicConstructorReferenceIsAuthority(node) {
+  if (isDiscardedSequenceOperand(node)) return false;
   if (isInTypePosition(node)) return false;
   const parent = node.parent;
   return !(
@@ -1658,6 +1670,10 @@ function dynamicConstructorPropertyAccess(node, scopes) {
 
   const { objectExpression, propertyExpression } = access;
   const propertyName = staticPropertyName(propertyExpression);
+  if (isInTypePosition(node) || isDiscardedSequenceOperand(node)) return false;
+  if (propertyName === "constructor") {
+    return staticallyKnownCallableValueKind(objectExpression, scopes) !== "non_callable";
+  }
   if (propertyName === null) {
     return Boolean(resolveGlobalObjectName(objectExpression, scopes));
   }
@@ -1673,6 +1689,212 @@ function dynamicConstructorPropertyAccess(node, scopes) {
   );
 }
 
+function staticallyKnownCallableValueKind(expression, scopes, resolving = new Set()) {
+  const value = valueProducingExpression(expression);
+  if (!value) return "unknown";
+
+  if (resolveGlobalObjectName(value, scopes)) return "non_callable";
+
+  if (ts.isIdentifier(value)) {
+    const name = value.text;
+    for (let index = scopes.length - 1; index >= 0; index--) {
+      const scope = scopes[index];
+      if (scope.callableBindings?.has(name)) {
+        const key = `callable:${index}:${name}`;
+        if (resolving.has(key)) return "unknown";
+        resolving.add(key);
+        const result = staticallyKnownCallableValueKind(
+          scope.callableBindings.get(name),
+          scopes,
+          resolving,
+        );
+        resolving.delete(key);
+        return result;
+      }
+      if (scope.valueBindings?.has(name)) {
+        const key = `value:${index}:${name}`;
+        if (resolving.has(key)) return "unknown";
+        resolving.add(key);
+        const result = staticallyKnownCallableValueKind(
+          scope.valueBindings.get(name),
+          scopes,
+          resolving,
+        );
+        resolving.delete(key);
+        return result;
+      }
+      const bindingKind = scope.bindings.get(name);
+      if (bindingKind) {
+        return bindingKind === "function" || bindingKind === "class"
+          ? "callable"
+          : "unknown";
+      }
+    }
+    if (
+      globalConstructorIdentifierNames.has(name) ||
+      isGlobalConstructorAlias(name, scopes)
+    ) {
+      return "callable";
+    }
+    return "unknown";
+  }
+
+  if (
+    ts.isFunctionExpression(value) ||
+    ts.isArrowFunction(value) ||
+    ts.isClassExpression(value)
+  ) {
+    return "callable";
+  }
+
+  if (
+    ts.isObjectLiteralExpression(value) ||
+    ts.isArrayLiteralExpression(value) ||
+    ts.isNewExpression(value) ||
+    ts.isTypeOfExpression(value) ||
+    ts.isLiteralExpression(value) ||
+    [
+      ts.SyntaxKind.NullKeyword,
+      ts.SyntaxKind.TrueKeyword,
+      ts.SyntaxKind.FalseKeyword,
+    ].includes(value.kind)
+  ) {
+    return "non_callable";
+  }
+
+  if (ts.isConditionalExpression(value)) {
+    const whenTrue = staticallyKnownCallableValueKind(
+      value.whenTrue,
+      scopes,
+      resolving,
+    );
+    const whenFalse = staticallyKnownCallableValueKind(
+      value.whenFalse,
+      scopes,
+      resolving,
+    );
+    return whenTrue === whenFalse && whenTrue !== "unknown"
+      ? whenTrue
+      : "unknown";
+  }
+
+  const access = staticPropertyAccessParts(value);
+  if (!access) return "unknown";
+
+  const propertyName = staticPropertyName(access.propertyExpression);
+  if (propertyName === "constructor") {
+    return staticallyKnownCallableValueKind(
+      access.objectExpression,
+      scopes,
+      resolving,
+    ) === "callable"
+      ? "callable"
+      : "unknown";
+  }
+  if (propertyName === "prototype") {
+    return staticallyKnownCallableValueKind(
+      access.objectExpression,
+      scopes,
+      resolving,
+    ) === "callable"
+      ? "non_callable"
+      : "unknown";
+  }
+  return globalConstructorValueReference(value, scopes)
+    ? "callable"
+    : "unknown";
+}
+
+function bindingScopeForName(name, scopes) {
+  for (let index = scopes.length - 1; index >= 0; index--) {
+    if (scopes[index].bindings.has(name)) return scopes[index];
+  }
+  return null;
+}
+
+function recordStaticValueBinding(node, scopes) {
+  if (!ts.isVariableDeclaration(node) || !ts.isIdentifier(node.name)) {
+    return;
+  }
+  const scope = bindingScopeForName(node.name.text, scopes);
+  if (!scope?.valueBindings) return;
+
+  scope.valueBindings.delete(node.name.text);
+  scope.callableBindings.delete(node.name.text);
+  if (!node.initializer) return;
+
+  scope.valueBindings.set(node.name.text, node.initializer);
+  if (staticallyKnownCallableValueKind(node.initializer, scopes) === "callable") {
+    scope.callableBindings.set(node.name.text, node.initializer);
+  }
+}
+
+function recordStaticValueAssignment(node, scopes) {
+  if (
+    !ts.isBinaryExpression(node) ||
+    node.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+    !ts.isIdentifier(node.left)
+  ) {
+    return;
+  }
+  const scope = bindingScopeForName(node.left.text, scopes);
+  if (!scope?.valueBindings) return;
+
+  scope.valueBindings.set(node.left.text, node.right);
+  scope.callableBindings.delete(node.left.text);
+  if (staticallyKnownCallableValueKind(node.right, scopes) === "callable") {
+    scope.callableBindings.set(node.left.text, node.right);
+  }
+}
+
+function callableBindingPatternCanReachConstructor(pattern) {
+  if (!ts.isObjectBindingPattern(pattern)) return false;
+  for (const element of pattern.elements) {
+    if (ts.isOmittedExpression(element)) continue;
+    if (element.dotDotDotToken) return true;
+    const propertyName = element.propertyName
+      ? staticPropertyName(element.propertyName)
+      : ts.isIdentifier(element.name)
+        ? element.name.text
+        : null;
+    if (propertyName === null || propertyName === "constructor") return true;
+    if (
+      (ts.isObjectBindingPattern(element.name) ||
+        ts.isArrayBindingPattern(element.name)) &&
+      callableBindingPatternCanReachConstructor(element.name)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isDiscardedSequenceOperand(node) {
+  let current = node;
+  while (current?.parent) {
+    const parent = current.parent;
+    if (
+      (ts.isParenthesizedExpression(parent) ||
+        ts.isNonNullExpression(parent) ||
+        ts.isAsExpression(parent) ||
+        ts.isTypeAssertionExpression(parent) ||
+        ts.isSatisfiesExpression(parent)) &&
+      parent.expression === current
+    ) {
+      current = parent;
+      continue;
+    }
+    if (
+      ts.isBinaryExpression(parent) &&
+      parent.operatorToken.kind === ts.SyntaxKind.CommaToken &&
+      parent.left === current
+    ) {
+      return true;
+    }
+    return false;
+  }
+  return false;
+}
 function staticPropertyAccessParts(node) {
   if (
     ts.isPropertyAccessExpression(node) ||
