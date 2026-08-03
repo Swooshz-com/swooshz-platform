@@ -4049,3 +4049,261 @@ object["other"];`],
     );
   }
 });
+
+test("run-18 array-literal destructuring reaches callable and unknown elements", async () => {
+  const sourcePath = "src/platform/run18-array-pattern-reachability.ts";
+  const rejected = [
+    [
+      "direct array-wrapped callable assignment",
+      `const source = () => {};
+let Constructor;
+([{ constructor: Constructor }] = [source]);
+Constructor;`,
+    ],
+    [
+      "alias-backed callable array",
+      `const source = () => {};
+const values = [source];
+const [{ constructor: Constructor }] = values;
+Constructor;`,
+    ],
+    [
+      "alias-of-alias callable array",
+      `const source = () => {};
+const values = [source];
+const first = values;
+const second = first;
+const [{ constructor: Constructor }] = second;
+Constructor;`,
+    ],
+    [
+      "unknown array element",
+      `const [{ constructor: Constructor }] = [acquire()];
+Constructor;`,
+    ],
+    [
+      "later-element callable",
+      `const source = () => {};
+const [first, { constructor: Constructor }] = [1, source];
+first;
+Constructor;`,
+    ],
+    [
+      "nested array callable",
+      `const source = () => {};
+const [[{ constructor: Constructor }]] = [[source]];
+Constructor;`,
+    ],
+    [
+      "nested array callable assignment",
+      `const source = () => {};
+let Constructor;
+([[{ constructor: Constructor }]] = [[source]]);
+Constructor;`,
+    ],
+    [
+      "object containing nested array callable",
+      `const source = () => {};
+const { outer: [{ constructor: Constructor }] } = { outer: [source] };
+Constructor;`,
+    ],
+    [
+      "object containing nested array callable assignment",
+      `const source = () => {};
+let Constructor;
+({ outer: [{ constructor: Constructor }] } = { outer: [source] });
+Constructor;`,
+    ],
+    [
+      "existing-binding array assignment",
+      `const source = () => {};
+let Constructor = 0;
+([{ constructor: Constructor }] = [source]);
+Constructor;`,
+    ],
+    [
+      "call-expression element",
+      `const [{ constructor: Constructor }] = [getValue()];
+Constructor;`,
+    ],
+    [
+      "conditional-expression element",
+      `const source = () => {};
+const flag = true;
+const [{ constructor: Constructor }] = [flag ? source : source];
+Constructor;`,
+    ],
+    [
+      "parenthesised element wrapper",
+      `const source = () => {};
+const [{ constructor: Constructor }] = [(source)];
+Constructor;`,
+    ],
+    [
+      "sequence element wrapper",
+      `const source = () => {};
+const [{ constructor: Constructor }] = [(0, source)];
+Constructor;`,
+    ],
+    [
+      "unknown alias-backed array",
+      `const values = acquire();
+const [{ constructor: Constructor }] = values;
+Constructor;`,
+    ],
+    [
+      "static concatenation constructor key",
+      `const source = () => {};
+const [{ ["con" + "structor"]: Constructor }] = [source];
+Constructor;`,
+    ],
+    [
+      "static template constructor key",
+      `const source = () => {};
+const [{ [\`constructor\`]: Constructor }] = [source];
+Constructor;`,
+    ],
+    [
+      "static sequence constructor key",
+      `const source = () => {};
+let Constructor;
+([{ [(0, "constructor")]: Constructor }] = [source]);
+Constructor;`,
+    ],
+    [
+      "callable array rest",
+      `const source = () => {};
+const [...rest] = [source];
+rest;`,
+    ],
+    [
+      "unknown object rest",
+      `const source = acquire();
+const { ...rest } = source;
+rest;`,
+    ],
+    [
+      "array spread correspondence is unknown",
+      `const source = () => {};
+const values = [source];
+const [{ constructor: Constructor }] = [...values];
+Constructor;`,
+    ],
+    [
+      "object spread correspondence is unknown",
+      `const source = () => {};
+const values = { constructor: source };
+const { constructor: Constructor } = { ...values };
+Constructor;`,
+    ],
+    [
+      "for-of assignment pattern",
+      `const source = () => {};
+let Constructor;
+for ([{ constructor: Constructor }] of [[source]]) {
+  Constructor;
+}`,
+    ],
+    [
+      "for-of binding pattern",
+      `const source = () => {};
+for (const [{ constructor: Constructor }] of [[source]]) {
+  Constructor;
+}`,
+    ],
+  ];
+
+  for (const [name, source] of rejected) {
+    await assert.rejects(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([[sourcePath, source]]),
+        }),
+      contractError(globalNetworkRejectionCode),
+      name,
+    );
+  }
+});
+
+test("run-18 array-literal destructuring preserves proven-safe controls", async () => {
+  const sourcePath = "src/platform/run18-array-pattern-controls.ts";
+  const safeCases = [
+    [
+      "proven ordinary element",
+      `const [{ constructor: Constructor }] = [{}];
+Constructor;`,
+    ],
+    [
+      "safe later element",
+      `const source = () => {};
+const [first, { constructor: Constructor }] = [source, {}];
+first;
+Constructor;`,
+    ],
+    [
+      "safe skipped position",
+      `const source = () => {};
+const [, { constructor: Constructor }] = [source, {}];
+Constructor;`,
+    ],
+    [
+      "safe array hole",
+      `const [{ constructor: Constructor }] = [,];
+Constructor;`,
+    ],
+    [
+      "non-constructor key",
+      `const source = () => {};
+const [{ other: value }] = [source];
+value;`,
+    ],
+    [
+      "benign custom-constructor data",
+      `const [{ constructor: Constructor }] = [{ constructor: 1 }];
+Constructor;`,
+    ],
+    [
+      "nested proven ordinary data",
+      `const [{ outer: [{ constructor: Constructor }] }] = [{ outer: [{}] }];
+Constructor;`,
+    ],
+    [
+      "binding-time immutable ordinary snapshot",
+      `let source = {};
+const values = [source];
+source = () => {};
+const [{ constructor: Constructor }] = values;
+Constructor;`,
+    ],
+    [
+      "alias-of-alias ordinary snapshot",
+      `let source = {};
+const values = [source];
+const first = values;
+const second = first;
+source = () => {};
+const [{ constructor: Constructor }] = second;
+Constructor;`,
+    ],
+    [
+      "proven-safe array rest",
+      `const [...rest] = [1, {}];
+rest;`,
+    ],
+    [
+      "proven-safe object rest",
+      `const { ...rest } = { value: 1 };
+rest;`,
+    ],
+  ];
+
+  for (const [name, source] of safeCases) {
+    await assert.doesNotReject(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([[sourcePath, source]]),
+        }),
+      name,
+    );
+  }
+});

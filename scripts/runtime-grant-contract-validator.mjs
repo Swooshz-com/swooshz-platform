@@ -1561,6 +1561,7 @@ function rejectGlobalDynamicConstructorAuthority(sourceFile) {
     globalConstructorAliases: new Set(),
     callableBindings: new Map(),
     valueBindings: new Map(),
+    valueSnapshots: new Map(),
     node: null,
     varScope: null,
   };
@@ -1592,8 +1593,11 @@ function rejectGlobalDynamicConstructorAuthority(sourceFile) {
     if (ts.isVariableDeclaration(node) && node.initializer) {
       if (
         (ts.isObjectBindingPattern(node.name) || ts.isArrayBindingPattern(node.name)) &&
-        staticallyKnownCallableValueKind(node.initializer, scopes) === "callable" &&
-        callableBindingPatternCanReachConstructor(node.name)
+        destructuringPatternCanReachCallableOrUnknown(
+          node.name,
+          node.initializer,
+          scopes,
+        )
       ) {
         reject();
       }
@@ -1621,8 +1625,30 @@ function rejectGlobalDynamicConstructorAuthority(sourceFile) {
         reject();
       }
       if (
-        staticallyKnownCallableValueKind(node.right, scopes) !== "non_callable" &&
-        assignmentDestructuringPatternCanReachConstructor(node.left)
+        destructuringPatternCanReachCallableOrUnknown(
+          node.left,
+          node.right,
+          scopes,
+        )
+      ) {
+        reject();
+      }
+    }
+
+    if (ts.isForOfStatement(node)) {
+      const pattern = ts.isVariableDeclarationList(node.initializer)
+        ? node.initializer.declarations[0]?.name
+        : node.initializer;
+      if (
+        pattern &&
+        (isAssignmentDestructuringPattern(pattern) ||
+          ts.isObjectBindingPattern(pattern) ||
+          ts.isArrayBindingPattern(pattern)) &&
+        forOfPatternCanReachCallableOrUnknown(
+          pattern,
+          node.expression,
+          scopes,
+        )
       ) {
         reject();
       }
@@ -1642,6 +1668,7 @@ function rejectGlobalDynamicConstructorAuthority(sourceFile) {
         globalAliases: new Set(),
         callableBindings: new Map(),
         valueBindings: new Map(),
+        valueSnapshots: new Map(),
         globalConstructorAliases: new Set(),
         node,
         varScope: null,
@@ -1809,11 +1836,13 @@ function recordStaticValueBinding(node, scopes) {
 
   scope.valueBindings.delete(node.name.text);
   scope.callableBindings.delete(node.name.text);
+  scope.valueSnapshots?.delete(node.name.text);
   if (!node.initializer) return;
 
-  const snapshot = staticallyKnownCallableValueKind(node.initializer, scopes);
-  scope.valueBindings.set(node.name.text, snapshot);
-  if (snapshot === "callable") {
+  const snapshot = staticValueProfile(node.initializer, scopes);
+  scope.valueBindings.set(node.name.text, snapshot.kind);
+  scope.valueSnapshots?.set(node.name.text, snapshot);
+  if (snapshot.kind === "callable") {
     scope.callableBindings.set(node.name.text, node.initializer);
   }
 }
@@ -1829,67 +1858,445 @@ function recordStaticValueAssignment(node, scopes) {
   const scope = bindingScopeForName(node.left.text, scopes);
   if (!scope?.valueBindings) return;
 
-  const snapshot = staticallyKnownCallableValueKind(node.right, scopes);
-  scope.valueBindings.set(node.left.text, snapshot);
+  const snapshot = staticValueProfile(node.right, scopes);
+  scope.valueBindings.set(node.left.text, snapshot.kind);
+  scope.valueSnapshots?.set(node.left.text, snapshot);
   scope.callableBindings.delete(node.left.text);
-  if (snapshot === "callable") {
+  if (snapshot.kind === "callable") {
     scope.callableBindings.set(node.left.text, node.right);
   }
 }
 
-function assignmentDestructuringPatternCanReachConstructor(pattern) {
-  if (ts.isArrayLiteralExpression(pattern)) {
+function destructuringPatternCanReachCallableOrUnknown(
+  pattern,
+  source,
+  scopes,
+) {
+  return patternProfileCanReachConstructor(
+    pattern,
+    staticValueProfile(source, scopes),
+  );
+}
+
+function forOfPatternCanReachCallableOrUnknown(pattern, iterable, scopes) {
+  return iterableProfileCanReachConstructor(
+    pattern,
+    staticValueProfile(iterable, scopes),
+  );
+}
+
+function iterableProfileCanReachConstructor(pattern, iterableProfile) {
+  if (!patternContainsConstructorAccess(pattern)) return false;
+  if (iterableProfile.alternatives) {
+    return iterableProfile.alternatives.some((profile) =>
+      iterableProfileCanReachConstructor(pattern, profile),
+    );
+  }
+  if (iterableProfile.kind !== "non_callable") return true;
+  if (!iterableProfile.arrayElements) return !iterableProfile.closedValue;
+  if (iterableProfile.arraySpreadIndex !== null) return true;
+  return iterableProfile.arrayElements.some((profile) =>
+    patternProfileCanReachConstructor(pattern, profile),
+  );
+}
+
+function staticValueProfile(expression, scopes, resolving = new Set()) {
+  const value = valueProducingExpression(expression);
+  if (!value) return staticUnknownValueProfile();
+  if (resolving.has(value)) return staticUnknownValueProfile();
+
+  const nextResolving = new Set(resolving);
+  nextResolving.add(value);
+
+  if (resolveGlobalObjectName(value, scopes)) {
+    return staticNonCallableValueProfile({ closedValue: true });
+  }
+
+  if (ts.isIdentifier(value)) {
+    const name = value.text;
+    for (let index = scopes.length - 1; index >= 0; index--) {
+      const scope = scopes[index];
+      if (scope.valueSnapshots?.has(name)) {
+        return scope.valueSnapshots.get(name);
+      }
+      if (scope.valueBindings?.has(name)) {
+        return staticValueProfileForKind(scope.valueBindings.get(name));
+      }
+      const bindingKind = scope.bindings.get(name);
+      if (bindingKind) {
+        return staticValueProfileForKind(
+          bindingKind === "function" || bindingKind === "class"
+            ? "callable"
+            : "unknown",
+        );
+      }
+    }
+    if (globalConstructorIdentifierNames.has(name)) {
+      return staticCallableValueProfile();
+    }
+    if (["undefined", "NaN", "Infinity"].includes(name)) {
+      return staticNonCallableValueProfile({ closedValue: true });
+    }
+    return staticUnknownValueProfile();
+  }
+
+  if (
+    ts.isFunctionExpression(value) ||
+    ts.isArrowFunction(value) ||
+    ts.isClassExpression(value)
+  ) {
+    return staticCallableValueProfile();
+  }
+
+  if (ts.isArrayLiteralExpression(value)) {
+    const elements = [];
+    let spreadIndex = null;
+    for (const [index, element] of value.elements.entries()) {
+      if (ts.isSpreadElement(element)) {
+        spreadIndex ??= index;
+        elements.push(staticUnknownValueProfile());
+      } else if (ts.isOmittedExpression(element)) {
+        elements.push(staticNonCallableValueProfile({ closedValue: true }));
+      } else {
+        elements.push(staticValueProfile(element, scopes, nextResolving));
+      }
+    }
+    return staticNonCallableValueProfile({
+      arrayElements: elements,
+      arraySpreadIndex: spreadIndex,
+      closedValue: true,
+    });
+  }
+
+  if (ts.isObjectLiteralExpression(value)) {
+    const properties = new Map();
+    let hasUnknownProperties = false;
+    for (const property of value.properties) {
+      if (ts.isSpreadAssignment(property) || ts.isSpreadElement(property)) {
+        hasUnknownProperties = true;
+        continue;
+      }
+      const propertyName = staticPropertyName(property.name);
+      if (propertyName === null) {
+        hasUnknownProperties = true;
+        continue;
+      }
+      if (ts.isPropertyAssignment(property)) {
+        properties.set(
+          propertyName,
+          staticValueProfile(property.initializer, scopes, nextResolving),
+        );
+      } else if (ts.isShorthandPropertyAssignment(property)) {
+        properties.set(
+          propertyName,
+          staticValueProfile(property.name, scopes, nextResolving),
+        );
+      } else if (ts.isMethodDeclaration(property)) {
+        properties.set(propertyName, staticCallableValueProfile());
+      } else {
+        hasUnknownProperties = true;
+      }
+    }
+    return staticNonCallableValueProfile({
+      objectProperties: properties,
+      objectHasUnknownProperties: hasUnknownProperties,
+      closedValue: !hasUnknownProperties,
+    });
+  }
+
+  if (ts.isConditionalExpression(value)) {
+    return staticValueProfileUnion([
+      staticValueProfile(value.whenTrue, scopes, nextResolving),
+      staticValueProfile(value.whenFalse, scopes, nextResolving),
+    ]);
+  }
+
+  const access = staticPropertyAccessParts(value);
+  if (access) {
+    if (globalConstructorValueReference(value, scopes)) {
+      return staticCallableValueProfile();
+    }
+    return staticValueProfileForProperty(
+      staticValueProfile(access.objectExpression, scopes, nextResolving),
+      staticPropertyName(access.propertyExpression),
+    );
+  }
+
+  if (
+    ts.isNewExpression(value) ||
+    ts.isLiteralExpression(value) ||
+    [
+      ts.SyntaxKind.NullKeyword,
+      ts.SyntaxKind.TrueKeyword,
+      ts.SyntaxKind.FalseKeyword,
+    ].includes(value.kind)
+  ) {
+    return staticNonCallableValueProfile({ closedValue: true });
+  }
+
+  return staticUnknownValueProfile();
+}
+
+function staticValueProfileForKind(kind) {
+  if (kind === "callable") return staticCallableValueProfile();
+  if (kind === "non_callable") {
+    return staticNonCallableValueProfile();
+  }
+  return staticUnknownValueProfile();
+}
+
+function staticCallableValueProfile() {
+  return Object.freeze({ kind: "callable" });
+}
+
+function staticUnknownValueProfile() {
+  return Object.freeze({ kind: "unknown" });
+}
+
+function staticNonCallableValueProfile(details = {}) {
+  return Object.freeze({ kind: "non_callable", ...details });
+}
+
+function staticValueProfileUnion(profiles) {
+  const firstKind = profiles[0]?.kind ?? "unknown";
+  const kind =
+    firstKind !== "unknown" && profiles.every((profile) => profile.kind === firstKind)
+      ? firstKind
+      : "unknown";
+  return Object.freeze({ kind, alternatives: Object.freeze(profiles) });
+}
+
+function staticValueProfileForProperty(objectProfile, propertyName) {
+  if (objectProfile.alternatives) {
+    return staticValueProfileUnion(
+      objectProfile.alternatives.map((profile) =>
+        staticValueProfileForProperty(profile, propertyName),
+      ),
+    );
+  }
+  if (propertyName === null) return staticUnknownValueProfile();
+
+  if (objectProfile.objectProperties?.has(propertyName)) {
+    return objectProfile.objectProperties.get(propertyName);
+  }
+
+  if (objectProfile.arrayElements && /^(?:0|[1-9][0-9]*)$/u.test(propertyName)) {
+    return staticArrayElementProfile(objectProfile, Number(propertyName));
+  }
+
+  if (propertyName === "constructor") {
+    if (objectProfile.kind === "callable") {
+      return staticCallableValueProfile();
+    }
+    if (objectProfile.kind === "unknown") {
+      return staticUnknownValueProfile();
+    }
+    if (objectProfile.arrayElements || objectProfile.closedValue) {
+      return staticNonCallableValueProfile({ closedValue: true });
+    }
+  }
+
+  if (objectProfile.kind === "unknown") {
+    return staticUnknownValueProfile();
+  }
+  if (objectProfile.objectHasUnknownProperties) {
+    return staticUnknownValueProfile();
+  }
+  if (objectProfile.closedValue) {
+    return staticNonCallableValueProfile({ closedValue: true });
+  }
+  return staticUnknownValueProfile();
+}
+
+function staticArrayElementProfile(arrayProfile, index) {
+  if (
+    arrayProfile.arraySpreadIndex !== null &&
+    index >= arrayProfile.arraySpreadIndex
+  ) {
+    return staticUnknownValueProfile();
+  }
+  return (
+    arrayProfile.arrayElements[index] ??
+    staticNonCallableValueProfile({ closedValue: true })
+  );
+}
+
+function patternProfileCanReachConstructor(pattern, sourceProfile) {
+  if (!patternContainsConstructorAccess(pattern)) return false;
+
+  if (sourceProfile.alternatives) {
+    return sourceProfile.alternatives.some((profile) =>
+      patternProfileCanReachConstructor(pattern, profile),
+    );
+  }
+
+  if (sourceProfile.kind !== "non_callable") return true;
+
+  if (ts.isArrayBindingPattern(pattern) || ts.isArrayLiteralExpression(pattern)) {
+    if (!sourceProfile.arrayElements) return !sourceProfile.closedValue;
+    let sourceIndex = 0;
     for (const element of pattern.elements) {
-      if (ts.isSpreadElement(element)) return true;
+      if (ts.isOmittedExpression(element)) {
+        sourceIndex += 1;
+        continue;
+      }
+      if (ts.isSpreadElement(element) || element.dotDotDotToken) {
+        return arrayRestCanReachConstructor(sourceProfile, sourceIndex);
+      }
+      const childPattern = ts.isBindingElement(element) ? element.name : element;
       if (
-        isAssignmentDestructuringPattern(element) &&
-        assignmentDestructuringPatternCanReachConstructor(element)
+        patternProfileCanReachConstructor(
+          childPattern,
+          staticArrayElementProfile(sourceProfile, sourceIndex),
+        )
+      ) {
+        return true;
+      }
+      sourceIndex += 1;
+    }
+    return false;
+  }
+
+  if (ts.isObjectBindingPattern(pattern) || ts.isObjectLiteralExpression(pattern)) {
+    const elements = ts.isObjectBindingPattern(pattern)
+      ? pattern.elements
+      : pattern.properties;
+    for (const element of elements) {
+      if (ts.isSpreadAssignment(element) || ts.isSpreadElement(element)) {
+        if (objectRestCanReachConstructor(sourceProfile)) return true;
+        continue;
+      }
+
+      let propertyName;
+      let childPattern;
+      if (ts.isBindingElement(element)) {
+        propertyName = element.propertyName
+          ? staticPropertyName(element.propertyName)
+          : ts.isIdentifier(element.name)
+            ? element.name.text
+            : null;
+        childPattern = element.name;
+      } else if (ts.isShorthandPropertyAssignment(element)) {
+        propertyName = element.name.text;
+        childPattern = element.name;
+      } else if (ts.isPropertyAssignment(element)) {
+        propertyName = staticPropertyName(element.name);
+        childPattern = element.initializer;
+      } else {
+        propertyName = staticPropertyName(element.name);
+        childPattern = element;
+      }
+
+      if (propertyName === null) return true;
+      const childProfile = staticValueProfileForProperty(
+        sourceProfile,
+        propertyName,
+      );
+      if (isDestructuringPatternNode(childPattern)) {
+        if (patternProfileCanReachConstructor(childPattern, childProfile)) {
+          return true;
+        }
+      } else if (
+        propertyName === "constructor" &&
+        profileIsCallableOrUnknown(childProfile)
       ) {
         return true;
       }
     }
-    return false;
   }
-  if (!ts.isObjectLiteralExpression(pattern)) return false;
-  for (const property of pattern.properties) {
-    if (ts.isSpreadAssignment(property)) return true;
-    if (ts.isShorthandPropertyAssignment(property)) {
-      if (property.name.text === "constructor") return true;
-      continue;
-    }
-    if (!ts.isPropertyAssignment(property)) continue;
-    const propertyName = staticPropertyName(property.name);
-    if (propertyName === "constructor" || propertyName === null) return true;
-    if (
-      isAssignmentDestructuringPattern(property.initializer) &&
-      assignmentDestructuringPatternCanReachConstructor(property.initializer)
-    ) {
+
+  return false;
+}
+
+function patternContainsConstructorAccess(pattern) {
+  if (ts.isArrayBindingPattern(pattern) || ts.isArrayLiteralExpression(pattern)) {
+    return pattern.elements.some((element) => {
+      if (ts.isOmittedExpression(element)) return false;
+      if (ts.isSpreadElement(element) || element.dotDotDotToken) return true;
+      return patternContainsConstructorAccess(
+        ts.isBindingElement(element) ? element.name : element,
+      );
+    });
+  }
+
+  if (ts.isObjectBindingPattern(pattern)) {
+    return pattern.elements.some((element) => {
+      if (element.dotDotDotToken) return true;
+      const propertyName = element.propertyName
+        ? staticPropertyName(element.propertyName)
+        : ts.isIdentifier(element.name)
+          ? element.name.text
+          : null;
+      return (
+        propertyName === null ||
+        propertyName === "constructor" ||
+        patternContainsConstructorAccess(element.name)
+      );
+    });
+  }
+
+  if (ts.isObjectLiteralExpression(pattern)) {
+    return pattern.properties.some((property) => {
+      if (ts.isSpreadAssignment(property) || ts.isSpreadElement(property)) {
+        return true;
+      }
+      if (ts.isShorthandPropertyAssignment(property)) {
+        return property.name.text === "constructor";
+      }
+      if (!ts.isPropertyAssignment(property)) return false;
+      const propertyName = staticPropertyName(property.name);
+      return (
+        propertyName === null ||
+        propertyName === "constructor" ||
+        patternContainsConstructorAccess(property.initializer)
+      );
+    });
+  }
+
+  return false;
+}
+
+function isDestructuringPatternNode(node) {
+  return (
+    ts.isObjectBindingPattern(node) ||
+    ts.isArrayBindingPattern(node) ||
+    ts.isObjectLiteralExpression(node) ||
+    ts.isArrayLiteralExpression(node)
+  );
+}
+
+function profileIsCallableOrUnknown(profile) {
+  if (profile.alternatives) {
+    return profile.alternatives.some(profileIsCallableOrUnknown);
+  }
+  return profile.kind !== "non_callable";
+}
+
+function arrayRestCanReachConstructor(arrayProfile, startIndex) {
+  if (arrayProfile.kind !== "non_callable") return true;
+  if (!arrayProfile.arrayElements) return !arrayProfile.closedValue;
+  if (
+    arrayProfile.arraySpreadIndex !== null &&
+    arrayProfile.arraySpreadIndex <= startIndex
+  ) {
+    return true;
+  }
+  for (let index = startIndex; index < arrayProfile.arrayElements.length; index++) {
+    if (profileIsCallableOrUnknown(arrayProfile.arrayElements[index])) {
       return true;
     }
   }
   return false;
 }
 
-function callableBindingPatternCanReachConstructor(pattern) {
-  if (!ts.isObjectBindingPattern(pattern)) return false;
-  for (const element of pattern.elements) {
-    if (ts.isOmittedExpression(element)) continue;
-    if (element.dotDotDotToken) return true;
-    const propertyName = element.propertyName
-      ? staticPropertyName(element.propertyName)
-      : ts.isIdentifier(element.name)
-        ? element.name.text
-        : null;
-    if (propertyName === null || propertyName === "constructor") return true;
-    if (
-      (ts.isObjectBindingPattern(element.name) ||
-        ts.isArrayBindingPattern(element.name)) &&
-      callableBindingPatternCanReachConstructor(element.name)
-    ) {
-      return true;
-    }
-  }
-  return false;
+function objectRestCanReachConstructor(objectProfile) {
+  if (objectProfile.kind !== "non_callable") return true;
+  if (objectProfile.objectHasUnknownProperties) return true;
+  if (!objectProfile.closedValue && !objectProfile.objectProperties) return true;
+  return profileIsCallableOrUnknown(
+    objectProfile.objectProperties?.get("constructor") ??
+      staticNonCallableValueProfile({ closedValue: true }),
+  );
 }
 
 function isDiscardedSequenceOperand(node) {
@@ -2930,10 +3337,12 @@ function addDeclarationBindings(declaration, bindings) {
 }
 
 function collectBindingNames(nameNode, bindings, kind) {
+  if (!nameNode) return;
   if (ts.isIdentifier(nameNode)) {
     bindings.set(nameNode.text, kind);
   } else if (ts.isObjectBindingPattern(nameNode)) {
     for (const element of nameNode.elements) {
+      if (ts.isOmittedExpression(element)) continue;
       if (ts.isIdentifier(element.name)) {
         bindings.set(element.name.text, kind);
       } else if (ts.isObjectBindingPattern(element.name) || ts.isArrayBindingPattern(element.name)) {
@@ -2942,6 +3351,7 @@ function collectBindingNames(nameNode, bindings, kind) {
     }
   } else if (ts.isArrayBindingPattern(nameNode)) {
     for (const element of nameNode.elements) {
+      if (ts.isOmittedExpression(element)) continue;
       if (ts.isIdentifier(element.name)) {
         bindings.set(element.name.text, kind);
       } else if (ts.isObjectBindingPattern(element.name) || ts.isArrayBindingPattern(element.name)) {
