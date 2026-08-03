@@ -1612,11 +1612,20 @@ function rejectGlobalDynamicConstructorAuthority(sourceFile) {
     if (
       ts.isBinaryExpression(node) &&
       node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-      isAssignmentDestructuringPattern(node.left) &&
-      isDirectGlobalObjectReference(node.right, scopes) &&
-      bindingPatternCanReachDynamicConstructor(node.left)
+      isAssignmentDestructuringPattern(node.left)
     ) {
-      reject();
+      if (
+        isDirectGlobalObjectReference(node.right, scopes) &&
+        bindingPatternCanReachDynamicConstructor(node.left)
+      ) {
+        reject();
+      }
+      if (
+        staticallyKnownCallableValueKind(node.right, scopes) !== "non_callable" &&
+        assignmentDestructuringPatternCanReachConstructor(node.left)
+      ) {
+        reject();
+      }
     }
 
     if (
@@ -1699,29 +1708,8 @@ function staticallyKnownCallableValueKind(expression, scopes, resolving = new Se
     const name = value.text;
     for (let index = scopes.length - 1; index >= 0; index--) {
       const scope = scopes[index];
-      if (scope.callableBindings?.has(name)) {
-        const key = `callable:${index}:${name}`;
-        if (resolving.has(key)) return "unknown";
-        resolving.add(key);
-        const result = staticallyKnownCallableValueKind(
-          scope.callableBindings.get(name),
-          scopes,
-          resolving,
-        );
-        resolving.delete(key);
-        return result;
-      }
       if (scope.valueBindings?.has(name)) {
-        const key = `value:${index}:${name}`;
-        if (resolving.has(key)) return "unknown";
-        resolving.add(key);
-        const result = staticallyKnownCallableValueKind(
-          scope.valueBindings.get(name),
-          scopes,
-          resolving,
-        );
-        resolving.delete(key);
-        return result;
+        return scope.valueBindings.get(name);
       }
       const bindingKind = scope.bindings.get(name);
       if (bindingKind) {
@@ -1823,8 +1811,9 @@ function recordStaticValueBinding(node, scopes) {
   scope.callableBindings.delete(node.name.text);
   if (!node.initializer) return;
 
-  scope.valueBindings.set(node.name.text, node.initializer);
-  if (staticallyKnownCallableValueKind(node.initializer, scopes) === "callable") {
+  const snapshot = staticallyKnownCallableValueKind(node.initializer, scopes);
+  scope.valueBindings.set(node.name.text, snapshot);
+  if (snapshot === "callable") {
     scope.callableBindings.set(node.name.text, node.initializer);
   }
 }
@@ -1840,11 +1829,45 @@ function recordStaticValueAssignment(node, scopes) {
   const scope = bindingScopeForName(node.left.text, scopes);
   if (!scope?.valueBindings) return;
 
-  scope.valueBindings.set(node.left.text, node.right);
+  const snapshot = staticallyKnownCallableValueKind(node.right, scopes);
+  scope.valueBindings.set(node.left.text, snapshot);
   scope.callableBindings.delete(node.left.text);
-  if (staticallyKnownCallableValueKind(node.right, scopes) === "callable") {
+  if (snapshot === "callable") {
     scope.callableBindings.set(node.left.text, node.right);
   }
+}
+
+function assignmentDestructuringPatternCanReachConstructor(pattern) {
+  if (ts.isArrayLiteralExpression(pattern)) {
+    for (const element of pattern.elements) {
+      if (ts.isSpreadElement(element)) return true;
+      if (
+        isAssignmentDestructuringPattern(element) &&
+        assignmentDestructuringPatternCanReachConstructor(element)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+  if (!ts.isObjectLiteralExpression(pattern)) return false;
+  for (const property of pattern.properties) {
+    if (ts.isSpreadAssignment(property)) return true;
+    if (ts.isShorthandPropertyAssignment(property)) {
+      if (property.name.text === "constructor") return true;
+      continue;
+    }
+    if (!ts.isPropertyAssignment(property)) continue;
+    const propertyName = staticPropertyName(property.name);
+    if (propertyName === "constructor" || propertyName === null) return true;
+    if (
+      isAssignmentDestructuringPattern(property.initializer) &&
+      assignmentDestructuringPatternCanReachConstructor(property.initializer)
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function callableBindingPatternCanReachConstructor(pattern) {

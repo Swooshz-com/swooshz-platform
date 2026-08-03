@@ -3796,3 +3796,256 @@ void template;`],
     );
   }
 });
+
+test("run-21 callable alias snapshots reject after source reassignment and through wrappers", async () => {
+  const sourcePath = "src/platform/run21-callable-alias-snapshot.ts";
+  const rejected = [
+    ["direct callable alias snapshot", `const source = () => {};
+const alias = source;
+alias.constructor;`],
+    ["callable alias-of-alias snapshot", `const source = () => {};
+const first = source;
+const second = first;
+source = {};
+second.constructor;`],
+    ["callable source reassigned ordinary after capture", `let source = function () {};
+const alias = source;
+source = {};
+alias.constructor;`],
+    ["callable source reassigned literal after capture", `let source = function () {};
+const alias = source;
+source = 42;
+alias.constructor;`],
+    ["callable alias through parentheses", `const source = () => {};
+const alias = (source);
+source = {};
+alias.constructor;`],
+    ["callable alias through type wrapper", `const source = () => {};
+const alias = source as (() => void);
+source = {};
+alias.constructor;`],
+    ["callable alias through non-null wrapper", `const source = () => {};
+const alias = source!;
+source = {};
+alias.constructor;`],
+    ["callable alias through sequence wrapper", `const source = () => {};
+const alias = (0, source);
+source = {};
+alias.constructor;`],
+    ["conditional callable snapshot", `const source = flag ? (() => {}) : (() => {});
+const alias = source;
+source = {};
+alias.constructor;`],
+    ["unknown capture fails closed", `const alias = acquire();
+alias.constructor;`],
+  ];
+
+  for (const [name, source] of rejected) {
+    await assert.rejects(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([[sourcePath, source]]),
+        }),
+      contractError(globalNetworkRejectionCode),
+      name,
+    );
+  }
+});
+
+test("run-21 cyclic and self-referential alias snapshots terminate and fail closed", async () => {
+  const sourcePath = "src/platform/run21-cyclic-alias-snapshot.ts";
+  const rejected = [
+    ["self-referential assignment", `let value;
+value = value;
+value.constructor;`],
+    ["mutual cyclic aliases", `let first;
+let second;
+first = second;
+second = first;
+first.constructor;`],
+  ];
+
+  for (const [name, source] of rejected) {
+    await assert.rejects(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([[sourcePath, source]]),
+        }),
+      contractError(globalNetworkRejectionCode),
+      name,
+    );
+  }
+});
+
+test("run-21 assignment-destructuring constructor acquisition is rejected including computed static keys", async () => {
+  const sourcePath = "src/platform/run21-assignment-constructor-key.ts";
+  const rejected = [
+    ["object assignment constructor acquisition", `const source = () => {};
+let Constructor;
+({ constructor: Constructor } = source);
+Constructor;`],
+    ["existing-binding assignment target", `const source = () => {};
+let Constructor = 0;
+({ constructor: Constructor } = source);
+Constructor;`],
+    ["static concatenation constructor key", `const source = () => {};
+let Constructor;
+({ ["con" + "structor"]: Constructor } = source);
+Constructor;`],
+    ["static template literal constructor key", `const source = () => {};
+let Constructor;
+({ [\`constructor\`]: Constructor } = source);
+Constructor;`],
+    ["static sequence constructor key", `const source = () => {};
+let Constructor;
+({ [(0, "constructor")]: Constructor } = source);
+Constructor;`],
+    ["parenthesised object assignment", `const source = () => {};
+let Constructor;
+(({ constructor: Constructor } = source));
+Constructor;`],
+    ["nested assignment destructuring", `const source = () => {};
+let Constructor;
+({ outer: { constructor: Constructor } } = source);
+Constructor;`],
+    ["wrapped callable assignment source", `const source = () => {};
+let Constructor;
+({ constructor: Constructor } = (source));
+Constructor;`],
+    ["alias-backed callable assignment source", `const source = () => {};
+const alias = source;
+let Constructor;
+({ constructor: Constructor } = alias);
+Constructor;`],
+    ["repeated constructor acquisition", `const source = () => {};
+let Constructor;
+({ constructor: Constructor } = source);
+({ constructor: Constructor } = source);
+Constructor;`],
+    ["unknown authority-bearing assignment source", `let Constructor;
+({ constructor: Constructor } = acquire());
+Constructor;`],
+    ["dynamic computed authority-bearing key", `const source = () => {};
+let Constructor;
+({ [key]: Constructor } = source);
+Constructor;`],
+  ];
+
+  for (const [name, source] of rejected) {
+    await assert.rejects(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([[sourcePath, source]]),
+        }),
+      contractError(globalNetworkRejectionCode),
+      name,
+    );
+  }
+});
+
+test("run-21 ordinary-object alias snapshots survive later source reassignment", async () => {
+  const sourcePath = "src/platform/run21-ordinary-alias-snapshot.ts";
+  const safeCases = [
+    ["ordinary-object alias snapshot", `const source = {};
+const alias = source;
+alias.constructor;`],
+    ["ordinary-object alias after source becomes callable", `const source = {};
+const alias = source;
+source = () => {};
+alias.constructor;`],
+    ["ordinary-object alias-of-alias", `const source = {};
+const first = source;
+const second = first;
+source = () => {};
+second.constructor;`],
+    ["ordinary array alias", `const source = [];
+const alias = source;
+source = () => {};
+alias.constructor;`],
+    ["custom constructor data property on ordinary object", `const object = { constructor: 1 };
+const alias = object;
+object = () => {};
+alias.constructor;`],
+    ["alias reassigned to ordinary value", `const source = () => {};
+let alias = source;
+alias = {};
+alias.constructor;`],
+    ["safe wrapper around ordinary object", `const object = {};
+const alias = ((object));
+object = () => {};
+alias.constructor;`],
+    ["conditional ordinary snapshot", `const source = flag ? {} : [];
+const alias = source;
+source = () => {};
+alias.constructor;`],
+  ];
+
+  for (const [name, source] of safeCases) {
+    await assert.doesNotReject(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([[sourcePath, source]]),
+        }),
+      name,
+    );
+  }
+});
+
+test("run-21 safe assignment destructuring and shadow controls remain admitted", async () => {
+  const sourcePath = "src/platform/run21-assignment-destructuring-controls.ts";
+  const safeCases = [
+    ["ordinary-object assignment destructuring", `const source = { a: 1, b: 2 };
+let first;
+let second;
+({ a: first, b: second } = source);
+first + second;`],
+    ["static computed non-authority key", `const source = () => {};
+let value;
+({ ["other"]: value } = source);
+value;`],
+    ["custom constructor data property assignment", `const source = { constructor: 1 };
+let Constructor;
+({ constructor: Constructor } = source);
+Constructor;`],
+    ["local callable-name shadow", `function load() {
+  const callable = {};
+  return callable.other;
+}`],
+    ["local constructor-name shadow", `function load() {
+  const Function = {};
+  return Function.constructor;
+}`],
+    ["local process shadow", `function load() {
+  const process = {};
+  return process.getBuiltinModule;
+}`],
+    ["type-only reference", `type ConstructorType = typeof Function;
+const value: ConstructorType | null = null;`],
+    ["type query", `type GlobalShape = typeof globalThis;
+function load(): GlobalShape | null {
+  return null;
+}`],
+    ["typeof inspection", `const kind = typeof Function;
+void kind;`],
+    ["string and comment text", `// constructor Function
+const text = "constructor Function";
+const template = \`constructor Function\`;
+void text;
+void template;`],
+    ["discarded sequence operand", `const source = () => {};
+const alias = (source.constructor, {});
+alias.constructor;`],
+    ["benign static property access", `const object = {};
+object["other"];`],
+  ];
+
+  for (const [name, source] of safeCases) {
+    await assert.doesNotReject(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([[sourcePath, source]]),
+        }),
+      name,
+    );
+  }
+});
