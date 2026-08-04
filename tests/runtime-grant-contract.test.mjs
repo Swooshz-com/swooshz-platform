@@ -4307,3 +4307,434 @@ rest;`,
     );
   }
 });
+
+test("run-22 snapshot-container mutation rejects stale profiles after element/property or mutating-call changes", async () => {
+  const sourcePath = "src/platform/run22-container-mutation-reachability.ts";
+  const rejected = [
+    [
+      "direct indexed assignment",
+      `const values = [{}];
+values[0] = () => {};
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "direct named-property assignment",
+      `const object = { value: {} };
+object.value = () => {};
+const { value: { constructor: Constructor } } = object;
+new Constructor("return process")();`,
+    ],
+    [
+      "dynamic computed property mutation",
+      `const values = [{}];
+const key = 0;
+values[key] = () => {};
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "static computed property mutation",
+      `const values = [{}];
+values[0] = () => {};
+const [{ ["constructor"]: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "alias mutation invalidates original",
+      `const values = [{}];
+const alias = values;
+alias[0] = () => {};
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "alias-of-alias mutation invalidates every path",
+      `const values = [{}];
+const first = values;
+const second = first;
+second[0] = () => {};
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "nested array mutation invalidates enclosing profile",
+      `const values = [[{}]];
+values[0][0] = () => {};
+const [[{ constructor: Constructor }]] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "nested object mutation invalidates enclosing profile",
+      `const object = { value: { nested: {} } };
+object.value.nested = () => {};
+const { value: { nested: { constructor: Constructor } } } = object;
+new Constructor("return process")();`,
+    ],
+    [
+      "push mutates container",
+      `const values = [{}];
+values.push(() => {});
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "splice mutates container",
+      `const values = [{}];
+values.splice(0, 1, () => {});
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "unshift mutates container",
+      `const values = [{}];
+values.unshift(() => {});
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "fill mutates container",
+      `const values = [{}, {}];
+values.fill(() => {});
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "copyWithin mutates container",
+      `const source = () => {};
+const values = [{}, source];
+values.copyWithin(0, 1, 2);
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "reverse moves authority into reachable position",
+      `const source = () => {};
+const values = [{}, source];
+values.reverse();
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "sort mutates container and may move authority",
+      `const source = () => {};
+const values = [{}, source];
+values.sort();
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "computed static mutating method name",
+      `const values = [{}];
+values["push"](() => {});
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "unknown dynamic method on tracked container fails closed",
+      `const values = [{}];
+values[method]();
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "Object.assign mutates container",
+      `const values = [{}];
+Object.assign(values, [() => {}]);
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "Object.defineProperty mutates container",
+      `const values = [{}];
+Object.defineProperty(values, 0, { value: () => {} });
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "Object.defineProperties mutates container",
+      `const values = [{}];
+Object.defineProperties(values, { 0: { value: () => {} } });
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "Reflect.set mutates container",
+      `const values = [{}];
+Reflect.set(values, 0, () => {});
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "Reflect.deleteProperty mutates container",
+      `const values = [() => {}];
+Reflect.deleteProperty(values, 0);
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "compound assignment mutates container element",
+      `const values = [{}];
+values[0] += () => {};
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "logical assignment mutates container element",
+      `const values = [{}];
+values[0] ||= () => {};
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "increment mutation of container element",
+      `const values = [0];
+values[0]++;
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "delete mutates container",
+      `const values = [() => {}];
+delete values[0];
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "for-of over container mutated before iteration",
+      `const values = [{}];
+values[0] = () => {};
+for (const { constructor: Constructor } of values) {
+  new Constructor("return process")();
+}`,
+    ],
+    [
+      "binding declaration after mutation",
+      `const values = [{}];
+values[0] = () => {};
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "existing-binding assignment after mutation",
+      `const values = [{}];
+values[0] = () => {};
+let Constructor;
+[{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "wrapped parenthesized receiver mutation",
+      `const values = [{}];
+(values)[0] = () => {};
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "wrapped sequence receiver mutation",
+      `const values = [{}];
+(0, values)[0] = () => {};
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "bound mutator invalidates tracked container",
+      `const values = [{}];
+const push = values.push.bind(values);
+push(() => {});
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "nested tracked container mutation invalidates enclosing",
+      `const inner = [{}];
+const values = [inner];
+inner[0] = () => {};
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "mutation through nested container alias invalidates enclosing",
+      `const inner = [{}];
+const values = { list: inner };
+inner[0] = () => {};
+const { list: [{ constructor: Constructor }] } = values;
+new Constructor("return process")();`,
+    ],
+  ];
+
+  for (const [name, source] of rejected) {
+    await assert.rejects(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([[sourcePath, source]]),
+        }),
+      contractError(globalNetworkRejectionCode),
+      name,
+    );
+  }
+});
+
+test("run-22 snapshot-container mutation preserves safe controls and temporal ordering", async () => {
+  const sourcePath = "src/platform/run22-container-mutation-controls.ts";
+  const safeCases = [
+    [
+      "mutation after completed destructuring",
+      `const values = [{}];
+const [{ constructor: Constructor }] = values;
+values[0] = () => {};
+new Constructor("return process")();`,
+    ],
+    [
+      "mutation of unrelated container",
+      `const values = [{}];
+const other = [{}];
+other[0] = () => {};
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "read-only map method",
+      `const values = [{}];
+values.map((value) => value);
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "read-only filter method",
+      `const values = [{}];
+values.filter(() => true);
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "read-only slice method",
+      `const values = [{}];
+values.slice();
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "read-only concat method",
+      `const values = [{}];
+values.concat([]);
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "read-only includes method",
+      `const values = [{}];
+values.includes(0);
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "read-only indexOf method",
+      `const values = [{}];
+values.indexOf(0);
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "read-only at method",
+      `const values = [{}];
+values.at(0);
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "safe immutable array",
+      `const values = [{}];
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "safe immutable object",
+      `const object = { value: {} };
+const { value: { constructor: Constructor } } = object;
+new Constructor("return process")();`,
+    ],
+    [
+      "safe alias snapshot ordering",
+      `const values = [{}];
+const first = values;
+const second = first;
+const [{ constructor: Constructor }] = second;
+new Constructor("return process")();`,
+    ],
+    [
+      "safe non-constructor property",
+      `const values = [{}];
+values[0] = () => {};
+const [{ other: value }] = values;
+value;`,
+    ],
+    [
+      "safe holes",
+      `const values = [, {}];
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "safe array rest",
+      `const values = [1, {}];
+const [...rest] = values;
+rest;`,
+    ],
+    [
+      "safe object rest",
+      `const object = { value: 1 };
+const { ...rest } = object;
+rest;`,
+    ],
+    [
+      "local lexical shadow unaffected by outer container mutation",
+      `const values = [{}];
+function load(values) {
+  values[0] = () => {};
+  return values;
+}
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "type-only reference unaffected",
+      `const values = [{}];
+type Shape = typeof values;
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "benign custom-constructor data",
+      `const values = [{ constructor: 1 }];
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "distinct copied array mutation does not invalidate source",
+      `const values = [{}];
+const copy = [...values];
+copy[0] = () => {};
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "reassignment of one alias does not falsely mutate the prior object",
+      `const values = [{}];
+let alias = values;
+alias = [() => {}];
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+  ];
+
+  for (const [name, source] of safeCases) {
+    await assert.doesNotReject(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([[sourcePath, source]]),
+        }),
+      name,
+    );
+  }
+});

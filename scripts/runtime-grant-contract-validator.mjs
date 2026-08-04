@@ -1551,6 +1551,98 @@ function rejectUnsupportedRuntimeModuleLoading(sourceFile) {
   visit(sourceFile);
 }
 
+const containerMutatingMethodNames = new Set([
+  "push",
+  "pop",
+  "shift",
+  "unshift",
+  "splice",
+  "fill",
+  "copyWithin",
+  "reverse",
+  "sort",
+]);
+
+const containerReadOnlyMethodNames = new Set([
+  "at",
+  "concat",
+  "entries",
+  "every",
+  "filter",
+  "find",
+  "findIndex",
+  "findLast",
+  "findLastIndex",
+  "flat",
+  "flatMap",
+  "forEach",
+  "includes",
+  "indexOf",
+  "join",
+  "keys",
+  "lastIndexOf",
+  "map",
+  "reduce",
+  "reduceRight",
+  "slice",
+  "some",
+  "toLocaleString",
+  "toReversed",
+  "toSorted",
+  "toSpliced",
+  "toString",
+  "values",
+  "with",
+  "iterator",
+]);
+
+const containerReflectionMutationMethods = new Set([
+  "assign",
+  "defineProperty",
+  "defineProperties",
+  "set",
+  "deleteProperty",
+]);
+
+const containerReflectionReadOnlyMethods = new Set([
+  "get",
+  "getOwnPropertyDescriptor",
+  "getOwnPropertyDescriptors",
+  "getOwnPropertyNames",
+  "getOwnPropertySymbols",
+  "getPrototypeOf",
+  "has",
+  "hasOwn",
+  "hasOwnProperty",
+  "is",
+  "isExtensible",
+  "isFrozen",
+  "isSealed",
+  "keys",
+  "ownKeys",
+  "values",
+  "entries",
+]);
+
+const containerAssignmentOperatorKinds = new Set([
+  ts.SyntaxKind.EqualsToken,
+  ts.SyntaxKind.PlusEqualsToken,
+  ts.SyntaxKind.MinusEqualsToken,
+  ts.SyntaxKind.AsteriskEqualsToken,
+  ts.SyntaxKind.AsteriskAsteriskEqualsToken,
+  ts.SyntaxKind.SlashEqualsToken,
+  ts.SyntaxKind.PercentEqualsToken,
+  ts.SyntaxKind.LessThanLessThanEqualsToken,
+  ts.SyntaxKind.GreaterThanGreaterThanEqualsToken,
+  ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
+  ts.SyntaxKind.AmpersandEqualsToken,
+  ts.SyntaxKind.BarEqualsToken,
+  ts.SyntaxKind.CaretEqualsToken,
+  ts.SyntaxKind.BarBarEqualsToken,
+  ts.SyntaxKind.AmpersandAmpersandEqualsToken,
+  ts.SyntaxKind.QuestionQuestionEqualsToken,
+]);
+
 function rejectGlobalDynamicConstructorAuthority(sourceFile) {
   const reject = () => {
     throw new RuntimeGrantContractError("runtime_grant_inventory_unclassified");
@@ -1562,6 +1654,11 @@ function rejectGlobalDynamicConstructorAuthority(sourceFile) {
     callableBindings: new Map(),
     valueBindings: new Map(),
     valueSnapshots: new Map(),
+    containerBindings: new Map(),
+    containerMutatorAliases: new Map(),
+    containerRegistry: new Map(),
+    containerDependents: new Map(),
+    containerNextId: 1,
     node: null,
     varScope: null,
   };
@@ -1572,6 +1669,7 @@ function rejectGlobalDynamicConstructorAuthority(sourceFile) {
   const visit = (node) => {
     recordStaticValueBinding(node, scopes);
     recordStaticValueAssignment(node, scopes);
+    recordContainerMutation(node, scopes);
     if (
       isRuntimeValueIdentifierReferenceForName(
         node,
@@ -1609,6 +1707,7 @@ function rejectGlobalDynamicConstructorAuthority(sourceFile) {
       ) {
         reject();
       }
+      recordContainerDestructuredMutators(node, scopes);
       recordGlobalConstructorAlias(node, scopes);
       checkGlobalObjectAlias(node, scopes);
     }
@@ -1661,6 +1760,10 @@ function rejectGlobalDynamicConstructorAuthority(sourceFile) {
       reject();
     }
 
+    if (ts.isCallExpression(node)) {
+      recordContainerMutatorInvocation(node, scopes);
+    }
+
     const isScope = isScopeNode(node);
     if (isScope) {
       const newScope = {
@@ -1669,6 +1772,8 @@ function rejectGlobalDynamicConstructorAuthority(sourceFile) {
         callableBindings: new Map(),
         valueBindings: new Map(),
         valueSnapshots: new Map(),
+        containerBindings: new Map(),
+        containerMutatorAliases: new Map(),
         globalConstructorAliases: new Set(),
         node,
         varScope: null,
@@ -1845,6 +1950,8 @@ function recordStaticValueBinding(node, scopes) {
   if (snapshot.kind === "callable") {
     scope.callableBindings.set(node.name.text, node.initializer);
   }
+  registerContainerBinding(node.name.text, node.initializer, snapshot, scope, scopes);
+  registerContainerMutatorAlias(node.name.text, node.initializer, scope, scopes);
 }
 
 function recordStaticValueAssignment(node, scopes) {
@@ -1864,6 +1971,274 @@ function recordStaticValueAssignment(node, scopes) {
   scope.callableBindings.delete(node.left.text);
   if (snapshot.kind === "callable") {
     scope.callableBindings.set(node.left.text, node.right);
+  }
+  registerContainerBinding(node.left.text, node.right, snapshot, scope, scopes);
+  registerContainerMutatorAlias(node.left.text, node.right, scope, scopes);
+}
+
+function recordContainerMutation(node, scopes) {
+  if (ts.isBinaryExpression(node) && containerAssignmentOperatorKinds.has(node.operatorToken.kind)) {
+    if (!staticPropertyAccessParts(node.left)) return;
+    const containerId = containerBaseOfMemberChain(node.left, scopes);
+    if (containerId) invalidateContainer(containerId, scopes);
+    return;
+  }
+  if (
+    (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+    (node.operator === ts.SyntaxKind.PlusPlusToken ||
+      node.operator === ts.SyntaxKind.MinusMinusToken)
+  ) {
+    if (!staticPropertyAccessParts(node.operand)) return;
+    const containerId = containerBaseOfMemberChain(node.operand, scopes);
+    if (containerId) invalidateContainer(containerId, scopes);
+    return;
+  }
+  if (ts.isDeleteExpression(node)) {
+    if (!staticPropertyAccessParts(node.expression)) return;
+    const containerId = containerBaseOfMemberChain(node.expression, scopes);
+    if (containerId) invalidateContainer(containerId, scopes);
+    return;
+  }
+  if (ts.isCallExpression(node)) {
+    recordContainerMethodMutation(node, scopes);
+    recordContainerReflectionMutation(node, scopes);
+  }
+}
+
+function containerBaseOfMemberChain(node, scopes) {
+  let current = node;
+  while (true) {
+    const access = staticPropertyAccessParts(current);
+    if (!access) break;
+    current = access.objectExpression;
+  }
+  const base = valueProducingExpression(current);
+  if (ts.isIdentifier(base)) return resolveContainerBinding(base.text, scopes);
+  return null;
+}
+
+function registerContainerBinding(name, initializer, snapshot, scope, scopes) {
+  const value = valueProducingExpression(initializer);
+  if (!value) return;
+  if (ts.isArrayLiteralExpression(value) || ts.isObjectLiteralExpression(value)) {
+    const containerId = nextContainerId(scopes);
+    scopes[0].containerRegistry.set(containerId, {
+      profile: snapshot,
+      invalidated: false,
+    });
+    scope.containerBindings.set(name, containerId);
+    registerContainerDependents(value, containerId, scopes);
+    return;
+  }
+  if (ts.isIdentifier(value)) {
+    const target = resolveContainerBinding(value.text, scopes);
+    if (target) {
+      scope.containerBindings.set(name, target);
+      return;
+    }
+  }
+  scope.containerBindings.delete(name);
+}
+
+function nextContainerId(scopes) {
+  const id = scopes[0].containerNextId;
+  scopes[0].containerNextId += 1;
+  return id;
+}
+
+function resolveContainerBinding(name, scopes) {
+  for (let index = scopes.length - 1; index >= 0; index--) {
+    if (scopes[index].containerBindings?.has(name)) {
+      return scopes[index].containerBindings.get(name);
+    }
+    if (scopes[index].bindings.has(name)) return null;
+  }
+  return null;
+}
+
+function registerContainerDependents(node, containerId, scopes, visited = new Set()) {
+  if (visited.has(node)) return;
+  visited.add(node);
+  const recordDependency = (expression) => {
+    const value = valueProducingExpression(expression);
+    if (ts.isIdentifier(value)) {
+      const target = resolveContainerBinding(value.text, scopes);
+      if (target && target !== containerId) {
+        const dependents = scopes[0].containerDependents;
+        let set = dependents.get(target);
+        if (!set) {
+          set = new Set();
+          dependents.set(target, set);
+        }
+        set.add(containerId);
+      }
+      return;
+    }
+    if (ts.isArrayLiteralExpression(value) || ts.isObjectLiteralExpression(value)) {
+      registerContainerDependents(value, containerId, scopes, visited);
+    }
+  };
+  if (ts.isArrayLiteralExpression(node)) {
+    for (const element of node.elements) {
+      if (ts.isSpreadElement(element) || ts.isOmittedExpression(element)) continue;
+      recordDependency(element);
+    }
+    return;
+  }
+  if (ts.isObjectLiteralExpression(node)) {
+    for (const property of node.properties) {
+      if (ts.isSpreadAssignment(property) || ts.isSpreadElement(property)) continue;
+      if (ts.isPropertyAssignment(property)) recordDependency(property.initializer);
+      else if (ts.isShorthandPropertyAssignment(property)) recordDependency(property.name);
+    }
+  }
+}
+
+function registerContainerMutatorAlias(name, initializer, scope, scopes) {
+  const containerId = mutatorAliasContainer(initializer, scopes);
+  if (containerId) {
+    scope.containerMutatorAliases.set(name, containerId);
+  } else {
+    scope.containerMutatorAliases.delete(name);
+  }
+}
+
+function mutatorAliasContainer(expression, scopes) {
+  const value = valueProducingExpression(expression);
+  if (!value) return null;
+  const access = staticPropertyAccessParts(value);
+  if (access) {
+    const methodName = staticPropertyName(access.propertyExpression);
+    if (methodName !== null && containerMutatingMethodNames.has(methodName)) {
+      const containerId = containerBaseOfMemberChain(access.objectExpression, scopes);
+      if (containerId) return containerId;
+    }
+    return null;
+  }
+  if (ts.isCallExpression(value) && value.arguments.length > 0) {
+    const callee = valueProducingExpression(value.expression);
+    if (!callee) return null;
+    const bindAccess = staticPropertyAccessParts(callee);
+    if (!bindAccess) return null;
+    const bindName = staticPropertyName(bindAccess.propertyExpression);
+    if (bindName !== "bind" && bindName !== "call" && bindName !== "apply") return null;
+    const inner = valueProducingExpression(bindAccess.objectExpression);
+    const innerAccess = staticPropertyAccessParts(inner);
+    if (!innerAccess) return null;
+    const methodName = staticPropertyName(innerAccess.propertyExpression);
+    if (methodName === null || !containerMutatingMethodNames.has(methodName)) return null;
+    return containerBaseOfMemberChain(innerAccess.objectExpression, scopes);
+  }
+  return null;
+}
+
+function recordContainerMutatorInvocation(node, scopes) {
+  if (!ts.isCallExpression(node)) return;
+  const callee = valueProducingExpression(node.expression);
+  let aliasName = null;
+  if (ts.isIdentifier(callee)) {
+    aliasName = callee.text;
+  } else {
+    const access = staticPropertyAccessParts(callee);
+    if (access) {
+      const invokedName = staticPropertyName(access.propertyExpression);
+      if (invokedName !== "call" && invokedName !== "apply" && invokedName !== "bind") return;
+      const base = valueProducingExpression(access.objectExpression);
+      if (ts.isIdentifier(base)) aliasName = base.text;
+    }
+  }
+  if (!aliasName) return;
+  const containerId = resolveContainerMutatorAlias(aliasName, scopes);
+  if (containerId) invalidateContainer(containerId, scopes);
+}
+
+function resolveContainerMutatorAlias(name, scopes) {
+  for (let index = scopes.length - 1; index >= 0; index--) {
+    if (scopes[index].containerMutatorAliases?.has(name)) {
+      return scopes[index].containerMutatorAliases.get(name);
+    }
+    if (scopes[index].bindings.has(name)) return null;
+  }
+  return null;
+}
+
+function recordContainerDestructuredMutators(node, scopes) {
+  if (!ts.isObjectBindingPattern(node.name)) return;
+  const containerId = mutatorAliasContainer(node.initializer, scopes);
+  if (!containerId) return;
+  const scope = scopes[scopes.length - 1];
+  for (const element of node.name.elements) {
+    if (ts.isOmittedExpression(element) || element.dotDotDotToken) continue;
+    const propertyName = element.propertyName
+      ? staticPropertyName(element.propertyName)
+      : ts.isIdentifier(element.name)
+        ? element.name.text
+        : null;
+    if (
+      propertyName !== null &&
+      containerMutatingMethodNames.has(propertyName) &&
+      ts.isIdentifier(element.name)
+    ) {
+      scope.containerMutatorAliases.set(element.name.text, containerId);
+    }
+  }
+}
+
+function invalidateContainer(containerId, scopes, visited = new Set()) {
+  if (visited.has(containerId)) return;
+  visited.add(containerId);
+  const state = scopes[0].containerRegistry.get(containerId);
+  if (state) state.invalidated = true;
+  const dependents = scopes[0].containerDependents.get(containerId);
+  if (dependents) {
+    for (const dependent of dependents) {
+      invalidateContainer(dependent, scopes, visited);
+    }
+  }
+}
+
+function recordContainerMethodMutation(call, scopes) {
+  const access = staticPropertyAccessParts(call.expression);
+  if (!access) return;
+  const containerId = containerBaseOfMemberChain(access.objectExpression, scopes);
+  if (!containerId) return;
+  const methodName = staticPropertyName(access.propertyExpression);
+  if (methodName === null) {
+    invalidateContainer(containerId, scopes);
+    return;
+  }
+  if (containerMutatingMethodNames.has(methodName)) {
+    invalidateContainer(containerId, scopes);
+    return;
+  }
+  if (!containerReadOnlyMethodNames.has(methodName)) {
+    invalidateContainer(containerId, scopes);
+  }
+}
+
+function recordContainerReflectionMutation(call, scopes) {
+  const access = staticPropertyAccessParts(call.expression);
+  if (!access) return;
+  const receiver = valueProducingExpression(access.objectExpression);
+  if (!ts.isIdentifier(receiver)) return;
+  const receiverName = receiver.text;
+  if (receiverName !== "Object" && receiverName !== "Reflect") return;
+  if (isLocallyBound(receiverName, scopes)) return;
+  const target = call.arguments[0];
+  if (!target) return;
+  const containerId = containerBaseOfMemberChain(target, scopes);
+  if (!containerId) return;
+  const methodName = staticPropertyName(access.propertyExpression);
+  if (methodName === null) {
+    invalidateContainer(containerId, scopes);
+    return;
+  }
+  if (containerReflectionMutationMethods.has(methodName)) {
+    invalidateContainer(containerId, scopes);
+    return;
+  }
+  if (!containerReflectionReadOnlyMethods.has(methodName)) {
+    invalidateContainer(containerId, scopes);
   }
 }
 
@@ -1916,6 +2291,14 @@ function staticValueProfile(expression, scopes, resolving = new Set()) {
     const name = value.text;
     for (let index = scopes.length - 1; index >= 0; index--) {
       const scope = scopes[index];
+      if (scope.containerBindings?.has(name)) {
+        const containerId = scope.containerBindings.get(name);
+        const state = scopes[0]?.containerRegistry?.get(containerId);
+        if (state) {
+          if (state.invalidated) return staticUnknownValueProfile();
+          return state.profile;
+        }
+      }
       if (scope.valueSnapshots?.has(name)) {
         return scope.valueSnapshots.get(name);
       }
