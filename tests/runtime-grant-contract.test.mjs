@@ -4738,3 +4738,373 @@ new Constructor("return process")();`,
     );
   }
 });
+
+test("run-23 mutator-alias reachability rejects destructured mutators and alias chains", async () => {
+  const sourcePath = "src/platform/run23-mutator-alias-reachability.ts";
+  const rejected = [
+    [
+      "direct destructured mutator",
+      `const values = [{}];
+const { push } = values;
+push.call(values, () => {});
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "renamed destructured mutator",
+      `const values = [{}];
+const { push: append } = values;
+append.apply(values, [[() => {}]]);
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "destructured mutator direct invocation",
+      `const values = [{}];
+const { push } = values;
+push(values, () => {});
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "destructured mutator then identifier alias",
+      `const values = [{}];
+const { push } = values;
+const second = push;
+second.call(values, () => {});
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "mutator alias-of-alias",
+      `const values = [{}];
+const first = values.push;
+const second = first;
+second.call(values, () => {});
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "deep mutator alias-of-alias chain",
+      `const values = [{}];
+const first = values.push;
+const second = first;
+const third = second;
+const fourth = third;
+fourth.call(values, () => {});
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "mutator alias via assignment",
+      `const values = [{}];
+const first = values.push;
+let second;
+second = first;
+second.call(values, () => {});
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "mutator alias via declaration assignment",
+      `const values = [{}];
+const first = values.push;
+let second = first;
+second.apply(values, [[() => {}]]);
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "bound mutator alias-of-alias",
+      `const values = [{}];
+const first = values.push.bind(values);
+const second = first;
+second(() => {});
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "bound mutator alias direct invocation",
+      `const values = [{}];
+const first = values.push.bind(values);
+first(() => {});
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "bound destructured mutator alias",
+      `const values = [{}];
+const { push } = values;
+const bound = push.bind(values);
+bound(() => {});
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "bound alias-of-alias through bind",
+      `const values = [{}];
+const first = values.push;
+const second = first.bind(values);
+second(() => {});
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "mutator alias through function boundary",
+      `const values = [{}];
+const first = values.push;
+function run() {
+  const second = first;
+  second.call(values, () => {});
+}
+run();
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "mutator alias through block boundary",
+      `const values = [{}];
+const first = values.push;
+{
+  const second = first;
+  second.call(values, () => {});
+}
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "destructured mutator then apply alias",
+      `const values = [{}];
+const { pop } = values;
+const second = pop;
+second.apply(values, []);
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "alias retains authority after source reassignment",
+      `const values = [{}];
+let first = values.push;
+const second = first;
+first = () => {};
+second.call(values, () => {});
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+  ];
+
+  for (const [name, source] of rejected) {
+    await assert.rejects(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([[sourcePath, source]]),
+        }),
+      contractError(globalNetworkRejectionCode),
+      name,
+    );
+  }
+});
+
+test("run-23 mutator-alias reachability preserves safe controls and shadowing", async () => {
+  const sourcePath = "src/platform/run23-mutator-alias-controls.ts";
+  const safeCases = [
+    [
+      "destructuring a read-only method",
+      `const values = [{}];
+const { map } = values;
+map.call(values, () => {});
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "renamed read-only method destructuring",
+      `const values = [{}];
+const { filter: select } = values;
+select.call(values, () => true);
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "aliasing read-only map method",
+      `const values = [{}];
+const first = values.map;
+const second = first;
+second.call(values, () => {});
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "aliasing read-only slice method",
+      `const values = [{}];
+const first = values.slice;
+const second = first;
+second.call(values);
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "aliasing read-only includes method",
+      `const values = [{}];
+const first = values.includes;
+const second = first;
+second.call(values, 0);
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "aliasing read-only at method",
+      `const values = [{}];
+const first = values.at;
+const second = first;
+second.call(values, 0);
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "mutation of an unrelated container",
+      `const values = [{}];
+const other = [{}];
+const first = other.push;
+first.call(other, () => {});
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "mutation of a distinct copied array",
+      `const values = [{}];
+const copy = [...values];
+const { push } = copy;
+push.call(copy, () => {});
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "reassigning an alias to an unrelated function",
+      `const values = [{}];
+let first = values.push;
+first = () => {};
+first.call(values, () => {});
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "alias removal after reassignment",
+      `const values = [{}];
+const first = values.push;
+let second = first;
+second = () => {};
+second.call(values, () => {});
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "alias replacement to another container",
+      `const values = [{}];
+const other = [() => {}];
+let first = values.push;
+first = other.push;
+first.call(other, () => {});
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "lexically shadowed alias parameter",
+      `const values = [{}];
+const { push } = values;
+function load(push) {
+  push.call(values, () => {});
+}
+load();
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "shadowed container parameter",
+      `const values = [{}];
+function load(values) {
+  values[0] = () => {};
+}
+load();
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "shadowed container parameter destructure",
+      `const values = [{}];
+function load(values) {
+  const { push } = values;
+  push.call(values, () => {});
+}
+load();
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "block-shadowed destructured alias",
+      `const values = [{}];
+const { push } = values;
+{
+  const push = () => {};
+  push.call(values, () => {});
+}
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "block-shadowed alias-of-alias",
+      `const values = [{}];
+const { push } = values;
+{
+  const push = () => {};
+  const second = push;
+  second.call(values, () => {});
+}
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "safe destructuring completed before a later mutation",
+      `const values = [{}];
+const { push } = values;
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();
+push.call(values, () => {});`,
+    ],
+    [
+      "non-constructor property reads after mutation",
+      `const values = [{}];
+const { push } = values;
+push.call(values, () => {});
+const [{ other: value }] = values;
+value;`,
+    ],
+    [
+      "type-only reference unaffected",
+      `const values = [{}];
+const { push } = values;
+type Shape = typeof values;
+const [, { constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+    [
+      "destructured read-only then mutation of another container",
+      `const values = [{}];
+const other = [{}];
+const { map } = values;
+const { push } = other;
+push.call(other, () => {});
+const [{ constructor: Constructor }] = values;
+new Constructor("return process")();`,
+    ],
+  ];
+
+  for (const [name, source] of safeCases) {
+    await assert.doesNotReject(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([[sourcePath, source]]),
+        }),
+      name,
+    );
+  }
+});

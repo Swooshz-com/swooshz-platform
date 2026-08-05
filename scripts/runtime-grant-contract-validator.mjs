@@ -2106,6 +2106,9 @@ function registerContainerMutatorAlias(name, initializer, scope, scopes) {
 function mutatorAliasContainer(expression, scopes) {
   const value = valueProducingExpression(expression);
   if (!value) return null;
+  if (ts.isIdentifier(value)) {
+    return resolveContainerMutatorAlias(value.text, scopes);
+  }
   const access = staticPropertyAccessParts(value);
   if (access) {
     const methodName = staticPropertyName(access.propertyExpression);
@@ -2123,6 +2126,9 @@ function mutatorAliasContainer(expression, scopes) {
     const bindName = staticPropertyName(bindAccess.propertyExpression);
     if (bindName !== "bind" && bindName !== "call" && bindName !== "apply") return null;
     const inner = valueProducingExpression(bindAccess.objectExpression);
+    if (ts.isIdentifier(inner)) {
+      return resolveContainerMutatorAlias(inner.text, scopes);
+    }
     const innerAccess = staticPropertyAccessParts(inner);
     if (!innerAccess) return null;
     const methodName = staticPropertyName(innerAccess.propertyExpression);
@@ -2164,9 +2170,11 @@ function resolveContainerMutatorAlias(name, scopes) {
 
 function recordContainerDestructuredMutators(node, scopes) {
   if (!ts.isObjectBindingPattern(node.name)) return;
-  const containerId = mutatorAliasContainer(node.initializer, scopes);
+  const containerId = destructuredMutatorSourceContainer(
+    node.initializer,
+    scopes,
+  );
   if (!containerId) return;
-  const scope = scopes[scopes.length - 1];
   for (const element of node.name.elements) {
     if (ts.isOmittedExpression(element) || element.dotDotDotToken) continue;
     const propertyName = element.propertyName
@@ -2179,9 +2187,22 @@ function recordContainerDestructuredMutators(node, scopes) {
       containerMutatingMethodNames.has(propertyName) &&
       ts.isIdentifier(element.name)
     ) {
+      const scope =
+        bindingScopeForName(element.name.text, scopes) ??
+        scopes[scopes.length - 1];
       scope.containerMutatorAliases.set(element.name.text, containerId);
     }
   }
+}
+
+function destructuredMutatorSourceContainer(expression, scopes) {
+  const value = valueProducingExpression(expression);
+  if (!value) return null;
+  if (ts.isIdentifier(value)) {
+    const containerId = resolveContainerBinding(value.text, scopes);
+    if (containerId) return containerId;
+  }
+  return mutatorAliasContainer(expression, scopes);
 }
 
 function invalidateContainer(containerId, scopes, visited = new Set()) {
