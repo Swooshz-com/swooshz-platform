@@ -97,7 +97,7 @@ const databaseSourceShapeAuthority = new Map([
   ],
   [
     "src/db/runtime-posture.ts",
-    "26e76abd42e40dda4905db1ae29acdaf4424408974a6e21c2063147418c1dbd9",
+    "ba35c50483c3b60e0be47606b004f4cf687710b12ac85f2a67cdc280864719da",
   ],
   [
     "src/db/schema.ts",
@@ -255,6 +255,50 @@ if (
 }
 
 const globalObjectIdentifiers = new Set(["globalThis", "global"]);
+const processIdentifierNames = new Set(["process"]);
+const dynamicConstructorIdentifierNames = new Set(["Function"]);
+const globalConstructorIdentifierNames = new Set([
+  "AbortController",
+  "AbortSignal",
+  "Array",
+  "ArrayBuffer",
+  "BigInt",
+  "BigInt64Array",
+  "BigUint64Array",
+  "Boolean",
+  "DataView",
+  "Date",
+  "Error",
+  "EvalError",
+  "Float32Array",
+  "Float64Array",
+  "Function",
+  "Int8Array",
+  "Int16Array",
+  "Int32Array",
+  "Map",
+  "Number",
+  "Object",
+  "Promise",
+  "Proxy",
+  "RangeError",
+  "ReferenceError",
+  "RegExp",
+  "Set",
+  "String",
+  "Symbol",
+  "SyntaxError",
+  "TypeError",
+  "Uint8Array",
+  "Uint8ClampedArray",
+  "Uint16Array",
+  "Uint32Array",
+  "URIError",
+  "URL",
+  "URLSearchParams",
+  "WeakMap",
+  "WeakSet",
+]);
 
 const databaseExternalImportAuthority = new Set([
   databaseExternalImportKey(
@@ -1484,6 +1528,9 @@ function assertDatabaseCapabilityFacadeOnly(sourceFile) {
 }
 
 function rejectUnsupportedRuntimeModuleLoading(sourceFile) {
+  rejectGlobalDynamicConstructorAuthority(sourceFile);
+  rejectUnboundGlobalProcessAuthority(sourceFile);
+
   const visit = (node) => {
     if (
       ts.isCallExpression(node) &&
@@ -1491,24 +1538,9 @@ function rejectUnsupportedRuntimeModuleLoading(sourceFile) {
         node.expression.kind === ts.SyntaxKind.ImportKeyword ||
         (
           ts.isIdentifier(node.expression) &&
-          ["eval", "Function", "require"].includes(node.expression.text)
-        ) ||
-        (
-          ts.isPropertyAccessExpression(node.expression) &&
-          ts.isIdentifier(node.expression.expression) &&
-          node.expression.expression.text === "process" &&
-          node.expression.name.text === "getBuiltinModule"
+          ["eval", "require"].includes(node.expression.text)
         )
       )
-    ) {
-      throw new RuntimeGrantContractError(
-        "runtime_grant_inventory_unclassified",
-      );
-    }
-    if (
-      ts.isNewExpression(node) &&
-      ts.isIdentifier(node.expression) &&
-      node.expression.text === "Function"
     ) {
       throw new RuntimeGrantContractError(
         "runtime_grant_inventory_unclassified",
@@ -1517,6 +1549,1631 @@ function rejectUnsupportedRuntimeModuleLoading(sourceFile) {
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
+}
+
+const containerMutatingMethodNames = new Set([
+  "push",
+  "pop",
+  "shift",
+  "unshift",
+  "splice",
+  "fill",
+  "copyWithin",
+  "reverse",
+  "sort",
+]);
+
+const containerReadOnlyMethodNames = new Set([
+  "at",
+  "concat",
+  "entries",
+  "every",
+  "filter",
+  "find",
+  "findIndex",
+  "findLast",
+  "findLastIndex",
+  "flat",
+  "flatMap",
+  "forEach",
+  "includes",
+  "indexOf",
+  "join",
+  "keys",
+  "lastIndexOf",
+  "map",
+  "reduce",
+  "reduceRight",
+  "slice",
+  "some",
+  "toLocaleString",
+  "toReversed",
+  "toSorted",
+  "toSpliced",
+  "toString",
+  "values",
+  "with",
+  "iterator",
+]);
+
+const containerReflectionMutationMethods = new Set([
+  "assign",
+  "defineProperty",
+  "defineProperties",
+  "set",
+  "deleteProperty",
+]);
+
+const containerReflectionReadOnlyMethods = new Set([
+  "get",
+  "getOwnPropertyDescriptor",
+  "getOwnPropertyDescriptors",
+  "getOwnPropertyNames",
+  "getOwnPropertySymbols",
+  "getPrototypeOf",
+  "has",
+  "hasOwn",
+  "hasOwnProperty",
+  "is",
+  "isExtensible",
+  "isFrozen",
+  "isSealed",
+  "keys",
+  "ownKeys",
+  "values",
+  "entries",
+]);
+
+const containerAssignmentOperatorKinds = new Set([
+  ts.SyntaxKind.EqualsToken,
+  ts.SyntaxKind.PlusEqualsToken,
+  ts.SyntaxKind.MinusEqualsToken,
+  ts.SyntaxKind.AsteriskEqualsToken,
+  ts.SyntaxKind.AsteriskAsteriskEqualsToken,
+  ts.SyntaxKind.SlashEqualsToken,
+  ts.SyntaxKind.PercentEqualsToken,
+  ts.SyntaxKind.LessThanLessThanEqualsToken,
+  ts.SyntaxKind.GreaterThanGreaterThanEqualsToken,
+  ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
+  ts.SyntaxKind.AmpersandEqualsToken,
+  ts.SyntaxKind.BarEqualsToken,
+  ts.SyntaxKind.CaretEqualsToken,
+  ts.SyntaxKind.BarBarEqualsToken,
+  ts.SyntaxKind.AmpersandAmpersandEqualsToken,
+  ts.SyntaxKind.QuestionQuestionEqualsToken,
+]);
+
+function rejectGlobalDynamicConstructorAuthority(sourceFile) {
+  const reject = () => {
+    throw new RuntimeGrantContractError("runtime_grant_inventory_unclassified");
+  };
+  const rootScope = {
+    bindings: new Map(),
+    globalAliases: new Set(),
+    globalConstructorAliases: new Set(),
+    callableBindings: new Map(),
+    valueBindings: new Map(),
+    valueSnapshots: new Map(),
+    containerBindings: new Map(),
+    containerMutatorAliases: new Map(),
+    containerRegistry: new Map(),
+    containerDependents: new Map(),
+    containerNextId: 1,
+    node: null,
+    varScope: null,
+  };
+  rootScope.varScope = rootScope;
+  addModuleScopeDeclarations(sourceFile, rootScope);
+
+  const scopes = [rootScope];
+  const visit = (node) => {
+    recordStaticValueBinding(node, scopes);
+    recordStaticValueAssignment(node, scopes);
+    recordContainerMutation(node, scopes);
+    if (
+      isRuntimeValueIdentifierReferenceForName(
+        node,
+        scopes,
+        dynamicConstructorIdentifierNames,
+      ) &&
+      dynamicConstructorReferenceIsAuthority(node)
+    ) {
+      reject();
+    }
+
+    if (
+      dynamicConstructorPropertyAccess(node, scopes) &&
+      dynamicConstructorReferenceIsAuthority(node)
+    ) {
+      reject();
+    }
+
+    if (ts.isVariableDeclaration(node) && node.initializer) {
+      if (
+        (ts.isObjectBindingPattern(node.name) || ts.isArrayBindingPattern(node.name)) &&
+        destructuringPatternCanReachCallableOrUnknown(
+          node.name,
+          node.initializer,
+          scopes,
+        )
+      ) {
+        reject();
+      }
+      if (
+        (ts.isObjectBindingPattern(node.name) ||
+          ts.isArrayBindingPattern(node.name)) &&
+        isDirectGlobalObjectReference(node.initializer, scopes) &&
+        bindingPatternCanReachDynamicConstructor(node.name)
+      ) {
+        reject();
+      }
+      recordContainerDestructuredMutators(node, scopes);
+      recordGlobalConstructorAlias(node, scopes);
+      checkGlobalObjectAlias(node, scopes);
+    }
+
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      isAssignmentDestructuringPattern(node.left)
+    ) {
+      if (
+        isDirectGlobalObjectReference(node.right, scopes) &&
+        bindingPatternCanReachDynamicConstructor(node.left)
+      ) {
+        reject();
+      }
+      if (
+        destructuringPatternCanReachCallableOrUnknown(
+          node.left,
+          node.right,
+          scopes,
+        )
+      ) {
+        reject();
+      }
+    }
+
+    if (ts.isForOfStatement(node)) {
+      const pattern = ts.isVariableDeclarationList(node.initializer)
+        ? node.initializer.declarations[0]?.name
+        : node.initializer;
+      if (
+        pattern &&
+        (isAssignmentDestructuringPattern(pattern) ||
+          ts.isObjectBindingPattern(pattern) ||
+          ts.isArrayBindingPattern(pattern)) &&
+        forOfPatternCanReachCallableOrUnknown(
+          pattern,
+          node.expression,
+          scopes,
+        )
+      ) {
+        reject();
+      }
+    }
+
+    if (
+      ts.isCallExpression(node) &&
+      reflectiveDynamicConstructorAcquisition(node, scopes)
+    ) {
+      reject();
+    }
+
+    if (ts.isCallExpression(node)) {
+      recordContainerMutatorInvocation(node, scopes);
+    }
+
+    const isScope = isScopeNode(node);
+    if (isScope) {
+      const newScope = {
+        bindings: new Map(),
+        globalAliases: new Set(),
+        callableBindings: new Map(),
+        valueBindings: new Map(),
+        valueSnapshots: new Map(),
+        containerBindings: new Map(),
+        containerMutatorAliases: new Map(),
+        globalConstructorAliases: new Set(),
+        node,
+        varScope: null,
+      };
+      newScope.varScope =
+        scopes[scopes.length - 1].varScope || scopes[scopes.length - 1];
+      addNodeScopeDeclarations(node, newScope);
+      scopes.push(newScope);
+    }
+
+    ts.forEachChild(node, visit);
+
+    if (isScope) {
+      scopes.pop();
+    }
+  };
+
+  visit(sourceFile);
+}
+
+function dynamicConstructorReferenceIsAuthority(node) {
+  if (isDiscardedSequenceOperand(node)) return false;
+  if (isInTypePosition(node)) return false;
+  const parent = node.parent;
+  return !(
+    parent &&
+    ts.isTypeOfExpression(parent) &&
+    parent.expression === node
+  );
+}
+
+function dynamicConstructorPropertyAccess(node, scopes) {
+  const access = staticPropertyAccessParts(node);
+  if (!access) return false;
+
+  const { objectExpression, propertyExpression } = access;
+  const propertyName = staticPropertyName(propertyExpression);
+  if (isInTypePosition(node) || isDiscardedSequenceOperand(node)) return false;
+  if (propertyName === "constructor") {
+    return staticallyKnownCallableValueKind(objectExpression, scopes) !== "non_callable";
+  }
+  if (propertyName === null) {
+    return Boolean(resolveGlobalObjectName(objectExpression, scopes));
+  }
+  if (
+    propertyName === "Function" &&
+    resolveGlobalObjectName(objectExpression, scopes)
+  ) {
+    return true;
+  }
+  return (
+    propertyName === "constructor" &&
+    globalConstructorValueReference(objectExpression, scopes)
+  );
+}
+
+function staticallyKnownCallableValueKind(expression, scopes, resolving = new Set()) {
+  const value = valueProducingExpression(expression);
+  if (!value) return "unknown";
+
+  if (resolveGlobalObjectName(value, scopes)) return "non_callable";
+
+  if (ts.isIdentifier(value)) {
+    const name = value.text;
+    for (let index = scopes.length - 1; index >= 0; index--) {
+      const scope = scopes[index];
+      if (scope.valueBindings?.has(name)) {
+        return scope.valueBindings.get(name);
+      }
+      const bindingKind = scope.bindings.get(name);
+      if (bindingKind) {
+        return bindingKind === "function" || bindingKind === "class"
+          ? "callable"
+          : "unknown";
+      }
+    }
+    if (
+      globalConstructorIdentifierNames.has(name) ||
+      isGlobalConstructorAlias(name, scopes)
+    ) {
+      return "callable";
+    }
+    return "unknown";
+  }
+
+  if (
+    ts.isFunctionExpression(value) ||
+    ts.isArrowFunction(value) ||
+    ts.isClassExpression(value)
+  ) {
+    return "callable";
+  }
+
+  if (
+    ts.isObjectLiteralExpression(value) ||
+    ts.isArrayLiteralExpression(value) ||
+    ts.isNewExpression(value) ||
+    ts.isTypeOfExpression(value) ||
+    ts.isLiteralExpression(value) ||
+    [
+      ts.SyntaxKind.NullKeyword,
+      ts.SyntaxKind.TrueKeyword,
+      ts.SyntaxKind.FalseKeyword,
+    ].includes(value.kind)
+  ) {
+    return "non_callable";
+  }
+
+  if (ts.isConditionalExpression(value)) {
+    const whenTrue = staticallyKnownCallableValueKind(
+      value.whenTrue,
+      scopes,
+      resolving,
+    );
+    const whenFalse = staticallyKnownCallableValueKind(
+      value.whenFalse,
+      scopes,
+      resolving,
+    );
+    return whenTrue === whenFalse && whenTrue !== "unknown"
+      ? whenTrue
+      : "unknown";
+  }
+
+  const access = staticPropertyAccessParts(value);
+  if (!access) return "unknown";
+
+  const propertyName = staticPropertyName(access.propertyExpression);
+  if (propertyName === "constructor") {
+    return staticallyKnownCallableValueKind(
+      access.objectExpression,
+      scopes,
+      resolving,
+    ) === "callable"
+      ? "callable"
+      : "unknown";
+  }
+  if (propertyName === "prototype") {
+    return staticallyKnownCallableValueKind(
+      access.objectExpression,
+      scopes,
+      resolving,
+    ) === "callable"
+      ? "non_callable"
+      : "unknown";
+  }
+  return globalConstructorValueReference(value, scopes)
+    ? "callable"
+    : "unknown";
+}
+
+function bindingScopeForName(name, scopes) {
+  for (let index = scopes.length - 1; index >= 0; index--) {
+    if (scopes[index].bindings.has(name)) return scopes[index];
+  }
+  return null;
+}
+
+function recordStaticValueBinding(node, scopes) {
+  if (!ts.isVariableDeclaration(node) || !ts.isIdentifier(node.name)) {
+    return;
+  }
+  const scope = bindingScopeForName(node.name.text, scopes);
+  if (!scope?.valueBindings) return;
+
+  scope.valueBindings.delete(node.name.text);
+  scope.callableBindings.delete(node.name.text);
+  scope.valueSnapshots?.delete(node.name.text);
+  if (!node.initializer) return;
+
+  const snapshot = staticValueProfile(node.initializer, scopes);
+  scope.valueBindings.set(node.name.text, snapshot.kind);
+  scope.valueSnapshots?.set(node.name.text, snapshot);
+  if (snapshot.kind === "callable") {
+    scope.callableBindings.set(node.name.text, node.initializer);
+  }
+  registerContainerBinding(node.name.text, node.initializer, snapshot, scope, scopes);
+  registerContainerMutatorAlias(node.name.text, node.initializer, scope, scopes);
+}
+
+function recordStaticValueAssignment(node, scopes) {
+  if (
+    !ts.isBinaryExpression(node) ||
+    node.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+    !ts.isIdentifier(node.left)
+  ) {
+    return;
+  }
+  const scope = bindingScopeForName(node.left.text, scopes);
+  if (!scope?.valueBindings) return;
+
+  const snapshot = staticValueProfile(node.right, scopes);
+  scope.valueBindings.set(node.left.text, snapshot.kind);
+  scope.valueSnapshots?.set(node.left.text, snapshot);
+  scope.callableBindings.delete(node.left.text);
+  if (snapshot.kind === "callable") {
+    scope.callableBindings.set(node.left.text, node.right);
+  }
+  registerContainerBinding(node.left.text, node.right, snapshot, scope, scopes);
+  registerContainerMutatorAlias(node.left.text, node.right, scope, scopes);
+}
+
+function recordContainerMutation(node, scopes) {
+  if (ts.isBinaryExpression(node) && containerAssignmentOperatorKinds.has(node.operatorToken.kind)) {
+    if (!staticPropertyAccessParts(node.left)) return;
+    const containerId = containerBaseOfMemberChain(node.left, scopes);
+    if (containerId) invalidateContainer(containerId, scopes);
+    return;
+  }
+  if (
+    (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+    (node.operator === ts.SyntaxKind.PlusPlusToken ||
+      node.operator === ts.SyntaxKind.MinusMinusToken)
+  ) {
+    if (!staticPropertyAccessParts(node.operand)) return;
+    const containerId = containerBaseOfMemberChain(node.operand, scopes);
+    if (containerId) invalidateContainer(containerId, scopes);
+    return;
+  }
+  if (ts.isDeleteExpression(node)) {
+    if (!staticPropertyAccessParts(node.expression)) return;
+    const containerId = containerBaseOfMemberChain(node.expression, scopes);
+    if (containerId) invalidateContainer(containerId, scopes);
+    return;
+  }
+  if (ts.isCallExpression(node)) {
+    recordContainerMethodMutation(node, scopes);
+    recordContainerReflectionMutation(node, scopes);
+  }
+}
+
+function containerBaseOfMemberChain(node, scopes) {
+  let current = node;
+  while (true) {
+    const access = staticPropertyAccessParts(current);
+    if (!access) break;
+    current = access.objectExpression;
+  }
+  const base = valueProducingExpression(current);
+  if (ts.isIdentifier(base)) return resolveContainerBinding(base.text, scopes);
+  return null;
+}
+
+function registerContainerBinding(name, initializer, snapshot, scope, scopes) {
+  const value = valueProducingExpression(initializer);
+  if (!value) return;
+  if (ts.isArrayLiteralExpression(value) || ts.isObjectLiteralExpression(value)) {
+    const containerId = nextContainerId(scopes);
+    scopes[0].containerRegistry.set(containerId, {
+      profile: snapshot,
+      invalidated: false,
+    });
+    scope.containerBindings.set(name, containerId);
+    registerContainerDependents(value, containerId, scopes);
+    return;
+  }
+  if (ts.isIdentifier(value)) {
+    const target = resolveContainerBinding(value.text, scopes);
+    if (target) {
+      scope.containerBindings.set(name, target);
+      return;
+    }
+  }
+  scope.containerBindings.delete(name);
+}
+
+function nextContainerId(scopes) {
+  const id = scopes[0].containerNextId;
+  scopes[0].containerNextId += 1;
+  return id;
+}
+
+function resolveContainerBinding(name, scopes) {
+  for (let index = scopes.length - 1; index >= 0; index--) {
+    if (scopes[index].containerBindings?.has(name)) {
+      return scopes[index].containerBindings.get(name);
+    }
+    if (scopes[index].bindings.has(name)) return null;
+  }
+  return null;
+}
+
+function registerContainerDependents(node, containerId, scopes, visited = new Set()) {
+  if (visited.has(node)) return;
+  visited.add(node);
+  const recordDependency = (expression) => {
+    const value = valueProducingExpression(expression);
+    if (ts.isIdentifier(value)) {
+      const target = resolveContainerBinding(value.text, scopes);
+      if (target && target !== containerId) {
+        const dependents = scopes[0].containerDependents;
+        let set = dependents.get(target);
+        if (!set) {
+          set = new Set();
+          dependents.set(target, set);
+        }
+        set.add(containerId);
+      }
+      return;
+    }
+    if (ts.isArrayLiteralExpression(value) || ts.isObjectLiteralExpression(value)) {
+      registerContainerDependents(value, containerId, scopes, visited);
+    }
+  };
+  if (ts.isArrayLiteralExpression(node)) {
+    for (const element of node.elements) {
+      if (ts.isSpreadElement(element) || ts.isOmittedExpression(element)) continue;
+      recordDependency(element);
+    }
+    return;
+  }
+  if (ts.isObjectLiteralExpression(node)) {
+    for (const property of node.properties) {
+      if (ts.isSpreadAssignment(property) || ts.isSpreadElement(property)) continue;
+      if (ts.isPropertyAssignment(property)) recordDependency(property.initializer);
+      else if (ts.isShorthandPropertyAssignment(property)) recordDependency(property.name);
+    }
+  }
+}
+
+function registerContainerMutatorAlias(name, initializer, scope, scopes) {
+  const containerId = mutatorAliasContainer(initializer, scopes);
+  if (containerId) {
+    scope.containerMutatorAliases.set(name, containerId);
+  } else {
+    scope.containerMutatorAliases.delete(name);
+  }
+}
+
+function mutatorAliasContainer(expression, scopes) {
+  const value = valueProducingExpression(expression);
+  if (!value) return null;
+  if (ts.isIdentifier(value)) {
+    return resolveContainerMutatorAlias(value.text, scopes);
+  }
+  const access = staticPropertyAccessParts(value);
+  if (access) {
+    const methodName = staticPropertyName(access.propertyExpression);
+    if (methodName !== null && containerMutatingMethodNames.has(methodName)) {
+      const containerId = containerBaseOfMemberChain(access.objectExpression, scopes);
+      if (containerId) return containerId;
+    }
+    return null;
+  }
+  if (ts.isCallExpression(value) && value.arguments.length > 0) {
+    const callee = valueProducingExpression(value.expression);
+    if (!callee) return null;
+    const bindAccess = staticPropertyAccessParts(callee);
+    if (!bindAccess) return null;
+    const bindName = staticPropertyName(bindAccess.propertyExpression);
+    if (bindName !== "bind" && bindName !== "call" && bindName !== "apply") return null;
+    const inner = valueProducingExpression(bindAccess.objectExpression);
+    if (ts.isIdentifier(inner)) {
+      return resolveContainerMutatorAlias(inner.text, scopes);
+    }
+    const innerAccess = staticPropertyAccessParts(inner);
+    if (!innerAccess) return null;
+    const methodName = staticPropertyName(innerAccess.propertyExpression);
+    if (methodName === null || !containerMutatingMethodNames.has(methodName)) return null;
+    return containerBaseOfMemberChain(innerAccess.objectExpression, scopes);
+  }
+  return null;
+}
+
+function recordContainerMutatorInvocation(node, scopes) {
+  if (!ts.isCallExpression(node)) return;
+  const callee = valueProducingExpression(node.expression);
+  let aliasName = null;
+  if (ts.isIdentifier(callee)) {
+    aliasName = callee.text;
+  } else {
+    const access = staticPropertyAccessParts(callee);
+    if (access) {
+      const invokedName = staticPropertyName(access.propertyExpression);
+      if (invokedName !== "call" && invokedName !== "apply" && invokedName !== "bind") return;
+      const base = valueProducingExpression(access.objectExpression);
+      if (ts.isIdentifier(base)) aliasName = base.text;
+    }
+  }
+  if (!aliasName) return;
+  const containerId = resolveContainerMutatorAlias(aliasName, scopes);
+  if (containerId) invalidateContainer(containerId, scopes);
+}
+
+function resolveContainerMutatorAlias(name, scopes) {
+  for (let index = scopes.length - 1; index >= 0; index--) {
+    if (scopes[index].containerMutatorAliases?.has(name)) {
+      return scopes[index].containerMutatorAliases.get(name);
+    }
+    if (scopes[index].bindings.has(name)) return null;
+  }
+  return null;
+}
+
+function recordContainerDestructuredMutators(node, scopes) {
+  if (!ts.isObjectBindingPattern(node.name)) return;
+  const containerId = destructuredMutatorSourceContainer(
+    node.initializer,
+    scopes,
+  );
+  if (!containerId) return;
+  for (const element of node.name.elements) {
+    if (ts.isOmittedExpression(element) || element.dotDotDotToken) continue;
+    const propertyName = element.propertyName
+      ? staticPropertyName(element.propertyName)
+      : ts.isIdentifier(element.name)
+        ? element.name.text
+        : null;
+    if (
+      propertyName !== null &&
+      containerMutatingMethodNames.has(propertyName) &&
+      ts.isIdentifier(element.name)
+    ) {
+      const scope =
+        bindingScopeForName(element.name.text, scopes) ??
+        scopes[scopes.length - 1];
+      scope.containerMutatorAliases.set(element.name.text, containerId);
+    }
+  }
+}
+
+function destructuredMutatorSourceContainer(expression, scopes) {
+  const value = valueProducingExpression(expression);
+  if (!value) return null;
+  if (ts.isIdentifier(value)) {
+    const containerId = resolveContainerBinding(value.text, scopes);
+    if (containerId) return containerId;
+  }
+  return mutatorAliasContainer(expression, scopes);
+}
+
+function invalidateContainer(containerId, scopes, visited = new Set()) {
+  if (visited.has(containerId)) return;
+  visited.add(containerId);
+  const state = scopes[0].containerRegistry.get(containerId);
+  if (state) state.invalidated = true;
+  const dependents = scopes[0].containerDependents.get(containerId);
+  if (dependents) {
+    for (const dependent of dependents) {
+      invalidateContainer(dependent, scopes, visited);
+    }
+  }
+}
+
+function recordContainerMethodMutation(call, scopes) {
+  const access = staticPropertyAccessParts(call.expression);
+  if (!access) return;
+  const containerId = containerBaseOfMemberChain(access.objectExpression, scopes);
+  if (!containerId) return;
+  const methodName = staticPropertyName(access.propertyExpression);
+  if (methodName === null) {
+    invalidateContainer(containerId, scopes);
+    return;
+  }
+  if (containerMutatingMethodNames.has(methodName)) {
+    invalidateContainer(containerId, scopes);
+    return;
+  }
+  if (!containerReadOnlyMethodNames.has(methodName)) {
+    invalidateContainer(containerId, scopes);
+  }
+}
+
+function recordContainerReflectionMutation(call, scopes) {
+  const access = staticPropertyAccessParts(call.expression);
+  if (!access) return;
+  const receiver = valueProducingExpression(access.objectExpression);
+  if (!ts.isIdentifier(receiver)) return;
+  const receiverName = receiver.text;
+  if (receiverName !== "Object" && receiverName !== "Reflect") return;
+  if (isLocallyBound(receiverName, scopes)) return;
+  const target = call.arguments[0];
+  if (!target) return;
+  const containerId = containerBaseOfMemberChain(target, scopes);
+  if (!containerId) return;
+  const methodName = staticPropertyName(access.propertyExpression);
+  if (methodName === null) {
+    invalidateContainer(containerId, scopes);
+    return;
+  }
+  if (containerReflectionMutationMethods.has(methodName)) {
+    invalidateContainer(containerId, scopes);
+    return;
+  }
+  if (!containerReflectionReadOnlyMethods.has(methodName)) {
+    invalidateContainer(containerId, scopes);
+  }
+}
+
+function destructuringPatternCanReachCallableOrUnknown(
+  pattern,
+  source,
+  scopes,
+) {
+  return patternProfileCanReachConstructor(
+    pattern,
+    staticValueProfile(source, scopes),
+  );
+}
+
+function forOfPatternCanReachCallableOrUnknown(pattern, iterable, scopes) {
+  return iterableProfileCanReachConstructor(
+    pattern,
+    staticValueProfile(iterable, scopes),
+  );
+}
+
+function iterableProfileCanReachConstructor(pattern, iterableProfile) {
+  if (!patternContainsConstructorAccess(pattern)) return false;
+  if (iterableProfile.alternatives) {
+    return iterableProfile.alternatives.some((profile) =>
+      iterableProfileCanReachConstructor(pattern, profile),
+    );
+  }
+  if (iterableProfile.kind !== "non_callable") return true;
+  if (!iterableProfile.arrayElements) return !iterableProfile.closedValue;
+  if (iterableProfile.arraySpreadIndex !== null) return true;
+  return iterableProfile.arrayElements.some((profile) =>
+    patternProfileCanReachConstructor(pattern, profile),
+  );
+}
+
+function staticValueProfile(expression, scopes, resolving = new Set()) {
+  const value = valueProducingExpression(expression);
+  if (!value) return staticUnknownValueProfile();
+  if (resolving.has(value)) return staticUnknownValueProfile();
+
+  const nextResolving = new Set(resolving);
+  nextResolving.add(value);
+
+  if (resolveGlobalObjectName(value, scopes)) {
+    return staticNonCallableValueProfile({ closedValue: true });
+  }
+
+  if (ts.isIdentifier(value)) {
+    const name = value.text;
+    for (let index = scopes.length - 1; index >= 0; index--) {
+      const scope = scopes[index];
+      if (scope.containerBindings?.has(name)) {
+        const containerId = scope.containerBindings.get(name);
+        const state = scopes[0]?.containerRegistry?.get(containerId);
+        if (state) {
+          if (state.invalidated) return staticUnknownValueProfile();
+          return state.profile;
+        }
+      }
+      if (scope.valueSnapshots?.has(name)) {
+        return scope.valueSnapshots.get(name);
+      }
+      if (scope.valueBindings?.has(name)) {
+        return staticValueProfileForKind(scope.valueBindings.get(name));
+      }
+      const bindingKind = scope.bindings.get(name);
+      if (bindingKind) {
+        return staticValueProfileForKind(
+          bindingKind === "function" || bindingKind === "class"
+            ? "callable"
+            : "unknown",
+        );
+      }
+    }
+    if (globalConstructorIdentifierNames.has(name)) {
+      return staticCallableValueProfile();
+    }
+    if (["undefined", "NaN", "Infinity"].includes(name)) {
+      return staticNonCallableValueProfile({ closedValue: true });
+    }
+    return staticUnknownValueProfile();
+  }
+
+  if (
+    ts.isFunctionExpression(value) ||
+    ts.isArrowFunction(value) ||
+    ts.isClassExpression(value)
+  ) {
+    return staticCallableValueProfile();
+  }
+
+  if (ts.isArrayLiteralExpression(value)) {
+    const elements = [];
+    let spreadIndex = null;
+    for (const [index, element] of value.elements.entries()) {
+      if (ts.isSpreadElement(element)) {
+        spreadIndex ??= index;
+        elements.push(staticUnknownValueProfile());
+      } else if (ts.isOmittedExpression(element)) {
+        elements.push(staticNonCallableValueProfile({ closedValue: true }));
+      } else {
+        elements.push(staticValueProfile(element, scopes, nextResolving));
+      }
+    }
+    return staticNonCallableValueProfile({
+      arrayElements: elements,
+      arraySpreadIndex: spreadIndex,
+      closedValue: true,
+    });
+  }
+
+  if (ts.isObjectLiteralExpression(value)) {
+    const properties = new Map();
+    let hasUnknownProperties = false;
+    for (const property of value.properties) {
+      if (ts.isSpreadAssignment(property) || ts.isSpreadElement(property)) {
+        hasUnknownProperties = true;
+        continue;
+      }
+      const propertyName = staticPropertyName(property.name);
+      if (propertyName === null) {
+        hasUnknownProperties = true;
+        continue;
+      }
+      if (ts.isPropertyAssignment(property)) {
+        properties.set(
+          propertyName,
+          staticValueProfile(property.initializer, scopes, nextResolving),
+        );
+      } else if (ts.isShorthandPropertyAssignment(property)) {
+        properties.set(
+          propertyName,
+          staticValueProfile(property.name, scopes, nextResolving),
+        );
+      } else if (ts.isMethodDeclaration(property)) {
+        properties.set(propertyName, staticCallableValueProfile());
+      } else {
+        hasUnknownProperties = true;
+      }
+    }
+    return staticNonCallableValueProfile({
+      objectProperties: properties,
+      objectHasUnknownProperties: hasUnknownProperties,
+      closedValue: !hasUnknownProperties,
+    });
+  }
+
+  if (ts.isConditionalExpression(value)) {
+    return staticValueProfileUnion([
+      staticValueProfile(value.whenTrue, scopes, nextResolving),
+      staticValueProfile(value.whenFalse, scopes, nextResolving),
+    ]);
+  }
+
+  const access = staticPropertyAccessParts(value);
+  if (access) {
+    if (globalConstructorValueReference(value, scopes)) {
+      return staticCallableValueProfile();
+    }
+    return staticValueProfileForProperty(
+      staticValueProfile(access.objectExpression, scopes, nextResolving),
+      staticPropertyName(access.propertyExpression),
+    );
+  }
+
+  if (
+    ts.isNewExpression(value) ||
+    ts.isLiteralExpression(value) ||
+    [
+      ts.SyntaxKind.NullKeyword,
+      ts.SyntaxKind.TrueKeyword,
+      ts.SyntaxKind.FalseKeyword,
+    ].includes(value.kind)
+  ) {
+    return staticNonCallableValueProfile({ closedValue: true });
+  }
+
+  return staticUnknownValueProfile();
+}
+
+function staticValueProfileForKind(kind) {
+  if (kind === "callable") return staticCallableValueProfile();
+  if (kind === "non_callable") {
+    return staticNonCallableValueProfile();
+  }
+  return staticUnknownValueProfile();
+}
+
+function staticCallableValueProfile() {
+  return Object.freeze({ kind: "callable" });
+}
+
+function staticUnknownValueProfile() {
+  return Object.freeze({ kind: "unknown" });
+}
+
+function staticNonCallableValueProfile(details = {}) {
+  return Object.freeze({ kind: "non_callable", ...details });
+}
+
+function staticValueProfileUnion(profiles) {
+  const firstKind = profiles[0]?.kind ?? "unknown";
+  const kind =
+    firstKind !== "unknown" && profiles.every((profile) => profile.kind === firstKind)
+      ? firstKind
+      : "unknown";
+  return Object.freeze({ kind, alternatives: Object.freeze(profiles) });
+}
+
+function staticValueProfileForProperty(objectProfile, propertyName) {
+  if (objectProfile.alternatives) {
+    return staticValueProfileUnion(
+      objectProfile.alternatives.map((profile) =>
+        staticValueProfileForProperty(profile, propertyName),
+      ),
+    );
+  }
+  if (propertyName === null) return staticUnknownValueProfile();
+
+  if (objectProfile.objectProperties?.has(propertyName)) {
+    return objectProfile.objectProperties.get(propertyName);
+  }
+
+  if (objectProfile.arrayElements && /^(?:0|[1-9][0-9]*)$/u.test(propertyName)) {
+    return staticArrayElementProfile(objectProfile, Number(propertyName));
+  }
+
+  if (propertyName === "constructor") {
+    if (objectProfile.kind === "callable") {
+      return staticCallableValueProfile();
+    }
+    if (objectProfile.kind === "unknown") {
+      return staticUnknownValueProfile();
+    }
+    if (objectProfile.arrayElements || objectProfile.closedValue) {
+      return staticNonCallableValueProfile({ closedValue: true });
+    }
+  }
+
+  if (objectProfile.kind === "unknown") {
+    return staticUnknownValueProfile();
+  }
+  if (objectProfile.objectHasUnknownProperties) {
+    return staticUnknownValueProfile();
+  }
+  if (objectProfile.closedValue) {
+    return staticNonCallableValueProfile({ closedValue: true });
+  }
+  return staticUnknownValueProfile();
+}
+
+function staticArrayElementProfile(arrayProfile, index) {
+  if (
+    arrayProfile.arraySpreadIndex !== null &&
+    index >= arrayProfile.arraySpreadIndex
+  ) {
+    return staticUnknownValueProfile();
+  }
+  return (
+    arrayProfile.arrayElements[index] ??
+    staticNonCallableValueProfile({ closedValue: true })
+  );
+}
+
+function patternProfileCanReachConstructor(pattern, sourceProfile) {
+  if (!patternContainsConstructorAccess(pattern)) return false;
+
+  if (sourceProfile.alternatives) {
+    return sourceProfile.alternatives.some((profile) =>
+      patternProfileCanReachConstructor(pattern, profile),
+    );
+  }
+
+  if (sourceProfile.kind !== "non_callable") return true;
+
+  if (ts.isArrayBindingPattern(pattern) || ts.isArrayLiteralExpression(pattern)) {
+    if (!sourceProfile.arrayElements) return !sourceProfile.closedValue;
+    let sourceIndex = 0;
+    for (const element of pattern.elements) {
+      if (ts.isOmittedExpression(element)) {
+        sourceIndex += 1;
+        continue;
+      }
+      if (ts.isSpreadElement(element) || element.dotDotDotToken) {
+        return arrayRestCanReachConstructor(sourceProfile, sourceIndex);
+      }
+      const childPattern = ts.isBindingElement(element) ? element.name : element;
+      if (
+        patternProfileCanReachConstructor(
+          childPattern,
+          staticArrayElementProfile(sourceProfile, sourceIndex),
+        )
+      ) {
+        return true;
+      }
+      sourceIndex += 1;
+    }
+    return false;
+  }
+
+  if (ts.isObjectBindingPattern(pattern) || ts.isObjectLiteralExpression(pattern)) {
+    const elements = ts.isObjectBindingPattern(pattern)
+      ? pattern.elements
+      : pattern.properties;
+    for (const element of elements) {
+      if (ts.isSpreadAssignment(element) || ts.isSpreadElement(element)) {
+        if (objectRestCanReachConstructor(sourceProfile)) return true;
+        continue;
+      }
+
+      let propertyName;
+      let childPattern;
+      if (ts.isBindingElement(element)) {
+        propertyName = element.propertyName
+          ? staticPropertyName(element.propertyName)
+          : ts.isIdentifier(element.name)
+            ? element.name.text
+            : null;
+        childPattern = element.name;
+      } else if (ts.isShorthandPropertyAssignment(element)) {
+        propertyName = element.name.text;
+        childPattern = element.name;
+      } else if (ts.isPropertyAssignment(element)) {
+        propertyName = staticPropertyName(element.name);
+        childPattern = element.initializer;
+      } else {
+        propertyName = staticPropertyName(element.name);
+        childPattern = element;
+      }
+
+      if (propertyName === null) return true;
+      const childProfile = staticValueProfileForProperty(
+        sourceProfile,
+        propertyName,
+      );
+      if (isDestructuringPatternNode(childPattern)) {
+        if (patternProfileCanReachConstructor(childPattern, childProfile)) {
+          return true;
+        }
+      } else if (
+        propertyName === "constructor" &&
+        profileIsCallableOrUnknown(childProfile)
+      ) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function patternContainsConstructorAccess(pattern) {
+  if (ts.isArrayBindingPattern(pattern) || ts.isArrayLiteralExpression(pattern)) {
+    return pattern.elements.some((element) => {
+      if (ts.isOmittedExpression(element)) return false;
+      if (ts.isSpreadElement(element) || element.dotDotDotToken) return true;
+      return patternContainsConstructorAccess(
+        ts.isBindingElement(element) ? element.name : element,
+      );
+    });
+  }
+
+  if (ts.isObjectBindingPattern(pattern)) {
+    return pattern.elements.some((element) => {
+      if (element.dotDotDotToken) return true;
+      const propertyName = element.propertyName
+        ? staticPropertyName(element.propertyName)
+        : ts.isIdentifier(element.name)
+          ? element.name.text
+          : null;
+      return (
+        propertyName === null ||
+        propertyName === "constructor" ||
+        patternContainsConstructorAccess(element.name)
+      );
+    });
+  }
+
+  if (ts.isObjectLiteralExpression(pattern)) {
+    return pattern.properties.some((property) => {
+      if (ts.isSpreadAssignment(property) || ts.isSpreadElement(property)) {
+        return true;
+      }
+      if (ts.isShorthandPropertyAssignment(property)) {
+        return property.name.text === "constructor";
+      }
+      if (!ts.isPropertyAssignment(property)) return false;
+      const propertyName = staticPropertyName(property.name);
+      return (
+        propertyName === null ||
+        propertyName === "constructor" ||
+        patternContainsConstructorAccess(property.initializer)
+      );
+    });
+  }
+
+  return false;
+}
+
+function isDestructuringPatternNode(node) {
+  return (
+    ts.isObjectBindingPattern(node) ||
+    ts.isArrayBindingPattern(node) ||
+    ts.isObjectLiteralExpression(node) ||
+    ts.isArrayLiteralExpression(node)
+  );
+}
+
+function profileIsCallableOrUnknown(profile) {
+  if (profile.alternatives) {
+    return profile.alternatives.some(profileIsCallableOrUnknown);
+  }
+  return profile.kind !== "non_callable";
+}
+
+function arrayRestCanReachConstructor(arrayProfile, startIndex) {
+  if (arrayProfile.kind !== "non_callable") return true;
+  if (!arrayProfile.arrayElements) return !arrayProfile.closedValue;
+  if (
+    arrayProfile.arraySpreadIndex !== null &&
+    arrayProfile.arraySpreadIndex <= startIndex
+  ) {
+    return true;
+  }
+  for (let index = startIndex; index < arrayProfile.arrayElements.length; index++) {
+    if (profileIsCallableOrUnknown(arrayProfile.arrayElements[index])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function objectRestCanReachConstructor(objectProfile) {
+  if (objectProfile.kind !== "non_callable") return true;
+  if (objectProfile.objectHasUnknownProperties) return true;
+  if (!objectProfile.closedValue && !objectProfile.objectProperties) return true;
+  return profileIsCallableOrUnknown(
+    objectProfile.objectProperties?.get("constructor") ??
+      staticNonCallableValueProfile({ closedValue: true }),
+  );
+}
+
+function isDiscardedSequenceOperand(node) {
+  let current = node;
+  while (current?.parent) {
+    const parent = current.parent;
+    if (
+      (ts.isParenthesizedExpression(parent) ||
+        ts.isNonNullExpression(parent) ||
+        ts.isAsExpression(parent) ||
+        ts.isTypeAssertionExpression(parent) ||
+        ts.isSatisfiesExpression(parent)) &&
+      parent.expression === current
+    ) {
+      current = parent;
+      continue;
+    }
+    if (
+      ts.isBinaryExpression(parent) &&
+      parent.operatorToken.kind === ts.SyntaxKind.CommaToken &&
+      parent.left === current
+    ) {
+      return true;
+    }
+    return false;
+  }
+  return false;
+}
+function staticPropertyAccessParts(node) {
+  if (
+    ts.isPropertyAccessExpression(node) ||
+    ts.isPropertyAccessChain(node)
+  ) {
+    return {
+      objectExpression: node.expression,
+      propertyExpression: node.name,
+    };
+  }
+  if (
+    ts.isElementAccessExpression(node) ||
+    (typeof ts.isElementAccessChain === "function" &&
+      ts.isElementAccessChain(node))
+  ) {
+    return {
+      objectExpression: node.expression,
+      propertyExpression: node.argumentExpression,
+    };
+  }
+  return null;
+}
+
+function globalConstructorValueReference(expression, scopes) {
+  expression = valueProducingExpression(expression);
+  if (!expression) return false;
+
+  if (ts.isIdentifier(expression)) {
+    if (isLocallyBound(expression.text, scopes)) {
+      return isGlobalConstructorAlias(expression.text, scopes);
+    }
+    return globalConstructorIdentifierNames.has(expression.text);
+  }
+
+  const access = staticPropertyAccessParts(expression);
+  if (!access) return false;
+  const objectReference = access.objectExpression;
+  const propertyName = staticPropertyName(access.propertyExpression);
+  if (propertyName === "constructor") {
+    return (
+      Boolean(resolveGlobalObjectName(objectReference, scopes)) ||
+      globalConstructorValueReference(objectReference, scopes)
+    );
+  }
+  return (
+    Boolean(resolveGlobalObjectName(objectReference, scopes)) &&
+    propertyName !== null &&
+    globalConstructorIdentifierNames.has(propertyName)
+  );
+}
+
+function isGlobalConstructorAlias(name, scopes) {
+  for (let i = scopes.length - 1; i >= 0; i--) {
+    if (scopes[i].globalConstructorAliases?.has(name)) return true;
+    if (scopes[i].bindings.has(name)) return false;
+  }
+  return false;
+}
+
+function recordGlobalConstructorAlias(node, scopes) {
+  const currentScope = scopes[scopes.length - 1];
+  if (ts.isIdentifier(node.name)) {
+    if (globalConstructorValueReference(node.initializer, scopes)) {
+      currentScope.globalConstructorAliases.add(node.name.text);
+    }
+    return;
+  }
+  if (
+    (ts.isObjectBindingPattern(node.name) ||
+      ts.isArrayBindingPattern(node.name)) &&
+    isDirectGlobalObjectReference(node.initializer, scopes)
+  ) {
+    recordGlobalConstructorBindingPattern(node.name, currentScope);
+  }
+}
+
+function recordGlobalConstructorBindingPattern(pattern, scope) {
+  if (!ts.isObjectBindingPattern(pattern)) return;
+  for (const element of pattern.elements) {
+    if (ts.isOmittedExpression(element) || element.dotDotDotToken) continue;
+    const propertyName =
+      element.propertyName && staticPropertyName(element.propertyName);
+    const sourceName =
+      propertyName ||
+      (ts.isIdentifier(element.name) ? element.name.text : null);
+    if (
+      sourceName === null ||
+      (!globalConstructorIdentifierNames.has(sourceName) &&
+        sourceName !== "constructor")
+    ) {
+      continue;
+    }
+    addBindingPatternNamesToSet(element.name, scope.globalConstructorAliases);
+  }
+}
+
+function addBindingPatternNamesToSet(pattern, target) {
+  if (ts.isIdentifier(pattern)) {
+    target.add(pattern.text);
+    return;
+  }
+  if (
+    ts.isObjectBindingPattern(pattern) ||
+    ts.isArrayBindingPattern(pattern)
+  ) {
+    for (const element of pattern.elements) {
+      if (!ts.isOmittedExpression(element) && !element.dotDotDotToken) {
+        addBindingPatternNamesToSet(element.name, target);
+      }
+    }
+  }
+}
+
+function bindingPatternCanReachDynamicConstructor(pattern) {
+  if (ts.isArrayBindingPattern(pattern) || ts.isArrayLiteralExpression(pattern)) {
+    return true;
+  }
+
+  const elements =
+    ts.isObjectBindingPattern(pattern) || ts.isArrayBindingPattern(pattern)
+      ? pattern.elements
+      : null;
+  if (elements) {
+    for (const element of elements) {
+      if (ts.isOmittedExpression(element) || element.dotDotDotToken) return true;
+      if (
+        element.propertyName &&
+        staticPropertyName(element.propertyName) === null
+      ) {
+        return true;
+      }
+      if (
+        (element.propertyName &&
+          staticPropertyName(element.propertyName) === "Function") ||
+        (!element.propertyName &&
+          ts.isIdentifier(element.name) &&
+          element.name.text === "Function")
+      ) {
+        return true;
+      }
+      if (
+        (ts.isObjectBindingPattern(element.name) ||
+          ts.isArrayBindingPattern(element.name)) &&
+        bindingPatternCanReachDynamicConstructor(element.name)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  if (ts.isObjectLiteralExpression(pattern)) {
+    for (const property of pattern.properties) {
+      if (ts.isSpreadAssignment(property)) return true;
+      if (ts.isShorthandPropertyAssignment(property)) {
+        if (staticPropertyName(property.name) === "Function") return true;
+        continue;
+      }
+      if (!ts.isPropertyAssignment(property)) continue;
+      const propertyName = staticPropertyName(property.name);
+      if (propertyName === null || propertyName === "Function") return true;
+      if (
+        isAssignmentDestructuringPattern(property.initializer) &&
+        bindingPatternCanReachDynamicConstructor(property.initializer)
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function reflectiveDynamicConstructorAcquisition(call, scopes) {
+  if (
+    !ts.isPropertyAccessExpression(call.expression) &&
+    !ts.isPropertyAccessChain(call.expression)
+  ) {
+    return false;
+  }
+
+  const receiver = call.expression.expression;
+  const method = call.expression.name.text;
+  const receiverName =
+    ts.isIdentifier(receiver) && !isLocallyBound(receiver.text, scopes)
+      ? receiver.text
+      : null;
+  if (
+    !receiverName ||
+    !(
+      (receiverName === "Reflect" &&
+        ["get", "getOwnPropertyDescriptor"].includes(method)) ||
+      (receiverName === "Object" &&
+        ["getOwnPropertyDescriptor", "getOwnPropertyDescriptors"].includes(
+          method,
+        ))
+    )
+  ) {
+    return false;
+  }
+
+  const target = call.arguments[0];
+  if (!target || !resolveGlobalObjectName(target, scopes)) return false;
+  if (call.arguments.length < 2) return true;
+  const propertyName = staticPropertyName(call.arguments[1]);
+  return propertyName === null || propertyName === "Function";
+}
+
+function rejectUnboundGlobalProcessAuthority(sourceFile) {
+  const reject = (node) => {
+    throw new RuntimeGrantContractError("runtime_grant_inventory_unclassified");
+  };
+  const rootScope = {
+    bindings: new Map(),
+    globalAliases: new Set(),
+    callableBindings: new Map(),
+    node: null,
+    varScope: null,
+  };
+  rootScope.varScope = rootScope;
+  addModuleScopeDeclarations(sourceFile, rootScope);
+
+  const scopes = [rootScope];
+  const visit = (node) => {
+    if (
+      isRuntimeValueIdentifierReferenceForName(
+        node,
+        scopes,
+        processIdentifierNames,
+    )
+      && unboundProcessReferenceIsAuthority(node)
+    ) {
+      reject(node);
+    }
+
+    if (
+      (ts.isPropertyAccessExpression(node) ||
+        ts.isPropertyAccessChain(node)) &&
+      node.name.text === "process" &&
+      resolveGlobalObjectName(node.expression, scopes)
+    ) {
+      reject(node);
+    }
+
+    if (
+      ts.isElementAccessExpression(node) &&
+      resolveGlobalObjectName(node.expression, scopes) &&
+      globalObjectElementCanReachProcess(node)
+    ) {
+      throw new RuntimeGrantContractError(
+        "runtime_grant_inventory_unclassified",
+      );
+    }
+
+    if (ts.isVariableDeclaration(node) && node.initializer) {
+      if (
+        (ts.isObjectBindingPattern(node.name) ||
+          ts.isArrayBindingPattern(node.name)) &&
+        isDirectGlobalObjectReference(node.initializer, scopes) &&
+        bindingPatternCanReachProcess(node.name)
+      ) {
+        reject(node);
+      }
+      checkGlobalObjectAlias(node, scopes);
+    }
+
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      isAssignmentDestructuringPattern(node.left) &&
+      isDirectGlobalObjectReference(node.right, scopes) &&
+      bindingPatternCanReachProcess(node.left)
+    ) {
+      reject(node);
+    }
+
+    if (
+      ts.isCallExpression(node) &&
+      reflectiveProcessAcquisition(node, scopes)
+    ) {
+      throw new RuntimeGrantContractError(
+        "runtime_grant_inventory_unclassified",
+      );
+    }
+
+    const isScope = isScopeNode(node);
+    if (isScope) {
+      const newScope = {
+        bindings: new Map(),
+        globalAliases: new Set(),
+        callableBindings: new Map(),
+        node,
+        varScope: null,
+      };
+      newScope.varScope =
+        scopes[scopes.length - 1].varScope || scopes[scopes.length - 1];
+      addNodeScopeDeclarations(node, newScope);
+      scopes.push(newScope);
+    }
+
+    ts.forEachChild(node, visit);
+
+    if (isScope) {
+      scopes.pop();
+    }
+  };
+
+  visit(sourceFile);
+}
+
+function unboundProcessReferenceIsAuthority(node) {
+  const parent = node.parent;
+  if (!parent) return true;
+
+  if (
+    (ts.isPropertyAccessExpression(parent) ||
+      ts.isPropertyAccessChain(parent)) &&
+    parent.expression === node
+  ) {
+    return parent.name.text === "getBuiltinModule";
+  }
+
+  if (ts.isElementAccessExpression(parent) && parent.expression === node) {
+    return true;
+  }
+
+  if (ts.isTypeOfExpression(parent)) return false;
+  return true;
+}
+
+function globalObjectElementCanReachProcess(node) {
+  if (!node.argumentExpression) return true;
+  const argument = valueProducingExpression(node.argumentExpression);
+  return !ts.isStringLiteral(argument) || argument.text === "process";
+}
+
+function bindingPatternCanReachProcess(pattern) {
+  if (ts.isArrayBindingPattern(pattern)) return true;
+  if (ts.isArrayLiteralExpression(pattern)) return true;
+  if (ts.isObjectLiteralExpression(pattern)) {
+    for (const property of pattern.properties) {
+      if (ts.isSpreadAssignment(property)) return true;
+      if (ts.isShorthandPropertyAssignment(property)) {
+        if (property.name.text === "process") return true;
+        continue;
+      }
+      if (!ts.isPropertyAssignment(property)) continue;
+      const propertyName = staticPropertyName(property.name);
+      if (propertyName === null || propertyName === "process") return true;
+      if (isAssignmentDestructuringPattern(property.initializer) &&
+          bindingPatternCanReachProcess(property.initializer)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  for (const element of pattern.elements) {
+    if (ts.isOmittedExpression(element)) continue;
+    if (element.dotDotDotToken) return true;
+    if (element.propertyName && staticPropertyName(element.propertyName) === null) {
+      return true;
+    }
+    if (element.propertyName && staticPropertyName(element.propertyName) === "process") {
+      return true;
+    }
+    if (
+      !element.propertyName &&
+      ts.isIdentifier(element.name) &&
+      element.name.text === "process"
+    ) {
+      return true;
+    }
+    if (
+      (ts.isObjectBindingPattern(element.name) ||
+        ts.isArrayBindingPattern(element.name)) &&
+      bindingPatternCanReachProcess(element.name)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isAssignmentDestructuringPattern(node) {
+  return ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node);
+}
+
+function staticPropertyName(node) {
+  if (!node) return null;
+  if (ts.isIdentifier(node) || ts.isStringLiteral(node) || ts.isNumericLiteral(node)) {
+    return node.text;
+  }
+  const expression = ts.isComputedPropertyName(node) ? node.expression : node;
+  return staticStringValue(expression);
+}
+
+function staticStringValue(expression) {
+  const value = valueProducingExpression(expression);
+  if (ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value)) {
+    return value.text;
+  }
+  if (
+    ts.isBinaryExpression(value) &&
+    value.operatorToken.kind === ts.SyntaxKind.PlusToken
+  ) {
+    const left = staticStringValue(value.left);
+    const right = staticStringValue(value.right);
+    return left !== null && right !== null ? left + right : null;
+  }
+  if (ts.isTemplateExpression(value)) {
+    let result = value.head.text;
+    for (const span of value.templateSpans) {
+      const expressionValue = staticStringValue(span.expression);
+      if (expressionValue === null) return null;
+      result += expressionValue + span.literal.text;
+    }
+    return result;
+  }
+  return null;
+}
+
+function reflectiveProcessAcquisition(call, scopes) {
+  if (!ts.isPropertyAccessExpression(call.expression) &&
+      !ts.isPropertyAccessChain(call.expression)) {
+    return false;
+  }
+
+  const receiver = call.expression.expression;
+  const method = call.expression.name.text;
+  const receiverName =
+    ts.isIdentifier(receiver) && !isLocallyBound(receiver.text, scopes)
+      ? receiver.text
+      : null;
+  if (!receiverName ||
+      !((receiverName === "Reflect" &&
+        ["get", "getOwnPropertyDescriptor"].includes(method)) ||
+        (receiverName === "Object" &&
+          ["getOwnPropertyDescriptor", "getOwnPropertyDescriptors"].includes(method)))) {
+    return false;
+  }
+
+  const target = call.arguments[0];
+  if (!target || !resolveGlobalObjectName(target, scopes)) return false;
+  if (call.arguments.length < 2) return true;
+  const property = valueProducingExpression(call.arguments[1]);
+  return !ts.isStringLiteral(property) || property.text === "process";
 }
 
 function resolveInternalModulePath(sourcePath, moduleName) {
@@ -2084,10 +3741,12 @@ function addDeclarationBindings(declaration, bindings) {
 }
 
 function collectBindingNames(nameNode, bindings, kind) {
+  if (!nameNode) return;
   if (ts.isIdentifier(nameNode)) {
     bindings.set(nameNode.text, kind);
   } else if (ts.isObjectBindingPattern(nameNode)) {
     for (const element of nameNode.elements) {
+      if (ts.isOmittedExpression(element)) continue;
       if (ts.isIdentifier(element.name)) {
         bindings.set(element.name.text, kind);
       } else if (ts.isObjectBindingPattern(element.name) || ts.isArrayBindingPattern(element.name)) {
@@ -2096,6 +3755,7 @@ function collectBindingNames(nameNode, bindings, kind) {
     }
   } else if (ts.isArrayBindingPattern(nameNode)) {
     for (const element of nameNode.elements) {
+      if (ts.isOmittedExpression(element)) continue;
       if (ts.isIdentifier(element.name)) {
         bindings.set(element.name.text, kind);
       } else if (ts.isObjectBindingPattern(element.name) || ts.isArrayBindingPattern(element.name)) {
@@ -2204,9 +3864,17 @@ function isLocallyBound(name, scopes) {
 }
 
 function isRuntimeValueIdentifierReference(node, scopes) {
+  return isRuntimeValueIdentifierReferenceForName(
+    node,
+    scopes,
+    globalNetworkPrimitiveNames,
+  );
+}
+
+function isRuntimeValueIdentifierReferenceForName(node, scopes, names) {
   if (!ts.isIdentifier(node)) return false;
   const name = node.text;
-  if (!globalNetworkPrimitiveNames.has(name)) return false;
+  if (!names.has(name)) return false;
   if (isLocallyBound(name, scopes)) return false;
 
   const parent = node.parent;
@@ -2259,6 +3927,10 @@ function isInTypePosition(node) {
 
 function isDirectGlobalObjectReference(expression, scopes) {
   if (!expression) return false;
+  const valueExpression = valueProducingExpression(expression);
+  if (valueExpression !== expression) {
+    return isDirectGlobalObjectReference(valueExpression, scopes);
+  }
   if (ts.isIdentifier(expression)) {
     return resolveGlobalObjectName(expression, scopes) !== null;
   }
@@ -2314,10 +3986,9 @@ function expressionContainsGlobalObject(expression, scopes) {
   }
 
   if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.CommaToken) {
-    return (
-      expressionContainsGlobalObject(expression.left, scopes) ||
-      expressionContainsGlobalObject(expression.right, scopes)
-    );
+    // Only the right operand is the value produced by a comma expression.
+    // The discarded left operand cannot become the resulting authority.
+    return expressionContainsGlobalObject(expression.right, scopes);
   }
 
   if (ts.isCallExpression(expression) || ts.isNewExpression(expression)) {
@@ -2362,9 +4033,7 @@ function callResultResolvesToGlobalObject(callExpression, scopes) {
 }
 
 function resolveCallableExpression(node, scopes) {
-  while (ts.isParenthesizedExpression(node) || ts.isNonNullExpression(node)) {
-    node = node.expression;
-  }
+  node = valueProducingExpression(node);
   if (ts.isIdentifier(node)) {
     const name = node.text;
     for (let i = scopes.length - 1; i >= 0; i--) {
@@ -2823,6 +4492,7 @@ function rejectGlobalObjectEscape(sourcePath, node, scopes) {
 }
 
 function resolveGlobalObjectName(expression, scopes) {
+  expression = valueProducingExpression(expression);
   if (ts.isIdentifier(expression)) {
     const name = expression.text;
     if (globalObjectIdentifiers.has(name) && !isLocallyBound(name, scopes)) return name;
@@ -2835,14 +4505,36 @@ function resolveGlobalObjectName(expression, scopes) {
     return null;
   }
   if (ts.isPropertyAccessExpression(expression) || ts.isPropertyAccessChain(expression)) return null;
-  if (ts.isParenthesizedExpression(expression) || ts.isNonNullExpression(expression) || ts.isAsExpression(expression)) {
-    return resolveGlobalObjectName(expression.expression, scopes);
-  }
   if (ts.isCallExpression(expression) || ts.isNewExpression(expression)) {
     if (callResultResolvesToGlobalObject(expression, scopes)) return "globalThis";
     return null;
   }
   return null;
+}
+
+function valueProducingExpression(expression) {
+  let current = expression;
+  while (current) {
+    if (
+      ts.isParenthesizedExpression(current) ||
+      ts.isNonNullExpression(current) ||
+      ts.isAsExpression(current) ||
+      ts.isTypeAssertionExpression(current) ||
+      ts.isSatisfiesExpression(current)
+    ) {
+      current = current.expression;
+      continue;
+    }
+    if (
+      ts.isBinaryExpression(current) &&
+      current.operatorToken.kind === ts.SyntaxKind.CommaToken
+    ) {
+      current = current.right;
+      continue;
+    }
+    break;
+  }
+  return current;
 }
 
 function checkAliasReassignment(identifier) {

@@ -22,6 +22,7 @@ const passingRow = Object.freeze({
   replication_absent: true,
   bypassrls_absent: true,
   database_create_absent: true,
+  all_non_system_schema_create_absent: true,
   public_schema_create_absent: true,
   drizzle_schema_usage_absent: true,
   migration_ledger_select_absent: true,
@@ -38,6 +39,11 @@ const passingRow = Object.freeze({
   runtime_default_relation_authority_absent: true,
   runtime_default_relation_grant_option_absent: true,
   public_default_relation_authority_absent: true,
+  runtime_default_sequence_authority_absent: true,
+  public_default_sequence_authority_absent: true,
+  runtime_default_routine_authority_absent: true,
+  public_default_routine_authority_absent: true,
+  default_acl_grant_option_absent: true,
   runtime_routine_authority_absent: true,
   public_routine_authority_absent: true,
   runtime_routine_ownership_absent: true,
@@ -130,7 +136,7 @@ test("restricted runtime posture returns aggregate states only", async () => {
   assert.match(calls[0].sql, /current_user = \$1 and session_user = \$1/);
   assert.match(
     calls[0].sql,
-    /pg_has_role\(assumable_role\.role_oid, table_record\.relowner, 'USAGE'\)/,
+    /pg_has_role\(effective_role\.role_oid, table_record\.relowner, 'USAGE'\)/,
   );
   assert.match(
     calls[0].sql,
@@ -147,7 +153,7 @@ test("restricted runtime posture returns aggregate states only", async () => {
   );
   assert.match(
     calls[0].sql,
-    /has_table_privilege\(\s*assumable_role\.role_oid,\s*\(select migration_ledger_oid from drizzle_state\)/,
+    /has_table_privilege\(\s*effective_role\.role_oid,\s*\(select migration_ledger_oid from drizzle_state\)/,
   );
   assert.doesNotMatch(calls[0].sql, /to_regclass\('drizzle\.__drizzle_migrations'\)/);
   assert.doesNotMatch(
@@ -165,7 +171,7 @@ test("restricted runtime posture returns aggregate states only", async () => {
   assert.match(calls[0].sql, /attnum > 0/);
   assert.match(calls[0].sql, /not column_record\.attisdropped/);
   assert.match(calls[0].sql, /pg_default_acl/);
-  assert.match(calls[0].sql, /defaclobjtype = 'r'/);
+  assert.match(calls[0].sql, /defaclobjtype in \('r', 'S', 'f'\)/);
   assert.match(calls[0].sql, /pg_proc/);
   assert.match(calls[0].sql, /relkind = 'S'/);
   assert.match(calls[0].sql, /relkind in \('r', 'p', 'v', 'm', 'f'\)/);
@@ -241,6 +247,65 @@ test("runtime posture traverses every SET-assumable role by catalog OID", async 
     postureSql,
     /from pg_roles\s+where rolname = current_user/,
   );
+});
+
+test("runtime posture rejects CREATE on every non-system schema and both membership directions", async () => {
+  let postureSql = "";
+  const report = await inspectRuntimeDatabasePosture(
+    {
+      async query(sql) {
+        postureSql = sql;
+        return {
+          rows: [
+            {
+              ...passingRow,
+              all_non_system_schema_create_absent: false,
+              role_membership_absent: false,
+            },
+          ],
+        };
+      },
+    },
+    expectedRole,
+  );
+
+  assert.equal(report.databaseAndSchemaCreateAbsent, "failed");
+  assert.equal(report.administrativeAttributesAbsent, "failed");
+  assert.match(
+    postureSql,
+    /schema_record\.nspname <> 'information_schema'[\s\S]*?schema_record\.nspname !~ '\^pg_'/,
+  );
+  assert.match(
+    postureSql,
+    /has_schema_privilege\(\s*[a-z_.]+role_oid,\s*schema_record\.oid,\s*'CREATE'\s*\)/,
+  );
+  assert.match(postureSql, /schema_record\.nspowner/);
+  assert.match(
+    postureSql,
+    /membership\.member = runtime_role\.oid[\s\S]*?or membership\.roleid = runtime_role\.oid/,
+  );
+});
+
+test("runtime posture models hard-wired, global replacement, and per-schema additive defaults for relations, sequences, and routines", async () => {
+  let postureSql = "";
+  await inspectRuntimeDatabasePosture(
+    {
+      async query(sql) {
+        postureSql = sql;
+        return { rows: [{ ...passingRow }] };
+      },
+    },
+    expectedRole,
+  );
+
+  assert.match(postureSql, /acldefault\(/);
+  assert.match(postureSql, /defaclnamespace = 0/);
+  assert.match(postureSql, /defaclobjtype in \('r', 'S', 'f'\)/);
+  assert.match(postureSql, /defaclacl[\s\S]*?\|\|/);
+  assert.match(postureSql, /aclexplode\(/);
+  assert.match(postureSql, /grantee_oid = 0/);
+  assert.match(postureSql, /is_grantable/);
+  assert.match(postureSql, /default_creator\.role_oid/);
 });
 
 test("operator-side dormant authority inspection reuses the exact recursive posture query", async () => {
@@ -333,6 +398,7 @@ test("every prohibited runtime posture fails closed", async (context) => {
     ["replication", "replication_absent"],
     ["bypassrls", "bypassrls_absent"],
     ["database create", "database_create_absent"],
+    ["all non-system schema create", "all_non_system_schema_create_absent"],
     ["public schema create", "public_schema_create_absent"],
     ["drizzle schema usage", "drizzle_schema_usage_absent"],
     ["migration ledger select", "migration_ledger_select_absent"],
@@ -357,6 +423,23 @@ test("every prohibited runtime posture fails closed", async (context) => {
       "PUBLIC default relation authority",
       "public_default_relation_authority_absent",
     ],
+    [
+      "runtime default sequence authority",
+      "runtime_default_sequence_authority_absent",
+    ],
+    [
+      "PUBLIC default sequence authority",
+      "public_default_sequence_authority_absent",
+    ],
+    [
+      "runtime default routine authority",
+      "runtime_default_routine_authority_absent",
+    ],
+    [
+      "PUBLIC default routine authority",
+      "public_default_routine_authority_absent",
+    ],
+    ["default ACL grant option", "default_acl_grant_option_absent"],
     ["runtime routine authority", "runtime_routine_authority_absent"],
     ["PUBLIC routine authority", "public_routine_authority_absent"],
     ["runtime routine ownership", "runtime_routine_ownership_absent"],

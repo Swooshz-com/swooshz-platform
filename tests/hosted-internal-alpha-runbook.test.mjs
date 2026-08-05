@@ -230,6 +230,68 @@ test("hosted runbook preserves the rollback-gated runtime activation contract", 
   }
 });
 
+test("hosted runbook records the locked runtime posture and fixture admission invariants", async () => {
+  const runbook = await readRunbook();
+  const requiredPhrases = [
+    "Disposable PostgreSQL Fixture Admission",
+    "every `pg_auth_members` row",
+    "either `member` or `roleid`",
+    "`admin_option`, `inherit_option`, and `set_option` never",
+    "exact `information_schema`",
+    "names beginning with `pg_`",
+    "relations (`r`), sequences (`S`), and routines (`f`)",
+    "global replacement",
+    "per-schema additive defaults",
+    "actual `aclexplode()` grantees",
+    "extension-managed non-system schemas receive no automatic exemption",
+    "primary and secondary fixture",
+    "before any\n`GRANT`, `REVOKE`, role, or ownership mutation",
+    "PostgreSQL 17",
+    "non-recovery state",
+    "Initialization and final-start transport attestations are distinct",
+    "opaque in-process token",
+    "If any secondary target fails",
+    "no mutation callback is entered",
+    "npm run test:disposable-runtime-postgres",
+  ];
+
+  for (const phrase of requiredPhrases) {
+    assert.match(runbook, new RegExp(escapeRegExp(phrase), "i"));
+  }
+});
+
+test("hosted runbook contract is line-ending agnostic but wording- and order-locked", async () => {
+  const lf = await readRunbook();
+  const assertContract = (value) => {
+    const runbook = normalizeRunbookLineEndings(value);
+    assert.match(runbook, /before any\n`GRANT`, `REVOKE`, role, or ownership mutation/i);
+    const headings = [
+      "## Hostinger VPS And Coolify Deployment Readiness",
+      "## Neon Hosted Postgres Readiness",
+      "### Disposable PostgreSQL Fixture Admission",
+      "### Restricted Runtime Role Activation Contract",
+      "## Sanitized Neon Migration Evidence",
+    ].map((heading) => runbook.indexOf(heading));
+    assert.ok(headings.every((index) => index >= 0));
+    for (let index = 1; index < headings.length; index += 1) {
+      assert.ok(headings[index - 1] < headings[index]);
+    }
+    assert.match(runbook, /If any secondary target fails[\s\S]*no mutation callback is entered/i);
+  };
+
+  assertContract(lf);
+  assertContract(lf.replace(/\n/gu, "\r\n"));
+  assertContract(lf.replace(/\n/gu, "\r"));
+  assert.throws(
+    () => assertContract(lf.replace("no mutation callback is entered", "mutation callback is entered")),
+  );
+  assert.throws(
+    () => assertContract(lf.replace("## Neon Hosted Postgres Readiness", "## Disposable PostgreSQL Fixture Admission")),
+  );
+  assert.throws(() => assertContract(lf.slice(0, 200)));
+  assert.throws(() => assertContract(""));
+});
+
 test("hosted internal alpha runbook covers Hostinger Coolify readiness without deployment config", async () => {
   const runbook = await readRunbook();
   const requiredPhrases = [
@@ -330,7 +392,11 @@ test("hosted internal alpha runbook avoids private material and unsafe callback 
 });
 
 async function readRunbook() {
-  return readFile(runbookPath, "utf8");
+  return normalizeRunbookLineEndings(await readFile(runbookPath, "utf8"));
+}
+
+function normalizeRunbookLineEndings(value) {
+  return value.replace(/\r\n?/gu, "\n");
 }
 
 function assertEnvRow(runbook, name, required, secret) {
