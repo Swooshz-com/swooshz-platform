@@ -41,7 +41,7 @@ test("hosted internal alpha runbook covers deployment operations", async () => {
     "Project: `swooshz-platform`",
     "Region: `Singapore / aws-ap-southeast-1`",
     "Database: `swooshz_platform`",
-    "Owner/migration role: `platform_app`",
+    "Owner/migration role: `platform_migrator`",
     "pooled `DATABASE_URL`",
     "`npm run platform:db-readiness-check`",
     "`db_config_missing`",
@@ -390,6 +390,66 @@ test("hosted internal alpha runbook avoids private material and unsafe callback 
   assert.doesNotMatch(runbook, /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
   assert.doesNotMatch(runbook, /127\.0\.0\.1/);
 });
+
+test("hosted runbook and repository contract align to the dedicated platform_migrator final-owner model", async () => {
+  const runbook = await readRunbook();
+
+  assert.match(runbook, /Owner\/migration role: `platform_migrator`/i);
+  assert.match(runbook, /Current transitional legacy authority: `platform_app`/i);
+  assert.match(runbook, /future dedicated operator\/migration role/i);
+  assert.match(runbook, /Platform Migrator Alignment/i);
+  assert.match(runbook, /`NEONDB_SWOOSHZ_PLATFORM_LEGACY_OWNER_URL`/i);
+  assert.match(runbook, /`NEONDB_SWOOSHZ_PLATFORM_API_KEY`/i);
+  assert.match(runbook, /`NEONDB_SWOOSHZ_PLATFORM_MIGRATOR_URL`/i);
+  assert.match(runbook, /`DATABASE_OPERATOR_URL`/i);
+  assert.match(runbook, /not yet created/i);
+  assert.match(runbook, /npm run test:disposable-migrator-alignment/i);
+  assert.match(runbook, /docs\/architecture\/PLATFORM-MIGRATOR-ALIGNMENT\.md/i);
+  assert.match(runbook, /provider-managed/i);
+  assert.match(runbook, /fresh read-only live preflight/i);
+});
+
+test("the repository contract explicitly rejects the bare target-only CREATEDB transfer model", async () => {
+  const runbook = await readRunbook();
+
+  assert.match(runbook, /bare temporary `CREATEDB`/i);
+  assert.match(runbook, /does not prove that the executing role can assume the new owner/i);
+  assert.match(runbook, /Path A/i);
+  assert.match(runbook, /Path B/i);
+  assert.match(runbook, /temporary SET ROLE-capable membership/i);
+  assert.match(runbook, /provider\/role-lifecycle authority/i);
+  assert.match(runbook, /immediate revocation/i);
+});
+
+test("the disposable migrator alignment rehearsal surfaces exist with a fixed public-safe summary", async () => {
+  await assertRehearsalSurface();
+});
+
+async function assertRehearsalSurface() {
+  const runbook = await readRunbook();
+  assert.match(runbook, /MIGRATOR_ALIGNMENT_TEST_CONFIRM=disposable-only/i);
+  const packageJson = JSON.parse(await readFile("package.json", "utf8"));
+  assert.match(
+    packageJson.scripts["test:disposable-migrator-alignment"],
+    /run-disposable-migrator-alignment-tests\.mjs/,
+  );
+  const runner = await readFile(
+    "scripts/run-disposable-migrator-alignment-tests.mjs",
+    "utf8",
+  );
+  assert.match(runner, /platform_migrator/i);
+  const architectureDoc = await readFile(
+    "docs/architecture/PLATFORM-MIGRATOR-ALIGNMENT.md",
+    "utf8",
+  );
+  assert.match(architectureDoc, /# Platform Migrator Alignment/i);
+  const postgresTest = await readFile(
+    "tests/platform-migrator-alignment-postgres.test.mjs",
+    "utf8",
+  );
+  assert.match(postgresTest, /MIGRATOR_ALIGNMENT_TEST_CONFIRM/);
+  assert.match(postgresTest, /disposable-only/);
+}
 
 async function readRunbook() {
   return normalizeRunbookLineEndings(await readFile(runbookPath, "utf8"));

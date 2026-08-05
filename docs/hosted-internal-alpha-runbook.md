@@ -149,13 +149,41 @@ Recommended Neon target, for operator setup outside this repo:
 - Project: `swooshz-platform`.
 - Region: `Singapore / aws-ap-southeast-1`.
 - Database: `swooshz_platform`.
-- Owner/migration role: `platform_app`.
-- Runtime role: the separately approved restricted role named by `DATABASE_EXPECTED_RUNTIME_ROLE`.
+- Owner/migration role: `platform_migrator` - intended future dedicated operator/migration role; not yet created and no live projection exists.
+- Current transitional legacy authority: `platform_app` - unchanged until a separately authorised live transition passes; its live attributes, ownership, membership and credential are not claimed to have changed.
+- Runtime role: the separately approved restricted non-owning role named by `DATABASE_EXPECTED_RUNTIME_ROLE` under the accepted 39-record contract.
 - Runtime connection: pooled restricted-role `DATABASE_URL` from the host secret store.
 - Operator connection: separately controlled `DATABASE_OPERATOR_URL`; never keep it on the long-running Coolify application.
 - Use an unpooled/direct owner connection for `DATABASE_OPERATOR_URL` when required by reviewed migration tooling; keep it outside source control and the long-running application.
 
 The platform runtime app code uses only `DATABASE_URL` as the pooled restricted-role app connection and validates it against `DATABASE_EXPECTED_RUNTIME_ROLE` before listening. Migration and operator readiness commands use `DATABASE_OPERATOR_URL` in production. Do not add multiple database URL aliases for day-to-day runtime behavior. Do not commit `.env` files, connection strings, usernames with passwords, database hostnames with credentials, backup exports, table dumps, or provider console screenshots.
+
+### Dedicated Migrator Alignment Contract
+
+The repository contract for the #128 dedicated migrator alignment (Platform Migrator Alignment) is documented in `docs/architecture/PLATFORM-MIGRATOR-ALIGNMENT.md`. It is repository contract and disposable-rehearsal evidence only; it releases no live database, role, grant, ownership, credential, provider or deployment authority.
+
+Locked role model (documented as the intended future model; none of it is claimed to exist in the live system):
+
+- `platform_migrator` is the intended future dedicated operator/migration role: `LOGIN`, `NOSUPERUSER`, `NOCREATEDB` in final state, `NOCREATEROLE`, `NOREPLICATION`, `NOBYPASSRLS`, no permanent memberships, never used by the long-running Coolify application, and connected only through the future private projection `NEONDB_SWOOSHZ_PLATFORM_MIGRATOR_URL` plus the process-local operator alias `DATABASE_OPERATOR_URL`.
+- `platform_runtime` is unchanged: non-owning, zero memberships, no migration or default-ACL authority, and restricted to the accepted exact 39-record direct grant contract. It remains `NOLOGIN` until separately authorised under #122.
+- `platform_app` is unchanged transitional legacy authority. Its live attributes, ownership, membership and credential are not claimed to have changed. Future retirement may occur only after complete independent proof that `platform_migrator` works; the intended eventual state is dormant and unreachable, but no repository contract or live operation performs that transition.
+
+Ownership-transfer correction: a bare temporary `CREATEDB` grant to `platform_migrator` followed by `ALTER DATABASE ... OWNER TO platform_migrator` from an unrelated current role is rejected. That does not prove that the executing role can assume the new owner. A future live transfer may use only one of these paths:
+
+- Path A - authorised provider/role-lifecycle authority performs the ownership transfer and exact read-back. The repository does not assume this capability exists; a later live preflight must prove it.
+- Path B - bounded temporary SET ROLE-capable membership. The executing current owner is proved to own the object being transferred, holds the exact required `CREATEDB` or schema authority, receives a temporary SET ROLE-capable membership allowing it to `SET ROLE` to `platform_migrator`, performs only the authorised ownership transfers, performs immediate revocation of the temporary membership, proves no membership remains, and proves the complete final ownership inventory. No permanent membership-derived migration authority is allowed.
+
+`public` schema decision: the repository does not state that `public` definitely becomes owned by `platform_migrator`. A fresh read-only live preflight decides fail-closed:
+
+- If `public` is application-controlled and safely transferable, the later live Design Lock may transfer it.
+- If `public` is provider-managed or represented through provider ownership semantics, preserve that ownership and grant `platform_migrator` only the exact `CREATE`/`USAGE` authority required by reviewed migration tooling.
+- Any inconclusive owner or provider result blocks mutation.
+
+Application schemas, application objects and the Drizzle ledger may still target `platform_migrator` ownership when the later live Design Lock proves the exact transfer path.
+
+Projection names: existing transition authority `NEONDB_SWOOSHZ_PLATFORM_LEGACY_OWNER_URL`; existing Platform control-plane authority `NEONDB_SWOOSHZ_PLATFORM_API_KEY`; future migrator projection `NEONDB_SWOOSHZ_PLATFORM_MIGRATOR_URL` (not yet created); process-local migration alias `DATABASE_OPERATOR_URL`; migration confirmation `DATABASE_MIGRATIONS_CONFIRM=apply-reviewed-migrations`; later #122 Coolify runtime variables `DATABASE_URL` and `DATABASE_EXPECTED_RUNTIME_ROLE=platform_runtime`. No generic local `NEON_API_KEY` or `NEON_PROJECT_ID` requirement is introduced and no existing projection is claimed to change.
+
+Disposable rehearsal: the repository proof command is `npm run test:disposable-migrator-alignment`. It owns a separate exact PostgreSQL 17 container and loopback-only listener that fail closed on preexistence, never accept caller-provided database URLs, reject the insufficient target-only `CREATEDB` transfer model, prove the bounded temporary-membership transfer and reverse rollback, preserve the restricted runtime contract, cover both `public` ownership variants, and emit one fixed public-safe summary with exact tests/passed/failed/skipped totals. The focused test file runs only under `MIGRATOR_ALIGNMENT_TEST_CONFIRM=disposable-only`. This lab does not authorise Neon/provider access, live role changes, ownership transfer, credentials or deployment.
 
 The pre-listen runtime-posture gate begins from the exact PostgreSQL `session_user` catalog identity. It rejects every `pg_auth_members` row where the restricted runtime role appears as either `member` or `roleid`; `admin_option`, `inherit_option`, and `set_option` never make that direct edge acceptable. Recursive `UNION` traversals still de-duplicate catalog OIDs and terminate cycles while evaluating inherited and SET-assumable roles for prohibited administrative attributes, Neon membership, database/schema/ledger privileges, and ownership conditions. A `SET FALSE` edge blocks SET traversal, but `ADMIN OPTION` on any membership reachable from the login or an already assumable role is itself rejected because it could be used to re-grant `SET TRUE`. Missing or inconclusive catalog evidence fails closed through the existing aggregate `database_posture_failed` behavior without exposing role or ACL details.
 
