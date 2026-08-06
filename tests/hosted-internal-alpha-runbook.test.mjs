@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
@@ -424,6 +425,190 @@ test("the repository contract explicitly rejects the bare target-only CREATEDB t
 test("the disposable migrator alignment rehearsal surfaces exist with a fixed public-safe summary", async () => {
   await assertRehearsalSurface();
 });
+
+test("both disposable PostgreSQL runners publish an explicit 127.0.0.1 loopback-only binding", async () => {
+  const migratorRunner = await readFile(
+    "scripts/run-disposable-migrator-alignment-tests.mjs",
+    "utf8",
+  );
+  const runtimeRunner = await readFile(
+    "scripts/run-disposable-runtime-postgres-tests.mjs",
+    "utf8",
+  );
+  for (const source of [migratorRunner, runtimeRunner]) {
+    assert.match(source, /--publish[\s\S]*127\.0\.0\.1:\$\{ownedPort\}:5432/);
+    assert.doesNotMatch(source, /--publish[\s\S]*`\$\{ownedPort\}:5432`/);
+    assert.match(source, /assertExactPublishedBinding/);
+  }
+});
+
+test("absence-verification lifecycle phase uses one allowlist vocabulary in both runners", async () => {
+  const migratorRunner = await readFile(
+    "scripts/run-disposable-migrator-alignment-tests.mjs",
+    "utf8",
+  );
+  const runtimeRunner = await readFile(
+    "scripts/run-disposable-runtime-postgres-tests.mjs",
+    "utf8",
+  );
+  for (const source of [migratorRunner, runtimeRunner]) {
+    assert.doesNotMatch(source, /runAt\(\s*lifecycleResources,\s*"verifyAbsence"/);
+    assert.match(source, /"absenceVerification"/);
+    assert.match(source, /"absence_verification"/);
+  }
+});
+
+test("failure during final absence verification reports the absence-verification phase", async () => {
+  const runner = await import(
+    "../scripts/run-disposable-migrator-alignment-tests.mjs"
+  );
+  const receipt = runner.formatDisposableRuntimeFailureReceipt({
+    failurePhase: "absenceVerification",
+    failureCategory: "absence_verification",
+    cleanupComplete: true,
+    absenceVerified: false,
+  });
+  assert.match(receipt, /"phase":"absenceVerification"/);
+  assert.match(receipt, /"category":"absence_verification"/);
+});
+
+test("migrator transfer fingerprint covers database/schema ACL and default-ACL state", async () => {
+  const source = await readFile(
+    "tests/platform-migrator-alignment-postgres.test.mjs",
+    "utf8",
+  );
+  assert.match(source, /datacl/);
+  assert.match(source, /nspacl/);
+  assert.match(source, /pg_default_acl/);
+});
+
+test("temporary transfer grants are revoked and cannot survive baseline-equality", async () => {
+  const source = await readFile(
+    "tests/platform-migrator-alignment-postgres.test.mjs",
+    "utf8",
+  );
+  assert.match(source, /revoke create on schema/);
+  assert.match(source, /revoke create on database/);
+  assert.match(source, /admin_option/);
+  assert.match(source, /inherit_option/);
+  assert.match(source, /set_option/);
+});
+
+test("provider-managed public executes a bounded migrator transaction with rollback", async () => {
+  const source = await readFile(
+    "tests/platform-migrator-alignment-postgres.test.mjs",
+    "utf8",
+  );
+  assert.match(source, /__migrator_bounded_probe/);
+});
+
+test("published binding parser rejects malformed, missing, duplicate and extra entries", async () => {
+  const runner = await import(
+    "../scripts/run-disposable-migrator-alignment-tests.mjs"
+  );
+  const valid =
+    '{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"56432"}]}';
+  runner.assertSingleLoopbackPublishedBinding(
+    runner.parsePublishedBinding(valid),
+    56432,
+  );
+  assert.throws(() => runner.parsePublishedBinding("not-json"));
+  assert.throws(() => runner.parsePublishedBinding(""));
+  assert.throws(() => runner.parsePublishedBinding("{}"));
+  assert.throws(() => runner.parsePublishedBinding("[]"));
+  assert.throws(() =>
+    runner.parsePublishedBinding('{"5432/tcp":[]}'),
+  );
+  assert.throws(() =>
+    runner.parsePublishedBinding('{"5433/udp":[{"HostIp":"127.0.0.1","HostPort":"56432"}]}'),
+  );
+  assert.throws(() =>
+    runner.assertSingleLoopbackPublishedBinding(
+      runner.parsePublishedBinding(
+        '{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"56432"},{"HostIp":"0.0.0.0","HostPort":"56432"}]}',
+      ),
+      56432,
+    ),
+  );
+  assert.throws(() =>
+    runner.assertSingleLoopbackPublishedBinding(
+      runner.parsePublishedBinding(
+        '{"5432/tcp":[{"HostIp":"0.0.0.0","HostPort":"56432"}]}',
+      ),
+      56432,
+    ),
+  );
+  assert.throws(() =>
+    runner.assertSingleLoopbackPublishedBinding(
+      runner.parsePublishedBinding(
+        '{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"9999"}]}',
+      ),
+      56432,
+    ),
+  );
+  assert.throws(() =>
+    runner.assertSingleLoopbackPublishedBinding(
+      runner.parsePublishedBinding(
+        '{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"56432"}],"5433/tcp":[{"HostIp":"127.0.0.1","HostPort":"56433"}]}',
+      ),
+      56432,
+    ),
+  );
+});
+
+test("migrator runner fails closed on malformed Docker binding evidence with cleanup and absence verification", async () => {
+  const runner = await import(
+    "../scripts/run-disposable-migrator-alignment-tests.mjs"
+  );
+  const spawnImpl = createMockDockerSpawn({
+    ps: () => "",
+    run: () => "container-id\n",
+    inspect: () => "not-json",
+    rm: () => "",
+  });
+  await assert.rejects(
+    () => runner.run({ env: {}, spawnImpl }),
+    (error) => {
+      const receipt = error.runtimeFailureReceipt;
+      assert.match(receipt, /"phase":"construct"/);
+      assert.match(receipt, /"category":"publish_binding_inspection"/);
+      assert.match(receipt, /"cleanupComplete":true/);
+      assert.match(receipt, /"absenceVerified":true/);
+      assert.ok(
+        spawnImpl.calls.some((call) => call[1] === "rm"),
+        "docker rm must run during cleanup",
+      );
+      assert.ok(
+        spawnImpl.calls.filter((call) => call[1] === "ps").length >= 2,
+        "absence verification must re-check container absence",
+      );
+      return true;
+    },
+  );
+});
+
+function createMockDockerSpawn(handlers) {
+  const calls = [];
+  const spawnImpl = (command, args, options) => {
+    calls.push([command, ...args]);
+    const sub = args[0];
+    const handler = handlers[sub];
+    if (typeof handler !== "function") {
+      throw new Error(`unexpected docker subcommand ${sub}`);
+    }
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = () => true;
+    process.nextTick(() => {
+      child.stdout.emit("data", Buffer.from(handler()));
+      child.emit("close", 0, null);
+    });
+    return child;
+  };
+  spawnImpl.calls = calls;
+  return spawnImpl;
+}
 
 async function assertRehearsalSurface() {
   const runbook = await readRunbook();

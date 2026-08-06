@@ -39,6 +39,11 @@ const fixtureRoleNames = [
   "platform_runtime",
   "provider_owner",
 ];
+const allowedAclRoles = new Set([
+  ...fixtureRoleNames,
+  "postgres",
+  "PUBLIC",
+]);
 const safeIdentifier = /^[a-z_][a-z0-9_$]{0,62}$/u;
 
 test(
@@ -182,6 +187,11 @@ test(
       await primary.adminPool.query(
         `grant platform_migrator to platform_app with inherit false, set true`,
       );
+      await assertSoleTemporaryMembership(
+        primary.adminPool,
+        "platform_app",
+        "platform_migrator",
+      );
       await primary.adminPool.query(
         `grant create on schema appdata to platform_migrator`,
       );
@@ -230,6 +240,15 @@ test(
       );
       await primary.appPool.query(
         `alter database ${identifier(primary.databaseName)} owner to platform_migrator`,
+      );
+      await primary.adminPool.query(
+        `revoke create on schema public from platform_migrator`,
+      );
+      await primary.adminPool.query(
+        `revoke create on schema appdata from platform_migrator`,
+      );
+      await primary.adminPool.query(
+        `revoke create on schema drizzle from platform_migrator`,
       );
       await primary.adminPool.query(
         `revoke platform_migrator from platform_app`,
@@ -335,6 +354,39 @@ test(
         `alter schema public owner to platform_migrator`,
         /permission denied|must be member|must be owner|must own|not owner/i,
       );
+
+      const boundedClient = await secondary.migratorPool.connect();
+      try {
+        await boundedClient.query("begin");
+        await boundedClient.query(
+          `create table public.__migrator_bounded_probe (id integer primary key)`,
+        );
+        await boundedClient.query(
+          `insert into public.__migrator_bounded_probe (id) values (1)`,
+        );
+        const probe = await boundedClient.query(
+          `select count(*)::int as c from public.__migrator_bounded_probe`,
+        );
+        assert.equal(probe.rows[0].c, 1);
+        await boundedClient.query("rollback");
+      } finally {
+        boundedClient.release();
+      }
+      const probeResidue = await secondary.adminPool.query(
+        `
+          select count(*)::int as c
+            from pg_class probe_record
+            join pg_namespace probe_schema
+              on probe_schema.oid = probe_record.relnamespace
+           where probe_schema.nspname = 'public'
+             and probe_record.relname = '__migrator_bounded_probe'
+        `,
+      );
+      assert.equal(probeResidue.rows[0].c, 0);
+      assert.equal(
+        await schemaOwner(secondary.adminPool, secondary.databaseName, "public"),
+        "provider_owner",
+      );
       await assertRuntimePosture(secondary.adminPool);
       assert.deepEqual(
         await readOwnershipFingerprint(
@@ -411,6 +463,10 @@ async function openFixtures() {
     connectionString: roleUrl("platform_app", secondaryDatabaseName),
     max: 2,
   });
+  const secondaryMigrator = new Pool({
+    connectionString: roleUrl("platform_migrator", secondaryDatabaseName),
+    max: 2,
+  });
 
   return {
     admission,
@@ -420,6 +476,7 @@ async function openFixtures() {
       primaryApp,
       primaryMigrator,
       secondaryApp,
+      secondaryMigrator,
     ],
     primary: {
       adminPool: primaryAdmin,
@@ -431,6 +488,7 @@ async function openFixtures() {
       adminPool: secondaryAdmin,
       appPool: secondaryApp,
       databaseName: secondaryDatabaseName,
+      migratorPool: secondaryMigrator,
     },
   };
 }
@@ -479,6 +537,11 @@ async function forwardTransfer(primary) {
   await adminPool.query(
     `grant platform_migrator to platform_app with inherit false, set true`,
   );
+  await assertSoleTemporaryMembership(
+    adminPool,
+    "platform_app",
+    "platform_migrator",
+  );
 
   const assumedClient = await appPool.connect();
   try {
@@ -524,6 +587,15 @@ async function forwardTransfer(primary) {
     `alter database ${identifier(databaseName)} owner to platform_migrator`,
   );
 
+  await adminPool.query(
+    `revoke create on schema public from platform_migrator`,
+  );
+  await adminPool.query(
+    `revoke create on schema appdata from platform_migrator`,
+  );
+  await adminPool.query(
+    `revoke create on schema drizzle from platform_migrator`,
+  );
   await adminPool.query(`revoke platform_migrator from platform_app`);
   await adminPool.query(`alter role platform_migrator nocreatedb`);
 }
@@ -535,6 +607,11 @@ async function reverseTransfer(primary) {
   await adminPool.query(`alter role platform_migrator createdb`);
   await adminPool.query(
     `grant platform_app to platform_migrator with inherit false, set true`,
+  );
+  await assertSoleTemporaryMembership(
+    adminPool,
+    "platform_migrator",
+    "platform_app",
   );
 
   await adminPool.query(`grant create on schema public to platform_app`);
@@ -570,6 +647,9 @@ async function reverseTransfer(primary) {
     `alter database ${identifier(databaseName)} owner to platform_app`,
   );
 
+  await adminPool.query(
+    `grant connect on database ${identifier(databaseName)} to platform_migrator`,
+  );
   await adminPool.query(`revoke platform_app from platform_migrator`);
   await adminPool.query(`alter role platform_migrator nocreatedb`);
 }
@@ -616,6 +696,61 @@ async function readOwnershipFingerprint(adminPool, databaseName) {
   );
   assert.equal(ownership.rows.length, 1);
 
+  const aclRecords = await adminPool.query(
+    `
+      select 'database' as surface,
+             $1::text as object_name,
+             coalesce(grantor_role.rolname, 'PUBLIC') as grantor,
+             coalesce(grantee_role.rolname, 'PUBLIC') as grantee,
+             grant_record.privilege_type as privilege_type,
+             grant_record.is_grantable as is_grantable
+        from pg_database database_record
+        join lateral aclexplode(
+          coalesce(
+            database_record.datacl,
+            acldefault('d', database_record.datdba)
+          )
+        ) grant_record on true
+        left join pg_roles grantor_role on grantor_role.oid = grant_record.grantor
+        left join pg_roles grantee_role on grantee_role.oid = grant_record.grantee
+       where database_record.datname = $1
+      union all
+      select 'schema', schema_record.nspname,
+             coalesce(grantor_role.rolname, 'PUBLIC'),
+             coalesce(grantee_role.rolname, 'PUBLIC'),
+             grant_record.privilege_type,
+             grant_record.is_grantable
+        from pg_namespace schema_record
+        join lateral aclexplode(
+          coalesce(
+            schema_record.nspacl,
+            acldefault('n', schema_record.nspowner)
+          )
+        ) grant_record on true
+        left join pg_roles grantor_role on grantor_role.oid = grant_record.grantor
+        left join pg_roles grantee_role on grantee_role.oid = grant_record.grantee
+       where schema_record.nspname in ('public', 'appdata', 'drizzle')
+      union all
+      select 'default', coalesce(namespace_record.nspname, '<global>')
+             || ':' || default_record.defaclobjtype::text,
+             coalesce(grantor_role.rolname, 'PUBLIC'),
+             coalesce(grantee_role.rolname, 'PUBLIC'),
+             grant_record.privilege_type,
+             grant_record.is_grantable
+        from pg_default_acl default_record
+        left join pg_namespace namespace_record
+          on namespace_record.oid = default_record.defaclnamespace
+        join lateral aclexplode(default_record.defaclacl) grant_record on true
+        left join pg_roles grantor_role on grantor_role.oid = grant_record.grantor
+        left join pg_roles grantee_role on grantee_role.oid = grant_record.grantee
+       where default_record.defaclrole in (
+         select oid from pg_roles where rolname = any($2::text[])
+       )
+      order by surface, object_name, grantor, grantee, privilege_type
+    `,
+    [databaseName, fixtureRoleNames],
+  );
+
   const attributes = await adminPool.query(
     `
       select rolname, rolsuper, rolinherit, rolcreatedb, rolcreaterole,
@@ -644,13 +779,38 @@ async function readOwnershipFingerprint(adminPool, databaseName) {
     [fixtureRoleNames],
   );
 
+  const aclSurfaces = {
+    database: [],
+    "default": [],
+    schema: [],
+  };
+  for (const row of aclRecords.rows) {
+    if (
+      typeof row.surface !== "string" ||
+      typeof row.object_name !== "string" ||
+      typeof row.grantor !== "string" ||
+      typeof row.grantee !== "string" ||
+      typeof row.privilege_type !== "string" ||
+      typeof row.is_grantable !== "boolean"
+    ) {
+      throw new Error();
+    }
+    if (!aclSurfaces[row.surface]) throw new Error();
+    aclSurfaces[row.surface].push(
+      `${row.object_name}\u0000${row.grantor}\u0000${row.grantee}\u0000${row.privilege_type}\u0000${row.is_grantable}`,
+    );
+  }
+
   return {
     attributes: attributes.rows,
+    databaseAcl: [...new Set(aclSurfaces.database)].sort(),
     databaseOwner: ownership.rows[0].database_owner,
+    defaultAcl: [...new Set(aclSurfaces.default)].sort(),
     enumOwners: ownership.rows[0].enum_owners ?? [],
     memberships: memberships.rows,
     objectOwners: ownership.rows[0].object_owners ?? [],
     routineOwners: ownership.rows[0].routine_owners ?? [],
+    schemaAcls: [...new Set(aclSurfaces.schema)].sort(),
     schemaOwners: ownership.rows[0].schema_owners ?? [],
   };
 }
@@ -698,6 +858,37 @@ function assertBaselineFingerprint(fingerprint, { providerManagedPublic = false 
     const provider = attributes.get("provider_owner");
     assert.equal(provider.rolcanlogin, false);
     assert.equal(provider.rolsuper, false);
+  }
+
+  assertAclSurfaceBounded(fingerprint.databaseAcl, "database");
+  assertAclSurfaceBounded(fingerprint.schemaAcls, "schema");
+  assertAclSurfaceBounded(fingerprint.defaultAcl, "default");
+  assert.ok(fingerprint.databaseAcl.length > 0);
+  assert.ok(fingerprint.schemaAcls.length > 0);
+  assert.ok(fingerprint.defaultAcl.length > 0);
+}
+
+function assertAclSurfaceBounded(records, surface) {
+  assert.ok(Array.isArray(records));
+  for (const record of records) {
+    const fields = record.split("\u0000");
+    assert.equal(fields.length, 5);
+    const objectName = fields[0];
+    const grantor = fields[1];
+    const grantee = fields[2];
+    const privilegeType = fields[3];
+    const isGrantable = fields[4];
+    assert.ok(
+      allowedAclRoles.has(grantor),
+      `unexpected ${surface} grantor ${grantor}`,
+    );
+    assert.ok(
+      allowedAclRoles.has(grantee),
+      `unexpected ${surface} grantee ${grantee}`,
+    );
+    assert.match(privilegeType, /^[A-Z_]+$/);
+    assert.ok(isGrantable === "true" || isGrantable === "false");
+    assert.ok(objectName.length > 0);
   }
 }
 
@@ -765,6 +956,31 @@ async function assertZeroFixtureMemberships(adminPool) {
     [fixtureRoleNames],
   );
   assert.equal(result.rows[0].c, 0);
+}
+
+async function assertSoleTemporaryMembership(adminPool, memberRole, roleidRole) {
+  const result = await adminPool.query(
+    `
+      select member_role.rolname as member_role,
+             roleid_role.rolname as roleid_role,
+             membership.admin_option,
+             membership.inherit_option,
+             membership.set_option
+        from pg_auth_members membership
+        join pg_roles member_role on member_role.oid = membership.member
+        join pg_roles roleid_role on roleid_role.oid = membership.roleid
+       where member_role.rolname = any($1::text[])
+          or roleid_role.rolname = any($1::text[])
+    `,
+    [fixtureRoleNames],
+  );
+  assert.equal(result.rows.length, 1);
+  const edge = result.rows[0];
+  assert.equal(edge.member_role, memberRole);
+  assert.equal(edge.roleid_role, roleidRole);
+  assert.equal(edge.admin_option, false);
+  assert.equal(edge.inherit_option, false);
+  assert.equal(edge.set_option, true);
 }
 
 async function assertRuntimePosture(adminPool) {

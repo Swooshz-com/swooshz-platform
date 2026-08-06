@@ -43,6 +43,7 @@ const failurePhases = new Set([
 const failureCategories = new Set([
   "container_preexistence",
   "listener_preexistence",
+  "publish_binding_inspection",
   "container_start",
   "postgres_readiness",
   "secondary_database_creation",
@@ -145,6 +146,8 @@ export async function run({
       resources.containerStarted = true;
       resources.runnerOwned.add(`container:${ownedContainerName}`);
       resources.runnerOwned.add(`listener:127.0.0.1:${ownedPort}`);
+      await runAt(resources, "construct", "publish_binding_inspection", () =>
+        assertExactPublishedBinding(spawnImpl));
 
       const urls = fixtureUrls();
       resources.databaseUrls = new Map([
@@ -285,7 +288,7 @@ export async function run({
 
     verifyAbsence: async (lifecycleResources) => runAt(
       lifecycleResources,
-      "verifyAbsence",
+      "absenceVerification",
       "absence_verification",
       async () => {
         await verifyRunnerAbsence(lifecycleResources, spawnImpl);
@@ -963,13 +966,77 @@ async function startOwnedContainer(spawnImpl) {
     "--name",
     ownedContainerName,
     "--publish",
-    `${ownedPort}:5432`,
+    `127.0.0.1:${ownedPort}:5432`,
     "--env",
     `POSTGRES_DB=${databaseName}`,
     "--env",
     "POSTGRES_HOST_AUTH_METHOD=trust",
     "postgres:17",
   ]);
+}
+
+export function parsePublishedBinding(output) {
+  const text = typeof output === "string" ? output.trim() : "";
+  if (text.length === 0) throw new Error();
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error();
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error();
+  }
+  const keys = Object.keys(parsed);
+  if (keys.length === 0) throw new Error();
+  const binding = new Map();
+  for (const key of keys) {
+    if (!/^[0-9]+\/tcp$/u.test(key)) throw new Error();
+    const entries = parsed[key];
+    if (!Array.isArray(entries) || entries.length === 0) throw new Error();
+    binding.set(
+      key,
+      entries.map((entry) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+          throw new Error();
+        }
+        const hostIp = entry.HostIp;
+        const hostPort = entry.HostPort;
+        if (typeof hostIp !== "string" || typeof hostPort !== "string") {
+          throw new Error();
+        }
+        return { hostIp, hostPort };
+      }),
+    );
+  }
+  return binding;
+}
+
+export function assertSingleLoopbackPublishedBinding(binding, expectedHostPort) {
+  if (!(binding instanceof Map)) throw new Error();
+  if (binding.size !== 1) throw new Error();
+  const entries = binding.get("5432/tcp");
+  if (!Array.isArray(entries) || entries.length !== 1) throw new Error();
+  const entry = entries[0];
+  if (
+    entry.hostIp !== "127.0.0.1" ||
+    entry.hostPort !== String(expectedHostPort)
+  ) {
+    throw new Error();
+  }
+}
+
+async function assertExactPublishedBinding(spawnImpl) {
+  const output = await runCommand(spawnImpl, "docker", [
+    "inspect",
+    "--format",
+    "{{json .NetworkSettings.Ports}}",
+    ownedContainerName,
+  ]);
+  assertSingleLoopbackPublishedBinding(
+    parsePublishedBinding(output),
+    ownedPort,
+  );
 }
 
 async function waitForPostgres(connectionString) {

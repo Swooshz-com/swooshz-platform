@@ -142,6 +142,12 @@ and is therefore not part of ordinary `npm test`.
 - A new exact owned container/listener identity that cannot collide with the
   existing runtime-posture fixture (`codex-platform127-pg17`).
 - Fails closed if its exact container or listener already exists.
+- Publishes PostgreSQL only through an explicit `127.0.0.1:<ownedPort>:5432`
+  Docker binding. A bounded Docker inspection runs after container creation and
+  before any PostgreSQL admission or connection and proves exactly one host
+  entry on container port `5432/tcp` with host IP `127.0.0.1` and the exact
+  owned host port; blank, wildcard, `0.0.0.0`, `::`, additional or malformed
+  bindings fail closed into cleanup and exact absence verification.
 - Uses only loopback.
 - Uses PostgreSQL 17.
 - Never accepts caller-provided database URLs.
@@ -162,9 +168,12 @@ The rehearsal creates disposable equivalents of:
 
 ### Starting fingerprint
 
-The rehearsal captures a non-vacuous starting fingerprint covering database,
-schema, relation, index, sequence, enum and routine ownership, role attributes
-and membership edges.
+The rehearsal captures a non-vacuous starting fingerprint covering database
+owner and database ACL entries, `public`/`appdata`/`drizzle` owners and complete
+schema ACL entries, relevant `pg_default_acl` entries, relation/index/sequence/
+enum/routine ownership, exact role attributes and exact membership edges with
+`admin_option`, `inherit_option` and `set_option`. ACL evidence is normalised
+into stable structured grantor/grantee/privilege/grantability records.
 
 ### Deterministic cleanup
 
@@ -187,19 +196,25 @@ failure and proves zero unintended persistent mutation.
 The rehearsal proves the bounded temporary-membership path:
 
 1. Create exact final migrator attributes.
-2. Establish only the temporary SET-capable membership required for transfer.
+2. Establish only the temporary SET-capable membership required for transfer and
+   prove the exact sole edge with `admin_option=false`, `inherit_option=false`
+   and `set_option=true`.
 3. Transfer the disposable database where PostgreSQL permits the model.
 4. Transfer application schema, migration schema, table, index-following
    ownership, enum, sequence, routine and ledger.
-5. Revoke temporary membership immediately.
+5. Revoke temporary membership immediately and every temporary transfer
+   database/schema privilege.
 6. Prove zero membership edges remain.
 7. Prove the migrator can perform a bounded migration transaction.
 8. Roll back the bounded capability proof.
 9. Prove the restricted runtime contract is unchanged and non-owning.
 10. Prove the legacy role cannot be retired until all replacement proof
     passes.
-11. Exercise the reverse ownership rollback procedure.
-12. Prove the complete original fingerprint can be restored.
+11. Exercise the reverse ownership rollback procedure and restore the exact
+    baseline database/schema/default-ACL fingerprint, including the
+    migrator database `CONNECT` grant.
+12. Prove the complete original fingerprint (owners, ACLs, default ACLs, role
+    attributes and membership edges) can be restored.
 
 ### public ownership variants
 
@@ -207,7 +222,11 @@ The rehearsal covers:
 
 - application-controlled `public` that can be transferred safely;
 - provider-managed `public` whose owner is preserved while exact migration
-  `CREATE`/`USAGE` authority is granted.
+  `CREATE`/`USAGE` authority is granted, including a real bounded
+  `platform_migrator` transaction that creates a disposable migration object in
+  `public`, validates it and rolls it back, proving the object is absent after
+  rollback, `public` ownership remains `provider_owner` and runtime authority is
+  unchanged.
 
 Neither variant may widen runtime authority.
 
