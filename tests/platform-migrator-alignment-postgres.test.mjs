@@ -48,7 +48,7 @@ const safeIdentifier = /^[a-z_][a-z0-9_$]{0,62}$/u;
 const syntheticMigratorPassword = "synthetic-migrator-password";
 
 test(
-  "PostgreSQL 17 protects the bootstrap creator edge created for platform_migrator",
+  "DL-128-REPO-003: the automatic ADMIN=true bootstrap edge is accident protection only and admits latent self-escalation until provider revocation",
   { skip: skipReason },
   async () => {
     const fixture = await openFixtures();
@@ -66,7 +66,7 @@ test(
       await assertQueryRejected(
         primary.appPool,
         `set role platform_migrator`,
-        /permission denied to set role|must be able to SET ROLE/i,
+        /permission denied to set role/i,
       );
 
       await primary.appPool.query(
@@ -74,13 +74,44 @@ test(
       );
       await assertExactProtectedEdge(primary.adminPool);
 
+      await primary.appPool.query(
+        `grant platform_migrator to platform_app with set true, inherit false`,
+      );
+      assertExactTransferWindowEdges(await readMembershipEdges(primary.adminPool));
+      await proveSelfGrantEscalation(primary.appPool);
+
+      await primary.appPool.query(
+        `revoke platform_migrator from platform_app granted by platform_app`,
+      );
+      await assertExactProtectedEdge(primary.adminPool);
+      await assertQueryRejected(
+        primary.appPool,
+        `set role platform_migrator`,
+        /permission denied to set role/i,
+      );
+
+      await primary.adminPool.query(
+        `revoke platform_migrator from platform_app`,
+      );
+      await assertZeroMigratorMembership(primary.adminPool);
       await assertMigratorRoleAttribute(
         primary.adminPool,
         "rolcreatedb",
         false,
       );
 
-      await primary.adminPool.query(`drop role platform_migrator`);
+      await assertQueryRejected(
+        primary.appPool,
+        `grant platform_migrator to platform_app with set true, inherit false`,
+        /permission denied to grant role/i,
+      );
+      await assertQueryRejected(
+        primary.appPool,
+        `set role platform_migrator`,
+        /permission denied to set role/i,
+      );
+
+      await dropMigratorRole(primary.adminPool);
       assert.deepEqual(
         await readOwnershipFingerprint(primary.adminPool, primary.databaseName),
         baseline,
@@ -92,7 +123,7 @@ test(
 );
 
 test(
-  "bounded supplemental SET edge, credential-before-transfer login admission and one-transaction ownership transfer",
+  "bounded supplemental SET edge, credential-before-transfer login admission, one-transaction ownership transfer and provider final revocation to zero membership",
   { skip: skipReason },
   async () => {
     const fixture = await openFixtures();
@@ -211,6 +242,75 @@ test(
       assert.equal(publicPrivileges.can_usage, true);
       await assertRuntimeGrantSetExact(primary.adminPool);
       await assertRuntimePosture(primary.adminPool);
+
+      await primary.appPool.query(
+        `grant platform_migrator to platform_app with set true, inherit false`,
+      );
+      assertExactTransferWindowEdges(await readMembershipEdges(primary.adminPool));
+      await proveSelfGrantEscalation(primary.appPool);
+      await primary.appPool.query(
+        `revoke platform_migrator from platform_app granted by platform_app`,
+      );
+      await assertExactProtectedEdge(primary.adminPool);
+
+      await primary.adminPool.query(
+        `revoke platform_migrator from platform_app`,
+      );
+      await assertZeroMigratorMembership(primary.adminPool);
+
+      await assertQueryRejected(
+        primary.appPool,
+        `grant platform_migrator to platform_app with set true, inherit false`,
+        /permission denied to grant role/i,
+      );
+      await assertQueryRejected(
+        primary.appPool,
+        `set role platform_migrator`,
+        /permission denied to set role/i,
+      );
+
+      const finalFingerprint = await readOwnershipFingerprint(
+        primary.adminPool,
+        primary.databaseName,
+      );
+      assert.equal(finalFingerprint.databaseOwner, "platform_migrator");
+      assert.deepEqual(finalFingerprint.schemaOwners, [
+        "appdata=platform_migrator",
+        "drizzle=platform_migrator",
+        "public=provider_owner",
+      ]);
+      for (const objectName of [
+        "widgets",
+        "widgets_label_uidx",
+        "counter_seq",
+        "__drizzle_migrations",
+        "users",
+        ...contractTableNames(),
+      ]) {
+        assert.ok(
+          finalFingerprint.objectOwners.includes(
+            `${objectName}=platform_migrator`,
+          ),
+          `expected ${objectName} owned by platform_migrator`,
+        );
+      }
+      assert.ok(finalFingerprint.enumOwners.includes("widget_status=platform_migrator"));
+      assert.ok(finalFingerprint.routineOwners.includes("widget_summary=platform_migrator"));
+      assert.equal(finalFingerprint.memberships.length, 0);
+
+      await assertMigratorFinalAttributes(primary.adminPool);
+      assert.equal(
+        await schemaOwner(primary.adminPool, primary.databaseName, "public"),
+        "provider_owner",
+      );
+      const finalPublicPrivileges = await schemaPrivileges(
+        primary.adminPool,
+        "platform_migrator",
+        "public",
+      );
+      assert.equal(finalPublicPrivileges.can_create, true);
+      assert.equal(finalPublicPrivileges.can_usage, true);
+      await assertRuntimeFinalPosture(primary.adminPool);
     } finally {
       await closeFixtures(fixture);
     }
@@ -218,7 +318,7 @@ test(
 );
 
 test(
-  "exact reverse rollback via the provider/bootstrap authority restores the complete baseline",
+  "exact reverse rollback via the provider authority restores the complete baseline from the final zero-membership state",
   { skip: skipReason },
   async () => {
     const fixture = await openFixtures();
@@ -229,13 +329,9 @@ test(
         primary.databaseName,
       );
       assert.equal(migratedState.databaseOwner, "platform_migrator");
-      await assertExactProtectedEdge(primary.adminPool);
+      await assertZeroMigratorMembership(primary.adminPool);
 
       await reverseTransferViaProviderAuthority(primary);
-
-      await primary.adminPool.query(
-        `revoke platform_migrator from platform_app`,
-      );
       await dropMigratorRole(primary.adminPool);
 
       const restored = await readOwnershipFingerprint(
@@ -249,7 +345,7 @@ test(
         restored.attributes.some((row) => row.rolname === "platform_migrator"),
         false,
       );
-      await assertRuntimePosture(primary.adminPool);
+      await assertRuntimeFinalPosture(primary.adminPool);
     } finally {
       await closeFixtures(fixture);
     }
@@ -404,6 +500,20 @@ async function installMigratorDefaultPrivileges(adminPool) {
 
 async function dropMigratorRole(adminPool) {
   await adminPool.query(`drop owned by platform_migrator`);
+  const defaultPrivilegeResidue = await adminPool.query(
+    `
+      select count(*)::int as c
+        from pg_default_acl default_record
+        join pg_roles role_record on role_record.oid = default_record.defaclrole
+       where role_record.rolname = 'platform_migrator'
+    `,
+  );
+  assert.equal(defaultPrivilegeResidue.rows.length, 1);
+  assert.equal(
+    defaultPrivilegeResidue.rows[0].c,
+    0,
+    "platform_migrator default-privilege records must be removed before the role drop",
+  );
   await adminPool.query(`drop role platform_migrator`);
 }
 
@@ -416,6 +526,21 @@ async function validateMigratorLoginAdmission(migratorPool) {
     assert.equal(result.rows[0].cu, "platform_migrator");
     assert.equal(result.rows[0].su, "platform_migrator");
   } finally {
+    client.release();
+  }
+}
+
+async function proveSelfGrantEscalation(appPool) {
+  const client = await appPool.connect();
+  try {
+    await client.query(`set role platform_migrator`);
+    const identity = await client.query(
+      `select current_user::text as cu, session_user::text as su`,
+    );
+    assert.equal(identity.rows[0].cu, "platform_migrator");
+    assert.equal(identity.rows[0].su, "platform_app");
+  } finally {
+    await client.query(`reset role`).catch(() => {});
     client.release();
   }
 }
@@ -519,6 +644,27 @@ async function readMembershipEdges(adminPool) {
   }));
 }
 
+async function assertZeroMigratorMembership(adminPool) {
+  const result = await adminPool.query(
+    `
+      select count(*)::int as c
+        from pg_auth_members membership
+        left join pg_roles granted_role on granted_role.oid = membership.roleid
+        left join pg_roles member_role on member_role.oid = membership.member
+        left join pg_roles grantor_role on grantor_role.oid = membership.grantor
+       where granted_role.rolname = 'platform_migrator'
+          or member_role.rolname = 'platform_migrator'
+          or grantor_role.rolname = 'platform_migrator'
+    `,
+  );
+  assert.equal(result.rows.length, 1);
+  assert.equal(
+    result.rows[0].c,
+    0,
+    "final platform_migrator membership inventory must be zero across granted-role, member and grantor positions",
+  );
+}
+
 async function assertExactProtectedEdge(adminPool) {
   const migratorEdges = (await readMembershipEdges(adminPool))
     .filter((edge) => edge.granted_role === "platform_migrator");
@@ -608,6 +754,21 @@ function assertOwnershipFieldsUnchanged(fingerprint, baseline) {
   assert.deepEqual(fingerprint.objectOwners, baseline.objectOwners);
   assert.deepEqual(fingerprint.enumOwners, baseline.enumOwners);
   assert.deepEqual(fingerprint.routineOwners, baseline.routineOwners);
+}
+
+async function assertRuntimeFinalPosture(adminPool) {
+  await assertRuntimePosture(adminPool);
+  const runtimeEdges = (await readMembershipEdges(adminPool))
+    .filter((edge) => edge.granted_role === "platform_runtime");
+  assert.equal(runtimeEdges.length, 0);
+  assert.deepEqual(await runtimeOwnershipCounts(adminPool), {
+    dbs: 0,
+    relations: 0,
+    routines: 0,
+    schemas: 0,
+    types: 0,
+  });
+  await assertRuntimeGrantSetExact(adminPool);
 }
 
 async function openFixtures() {
