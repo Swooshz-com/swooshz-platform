@@ -15,7 +15,9 @@ and performs no deployment. It releases no live-system authority.
 
 - Parent issue #104 rolling queue.
 - Child issue #128, including the current body and comment `5193670650`.
-- Repository Design Lock `DL-128-REPO-001`.
+- Repository Design Lock `DL-128-REPO-001`, amended by repository contract
+  amendment `DL-128-REPO-002` (PostgreSQL 17 creator-edge, transaction,
+  rollback and credential-order semantics).
 - Completed topology evidence #116 / Run-49.
 - Completed #127 and merged PR #129, including the accepted 39-record runtime
   grant contract and the exact disposable PostgreSQL 17 fixture authority.
@@ -33,12 +35,20 @@ Future dedicated operator/migration role:
 
 - `LOGIN`.
 - `NOSUPERUSER`.
-- `NOCREATEDB` in final state (temporary `CREATEDB` is permitted only inside a
-  separately authorised transfer phase and is revoked before the phase ends).
+- `NOCREATEDB` (final and throughout). No temporary `CREATEDB` on `platform_migrator`.
 - `NOCREATEROLE`.
 - `NOREPLICATION`.
 - `NOBYPASSRLS`.
-- No permanent memberships.
+- Exactly one protected provider/bootstrap control edge is admitted:
+  `granted_role=platform_migrator`, `member=platform_app`,
+  bootstrap-superuser grantor, `admin_option=true`, `inherit_option=false`,
+  `set_option=false`. That edge grants no inherited privilege and no
+  `SET ROLE` path and is not removable by the creator. It is rejected if any
+  field, direction, grantor or multiplicity differs.
+- A second grant `granted_role=platform_migrator`, `member=platform_app`,
+  grantor `platform_app`, `SET=true`, `INHERIT=false` may exist only during the
+  bounded transfer window and must be revoked by the same grantor before final
+  acceptance.
 - Never used by the long-running Coolify application.
 - Future private projection: `NEONDB_SWOOSHZ_PLATFORM_MIGRATOR_URL`.
 - Process-local operator alias: `DATABASE_OPERATOR_URL`.
@@ -90,15 +100,27 @@ must prove it before the live Design Lock is issued.
 The executing current owner:
 
 1. Is proved to own the object being transferred.
-2. Holds the exact required `CREATEDB` or schema authority.
-3. Receives a temporary membership allowing it to `SET ROLE` to
-   `platform_migrator`.
-4. Performs only the authorised ownership transfers.
-5. Immediately revokes the temporary membership.
-6. Proves that no membership remains.
-7. Proves the complete final ownership inventory.
+2. Holds the exact required `CREATEDB` and `SET ROLE` authority; the target role
+   never receives temporary `CREATEDB`.
+3. Creates the target role as `NOLOGIN` with final non-administrative
+   attributes; PostgreSQL 17 automatically creates the protected bootstrap creator edge (bootstrap-superuser
+   grantor, `admin_option=true`, `inherit_option=false`, `set_option=false`) which the
+   creator cannot remove.
+4. Grants itself a separately grantable and separately revocable supplemental
+   `SET=true`, `INHERIT=false` edge for the bounded transfer window.
+5. Proves credential/login admission (private password, `LOGIN` enablement,
+   private projection installation and a validated direct read-only migrator
+   connection) before any ownership transfer.
+6. Performs only the authorised ownership transfers, preferably in one
+   rollback-capable transaction (the PostgreSQL 17 `ALTER DATABASE ... OWNER`
+   ownership form is transactional; the `SET TABLESPACE` restriction does not
+   apply).
+7. Revokes only the supplemental `SET=true` edge by its own grantor; the exact
+   protected bootstrap edge is retained and verified.
+8. Proves the complete final ownership inventory and the exact protected edge.
 
-No permanent membership-derived migration authority is allowed.
+No permanent membership-derived migration authority is allowed beyond the
+single protected bootstrap control edge.
 
 ## public schema decision boundary
 
@@ -193,42 +215,49 @@ failure and proves zero unintended persistent mutation.
 
 ### Required positive transfer rehearsal
 
-The rehearsal proves the bounded temporary-membership path:
+The rehearsal proves the bounded temporary-membership path per
+`DL-128-REPO-002`:
 
-1. Create exact final migrator attributes.
-2. Establish only the temporary SET-capable membership required for transfer and
-   prove the exact sole edge with `admin_option=false`, `inherit_option=false`
-   and `set_option=true`.
-3. Transfer the disposable database where PostgreSQL permits the model.
-4. Transfer application schema, migration schema, table, index-following
-   ownership, enum, sequence, routine and ledger.
-5. Revoke temporary membership immediately and every temporary transfer
-   database/schema privilege.
-6. Prove zero membership edges remain.
-7. Prove the migrator can perform a bounded migration transaction.
-8. Roll back the bounded capability proof.
-9. Prove the restricted runtime contract is unchanged and non-owning.
+1. Create `platform_migrator` as `NOLOGIN` with final non-administrative
+   attributes through the non-superuser `CREATEROLE` legacy owner.
+2. Admit the exact protected bootstrap creator-admin edge
+   (`grantor` = the fixture bootstrap superuser, `admin_option=true`,
+   `inherit_option=false`, `set_option=false`) and prove it is not removable by
+   the creator.
+3. Prove a separately granted and separately revocable supplemental
+   `SET=true`, `INHERIT=false` edge with a distinct grantor.
+4. Prove credential/login admission (password set, `LOGIN` enablement, direct
+   read-only migrator connection) before ownership transfer, and prove a failed
+   login leaves ownership unchanged.
+5. Prove the exact transaction boundary: database and object ownership
+   transfer inside one rollback-capable transaction in PostgreSQL 17.
+6. Transfer database, `drizzle`, migration ledger and the application-owned
+   object inventory (tables, index-following ownership, sequences, enums,
+   routines); retain provider-managed `public` ownership with only the exact
+   migrator `CREATE`/`USAGE` authority.
+7. Revoke only the supplemental `SET=true` edge; retain and verify the exact
+   protected bootstrap control edge.
+8. Revoke the existing `platform_runtime`/`platform_app` edge and prove runtime
+   zero-membership with the exact 39-record contract unchanged.
+9. Execute a mechanically valid complete reverse rollback through the
+   provider/bootstrap authority and prove the exact baseline restoration.
 10. Prove the legacy role cannot be retired until all replacement proof
-    passes.
-11. Exercise the reverse ownership rollback procedure and restore the exact
-    baseline database/schema/default-ACL fingerprint, including the
-    migrator database `CONNECT` grant.
-12. Prove the complete original fingerprint (owners, ACLs, default ACLs, role
-    attributes and membership edges) can be restored.
+    passes; conversion to `NOLOGIN` occurs only after complete proof.
 
 ### public ownership variants
 
-The rehearsal covers:
+The rehearsal covers provider-managed `public` only:
 
-- application-controlled `public` that can be transferred safely;
-- provider-managed `public` whose owner is preserved while exact migration
-  `CREATE`/`USAGE` authority is granted, including a real bounded
-  `platform_migrator` transaction that creates a disposable migration object in
-  `public`, validates it and rolls it back, proving the object is absent after
-  rollback, `public` ownership remains `provider_owner` and runtime authority is
+- `public` is owned by the disposable provider owner in every variant and is
+  never transferred.
+- `platform_migrator` receives only the exact reviewed `CREATE`/`USAGE`
+  authority required for migration work, including a real bounded migrator
+  transaction that creates a disposable migration object in `public`,
+  validates it and rolls it back, proving the object is absent after rollback,
+  `public` ownership remains with the provider owner and runtime authority is
   unchanged.
 
-Neither variant may widen runtime authority.
+No variant may widen runtime authority.
 
 ### Exact summary
 

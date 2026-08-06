@@ -488,7 +488,8 @@ test("temporary transfer grants are revoked and cannot survive baseline-equality
     "utf8",
   );
   assert.match(source, /revoke create on schema/);
-  assert.match(source, /revoke create on database/);
+  assert.match(source, /revoke connect on database/);
+  assert.match(source, /granted by platform_app/);
   assert.match(source, /admin_option/);
   assert.match(source, /inherit_option/);
   assert.match(source, /set_option/);
@@ -609,6 +610,73 @@ function createMockDockerSpawn(handlers) {
   spawnImpl.calls = calls;
   return spawnImpl;
 }
+
+test("DL-128-REPO-002: the migrator contract admits exactly one protected bootstrap creator edge, not zero memberships", async () => {
+  const architectureDoc = await readFile(
+    "docs/architecture/PLATFORM-MIGRATOR-ALIGNMENT.md",
+    "utf8",
+  );
+  const runbook = await readRunbook();
+  const postgresTest = await readFile(
+    "tests/platform-migrator-alignment-postgres.test.mjs",
+    "utf8",
+  );
+  assert.match(architectureDoc, /bootstrap-superuser grantor/i);
+  assert.match(architectureDoc, /protected bootstrap creator edge/i);
+  assert.match(architectureDoc, /exactly one protected/i);
+  assert.match(architectureDoc, /not removable by the creator|not removable by `platform_app`/i);
+  assert.match(runbook, /bootstrap-superuser grantor/i);
+  assert.match(postgresTest, /grantor/);
+  assert.match(postgresTest, /pg_auth_members[\s\S]*grantor|grantor[\s\S]*pg_auth_members/i);
+});
+
+test("DL-128-REPO-002: no temporary CREATEDB is granted to platform_migrator", async () => {
+  const postgresTest = await readFile(
+    "tests/platform-migrator-alignment-postgres.test.mjs",
+    "utf8",
+  );
+  const architectureDoc = await readFile(
+    "docs/architecture/PLATFORM-MIGRATOR-ALIGNMENT.md",
+    "utf8",
+  );
+  const runbook = await readRunbook();
+  assert.doesNotMatch(postgresTest, /alter role platform_migrator createdb/);
+  assert.doesNotMatch(postgresTest, /alter role platform_migrator\s+createdb/i);
+  assert.match(architectureDoc, /No temporary `CREATEDB` on `platform_migrator`/i);
+  assert.match(runbook, /No temporary `CREATEDB` on `platform_migrator`/i);
+});
+
+test("DL-128-REPO-002: database ownership transfer is proven transactional in PostgreSQL 17", async () => {
+  const postgresTest = await readFile(
+    "tests/platform-migrator-alignment-postgres.test.mjs",
+    "utf8",
+  );
+  assert.match(
+    postgresTest,
+    /begin[\s\S]*alter database [\s\S]*owner to platform_migrator[\s\S]*commit/i,
+  );
+});
+
+test("DL-128-REPO-002: migrator login admission is proven before the ownership transfer", async () => {
+  const postgresTest = await readFile(
+    "tests/platform-migrator-alignment-postgres.test.mjs",
+    "utf8",
+  );
+  assert.match(postgresTest, /validateMigratorLoginAdmission|login admission/i);
+  const transferIndex = postgresTest.search(/alter database \$\{identifier\(databaseName\)\} owner to platform_migrator/);
+  const loginIndex = postgresTest.search(/validateMigratorLoginAdmission/);
+  assert.ok(loginIndex >= 0, "login admission must exist");
+  assert.ok(transferIndex > loginIndex, "login admission must precede the database ownership transfer");
+});
+
+test("DL-128-REPO-002: credential/login validation precedes ownership transfer and failure leaves ownership unchanged", async () => {
+  const postgresTest = await readFile(
+    "tests/platform-migrator-alignment-postgres.test.mjs",
+    "utf8",
+  );
+  assert.match(postgresTest, /failed login|login fails|not permitted to log in/i);
+  assert.match(postgresTest, /ownership unchanged|owner.*unchanged/i);
+});
 
 async function assertRehearsalSurface() {
   const runbook = await readRunbook();

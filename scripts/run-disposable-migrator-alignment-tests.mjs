@@ -555,11 +555,7 @@ async function provisionFixture(
       do $fixture$
       begin
         if not exists (select 1 from pg_roles where rolname = 'platform_app') then
-          create role platform_app login nosuperuser createdb nocreaterole
-            noreplication nobypassrls;
-        end if;
-        if not exists (select 1 from pg_roles where rolname = 'platform_migrator') then
-          create role platform_migrator login nosuperuser nocreatedb nocreaterole
+          create role platform_app login nosuperuser createdb createrole
             noreplication nobypassrls;
         end if;
         if not exists (select 1 from pg_roles where rolname = 'platform_runtime') then
@@ -574,10 +570,7 @@ async function provisionFixture(
       $fixture$
     `);
     await authorizedPool.query(
-      "alter role platform_app login inherit nosuperuser createdb nocreaterole noreplication nobypassrls",
-    );
-    await authorizedPool.query(
-      "alter role platform_migrator login inherit nosuperuser nocreatedb nocreaterole noreplication nobypassrls",
+      "alter role platform_app login inherit nosuperuser createdb createrole noreplication nobypassrls",
     );
     await authorizedPool.query(
       "alter role platform_runtime nologin noinherit nosuperuser nocreatedb nocreaterole noreplication nobypassrls",
@@ -585,27 +578,18 @@ async function provisionFixture(
     await authorizedPool.query(
       "alter role provider_owner nologin noinherit nosuperuser nocreatedb nocreaterole noreplication nobypassrls",
     );
-    await authorizedPool.query("revoke platform_migrator from platform_app");
-    await authorizedPool.query("revoke platform_app from platform_migrator");
     await authorizedPool.query("revoke platform_runtime from platform_app");
     await authorizedPool.query("revoke platform_app from platform_runtime");
-    await authorizedPool.query("revoke platform_runtime from platform_migrator");
-    await authorizedPool.query("revoke platform_migrator from platform_runtime");
     await authorizedPool.query("revoke provider_owner from platform_app");
     await authorizedPool.query("revoke platform_app from provider_owner");
-    await authorizedPool.query("revoke provider_owner from platform_migrator");
-    await authorizedPool.query("revoke platform_migrator from provider_owner");
     await authorizedPool.query("revoke provider_owner from platform_runtime");
     await authorizedPool.query("revoke platform_runtime from provider_owner");
 
-    const publicOwner = variant === "provider-managed-public"
-      ? "provider_owner"
-      : "platform_app";
     await authorizedPool.query(
       `alter database ${quoteIdentifier(expectedDatabase)} owner to platform_app`,
     );
     await authorizedPool.query(
-      `alter schema public owner to ${quoteIdentifier(publicOwner)}`,
+      `alter schema public owner to provider_owner`,
     );
     await authorizedPool.query(
       "create schema appdata authorization platform_app",
@@ -625,22 +609,11 @@ async function provisionFixture(
       `grant connect on database ${quoteIdentifier(expectedDatabase)} to platform_app`,
     );
     await authorizedPool.query(
-      `grant connect on database ${quoteIdentifier(expectedDatabase)} to platform_migrator`,
-    );
-    await authorizedPool.query(
       `revoke create on database ${quoteIdentifier(expectedDatabase)} from public`,
     );
     await authorizedPool.query("revoke create on schema public from public");
     await authorizedPool.query("grant usage on schema public to platform_app");
     await authorizedPool.query("grant usage on schema appdata to platform_app");
-    if (variant === "provider-managed-public") {
-      await authorizedPool.query(
-        "grant create, usage on schema public to platform_app",
-      );
-      await authorizedPool.query(
-        "grant create, usage on schema public to platform_migrator",
-      );
-    }
 
     await authorizedPool.query(
       "create type appdata.widget_status as enum ('active', 'disabled')",
@@ -724,15 +697,6 @@ async function provisionFixture(
     );
     await authorizedPool.query(
       "alter default privileges for role platform_app revoke execute on functions from public",
-    );
-    await authorizedPool.query(
-      "alter default privileges for role platform_migrator revoke all privileges on tables from public",
-    );
-    await authorizedPool.query(
-      "alter default privileges for role platform_migrator revoke all privileges on sequences from public",
-    );
-    await authorizedPool.query(
-      "alter default privileges for role platform_migrator revoke execute on functions from public",
     );
     await authorizedPool.query(
       "alter default privileges for role provider_owner revoke all privileges on tables from public",
