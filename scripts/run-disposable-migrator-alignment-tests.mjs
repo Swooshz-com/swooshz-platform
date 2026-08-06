@@ -21,13 +21,13 @@ import {
 } from "../tests/support/disposable-postgres-fixture.mjs";
 import { runDisposableRuntimeLifecycle } from "./disposable-runtime-lifecycle.mjs";
 
-const databaseName = "runtime_posture_test";
-const secondaryDatabaseName = "runtime_posture_test_secondary";
-const ownedContainerName = "codex-platform127-pg17";
-const ownedPort = 55432;
+const databaseName = "migrator_alignment_test";
+const secondaryDatabaseName = "migrator_alignment_test_secondary";
+const ownedContainerName = "deepseek-platform128-pg17";
+const ownedPort = 56432;
 const maxChildOutputBytes = 64 * 1024;
 const maxChildDurationMs = 120_000;
-const expectedPostgresTestCount = 53;
+const expectedPostgresTestCount = 4;
 const safeIdentifier = /^[a-z_][a-z0-9_$]{0,62}$/u;
 const loopbackHosts = new Set(["127.0.0.1", "::1"]);
 const failurePhases = new Set([
@@ -42,6 +42,7 @@ const failurePhases = new Set([
 ]);
 const failureCategories = new Set([
   "container_preexistence",
+  "listener_preexistence",
   "publish_binding_inspection",
   "container_start",
   "postgres_readiness",
@@ -70,7 +71,7 @@ if (
       `${error?.runtimeFailureReceipt ?? formatDisposableRuntimeFailureReceipt()}` +
         "\n",
     );
-    process.stderr.write("Disposable fixture test runner failed.\n");
+    process.stderr.write("Disposable migrator alignment test runner failed.\n");
     process.exitCode = 1;
   });
 }
@@ -108,11 +109,21 @@ export async function run({
         childExited: true,
         databaseUrls: new Map(),
         ownedDatabases: new Set(),
-        ownedRoles: new Set(["platform_app", "platform_runtime"]),
-        ownedSchemas: new Set(["drizzle"]),
+        ownedRoles: new Set([
+          "platform_app",
+          "platform_migrator",
+          "platform_runtime",
+          "provider_owner",
+        ]),
+        ownedSchemas: new Set(["drizzle", "appdata"]),
         ownedObjects: new Set([
           "drizzle.__drizzle_migrations",
           "public.users",
+          "appdata.widgets",
+          "appdata.widgets_label_uidx",
+          "appdata.widget_status",
+          "appdata.counter_seq",
+          "appdata.widget_summary",
           ...contractTableNames().map((name) => `public.${name}`),
         ]),
         runnerOwned: new Set(),
@@ -124,6 +135,9 @@ export async function run({
       await runAt(resources, "construct", "container_preexistence", async () => {
         assertNoCallerSuppliedFixture(env);
         await assertExactContainerAbsent(spawnImpl);
+      });
+      await runAt(resources, "construct", "listener_preexistence", async () => {
+        await assertOwnedListenerAbsent();
       });
       resources.containerStartAttempted = true;
       await runAt(resources, "construct", "container_start", () =>
@@ -218,6 +232,7 @@ export async function run({
           databaseName,
           authorities.authorities.get("primary"),
           lifecycleResources,
+          "application-public",
         ),
       );
       await runAt(
@@ -229,6 +244,7 @@ export async function run({
           secondaryDatabaseName,
           authorities.authorities.get("secondary"),
           lifecycleResources,
+          "provider-managed-public",
         ),
       );
       lifecycleResources.provisioningComplete = true;
@@ -316,7 +332,7 @@ export function formatDisposableRuntimeFailureReceipt(resources = {}) {
   return `Disposable fixture failure receipt: ${JSON.stringify(receipt)}`;
 }
 
-export function parseDisposableRuntimeTestSummary(output) {
+export function parseDisposableMigratorAlignmentTestSummary(output) {
   if (typeof output !== "string" || Buffer.byteLength(output, "utf8") > maxChildOutputBytes) {
     return null;
   }
@@ -478,13 +494,19 @@ function fixtureDefinition(name, urls) {
     expectedMutationUser: "postgres",
     operatorUrl: secondary ? urls.secondaryOperatorUrl : urls.primaryOperatorUrl,
     expectedObjects: {
-      schemas: ["public", "drizzle"],
+      schemas: ["public", "appdata", "drizzle"],
       relations: [
         { schema: "drizzle", name: "__drizzle_migrations", kind: "r" },
         { schema: "public", name: "users", kind: "r" },
+        { schema: "appdata", name: "widgets", kind: "r" },
+        ...contractTableNames().map((name) => ({
+          schema: "public",
+          name,
+          kind: "r",
+        })),
       ],
-      sequences: [],
-      routines: [],
+      sequences: [{ schema: "appdata", name: "counter_seq" }],
+      routines: [{ schema: "appdata", name: "widget_summary", kind: "f" }],
     },
     transport: { kind: "loopback", phase: "final_start" },
     operatorTransport: { kind: "loopback", phase: "final_start" },
@@ -519,7 +541,13 @@ async function ensureDatabase(
   }
 }
 
-async function provisionFixture(operatorUrl, expectedDatabase, authority, resources) {
+async function provisionFixture(
+  operatorUrl,
+  expectedDatabase,
+  authority,
+  resources,
+  variant,
+) {
   const operatorPool = new Pool({ connectionString: operatorUrl, max: 1 });
   const authorizedPool = createAuthorizedProvisioningPool(operatorPool, authority);
   try {
@@ -527,64 +555,132 @@ async function provisionFixture(operatorUrl, expectedDatabase, authority, resour
       do $fixture$
       begin
         if not exists (select 1 from pg_roles where rolname = 'platform_app') then
-          create role platform_app login nosuperuser nocreatedb nocreaterole
+          create role platform_app login nosuperuser createdb nocreaterole
+            noreplication nobypassrls;
+        end if;
+        if not exists (select 1 from pg_roles where rolname = 'platform_migrator') then
+          create role platform_migrator login nosuperuser nocreatedb nocreaterole
             noreplication nobypassrls;
         end if;
         if not exists (select 1 from pg_roles where rolname = 'platform_runtime') then
           create role platform_runtime nologin nosuperuser nocreatedb nocreaterole
             noreplication nobypassrls;
         end if;
+        if not exists (select 1 from pg_roles where rolname = 'provider_owner') then
+          create role provider_owner nologin nosuperuser nocreatedb nocreaterole
+            noreplication nobypassrls;
+        end if;
       end
       $fixture$
     `);
     await authorizedPool.query(
-      "alter role platform_app login nosuperuser nocreatedb nocreaterole noreplication nobypassrls",
+      "alter role platform_app login inherit nosuperuser createdb nocreaterole noreplication nobypassrls",
+    );
+    await authorizedPool.query(
+      "alter role platform_migrator login inherit nosuperuser nocreatedb nocreaterole noreplication nobypassrls",
     );
     await authorizedPool.query(
       "alter role platform_runtime nologin noinherit nosuperuser nocreatedb nocreaterole noreplication nobypassrls",
     );
+    await authorizedPool.query(
+      "alter role provider_owner nologin noinherit nosuperuser nocreatedb nocreaterole noreplication nobypassrls",
+    );
+    await authorizedPool.query("revoke platform_migrator from platform_app");
+    await authorizedPool.query("revoke platform_app from platform_migrator");
     await authorizedPool.query("revoke platform_runtime from platform_app");
     await authorizedPool.query("revoke platform_app from platform_runtime");
-    await authorizedPool.query("alter schema public owner to postgres");
+    await authorizedPool.query("revoke platform_runtime from platform_migrator");
+    await authorizedPool.query("revoke platform_migrator from platform_runtime");
+    await authorizedPool.query("revoke provider_owner from platform_app");
+    await authorizedPool.query("revoke platform_app from provider_owner");
+    await authorizedPool.query("revoke provider_owner from platform_migrator");
+    await authorizedPool.query("revoke platform_migrator from provider_owner");
+    await authorizedPool.query("revoke provider_owner from platform_runtime");
+    await authorizedPool.query("revoke platform_runtime from provider_owner");
+
+    const publicOwner = variant === "provider-managed-public"
+      ? "provider_owner"
+      : "platform_app";
     await authorizedPool.query(
-      "create schema if not exists drizzle authorization postgres",
+      `alter database ${quoteIdentifier(expectedDatabase)} owner to platform_app`,
     );
-    await authorizedPool.query("alter schema drizzle owner to postgres");
     await authorizedPool.query(
-      "create table if not exists drizzle.__drizzle_migrations (id integer primary key)",
+      `alter schema public owner to ${quoteIdentifier(publicOwner)}`,
     );
     await authorizedPool.query(
-      "alter table drizzle.__drizzle_migrations owner to postgres",
+      "create schema appdata authorization platform_app",
+    );
+    await authorizedPool.query(
+      "create schema drizzle authorization platform_app",
+    );
+    await authorizedPool.query("alter schema appdata owner to platform_app");
+    await authorizedPool.query("alter schema drizzle owner to platform_app");
+    await authorizedPool.query(
+      "create table drizzle.__drizzle_migrations (id integer primary key, hash text not null)",
+    );
+    await authorizedPool.query(
+      "alter table drizzle.__drizzle_migrations owner to platform_app",
     );
     await authorizedPool.query(
       `grant connect on database ${quoteIdentifier(expectedDatabase)} to platform_app`,
     );
     await authorizedPool.query(
+      `grant connect on database ${quoteIdentifier(expectedDatabase)} to platform_migrator`,
+    );
+    await authorizedPool.query(
       `revoke create on database ${quoteIdentifier(expectedDatabase)} from public`,
     );
     await authorizedPool.query("revoke create on schema public from public");
-    await authorizedPool.query("revoke create on schema drizzle from public");
-    await authorizedPool.query("revoke usage on schema drizzle from public");
     await authorizedPool.query("grant usage on schema public to platform_app");
+    await authorizedPool.query("grant usage on schema appdata to platform_app");
+    if (variant === "provider-managed-public") {
+      await authorizedPool.query(
+        "grant create, usage on schema public to platform_app",
+      );
+      await authorizedPool.query(
+        "grant create, usage on schema public to platform_migrator",
+      );
+    }
+
     await authorizedPool.query(
-      "alter default privileges for role postgres revoke execute on functions from public",
+      "create type appdata.widget_status as enum ('active', 'disabled')",
+    );
+    await authorizedPool.query(
+      "alter type appdata.widget_status owner to platform_app",
+    );
+    await authorizedPool.query(
+      "create table appdata.widgets (id integer primary key, label text not null, status appdata.widget_status not null default 'active')",
+    );
+    await authorizedPool.query(
+      "alter table appdata.widgets owner to platform_app",
+    );
+    await authorizedPool.query(
+      "create unique index widgets_label_uidx on appdata.widgets (label)",
+    );
+    await authorizedPool.query(
+      "create sequence appdata.counter_seq",
+    );
+    await authorizedPool.query(
+      "alter sequence appdata.counter_seq owner to platform_app",
+    );
+    await authorizedPool.query(
+      "create function appdata.widget_summary() returns bigint language sql as $$ select count(*)::bigint from appdata.widgets $$",
+    );
+    await authorizedPool.query(
+      "alter function appdata.widget_summary() owner to platform_app",
     );
 
     for (const tableName of contractTableNames()) {
       await authorizedPool.query(
-        `create table if not exists public.${quoteIdentifier(tableName)} (id integer)`,
+        `create table public.${quoteIdentifier(tableName)} (id integer)`,
       );
       await authorizedPool.query(
-        `alter table public.${quoteIdentifier(tableName)} owner to postgres`,
+        `alter table public.${quoteIdentifier(tableName)} owner to platform_app`,
       );
       await authorizedPool.query(
         `revoke all privileges on table public.${quoteIdentifier(tableName)} from platform_runtime`,
       );
     }
-    await authorizedPool.query(
-      "create table if not exists public.users (id integer)",
-    );
-    await authorizedPool.query("alter table public.users owner to postgres");
     for (const [tableName, privileges] of privilegesByTable()) {
       await authorizedPool.query(
         `grant ${privileges.join(", ")} on table public.${quoteIdentifier(tableName)} to platform_runtime`,
@@ -596,9 +692,63 @@ async function provisionFixture(operatorUrl, expectedDatabase, authority, resour
     await authorizedPool.query(
       "revoke all privileges on all functions in schema public from platform_runtime",
     );
+    await authorizedPool.query(
+      "revoke all privileges on all sequences in schema appdata from platform_runtime",
+    );
+    await authorizedPool.query(
+      "revoke all privileges on all functions in schema appdata from platform_runtime",
+    );
+    await authorizedPool.query(
+      "revoke all privileges on all sequences in schema public from public",
+    );
+    await authorizedPool.query(
+      "revoke all privileges on all functions in schema public from public",
+    );
+    await authorizedPool.query(
+      "revoke all privileges on all sequences in schema appdata from public",
+    );
+    await authorizedPool.query(
+      "revoke all privileges on all functions in schema appdata from public",
+    );
+    await authorizedPool.query(
+      "revoke execute on function appdata.widget_summary() from public",
+    );
+    await authorizedPool.query(
+      "alter default privileges for role postgres revoke execute on functions from public",
+    );
+    await authorizedPool.query(
+      "alter default privileges for role platform_app revoke all privileges on tables from public",
+    );
+    await authorizedPool.query(
+      "alter default privileges for role platform_app revoke all privileges on sequences from public",
+    );
+    await authorizedPool.query(
+      "alter default privileges for role platform_app revoke execute on functions from public",
+    );
+    await authorizedPool.query(
+      "alter default privileges for role platform_migrator revoke all privileges on tables from public",
+    );
+    await authorizedPool.query(
+      "alter default privileges for role platform_migrator revoke all privileges on sequences from public",
+    );
+    await authorizedPool.query(
+      "alter default privileges for role platform_migrator revoke execute on functions from public",
+    );
+    await authorizedPool.query(
+      "alter default privileges for role provider_owner revoke all privileges on tables from public",
+    );
+    await authorizedPool.query(
+      "alter default privileges for role provider_owner revoke all privileges on sequences from public",
+    );
+    await authorizedPool.query(
+      "alter default privileges for role provider_owner revoke execute on functions from public",
+    );
     resources.runnerOwned.add(`role:platform_app:${expectedDatabase}`);
+    resources.runnerOwned.add(`role:platform_migrator:${expectedDatabase}`);
     resources.runnerOwned.add(`role:platform_runtime:${expectedDatabase}`);
+    resources.runnerOwned.add(`role:provider_owner:${expectedDatabase}`);
     resources.runnerOwned.add(`schema:drizzle:${expectedDatabase}`);
+    resources.runnerOwned.add(`schema:appdata:${expectedDatabase}`);
     for (const object of resources.ownedObjects) {
       resources.runnerOwned.add(`${object}:${expectedDatabase}`);
     }
@@ -610,11 +760,11 @@ async function provisionFixture(operatorUrl, expectedDatabase, authority, resour
 async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
   const env = {
     ...process.env,
-    RUNTIME_POSTURE_TEST_DATABASE_URL: urls.primaryTargetUrl,
-    RUNTIME_POSTURE_TEST_OPERATOR_URL: urls.primaryOperatorUrl,
-    RUNTIME_POSTURE_TEST_SECONDARY_DATABASE_URL: urls.secondaryTargetUrl,
-    RUNTIME_POSTURE_TEST_SECONDARY_OPERATOR_URL: urls.secondaryOperatorUrl,
-    RUNTIME_POSTURE_TEST_CONFIRM: "disposable-only",
+    MIGRATOR_ALIGNMENT_TEST_DATABASE_URL: urls.primaryTargetUrl,
+    MIGRATOR_ALIGNMENT_TEST_OPERATOR_URL: urls.primaryOperatorUrl,
+    MIGRATOR_ALIGNMENT_TEST_SECONDARY_DATABASE_URL: urls.secondaryTargetUrl,
+    MIGRATOR_ALIGNMENT_TEST_SECONDARY_OPERATOR_URL: urls.secondaryOperatorUrl,
+    MIGRATOR_ALIGNMENT_TEST_CONFIRM: "disposable-only",
   };
   await new Promise((resolvePromise, reject) => {
     const output = [];
@@ -626,9 +776,7 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
         process.execPath,
         [
           "--test",
-          "tests/disposable-postgres-fixture.test.mjs",
-          "tests/disposable-runtime-lifecycle.test.mjs",
-          "tests/runtime-database-posture-postgres.test.mjs",
+          "tests/platform-migrator-alignment-postgres.test.mjs",
         ],
         { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
       );
@@ -673,7 +821,7 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
         return;
       }
       if (code === 0 && signal === null && !outputOverflow) {
-        const summary = parseDisposableRuntimeTestSummary(
+        const summary = parseDisposableMigratorAlignmentTestSummary(
           Buffer.concat(output).toString("utf8"),
         );
         if (!summary) {
@@ -683,7 +831,7 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
         }
         resources.childSummaryParsed = true;
         process.stdout.write(
-          `Disposable PostgreSQL 17 tests: ${summary.total} total, ${summary.passed} passed, ${summary.skipped} skipped.\n`,
+          `Disposable PostgreSQL 17 migrator alignment tests: ${summary.total} total, ${summary.passed} passed, ${summary.failed} failed, ${summary.skipped} skipped.\n`,
         );
         resolvePromise();
       }
@@ -756,6 +904,7 @@ async function cleanupFixtureDatabases(resources) {
         );
       }
       await pool.query("drop schema if exists drizzle cascade");
+      await pool.query("drop schema if exists appdata cascade");
     } finally {
       await pool.end();
     }
@@ -819,7 +968,7 @@ async function startOwnedContainer(spawnImpl) {
     "--publish",
     `127.0.0.1:${ownedPort}:5432`,
     "--env",
-    "POSTGRES_DB=runtime_posture_test",
+    `POSTGRES_DB=${databaseName}`,
     "--env",
     "POSTGRES_HOST_AUTH_METHOD=trust",
     "postgres:17",
@@ -917,7 +1066,7 @@ async function assertExactContainerAbsent(spawnImpl) {
   return output.trim();
 }
 
-async function assertPortAbsent() {
+async function assertOwnedListenerAbsent() {
   await new Promise((resolvePromise, reject) => {
     const socket = net.createConnection({
       host: "127.0.0.1",
@@ -941,6 +1090,10 @@ async function assertPortAbsent() {
       }
     });
   });
+}
+
+async function assertPortAbsent() {
+  await assertOwnedListenerAbsent();
 }
 
 async function runCommand(spawnImpl, command, args) {
@@ -976,10 +1129,10 @@ async function runCommand(spawnImpl, command, args) {
 
 function assertNoCallerSuppliedFixture(env) {
   const names = [
-    "RUNTIME_POSTURE_TEST_DATABASE_URL",
-    "RUNTIME_POSTURE_TEST_OPERATOR_URL",
-    "RUNTIME_POSTURE_TEST_SECONDARY_DATABASE_URL",
-    "RUNTIME_POSTURE_TEST_SECONDARY_OPERATOR_URL",
+    "MIGRATOR_ALIGNMENT_TEST_DATABASE_URL",
+    "MIGRATOR_ALIGNMENT_TEST_OPERATOR_URL",
+    "MIGRATOR_ALIGNMENT_TEST_SECONDARY_DATABASE_URL",
+    "MIGRATOR_ALIGNMENT_TEST_SECONDARY_OPERATOR_URL",
   ];
   if (names.some((name) => typeof env?.[name] === "string" && env[name])) {
     throw new Error();
