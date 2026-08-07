@@ -27,7 +27,7 @@ const ownedContainerName = "deepseek-platform128-pg17";
 const ownedPort = 56432;
 const maxChildOutputBytes = 64 * 1024;
 const maxChildDurationMs = 120_000;
-const expectedPostgresTestCount = 4;
+const expectedPostgresTestCount = 5;
 const safeIdentifier = /^[a-z_][a-z0-9_$]{0,62}$/u;
 const loopbackHosts = new Set(["127.0.0.1", "::1"]);
 const failurePhases = new Set([
@@ -46,6 +46,7 @@ const failureCategories = new Set([
   "publish_binding_inspection",
   "container_start",
   "postgres_readiness",
+  "password_auth_lockdown",
   "secondary_database_creation",
   "construction_target_admission",
   "provisioning_authority",
@@ -160,6 +161,8 @@ export async function run({
         await waitForPostgres(urls.primaryOperatorUrl);
         resources.postgresReady = true;
       });
+      await runAt(resources, "construct", "password_auth_lockdown", () =>
+        applyMigratorPasswordAuth(spawnImpl));
       return urls;
     },
 
@@ -232,7 +235,7 @@ export async function run({
           databaseName,
           authorities.authorities.get("primary"),
           lifecycleResources,
-          "application-public",
+          "pg-database-owner-public",
         ),
       );
       await runAt(
@@ -244,7 +247,7 @@ export async function run({
           secondaryDatabaseName,
           authorities.authorities.get("secondary"),
           lifecycleResources,
-          "provider-managed-public",
+          "stable-provider-owner-public",
         ),
       );
       lifecycleResources.provisioningComplete = true;
@@ -588,9 +591,31 @@ async function provisionFixture(
     await authorizedPool.query(
       `alter database ${quoteIdentifier(expectedDatabase)} owner to platform_app`,
     );
-    await authorizedPool.query(
-      `alter schema public owner to provider_owner`,
-    );
+    if (variant === "stable-provider-owner-public") {
+      await authorizedPool.query(
+        `alter schema public owner to provider_owner`,
+      );
+    } else if (variant === "pg-database-owner-public") {
+      const publicOwner = await authorizedPool.query(
+        `select pg_get_userbyid(nspowner)::text as owner
+           from pg_namespace
+          where nspname = 'public'`,
+      );
+      if (publicOwner.rows?.[0]?.owner !== "pg_database_owner") {
+        throw new Error();
+      }
+      await authorizedPool.query(
+        "alter default privileges for role pg_database_owner revoke all privileges on tables from public",
+      );
+      await authorizedPool.query(
+        "alter default privileges for role pg_database_owner revoke all privileges on sequences from public",
+      );
+      await authorizedPool.query(
+        "alter default privileges for role pg_database_owner revoke execute on functions from public",
+      );
+    } else {
+      throw new Error();
+    }
     await authorizedPool.query(
       "create schema appdata authorization platform_app",
     );
@@ -937,6 +962,76 @@ async function startOwnedContainer(spawnImpl) {
     "POSTGRES_HOST_AUTH_METHOD=trust",
     "postgres:17",
   ]);
+}
+
+const ownedPgDataPath = "/var/lib/postgresql/data";
+
+function migratorHbaContent() {
+  return [
+    "# managed by run-disposable-migrator-alignment-tests.mjs",
+    "local   all             all                                        trust",
+    "host    all             platform_migrator       127.0.0.1/32       scram-sha-256",
+    "host    all             platform_migrator       ::1/128            scram-sha-256",
+    "host    all             platform_migrator       all                scram-sha-256",
+    "host    all             all                     127.0.0.1/32       trust",
+    "host    all             all                     ::1/128            trust",
+    "host    all             all                     all                trust",
+    "",
+  ].join("\n");
+}
+
+function assertMigratorHbaContent(content) {
+  const lines = content
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("#"));
+  if (lines.length !== 7) throw new Error();
+  const scramRules = lines.filter(
+    (line) => line.includes("platform_migrator") && line.includes("scram-sha-256"),
+  );
+  if (scramRules.length !== 3) throw new Error();
+  for (const rule of scramRules) {
+    if (!/^host\s+all\s+platform_migrator\s+(?:\d+\.\d+\.\d+\.\d+\/\d+|::1\/\d+|all)\s+scram-sha-256$/u.test(rule)) {
+      throw new Error();
+    }
+  }
+  const fallback = lines.find((line) =>
+    /^host\s+all\s+all\s+(?:\d+\.\d+\.\d+\.\d+\/\d+|::1\/\d+|all)\s+trust$/u.test(line));
+  if (!fallback) throw new Error();
+  if (lines.some((line) => line.includes("platform_migrator") && line.includes("trust"))) {
+    throw new Error();
+  }
+}
+
+async function applyMigratorPasswordAuth(spawnImpl) {
+  const content = migratorHbaContent();
+  const quotedLines = content
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => `'${line}'`)
+    .join(" ");
+  await runCommand(spawnImpl, "docker", [
+    "exec",
+    ownedContainerName,
+    "sh",
+    "-c",
+    `printf '%s\n' ${quotedLines} > ${ownedPgDataPath}/pg_hba.conf`,
+  ]);
+  const observed = await runCommand(spawnImpl, "docker", [
+    "exec",
+    ownedContainerName,
+    "sh",
+    "-c",
+    `cat ${ownedPgDataPath}/pg_hba.conf`,
+  ]);
+  assertMigratorHbaContent(observed);
+  const pool = new Pool({ connectionString: buildUrl("postgres", databaseName), max: 1 });
+  try {
+    const result = await pool.query("select pg_reload_conf() as ok");
+    if (result.rows?.[0]?.ok !== true) throw new Error();
+  } finally {
+    await pool.end();
+  }
 }
 
 export function parsePublishedBinding(output) {
