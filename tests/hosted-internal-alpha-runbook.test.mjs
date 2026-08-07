@@ -488,7 +488,8 @@ test("temporary transfer grants are revoked and cannot survive baseline-equality
     "utf8",
   );
   assert.match(source, /revoke create on schema/);
-  assert.match(source, /revoke create on database/);
+  assert.match(source, /revoke connect on database/);
+  assert.match(source, /granted by platform_app/);
   assert.match(source, /admin_option/);
   assert.match(source, /inherit_option/);
   assert.match(source, /set_option/);
@@ -610,6 +611,210 @@ function createMockDockerSpawn(handlers) {
   return spawnImpl;
 }
 
+test("DL-128-REPO-002: the migrator contract admits exactly one protected bootstrap creator edge, not zero memberships", async () => {
+  const architectureDoc = await readFile(
+    "docs/architecture/PLATFORM-MIGRATOR-ALIGNMENT.md",
+    "utf8",
+  );
+  const runbook = await readRunbook();
+  const postgresTest = await readFile(
+    "tests/platform-migrator-alignment-postgres.test.mjs",
+    "utf8",
+  );
+  assert.match(architectureDoc, /bootstrap-superuser grantor/i);
+  assert.match(architectureDoc, /protected bootstrap creator edge/i);
+  assert.match(architectureDoc, /exactly one protected/i);
+  assert.match(architectureDoc, /not removable by the creator|not removable by `platform_app`/i);
+  assert.match(runbook, /bootstrap-superuser grantor/i);
+  assert.match(postgresTest, /grantor/);
+  assert.match(postgresTest, /pg_auth_members[\s\S]*grantor|grantor[\s\S]*pg_auth_members/i);
+});
+
+test("DL-128-REPO-002: no temporary CREATEDB is granted to platform_migrator", async () => {
+  const postgresTest = await readFile(
+    "tests/platform-migrator-alignment-postgres.test.mjs",
+    "utf8",
+  );
+  const architectureDoc = await readFile(
+    "docs/architecture/PLATFORM-MIGRATOR-ALIGNMENT.md",
+    "utf8",
+  );
+  const runbook = await readRunbook();
+  assert.doesNotMatch(postgresTest, /alter role platform_migrator createdb/);
+  assert.doesNotMatch(postgresTest, /alter role platform_migrator\s+createdb/i);
+  assert.match(architectureDoc, /No temporary `CREATEDB` on `platform_migrator`/i);
+  assert.match(runbook, /No temporary `CREATEDB` on `platform_migrator`/i);
+});
+
+test("DL-128-REPO-002: database ownership transfer is proven transactional in PostgreSQL 17", async () => {
+  const postgresTest = await readFile(
+    "tests/platform-migrator-alignment-postgres.test.mjs",
+    "utf8",
+  );
+  assert.match(
+    postgresTest,
+    /begin[\s\S]*alter database [\s\S]*owner to platform_migrator[\s\S]*commit/i,
+  );
+});
+
+test("DL-128-REPO-002: migrator login admission is proven before the ownership transfer", async () => {
+  const postgresTest = await readFile(
+    "tests/platform-migrator-alignment-postgres.test.mjs",
+    "utf8",
+  );
+  assert.match(postgresTest, /validateMigratorLoginAdmission|login admission/i);
+  const transferIndex = postgresTest.search(/alter database \$\{identifier\(databaseName\)\} owner to platform_migrator/);
+  const loginIndex = postgresTest.search(/validateMigratorLoginAdmission/);
+  assert.ok(loginIndex >= 0, "login admission must exist");
+  assert.ok(transferIndex > loginIndex, "login admission must precede the database ownership transfer");
+});
+
+test("DL-128-REPO-002: credential/login validation precedes ownership transfer and failure leaves ownership unchanged", async () => {
+  const postgresTest = await readFile(
+    "tests/platform-migrator-alignment-postgres.test.mjs",
+    "utf8",
+  );
+  assert.match(postgresTest, /failed login|login fails|not permitted to log in/i);
+  assert.match(postgresTest, /ownership unchanged|owner.*unchanged/i);
+});
+
+test("DL-128-REPO-003: SET=false and INHERIT=false with ADMIN=true is documented as accident protection, not a security boundary", async () => {
+  const architectureDoc = await readFile(
+    "docs/architecture/PLATFORM-MIGRATOR-ALIGNMENT.md",
+    "utf8",
+  );
+  const runbook = await readRunbook();
+  const decisions = await readFile(
+    "docs/hosted-internal-alpha-operator-decisions.md",
+    "utf8",
+  );
+  for (const source of [architectureDoc, runbook]) {
+    assert.match(
+      source,
+      new RegExp(
+        whitespaceTolerant("`SET=false` and `INHERIT=false` do not create a security boundary while `ADMIN=true` remains"),
+        "i",
+      ),
+    );
+    assert.match(
+      source,
+      new RegExp(whitespaceTolerant("The automatic edge protects against accidents only"), "i"),
+    );
+    assert.match(
+      source,
+      new RegExp(whitespaceTolerant("Provider revocation is mandatory before final acceptance"), "i"),
+    );
+    assert.match(
+      source,
+      new RegExp(whitespaceTolerant("Final migrator membership is zero"), "i"),
+    );
+  }
+  assert.match(decisions, /`DL-128-REPO-003`/i);
+  assert.match(decisions, /final migrator membership is zero|zero migrator membership/i);
+  assert.match(decisions, /provider\/bootstrap authority then revokes the automatic edge/i);
+});
+
+test("DL-128-REPO-003: the repository no longer accepts the protected bootstrap edge as the final state", async () => {
+  const architectureDoc = await readFile(
+    "docs/architecture/PLATFORM-MIGRATOR-ALIGNMENT.md",
+    "utf8",
+  );
+  const runbook = await readRunbook();
+  for (const source of [architectureDoc, runbook]) {
+    assert.match(
+      source,
+      new RegExp(
+        whitespaceTolerant("the automatic bootstrap edge may exist only during creation, credential admission and ownership transfer"),
+        "i",
+      ),
+    );
+    assert.match(
+      source,
+      new RegExp(
+        whitespaceTolerant("revokes the automatic edge after successful transfer/read-back"),
+        "i",
+      ),
+    );
+    assert.match(
+      source,
+      new RegExp(
+        whitespaceTolerant("final accepted `platform_migrator` membership posture is zero edges across granted-role, member and grantor positions"),
+        "i",
+      ),
+    );
+  }
+});
+
+test("DL-128-REPO-003: the disposable rehearsal proves latent self-escalation and provider final revocation before denial", async () => {
+  const postgresTest = await readFile(
+    "tests/platform-migrator-alignment-postgres.test.mjs",
+    "utf8",
+  );
+  assert.match(
+    postgresTest,
+    /grant platform_migrator to platform_app with set true, inherit false/i,
+  );
+  assert.match(postgresTest, /set role platform_migrator/i);
+  assert.match(postgresTest, /current_user::text as cu, session_user::text as su/i);
+  assert.match(
+    postgresTest,
+    /revoke platform_migrator from platform_app granted by platform_app/i,
+  );
+  assert.match(
+    postgresTest,
+    /select count\(\*\)::int as c[\s\S]*from pg_auth_members[\s\S]*granted_role\.rolname = 'platform_migrator'[\s\S]*member_role\.rolname = 'platform_migrator'[\s\S]*grantor_role\.rolname = 'platform_migrator'/i,
+  );
+  const escalationIndex = postgresTest.search(
+    /grant platform_migrator to platform_app with set true, inherit false/i,
+  );
+  const revocationIndex = postgresTest.search(
+    /revoke platform_migrator from platform_app granted by platform_app/i,
+  );
+  const providerRevocationIndex = postgresTest.search(
+    /adminPool\.query\(\s*`revoke platform_migrator from platform_app`/i,
+  );
+  const denialIndex = postgresTest.search(/permission denied to grant role/i);
+  assert.ok(escalationIndex >= 0, "self-grant proof must exist");
+  assert.ok(revocationIndex >= 0, "self-granted edge revocation must exist");
+  assert.ok(providerRevocationIndex >= 0, "provider revocation must exist");
+  assert.ok(denialIndex >= 0, "post-revocation denial proof must exist");
+  assert.ok(
+    escalationIndex < providerRevocationIndex,
+    "self-escalation proof must precede provider revocation",
+  );
+  assert.ok(
+    providerRevocationIndex < denialIndex,
+    "provider revocation must precede the denial proof",
+  );
+});
+
+test("DL-128-REPO-003: zero-membership finality and post-revocation denial are proven in the disposable rehearsal", async () => {
+  const postgresTest = await readFile(
+    "tests/platform-migrator-alignment-postgres.test.mjs",
+    "utf8",
+  );
+  assert.match(
+    postgresTest,
+    /permission denied to grant role/i,
+  );
+  assert.match(
+    postgresTest,
+    /permission denied to set role/i,
+  );
+  assert.match(
+    postgresTest,
+    /final platform_migrator membership inventory must be zero across granted-role, member and grantor positions/i,
+  );
+  assert.match(
+    postgresTest,
+    /platform_migrator default-privilege records must be removed before the role drop/i,
+  );
+  assert.match(
+    postgresTest,
+    /drop owned by platform_migrator[\s\S]*pg_default_acl[\s\S]*drop role platform_migrator/i,
+  );
+});
+
 async function assertRehearsalSurface() {
   const runbook = await readRunbook();
   assert.match(runbook, /MIGRATOR_ALIGNMENT_TEST_CONFIRM=disposable-only/i);
@@ -656,4 +861,8 @@ function assertEnvRow(runbook, name, required, secret) {
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function whitespaceTolerant(value) {
+  return escapeRegExp(value).replaceAll(" ", "\\s+");
 }
