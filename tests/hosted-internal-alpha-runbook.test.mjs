@@ -815,6 +815,119 @@ test("DL-128-REPO-003: zero-membership finality and post-revocation denial are p
   );
 });
 
+test("DL-128-REPO-004: migrator credential admission enforces real password authentication", async () => {
+  const postgresTest = await readFile(
+    "tests/platform-migrator-alignment-postgres.test.mjs",
+    "utf8",
+  );
+  const runner = await readFile(
+    "scripts/run-disposable-migrator-alignment-tests.mjs",
+    "utf8",
+  );
+  const architectureDoc = await readFile(
+    "docs/architecture/PLATFORM-MIGRATOR-ALIGNMENT.md",
+    "utf8",
+  );
+  const runbook = await readRunbook();
+
+  assert.match(runner, /scram-sha-256/);
+  assert.match(runner, /pg_hba\.conf/);
+  assert.match(runner, /pg_reload_conf/);
+  assert.match(postgresTest, /scram-sha-256/);
+  assert.match(postgresTest, /password authentication failed/i);
+  assert.match(
+    postgresTest,
+    /client password must be a string|no password supplied/i,
+  );
+  assert.match(postgresTest, /validateMigratorLoginAdmission/i);
+  assert.match(postgresTest, /direct migrator login fails before activation/i);
+  assert.match(architectureDoc, /scram-sha-256/);
+  assert.match(runbook, /scram-sha-256/);
+  assert.match(runbook, /wrong-password and omitted-password rejection/i);
+});
+
+test("DL-128-REPO-004: intermediate membership windows validate the complete inventory across granted-role, member and grantor positions", async () => {
+  const postgresTest = await readFile(
+    "tests/platform-migrator-alignment-postgres.test.mjs",
+    "utf8",
+  );
+  assert.doesNotMatch(
+    postgresTest,
+    /\.filter\(\(edge\) => edge\.granted_role === "platform_migrator"\)/,
+  );
+  assert.match(postgresTest, /grantor_role\.rolname = any/);
+  assert.match(postgresTest, /complete membership inventory must contain exactly/i);
+});
+
+test("DL-128-REPO-004: the corrected negative control keeps platform_migrator NOCREATEDB and uses the missing SET-capable authority", async () => {
+  const architectureDoc = await readFile(
+    "docs/architecture/PLATFORM-MIGRATOR-ALIGNMENT.md",
+    "utf8",
+  );
+  const postgresTest = await readFile(
+    "tests/platform-migrator-alignment-postgres.test.mjs",
+    "utf8",
+  );
+  const runbook = await readRunbook();
+  assert.doesNotMatch(architectureDoc, /receiving `CREATEDB`/);
+  assert.doesNotMatch(postgresTest, /alter role platform_migrator createdb/);
+  assert.match(
+    architectureDoc,
+    /target-role assumption\/SET-capable authority|SET-capable authority/,
+  );
+  assert.match(postgresTest, /must be able to SET ROLE|permission denied/i);
+  assert.match(runbook, /remains `NOCREATEDB`/i);
+});
+
+test("DL-128-REPO-004: the pre-completion legacy-retirement guard is mechanically exercised", async () => {
+  const postgresTest = await readFile(
+    "tests/platform-migrator-alignment-postgres.test.mjs",
+    "utf8",
+  );
+  const architectureDoc = await readFile(
+    "docs/architecture/PLATFORM-MIGRATOR-ALIGNMENT.md",
+    "utf8",
+  );
+  assert.match(postgresTest, /drop role platform_app/);
+  assert.match(postgresTest, /depends on it|cannot be dropped/i);
+  assert.match(postgresTest, /legacy authority remains available|assertLegacyAuthorityAvailable/i);
+  assert.match(architectureDoc, /cannot be retired/i);
+});
+
+test("DL-128-REPO-004: the rehearsal models real pg_database_owner semantics with before/after and rollback authority proof", async () => {
+  const postgresTest = await readFile(
+    "tests/platform-migrator-alignment-postgres.test.mjs",
+    "utf8",
+  );
+  const architectureDoc = await readFile(
+    "docs/architecture/PLATFORM-MIGRATOR-ALIGNMENT.md",
+    "utf8",
+  );
+  const runbook = await readRunbook();
+  assert.match(postgresTest, /pg_database_owner/);
+  assert.match(postgresTest, /assertCanCreateInPublic/);
+  assert.match(architectureDoc, /pg_database_owner/);
+  assert.match(architectureDoc, /implicit member/);
+  assert.match(architectureDoc, /current database owner/);
+  assert.match(runbook, /pg_database_owner/);
+  assert.match(runbook, /implicit member/);
+  assert.match(runbook, /current database owner/);
+});
+
+test("DL-128-REPO-004: the repository states one public-ownership starting fact and no application-controlled branch", async () => {
+  const architectureDoc = await readFile(
+    "docs/architecture/PLATFORM-MIGRATOR-ALIGNMENT.md",
+    "utf8",
+  );
+  const runbook = await readRunbook();
+  assert.doesNotMatch(architectureDoc, /application-controlled `public` that can be transferred/i);
+  assert.doesNotMatch(architectureDoc, /fresh live read-back proves `public` is application-controlled/i);
+  assert.match(architectureDoc, /one current starting fact/);
+  assert.match(architectureDoc, /not an unrelated independent provider role|independent provider role/);
+  assert.doesNotMatch(runbook, /application-controlled-`public` branch|application-controlled `public`/i);
+  assert.match(runbook, /known live starting fact/);
+});
+
 async function assertRehearsalSurface() {
   const runbook = await readRunbook();
   assert.match(runbook, /MIGRATOR_ALIGNMENT_TEST_CONFIRM=disposable-only/i);

@@ -5,9 +5,11 @@
 This document is the repository contract for issue #128 (dedicated Platform
 migrator authority) under parent #104. It implements the controller corrections
 in `DL-128-REPO-001`, `DL-128-REPO-002` (PostgreSQL 17 creator-edge,
-transaction, rollback and credential-order semantics) and `DL-128-REPO-003`
-(creator-edge finality), under the Run-06R4 authority in #128 comment
-`5206359921`.
+transaction, rollback and credential-order semantics), `DL-128-REPO-003`
+(creator-edge finality) and `DL-128-REPO-004` (real password credential
+admission, complete membership-position closure, target-`NOCREATEDB` negative
+control, legacy-retirement guard and real PostgreSQL 17 `pg_database_owner`
+semantics), under the Run-09 authority in #128 comment `5211873287`.
 
 It is repository contract and disposable-rehearsal evidence only. It creates no
 role, grants no privilege, transfers no ownership, rotates no credential,
@@ -17,14 +19,21 @@ and performs no deployment. It releases no live-system authority.
 ## Sources of authority
 
 - Parent issue #104 rolling queue.
-- Child issue #128, including the current body and comment `5206359921`.
+- Child issue #128, including the current body and comment `5211873287`.
 - Repository Design Lock `DL-128-REPO-001`, amended by repository contract
   amendment `DL-128-REPO-002` (PostgreSQL 17 creator-edge, transaction,
-  rollback and credential-order semantics), and superseded for creator-edge
-  finality by repository contract amendment `DL-128-REPO-003`.
+  rollback and credential-order semantics), superseded for creator-edge
+  finality by repository contract amendment `DL-128-REPO-003`, and amended by
+  repository contract amendment `DL-128-REPO-004` (post-merge repair of the
+  six PR #131 review findings: real password credential admission, complete
+  membership-position closure, target-`NOCREATEDB` negative control,
+  legacy-retirement guard and real PostgreSQL 17 `pg_database_owner`
+  semantics).
 - Completed topology evidence #116 / Run-49.
 - Completed #127 and merged PR #129, including the accepted 39-record runtime
   grant contract and the exact disposable PostgreSQL 17 fixture authority.
+- Merged PR #131 and its six post-merge review threads, all adjudicated
+  `VALID_OPEN` by the controller and repaired under Run-09.
 - Blocked successor #122.
 
 ## Locked role model
@@ -165,17 +174,40 @@ The executing current owner:
 No permanent membership-derived migration authority is allowed in the final
 state: final migrator membership is zero.
 
-## public schema decision boundary
+## public schema ownership contract
 
-The repository does not state that `public` definitely becomes owned by
-`platform_migrator`. The later live read-back decides fail-closed:
+The accepted read-only live evidence establishes one current starting fact:
 
-- If fresh live read-back proves `public` is application-controlled and safely
-  transferable, the later live Design Lock may transfer it.
-- If `public` is provider-managed or represented through provider ownership
-  semantics, preserve that ownership and grant `platform_migrator` only the
-  exact `CREATE`/`USAGE` authority required by reviewed migration tooling.
-- Any inconclusive owner or provider result blocks mutation.
+> In the live database, the `public` schema is owned by the predefined
+> `pg_database_owner` role.
+
+PostgreSQL defines `pg_database_owner` as having exactly one implicit member:
+the **current database owner**. A `public` schema owned by `pg_database_owner`
+is therefore governed by the current database owner, and `pg_database_owner`
+must not be described as an unrelated independent provider role. The repository
+does not carry an application-controlled-`public` branch: that question was
+already resolved by the accepted live evidence.
+
+Consequence: if a later live transaction transfers database ownership to
+`platform_migrator` while `public` remains owned by `pg_database_owner`,
+`platform_migrator` becomes the implicit role exercising the associated
+`public` owner authority. The disposable rehearsal models, proves and reports
+that consequence and its complete reverse rollback; it does not claim `public`
+stays independently provider-controlled.
+
+The repository contract performs no live ownership mutation. Run-09 chooses no
+live ownership decision. After this repair is merged and independently
+accepted, a fresh read-only live preflight will determine whether the final
+live Design Lock should explicitly accept the database-owner/public-owner
+authority relationship, establish a separately proven stable owner for
+`public` before/with the transfer, or choose another safe topology. The final
+live Design Lock may choose among only facts mechanically proven by that fresh
+preflight.
+
+A separate explicitly labelled **stable-provider-owner fixture**
+(`provider_owner`) may remain in the rehearsal only as a distinct possible
+future topology. It is not evidence for the known live `pg_database_owner`
+topology and may not substitute for it.
 
 Application schemas, application objects and the Drizzle ledger may still
 target `platform_migrator` ownership when the later live Design Lock proves the
@@ -216,6 +248,15 @@ and is therefore not part of ordinary `npm test`.
 - Uses only loopback.
 - Uses PostgreSQL 17.
 - Never accepts caller-provided database URLs.
+- Enforces real password authentication on the migrator credential-admission
+  path. The runner replaces the container host-authentication configuration
+  with an exact managed `pg_hba.conf` whose first-match rules require
+  `scram-sha-256` for `platform_migrator` host connections (loopback and any
+  forwarded source address) before the bootstrap `trust` fallback for the
+  fixture's operator and legacy roles, reloads the configuration through
+  `pg_reload_conf()` and verifies the written rules. The bootstrap
+  `POSTGRES_HOST_AUTH_METHOD=trust` posture is superseded before any migrator
+  connection and is never used as credential-admission evidence.
 
 ### Disposable equivalents
 
@@ -225,11 +266,14 @@ The rehearsal creates disposable equivalents of:
   `CREATEDB` attribute);
 - future migrator (`platform_migrator`, final attributes);
 - restricted runtime (`platform_runtime`, non-owning, `NOLOGIN`);
-- a provider-managed public owner variant (`provider_owner`);
+- the real `pg_database_owner` topology of the primary fixture (`public`
+  remains owned by the predefined `pg_database_owner` role, whose implicit
+  member is the current database owner);
+- an explicitly labelled stable-provider-owner fixture (`provider_owner`) in
+  the secondary fixture, modelling only a distinct possible future topology;
 - application schema, migration schema and ledger;
 - representative table, index, enum, routine and sequence;
-- the accepted 39-record runtime grant contract;
-- the provider-managed-public-owner variant where needed.
+- the accepted 39-record runtime grant contract.
 
 ### Starting fingerprint
 
@@ -248,13 +292,16 @@ absence after success and after every failure path.
 
 ### Required negative control
 
-The rehearsal proves that:
-
-- `platform_migrator` receiving `CREATEDB`;
-- while the executing legacy owner cannot `SET ROLE` to it;
-
-does not satisfy the database-owner transfer contract. The test observes the
-failure and proves zero unintended persistent mutation.
+The rehearsal proves that the executing legacy/database owner, holding only
+the automatic bootstrap edge (`SET=false`, `INHERIT=false`), lacks the
+target-role assumption/SET-capable authority required for the ownership
+transfer. `platform_migrator` remains `NOCREATEDB` throughout; no temporary
+`CREATEDB` is granted to it. The test attempts the database-owner transfer
+from the executing legacy owner before the bounded transfer window, observes
+the PostgreSQL 17 rejection (`must be able to SET ROLE` / `permission denied`),
+proves the target attributes remain exact (`NOCREATEDB`, `LOGIN` unchanged)
+and proves zero unintended persistent mutation by baseline-equality of the
+ownership fingerprint.
 
 ### Required positive transfer rehearsal
 
@@ -269,15 +316,33 @@ The rehearsal proves the bounded temporary-membership path per
    the creator through an ordinary `REVOKE`.
 3. Prove a separately granted and separately revocable supplemental
    `SET=true`, `INHERIT=false` edge with a distinct grantor.
-4. Prove credential/login admission (password set, `LOGIN` enablement, direct
-   read-only migrator connection) before ownership transfer, and prove a failed
-   login leaves ownership unchanged.
+4. Prove credential/login admission under real password authentication: the
+   disposable fixture enforces `scram-sha-256` for the migrator host path
+   (the bootstrap `trust` posture is superseded before any migrator
+   connection), `platform_migrator` begins `NOLOGIN` with no password, direct
+   login fails before activation, the exact synthetic password is installed
+   with `LOGIN` enablement, a fresh connection using that exact password
+   succeeds and reads back the exact role and database, a fresh connection
+   with a wrong password fails, a fresh connection with the password omitted
+   fails, and a failed login leaves ownership unchanged.
 5. Prove the exact transaction boundary: database and object ownership
-   transfer inside one rollback-capable transaction in PostgreSQL 17.
+   transfer inside one rollback-capable transaction in PostgreSQL 17. The
+   statement order inside that transaction satisfies the directional
+   PostgreSQL 17 owner checks: the application-owned objects transfer first
+   while the target still holds `CREATE` on their schemas, the `drizzle` and
+   `appdata` schemas transfer while the executing legacy owner still holds
+   database-`CREATE` (the `ALTER SCHEMA ... OWNER` check), the database
+   ownership transfers next (the `ALTER DATABASE ... OWNER` SET-capable
+   check), and the `public` table transfers run last so the new database
+   owner satisfies the new-owner schema-`CREATE` requirement through the
+   implicit `pg_database_owner` membership (the `ALTER TABLE ... OWNER`
+   check).
 6. Transfer database, `drizzle`, migration ledger and the application-owned
    object inventory (tables, index-following ownership, sequences, enums,
-   routines); retain provider-managed `public` ownership with only the exact
-   migrator `CREATE`/`USAGE` authority.
+   routines); `public` remains owned by `pg_database_owner` and the rehearsal
+   proves the effective-authority consequence: the database owner exercises
+   the associated `public` owner authority before and after the transfer and
+   through complete reverse rollback.
 7. Revoke only the supplemental `SET=true` edge; prove the remaining automatic
    `ADMIN=true` edge still lets `platform_app` grant itself a fresh
    `SET=true` edge and successfully `SET ROLE platform_migrator` (the latent
@@ -288,33 +353,56 @@ The rehearsal proves the bounded temporary-membership path per
    granted-role, member and grantor positions.
 9. Prove the final ownership remains assigned to `platform_migrator`, the
    final attributes (`LOGIN`, `NOSUPERUSER`, `NOCREATEDB`, `NOCREATEROLE`,
-   `NOREPLICATION`, `NOBYPASSRLS`) remain exact, `public` remains
-   provider-owned with only the reviewed `CREATE`/`USAGE` authority, and
-   `platform_runtime` remains zero-membership, zero-ownership and exactly equal
-   to the 39-record contract; then prove `platform_app` cannot grant itself
-   membership in `platform_migrator` and cannot `SET ROLE platform_migrator`.
+   `NOREPLICATION`, `NOBYPASSRLS`) remain exact, `public` remains owned by
+   `pg_database_owner` with the effective authority following the current
+   database owner, and `platform_runtime` remains zero-membership,
+   zero-ownership and exactly equal to the 39-record contract; then prove
+   `platform_app` cannot grant itself membership in `platform_migrator` and
+   cannot `SET ROLE platform_migrator`.
 10. Revoke the existing `platform_runtime`/`platform_app` edge and prove
     runtime zero-membership with the exact 39-record contract unchanged.
 11. Execute a mechanically valid complete reverse rollback through the
     provider/bootstrap authority and prove the exact baseline restoration,
     including owners, ACLs, default ACLs, role attributes, memberships,
     removal of `platform_migrator` default-privilege records and a clean role
-    drop.
+    drop; the original database owner and the corresponding
+    `pg_database_owner`-derived `public` authority are restored with no
+    residue.
 12. Prove the legacy role cannot be retired until all replacement proof
-    passes; conversion to `NOLOGIN` occurs only after complete proof.
+    passes: at the migrated zero-membership state before the completion point,
+    `DROP ROLE platform_app` is mechanically rejected and the legacy
+    authority remains available for rollback; conversion to `NOLOGIN` occurs
+    only after complete proof.
 
 ### public ownership variants
 
-The rehearsal covers provider-managed `public` only:
+The rehearsal covers two explicitly labelled variants:
 
-- `public` is owned by the disposable provider owner in every variant and is
-  never transferred.
-- `platform_migrator` receives only the exact reviewed `CREATE`/`USAGE`
-  authority required for migration work, including a real bounded migrator
-  transaction that creates a disposable migration object in `public`,
-  validates it and rolls it back, proving the object is absent after rollback,
-  `public` ownership remains with the provider owner and runtime authority is
-  unchanged.
+- **Real `pg_database_owner` topology (primary fixture, models the known live
+  starting state).** `public` is owned by the predefined `pg_database_owner`
+  role and is never transferred. Its single implicit member is the current
+  database owner. The rehearsal proves which role exercises the
+  database-owner/`public`-owner authority before the transfer
+  (`platform_app`), that the database-owner transfer to `platform_migrator`
+  makes `platform_migrator` the implicit role exercising that `public` owner
+  authority, that the effective authority over `public` changes accordingly
+  (with runtime authority unchanged), and that complete reverse rollback
+  restores the original database owner and the corresponding
+  `pg_database_owner` authority with no residue. The fixture also mirrors the
+  accepted live default-privilege posture: the `pg_database_owner` creator
+  role receives explicit default-privilege revokes (tables, sequences and
+  functions from `PUBLIC`) exactly like the other fixture creator roles, so
+  the runtime posture gate observes no `PUBLIC` default authority. This
+  variant is the live topology proof; it does not claim `public` stays
+  independently provider-controlled.
+- **Explicitly labelled stable-provider-owner fixture (secondary fixture).**
+  `public` is owned by the disposable `provider_owner` role and `platform_migrator`
+  receives the exact reviewed `CREATE`/`USAGE` authority, including a real
+  bounded migrator transaction that creates a disposable migration object in
+  `public`, validates it and rolls it back, proving the object is absent after
+  rollback and runtime authority is unchanged. This fixture models only a
+  distinct possible future topology; its evidence may not substitute for the
+  known live `pg_database_owner` proof.
 
 No variant may widen runtime authority.
 

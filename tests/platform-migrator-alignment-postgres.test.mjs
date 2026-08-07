@@ -41,11 +41,14 @@ const fixtureRoleNames = [
 ];
 const allowedAclRoles = new Set([
   ...fixtureRoleNames,
+  "pg_database_owner",
   "postgres",
   "PUBLIC",
 ]);
 const safeIdentifier = /^[a-z_][a-z0-9_$]{0,62}$/u;
 const syntheticMigratorPassword = "synthetic-migrator-password";
+const wrongMigratorPassword = "synthetic-wrong-migrator-password";
+const publicAuthorityProbeTable = "__pgdbowner_authority_probe";
 
 test(
   "DL-128-REPO-003: the automatic ADMIN=true bootstrap edge is accident protection only and admits latent self-escalation until provider revocation",
@@ -58,7 +61,7 @@ test(
         primary.adminPool,
         primary.databaseName,
       );
-      assertBaselineFingerprint(baseline);
+      assertBaselineFingerprint(baseline, "pg_database_owner");
 
       await createMigratorRoleAsLegacyOwner(primary.appPool);
 
@@ -123,7 +126,7 @@ test(
 );
 
 test(
-  "bounded supplemental SET edge, credential-before-transfer login admission, one-transaction ownership transfer and provider final revocation to zero membership",
+  "bounded supplemental SET edge, real password credential admission, target-NOCREATEDB negative control, pg_database_owner authority transfer, provider final revocation, pre-completion legacy-retirement guard",
   { skip: skipReason },
   async () => {
     const fixture = await openFixtures();
@@ -133,7 +136,7 @@ test(
         primary.adminPool,
         primary.databaseName,
       );
-      assertBaselineFingerprint(baseline);
+      assertBaselineFingerprint(baseline, "pg_database_owner");
 
       await createMigratorRoleAsLegacyOwner(primary.appPool);
       await primary.appPool.query(
@@ -142,10 +145,23 @@ test(
       await installMigratorDefaultPrivileges(primary.adminPool);
       await assertExactProtectedEdge(primary.adminPool);
 
+      // platform_migrator begins NOLOGIN with no password: prove catalog state
+      // and prove direct migrator login fails before activation. The migrator
+      // host-authentication path is scram-sha-256 enforced by the disposable
+      // runner, so a passwordless connection cannot authenticate and a
+      // password-bearing connection fails until the exact synthetic password
+      // is installed.
+      await assertMigratorRoleAttribute(primary.adminPool, "rolcanlogin", false);
+      await assertMigratorPasswordInstalled(primary.adminPool, false);
       await assertQueryRejected(
-        primary.migratorPool,
+        primary.migratorPasswordPool,
         `select 1`,
-        /not permitted to log in/i,
+        /password authentication failed|no password supplied/i,
+      );
+      await assertQueryRejected(
+        primary.migratorNoPasswordPool,
+        `select 1`,
+        /client password must be a string|no password supplied|password authentication failed/i,
       );
       assertOwnershipFieldsUnchanged(
         await readOwnershipFingerprint(primary.adminPool, primary.databaseName),
@@ -156,16 +172,77 @@ test(
         `alter role platform_migrator login password '${syntheticMigratorPassword}'`,
       );
       await assertMigratorRoleAttribute(primary.adminPool, "rolcanlogin", true);
-      await validateMigratorLoginAdmission(primary.migratorPool);
+      await assertMigratorPasswordInstalled(primary.adminPool, true);
+
+      // Correct password succeeds: the fresh admitted connection reads back
+      // the exact expected role and database before any ownership transfer.
+      await validateMigratorLoginAdmission(
+        primary.migratorPasswordPool,
+        primary.databaseName,
+      );
+      await assertQueryRejected(
+        primary.migratorWrongPasswordPool,
+        `select 1`,
+        /password authentication failed/i,
+      );
+      await assertQueryRejected(
+        primary.migratorNoPasswordPool,
+        `select 1`,
+        /client password must be a string|no password supplied|password authentication failed/i,
+      );
+      assertOwnershipFieldsUnchanged(
+        await readOwnershipFingerprint(primary.adminPool, primary.databaseName),
+        baseline,
+      );
+
+      // Corrected target-NOCREATEDB negative control: the executing legacy
+      // owner holds the automatic bootstrap edge (SET=false) and therefore
+      // lacks the target-role assumption/SET-capable authority required for
+      // the transfer. The transfer is rejected, the target remains
+      // NOCREATEDB with LOGIN unchanged, and no persistent mutation occurs.
+      await assertQueryRejected(
+        primary.appPool,
+        `alter database ${identifier(primary.databaseName)} owner to platform_migrator`,
+        /must be able to SET ROLE|permission denied/i,
+      );
+      await assertMigratorRoleAttribute(primary.adminPool, "rolcreatedb", false);
+      await assertMigratorRoleAttribute(primary.adminPool, "rolcanlogin", true);
+      assertOwnershipFieldsUnchanged(
+        await readOwnershipFingerprint(primary.adminPool, primary.databaseName),
+        baseline,
+      );
+
+      // Real pg_database_owner starting-state proof: the fresh PostgreSQL 17
+      // database leaves `public` owned by the predefined pg_database_owner
+      // role, whose single implicit member is the current database owner
+      // (platform_app at baseline). The database owner therefore exercises
+      // the public owner authority before transfer; platform_migrator does
+      // not.
+      assert.equal(
+        await schemaOwner(primary.adminPool, primary.databaseName, "public"),
+        "pg_database_owner",
+      );
+      await assertCurrentDatabaseOwner(
+        primary.adminPool,
+        primary.databaseName,
+        "platform_app",
+      );
+      await assertCanCreateInPublic(
+        primary.appPool,
+        "platform_app",
+        true,
+      );
+      await assertCanCreateInPublic(
+        primary.migratorPasswordPool,
+        "platform_migrator",
+        false,
+      );
 
       await primary.appPool.query(
         `grant platform_migrator to platform_app with set true, inherit false`,
       );
       assertExactTransferWindowEdges(await readMembershipEdges(primary.adminPool));
 
-      await primary.adminPool.query(
-        `grant create, usage on schema public to platform_migrator`,
-      );
       await primary.adminPool.query(
         `grant create on schema drizzle to platform_migrator`,
       );
@@ -191,7 +268,7 @@ test(
       assert.deepEqual(forwardFingerprint.schemaOwners, [
         "appdata=platform_migrator",
         "drizzle=platform_migrator",
-        "public=provider_owner",
+        "public=pg_database_owner",
       ]);
       for (const objectName of [
         "widgets",
@@ -214,7 +291,7 @@ test(
       const ledgerBefore = await primary.adminPool.query(
         "select count(*)::int as c from drizzle.__drizzle_migrations",
       );
-      const migrationClient = await primary.migratorPool.connect();
+      const migrationClient = await primary.migratorPasswordPool.connect();
       try {
         await migrationClient.query("begin");
         await migrationClient.query(
@@ -229,17 +306,29 @@ test(
       );
       assert.equal(ledgerAfter.rows[0].c, ledgerBefore.rows[0].c);
 
+      // Database-owner transfer consequence: `public` remains owned by
+      // pg_database_owner, so the implicit role exercising that public owner
+      // authority is now the new database owner (platform_migrator), and the
+      // former database owner (platform_app) loses it.
       assert.equal(
         await schemaOwner(primary.adminPool, primary.databaseName, "public"),
-        "provider_owner",
+        "pg_database_owner",
       );
-      const publicPrivileges = await schemaPrivileges(
+      await assertCurrentDatabaseOwner(
         primary.adminPool,
+        primary.databaseName,
         "platform_migrator",
-        "public",
       );
-      assert.equal(publicPrivileges.can_create, true);
-      assert.equal(publicPrivileges.can_usage, true);
+      await assertCanCreateInPublic(
+        primary.migratorPasswordPool,
+        "platform_migrator",
+        true,
+      );
+      await assertCanCreateInPublic(
+        primary.appPool,
+        "platform_app",
+        false,
+      );
       await assertRuntimeGrantSetExact(primary.adminPool);
       await assertRuntimePosture(primary.adminPool);
 
@@ -257,6 +346,17 @@ test(
         `revoke platform_migrator from platform_app`,
       );
       await assertZeroMigratorMembership(primary.adminPool);
+
+      // Pre-completion legacy-retirement guard: at the migrated zero-membership
+      // state, before the replacement and rollback proof completes, the legacy
+      // role cannot be retired or dropped and its authority remains available
+      // for rollback.
+      await assertQueryRejected(
+        primary.adminPool,
+        `drop role platform_app`,
+        /depends on it|cannot be dropped/i,
+      );
+      await assertLegacyAuthorityAvailable(primary.appPool);
 
       await assertQueryRejected(
         primary.appPool,
@@ -277,7 +377,7 @@ test(
       assert.deepEqual(finalFingerprint.schemaOwners, [
         "appdata=platform_migrator",
         "drizzle=platform_migrator",
-        "public=provider_owner",
+        "public=pg_database_owner",
       ]);
       for (const objectName of [
         "widgets",
@@ -301,48 +401,16 @@ test(
       await assertMigratorFinalAttributes(primary.adminPool);
       assert.equal(
         await schemaOwner(primary.adminPool, primary.databaseName, "public"),
-        "provider_owner",
+        "pg_database_owner",
       );
-      const finalPublicPrivileges = await schemaPrivileges(
-        primary.adminPool,
+      await assertCanCreateInPublic(
+        primary.migratorPasswordPool,
         "platform_migrator",
-        "public",
+        true,
       );
-      assert.equal(finalPublicPrivileges.can_create, true);
-      assert.equal(finalPublicPrivileges.can_usage, true);
-      await assertRuntimeFinalPosture(primary.adminPool);
-    } finally {
-      await closeFixtures(fixture);
-    }
-  },
-);
-
-test(
-  "exact reverse rollback via the provider authority restores the complete baseline from the final zero-membership state",
-  { skip: skipReason },
-  async () => {
-    const fixture = await openFixtures();
-    try {
-      const primary = fixture.primary;
-      const migratedState = await readOwnershipFingerprint(
-        primary.adminPool,
-        primary.databaseName,
-      );
-      assert.equal(migratedState.databaseOwner, "platform_migrator");
-      await assertZeroMigratorMembership(primary.adminPool);
-
-      await reverseTransferViaProviderAuthority(primary);
-      await dropMigratorRole(primary.adminPool);
-
-      const restored = await readOwnershipFingerprint(
-        primary.adminPool,
-        primary.databaseName,
-      );
-      assertBaselineFingerprint(restored);
-      assert.equal(restored.databaseOwner, "platform_app");
-      assert.equal(restored.memberships.length, 0);
-      assert.equal(
-        restored.attributes.some((row) => row.rolname === "platform_migrator"),
+      await assertCanCreateInPublic(
+        primary.appPool,
+        "platform_app",
         false,
       );
       await assertRuntimeFinalPosture(primary.adminPool);
@@ -353,7 +421,65 @@ test(
 );
 
 test(
-  "platform_runtime edge revocation and provider-managed public bounded migrator transaction",
+  "exact reverse rollback via the provider authority restores the complete baseline including pg_database_owner authority from the final zero-membership state",
+  { skip: skipReason },
+  async () => {
+    const fixture = await openFixtures();
+    try {
+      const primary = fixture.primary;
+      const migratedState = await readOwnershipFingerprint(
+        primary.adminPool,
+        primary.databaseName,
+      );
+      assert.equal(migratedState.databaseOwner, "platform_migrator");
+      assert.equal(
+        await schemaOwner(primary.adminPool, primary.databaseName, "public"),
+        "pg_database_owner",
+      );
+      await assertZeroMigratorMembership(primary.adminPool);
+      await assertCanCreateInPublic(
+        primary.migratorPasswordPool,
+        "platform_migrator",
+        true,
+      );
+      await assertCanCreateInPublic(
+        primary.appPool,
+        "platform_app",
+        false,
+      );
+
+      await reverseTransferViaProviderAuthority(primary);
+      await dropMigratorRole(primary.adminPool);
+
+      const restored = await readOwnershipFingerprint(
+        primary.adminPool,
+        primary.databaseName,
+      );
+      assertBaselineFingerprint(restored, "pg_database_owner");
+      assert.equal(restored.databaseOwner, "platform_app");
+      assert.equal(restored.memberships.length, 0);
+      assert.equal(
+        restored.attributes.some((row) => row.rolname === "platform_migrator"),
+        false,
+      );
+      assert.equal(
+        await schemaOwner(primary.adminPool, primary.databaseName, "public"),
+        "pg_database_owner",
+      );
+      await assertCanCreateInPublic(
+        primary.appPool,
+        "platform_app",
+        true,
+      );
+      await assertRuntimeFinalPosture(primary.adminPool);
+    } finally {
+      await closeFixtures(fixture);
+    }
+  },
+);
+
+test(
+  "platform_runtime edge revocation and the explicitly labelled stable-provider-owner public variant executes the bounded migrator transaction",
   { skip: skipReason },
   async () => {
     const fixture = await openFixtures();
@@ -364,12 +490,12 @@ test(
         primary.adminPool,
         primary.databaseName,
       );
-      assertBaselineFingerprint(primaryBaseline);
+      assertBaselineFingerprint(primaryBaseline, "pg_database_owner");
       const secondaryBaseline = await readOwnershipFingerprint(
         secondary.adminPool,
         secondary.databaseName,
       );
-      assertBaselineFingerprint(secondaryBaseline);
+      assertBaselineFingerprint(secondaryBaseline, "provider_owner");
 
       await primary.adminPool.query(
         `grant platform_runtime to platform_app with admin true, inherit false, set false`,
@@ -422,8 +548,21 @@ test(
       await secondary.adminPool.query(
         `alter role platform_migrator login password '${syntheticMigratorPassword}'`,
       );
-      await validateMigratorLoginAdmission(secondary.migratorPool);
-      const boundedClient = await secondary.migratorPool.connect();
+      await validateMigratorLoginAdmission(
+        secondary.migratorPasswordPool,
+        secondaryDatabaseName,
+      );
+      await assertQueryRejected(
+        secondary.migratorWrongPasswordPool,
+        `select 1`,
+        /password authentication failed/i,
+      );
+      await assertQueryRejected(
+        secondary.migratorNoPasswordPool,
+        `select 1`,
+        /client password must be a string|no password supplied|password authentication failed/i,
+      );
+      const boundedClient = await secondary.migratorPasswordPool.connect();
       try {
         await boundedClient.query("begin");
         await boundedClient.query(
@@ -480,6 +619,60 @@ test(
   },
 );
 
+test(
+  "DL-128-REPO-004: the complete membership inventory rejects unexpected platform_migrator edges in member and grantor positions",
+  { skip: skipReason },
+  async () => {
+    const fixture = await openFixtures();
+    try {
+      const primary = fixture.primary;
+      await createMigratorRoleAsLegacyOwner(primary.appPool);
+      await assertExactProtectedEdge(primary.adminPool);
+
+      await primary.adminPool.query(
+        `grant platform_runtime to platform_migrator`,
+      );
+      await assert.rejects(
+        () => assertExactProtectedEdge(primary.adminPool),
+        /exactly/,
+      );
+      await primary.adminPool.query(
+        `revoke platform_runtime from platform_migrator`,
+      );
+      await assertExactProtectedEdge(primary.adminPool);
+
+      await primary.adminPool.query(
+        `grant platform_runtime to platform_migrator with admin true`,
+      );
+      const grantorClient = await primary.adminPool.connect();
+      try {
+        await grantorClient.query(`set role platform_migrator`);
+        await grantorClient.query(`grant platform_runtime to platform_app`);
+        await assert.rejects(
+          () => assertExactProtectedEdge(primary.adminPool),
+          /exactly/,
+        );
+        await grantorClient.query(`revoke platform_runtime from platform_app`);
+        await grantorClient.query(`reset role`);
+      } finally {
+        grantorClient.release();
+      }
+      await primary.adminPool.query(
+        `revoke platform_runtime from platform_migrator`,
+      );
+      await assertExactProtectedEdge(primary.adminPool);
+
+      await primary.adminPool.query(
+        `revoke platform_migrator from platform_app`,
+      );
+      await assertZeroMigratorMembership(primary.adminPool);
+      await dropMigratorRole(primary.adminPool);
+    } finally {
+      await closeFixtures(fixture);
+    }
+  },
+);
+
 async function createMigratorRoleAsLegacyOwner(appPool) {
   await appPool.query(
     `create role platform_migrator nologin nosuperuser nocreatedb nocreaterole noreplication nobypassrls`,
@@ -517,14 +710,15 @@ async function dropMigratorRole(adminPool) {
   await adminPool.query(`drop role platform_migrator`);
 }
 
-async function validateMigratorLoginAdmission(migratorPool) {
+async function validateMigratorLoginAdmission(migratorPool, expectedDatabase) {
   const client = await migratorPool.connect();
   try {
     const result = await client.query(
-      `select current_user::text as cu, session_user::text as su`,
+      `select current_user::text as cu, session_user::text as su, current_database()::text as cd`,
     );
     assert.equal(result.rows[0].cu, "platform_migrator");
     assert.equal(result.rows[0].su, "platform_migrator");
+    assert.equal(result.rows[0].cd, expectedDatabase);
   } finally {
     client.release();
   }
@@ -555,13 +749,13 @@ async function forwardTransferInOneTransaction(primary) {
     `alter sequence appdata.counter_seq owner to platform_migrator`,
     `alter type appdata.widget_status owner to platform_migrator`,
     `alter function appdata.widget_summary() owner to platform_migrator`,
+    `alter schema drizzle owner to platform_migrator`,
+    `alter schema appdata owner to platform_migrator`,
+    `alter database ${identifier(databaseName)} owner to platform_migrator`,
     ...[...new Set(["users", ...contractTableNames()])].map(
       (tableName) =>
         `alter table public.${identifier(tableName)} owner to platform_migrator`,
     ),
-    `alter schema drizzle owner to platform_migrator`,
-    `alter schema appdata owner to platform_migrator`,
-    `alter database ${identifier(databaseName)} owner to platform_migrator`,
   ];
   const client = await appPool.connect();
   try {
@@ -597,7 +791,6 @@ async function reverseTransferViaProviderAuthority(primary) {
     ),
     `revoke create on schema drizzle from platform_migrator`,
     `revoke create on schema appdata from platform_migrator`,
-    `revoke create, usage on schema public from platform_migrator`,
     `revoke connect on database ${identifier(databaseName)} from platform_migrator`,
   ];
   const client = await adminPool.connect();
@@ -630,6 +823,7 @@ async function readMembershipEdges(adminPool) {
         left join pg_roles grantor_role on grantor_role.oid = membership.grantor
        where member_role.rolname = any($1::text[])
           or roleid_role.rolname = any($1::text[])
+          or grantor_role.rolname = any($1::text[])
        order by granted_role, member, grantor
     `,
     [fixtureRoleNames],
@@ -666,10 +860,13 @@ async function assertZeroMigratorMembership(adminPool) {
 }
 
 async function assertExactProtectedEdge(adminPool) {
-  const migratorEdges = (await readMembershipEdges(adminPool))
-    .filter((edge) => edge.granted_role === "platform_migrator");
-  assert.equal(migratorEdges.length, 1);
-  const edge = migratorEdges[0];
+  const edges = await readMembershipEdges(adminPool);
+  assert.equal(
+    edges.length,
+    1,
+    "complete membership inventory must contain exactly the protected edge",
+  );
+  const edge = edges[0];
   assert.equal(edge.granted_role, "platform_migrator");
   assert.equal(edge.member, "platform_app");
   assert.equal(edge.grantor, "postgres");
@@ -679,15 +876,18 @@ async function assertExactProtectedEdge(adminPool) {
 }
 
 function assertExactTransferWindowEdges(edges) {
-  const migratorEdges = edges.filter((edge) => edge.granted_role === "platform_migrator");
-  assert.equal(migratorEdges.length, 2);
-  const protectedEdge = migratorEdges.find((edge) => edge.grantor === "postgres");
+  assert.equal(
+    edges.length,
+    2,
+    "complete membership inventory must contain exactly the two transfer-window edges",
+  );
+  const protectedEdge = edges.find((edge) => edge.grantor === "postgres");
   assert.ok(protectedEdge);
   assert.equal(protectedEdge.member, "platform_app");
   assert.equal(protectedEdge.admin_option, true);
   assert.equal(protectedEdge.inherit_option, false);
   assert.equal(protectedEdge.set_option, false);
-  const supplementalEdge = migratorEdges.find((edge) => edge.grantor === "platform_app");
+  const supplementalEdge = edges.find((edge) => edge.grantor === "platform_app");
   assert.ok(supplementalEdge);
   assert.equal(supplementalEdge.member, "platform_app");
   assert.equal(supplementalEdge.admin_option, false);
@@ -701,6 +901,22 @@ async function assertMigratorRoleAttribute(adminPool, field, expected) {
   );
   assert.equal(result.rows.length, 1);
   assert.equal(result.rows[0][field], expected);
+}
+
+async function assertMigratorPasswordInstalled(adminPool, installed) {
+  const result = await adminPool.query(
+    `
+      select (rolpassword is null) as missing
+        from pg_authid
+       where rolname = 'platform_migrator'
+    `,
+  );
+  assert.equal(result.rows.length, 1);
+  assert.equal(
+    result.rows[0].missing,
+    !installed,
+    "platform_migrator password must be installed exactly at the admission step",
+  );
 }
 
 async function assertMigratorFinalAttributes(adminPool) {
@@ -771,6 +987,59 @@ async function assertRuntimeFinalPosture(adminPool) {
   await assertRuntimeGrantSetExact(adminPool);
 }
 
+async function assertCurrentDatabaseOwner(adminPool, databaseName, expected) {
+  const result = await adminPool.query(
+    `
+      select role_record.rolname as owner
+        from pg_database database_record
+        join pg_roles role_record on role_record.oid = database_record.datdba
+       where database_record.datname = $1
+    `,
+    [databaseName],
+  );
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.rows[0].owner, expected);
+}
+
+async function assertCanCreateInPublic(pool, expectedUser, canCreate) {
+  const client = await pool.connect();
+  try {
+    const identity = await client.query(
+      `select current_user::text as cu, session_user::text as su`,
+    );
+    assert.equal(identity.rows[0].cu, expectedUser);
+    await client.query("begin");
+    if (canCreate) {
+      await client.query(
+        `create table public.${identifier(publicAuthorityProbeTable)} (id integer primary key)`,
+      );
+    } else {
+      await assert.rejects(
+        () => client.query(
+          `create table public.${identifier(publicAuthorityProbeTable)} (id integer primary key)`,
+        ),
+        /permission denied for schema public/i,
+      );
+    }
+    await client.query("rollback");
+  } finally {
+    client.release();
+  }
+}
+
+async function assertLegacyAuthorityAvailable(appPool) {
+  const client = await appPool.connect();
+  try {
+    const identity = await client.query(
+      `select current_user::text as cu, session_user::text as su, current_database()::text as cd`,
+    );
+    assert.equal(identity.rows[0].cu, "platform_app");
+    assert.equal(identity.rows[0].su, "platform_app");
+  } finally {
+    client.release();
+  }
+}
+
 async function openFixtures() {
   assertFixtureUrl(primaryDatabaseUrl, {
     expectedUser: "platform_app",
@@ -825,16 +1094,48 @@ async function openFixtures() {
     connectionString: roleUrl("platform_app", primaryDatabaseName),
     max: 2,
   });
-  const primaryMigrator = new Pool({
+  const primaryMigratorNoPassword = new Pool({
     connectionString: roleUrl("platform_migrator", primaryDatabaseName),
+    max: 2,
+  });
+  const primaryMigratorPassword = new Pool({
+    connectionString: roleUrl(
+      "platform_migrator",
+      primaryDatabaseName,
+      syntheticMigratorPassword,
+    ),
+    max: 2,
+  });
+  const primaryMigratorWrongPassword = new Pool({
+    connectionString: roleUrl(
+      "platform_migrator",
+      primaryDatabaseName,
+      wrongMigratorPassword,
+    ),
     max: 2,
   });
   const secondaryApp = new Pool({
     connectionString: roleUrl("platform_app", secondaryDatabaseName),
     max: 2,
   });
-  const secondaryMigrator = new Pool({
+  const secondaryMigratorNoPassword = new Pool({
     connectionString: roleUrl("platform_migrator", secondaryDatabaseName),
+    max: 2,
+  });
+  const secondaryMigratorPassword = new Pool({
+    connectionString: roleUrl(
+      "platform_migrator",
+      secondaryDatabaseName,
+      syntheticMigratorPassword,
+    ),
+    max: 2,
+  });
+  const secondaryMigratorWrongPassword = new Pool({
+    connectionString: roleUrl(
+      "platform_migrator",
+      secondaryDatabaseName,
+      wrongMigratorPassword,
+    ),
     max: 2,
   });
 
@@ -844,21 +1145,29 @@ async function openFixtures() {
       primaryOperatorPool,
       secondaryOperatorPool,
       primaryApp,
-      primaryMigrator,
+      primaryMigratorNoPassword,
+      primaryMigratorPassword,
+      primaryMigratorWrongPassword,
       secondaryApp,
-      secondaryMigrator,
+      secondaryMigratorNoPassword,
+      secondaryMigratorPassword,
+      secondaryMigratorWrongPassword,
     ],
     primary: {
       adminPool: primaryAdmin,
       appPool: primaryApp,
       databaseName: primaryDatabaseName,
-      migratorPool: primaryMigrator,
+      migratorNoPasswordPool: primaryMigratorNoPassword,
+      migratorPasswordPool: primaryMigratorPassword,
+      migratorWrongPasswordPool: primaryMigratorWrongPassword,
     },
     secondary: {
       adminPool: secondaryAdmin,
       appPool: secondaryApp,
       databaseName: secondaryDatabaseName,
-      migratorPool: secondaryMigrator,
+      migratorNoPasswordPool: secondaryMigratorNoPassword,
+      migratorPasswordPool: secondaryMigratorPassword,
+      migratorWrongPasswordPool: secondaryMigratorWrongPassword,
     },
   };
 }
@@ -1045,12 +1354,12 @@ async function readOwnershipFingerprint(adminPool, databaseName) {
   };
 }
 
-function assertBaselineFingerprint(fingerprint) {
+function assertBaselineFingerprint(fingerprint, expectedPublicOwner) {
   assert.equal(fingerprint.databaseOwner, "platform_app");
   assert.deepEqual(fingerprint.schemaOwners, [
     "appdata=platform_app",
     "drizzle=platform_app",
-    "public=provider_owner",
+    `public=${expectedPublicOwner}`,
   ]);
   for (const objectName of [
     "widgets",
@@ -1252,11 +1561,14 @@ function assertFixtureUrl(url, { expectedUser, expectedDatabase }) {
   }
 }
 
-function roleUrl(user, databaseName) {
+function roleUrl(user, databaseName, password) {
   if (!safeIdentifier.test(user) || !safeIdentifier.test(databaseName)) {
     throw new Error();
   }
-  return `postgres://${user}@127.0.0.1:${ownedPort}/${databaseName}`;
+  const authority = password
+    ? `${user}:${encodeURIComponent(password)}`
+    : user;
+  return `postgres://${authority}@127.0.0.1:${ownedPort}/${databaseName}`;
 }
 
 function contractTableNames() {
