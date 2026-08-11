@@ -238,6 +238,11 @@ and is therefore not part of ordinary `npm test`.
 
 - A new exact owned container/listener identity that cannot collide with the
   existing runtime-posture fixture (`codex-platform127-pg17`).
+- The disposable migrator runner owns the exact named PostgreSQL data volume
+  `deepseek-platform128-pg17-data`, mounted read/write at
+  `/var/lib/postgresql/data`. It proves the exact volume is absent before
+  creation or attachment and rejects a pre-existing exact-volume identity
+  collision.
 - Fails closed if its exact container or listener already exists.
 - Publishes PostgreSQL only through an explicit `127.0.0.1:<ownedPort>:5432`
   Docker binding. A bounded Docker inspection runs after container creation and
@@ -287,8 +292,13 @@ into stable structured grantor/grantee/privilege/grantability records.
 ### Deterministic cleanup
 
 The runner removes all runner-owned databases, roles, schemas and objects,
-then the container and listener, and proves exact container and listener
-absence after success and after every failure path.
+then the exact container and the exact named volume
+`deepseek-platform128-pg17-data`, and proves exact container absence,
+exact volume absence, and exact listener absence after success and after every
+failure path. Exact volume removal occurs only after container removal.
+Caller-managed or unproven resources are untouched. Broad/global Docker volume
+pruning is prohibited. The unidentified historical anonymous volume is not
+selected or deleted.
 
 ### Required negative control
 

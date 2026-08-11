@@ -426,6 +426,107 @@ test("the disposable migrator alignment rehearsal surfaces exist with a fixed pu
   await assertRehearsalSurface();
 });
 
+test("Run-12 dedicated migrator volume finality contract is complete", async () => {
+  const runner = await readFile(
+    "scripts/run-disposable-migrator-alignment-tests.mjs",
+    "utf8",
+  );
+  const architectureDoc = await readFile(
+    "docs/architecture/PLATFORM-MIGRATOR-ALIGNMENT.md",
+    "utf8",
+  );
+  const runbook = await readRunbook();
+  const volumeName = "deepseek-platform128-pg17-data";
+  const checks = [
+    {
+      label: "exact named volume identity",
+      satisfied: new RegExp(
+        `const ownedVolumeName = ["']${volumeName}["']`,
+      ).test(runner),
+    },
+    {
+      label: "pre-existing exact-volume rejection",
+      satisfied:
+        /volume_preexistence/.test(runner) &&
+        /assertExactVolumeAbsent\(spawnImpl\)/.test(runner),
+    },
+    {
+      label: "explicit named-volume mount",
+      satisfied:
+        /--mount/.test(runner) &&
+        /type=volume,source=\$\{ownedVolumeName\},destination=\$\{ownedPgDataPath\}/.test(
+          runner,
+        ),
+    },
+    {
+      label: "exact mount destination",
+      satisfied: /const ownedPgDataPath = ["']\/var\/lib\/postgresql\/data["']/.test(
+        runner,
+      ),
+    },
+    {
+      label: "exact mount identity check",
+      satisfied:
+        /assertExactVolumeMount\(spawnImpl\)/.test(runner) &&
+        /assertSingleOwnedVolumeMount\(parseContainerMounts\(output\)\)/.test(
+          runner,
+        ) &&
+        /mount\.Type !== ["']volume["']/.test(runner) &&
+        /mount\.Name !== ownedVolumeName/.test(runner) &&
+        /mount\.Destination !== ownedPgDataPath/.test(runner) &&
+        /mount\.RW !== true/.test(runner),
+    },
+    {
+      label: "exact owned volume removal",
+      satisfied: /["']volume["'],\s*["']rm["'],\s*ownedVolumeName/.test(
+        runner,
+      ),
+    },
+    {
+      label: "exact post-cleanup volume absence proof",
+      satisfied:
+        /volumeAbsenceVerified/.test(runner) &&
+        (runner.match(/assertExactVolumeAbsent\(spawnImpl\)/g) ?? [])
+          .length >= 2,
+    },
+    {
+      label: "architecture documentation parity",
+      satisfied:
+        new RegExp(
+          `exact named PostgreSQL data volume[\\s\\S]*${volumeName}`,
+          "i",
+        ).test(architectureDoc) &&
+        /exact volume removal/i.test(architectureDoc) &&
+        /exact volume absence/i.test(architectureDoc),
+    },
+    {
+      label: "hosted runbook documentation parity",
+      satisfied:
+        new RegExp(
+          `exact named PostgreSQL data volume[\\s\\S]*${volumeName}`,
+          "i",
+        ).test(runbook) &&
+        /exact volume removal/i.test(runbook) &&
+        /exact volume absence/i.test(runbook),
+    },
+    {
+      label: "broad/global volume pruning prohibition",
+      satisfied:
+        /broad\/global Docker volume\s+pruning is prohibited/i.test(
+          architectureDoc,
+        ) &&
+        /broad\/global Docker volume\s+pruning is prohibited/i.test(runbook) &&
+        !/docker\s+(?:volume|system)\s+prune/i.test(runner),
+    },
+  ];
+  const missing = checks.filter((check) => !check.satisfied).map((check) => check.label);
+  assert.deepEqual(
+    missing,
+    [],
+    `Run-12 named-volume contract missing: ${JSON.stringify(missing)}`,
+  );
+});
+
 test("both disposable PostgreSQL runners publish an explicit 127.0.0.1 loopback-only binding", async () => {
   const migratorRunner = await readFile(
     "scripts/run-disposable-migrator-alignment-tests.mjs",
@@ -563,6 +664,8 @@ test("migrator runner fails closed on malformed Docker binding evidence with cle
   );
   const spawnImpl = createMockDockerSpawn({
     ps: () => "",
+    volume: (operation) =>
+      operation === "create" ? "deepseek-platform128-pg17-data\n" : "",
     run: () => "container-id\n",
     inspect: () => "not-json",
     rm: () => "",
@@ -583,6 +686,21 @@ test("migrator runner fails closed on malformed Docker binding evidence with cle
         spawnImpl.calls.filter((call) => call[1] === "ps").length >= 2,
         "absence verification must re-check container absence",
       );
+      assert.ok(
+        spawnImpl.calls.some(
+          (call) =>
+            call[1] === "volume" &&
+            call[2] === "rm" &&
+            call[3] === "deepseek-platform128-pg17-data",
+        ),
+        "docker volume rm must run during cleanup",
+      );
+      assert.ok(
+        spawnImpl.calls.filter(
+          (call) => call[1] === "volume" && call[2] === "ls",
+        ).length >= 2,
+        "volume absence must be checked before and after the run",
+      );
       return true;
     },
   );
@@ -602,7 +720,7 @@ function createMockDockerSpawn(handlers) {
     child.stderr = new EventEmitter();
     child.kill = () => true;
     process.nextTick(() => {
-      child.stdout.emit("data", Buffer.from(handler()));
+      child.stdout.emit("data", Buffer.from(handler(...args.slice(1))));
       child.emit("close", 0, null);
     });
     return child;

@@ -24,6 +24,7 @@ import { runDisposableRuntimeLifecycle } from "./disposable-runtime-lifecycle.mj
 const databaseName = "migrator_alignment_test";
 const secondaryDatabaseName = "migrator_alignment_test_secondary";
 const ownedContainerName = "deepseek-platform128-pg17";
+const ownedVolumeName = "deepseek-platform128-pg17-data";
 const ownedPort = 56432;
 const maxChildOutputBytes = 64 * 1024;
 const maxChildDurationMs = 120_000;
@@ -42,6 +43,9 @@ const failurePhases = new Set([
 ]);
 const failureCategories = new Set([
   "container_preexistence",
+  "volume_preexistence",
+  "volume_create",
+  "volume_mount_inspection",
   "listener_preexistence",
   "publish_binding_inspection",
   "container_start",
@@ -106,6 +110,13 @@ export async function run({
         containerStartAttempted: false,
         ownedContainer: false,
         containerRemoved: false,
+        volumePreAbsenceVerified: false,
+        volumeCreateAttempted: false,
+        volumeCreated: false,
+        volumeAttached: false,
+        volumeOwned: false,
+        volumeRemoved: false,
+        volumeAbsenceVerified: false,
         childProcess: null,
         childExited: true,
         databaseUrls: new Map(),
@@ -137,8 +148,18 @@ export async function run({
         assertNoCallerSuppliedFixture(env);
         await assertExactContainerAbsent(spawnImpl);
       });
+      await runAt(resources, "construct", "volume_preexistence", async () => {
+        await assertExactVolumeAbsent(spawnImpl);
+        resources.volumePreAbsenceVerified = true;
+      });
       await runAt(resources, "construct", "listener_preexistence", async () => {
         await assertOwnedListenerAbsent();
+      });
+      resources.volumeCreateAttempted = true;
+      await runAt(resources, "construct", "volume_create", async () => {
+        const createdVolume = await createOwnedVolume(spawnImpl);
+        resources.volumeCreated = true;
+        if (createdVolume !== ownedVolumeName) throw new Error();
       });
       resources.containerStartAttempted = true;
       await runAt(resources, "construct", "container_start", () =>
@@ -149,6 +170,12 @@ export async function run({
       resources.runnerOwned.add(`listener:127.0.0.1:${ownedPort}`);
       await runAt(resources, "construct", "publish_binding_inspection", () =>
         assertExactPublishedBinding(spawnImpl));
+      await runAt(resources, "construct", "volume_mount_inspection", async () => {
+        await assertExactVolumeMount(spawnImpl);
+        resources.volumeAttached = true;
+        resources.volumeOwned = true;
+        resources.runnerOwned.add(`volume:${ownedVolumeName}`);
+      });
 
       const urls = fixtureUrls();
       resources.databaseUrls = new Map([
@@ -324,6 +351,13 @@ export function formatDisposableRuntimeFailureReceipt(resources = {}) {
     outputOverflow: resources.childOutputOverflow === true,
     summaryParsed: resources.childSummaryParsed === true,
     containerStarted: resources.containerStarted === true,
+    volumePreAbsenceVerified: resources.volumePreAbsenceVerified === true,
+    volumeCreateAttempted: resources.volumeCreateAttempted === true,
+    volumeCreated: resources.volumeCreated === true,
+    volumeAttached: resources.volumeAttached === true,
+    volumeOwned: resources.volumeOwned === true,
+    volumeRemoved: resources.volumeRemoved === true,
+    volumeAbsenceVerified: resources.volumeAbsenceVerified === true,
     postgresReady: resources.postgresReady === true,
     constructionAdmission: resources.constructionAdmission === true,
     provisioningComplete: resources.provisioningComplete === true,
@@ -876,6 +910,18 @@ async function cleanupRunnerResources(resources, spawnImpl) {
       firstError ??= new Error();
     }
   }
+  if (resources.volumeCreated) {
+    try {
+      await runCommand(spawnImpl, "docker", [
+        "volume",
+        "rm",
+        ownedVolumeName,
+      ]);
+      resources.volumeRemoved = true;
+    } catch {
+      firstError ??= new Error();
+    }
+  }
   if (firstError) throw firstError;
 }
 
@@ -925,10 +971,22 @@ async function cleanupFixtureDatabases(resources) {
 
 async function verifyRunnerAbsence(resources, spawnImpl) {
   if (resources.childProcess && !resources.childExited) throw new Error();
-  if (!resources.containerStartAttempted) return;
+  if (!resources.containerStartAttempted) {
+    if (resources.volumeCreateAttempted) {
+      await assertExactVolumeAbsent(spawnImpl);
+      resources.volumeAbsenceVerified = true;
+      if (resources.volumeCreated && !resources.volumeRemoved) throw new Error();
+    }
+    return;
+  }
   const names = await assertExactContainerAbsent(spawnImpl);
   if (names !== "") throw new Error();
   if (!resources.containerRemoved) throw new Error();
+  if (resources.volumeCreateAttempted) {
+    await assertExactVolumeAbsent(spawnImpl);
+    resources.volumeAbsenceVerified = true;
+    if (resources.volumeCreated && !resources.volumeRemoved) throw new Error();
+  }
   await assertPortAbsent();
 }
 
@@ -948,12 +1006,22 @@ async function terminateOwnedChild(resources) {
   });
 }
 
+async function createOwnedVolume(spawnImpl) {
+  return (await runCommand(spawnImpl, "docker", [
+    "volume",
+    "create",
+    ownedVolumeName,
+  ])).trim();
+}
+
 async function startOwnedContainer(spawnImpl) {
   await runCommand(spawnImpl, "docker", [
     "run",
     "--detach",
     "--name",
     ownedContainerName,
+    "--mount",
+    `type=volume,source=${ownedVolumeName},destination=${ownedPgDataPath}`,
     "--publish",
     `127.0.0.1:${ownedPort}:5432`,
     "--env",
@@ -1111,6 +1179,66 @@ async function waitForPostgres(connectionString) {
     }
   }
   throw new Error();
+}
+
+export function parseContainerMounts(output) {
+  const text = typeof output === "string" ? output.trim() : "";
+  if (text.length === 0) throw new Error();
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error();
+  }
+  if (!Array.isArray(parsed)) throw new Error();
+  return parsed;
+}
+
+export function assertSingleOwnedVolumeMount(mounts) {
+  if (!Array.isArray(mounts)) throw new Error();
+  const ownedMounts = mounts.filter(
+    (mount) => mount?.Name === ownedVolumeName,
+  );
+  if (ownedMounts.length !== 1) throw new Error();
+  const dataMounts = mounts.filter(
+    (mount) => mount?.Destination === ownedPgDataPath,
+  );
+  if (dataMounts.length !== 1) throw new Error();
+  const mount = dataMounts[0];
+  if (
+    mount.Type !== "volume" ||
+    mount.Name !== ownedVolumeName ||
+    mount.Destination !== ownedPgDataPath ||
+    mount.RW !== true
+  ) {
+    throw new Error();
+  }
+}
+
+async function assertExactVolumeMount(spawnImpl) {
+  const output = await runCommand(spawnImpl, "docker", [
+    "inspect",
+    "--format",
+    "{{json .Mounts}}",
+    ownedContainerName,
+  ]);
+  assertSingleOwnedVolumeMount(parseContainerMounts(output));
+}
+
+async function assertExactVolumeAbsent(spawnImpl) {
+  const output = await runCommand(spawnImpl, "docker", [
+    "volume",
+    "ls",
+    "--quiet",
+    "--filter",
+    `name=^${ownedVolumeName}$`,
+  ]);
+  const names = output
+    .trim()
+    .split(/\r?\n/u)
+    .filter((name) => name.length > 0);
+  if (names.some((name) => name !== ownedVolumeName)) throw new Error();
+  if (names.length !== 0) throw new Error();
 }
 
 async function assertExactContainerAbsent(spawnImpl) {
