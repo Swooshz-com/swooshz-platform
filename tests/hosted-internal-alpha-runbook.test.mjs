@@ -1329,8 +1329,61 @@ test("Run-15 actual focused child rejects hostile inherited PostgreSQL authentic
   );
 
   const focusedChildRuns = [];
+  const originalProcessEnv = process.env;
+  const runnerEnvironment = { ...originalProcessEnv };
+  delete runnerEnvironment.PGPASSWORD;
+  delete runnerEnvironment.PGPASSFILE;
+  let focusedParentEnvironmentRequested = false;
+  const parentProcessEnv = { ...runnerEnvironment };
+  Object.defineProperties(parentProcessEnv, {
+    PGPASSWORD: {
+      configurable: true,
+      enumerable: false,
+      value: undefined,
+      writable: true,
+    },
+    PGPASSFILE: {
+      configurable: true,
+      enumerable: false,
+      value: undefined,
+      writable: true,
+    },
+  });
+  process.env = new Proxy(parentProcessEnv, {
+    ownKeys(target) {
+      const stack = new Error().stack ?? "";
+      if (
+        stack.includes("runFocusedTests") &&
+        stack.includes("run-disposable-migrator-alignment-tests.mjs")
+      ) {
+        focusedParentEnvironmentRequested = true;
+      }
+      return Reflect.ownKeys(target);
+    },
+    getOwnPropertyDescriptor(target, key) {
+      const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
+      if (
+        descriptor &&
+        (key === "PGPASSWORD" || key === "PGPASSFILE")
+      ) {
+        return {
+          ...descriptor,
+          enumerable: focusedParentEnvironmentRequested,
+        };
+      }
+      return descriptor;
+    },
+    get(target, key, receiver) {
+      if (focusedParentEnvironmentRequested && key === "PGPASSWORD") {
+        return hostilePassword;
+      }
+      if (focusedParentEnvironmentRequested && key === "PGPASSFILE") {
+        return passwordFilePath;
+      }
+      return Reflect.get(target, key, receiver);
+    },
+  });
   try {
-    const runnerEnvironment = { ...process.env };
     for (const key of [
       "MIGRATOR_ALIGNMENT_TEST_DATABASE_URL",
       "MIGRATOR_ALIGNMENT_TEST_OPERATOR_URL",
@@ -1346,23 +1399,39 @@ test("Run-15 actual focused child rejects hostile inherited PostgreSQL authentic
         command === process.execPath &&
         args.includes("tests/platform-migrator-alignment-postgres.test.mjs")
       ) {
-        const runnerChildEnv = options.env ?? {};
-        const hostileParentEnv = {
-          ...runnerChildEnv,
-          PGPASSWORD: hostilePassword,
-          PGPASSFILE: passwordFilePath,
+        const runnerProvidedChildEnv = options.env ?? {};
+        const parentEnvAtRunnerBoundary = {
+          PGPASSWORD: process.env.PGPASSWORD,
+          PGPASSFILE: process.env.PGPASSFILE,
         };
-        // Keep the runner's own provisioning environment clean, then feed a
-        // hostile synthetic parent environment through the same scrubber at
-        // the actual focused-child spawn seam.
-        const childEnv = runner.buildFocusedTestEnvironment(hostileParentEnv);
+        assert.equal(
+          parentEnvAtRunnerBoundary.PGPASSWORD,
+          hostilePassword,
+          "hostile PGPASSWORD must exist before the runner boundary",
+        );
+        assert.equal(
+          parentEnvAtRunnerBoundary.PGPASSFILE,
+          passwordFilePath,
+          "hostile PGPASSFILE must exist before the runner boundary",
+        );
+        assert.equal(
+          Object.hasOwn(runnerProvidedChildEnv, "PGPASSWORD"),
+          false,
+          "runner must remove PGPASSWORD before focused-child spawn",
+        );
+        assert.equal(
+          Object.hasOwn(runnerProvidedChildEnv, "PGPASSFILE"),
+          false,
+          "runner must remove PGPASSFILE before focused-child spawn",
+        );
+        const childEnv = { ...runnerProvidedChildEnv };
         delete childEnv.NODE_TEST_CONTEXT;
         const childArgs = [args[0], "--test-reporter=spec", ...args.slice(1)];
         const child = spawn(command, childArgs, { ...options, env: childEnv });
         const record = {
           args: childArgs,
-          runnerChildEnv,
-          hostileParentEnv,
+          runnerProvidedChildEnv,
+          parentEnvAtRunnerBoundary,
           childEnv,
           exitCode: null,
           signal: null,
@@ -1382,14 +1451,19 @@ test("Run-15 actual focused child rejects hostile inherited PostgreSQL authentic
       spawnImpl,
     });
 
+    assert.equal(
+      focusedParentEnvironmentRequested,
+      true,
+      "runner must read the hostile parent environment while building focused-child env",
+    );
     assert.equal(focusedChildRuns.length, 1);
     const focusedChild = focusedChildRuns[0];
     assert.equal(
-      Object.hasOwn(focusedChild.runnerChildEnv, "PGPASSWORD"),
+      Object.hasOwn(focusedChild.runnerProvidedChildEnv, "PGPASSWORD"),
       false,
     );
     assert.equal(
-      Object.hasOwn(focusedChild.runnerChildEnv, "PGPASSFILE"),
+      Object.hasOwn(focusedChild.runnerProvidedChildEnv, "PGPASSFILE"),
       false,
     );
     assert.equal(Object.hasOwn(focusedChild.childEnv, "PGPASSWORD"), false);
@@ -1402,11 +1476,11 @@ test("Run-15 actual focused child rejects hostile inherited PostgreSQL authentic
       true,
     );
     assert.ok(
-      focusedChild.hostileParentEnv.PGPASSWORD === hostilePassword,
+      focusedChild.parentEnvAtRunnerBoundary.PGPASSWORD === hostilePassword,
       "hostile synthetic PGPASSWORD must be present at the focused-child parent seam",
     );
     assert.ok(
-      focusedChild.hostileParentEnv.PGPASSFILE === passwordFilePath,
+      focusedChild.parentEnvAtRunnerBoundary.PGPASSFILE === passwordFilePath,
       "hostile synthetic PGPASSFILE must be present at the focused-child parent seam",
     );
     assert.ok(
@@ -1464,6 +1538,7 @@ test("Run-15 actual focused child rejects hostile inherited PostgreSQL authentic
     assert.equal(resources.volumeRemoved, true);
     assert.equal(resources.volumeAbsenceVerified, true);
   } finally {
+    process.env = originalProcessEnv;
     await rm(passwordFileDirectory, { recursive: true, force: true });
     await assert.rejects(() => access(passwordFilePath));
   }
