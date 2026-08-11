@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { readFile } from "node:fs/promises";
+import {
+  access,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 const runbookPath = "docs/hosted-internal-alpha-runbook.md";
@@ -1212,6 +1221,55 @@ test("Run-14 named-volume cleanup reconciles daemon-side create ambiguity by exa
   assert.equal(run14VolumeRmCalls(unownedSpawn).length, 0);
 });
 
+test("Run-15 malformed and ambiguous volume inspection evidence fails closed", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const inspectionCases = [
+    { label: "malformed JSON", inspectOutput: "not-json\n" },
+    { label: "structurally invalid JSON", inspectOutput: "[]\n" },
+    {
+      label: "multiple inspection records",
+      inspectOutput: JSON.stringify({ Name: run14OwnedVolumeName }) + "\n" +
+        JSON.stringify({ Name: run14OwnedVolumeName }) + "\n",
+    },
+  ];
+
+  for (const { label, inspectOutput } of inspectionCases) {
+    const spawnImpl = createRun14VolumeSpawn({
+      createdBeforeStart: true,
+      inspectOutput,
+    });
+
+    assert.deepEqual(
+      await runner.inspectOwnedVolumeOwnership(spawnImpl),
+      { state: "ambiguous" },
+      label,
+    );
+    await assert.rejects(
+      () => runner.cleanupOwnedVolumeAfterCreateAttempt(spawnImpl, {
+        volumeCreateAttempted: true,
+        volumeCreated: false,
+        volumeOwned: false,
+        volumeRemoved: false,
+        containerStartAttempted: false,
+        containerRemoved: false,
+      }),
+      /owned volume evidence was ambiguous/,
+      label,
+    );
+    assert.equal(run14VolumeRmCalls(spawnImpl).length, 0, label);
+    assert.equal(
+      spawnImpl.calls.some(({ args }) => args.includes("prune")),
+      false,
+      label,
+    );
+    assert.deepEqual(
+      await runner.inspectOwnedVolumeOwnership(spawnImpl),
+      { state: "ambiguous" },
+      label + " volume must remain present and unowned by proof",
+    );
+  }
+});
+
 test("Run-14 focused child environment removes PostgreSQL connection overrides and retains benign env", async () => {
   const { buildFocusedTestEnvironment } = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
   const pgKeys = [
@@ -1256,6 +1314,179 @@ test("Run-14 focused child environment removes PostgreSQL connection overrides a
   assert.equal(output.NODE_ENV, "test");
   assert.equal(input.PGPASSWORD, "PGPASSWORD");
 });
+
+test("Run-15 actual focused child rejects hostile inherited PostgreSQL authentication configuration", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const passwordFileDirectory = await mkdtemp(
+    join(tmpdir(), "swooshz-platform-run15-pgpass-"),
+  );
+  const passwordFilePath = join(passwordFileDirectory, "pgpass");
+  const hostilePassword = "synthetic-migrator-password";
+  await writeFile(
+    passwordFilePath,
+    "*:*:*:platform_migrator:" + hostilePassword + "\n",
+    "utf8",
+  );
+
+  const focusedChildRuns = [];
+  try {
+    const runnerEnvironment = { ...process.env };
+    for (const key of [
+      "MIGRATOR_ALIGNMENT_TEST_DATABASE_URL",
+      "MIGRATOR_ALIGNMENT_TEST_OPERATOR_URL",
+      "MIGRATOR_ALIGNMENT_TEST_SECONDARY_DATABASE_URL",
+      "MIGRATOR_ALIGNMENT_TEST_SECONDARY_OPERATOR_URL",
+      "MIGRATOR_ALIGNMENT_TEST_CONFIRM",
+    ]) {
+      delete runnerEnvironment[key];
+    }
+
+    const spawnImpl = (command, args, options = {}) => {
+      if (
+        command === process.execPath &&
+        args.includes("tests/platform-migrator-alignment-postgres.test.mjs")
+      ) {
+        const runnerChildEnv = options.env ?? {};
+        const hostileParentEnv = {
+          ...runnerChildEnv,
+          PGPASSWORD: hostilePassword,
+          PGPASSFILE: passwordFilePath,
+        };
+        // Keep the runner's own provisioning environment clean, then feed a
+        // hostile synthetic parent environment through the same scrubber at
+        // the actual focused-child spawn seam.
+        const childEnv = runner.buildFocusedTestEnvironment(hostileParentEnv);
+        delete childEnv.NODE_TEST_CONTEXT;
+        const childArgs = [args[0], "--test-reporter=spec", ...args.slice(1)];
+        const child = spawn(command, childArgs, { ...options, env: childEnv });
+        const record = {
+          args: childArgs,
+          runnerChildEnv,
+          hostileParentEnv,
+          childEnv,
+          exitCode: null,
+          signal: null,
+        };
+        focusedChildRuns.push(record);
+        child.once("close", (code, signal) => {
+          record.exitCode = code;
+          record.signal = signal;
+        });
+        return child;
+      }
+      return spawn(command, args, options);
+    };
+
+    const resources = await runner.run({
+      env: runnerEnvironment,
+      spawnImpl,
+    });
+
+    assert.equal(focusedChildRuns.length, 1);
+    const focusedChild = focusedChildRuns[0];
+    assert.equal(
+      Object.hasOwn(focusedChild.runnerChildEnv, "PGPASSWORD"),
+      false,
+    );
+    assert.equal(
+      Object.hasOwn(focusedChild.runnerChildEnv, "PGPASSFILE"),
+      false,
+    );
+    assert.equal(Object.hasOwn(focusedChild.childEnv, "PGPASSWORD"), false);
+    assert.equal(Object.hasOwn(focusedChild.childEnv, "PGPASSFILE"), false);
+    assert.equal(focusedChild.args.includes("--test"), true);
+    assert.equal(
+      focusedChild.args.includes(
+        "tests/platform-migrator-alignment-postgres.test.mjs",
+      ),
+      true,
+    );
+    assert.ok(
+      focusedChild.hostileParentEnv.PGPASSWORD === hostilePassword,
+      "hostile synthetic PGPASSWORD must be present at the focused-child parent seam",
+    );
+    assert.ok(
+      focusedChild.hostileParentEnv.PGPASSFILE === passwordFilePath,
+      "hostile synthetic PGPASSFILE must be present at the focused-child parent seam",
+    );
+    assert.ok(
+      isRunnerFixtureUrl(
+        focusedChild.childEnv.MIGRATOR_ALIGNMENT_TEST_DATABASE_URL,
+        "platform_app",
+        "migrator_alignment_test",
+      ),
+      "primary target fixture URL must come from the runner",
+    );
+    assert.ok(
+      isRunnerFixtureUrl(
+        focusedChild.childEnv.MIGRATOR_ALIGNMENT_TEST_OPERATOR_URL,
+        "postgres",
+        "migrator_alignment_test",
+      ),
+      "primary operator fixture URL must come from the runner",
+    );
+    assert.ok(
+      isRunnerFixtureUrl(
+        focusedChild.childEnv.MIGRATOR_ALIGNMENT_TEST_SECONDARY_DATABASE_URL,
+        "platform_app",
+        "migrator_alignment_test_secondary",
+      ),
+      "secondary target fixture URL must come from the runner",
+    );
+    assert.ok(
+      isRunnerFixtureUrl(
+        focusedChild.childEnv.MIGRATOR_ALIGNMENT_TEST_SECONDARY_OPERATOR_URL,
+        "postgres",
+        "migrator_alignment_test_secondary",
+      ),
+      "secondary operator fixture URL must come from the runner",
+    );
+    assert.equal(
+      focusedChild.childEnv.MIGRATOR_ALIGNMENT_TEST_CONFIRM,
+      "disposable-only",
+    );
+    assert.equal(focusedChild.exitCode, 0);
+    assert.equal(focusedChild.signal, null);
+
+    // The child suite's five behavioral tests include correct-password
+    // success, wrong-password rejection, omitted-password rejection, and the
+    // reversible NOLOGIN fresh-login control. A correct hostile inherited
+    // password plus a matching synthetic pgpass file would invalidate the
+    // omitted-password assertion if either variable crossed the spawn seam.
+    assert.equal(resources.childTestsStarted, true);
+    assert.equal(resources.childExited, true);
+    assert.equal(resources.childExitCode, 0);
+    assert.equal(resources.childSignal, false);
+    assert.equal(resources.childSummaryParsed, true);
+    assert.equal(resources.cleanupComplete, true);
+    assert.equal(resources.absenceVerified, true);
+    assert.equal(resources.containerRemoved, true);
+    assert.equal(resources.volumeRemoved, true);
+    assert.equal(resources.volumeAbsenceVerified, true);
+  } finally {
+    await rm(passwordFileDirectory, { recursive: true, force: true });
+    await assert.rejects(() => access(passwordFilePath));
+  }
+});
+
+function isRunnerFixtureUrl(value, expectedUser, expectedDatabase) {
+  if (typeof value !== "string") return false;
+  try {
+    const parsed = new URL(value);
+    return (
+      (parsed.protocol === "postgres:" || parsed.protocol === "postgresql:") &&
+      parsed.username === expectedUser &&
+      parsed.password === "" &&
+      parsed.hostname === "127.0.0.1" &&
+      parsed.port === "56432" &&
+      parsed.pathname === "/" + expectedDatabase &&
+      parsed.search === "" &&
+      parsed.hash === ""
+    );
+  } catch {
+    return false;
+  }
+}
 
 function whitespaceTolerant(value) {
   return escapeRegExp(value).replaceAll(" ", "\\s+");
