@@ -24,7 +24,6 @@ import { runDisposableRuntimeLifecycle } from "./disposable-runtime-lifecycle.mj
 const databaseName = "runtime_posture_test";
 const secondaryDatabaseName = "runtime_posture_test_secondary";
 const ownedContainerName = "codex-platform127-pg17";
-const ownedPort = 55432;
 const maxChildOutputBytes = 64 * 1024;
 const maxChildDurationMs = 120_000;
 const expectedPostgresTestCount = 53;
@@ -104,6 +103,7 @@ export async function run({
         containerStartAttempted: false,
         ownedContainer: false,
         containerRemoved: false,
+        observedPort: null,
         childProcess: null,
         childExited: true,
         databaseUrls: new Map(),
@@ -131,11 +131,13 @@ export async function run({
       resources.ownedContainer = true;
       resources.containerStarted = true;
       resources.runnerOwned.add(`container:${ownedContainerName}`);
-      resources.runnerOwned.add(`listener:127.0.0.1:${ownedPort}`);
       await runAt(resources, "construct", "publish_binding_inspection", () =>
-        assertExactPublishedBinding(spawnImpl));
+        (async () => {
+          resources.observedPort = await assertExactPublishedBinding(spawnImpl);
+          resources.runnerOwned.add(`listener:127.0.0.1:${resources.observedPort}`);
+        })());
 
-      const urls = fixtureUrls();
+      const urls = fixtureUrls(resources.observedPort);
       resources.databaseUrls = new Map([
         [databaseName, urls.primaryOperatorUrl],
         [secondaryDatabaseName, urls.secondaryOperatorUrl],
@@ -305,6 +307,10 @@ export function formatDisposableRuntimeFailureReceipt(resources = {}) {
     outputOverflow: resources.childOutputOverflow === true,
     summaryParsed: resources.childSummaryParsed === true,
     containerStarted: resources.containerStarted === true,
+    publishedBindingVerified: Number.isInteger(resources.observedPort),
+    observedPort: Number.isInteger(resources.observedPort)
+      ? resources.observedPort
+      : null,
     postgresReady: resources.postgresReady === true,
     constructionAdmission: resources.constructionAdmission === true,
     provisioningComplete: resources.provisioningComplete === true,
@@ -425,21 +431,23 @@ async function runAt(resources, phase, category, operation) {
   }
 }
 
-function fixtureUrls() {
+export function fixtureUrls(port) {
+  assertValidObservedPort(port);
   return {
-    rootOperatorUrl: buildUrl("postgres", "postgres"),
-    primaryTargetUrl: buildUrl("platform_app", databaseName),
-    primaryOperatorUrl: buildUrl("postgres", databaseName),
-    secondaryTargetUrl: buildUrl("platform_app", secondaryDatabaseName),
-    secondaryOperatorUrl: buildUrl("postgres", secondaryDatabaseName),
+    rootOperatorUrl: buildUrl("postgres", "postgres", port),
+    primaryTargetUrl: buildUrl("platform_app", databaseName, port),
+    primaryOperatorUrl: buildUrl("postgres", databaseName, port),
+    secondaryTargetUrl: buildUrl("platform_app", secondaryDatabaseName, port),
+    secondaryOperatorUrl: buildUrl("postgres", secondaryDatabaseName, port),
   };
 }
 
-function buildUrl(user, database) {
+function buildUrl(user, database, port) {
   if (!safeIdentifier.test(user) || !safeIdentifier.test(database)) {
     throw new Error();
   }
-  return `postgres://${user}@127.0.0.1:${ownedPort}/${database}`;
+  assertValidObservedPort(port);
+  return `postgres://${user}@127.0.0.1:${port}/${database}`;
 }
 
 function constructionTargetDefinition(
@@ -746,9 +754,12 @@ async function cleanupFixtureDatabases(resources) {
   if (!resources.ownedContainer || resources.ownedDatabases.size === 0) {
     return;
   }
-  const rootUrl = buildUrl("postgres", "postgres");
+  const rootUrl = buildUrl("postgres", "postgres", resources.observedPort);
   for (const database of resources.ownedDatabases) {
-    const pool = new Pool({ connectionString: buildUrl("postgres", database), max: 1 });
+    const pool = new Pool({
+      connectionString: buildUrl("postgres", database, resources.observedPort),
+      max: 1,
+    });
     try {
       for (const tableName of ["users", ...contractTableNames()]) {
         await pool.query(
@@ -791,7 +802,9 @@ async function verifyRunnerAbsence(resources, spawnImpl) {
   const names = await assertExactContainerAbsent(spawnImpl);
   if (names !== "") throw new Error();
   if (!resources.containerRemoved) throw new Error();
-  await assertPortAbsent();
+  if (Number.isInteger(resources.observedPort)) {
+    await assertPortAbsent(resources.observedPort);
+  }
 }
 
 async function terminateOwnedChild(resources) {
@@ -817,7 +830,7 @@ async function startOwnedContainer(spawnImpl) {
     "--name",
     ownedContainerName,
     "--publish",
-    `127.0.0.1:${ownedPort}:5432`,
+    "127.0.0.1::5432",
     "--env",
     "POSTGRES_DB=runtime_posture_test",
     "--env",
@@ -863,7 +876,12 @@ export function parsePublishedBinding(output) {
   return binding;
 }
 
-export function assertSingleLoopbackPublishedBinding(binding, expectedHostPort) {
+function assertValidObservedPort(port) {
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error();
+  return port;
+}
+
+export function assertSingleLoopbackPublishedBinding(binding) {
   if (!(binding instanceof Map)) throw new Error();
   if (binding.size !== 1) throw new Error();
   const entries = binding.get("5432/tcp");
@@ -871,10 +889,11 @@ export function assertSingleLoopbackPublishedBinding(binding, expectedHostPort) 
   const entry = entries[0];
   if (
     entry.hostIp !== "127.0.0.1" ||
-    entry.hostPort !== String(expectedHostPort)
+    !/^[0-9]+$/u.test(entry.hostPort)
   ) {
     throw new Error();
   }
+  return assertValidObservedPort(Number(entry.hostPort));
 }
 
 async function assertExactPublishedBinding(spawnImpl) {
@@ -884,9 +903,8 @@ async function assertExactPublishedBinding(spawnImpl) {
     "{{json .NetworkSettings.Ports}}",
     ownedContainerName,
   ]);
-  assertSingleLoopbackPublishedBinding(
+  return assertSingleLoopbackPublishedBinding(
     parsePublishedBinding(output),
-    ownedPort,
   );
 }
 
@@ -917,11 +935,12 @@ async function assertExactContainerAbsent(spawnImpl) {
   return output.trim();
 }
 
-async function assertPortAbsent() {
+async function assertPortAbsent(port) {
+  const observedPort = assertValidObservedPort(port);
   await new Promise((resolvePromise, reject) => {
     const socket = net.createConnection({
       host: "127.0.0.1",
-      port: ownedPort,
+      port: observedPort,
     });
     let settled = false;
     const finish = (error) => {

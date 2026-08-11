@@ -527,7 +527,7 @@ test("Run-12 dedicated migrator volume finality contract is complete", async () 
   );
 });
 
-test("both disposable PostgreSQL runners publish an explicit 127.0.0.1 loopback-only binding", async () => {
+test("disposable PostgreSQL runners use loopback binding with runtime ephemeral allocation", async () => {
   const migratorRunner = await readFile(
     "scripts/run-disposable-migrator-alignment-tests.mjs",
     "utf8",
@@ -536,11 +536,16 @@ test("both disposable PostgreSQL runners publish an explicit 127.0.0.1 loopback-
     "scripts/run-disposable-runtime-postgres-tests.mjs",
     "utf8",
   );
-  for (const source of [migratorRunner, runtimeRunner]) {
-    assert.match(source, /--publish[\s\S]*127\.0\.0\.1:\$\{ownedPort\}:5432/);
-    assert.doesNotMatch(source, /--publish[\s\S]*`\$\{ownedPort\}:5432`/);
-    assert.match(source, /assertExactPublishedBinding/);
-  }
+  assert.match(
+    migratorRunner,
+    /--publish[\s\S]*127\.0\.0\.1:\$\{ownedPort\}:5432/,
+  );
+  assert.match(migratorRunner, /assertExactPublishedBinding/);
+  assert.match(runtimeRunner, /--publish[\s\S]*127\.0\.0\.1::5432/);
+  assert.doesNotMatch(runtimeRunner, /\b55432\b/);
+  assert.match(runtimeRunner, /fixtureUrls\(resources\.observedPort\)/);
+  assert.match(runtimeRunner, /assertPortAbsent\(resources\.observedPort\)/);
+  assert.match(runtimeRunner, /resources\.observedPort/);
 });
 
 test("absence-verification lifecycle phase uses one allowlist vocabulary in both runners", async () => {
@@ -604,58 +609,50 @@ test("provider-managed public executes a bounded migrator transaction with rollb
   assert.match(source, /__migrator_bounded_probe/);
 });
 
-test("published binding parser rejects malformed, missing, duplicate and extra entries", async () => {
+test("dynamic runtime binding validates the assigned port and propagates it", async () => {
   const runner = await import(
-    "../scripts/run-disposable-migrator-alignment-tests.mjs"
+    "../scripts/run-disposable-runtime-postgres-tests.mjs"
   );
   const valid =
-    '{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"56432"}]}';
-  runner.assertSingleLoopbackPublishedBinding(
-    runner.parsePublishedBinding(valid),
-    56432,
-  );
-  assert.throws(() => runner.parsePublishedBinding("not-json"));
-  assert.throws(() => runner.parsePublishedBinding(""));
-  assert.throws(() => runner.parsePublishedBinding("{}"));
-  assert.throws(() => runner.parsePublishedBinding("[]"));
-  assert.throws(() =>
-    runner.parsePublishedBinding('{"5432/tcp":[]}'),
-  );
-  assert.throws(() =>
-    runner.parsePublishedBinding('{"5433/udp":[{"HostIp":"127.0.0.1","HostPort":"56432"}]}'),
-  );
-  assert.throws(() =>
+    '{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"49152"}]}';
+  assert.equal(
     runner.assertSingleLoopbackPublishedBinding(
-      runner.parsePublishedBinding(
-        '{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"56432"},{"HostIp":"0.0.0.0","HostPort":"56432"}]}',
-      ),
-      56432,
+      runner.parsePublishedBinding(valid),
     ),
+    49152,
   );
-  assert.throws(() =>
-    runner.assertSingleLoopbackPublishedBinding(
-      runner.parsePublishedBinding(
-        '{"5432/tcp":[{"HostIp":"0.0.0.0","HostPort":"56432"}]}',
+  const urls = runner.fixtureUrls(49152);
+  assert.ok(Object.values(urls).every((value) => value.includes(":49152/")));
+  const receipt = runner.formatDisposableRuntimeFailureReceipt({
+    observedPort: 49152,
+  });
+  assert.match(receipt, /"publishedBindingVerified":true/);
+  assert.match(receipt, /"observedPort":49152/);
+  for (const raw of [
+    "not-json",
+    "",
+    "{}",
+    "[]",
+    '{"5432/tcp":null}',
+    '{"5432/tcp":[]}',
+    '{"5433/udp":[{"HostIp":"127.0.0.1","HostPort":"49152"}]}',
+    '{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"49152"},{"HostIp":"127.0.0.1","HostPort":"49153"}]}',
+    '{"5432/tcp":[{"HostIp":"0.0.0.0","HostPort":"49152"}]}',
+    '{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"not-a-port"}]}',
+    '{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":""}]}',
+    '{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"1.5"}]}',
+    '{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"0"}]}',
+    '{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"65536"}]}',
+    '{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"49152"}],"5433/tcp":[{"HostIp":"127.0.0.1","HostPort":"49153"}]}',
+  ]) {
+    assert.throws(() =>
+      runner.assertSingleLoopbackPublishedBinding(
+        runner.parsePublishedBinding(raw),
       ),
-      56432,
-    ),
-  );
-  assert.throws(() =>
-    runner.assertSingleLoopbackPublishedBinding(
-      runner.parsePublishedBinding(
-        '{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"9999"}]}',
-      ),
-      56432,
-    ),
-  );
-  assert.throws(() =>
-    runner.assertSingleLoopbackPublishedBinding(
-      runner.parsePublishedBinding(
-        '{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"56432"}],"5433/tcp":[{"HostIp":"127.0.0.1","HostPort":"56433"}]}',
-      ),
-      56432,
-    ),
-  );
+    );
+  }
+  assert.throws(() => runner.fixtureUrls(0));
+  assert.throws(() => runner.fixtureUrls(65_536));
 });
 
 test("migrator runner fails closed on malformed Docker binding evidence with cleanup and absence verification", async () => {
