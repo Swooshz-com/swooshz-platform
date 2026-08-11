@@ -313,6 +313,10 @@ proves the target attributes remain exact (`NOCREATEDB`, `LOGIN` unchanged)
 and proves zero unintended persistent mutation by baseline-equality of the
 ownership fingerprint.
 
+### Pre-completion legacy retirement effect
+
+`DROP ROLE platform_app` remains mechanically rejected while dependent objects or ownership remain. `ALTER ROLE platform_app NOLOGIN` is distinct: PostgreSQL can apply it while those dependencies remain, so the controller sequence?not a claimed PostgreSQL dependency rejection?must forbid premature retirement. The disposable rehearsal may exercise `NOLOGIN` only as a bounded reversible negative control: require `LOGIN` before the check, apply `NOLOGIN` through admitted disposable admin authority, prove that a brand-new `platform_app` connection fails, restore `LOGIN`, and prove that a brand-new connection succeeds. An already-open session is diagnostic only. No live `NOLOGIN` action is authorized by this repository rehearsal.
+
 ### Required positive transfer rehearsal
 
 The rehearsal proves the bounded temporary-membership path per

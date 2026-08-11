@@ -351,6 +351,7 @@ test(
       // state, before the replacement and rollback proof completes, the legacy
       // role cannot be retired or dropped and its authority remains available
       // for rollback.
+      await runReversibleLegacyNoLoginControl(primary);
       await assertQueryRejected(
         primary.adminPool,
         `drop role platform_app`,
@@ -1577,6 +1578,69 @@ function contractTableNames() {
   )];
 }
 
+export async function runReversibleLegacyNoLoginControl(primary) {
+  const baselineFingerprint = await readOwnershipFingerprint(
+    primary.adminPool,
+    primary.databaseName,
+  );
+  let existingClient;
+  let blockedPool;
+  let restoredPool;
+
+  try {
+    await primary.adminPool.query("ALTER ROLE platform_app LOGIN");
+    const initialRole = await primary.adminPool.query(
+      "select rolcanlogin from pg_roles where rolname = 'platform_app'",
+    );
+    assert.equal(initialRole.rows[0]?.rolcanlogin, true);
+
+    existingClient = await primary.appPool.connect();
+    await existingClient.query("select 1");
+
+    await primary.adminPool.query("ALTER ROLE platform_app NOLOGIN");
+    const noLoginRole = await primary.adminPool.query(
+      "select rolcanlogin from pg_roles where rolname = 'platform_app'",
+    );
+    assert.equal(noLoginRole.rows[0]?.rolcanlogin, false);
+
+    blockedPool = new Pool({
+      connectionString: roleUrl("platform_app", primary.databaseName),
+      max: 1,
+    });
+    await assert.rejects(
+      () => blockedPool.query("select 1"),
+      (error) =>
+        /not permitted to log in|cannot log in|authentication failed/i.test(
+          String(error?.message ?? ""),
+        ),
+    );
+
+    await existingClient.query("select 1");
+
+    await primary.adminPool.query("ALTER ROLE platform_app LOGIN");
+    restoredPool = new Pool({
+      connectionString: roleUrl("platform_app", primary.databaseName),
+      max: 1,
+    });
+    await assert.doesNotReject(() => restoredPool.query("select 1"));
+
+    const restoredRole = await primary.adminPool.query(
+      "select rolcanlogin from pg_roles where rolname = 'platform_app'",
+    );
+    assert.equal(restoredRole.rows[0]?.rolcanlogin, true);
+  } finally {
+    await blockedPool?.end();
+    await restoredPool?.end();
+    existingClient?.release();
+    await primary.adminPool.query("ALTER ROLE platform_app LOGIN");
+  }
+
+  const finalFingerprint = await readOwnershipFingerprint(
+    primary.adminPool,
+    primary.databaseName,
+  );
+  assert.deepEqual(finalFingerprint, baselineFingerprint);
+}
 function identifier(value) {
   assert.match(value, /^[a-z_][a-z0-9_$]{0,62}$/);
   return `"${value.replaceAll('"', '""')}"`;

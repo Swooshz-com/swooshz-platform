@@ -659,10 +659,25 @@ test("migrator runner fails closed on malformed Docker binding evidence with cle
   const runner = await import(
     "../scripts/run-disposable-migrator-alignment-tests.mjs"
   );
+  let mockVolumeCreated = false;
   const spawnImpl = createMockDockerSpawn({
     ps: () => "",
-    volume: (operation) =>
-      operation === "create" ? "deepseek-platform128-pg17-data\n" : "",
+    volume: (operation) => {
+      const action = Array.isArray(operation) ? operation[0] : operation;
+      if (action === "create") {
+        mockVolumeCreated = true;
+        return `${run14OwnedVolumeName}\n`;
+      }
+      if (action === "ls") return mockVolumeCreated ? `${run14OwnedVolumeName}\n` : "";
+      if (action === "inspect") {
+        return `${JSON.stringify({
+          Name: run14OwnedVolumeName,
+          Labels: { "com.swooshz.platform.runner": "deepseek-platform128-migrator" },
+        })}\n`;
+      }
+      if (action === "rm") mockVolumeCreated = false;
+      return "";
+    },
     run: () => "container-id\n",
     inspect: () => "not-json",
     rm: () => "",
@@ -1090,6 +1105,157 @@ function assertEnvRow(runbook, name, required, secret) {
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+const run14OwnedVolumeName = "deepseek-platform128-pg17-data";
+
+function createRun14VolumeSpawn({
+  createExitCode = 0,
+  signalOnCreate = false,
+  createdBeforeStart = false,
+  createdLabels = {
+    "com.swooshz.platform.runner": "deepseek-platform128-migrator",
+  },
+  inspectOutput,
+} = {}) {
+  let exists = createdBeforeStart;
+  let labels = { ...createdLabels };
+  const calls = [];
+  const spawnImpl = (command, args, options = {}) => {
+    calls.push({ command, args: [...args], options });
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = () => {
+      child.emit("close", null, "SIGTERM");
+    };
+    queueMicrotask(() => {
+      let stdout = "";
+      let code = 0;
+      let signal = null;
+      if (args.includes("ls")) {
+        stdout = exists ? `${run14OwnedVolumeName}\n` : "";
+      } else if (args.includes("inspect")) {
+        stdout = inspectOutput ?? `${JSON.stringify({ Name: run14OwnedVolumeName, Labels: labels })}\n`;
+      } else if (args.includes("create")) {
+        exists = true;
+        code = createExitCode;
+        if (signalOnCreate) {
+          code = null;
+          signal = "SIGTERM";
+        }
+      } else if (args.includes("rm")) {
+        exists = false;
+        stdout = `${run14OwnedVolumeName}\n`;
+      }
+      if (stdout) child.stdout.emit("data", Buffer.from(stdout));
+      child.emit("close", code, signal);
+    });
+    return child;
+  };
+  spawnImpl.calls = calls;
+  return spawnImpl;
+}
+
+function run14VolumeRmCalls(spawnImpl) {
+  return spawnImpl.calls.filter(({ args }) => args.includes("rm"));
+}
+
+test("Run-14 named-volume cleanup reconciles daemon-side create ambiguity by exact ownership", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const ownedSpawn = createRun14VolumeSpawn();
+  assert.equal(await runner.createOwnedVolume(ownedSpawn), run14OwnedVolumeName);
+  const ownedResources = {
+    volumeCreateAttempted: true,
+    volumeCreated: true,
+    volumeOwned: true,
+    volumeRemoved: false,
+    containerStartAttempted: false,
+    containerRemoved: false,
+  };
+  await runner.cleanupOwnedVolumeAfterCreateAttempt(ownedSpawn, ownedResources);
+  assert.equal(run14VolumeRmCalls(ownedSpawn).length, 1);
+  assert.deepEqual(await runner.inspectOwnedVolumeOwnership(ownedSpawn), { state: "absent" });
+
+  for (const createFailure of ["nonzero", "signal"]) {
+    const failedSpawn = createRun14VolumeSpawn({
+      createExitCode: createFailure === "nonzero" ? 1 : 0,
+      signalOnCreate: createFailure === "signal",
+    });
+    await assert.rejects(() => runner.createOwnedVolume(failedSpawn));
+    const failedResources = {
+      volumeCreateAttempted: true,
+      volumeCreated: false,
+      volumeOwned: false,
+      volumeRemoved: false,
+      containerStartAttempted: false,
+      containerRemoved: false,
+      failureLabel: createFailure,
+    };
+    await runner.cleanupOwnedVolumeAfterCreateAttempt(failedSpawn, failedResources);
+    assert.equal(run14VolumeRmCalls(failedSpawn).length, 1);
+    assert.deepEqual(await runner.inspectOwnedVolumeOwnership(failedSpawn), { state: "absent" });
+  }
+
+  const unownedSpawn = createRun14VolumeSpawn({
+    createExitCode: 1,
+    createdBeforeStart: true,
+    createdLabels: { "com.swooshz.platform.runner": "other-owner" },
+  });
+  await assert.rejects(() => runner.cleanupOwnedVolumeAfterCreateAttempt(unownedSpawn, {
+    volumeCreateAttempted: true,
+    volumeCreated: false,
+    volumeOwned: false,
+    volumeRemoved: false,
+    containerStartAttempted: false,
+    containerRemoved: false,
+  }));
+  assert.equal(run14VolumeRmCalls(unownedSpawn).length, 0);
+});
+
+test("Run-14 focused child environment removes PostgreSQL connection overrides and retains benign env", async () => {
+  const { buildFocusedTestEnvironment } = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const pgKeys = [
+    "PGUSER",
+    "PGDATABASE",
+    "PGHOST",
+    "PGHOSTADDR",
+    "PGPORT",
+    "PGPASSWORD",
+    "PGPASSFILE",
+    "PGSERVICE",
+    "PGSERVICEFILE",
+    "PGOPTIONS",
+    "PGAPPNAME",
+    "PGCONNECT_TIMEOUT",
+    "PGSSLMODE",
+    "PGSSLNEGOTIATION",
+    "PGSSLCERT",
+    "PGSSLKEY",
+    "PGSSLROOTCERT",
+    "PGREQUIRESSL",
+    "PGCHANNELBINDING",
+    "PGTARGETSESSIONATTRS",
+    "PGCLIENTENCODING",
+    "PGDATESTYLE",
+    "PGTZ",
+    "PGGEQO",
+    "PGSYSCONFDIR",
+    "PGLOCALEDIR",
+    "PGPASS_NO_DEESCAPE",
+    "PGSYNTHETIC",
+    "NODE_PG_FORCE_NATIVE",
+  ];
+  const input = {
+    PATH: "retained",
+    NODE_ENV: "test",
+    ...Object.fromEntries(pgKeys.map((key) => [key, key])),
+  };
+  const output = buildFocusedTestEnvironment(input);
+  for (const key of pgKeys) assert.equal(output[key], undefined, key);
+  assert.equal(output.PATH, "retained");
+  assert.equal(output.NODE_ENV, "test");
+  assert.equal(input.PGPASSWORD, "PGPASSWORD");
+});
 
 function whitespaceTolerant(value) {
   return escapeRegExp(value).replaceAll(" ", "\\s+");

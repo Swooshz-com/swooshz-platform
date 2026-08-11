@@ -356,6 +356,8 @@ export function formatDisposableRuntimeFailureReceipt(resources = {}) {
     volumeCreated: resources.volumeCreated === true,
     volumeAttached: resources.volumeAttached === true,
     volumeOwned: resources.volumeOwned === true,
+
+volumeOwnershipState: resources.volumeOwnershipState ?? "unknown",
     volumeRemoved: resources.volumeRemoved === true,
     volumeAbsenceVerified: resources.volumeAbsenceVerified === true,
     postgresReady: resources.postgresReady === true,
@@ -781,6 +783,12 @@ async function provisionFixture(
 }
 
 async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
+  const originalSpawnImpl = spawnImpl;
+  spawnImpl = (command, args, options = {}) =>
+    originalSpawnImpl(command, args, {
+      ...options,
+      env: buildFocusedTestEnvironment(options.env),
+    });
   const env = {
     ...process.env,
     MIGRATOR_ALIGNMENT_TEST_DATABASE_URL: urls.primaryTargetUrl,
@@ -798,7 +806,7 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
       child = spawnImpl(
         process.execPath,
         [
-          "--test",
+        "--test",
           "tests/platform-migrator-alignment-postgres.test.mjs",
         ],
         { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
@@ -840,7 +848,7 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
       }
       if (code !== 0) {
         markChildFailure(resources, "child_test_failure");
-        reject(new Error());
+        reject(new Error("Focused child test failed."));
         return;
       }
       if (code === 0 && signal === null && !outputOverflow) {
@@ -910,6 +918,10 @@ async function cleanupRunnerResources(resources, spawnImpl) {
       firstError ??= new Error();
     }
   }
+  if (resources.volumeCreateAttempted && (!resources.volumeCreated || !resources.volumeOwned) && !resources.volumeRemoved) {
+    await cleanupOwnedVolumeAfterCreateAttempt(spawnImpl, resources);
+  }
+
   if (resources.volumeCreated) {
     try {
       await runCommand(spawnImpl, "docker", [
@@ -1006,13 +1018,121 @@ async function terminateOwnedChild(resources) {
   });
 }
 
-async function createOwnedVolume(spawnImpl) {
-  return (await runCommand(spawnImpl, "docker", [
+function ownedVolumeOwnershipMarker() {
+  return {
+    key: "com.swooshz.platform.runner",
+    value: "deepseek-platform128-migrator",
+  };
+}
+
+function malformedOwnedVolumeState() {
+  return { state: "ambiguous" };
+}
+
+export async function inspectOwnedVolumeOwnership(spawnImpl) {
+  let listedOutput;
+  try {
+    listedOutput = await runCommand(spawnImpl, "docker", [
+      "volume",
+      "ls",
+      "--filter",
+      `name=${ownedVolumeName}`,
+      "--format",
+      "{{.Name}}",
+    ]);
+  } catch {
+    return malformedOwnedVolumeState();
+  }
+
+  const names = String(listedOutput ?? "")
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const exactNames = names.filter((value) => value === ownedVolumeName);
+  if (exactNames.length === 0) return { state: "absent" };
+  if (exactNames.length !== 1) return malformedOwnedVolumeState();
+
+  let inspectedOutput;
+  try {
+    inspectedOutput = await runCommand(spawnImpl, "docker", [
+      "volume",
+      "inspect",
+      "--format",
+      "{{json .}}",
+      ownedVolumeName,
+    ]);
+  } catch {
+    return malformedOwnedVolumeState();
+  }
+
+  const inspectedLines = String(inspectedOutput ?? "")
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (inspectedLines.length !== 1) return malformedOwnedVolumeState();
+
+  let details;
+  try {
+    details = JSON.parse(inspectedLines[0]);
+  } catch {
+    return malformedOwnedVolumeState();
+  }
+  if (!details || Array.isArray(details) || typeof details !== "object") {
+    return malformedOwnedVolumeState();
+  }
+  if (details.Name !== ownedVolumeName) return { state: "unowned" };
+
+  const marker = ownedVolumeOwnershipMarker();
+  if (!details.Labels || typeof details.Labels !== "object") {
+    return { state: "unowned" };
+  }
+  if (details.Labels[marker.key] !== marker.value) {
+    return { state: "unowned" };
+  }
+  return { state: "owned" };
+}
+
+export async function cleanupOwnedVolumeAfterCreateAttempt(spawnImpl, resources) {
+  if (!resources.volumeCreateAttempted || resources.volumeRemoved) {
+    return "not-required";
+  }
+  if (resources.containerStartAttempted && !resources.containerRemoved) {
+    throw new Error("volume cleanup requires container cleanup first");
+  }
+
+  const state = await inspectOwnedVolumeOwnership(spawnImpl);
+  resources.volumeOwnershipState = state.state;
+  if (state.state === "absent") return state.state;
+  if (state.state !== "owned") {
+    throw new Error(`owned volume evidence was ${state.state}`);
+  }
+
+    await runCommand(spawnImpl, "docker", ["volume", "rm", ownedVolumeName]);
+  resources.volumeCreated = true;
+  resources.volumeOwned = true;
+  resources.volumeRemoved = true;
+  return "removed";
+}
+
+export async function createOwnedVolume(spawnImpl) {
+  const marker = ownedVolumeOwnershipMarker();
+  const output = await runCommand(spawnImpl, "docker", [
     "volume",
     "create",
+    "--label",
+    `${marker.key}=${marker.value}`,
     ownedVolumeName,
-  ])).trim();
+  ]);
+  if (String(output ?? "").trim() && String(output).trim() !== ownedVolumeName) {
+    throw new Error("docker volume create returned an unexpected name");
+  }
+  const state = await inspectOwnedVolumeOwnership(spawnImpl);
+  if (state.state !== "owned") {
+    throw new Error(`created volume ownership evidence was ${state.state}`);
+  }
+  return ownedVolumeName;
 }
+
 
 async function startOwnedContainer(spawnImpl) {
   await runCommand(spawnImpl, "docker", [
@@ -1340,6 +1460,47 @@ function privilegesByTable() {
     values.set(record.objectName, privileges);
   }
   return values;
+}
+
+const postgresqlConnectionEnvironmentKeys = Object.freeze([
+  "PGUSER",
+  "PGDATABASE",
+  "PGHOST",
+  "PGHOSTADDR",
+  "PGPORT",
+  "PGPASSWORD",
+  "PGPASSFILE",
+  "PGSERVICE",
+  "PGSERVICEFILE",
+  "PGOPTIONS",
+  "PGAPPNAME",
+  "PGCONNECT_TIMEOUT",
+  "PGSSLMODE",
+  "PGSSLNEGOTIATION",
+  "PGSSLCERT",
+  "PGSSLKEY",
+  "PGSSLROOTCERT",
+  "PGREQUIRESSL",
+  "PGCHANNELBINDING",
+  "PGTARGETSESSIONATTRS",
+  "PGCLIENTENCODING",
+  "PGDATESTYLE",
+  "PGTZ",
+  "PGGEQO",
+  "PGSYSCONFDIR",
+  "PGLOCALEDIR",
+  "PGPASS_NO_DEESCAPE",
+  "NODE_PG_FORCE_NATIVE",
+]);
+
+export function buildFocusedTestEnvironment(env = process.env) {
+  const childEnv = { ...env };
+  for (const key of postgresqlConnectionEnvironmentKeys) delete childEnv[key];
+  for (const key of Object.keys(childEnv)) {
+    if (key.startsWith("PG")) delete childEnv[key];
+  }
+  delete childEnv.NODE_PG_FORCE_NATIVE;
+  return childEnv;
 }
 
 function quoteIdentifier(value) {
