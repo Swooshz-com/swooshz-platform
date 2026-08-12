@@ -805,6 +805,8 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
   };
   await new Promise((resolvePromise, reject) => {
     const output = [];
+    const diagnosticOutput = [];
+    let diagnosticOutputLength = 0;
     let outputLength = 0;
     let outputOverflow = false;
     let child;
@@ -832,7 +834,12 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
         outputOverflow = true;
       }
     });
-    child.stderr?.resume();
+    child.stderr?.on("data", (chunk) => {
+      diagnosticOutputLength += chunk.length;
+      if (diagnosticOutputLength <= maxChildOutputBytes) {
+        diagnosticOutput.push(Buffer.from(chunk));
+      }
+    });
     child.once("error", (error) => {
       markChildFailure(resources, "child_test_spawn");
       reject(error);
@@ -853,6 +860,13 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
         return;
       }
       if (code !== 0) {
+        emitFocusedChildFailureDiagnostic({
+          output,
+          diagnosticOutput,
+          childExitCode: resources.childExitCode,
+          childSignal: signal,
+          category: "child_test_failure",
+        });
         markChildFailure(resources, "child_test_failure");
         reject(new Error("Focused child test failed."));
         return;
@@ -877,6 +891,49 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
   void admission;
 }
 
+function emitFocusedChildFailureDiagnostic({
+  output,
+  diagnosticOutput,
+  childExitCode,
+  childSignal,
+  category,
+}) {
+  const combined = Buffer.concat([...output, ...diagnosticOutput]).toString("utf8");
+  const normalised = combined
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "")
+    .replace(/\r\n?/gu, "\n");
+  const subtest = normalised.match(/not ok\s+\d+\s+-\s+([^\n]+)/u)?.[1]
+    ?.trim().replace(/\s+/gu, " ").slice(0, 180) ?? "unknown";
+  const categories = [
+    ["exact reverse rollback", "exact_reverse_rollback"],
+    ["default-ACL residue", "default_acl_residue_negative_control"],
+    ["ACL residue", "acl_residue_negative_control"],
+    ["fingerprint fields:", "exact_fingerprint_assertion"],
+    ["AssertionError", "assertion"],
+  ];
+  const assertionCategory = categories.find(([needle]) =>
+    normalised.toLowerCase().includes(needle.toLowerCase()))?.[1] ?? "unknown";
+  const allowedFields = [
+    "databaseOwner", "schemaOwners", "objectOwners", "enumOwners",
+    "routineOwners", "databaseAcl", "schemaAcls", "defaultAcl",
+    "attributes", "memberships",
+  ];
+  const fingerprintFields = normalised.match(/fingerprint fields:\s*([^;\n]*)/iu)?.[1]
+    ?.split(",").map((field) => field.trim())
+    .filter((field) => allowedFields.includes(field)) ?? [];
+  const tupleCounts = normalised.match(/tuple counts:\s*([^;\n]*)/iu)?.[1]
+    ?.split(",").map((entry) => entry.trim())
+    .filter((entry) => /^[a-zA-Z]+:\d+\/\d+$/u.test(entry)) ?? [];
+  process.stderr.write(`Focused child diagnostic: ${JSON.stringify({
+    subtest,
+    assertionCategory,
+    fingerprintFields: [...new Set(fingerprintFields)],
+    tupleCounts,
+    runnerCategory: category,
+    childExitCode: Number.isInteger(childExitCode) ? childExitCode : null,
+    childSignal: typeof childSignal === "string" ? childSignal : null,
+  })}\n`);
+}
 function markChildFailure(resources, category) {
   if (!resources.failureCategory) {
     resources.failurePhase = "runFocusedTests";
