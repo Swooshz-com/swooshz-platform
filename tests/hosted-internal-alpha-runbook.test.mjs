@@ -519,12 +519,37 @@ test("Run-12 dedicated migrator volume finality contract is complete", async () 
         /exact volume absence/i.test(runbook),
     },
     {
+      label: "fresh per-run ownership token",
+      satisfied:
+        /randomUUID\(\)/.test(runner) &&
+        /volumeOwnershipTokenLabelKey/.test(runner) &&
+        /volumeOwnershipToken: createVolumeOwnershipToken\(\)/.test(runner) &&
+        /resources\.volumeOwnershipToken/.test(runner) &&
+        !/volumeOwnershipToken.*formatDisposableRuntimeFailureReceipt/.test(runner),
+    },
+    {
+      label: "single bounded owned-volume removal path",
+      satisfied:
+        /resources\.volumeCreateAttempted && !resources\.volumeRemoved/.test(runner) &&
+        (runner.match(/\[\s*"volume",\s*"rm",\s*ownedVolumeName\s*\]/g) ?? [])
+          .length === 1 &&
+        /once `volumeRemoved=true`, no second attempt/i.test(architectureDoc) &&
+        /no second attempt after `volumeRemoved=true`/i.test(runbook),
+    },
+    {
+      label: "token and retirement documentation parity",
+      satisfied:
+        /fresh in-memory ownership token/i.test(architectureDoc) &&
+        /fresh in-memory ownership token/i.test(runbook) &&
+        /DROP ROLE platform_app[\s\S]*NOLOGIN.*controller-gated/i.test(runbook),
+    },
+    {
       label: "broad/global volume pruning prohibition",
       satisfied:
-        /broad\/global Docker volume\s+pruning is prohibited/i.test(
+        /broad\/global Docker volume\s+pruning\s+is\s+prohibited/i.test(
           architectureDoc,
         ) &&
-        /broad\/global Docker volume\s+pruning is prohibited/i.test(runbook) &&
+        /broad\/global Docker volume\s+pruning\s+is\s+prohibited/i.test(runbook) &&
         !/docker\s+(?:volume|system)\s+prune/i.test(runner),
     },
   ];
@@ -669,11 +694,14 @@ test("migrator runner fails closed on malformed Docker binding evidence with cle
     "../scripts/run-disposable-migrator-alignment-tests.mjs"
   );
   let mockVolumeCreated = false;
+  let mockVolumeLabels = {};
   const spawnImpl = createMockDockerSpawn({
     ps: () => "",
-    volume: (operation) => {
-      const action = Array.isArray(operation) ? operation[0] : operation;
+    volume: (operation, ...rest) => {
+      const operationArgs = [operation, ...rest];
+      const action = operationArgs[0];
       if (action === "create") {
+        mockVolumeLabels = parseVolumeCreateLabels(operationArgs);
         mockVolumeCreated = true;
         return `${run14OwnedVolumeName}\n`;
       }
@@ -681,7 +709,7 @@ test("migrator runner fails closed on malformed Docker binding evidence with cle
       if (action === "inspect") {
         return `${JSON.stringify({
           Name: run14OwnedVolumeName,
-          Labels: { "com.swooshz.platform.runner": "deepseek-platform128-migrator" },
+          Labels: mockVolumeLabels,
         })}\n`;
       }
       if (action === "rm") mockVolumeCreated = false;
@@ -726,6 +754,98 @@ test("migrator runner fails closed on malformed Docker binding evidence with cle
     },
   );
 });
+
+test("Run-18 production runner reconciles daemon-created nonzero volume once with final absence", async () => {
+  const runner = await import(
+    "../scripts/run-disposable-migrator-alignment-tests.mjs",
+  );
+  const ownershipTokens = [];
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const spawnImpl = createDaemonCreatedNonzeroVolumeSpawn();
+    await assert.rejects(
+      () => runner.run({ env: {}, spawnImpl }),
+      (error) => {
+        const receipt = error.runtimeFailureReceipt;
+        assert.match(receipt, /"category":"volume_create"/);
+        assert.match(receipt, /"cleanupComplete":true/);
+        assert.match(receipt, /"absenceVerified":true/);
+        assert.match(receipt, /"volumeRemoved":true/);
+        assert.match(receipt, /"volumeAbsenceVerified":true/);
+        assert.equal(spawnImpl.volumeRmCalls(), 1);
+        assert.equal(spawnImpl.volumeExists(), false);
+        assert.equal(spawnImpl.volumeLsCalls(), 3);
+        assert.doesNotMatch(
+          receipt,
+          new RegExp(escapeRegExp(spawnImpl.ownershipToken)),
+        );
+        ownershipTokens.push(spawnImpl.ownershipToken);
+        return true;
+      },
+    );
+  }
+
+  assert.notEqual(
+    ownershipTokens[0],
+    ownershipTokens[1],
+    "each runner invocation must use a fresh ownership token",
+  );
+});
+
+function createDaemonCreatedNonzeroVolumeSpawn() {
+  let volumeExists = false;
+  let volumeLabels = {};
+  const calls = [];
+  const spawnImpl = (command, args, options = {}) => {
+    calls.push({ command, args: [...args], options });
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    queueMicrotask(() => {
+      let stdout = "";
+      let code = 0;
+      if (args[0] === "ps") {
+        stdout = "";
+      } else if (args[0] === "volume") {
+        const action = args[1];
+        if (action === "ls") {
+          stdout = volumeExists ? `${run14OwnedVolumeName}\n` : "";
+        } else if (action === "create") {
+          volumeLabels = parseVolumeCreateLabels(args);
+          volumeExists = true;
+          code = 1;
+        } else if (action === "inspect") {
+          stdout = `${JSON.stringify({
+            Name: run14OwnedVolumeName,
+            Labels: volumeLabels,
+          })}\n`;
+        } else if (action === "rm") {
+          volumeExists = false;
+          stdout = `${run14OwnedVolumeName}\n`;
+        } else {
+          throw new Error(`unexpected volume action ${action}`);
+        }
+      } else {
+        throw new Error(`unexpected docker command ${args[0]}`);
+      }
+      if (stdout) child.stdout.emit("data", Buffer.from(stdout));
+      child.emit("close", code, null);
+    });
+    return child;
+  };
+  spawnImpl.calls = calls;
+  spawnImpl.volumeExists = () => volumeExists;
+  spawnImpl.volumeRmCalls = () => calls.filter(
+    ({ args }) => args[0] === "volume" && args[1] === "rm",
+  ).length;
+  spawnImpl.volumeLsCalls = () => calls.filter(
+    ({ args }) => args[0] === "volume" && args[1] === "ls",
+  ).length;
+  Object.defineProperty(spawnImpl, "ownershipToken", {
+    get: () => volumeLabels[run18VolumeOwnershipTokenLabelKey],
+  });
+  return spawnImpl;
+}
 
 function createMockDockerSpawn(handlers) {
   const calls = [];
@@ -1027,9 +1147,15 @@ test("DL-128-REPO-004: the pre-completion legacy-retirement guard is mechanicall
     "docs/architecture/PLATFORM-MIGRATOR-ALIGNMENT.md",
     "utf8",
   );
+  const runbook = await readRunbook();
   assert.match(postgresTest, /drop role platform_app/);
   assert.match(postgresTest, /depends on it|cannot be dropped/i);
   assert.match(postgresTest, /legacy authority remains available|assertLegacyAuthorityAvailable/i);
+  assert.match(postgresTest, /initialRole[\s\S]*rolcanlogin[\s\S]*true/);
+  assert.match(postgresTest, /assertFreshPlatformAppLogin\(primary\)/);
+  assert.match(postgresTest, /assertFreshPlatformAppLoginRejected\(primary\)/);
+  assert.match(postgresTest, /noLoginAttempted/);
+  assert.match(runbook, /DROP ROLE platform_app[\s\S]*mechanically[\s\S]*NOLOGIN[\s\S]*controller-gated[\s\S]*fresh login/i);
   assert.match(architectureDoc, /cannot be retired/i);
 });
 
@@ -1116,6 +1242,20 @@ function escapeRegExp(value) {
 }
 
 const run14OwnedVolumeName = "deepseek-platform128-pg17-data";
+const run18VolumeOwnershipToken = "run18-owned-token";
+const run18VolumeOwnershipTokenLabelKey = "com.swooshz.platform.runner-token";
+
+function parseVolumeCreateLabels(operation) {
+  if (!Array.isArray(operation)) return {};
+  const labels = {};
+  for (let index = 0; index < operation.length; index += 1) {
+    if (operation[index] !== "--label") continue;
+    const [key, ...valueParts] = String(operation[index + 1] ?? "").split("=");
+    labels[key] = valueParts.join("=");
+    index += 1;
+  }
+  return labels;
+}
 
 function createRun14VolumeSpawn({
   createExitCode = 0,
@@ -1123,6 +1263,7 @@ function createRun14VolumeSpawn({
   createdBeforeStart = false,
   createdLabels = {
     "com.swooshz.platform.runner": "deepseek-platform128-migrator",
+    [run18VolumeOwnershipTokenLabelKey]: run18VolumeOwnershipToken,
   },
   inspectOutput,
 } = {}) {
@@ -1146,6 +1287,7 @@ function createRun14VolumeSpawn({
       } else if (args.includes("inspect")) {
         stdout = inspectOutput ?? `${JSON.stringify({ Name: run14OwnedVolumeName, Labels: labels })}\n`;
       } else if (args.includes("create")) {
+        labels = parseVolumeCreateLabels(args);
         exists = true;
         code = createExitCode;
         if (signalOnCreate) {
@@ -1172,7 +1314,10 @@ function run14VolumeRmCalls(spawnImpl) {
 test("Run-14 named-volume cleanup reconciles daemon-side create ambiguity by exact ownership", async () => {
   const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
   const ownedSpawn = createRun14VolumeSpawn();
-  assert.equal(await runner.createOwnedVolume(ownedSpawn), run14OwnedVolumeName);
+  assert.equal(
+    await runner.createOwnedVolume(ownedSpawn, run18VolumeOwnershipToken),
+    run14OwnedVolumeName,
+  );
   const ownedResources = {
     volumeCreateAttempted: true,
     volumeCreated: true,
@@ -1180,17 +1325,18 @@ test("Run-14 named-volume cleanup reconciles daemon-side create ambiguity by exa
     volumeRemoved: false,
     containerStartAttempted: false,
     containerRemoved: false,
+    volumeOwnershipToken: run18VolumeOwnershipToken,
   };
   await runner.cleanupOwnedVolumeAfterCreateAttempt(ownedSpawn, ownedResources);
   assert.equal(run14VolumeRmCalls(ownedSpawn).length, 1);
-  assert.deepEqual(await runner.inspectOwnedVolumeOwnership(ownedSpawn), { state: "absent" });
+  assert.deepEqual(await runner.inspectOwnedVolumeOwnership(ownedSpawn, run18VolumeOwnershipToken), { state: "absent" });
 
   for (const createFailure of ["nonzero", "signal"]) {
     const failedSpawn = createRun14VolumeSpawn({
       createExitCode: createFailure === "nonzero" ? 1 : 0,
       signalOnCreate: createFailure === "signal",
     });
-    await assert.rejects(() => runner.createOwnedVolume(failedSpawn));
+    await assert.rejects(() => runner.createOwnedVolume(failedSpawn, run18VolumeOwnershipToken));
     const failedResources = {
       volumeCreateAttempted: true,
       volumeCreated: false,
@@ -1199,16 +1345,17 @@ test("Run-14 named-volume cleanup reconciles daemon-side create ambiguity by exa
       containerStartAttempted: false,
       containerRemoved: false,
       failureLabel: createFailure,
+      volumeOwnershipToken: run18VolumeOwnershipToken,
     };
     await runner.cleanupOwnedVolumeAfterCreateAttempt(failedSpawn, failedResources);
     assert.equal(run14VolumeRmCalls(failedSpawn).length, 1);
-    assert.deepEqual(await runner.inspectOwnedVolumeOwnership(failedSpawn), { state: "absent" });
+    assert.deepEqual(await runner.inspectOwnedVolumeOwnership(failedSpawn, run18VolumeOwnershipToken), { state: "absent" });
   }
 
   const unownedSpawn = createRun14VolumeSpawn({
     createExitCode: 1,
     createdBeforeStart: true,
-    createdLabels: { "com.swooshz.platform.runner": "other-owner" },
+    createdLabels: { "com.swooshz.platform.runner": "deepseek-platform128-migrator" },
   });
   await assert.rejects(() => runner.cleanupOwnedVolumeAfterCreateAttempt(unownedSpawn, {
     volumeCreateAttempted: true,
@@ -1217,8 +1364,30 @@ test("Run-14 named-volume cleanup reconciles daemon-side create ambiguity by exa
     volumeRemoved: false,
     containerStartAttempted: false,
     containerRemoved: false,
+    volumeOwnershipToken: run18VolumeOwnershipToken,
   }));
   assert.equal(run14VolumeRmCalls(unownedSpawn).length, 0);
+  const mismatchedTokenSpawn = createRun14VolumeSpawn({
+    createExitCode: 1,
+    createdBeforeStart: true,
+    createdLabels: {
+      "com.swooshz.platform.runner": "deepseek-platform128-migrator",
+      [run18VolumeOwnershipTokenLabelKey]: "other-run-token",
+    },
+  });
+  await assert.rejects(() => runner.cleanupOwnedVolumeAfterCreateAttempt(
+    mismatchedTokenSpawn,
+    {
+      volumeCreateAttempted: true,
+      volumeCreated: false,
+      volumeOwned: false,
+      volumeRemoved: false,
+      containerStartAttempted: false,
+      containerRemoved: false,
+      volumeOwnershipToken: run18VolumeOwnershipToken,
+    },
+  ));
+  assert.equal(run14VolumeRmCalls(mismatchedTokenSpawn).length, 0);
 });
 
 test("Run-15 malformed and ambiguous volume inspection evidence fails closed", async () => {
@@ -1240,7 +1409,7 @@ test("Run-15 malformed and ambiguous volume inspection evidence fails closed", a
     });
 
     assert.deepEqual(
-      await runner.inspectOwnedVolumeOwnership(spawnImpl),
+      await runner.inspectOwnedVolumeOwnership(spawnImpl, run18VolumeOwnershipToken),
       { state: "ambiguous" },
       label,
     );
@@ -1252,6 +1421,7 @@ test("Run-15 malformed and ambiguous volume inspection evidence fails closed", a
         volumeRemoved: false,
         containerStartAttempted: false,
         containerRemoved: false,
+        volumeOwnershipToken: run18VolumeOwnershipToken,
       }),
       /owned volume evidence was ambiguous/,
       label,
@@ -1263,7 +1433,7 @@ test("Run-15 malformed and ambiguous volume inspection evidence fails closed", a
       label,
     );
     assert.deepEqual(
-      await runner.inspectOwnedVolumeOwnership(spawnImpl),
+      await runner.inspectOwnedVolumeOwnership(spawnImpl, run18VolumeOwnershipToken),
       { state: "ambiguous" },
       label + " volume must remain present and unowned by proof",
     );

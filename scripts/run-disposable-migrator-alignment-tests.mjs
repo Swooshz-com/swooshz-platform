@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -25,6 +26,7 @@ const databaseName = "migrator_alignment_test";
 const secondaryDatabaseName = "migrator_alignment_test_secondary";
 const ownedContainerName = "deepseek-platform128-pg17";
 const ownedVolumeName = "deepseek-platform128-pg17-data";
+const volumeOwnershipTokenLabelKey = "com.swooshz.platform.runner-token";
 const ownedPort = 56432;
 const maxChildOutputBytes = 64 * 1024;
 const maxChildDurationMs = 120_000;
@@ -116,6 +118,7 @@ export async function run({
         volumeAttached: false,
         volumeOwned: false,
         volumeRemoved: false,
+        volumeOwnershipToken: createVolumeOwnershipToken(),
         volumeAbsenceVerified: false,
         childProcess: null,
         childExited: true,
@@ -157,7 +160,10 @@ export async function run({
       });
       resources.volumeCreateAttempted = true;
       await runAt(resources, "construct", "volume_create", async () => {
-        const createdVolume = await createOwnedVolume(spawnImpl);
+        const createdVolume = await createOwnedVolume(
+          spawnImpl,
+          resources.volumeOwnershipToken,
+        );
         resources.volumeCreated = true;
         if (createdVolume !== ownedVolumeName) throw new Error();
       });
@@ -918,18 +924,9 @@ async function cleanupRunnerResources(resources, spawnImpl) {
       firstError ??= new Error();
     }
   }
-  if (resources.volumeCreateAttempted && (!resources.volumeCreated || !resources.volumeOwned) && !resources.volumeRemoved) {
-    await cleanupOwnedVolumeAfterCreateAttempt(spawnImpl, resources);
-  }
-
-  if (resources.volumeCreated) {
+  if (resources.volumeCreateAttempted && !resources.volumeRemoved) {
     try {
-      await runCommand(spawnImpl, "docker", [
-        "volume",
-        "rm",
-        ownedVolumeName,
-      ]);
-      resources.volumeRemoved = true;
+      await cleanupOwnedVolumeAfterCreateAttempt(spawnImpl, resources);
     } catch {
       firstError ??= new Error();
     }
@@ -1025,11 +1022,28 @@ function ownedVolumeOwnershipMarker() {
   };
 }
 
+function createVolumeOwnershipToken() {
+  return randomUUID();
+}
+
+function isVolumeOwnershipToken(value) {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value);
+}
+
+function volumeOwnershipLabels(ownershipToken) {
+  if (!isVolumeOwnershipToken(ownershipToken)) throw new Error();
+  const marker = ownedVolumeOwnershipMarker();
+  return {
+    [marker.key]: marker.value,
+    [volumeOwnershipTokenLabelKey]: ownershipToken,
+  };
+}
+
 function malformedOwnedVolumeState() {
   return { state: "ambiguous" };
 }
 
-export async function inspectOwnedVolumeOwnership(spawnImpl) {
+export async function inspectOwnedVolumeOwnership(spawnImpl, ownershipToken) {
   let listedOutput;
   try {
     listedOutput = await runCommand(spawnImpl, "docker", [
@@ -1048,9 +1062,10 @@ export async function inspectOwnedVolumeOwnership(spawnImpl) {
     .split(/\r?\n/)
     .map((value) => value.trim())
     .filter(Boolean);
-  const exactNames = names.filter((value) => value === ownedVolumeName);
-  if (exactNames.length === 0) return { state: "absent" };
-  if (exactNames.length !== 1) return malformedOwnedVolumeState();
+  if (names.length === 0) return { state: "absent" };
+  if (names.length !== 1 || names[0] !== ownedVolumeName) {
+    return malformedOwnedVolumeState();
+  }
 
   let inspectedOutput;
   try {
@@ -1083,10 +1098,17 @@ export async function inspectOwnedVolumeOwnership(spawnImpl) {
   if (details.Name !== ownedVolumeName) return { state: "unowned" };
 
   const marker = ownedVolumeOwnershipMarker();
-  if (!details.Labels || typeof details.Labels !== "object") {
+  if (
+    !details.Labels ||
+    typeof details.Labels !== "object" ||
+    Array.isArray(details.Labels)
+  ) {
     return { state: "unowned" };
   }
-  if (details.Labels[marker.key] !== marker.value) {
+  if (
+    details.Labels[marker.key] !== marker.value ||
+    details.Labels[volumeOwnershipTokenLabelKey] !== ownershipToken
+  ) {
     return { state: "unowned" };
   }
   return { state: "owned" };
@@ -1100,7 +1122,10 @@ export async function cleanupOwnedVolumeAfterCreateAttempt(spawnImpl, resources)
     throw new Error("volume cleanup requires container cleanup first");
   }
 
-  const state = await inspectOwnedVolumeOwnership(spawnImpl);
+  const state = await inspectOwnedVolumeOwnership(
+    spawnImpl,
+    resources.volumeOwnershipToken,
+  );
   resources.volumeOwnershipState = state.state;
   if (state.state === "absent") return state.state;
   if (state.state !== "owned") {
@@ -1114,19 +1139,22 @@ export async function cleanupOwnedVolumeAfterCreateAttempt(spawnImpl, resources)
   return "removed";
 }
 
-export async function createOwnedVolume(spawnImpl) {
+export async function createOwnedVolume(spawnImpl, ownershipToken) {
   const marker = ownedVolumeOwnershipMarker();
+  const labels = volumeOwnershipLabels(ownershipToken);
   const output = await runCommand(spawnImpl, "docker", [
     "volume",
     "create",
     "--label",
     `${marker.key}=${marker.value}`,
+    "--label",
+    `${volumeOwnershipTokenLabelKey}=${labels[volumeOwnershipTokenLabelKey]}`,
     ownedVolumeName,
   ]);
   if (String(output ?? "").trim() && String(output).trim() !== ownedVolumeName) {
     throw new Error("docker volume create returned an unexpected name");
   }
-  const state = await inspectOwnedVolumeOwnership(spawnImpl);
+  const state = await inspectOwnedVolumeOwnership(spawnImpl, ownershipToken);
   if (state.state !== "owned") {
     throw new Error(`created volume ownership evidence was ${state.state}`);
   }

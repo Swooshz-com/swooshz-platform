@@ -1572,6 +1572,52 @@ function roleUrl(user, databaseName, password) {
   return `postgres://${authority}@127.0.0.1:${ownedPort}/${databaseName}`;
 }
 
+async function assertFreshPlatformAppLogin(primary) {
+  const pool = new Pool({
+    connectionString: roleUrl("platform_app", primary.databaseName),
+    max: 1,
+  });
+  try {
+    const client = await pool.connect();
+    try {
+      const result = await client.query(
+        "select current_user, session_user",
+      );
+      assert.equal(result.rows[0]?.current_user, "platform_app");
+      assert.equal(result.rows[0]?.session_user, "platform_app");
+    } finally {
+      client.release();
+    }
+  } finally {
+    await pool.end();
+  }
+}
+
+async function assertFreshPlatformAppLoginRejected(primary) {
+  const pool = new Pool({
+    connectionString: roleUrl("platform_app", primary.databaseName),
+    max: 1,
+  });
+  try {
+    await assert.rejects(
+      async () => {
+        const client = await pool.connect();
+        try {
+          await client.query("select 1");
+        } finally {
+          client.release();
+        }
+      },
+      (error) =>
+        /not permitted to log in|cannot log in|authentication failed/i.test(
+          String(error?.message ?? ""),
+        ),
+    );
+  } finally {
+    await pool.end();
+  }
+}
+
 function contractTableNames() {
   return [...new Set(
     RUNTIME_TABLE_GRANT_CONTRACT.map((record) => record.objectName),
@@ -1584,55 +1630,43 @@ export async function runReversibleLegacyNoLoginControl(primary) {
     primary.databaseName,
   );
   let existingClient;
-  let blockedPool;
-  let restoredPool;
+  let noLoginAttempted = false;
 
   try {
-    await primary.adminPool.query("ALTER ROLE platform_app LOGIN");
     const initialRole = await primary.adminPool.query(
       "select rolcanlogin from pg_roles where rolname = 'platform_app'",
     );
     assert.equal(initialRole.rows[0]?.rolcanlogin, true);
 
+    await assertFreshPlatformAppLogin(primary);
+
     existingClient = await primary.appPool.connect();
     await existingClient.query("select 1");
 
+    noLoginAttempted = true;
     await primary.adminPool.query("ALTER ROLE platform_app NOLOGIN");
     const noLoginRole = await primary.adminPool.query(
       "select rolcanlogin from pg_roles where rolname = 'platform_app'",
     );
     assert.equal(noLoginRole.rows[0]?.rolcanlogin, false);
 
-    blockedPool = new Pool({
-      connectionString: roleUrl("platform_app", primary.databaseName),
-      max: 1,
-    });
-    await assert.rejects(
-      () => blockedPool.query("select 1"),
-      (error) =>
-        /not permitted to log in|cannot log in|authentication failed/i.test(
-          String(error?.message ?? ""),
-        ),
-    );
+    await assertFreshPlatformAppLoginRejected(primary);
 
     await existingClient.query("select 1");
 
     await primary.adminPool.query("ALTER ROLE platform_app LOGIN");
-    restoredPool = new Pool({
-      connectionString: roleUrl("platform_app", primary.databaseName),
-      max: 1,
-    });
-    await assert.doesNotReject(() => restoredPool.query("select 1"));
+    noLoginAttempted = false;
+    await assertFreshPlatformAppLogin(primary);
 
     const restoredRole = await primary.adminPool.query(
       "select rolcanlogin from pg_roles where rolname = 'platform_app'",
     );
     assert.equal(restoredRole.rows[0]?.rolcanlogin, true);
   } finally {
-    await blockedPool?.end();
-    await restoredPool?.end();
     existingClient?.release();
-    await primary.adminPool.query("ALTER ROLE platform_app LOGIN");
+    if (noLoginAttempted) {
+      await primary.adminPool.query("ALTER ROLE platform_app LOGIN");
+    }
   }
 
   const finalFingerprint = await readOwnershipFingerprint(

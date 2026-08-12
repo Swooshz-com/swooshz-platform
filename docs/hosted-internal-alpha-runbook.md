@@ -181,6 +181,15 @@ Application schemas, application objects and the Drizzle ledger may still target
 
 Projection names: existing transition authority `NEONDB_SWOOSHZ_PLATFORM_LEGACY_OWNER_URL`; existing Platform control-plane authority `NEONDB_SWOOSHZ_PLATFORM_API_KEY`; future migrator projection `NEONDB_SWOOSHZ_PLATFORM_MIGRATOR_URL` (not yet created); process-local migration alias `DATABASE_OPERATOR_URL`; migration confirmation `DATABASE_MIGRATIONS_CONFIRM=apply-reviewed-migrations`; later #122 Coolify runtime variables `DATABASE_URL` and `DATABASE_EXPECTED_RUNTIME_ROLE=platform_runtime`. No generic local `NEON_API_KEY` or `NEON_PROJECT_ID` requirement is introduced and no existing projection is claimed to change.
 
+Pre-completion retirement guard: `DROP ROLE platform_app` is mechanically
+rejected while dependent objects or ownership remain. `ALTER ROLE platform_app
+NOLOGIN` is distinct and separately controller-gated; this repository exercises
+it only as a reversible disposable control. The rehearsal reads and requires
+initial `LOGIN` without mutating it, proves a fresh successful login, applies
+`NOLOGIN`, proves a separate fresh login fails, restores `LOGIN`, proves another
+fresh login succeeds, and requires final baseline-fingerprint equality. An
+already-open session is diagnostic only. No live `NOLOGIN` action is authorized.
+
 Disposable rehearsal: the repository proof command is `npm run test:disposable-migrator-alignment`. It owns a separate exact PostgreSQL 17 container and loopback-only listener that fail closed on preexistence, publish only an explicit loopback-only Docker binding of the owned host port to container port `5432/tcp` proven by bounded inspection before any PostgreSQL admission or connection, never accept caller-provided database URLs, and enforce real password authentication on the migrator credential-admission path: the runner replaces the container host-authentication configuration with an exact managed `pg_hba.conf` requiring `scram-sha-256` for `platform_migrator` before any migrator connection, reloads it, and the rehearsal proves correct-password admission plus wrong-password and omitted-password rejection with synthetic disposable credentials only. The rehearsal rejects the insufficient target-only `CREATEDB` transfer model and instead proves the corrected target-`NOCREATEDB` negative control: the executing legacy owner, holding only the automatic `SET=false` bootstrap edge, cannot transfer database ownership because it lacks the required target-role assumption/SET-capable authority, and the failed attempt leaves no mutation while the target remains `NOCREATEDB`. It proves the bounded temporary-membership transfer and reverse rollback, proves the latent self-escalation consequence of the retained `ADMIN=true` automatic edge (self-granted `SET=true` plus successful `SET ROLE`), revokes the automatic edge through provider/bootstrap authority after transfer/read-back and proves final zero migrator membership plus denial of re-grant and `SET ROLE`. It models the real `pg_database_owner` semantics of the known live starting state: `public` remains owned by the predefined `pg_database_owner` role and the rehearsal proves which role exercises the database-owner/`public`-owner authority before the transfer, that the database-owner transfer changes the implicit role exercising that authority, and that complete reverse rollback restores the original database owner and `pg_database_owner` authority with no residue. A separate explicitly labelled stable-provider-owner fixture models only a distinct possible future topology, and its evidence cannot substitute for the `pg_database_owner` proof. The rehearsal restores the pre-completion legacy-retirement guard: at the migrated zero-membership state, retirement of `platform_app` is mechanically rejected and the legacy authority remains available for rollback until the completion point. It revokes every temporary transfer/rollback privilege and restores the complete database/schema/default-ACL fingerprint including removal of `platform_migrator` default-privilege records and a clean role drop, executes and rolls back a real bounded migrator operation under the explicitly labelled stable-provider-owner (provider-managed) variant, preserves the restricted runtime contract, and emits one fixed public-safe summary with exact tests/passed/failed/skipped totals. The focused test file runs only under `MIGRATOR_ALIGNMENT_TEST_CONFIRM=disposable-only`. This lab does not authorise Neon/provider access, live role changes, ownership transfer, credentials or deployment.
 
 The disposable migrator runner owns its exact container, exact loopback
@@ -188,9 +197,14 @@ listener, exact named PostgreSQL data volume `deepseek-platform128-pg17-data`
 mounted read/write at `/var/lib/postgresql/data`, and its bounded fixture
 databases, roles, focused-test temporary roles, schemas, objects, and
 focused-test child process. Before volume creation or attachment it proves
-the exact named volume is absent and rejects a pre-existing collision.
-Exact volume removal occurs only after container removal and proves exact
-container absence, exact volume absence, and exact listener absence.
+the exact named volume is absent and rejects a pre-existing collision. Each
+invocation binds a fresh in-memory ownership token to the Docker volume labels
+and requires that token during inspection, reconciliation and cleanup; fixed-
+marker, pre-existing, mismatched-token and ambiguous evidence is never treated
+as runner ownership. Exact volume removal occurs only after container removal,
+and normal and ambiguous owned-create cleanup converge on one bounded removal
+attempt with no second attempt after `volumeRemoved=true`. The runner proves
+exact container absence, exact volume absence, and exact listener absence.
 Caller-managed or unproven resources remain untouched. Broad/global Docker volume
 pruning is prohibited. The unidentified historical anonymous volume is not
 selected or deleted.

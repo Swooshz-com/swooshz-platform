@@ -242,7 +242,10 @@ and is therefore not part of ordinary `npm test`.
   `deepseek-platform128-pg17-data`, mounted read/write at
   `/var/lib/postgresql/data`. It proves the exact volume is absent before
   creation or attachment and rejects a pre-existing exact-volume identity
-  collision.
+  collision. Each invocation binds a fresh in-memory ownership token to the
+  volume labels and requires that same token during inspection, reconciliation
+  and cleanup; fixed-marker, pre-existing, mismatched-token and ambiguous
+  evidence is never treated as runner ownership.
 - Fails closed if its exact container or listener already exists.
 - Publishes PostgreSQL only through an explicit `127.0.0.1:<ownedPort>:5432`
   Docker binding. A bounded Docker inspection runs after container creation and
@@ -295,10 +298,12 @@ The runner removes all runner-owned databases, roles, schemas and objects,
 then the exact container and the exact named volume
 `deepseek-platform128-pg17-data`, and proves exact container absence,
 exact volume absence, and exact listener absence after success and after every
-failure path. Exact volume removal occurs only after container removal.
-Caller-managed or unproven resources are untouched. Broad/global Docker volume
-pruning is prohibited. The unidentified historical anonymous volume is not
-selected or deleted.
+failure path. Exact volume removal occurs only after container removal. Normal
+and ambiguous owned-create cleanup converge on one bounded volume-removal
+attempt; once `volumeRemoved=true`, no second attempt is made. Caller-managed or
+unproven resources are untouched. Broad/global Docker volume pruning is
+prohibited. The unidentified historical anonymous volume is not selected or
+deleted.
 
 ### Required negative control
 
@@ -315,7 +320,7 @@ ownership fingerprint.
 
 ### Pre-completion legacy retirement effect
 
-`DROP ROLE platform_app` remains mechanically rejected while dependent objects or ownership remain. `ALTER ROLE platform_app NOLOGIN` is distinct: PostgreSQL can apply it while those dependencies remain, so the controller sequence?not a claimed PostgreSQL dependency rejection?must forbid premature retirement. The disposable rehearsal may exercise `NOLOGIN` only as a bounded reversible negative control: require `LOGIN` before the check, apply `NOLOGIN` through admitted disposable admin authority, prove that a brand-new `platform_app` connection fails, restore `LOGIN`, and prove that a brand-new connection succeeds. An already-open session is diagnostic only. No live `NOLOGIN` action is authorized by this repository rehearsal.
+`DROP ROLE platform_app` remains mechanically rejected while dependent objects or ownership remain. `ALTER ROLE platform_app NOLOGIN` is distinct: PostgreSQL can apply it while those dependencies remain, so the controller sequence, rather than a claimed PostgreSQL dependency rejection, must forbid premature retirement. The disposable rehearsal may exercise `NOLOGIN` only as a bounded reversible negative control: require `LOGIN` before the check, apply `NOLOGIN` through admitted disposable admin authority, prove that a brand-new `platform_app` connection fails, restore `LOGIN`, and prove that a brand-new connection succeeds. An already-open session is diagnostic only. No live `NOLOGIN` action is authorized by this repository rehearsal.
 
 ### Required positive transfer rehearsal
 
