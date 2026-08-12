@@ -49,6 +49,7 @@ const safeIdentifier = /^[a-z_][a-z0-9_$]{0,62}$/u;
 const syntheticMigratorPassword = "synthetic-migrator-password";
 const wrongMigratorPassword = "synthetic-wrong-migrator-password";
 const publicAuthorityProbeTable = "__pgdbowner_authority_probe";
+let retainedPrimaryPreForwardBaseline;
 
 test(
   "DL-128-REPO-003: the automatic ADMIN=true bootstrap edge is accident protection only and admits latent self-escalation until provider revocation",
@@ -136,6 +137,7 @@ test(
         primary.adminPool,
         primary.databaseName,
       );
+      retainedPrimaryPreForwardBaseline = baseline;
       assertBaselineFingerprint(baseline, "pg_database_owner");
 
       await createMigratorRoleAsLegacyOwner(primary.appPool);
@@ -428,6 +430,8 @@ test(
     const fixture = await openFixtures();
     try {
       const primary = fixture.primary;
+      const preForwardBaseline = retainedPrimaryPreForwardBaseline;
+      assert.ok(preForwardBaseline);
       const migratedState = await readOwnershipFingerprint(
         primary.adminPool,
         primary.databaseName,
@@ -456,6 +460,10 @@ test(
         primary.adminPool,
         primary.databaseName,
       );
+      assertExactFingerprint(
+        restored,
+        preForwardBaseline,
+      );
       assertBaselineFingerprint(restored, "pg_database_owner");
       assert.equal(restored.databaseOwner, "platform_app");
       assert.equal(restored.memberships.length, 0);
@@ -471,6 +479,23 @@ test(
         primary.appPool,
         "platform_app",
         true,
+      );
+      await assertAclResidueNegativeControl(
+        primary.adminPool,
+        primary.databaseName,
+        preForwardBaseline,
+      );
+      await assertDefaultAclResidueNegativeControl(
+        primary.adminPool,
+        primary.databaseName,
+        preForwardBaseline,
+      );
+      assertExactFingerprint(
+        await readOwnershipFingerprint(
+          primary.adminPool,
+          primary.databaseName,
+        ),
+        preForwardBaseline,
       );
       await assertRuntimeFinalPosture(primary.adminPool);
     } finally {
@@ -1426,6 +1451,100 @@ function assertAclSurfaceBounded(records, surface) {
     assert.ok(isGrantable === "true" || isGrantable === "false");
     assert.ok(objectName.length > 0);
   }
+}
+
+function assertExactFingerprint(actual, expected, label) {
+  assert.deepEqual(actual, expected, label);
+}
+
+async function assertAclResidueNegativeControl(adminPool, databaseName, baseline) {
+  const expectedResidue = [
+    databaseName,
+    "postgres",
+    "platform_runtime",
+    "CONNECT",
+    "false",
+  ].join("\u0000");
+  assert.equal(baseline.databaseAcl.includes(expectedResidue), false);
+  let grantAttempted = false;
+  try {
+    grantAttempted = true;
+    await adminPool.query(
+      "grant connect on database " +
+        identifier(databaseName) +
+        " to platform_runtime",
+    );
+    const perturbed = await readOwnershipFingerprint(adminPool, databaseName);
+    assert.deepEqual(
+      perturbed.databaseAcl.filter(
+        (record) => !baseline.databaseAcl.includes(record),
+      ),
+      [expectedResidue],
+    );
+    assertBaselineFingerprint(perturbed, "pg_database_owner");
+    assert.throws(
+      () => assertExactFingerprint(perturbed, baseline),
+      assert.AssertionError,
+    );
+  } finally {
+    if (grantAttempted) {
+      await adminPool.query(
+        "revoke connect on database " +
+          identifier(databaseName) +
+          " from platform_runtime",
+      );
+    }
+  }
+  assertExactFingerprint(
+    await readOwnershipFingerprint(adminPool, databaseName),
+    baseline,
+  );
+}
+
+async function assertDefaultAclResidueNegativeControl(
+  adminPool,
+  databaseName,
+  baseline,
+) {
+  const expectedResidue = [
+    "<global>:f",
+    "platform_app",
+    "platform_runtime",
+    "EXECUTE",
+    "false",
+  ].join("\u0000");
+  assert.equal(baseline.defaultAcl.includes(expectedResidue), false);
+  let grantAttempted = false;
+  try {
+    grantAttempted = true;
+    await adminPool.query(
+      "alter default privileges for role platform_app " +
+        "grant execute on functions to platform_runtime",
+    );
+    const perturbed = await readOwnershipFingerprint(adminPool, databaseName);
+    assert.deepEqual(
+      perturbed.defaultAcl.filter(
+        (record) => !baseline.defaultAcl.includes(record),
+      ),
+      [expectedResidue],
+    );
+    assertBaselineFingerprint(perturbed, "pg_database_owner");
+    assert.throws(
+      () => assertExactFingerprint(perturbed, baseline),
+      assert.AssertionError,
+    );
+  } finally {
+    if (grantAttempted) {
+      await adminPool.query(
+        "alter default privileges for role platform_app " +
+          "revoke execute on functions from platform_runtime",
+      );
+    }
+  }
+  assertExactFingerprint(
+    await readOwnershipFingerprint(adminPool, databaseName),
+    baseline,
+  );
 }
 
 async function assertRuntimePosture(adminPool) {
