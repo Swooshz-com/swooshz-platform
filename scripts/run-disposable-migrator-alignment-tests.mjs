@@ -34,6 +34,8 @@ const maxChildOutputBytes = 64 * 1024;
 const structuredFailureReceiptPrefix = "PLATFORM_MIGRATOR_FAILURE_V1=";
 const structuredFailureReceiptFileEnvironmentVariable =
   "PLATFORM_MIGRATOR_FAILURE_RECEIPT_FILE";
+const structuredFailureProgressFileEnvironmentVariable =
+  "PLATFORM_MIGRATOR_FAILURE_PROGRESS_FILE";
 const maxStructuredReceiptSidecarBytes = 16 * 1024;
 const structuredReceiptSidecarDirectoryPrefix =
   "swooshz-platform-migrator-receipt-";
@@ -83,6 +85,11 @@ const structuredReceiptCleanupPhases = new Set([
   "complete",
   "failed",
 ]);
+const structuredReceiptTransportStates = new Set([
+  "phase_armed",
+  "failure_catch_entered",
+  "failure_receipt_write_armed",
+]);
 const structuredReceiptTestIdPattern = /^[A-Za-z0-9._:-]{1,96}$/u;
 const structuredReceiptTuplePattern = /^([A-Za-z][A-Za-z0-9]*):(0|[1-9]\d*)\/(0|[1-9]\d*)$/u;
 const safeIdentifier = /^[a-z_][a-z0-9_$]{0,62}$/u;
@@ -116,6 +123,10 @@ const failureCategories = new Set([
   "child_test_spawn",
   "child_test_failure",
   "structured_child_receipt_missing",
+  "structured_child_failure_receipt_absent_with_progress",
+  "structured_child_failure_receipt_invalid",
+  "structured_child_context_missing",
+  "structured_child_progress_invalid",
   "child_output_overflow",
   "child_signal",
   "cleanup",
@@ -156,6 +167,7 @@ export async function run({
         childOutputOverflow: false,
         childSummaryParsed: false,
         structuredChildReceipt: null,
+        structuredChildProgress: null,
         containerStarted: false,
         postgresReady: false,
         constructionAdmission: false,
@@ -414,6 +426,9 @@ export function formatDisposableRuntimeFailureReceipt(resources = {}) {
     structuredChildReceipt: projectStructuredChildReceipt(
       resources.structuredChildReceipt,
     ),
+    structuredChildProgress: projectStructuredChildProgress(
+      resources.structuredChildProgress,
+    ),
     containerStarted: resources.containerStarted === true,
     volumePreAbsenceVerified: resources.volumePreAbsenceVerified === true,
     volumeCreateAttempted: resources.volumeCreateAttempted === true,
@@ -527,12 +542,50 @@ export async function createStructuredFailureReceiptSidecar() {
   );
   return Object.freeze({
     directory,
+    progressFilePath: join(directory, "progress"),
     filePath: join(directory, "receipt"),
   });
 }
 
 export async function readStructuredFailureReceiptFile(filePath) {
-  if (typeof filePath !== "string" || filePath.length === 0) return null;
+  const result = await readStructuredSidecarFile(filePath, parseStructuredFailureReceipt);
+  return result.status === "valid" ? result.value : null;
+}
+
+export async function readStructuredFailureProgressFile(filePath) {
+  const result = await readStructuredSidecarFile(filePath, parseStructuredFailureProgress);
+  return result.status === "valid" ? result.value : null;
+}
+
+export async function readStructuredChildFailureDiagnostics(sidecar) {
+  const finalReceipt = await readStructuredSidecarFile(
+    sidecar?.filePath,
+    parseStructuredFailureReceipt,
+  );
+  if (finalReceipt.status === "valid") {
+    return { kind: "final", receipt: finalReceipt.value };
+  }
+  if (finalReceipt.status === "invalid") {
+    return { kind: "final_invalid" };
+  }
+
+  const progress = await readStructuredSidecarFile(
+    sidecar?.progressFilePath,
+    parseStructuredFailureProgress,
+  );
+  if (progress.status === "valid") {
+    return { kind: "progress", progress: progress.value };
+  }
+  if (progress.status === "invalid") {
+    return { kind: "progress_invalid" };
+  }
+  return { kind: "missing" };
+}
+
+async function readStructuredSidecarFile(filePath, parser) {
+  if (typeof filePath !== "string" || filePath.length === 0) {
+    return { status: "missing" };
+  }
   let handle = null;
   try {
     handle = await open(filePath, "r");
@@ -548,12 +601,15 @@ export async function readStructuredFailureReceiptFile(filePath) {
       if (result.bytesRead === 0) break;
       bytesRead += result.bytesRead;
     }
-    if (bytesRead > maxStructuredReceiptSidecarBytes) return null;
-    return parseStructuredFailureReceipt(
-      buffer.subarray(0, bytesRead).toString("utf8"),
-    );
-  } catch {
-    return null;
+    if (bytesRead > maxStructuredReceiptSidecarBytes) {
+      return { status: "invalid" };
+    }
+    const value = parser(buffer.subarray(0, bytesRead).toString("utf8"));
+    return value ? { status: "valid", value } : { status: "invalid" };
+  } catch (error) {
+    return error?.code === "ENOENT"
+      ? { status: "missing" }
+      : { status: "invalid" };
   } finally {
     if (handle) await handle.close().catch(() => {});
   }
@@ -566,7 +622,7 @@ export async function cleanupStructuredFailureReceiptSidecar(sidecar) {
   } catch {
     cleanupFailed = true;
   }
-  for (const path of [sidecar?.filePath, sidecar?.directory]) {
+  for (const path of [sidecar?.filePath, sidecar?.progressFilePath, sidecar?.directory]) {
     if (typeof path !== "string") {
       cleanupFailed = true;
       continue;
@@ -580,6 +636,61 @@ export async function cleanupStructuredFailureReceiptSidecar(sidecar) {
   }
   if (cleanupFailed) throw new Error();
 }
+function projectStructuredChildProgress(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (value.version !== 1 || typeof value.test_id !== "string") return null;
+  if (!structuredReceiptTestIdPattern.test(value.test_id)) return null;
+  if (!structuredReceiptPhases.has(value.phase)) return null;
+  if (!structuredReceiptAssertionCategories.has(value.assertion_category)) {
+    return null;
+  }
+  if (!Array.isArray(value.fingerprint_fields)) return null;
+  if (value.fingerprint_fields.length > structuredReceiptFingerprintFields.size) return null;
+  const fingerprintFields = [];
+  for (const field of value.fingerprint_fields) {
+    if (typeof field !== "string" || !structuredReceiptFingerprintFields.has(field) || fingerprintFields.includes(field)) {
+      return null;
+    }
+    fingerprintFields.push(field);
+  }
+  if (!Array.isArray(value.tuple_counts)) return null;
+  if (value.tuple_counts.length > structuredReceiptFingerprintFields.size) return null;
+  const tupleCounts = [];
+  for (const entry of value.tuple_counts) {
+    if (typeof entry !== "string" || tupleCounts.includes(entry)) return null;
+    const match = entry.match(structuredReceiptTuplePattern);
+    if (!match || !structuredReceiptFingerprintFields.has(match[1])) return null;
+    tupleCounts.push(entry);
+  }
+  if (!structuredReceiptCleanupPhases.has(value.cleanup_phase)) return null;
+  if (!structuredReceiptTransportStates.has(value.transport_state)) return null;
+  return {
+    version: 1,
+    test_id: value.test_id,
+    phase: value.phase,
+    assertion_category: value.assertion_category,
+    fingerprint_fields: fingerprintFields,
+    tuple_counts: tupleCounts,
+    cleanup_phase: value.cleanup_phase,
+    transport_state: value.transport_state,
+  };
+}
+function parseStructuredFailureProgress(output) {
+  if (typeof output !== "string" || Buffer.byteLength(output, "utf8") > maxStructuredReceiptSidecarBytes) {
+    return null;
+  }
+  const lines = output.replaceAll(String.fromCharCode(13), "").split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  if (lines.length !== 1 || lines[0].trim() !== lines[0]) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(lines[0]);
+  } catch {
+    return null;
+  }
+  return projectStructuredChildProgress(parsed);
+}
+
 function projectStructuredChildReceipt(value) {
   const receipt = projectStructuredFailureReceipt(value);
   if (!receipt) return null;
@@ -937,6 +1048,7 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
       const childEnv = {
         ...env,
         [structuredFailureReceiptFileEnvironmentVariable]: sidecar.filePath,
+        [structuredFailureProgressFileEnvironmentVariable]: sidecar.progressFilePath,
       };
       let outputLength = 0;
       let outputOverflow = false;
@@ -974,21 +1086,11 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
         resources.childExited = true;
         resources.childExitCode = Number.isInteger(code) ? code : null;
         resources.childSignal = signal !== null;
-        if (resources.childSignal) {
-          markChildFailure(resources, "child_signal");
-          reject(new Error());
-          return;
-        }
-        if (code !== 0) {
-          void readStructuredFailureReceiptFile(sidecar.filePath).then(
-            (structuredReceipt) => {
-              if (!structuredReceipt) {
-                markChildFailure(resources, "structured_child_receipt_missing");
-                reject(new Error("Focused child test failed without a structured receipt."));
-                return;
-              }
+        if (code !== 0 || resources.childSignal) {
+          void readStructuredChildFailureDiagnostics(sidecar).then((diagnostic) => {
+            if (diagnostic.kind === "final") {
               resources.structuredChildReceipt = {
-                ...structuredReceipt,
+                ...diagnostic.receipt,
                 child_exit_code: resources.childExitCode,
                 child_signal: typeof signal === "string" ? signal : null,
                 runner_category: "child_test_failure",
@@ -996,12 +1098,30 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
               resources.childOutputOverflow = outputOverflow;
               markChildFailure(resources, "child_test_failure");
               reject(new Error("Focused child test failed."));
-            },
-            () => {
-              markChildFailure(resources, "structured_child_receipt_missing");
-              reject(new Error("Focused child test failed without a structured receipt."));
-            },
-          );
+              return;
+            }
+            if (diagnostic.kind === "final_invalid") {
+              markChildFailure(resources, "structured_child_failure_receipt_invalid");
+              reject(new Error("Focused child test failed with an invalid structured receipt."));
+              return;
+            }
+            if (diagnostic.kind === "progress") {
+              resources.structuredChildProgress = diagnostic.progress;
+              markChildFailure(
+                resources,
+                "structured_child_failure_receipt_absent_with_progress",
+              );
+              reject(new Error("Focused child test failed with durable progress."));
+              return;
+            }
+            if (diagnostic.kind === "progress_invalid") {
+              markChildFailure(resources, "structured_child_progress_invalid");
+              reject(new Error("Focused child test failed with invalid durable progress."));
+              return;
+            }
+            markChildFailure(resources, "structured_child_context_missing");
+            reject(new Error("Focused child test failed without bounded context."));
+          });
           return;
         }
         if (outputOverflow) {

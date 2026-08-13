@@ -629,6 +629,11 @@ test("structured migrator failure receipts use an out-of-band sidecar at the act
   assert.equal(result.exitCode, 1);
   assert.equal(result.signal, null);
   assert.deepEqual(result.receipt, expected);
+  assert.deepEqual(result.progress, {
+    ...expected,
+    transport_state: "failure_receipt_write_armed",
+  });
+  assert.deepEqual(result.diagnostics, { kind: "final", receipt: expected });
   assert.match(result.stdout, /TAP-looking|spec|not ok/i);
   assert.match(
     result.stdout + result.stderr,
@@ -650,6 +655,8 @@ test("structured migrator failure receipts use an out-of-band sidecar at the act
     runnerSource,
     /PLATFORM_MIGRATOR_FAILURE_RECEIPT_FILE/,
   );
+  assert.match(runnerSource, /PLATFORM_MIGRATOR_FAILURE_PROGRESS_FILE/);
+  assert.match(childSource, /renameSync\(temporaryPath, filePath\)/);
   assert.doesNotMatch(
     runnerSource,
     /parseStructuredFailureReceipt\(\s*Buffer\.concat/,
@@ -689,13 +696,90 @@ test("structured migrator failure receipts use an out-of-band sidecar at the act
       sidecar_content: result.sidecarContent,
       unknown: "do-not-leak",
     },
+    structuredChildProgress: {
+      ...result.progress,
+      progress_path: result.progressFilePath,
+      progress_content: result.progressSidecarContent,
+      unknown: "do-not-leak",
+    },
   });
   assert.doesNotMatch(publicReceipt, new RegExp(escapeRegExp(result.filePath)));
   assert.doesNotMatch(publicReceipt, new RegExp(escapeRegExp(result.sidecarContent)));
+  assert.doesNotMatch(publicReceipt, new RegExp(escapeRegExp(result.progressFilePath)));
+  assert.doesNotMatch(publicReceipt, new RegExp(escapeRegExp(result.progressSidecarContent)));
   assert.doesNotMatch(publicReceipt, /PLATFORM_MIGRATOR_FAILURE_V1=|do-not-leak/i);
   assert.match(publicReceipt, /"test_id":"DL-128-REPO-011-A3-child-boundary"/);
   assert.match(publicReceipt, /"child_exit_code":1/);
   assert.match(publicReceipt, /"child_signal":null/);
+  assert.match(publicReceipt, /"transport_state":"failure_receipt_write_armed"/);
+});
+
+test("abrupt child exit leaves durable progress without a final receipt", async () => {
+  const runner = await import(
+    "../scripts/run-disposable-migrator-alignment-tests.mjs"
+  );
+  const result = await runStructuredReceiptTransportChild(
+    runner,
+    "abrupt-exit-boundary",
+  );
+  assert.notEqual(result.exitCode, 0);
+  assert.equal(result.signal, null);
+  assert.equal(result.receipt, null);
+  assert.deepEqual(result.progress, {
+    version: 1,
+    test_id: "DL-128-REPO-011-A3-abrupt-exit",
+    phase: "post_reverse_exact_fingerprint",
+    assertion_category: "exact_reverse_rollback",
+    fingerprint_fields: ["databaseAcl"],
+    tuple_counts: ["databaseAcl:1/1"],
+    cleanup_phase: "complete",
+    transport_state: "phase_armed",
+  });
+  assert.deepEqual(result.diagnostics, {
+    kind: "progress",
+    progress: result.progress,
+  });
+  assert.doesNotMatch(
+    result.stdout + result.stderr,
+    /PLATFORM_MIGRATOR_FAILURE_V1=|C:\\|\\Users\\/i,
+  );
+  assert.equal(result.filePresentAfterCleanup, false);
+  assert.equal(result.progressFilePresentAfterCleanup, false);
+  assert.equal(result.directoryPresentAfterCleanup, false);
+});
+
+test("final receipt writer failure preserves the causal progress checkpoint", async () => {
+  const runner = await import(
+    "../scripts/run-disposable-migrator-alignment-tests.mjs"
+  );
+  const result = await runStructuredReceiptTransportChild(
+    runner,
+    "writer-failure-boundary",
+  );
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.signal, null);
+  assert.equal(result.receipt, null);
+  assert.deepEqual(result.progress, {
+    version: 1,
+    test_id: "DL-128-REPO-011-A3-writer-failure",
+    phase: "post_reverse_exact_fingerprint",
+    assertion_category: "exact_reverse_rollback",
+    fingerprint_fields: ["databaseAcl"],
+    tuple_counts: ["databaseAcl:1/1"],
+    cleanup_phase: "complete",
+    transport_state: "failure_receipt_write_armed",
+  });
+  assert.deepEqual(result.diagnostics, {
+    kind: "progress",
+    progress: result.progress,
+  });
+  assert.doesNotMatch(
+    result.stdout + result.stderr,
+    /PLATFORM_MIGRATOR_FAILURE_V1=|EACCES|EEXIST|permission denied/i,
+  );
+  assert.equal(result.filePresentAfterCleanup, false);
+  assert.equal(result.progressFilePresentAfterCleanup, false);
+  assert.equal(result.directoryPresentAfterCleanup, false);
 });
 
 test("structured sidecar duplicate, malformed, missing, oversized, and unknown fields fail closed", async () => {
@@ -713,6 +797,17 @@ test("structured sidecar duplicate, malformed, missing, oversized, and unknown f
     cleanup_phase: "complete",
   };
   const serialized = prefix + JSON.stringify(receipt) + "\n";
+  const progress = {
+    version: 1,
+    test_id: receipt.test_id,
+    phase: receipt.phase,
+    assertion_category: receipt.assertion_category,
+    fingerprint_fields: receipt.fingerprint_fields,
+    tuple_counts: receipt.tuple_counts,
+    cleanup_phase: receipt.cleanup_phase,
+    transport_state: "phase_armed",
+  };
+  const serializedProgress = JSON.stringify(progress) + "\n";
 
   const validSidecar = await runner.createStructuredFailureReceiptSidecar();
   try {
@@ -778,9 +873,14 @@ test("structured sidecar duplicate, malformed, missing, oversized, and unknown f
       serialized + "x".repeat(16 * 1024),
       "utf8",
     );
+    await writeFile(oversizedSidecar.progressFilePath, serializedProgress, { flag: "wx" });
     assert.equal(
       await runner.readStructuredFailureReceiptFile(oversizedSidecar.filePath),
       null,
+    );
+    assert.deepEqual(
+      await runner.readStructuredChildFailureDiagnostics(oversizedSidecar),
+      { kind: "final_invalid" },
     );
   } finally {
     await runner.cleanupStructuredFailureReceiptSidecar(oversizedSidecar);
@@ -810,11 +910,73 @@ test("structured sidecar duplicate, malformed, missing, oversized, and unknown f
     );
   }
 
+  const precedenceSidecar = await runner.createStructuredFailureReceiptSidecar();
+  try {
+    await writeFile(precedenceSidecar.filePath, serialized, { flag: "wx" });
+    await writeFile(precedenceSidecar.progressFilePath, serializedProgress, { flag: "wx" });
+    assert.deepEqual(
+      await runner.readStructuredChildFailureDiagnostics(precedenceSidecar),
+      { kind: "final", receipt },
+    );
+  } finally {
+    await runner.cleanupStructuredFailureReceiptSidecar(precedenceSidecar);
+  }
+
+  const progressFallbackSidecar = await runner.createStructuredFailureReceiptSidecar();
+  try {
+    await writeFile(progressFallbackSidecar.progressFilePath, JSON.stringify({
+      ...progress,
+      private_path: progressFallbackSidecar.progressFilePath,
+      private_value: "do-not-leak",
+    }) + "\n", { flag: "wx" });
+    assert.deepEqual(
+      await runner.readStructuredChildFailureDiagnostics(progressFallbackSidecar),
+      { kind: "progress", progress },
+    );
+  } finally {
+    await runner.cleanupStructuredFailureReceiptSidecar(progressFallbackSidecar);
+  }
+
+  const malformedFinalSidecar = await runner.createStructuredFailureReceiptSidecar();
+  try {
+    await writeFile(malformedFinalSidecar.filePath, prefix + "{\n", { flag: "wx" });
+    await writeFile(malformedFinalSidecar.progressFilePath, serializedProgress, { flag: "wx" });
+    assert.deepEqual(
+      await runner.readStructuredChildFailureDiagnostics(malformedFinalSidecar),
+      { kind: "final_invalid" },
+    );
+  } finally {
+    await runner.cleanupStructuredFailureReceiptSidecar(malformedFinalSidecar);
+  }
+
+  const malformedProgressSidecar = await runner.createStructuredFailureReceiptSidecar();
+  try {
+    await writeFile(malformedProgressSidecar.progressFilePath, "{\n", { flag: "wx" });
+    assert.deepEqual(
+      await runner.readStructuredChildFailureDiagnostics(malformedProgressSidecar),
+      { kind: "progress_invalid" },
+    );
+  } finally {
+    await runner.cleanupStructuredFailureReceiptSidecar(malformedProgressSidecar);
+  }
+
+  const oversizedProgressSidecar = await runner.createStructuredFailureReceiptSidecar();
+  try {
+    await writeFile(oversizedProgressSidecar.progressFilePath, "x".repeat(16 * 1024 + 1), { flag: "wx" });
+    assert.deepEqual(
+      await runner.readStructuredChildFailureDiagnostics(oversizedProgressSidecar),
+      { kind: "progress_invalid" },
+    );
+  } finally {
+    await runner.cleanupStructuredFailureReceiptSidecar(oversizedProgressSidecar);
+  }
+
   const missingReceipt = runner.formatDisposableRuntimeFailureReceipt({
     failurePhase: "runFocusedTests",
-    failureCategory: "structured_child_receipt_missing",
+    failureCategory: "structured_child_context_missing",
+    structuredChildProgress: null,
   });
-  assert.match(missingReceipt, /"category":"structured_child_receipt_missing"/);
+  assert.match(missingReceipt, /"category":"structured_child_context_missing"/);
   assert.doesNotMatch(missingReceipt, /do-not-leak|PLATFORM_MIGRATOR_FAILURE_V1=/i);
 });
 
@@ -829,6 +991,7 @@ test("duplicate child receipt writes preserve the first sidecar receipt", async 
   assert.equal(result.exitCode, 1);
   assert.equal(result.signal, null);
   assert.equal(result.receipt?.test_id, "DL-128-REPO-011-A3-first-receipt");
+  assert.equal(result.diagnostics?.kind, "final");
   assert.equal(result.filePresentAfterCleanup, false);
   assert.equal(result.directoryPresentAfterCleanup, false);
 });
@@ -841,7 +1004,10 @@ test("zero child exit succeeds without a failure sidecar", async () => {
   assert.equal(result.exitCode, 0);
   assert.equal(result.signal, null);
   assert.equal(result.receipt, null);
+  assert.equal(result.progress, null);
+  assert.equal(result.diagnostics.kind, "missing");
   assert.equal(result.sidecarContent, null);
+  assert.equal(result.progressSidecarContent, null);
   assert.equal(result.filePresentAfterCleanup, false);
   assert.equal(result.directoryPresentAfterCleanup, false);
 });
@@ -851,10 +1017,14 @@ async function runStructuredReceiptTransportChild(runner, mode) {
   const output = { stdout: "", stderr: "" };
   let childResult = null;
   let receipt = null;
+  let progress = null;
+  let diagnostics = null;
   let sidecarContent = null;
+  let progressSidecarContent = null;
   const childEnv = {
     NODE_ENV: "test",
     PLATFORM_MIGRATOR_FAILURE_RECEIPT_FILE: sidecar.filePath,
+    PLATFORM_MIGRATOR_FAILURE_PROGRESS_FILE: sidecar.progressFilePath,
   };
   for (const key of ["PATH", "SystemRoot", "WINDIR"]) {
     if (typeof process.env[key] === "string") childEnv[key] = process.env[key];
@@ -896,10 +1066,17 @@ async function runStructuredReceiptTransportChild(runner, mode) {
       });
     });
     receipt = await runner.readStructuredFailureReceiptFile(sidecar.filePath);
+    progress = await runner.readStructuredFailureProgressFile(sidecar.progressFilePath);
+    diagnostics = await runner.readStructuredChildFailureDiagnostics(sidecar);
     try {
       sidecarContent = await readFile(sidecar.filePath, "utf8");
     } catch {
       sidecarContent = null;
+    }
+    try {
+      progressSidecarContent = await readFile(sidecar.progressFilePath, "utf8");
+    } catch {
+      progressSidecarContent = null;
     }
   } finally {
     await runner.cleanupStructuredFailureReceiptSidecar(sidecar);
@@ -923,8 +1100,13 @@ async function runStructuredReceiptTransportChild(runner, mode) {
     ...output,
     receipt,
     sidecarContent,
+    progressSidecarContent,
+    progress,
+    diagnostics,
     filePath: sidecar.filePath,
+    progressFilePath: sidecar.progressFilePath,
     filePresentAfterCleanup,
+    progressFilePresentAfterCleanup: await pathIsPresent(sidecar.progressFilePath),
     directoryPresentAfterCleanup,
   };
 }
@@ -1553,6 +1735,16 @@ function assertEnvRow(runbook, name, required, secret) {
   );
 }
 
+async function pathIsPresent(path) {
+  try {
+    await access(path);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -1918,6 +2110,14 @@ test("Run-15 actual focused child rejects hostile inherited PostgreSQL authentic
           true,
           "runner must pass the dedicated receipt sidecar path only through the child test environment",
         );
+        assert.equal(
+          Object.hasOwn(
+            runnerProvidedChildEnv,
+            "PLATFORM_MIGRATOR_FAILURE_PROGRESS_FILE",
+          ),
+          true,
+          "runner must pass the dedicated progress sidecar path only through the child test environment",
+        );
         const childEnv = { ...runnerProvidedChildEnv };
         delete childEnv.NODE_TEST_CONTEXT;
         const childArgs = [args[0], "--test-reporter=spec", ...args.slice(1)];
@@ -1940,10 +2140,20 @@ test("Run-15 actual focused child rejects hostile inherited PostgreSQL authentic
       return spawn(command, args, options);
     };
 
-    const resources = await runner.run({
-      env: runnerEnvironment,
-      spawnImpl,
-    });
+    let resources;
+    try {
+      resources = await runner.run({
+        env: runnerEnvironment,
+        spawnImpl,
+      });
+    } catch (error) {
+      process.stderr.write(
+        `${typeof error?.runtimeFailureReceipt === "string"
+          ? error.runtimeFailureReceipt
+          : runner.formatDisposableRuntimeFailureReceipt()}\n`,
+      );
+      throw error;
+    }
 
     assert.equal(
       focusedParentEnvironmentRequested,
@@ -1966,6 +2176,13 @@ test("Run-15 actual focused child rejects hostile inherited PostgreSQL authentic
       Object.hasOwn(
         focusedChild.childEnv,
         "PLATFORM_MIGRATOR_FAILURE_RECEIPT_FILE",
+      ),
+      true,
+    );
+    assert.equal(
+      Object.hasOwn(
+        focusedChild.childEnv,
+        "PLATFORM_MIGRATOR_FAILURE_PROGRESS_FILE",
       ),
       true,
     );

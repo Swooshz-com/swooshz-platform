@@ -1,4 +1,6 @@
 ﻿import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { renameSync, unlinkSync, writeFileSync } from "node:fs";
 import test from "node:test";
 
 import { writeFile } from "node:fs/promises";
@@ -53,6 +55,9 @@ const publicAuthorityProbeTable = "__pgdbowner_authority_probe";
 const structuredFailureReceiptPrefix = "PLATFORM_MIGRATOR_FAILURE_V1=";
 const structuredFailureReceiptFileEnvironmentVariable =
   "PLATFORM_MIGRATOR_FAILURE_RECEIPT_FILE";
+const structuredFailureProgressFileEnvironmentVariable =
+  "PLATFORM_MIGRATOR_FAILURE_PROGRESS_FILE";
+const structuredReceiptProgressMaxBytes = 16 * 1024;
 const structuredReceiptTransportTestMode =
   process.env.PLATFORM_MIGRATOR_FAILURE_RECEIPT_TEST ?? "";
 const structuredFingerprintFields = [
@@ -101,6 +106,11 @@ const structuredCleanupPhases = new Set([
   "complete",
   "failed",
 ]);
+const structuredTransportStates = new Set([
+  "phase_armed",
+  "failure_catch_entered",
+  "failure_receipt_write_armed",
+]);
 let activeStructuredFailureContext = null;
 
 function withStructuredFailureReceipt(testId, operation) {
@@ -113,15 +123,26 @@ function withStructuredFailureReceipt(testId, operation) {
     fingerprintFields: [],
     tupleCounts: [],
     cleanupPhase: "not_started",
+    transportState: "phase_armed",
   };
   activeStructuredFailureContext = context;
+  try {
+    persistStructuredFailureProgress(context);
+  } catch (error) {
+    activeStructuredFailureContext = previousContext;
+    throw error;
+  }
   return Promise.resolve()
     .then(operation)
     .catch(async (error) => {
       try {
+        context.transportState = "failure_catch_entered";
+        persistStructuredFailureProgress(context);
+        context.transportState = "failure_receipt_write_armed";
+        persistStructuredFailureProgress(context);
         await emitStructuredFailureReceipt(context);
       } catch {
-        // The original test failure remains the child outcome; the parent fails closed if the receipt is absent.
+        // Preserve the original test failure; the parent reads durable progress when the final receipt is absent.
       }
       throw error;
     })
@@ -137,6 +158,7 @@ function markStructuredFailurePhase(phase, assertionCategory) {
   if (structuredAssertionCategories.has(assertionCategory)) {
     activeStructuredFailureContext.assertionCategory = assertionCategory;
   }
+  persistStructuredFailureProgress(activeStructuredFailureContext);
 }
 
 function markStructuredCleanupPhase(phase) {
@@ -145,6 +167,7 @@ function markStructuredCleanupPhase(phase) {
     structuredCleanupPhases.has(phase)
   ) {
     activeStructuredFailureContext.cleanupPhase = phase;
+    persistStructuredFailureProgress(activeStructuredFailureContext);
   }
 }
 
@@ -156,6 +179,7 @@ function recordStructuredFingerprintSnapshot(fingerprint) {
   activeStructuredFailureContext.tupleCounts = structuredFingerprintFields.map(
     (field) => `${field}:${structuredTupleCount(fingerprint[field])}/${structuredTupleCount(fingerprint[field])}`,
   );
+  persistStructuredFailureProgress(activeStructuredFailureContext);
 }
 
 function recordStructuredFingerprintComparison(actual, expected) {
@@ -163,11 +187,13 @@ function recordStructuredFingerprintComparison(actual, expected) {
   const differingFields = structuredFingerprintFields.filter(
     (field) => JSON.stringify(actual?.[field]) !== JSON.stringify(expected?.[field]),
   );
-  if (differingFields.length === 0) return;
-  activeStructuredFailureContext.fingerprintFields = differingFields;
-  activeStructuredFailureContext.tupleCounts = differingFields.map(
-    (field) => `${field}:${structuredTupleCount(actual?.[field])}/${structuredTupleCount(expected?.[field])}`,
-  );
+  if (differingFields.length > 0) {
+    activeStructuredFailureContext.fingerprintFields = differingFields;
+    activeStructuredFailureContext.tupleCounts = differingFields.map(
+      (field) => `${field}:${structuredTupleCount(actual?.[field])}/${structuredTupleCount(expected?.[field])}`,
+    );
+  }
+  persistStructuredFailureProgress(activeStructuredFailureContext);
 }
 
 function structuredTupleCount(value) {
@@ -178,6 +204,9 @@ function structuredTupleCount(value) {
 async function emitStructuredFailureReceipt(context) {
   const filePath = process.env[structuredFailureReceiptFileEnvironmentVariable];
   if (typeof filePath !== "string" || filePath.length === 0) {
+    throw new Error();
+  }
+  if (structuredReceiptTransportTestMode === "writer-failure-boundary") {
     throw new Error();
   }
   const receipt = {
@@ -211,6 +240,72 @@ async function emitStructuredFailureReceipt(context) {
   );
 }
 
+function persistStructuredFailureProgress(context) {
+  const filePath = process.env[structuredFailureProgressFileEnvironmentVariable];
+  if (typeof filePath !== "string" || filePath.length === 0) {
+    throw new Error();
+  }
+  const payload = {
+    version: 1,
+    test_id: isSafeStructuredTestId(context?.testId) ? context.testId : "unknown",
+    phase: structuredFailurePhases.has(context?.phase)
+      ? context.phase
+      : "baseline_capture",
+    assertion_category: structuredAssertionCategories.has(context?.assertionCategory)
+      ? context.assertionCategory
+      : "focused_child_defect",
+    fingerprint_fields: structuredFingerprintFields.filter((field) =>
+      context?.fingerprintFields?.includes(field),
+    ),
+    tuple_counts: Array.isArray(context?.tupleCounts)
+      ? context.tupleCounts.filter(isBoundedStructuredTupleCount)
+      : [],
+    cleanup_phase: structuredCleanupPhases.has(context?.cleanupPhase)
+      ? context.cleanupPhase
+      : "not_started",
+    transport_state: structuredTransportStates.has(context?.transportState)
+      ? context.transportState
+      : "phase_armed",
+  };
+  const serialized = JSON.stringify(payload) + "\n";
+  if (Buffer.byteLength(serialized, "utf8") > structuredReceiptProgressMaxBytes) {
+    throw new Error();
+  }
+  const temporaryPath = filePath + "." + randomUUID() + ".tmp";
+  try {
+    writeFileSync(temporaryPath, serialized, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    renameSync(temporaryPath, filePath);
+  } finally {
+    try {
+      unlinkSync(temporaryPath);
+    } catch {
+      // Parent cleanup removes the runner-owned directory if replacement fails.
+    }
+  }
+}
+
+function isSafeStructuredTestId(value) {
+  return typeof value === "string" && value.length >= 1 && value.length <= 96 && /^[A-Za-z0-9._:-]+$/u.test(value);
+}
+
+function isBoundedStructuredTupleCount(entry) {
+  if (typeof entry !== "string") return false;
+  const parts = entry.split(/[:/]/u);
+  return parts.length === 3 &&
+    structuredFingerprintFields.includes(parts[0]) &&
+    isNonnegativeStructuredCount(parts[1]) &&
+    isNonnegativeStructuredCount(parts[2]);
+}
+
+function isNonnegativeStructuredCount(value) {
+  if (typeof value !== "string" || value.length === 0 || value.length > 6) return false;
+  if (value.length > 1 && value.startsWith("0")) return false;
+  return [...value].every((character) => character >= "0" && character <= "9");
+}
 async function forceStructuredReceiptTransportFailure(testId) {
   return withStructuredFailureReceipt(testId, async () => {
     markStructuredFailurePhase(
@@ -233,6 +328,36 @@ if (structuredReceiptTransportTestMode === "child-boundary") {
     "test-only structured receipt transport child failure",
     async () => forceStructuredReceiptTransportFailure(
       "DL-128-REPO-011-A3-child-boundary",
+    ),
+  );
+}
+
+if (structuredReceiptTransportTestMode === "writer-failure-boundary") {
+  test(
+    "test-only final receipt writer failure preserves durable progress",
+    async () => forceStructuredReceiptTransportFailure(
+      "DL-128-REPO-011-A3-writer-failure",
+    ),
+  );
+}
+
+if (structuredReceiptTransportTestMode === "abrupt-exit-boundary") {
+  test(
+    "test-only abrupt child exit preserves durable progress",
+    async () => withStructuredFailureReceipt(
+      "DL-128-REPO-011-A3-abrupt-exit",
+      async () => {
+        markStructuredFailurePhase(
+          "post_reverse_exact_fingerprint",
+          "exact_reverse_rollback",
+        );
+        recordStructuredFingerprintComparison(
+          { databaseAcl: ["actual"] },
+          { databaseAcl: ["expected"] },
+        );
+        markStructuredCleanupPhase("complete");
+        process.exit(23);
+      },
     ),
   );
 }
