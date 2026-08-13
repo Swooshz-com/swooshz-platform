@@ -49,15 +49,163 @@ const safeIdentifier = /^[a-z_][a-z0-9_$]{0,62}$/u;
 const syntheticMigratorPassword = "synthetic-migrator-password";
 const wrongMigratorPassword = "synthetic-wrong-migrator-password";
 const publicAuthorityProbeTable = "__pgdbowner_authority_probe";
+const structuredFailureReceiptPrefix = "PLATFORM_MIGRATOR_FAILURE_V1=";
+const structuredFingerprintFields = [
+  "databaseOwner",
+  "schemaOwners",
+  "objectOwners",
+  "enumOwners",
+  "routineOwners",
+  "databaseAcl",
+  "schemaAcls",
+  "defaultAcl",
+  "attributes",
+  "memberships",
+];
+const structuredFailurePhases = new Set([
+  "baseline_capture",
+  "forward_migration",
+  "migrated_state_assertion",
+  "reverse_transfer",
+  "reverse_role_restoration",
+  "post_reverse_exact_fingerprint",
+  "acl_residue_setup",
+  "acl_residue_permissive_helper",
+  "acl_residue_exact_rejection",
+  "acl_residue_cleanup",
+  "post_acl_exact_fingerprint",
+  "default_acl_residue_setup",
+  "default_acl_permissive_helper",
+  "default_acl_exact_rejection",
+  "default_acl_residue_cleanup",
+  "post_default_acl_exact_fingerprint",
+]);
+const structuredAssertionCategories = new Set([
+  "baseline_lifecycle",
+  "forward_migration",
+  "migrated_state_assertion",
+  "exact_reverse_rollback",
+  "acl_residue_cleanup",
+  "default_acl_residue_cleanup",
+  "membership_inventory",
+  "focused_child_defect",
+]);
+const structuredCleanupPhases = new Set([
+  "not_started",
+  "started",
+  "complete",
+  "failed",
+]);
+let activeStructuredFailureContext = null;
+
+function withStructuredFailureReceipt(testId, operation) {
+  const previousContext = activeStructuredFailureContext;
+  const context = {
+    version: 1,
+    testId,
+    phase: "baseline_capture",
+    assertionCategory: "focused_child_defect",
+    fingerprintFields: [],
+    tupleCounts: [],
+    cleanupPhase: "not_started",
+  };
+  activeStructuredFailureContext = context;
+  return Promise.resolve()
+    .then(operation)
+    .catch((error) => {
+      emitStructuredFailureReceipt(context);
+      throw error;
+    })
+    .finally(() => {
+      activeStructuredFailureContext = previousContext;
+    });
+}
+
+function markStructuredFailurePhase(phase, assertionCategory) {
+  if (!activeStructuredFailureContext) return;
+  if (structuredFailurePhases.has(phase)) {
+    activeStructuredFailureContext.phase = phase;
+  }
+  if (structuredAssertionCategories.has(assertionCategory)) {
+    activeStructuredFailureContext.assertionCategory = assertionCategory;
+  }
+}
+
+function markStructuredCleanupPhase(phase) {
+  if (
+    activeStructuredFailureContext &&
+    structuredCleanupPhases.has(phase)
+  ) {
+    activeStructuredFailureContext.cleanupPhase = phase;
+  }
+}
+
+function recordStructuredFingerprintSnapshot(fingerprint) {
+  if (!activeStructuredFailureContext) return;
+  activeStructuredFailureContext.fingerprintFields = [
+    ...structuredFingerprintFields,
+  ];
+  activeStructuredFailureContext.tupleCounts = structuredFingerprintFields.map(
+    (field) => `${field}:${structuredTupleCount(fingerprint[field])}/${structuredTupleCount(fingerprint[field])}`,
+  );
+}
+
+function recordStructuredFingerprintComparison(actual, expected) {
+  if (!activeStructuredFailureContext) return;
+  const differingFields = structuredFingerprintFields.filter(
+    (field) => JSON.stringify(actual?.[field]) !== JSON.stringify(expected?.[field]),
+  );
+  if (differingFields.length === 0) return;
+  activeStructuredFailureContext.fingerprintFields = differingFields;
+  activeStructuredFailureContext.tupleCounts = differingFields.map(
+    (field) => `${field}:${structuredTupleCount(actual?.[field])}/${structuredTupleCount(expected?.[field])}`,
+  );
+}
+
+function structuredTupleCount(value) {
+  if (Array.isArray(value)) return value.length;
+  return value === null || value === undefined ? 0 : 1;
+}
+
+function emitStructuredFailureReceipt(context) {
+  const receipt = {
+    version: 1,
+    test_id: typeof context.testId === "string" ? context.testId : "unknown",
+    phase: structuredFailurePhases.has(context.phase)
+      ? context.phase
+      : "baseline_capture",
+    assertion_category: structuredAssertionCategories.has(
+      context.assertionCategory,
+    )
+      ? context.assertionCategory
+      : "focused_child_defect",
+    fingerprint_fields: structuredFingerprintFields.filter((field) =>
+      context.fingerprintFields?.includes(field),
+    ),
+    tuple_counts: Array.isArray(context.tupleCounts)
+      ? context.tupleCounts.filter((entry) =>
+          typeof entry === "string" &&
+          /^(?:databaseOwner|schemaOwners|objectOwners|enumOwners|routineOwners|databaseAcl|schemaAcls|defaultAcl|attributes|memberships):(?:0|[1-9]\d*)\/(?:0|[1-9]\d*)$/u.test(entry),
+        )
+      : [],
+    cleanup_phase: structuredCleanupPhases.has(context.cleanupPhase)
+      ? context.cleanupPhase
+      : "not_started",
+  };
+  process.stdout.write(`${structuredFailureReceiptPrefix}${JSON.stringify(receipt)}\n`);
+}
 let retainedPrimaryPreForwardBaseline;
 
 test(
   "DL-128-REPO-003: the automatic ADMIN=true bootstrap edge is accident protection only and admits latent self-escalation until provider revocation",
   { skip: skipReason },
-  async () => {
+  async () => withStructuredFailureReceipt(
+    "DL-128-REPO-003-bootstrap-edge",
+    async () => {
     const fixture = await openFixtures();
     try {
       const primary = fixture.primary;
+      markStructuredFailurePhase("baseline_capture", "baseline_lifecycle");
       const baseline = await readOwnershipFingerprint(
         primary.adminPool,
         primary.databaseName,
@@ -116,23 +264,28 @@ test(
       );
 
       await dropMigratorRole(primary.adminPool);
-      assert.deepEqual(
+      markStructuredFailurePhase("baseline_capture", "baseline_lifecycle");
+      assertExactFingerprint(
         await readOwnershipFingerprint(primary.adminPool, primary.databaseName),
         baseline,
       );
     } finally {
       await closeFixtures(fixture);
     }
-  },
+    },
+  ),
 );
 
 test(
   "bounded supplemental SET edge, real password credential admission, target-NOCREATEDB negative control, pg_database_owner authority transfer, provider final revocation, pre-completion legacy-retirement guard",
   { skip: skipReason },
-  async () => {
+  async () => withStructuredFailureReceipt(
+    "DL-128-REPO-003-forward-migration",
+    async () => {
     const fixture = await openFixtures();
     try {
       const primary = fixture.primary;
+      markStructuredFailurePhase("baseline_capture", "baseline_lifecycle");
       const baseline = await readOwnershipFingerprint(
         primary.adminPool,
         primary.databaseName,
@@ -252,6 +405,7 @@ test(
         `grant create on schema appdata to platform_migrator`,
       );
 
+      markStructuredFailurePhase("forward_migration", "forward_migration");
       await forwardTransferInOneTransaction(primary);
 
       await assertMigratorRoleAttribute(primary.adminPool, "rolcreatedb", false);
@@ -262,6 +416,7 @@ test(
       );
       await assertExactProtectedEdge(primary.adminPool);
 
+      markStructuredFailurePhase("migrated_state_assertion", "migrated_state_assertion");
       const forwardFingerprint = await readOwnershipFingerprint(
         primary.adminPool,
         primary.databaseName,
@@ -372,6 +527,7 @@ test(
         /permission denied to set role/i,
       );
 
+      markStructuredFailurePhase("migrated_state_assertion", "migrated_state_assertion");
       const finalFingerprint = await readOwnershipFingerprint(
         primary.adminPool,
         primary.databaseName,
@@ -420,18 +576,23 @@ test(
     } finally {
       await closeFixtures(fixture);
     }
-  },
+    },
+  ),
 );
 
 test(
   "exact reverse rollback via the provider authority restores the complete baseline including pg_database_owner authority from the final zero-membership state",
   { skip: skipReason },
-  async () => {
+  async () => withStructuredFailureReceipt(
+    "DL-128-REPO-003-exact-reverse-rollback",
+    async () => {
     const fixture = await openFixtures();
     try {
       const primary = fixture.primary;
+      markStructuredFailurePhase("baseline_capture", "baseline_lifecycle");
       const preForwardBaseline = retainedPrimaryPreForwardBaseline;
       assert.ok(preForwardBaseline);
+      markStructuredFailurePhase("migrated_state_assertion", "migrated_state_assertion");
       const migratedState = await readOwnershipFingerprint(
         primary.adminPool,
         primary.databaseName,
@@ -453,9 +614,12 @@ test(
         false,
       );
 
+      markStructuredFailurePhase("reverse_transfer", "exact_reverse_rollback");
       await reverseTransferViaProviderAuthority(primary);
+      markStructuredFailurePhase("reverse_role_restoration", "exact_reverse_rollback");
       await dropMigratorRole(primary.adminPool);
 
+      markStructuredFailurePhase("post_reverse_exact_fingerprint", "exact_reverse_rollback");
       const restored = await readOwnershipFingerprint(
         primary.adminPool,
         primary.databaseName,
@@ -501,16 +665,20 @@ test(
     } finally {
       await closeFixtures(fixture);
     }
-  },
+    },
+  ),
 );
 
 test(
   "platform_runtime edge revocation and the explicitly labelled stable-provider-owner public variant executes the bounded migrator transaction",
   { skip: skipReason },
-  async () => {
+  async () => withStructuredFailureReceipt(
+    "DL-128-REPO-003-secondary-transfer",
+    async () => {
     const fixture = await openFixtures();
     try {
       const primary = fixture.primary;
+      markStructuredFailurePhase("baseline_capture", "baseline_lifecycle");
       const secondary = fixture.secondary;
       const primaryBaseline = await readOwnershipFingerprint(
         primary.adminPool,
@@ -557,11 +725,12 @@ test(
         0,
       );
       await assertRuntimePosture(primary.adminPool);
-      assert.deepEqual(
+      assertExactFingerprint(
         await readOwnershipFingerprint(primary.adminPool, primary.databaseName),
         primaryBaseline,
       );
 
+      markStructuredFailurePhase("forward_migration", "forward_migration");
       await createMigratorRoleAsLegacyOwner(secondary.appPool);
       await secondary.appPool.query(
         `grant connect on database ${identifier(secondary.databaseName)} to platform_migrator`,
@@ -632,7 +801,11 @@ test(
         `revoke platform_migrator from platform_app`,
       );
       await dropMigratorRole(secondary.adminPool);
-      assert.deepEqual(
+      markStructuredFailurePhase(
+        "post_reverse_exact_fingerprint",
+        "exact_reverse_rollback",
+      );
+      assertExactFingerprint(
         await readOwnershipFingerprint(
           secondary.adminPool,
           secondary.databaseName,
@@ -642,16 +815,21 @@ test(
     } finally {
       await closeFixtures(fixture);
     }
-  },
+    },
+  ),
 );
 
 test(
   "DL-128-REPO-004: the complete membership inventory rejects unexpected platform_migrator edges in member and grantor positions",
   { skip: skipReason },
-  async () => {
+  async () => withStructuredFailureReceipt(
+    "DL-128-REPO-004-membership-inventory",
+    async () => {
     const fixture = await openFixtures();
     try {
       const primary = fixture.primary;
+      markStructuredFailurePhase("baseline_capture", "baseline_lifecycle");
+      markStructuredFailurePhase("migrated_state_assertion", "membership_inventory");
       await createMigratorRoleAsLegacyOwner(primary.appPool);
       await assertExactProtectedEdge(primary.adminPool);
 
@@ -696,7 +874,8 @@ test(
     } finally {
       await closeFixtures(fixture);
     }
-  },
+    },
+  ),
 );
 
 async function createMigratorRoleAsLegacyOwner(appPool) {
@@ -1199,9 +1378,16 @@ async function openFixtures() {
 }
 
 async function closeFixtures(fixture) {
-  invalidateDisposablePostgresAdmission(fixture.admission);
-  for (const pool of fixture.pools) {
-    await pool.end().catch(() => {});
+  markStructuredCleanupPhase("started");
+  try {
+    invalidateDisposablePostgresAdmission(fixture.admission);
+    for (const pool of fixture.pools) {
+      await pool.end().catch(() => {});
+    }
+    markStructuredCleanupPhase("complete");
+  } catch (error) {
+    markStructuredCleanupPhase("failed");
+    throw error;
   }
 }
 
@@ -1366,7 +1552,7 @@ async function readOwnershipFingerprint(adminPool, databaseName) {
     );
   }
 
-  return {
+  const fingerprint = {
     attributes: attributes.rows,
     databaseAcl: [...new Set(aclSurfaces.database)].sort(),
     databaseOwner: ownership.rows[0].database_owner,
@@ -1378,6 +1564,8 @@ async function readOwnershipFingerprint(adminPool, databaseName) {
     schemaAcls: [...new Set(aclSurfaces.schema)].sort(),
     schemaOwners: ownership.rows[0].schema_owners ?? [],
   };
+  recordStructuredFingerprintSnapshot(fingerprint);
+  return fingerprint;
 }
 
 function assertBaselineFingerprint(fingerprint, expectedPublicOwner) {
@@ -1454,6 +1642,7 @@ function assertAclSurfaceBounded(records, surface) {
 }
 
 function assertExactFingerprint(actual, expected, label) {
+  recordStructuredFingerprintComparison(actual, expected);
   assert.deepEqual(actual, expected, label);
 }
 
@@ -1465,6 +1654,7 @@ async function assertAclResidueNegativeControl(adminPool, databaseName, baseline
     "CONNECT",
     "false",
   ].join("\u0000");
+  markStructuredFailurePhase("acl_residue_setup", "acl_residue_cleanup");
   assert.equal(baseline.databaseAcl.includes(expectedResidue), false);
   let grantAttempted = false;
   try {
@@ -1474,6 +1664,10 @@ async function assertAclResidueNegativeControl(adminPool, databaseName, baseline
         identifier(databaseName) +
         " to platform_runtime",
     );
+    markStructuredFailurePhase(
+      "acl_residue_permissive_helper",
+      "acl_residue_cleanup",
+    );
     const perturbed = await readOwnershipFingerprint(adminPool, databaseName);
     assert.deepEqual(
       perturbed.databaseAcl.filter(
@@ -1482,11 +1676,16 @@ async function assertAclResidueNegativeControl(adminPool, databaseName, baseline
       [expectedResidue],
     );
     assertBaselineFingerprint(perturbed, "pg_database_owner");
+    markStructuredFailurePhase(
+      "acl_residue_exact_rejection",
+      "acl_residue_cleanup",
+    );
     assert.throws(
       () => assertExactFingerprint(perturbed, baseline),
       assert.AssertionError,
     );
   } finally {
+    markStructuredFailurePhase("acl_residue_cleanup", "acl_residue_cleanup");
     if (grantAttempted) {
       await adminPool.query(
         "revoke connect on database " +
@@ -1495,12 +1694,15 @@ async function assertAclResidueNegativeControl(adminPool, databaseName, baseline
       );
     }
   }
+  markStructuredFailurePhase(
+    "post_acl_exact_fingerprint",
+    "acl_residue_cleanup",
+  );
   assertExactFingerprint(
     await readOwnershipFingerprint(adminPool, databaseName),
     baseline,
   );
 }
-
 async function assertDefaultAclResidueNegativeControl(
   adminPool,
   databaseName,
@@ -1513,6 +1715,10 @@ async function assertDefaultAclResidueNegativeControl(
     "EXECUTE",
     "false",
   ].join("\u0000");
+  markStructuredFailurePhase(
+    "default_acl_residue_setup",
+    "default_acl_residue_cleanup",
+  );
   assert.equal(baseline.defaultAcl.includes(expectedResidue), false);
   let grantAttempted = false;
   try {
@@ -1520,6 +1726,10 @@ async function assertDefaultAclResidueNegativeControl(
     await adminPool.query(
       "alter default privileges for role platform_app " +
         "grant execute on functions to platform_runtime",
+    );
+    markStructuredFailurePhase(
+      "default_acl_permissive_helper",
+      "default_acl_residue_cleanup",
     );
     const perturbed = await readOwnershipFingerprint(adminPool, databaseName);
     assert.deepEqual(
@@ -1529,11 +1739,19 @@ async function assertDefaultAclResidueNegativeControl(
       [expectedResidue],
     );
     assertBaselineFingerprint(perturbed, "pg_database_owner");
+    markStructuredFailurePhase(
+      "default_acl_exact_rejection",
+      "default_acl_residue_cleanup",
+    );
     assert.throws(
       () => assertExactFingerprint(perturbed, baseline),
       assert.AssertionError,
     );
   } finally {
+    markStructuredFailurePhase(
+      "default_acl_residue_cleanup",
+      "default_acl_residue_cleanup",
+    );
     if (grantAttempted) {
       await adminPool.query(
         "alter default privileges for role platform_app " +
@@ -1541,12 +1759,15 @@ async function assertDefaultAclResidueNegativeControl(
       );
     }
   }
+  markStructuredFailurePhase(
+    "post_default_acl_exact_fingerprint",
+    "default_acl_residue_cleanup",
+  );
   assertExactFingerprint(
     await readOwnershipFingerprint(adminPool, databaseName),
     baseline,
   );
 }
-
 async function assertRuntimePosture(adminPool) {
   const report = await inspectRuntimeDatabaseRoleAuthorityPosture(
     adminPool,
@@ -1792,7 +2013,7 @@ export async function runReversibleLegacyNoLoginControl(primary) {
     primary.adminPool,
     primary.databaseName,
   );
-  assert.deepEqual(finalFingerprint, baselineFingerprint);
+  assertExactFingerprint(finalFingerprint, baselineFingerprint);
 }
 function identifier(value) {
   assert.match(value, /^[a-z_][a-z0-9_$]{0,62}$/);

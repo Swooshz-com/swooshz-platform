@@ -29,8 +29,55 @@ const ownedVolumeName = "deepseek-platform128-pg17-data";
 const volumeOwnershipTokenLabelKey = "com.swooshz.platform.runner-token";
 const ownedPort = 56432;
 const maxChildOutputBytes = 64 * 1024;
-const maxChildDurationMs = 120_000;
-const expectedPostgresTestCount = 5;
+const structuredFailureReceiptPrefix = "PLATFORM_MIGRATOR_FAILURE_V1=";
+const structuredReceiptFingerprintFields = new Set([
+  "databaseOwner",
+  "schemaOwners",
+  "objectOwners",
+  "enumOwners",
+  "routineOwners",
+  "databaseAcl",
+  "schemaAcls",
+  "defaultAcl",
+  "attributes",
+  "memberships",
+]);
+const structuredReceiptPhases = new Set([
+  "baseline_capture",
+  "forward_migration",
+  "migrated_state_assertion",
+  "reverse_transfer",
+  "reverse_role_restoration",
+  "post_reverse_exact_fingerprint",
+  "acl_residue_setup",
+  "acl_residue_permissive_helper",
+  "acl_residue_exact_rejection",
+  "acl_residue_cleanup",
+  "post_acl_exact_fingerprint",
+  "default_acl_residue_setup",
+  "default_acl_permissive_helper",
+  "default_acl_exact_rejection",
+  "default_acl_residue_cleanup",
+  "post_default_acl_exact_fingerprint",
+]);
+const structuredReceiptAssertionCategories = new Set([
+  "baseline_lifecycle",
+  "forward_migration",
+  "migrated_state_assertion",
+  "exact_reverse_rollback",
+  "acl_residue_cleanup",
+  "default_acl_residue_cleanup",
+  "membership_inventory",
+  "focused_child_defect",
+]);
+const structuredReceiptCleanupPhases = new Set([
+  "not_started",
+  "started",
+  "complete",
+  "failed",
+]);
+const structuredReceiptTestIdPattern = /^[A-Za-z0-9._:-]{1,96}$/u;
+const structuredReceiptTuplePattern = /^([A-Za-z][A-Za-z0-9]*):(0|[1-9]\d*)\/(0|[1-9]\d*)$/u;
 const safeIdentifier = /^[a-z_][a-z0-9_$]{0,62}$/u;
 const loopbackHosts = new Set(["127.0.0.1", "::1"]);
 const failurePhases = new Set([
@@ -61,8 +108,8 @@ const failureCategories = new Set([
   "configured_fixture_admission",
   "child_test_spawn",
   "child_test_failure",
+  "structured_child_receipt_missing",
   "child_output_overflow",
-  "child_summary_parse",
   "child_signal",
   "cleanup",
   "absence_verification",
@@ -101,6 +148,7 @@ export async function run({
         childSignal: false,
         childOutputOverflow: false,
         childSummaryParsed: false,
+        structuredChildReceipt: null,
         containerStarted: false,
         postgresReady: false,
         constructionAdmission: false,
@@ -356,14 +404,16 @@ export function formatDisposableRuntimeFailureReceipt(resources = {}) {
     childSignal: resources.childSignal === true,
     outputOverflow: resources.childOutputOverflow === true,
     summaryParsed: resources.childSummaryParsed === true,
+    structuredChildReceipt: projectStructuredChildReceipt(
+      resources.structuredChildReceipt,
+    ),
     containerStarted: resources.containerStarted === true,
     volumePreAbsenceVerified: resources.volumePreAbsenceVerified === true,
     volumeCreateAttempted: resources.volumeCreateAttempted === true,
     volumeCreated: resources.volumeCreated === true,
     volumeAttached: resources.volumeAttached === true,
     volumeOwned: resources.volumeOwned === true,
-
-volumeOwnershipState: resources.volumeOwnershipState ?? "unknown",
+    volumeOwnershipState: resources.volumeOwnershipState ?? "unknown",
     volumeRemoved: resources.volumeRemoved === true,
     volumeAbsenceVerified: resources.volumeAbsenceVerified === true,
     postgresReady: resources.postgresReady === true,
@@ -377,102 +427,95 @@ volumeOwnershipState: resources.volumeOwnershipState ?? "unknown",
   return `Disposable fixture failure receipt: ${JSON.stringify(receipt)}`;
 }
 
-export function parseDisposableMigratorAlignmentTestSummary(output) {
-  if (typeof output !== "string" || Buffer.byteLength(output, "utf8") > maxChildOutputBytes) {
+function projectStructuredFailureReceipt(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (value.version !== 1 || typeof value.test_id !== "string") return null;
+  if (!structuredReceiptTestIdPattern.test(value.test_id)) return null;
+  if (!structuredReceiptPhases.has(value.phase)) return null;
+  if (!structuredReceiptAssertionCategories.has(value.assertion_category)) {
     return null;
   }
-  const normalised = output
-    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "")
-    .replace(/\r\n?/gu, "\n");
-  const lines = normalised.split("\n");
-  while (lines.at(-1) === "") lines.pop();
-  if (lines.length === 0) return null;
-
-  const fieldPattern = /^\s*([#ℹ])\s+(tests|suites|pass|fail|cancelled|skipped|todo|duration_ms)(?:\s+([^\s].*?))?\s*$/u;
-  const summaryStarts = [];
-  for (let index = 0; index < lines.length; index += 1) {
-    const match = lines[index].match(fieldPattern);
-    if (match?.[2] === "tests") summaryStarts.push(index);
+  if (!Array.isArray(value.fingerprint_fields)) return null;
+  if (value.fingerprint_fields.length > structuredReceiptFingerprintFields.size) {
+    return null;
   }
-  if (summaryStarts.length !== 1) return null;
-  const start = summaryStarts[0];
-  const fields = new Map();
-  let marker = null;
-  let expectedIndex = 0;
-  const expectedFields = [
-    "tests",
-    "suites",
-    "pass",
-    "fail",
-    "cancelled",
-    "skipped",
-    "todo",
-    "duration_ms",
-  ];
-  for (let index = start; index < lines.length; index += 1) {
-    const match = lines[index].match(fieldPattern);
-    if (!match || (marker !== null && match[1] !== marker)) return null;
-    marker ??= match[1];
-    if (match[2] !== expectedFields[expectedIndex] || fields.has(match[2])) {
+  const fingerprintFields = [];
+  for (const field of value.fingerprint_fields) {
+    if (
+      typeof field !== "string" ||
+      !structuredReceiptFingerprintFields.has(field) ||
+      fingerprintFields.includes(field)
+    ) {
       return null;
     }
-    if (typeof match[3] !== "string" || match[3].length === 0) return null;
-    fields.set(match[2], match[3]);
-    expectedIndex += 1;
-    if (match[2] === "duration_ms") {
-      if (index !== lines.length - 1) return null;
-      break;
+    fingerprintFields.push(field);
+  }
+  if (!Array.isArray(value.tuple_counts)) return null;
+  const tupleCounts = [];
+  for (const entry of value.tuple_counts) {
+    if (typeof entry !== "string" || tupleCounts.includes(entry)) return null;
+    const match = entry.match(structuredReceiptTuplePattern);
+    if (!match || !structuredReceiptFingerprintFields.has(match[1])) {
+      return null;
     }
+    tupleCounts.push(entry);
   }
-  if (expectedIndex !== expectedFields.length) return null;
-  if (start > 0) {
-    for (const line of lines.slice(0, start)) {
-      if (fieldPattern.test(line)) return null;
-    }
-  }
-
-  const counts = {};
-  for (const field of ["tests", "suites", "pass", "fail", "cancelled", "skipped", "todo"]) {
-    const value = fields.get(field);
-    if (!/^(?:0|[1-9]\d*)$/u.test(value)) return null;
-    const count = Number(value);
-    if (!Number.isSafeInteger(count)) return null;
-    counts[field] = count;
-  }
-  if (
-    counts.tests !== expectedPostgresTestCount ||
-    counts.pass !== expectedPostgresTestCount ||
-    counts.fail !== 0 ||
-    counts.skipped !== 0 ||
-    counts.cancelled !== 0 ||
-    counts.todo !== 0 ||
-    counts.pass + counts.fail + counts.skipped + counts.cancelled + counts.todo !== counts.tests
-  ) {
-    return null;
-  }
-  const durationText = fields.get("duration_ms");
-  if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(durationText)) {
-    return null;
-  }
-  const durationMs = Number(durationText);
-  if (
-    !Number.isFinite(durationMs) ||
-    durationMs < 0 ||
-    durationMs > maxChildDurationMs ||
-    String(durationMs) !== durationText
-  ) {
-    return null;
-  }
+  if (!structuredReceiptCleanupPhases.has(value.cleanup_phase)) return null;
   return {
-    cancelled: counts.cancelled,
-    failed: counts.fail,
-    passed: counts.pass,
-    skipped: counts.skipped,
-    todo: counts.todo,
-    total: counts.tests,
+    version: 1,
+    test_id: value.test_id,
+    phase: value.phase,
+    assertion_category: value.assertion_category,
+    fingerprint_fields: fingerprintFields,
+    tuple_counts: tupleCounts,
+    cleanup_phase: value.cleanup_phase,
   };
 }
 
+export function parseStructuredFailureReceipt(output) {
+  if (
+    typeof output !== "string" ||
+    Buffer.byteLength(output, "utf8") > maxChildOutputBytes
+  ) {
+    return null;
+  }
+  const lines = output.replace(/\r\n?/gu, "\n").split("\n");
+  const sentinelLines = lines.filter((line) =>
+    line.startsWith(structuredFailureReceiptPrefix),
+  );
+  if (sentinelLines.length !== 1) return null;
+  const payload = sentinelLines[0].slice(structuredFailureReceiptPrefix.length);
+  if (payload.length === 0 || payload.trim() !== payload) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(payload);
+  } catch {
+    return null;
+  }
+  return projectStructuredFailureReceipt(parsed);
+}
+
+function projectStructuredChildReceipt(value) {
+  const receipt = projectStructuredFailureReceipt(value);
+  if (!receipt) return null;
+  return {
+    ...receipt,
+    child_exit_code:
+      Number.isSafeInteger(value.child_exit_code) &&
+      value.child_exit_code >= 0 &&
+      value.child_exit_code <= 255
+        ? value.child_exit_code
+        : null,
+    child_signal:
+      typeof value.child_signal === "string" &&
+      /^[A-Z0-9_]{1,32}$/u.test(value.child_signal)
+        ? value.child_signal
+        : null,
+    runner_category: failureCategories.has(value.runner_category)
+      ? value.runner_category
+      : null,
+  };
+}
 async function runAt(resources, phase, category, operation) {
   resources.phase = phase;
   try {
@@ -805,8 +848,6 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
   };
   await new Promise((resolvePromise, reject) => {
     const output = [];
-    const diagnosticOutput = [];
-    let diagnosticOutputLength = 0;
     let outputLength = 0;
     let outputOverflow = false;
     let child;
@@ -814,7 +855,7 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
       child = spawnImpl(
         process.execPath,
         [
-        "--test",
+          "--test",
           "tests/platform-migrator-alignment-postgres.test.mjs",
         ],
         { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
@@ -827,19 +868,15 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
     resources.childExited = false;
     resources.childTestsStarted = true;
     child.stdout?.on("data", (chunk) => {
-      outputLength += chunk.length;
-      if (outputLength <= 64 * 1024) {
-        output.push(Buffer.from(chunk));
+      const buffer = Buffer.from(chunk);
+      outputLength += buffer.length;
+      if (outputLength <= maxChildOutputBytes) {
+        output.push(buffer);
       } else {
         outputOverflow = true;
       }
     });
-    child.stderr?.on("data", (chunk) => {
-      diagnosticOutputLength += chunk.length;
-      if (diagnosticOutputLength <= maxChildOutputBytes) {
-        diagnosticOutput.push(Buffer.from(chunk));
-      }
-    });
+    child.stderr?.resume();
     child.once("error", (error) => {
       markChildFailure(resources, "child_test_spawn");
       reject(error);
@@ -860,79 +897,35 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
         return;
       }
       if (code !== 0) {
-        emitFocusedChildFailureDiagnostic({
-          output,
-          diagnosticOutput,
-          childExitCode: resources.childExitCode,
-          childSignal: signal,
-          category: "child_test_failure",
-        });
+        const structuredReceipt = parseStructuredFailureReceipt(
+          Buffer.concat(output).toString("utf8"),
+        );
+        if (!structuredReceipt) {
+          markChildFailure(resources, "structured_child_receipt_missing");
+          reject(new Error("Focused child test failed without a structured receipt."));
+          return;
+        }
+        resources.structuredChildReceipt = {
+          ...structuredReceipt,
+          child_exit_code: resources.childExitCode,
+          child_signal: typeof signal === "string" ? signal : null,
+          runner_category: "child_test_failure",
+        };
         markChildFailure(resources, "child_test_failure");
         reject(new Error("Focused child test failed."));
         return;
       }
       if (code === 0 && signal === null && !outputOverflow) {
-        const summary = parseDisposableMigratorAlignmentTestSummary(
-          Buffer.concat(output).toString("utf8"),
-        );
-        if (!summary) {
-          markChildFailure(resources, "child_summary_parse");
-          reject(new Error());
-          return;
-        }
+        // Retained as completion evidence for the existing lifecycle contract; no reporter text is parsed.
         resources.childSummaryParsed = true;
         process.stdout.write(
-          `Disposable PostgreSQL 17 migrator alignment tests: ${summary.total} total, ${summary.passed} passed, ${summary.failed} failed, ${summary.skipped} skipped.\n`,
+          "Disposable PostgreSQL 17 migrator alignment child exited successfully.\n",
         );
         resolvePromise();
       }
     });
   });
   void admission;
-}
-
-function emitFocusedChildFailureDiagnostic({
-  output,
-  diagnosticOutput,
-  childExitCode,
-  childSignal,
-  category,
-}) {
-  const combined = Buffer.concat([...output, ...diagnosticOutput]).toString("utf8");
-  const normalised = combined
-    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "")
-    .replace(/\r\n?/gu, "\n");
-  const subtest = normalised.match(/not ok\s+\d+\s+-\s+([^\n]+)/u)?.[1]
-    ?.trim().replace(/\s+/gu, " ").slice(0, 180) ?? "unknown";
-  const categories = [
-    ["exact reverse rollback", "exact_reverse_rollback"],
-    ["default-ACL residue", "default_acl_residue_negative_control"],
-    ["ACL residue", "acl_residue_negative_control"],
-    ["fingerprint fields:", "exact_fingerprint_assertion"],
-    ["AssertionError", "assertion"],
-  ];
-  const assertionCategory = categories.find(([needle]) =>
-    normalised.toLowerCase().includes(needle.toLowerCase()))?.[1] ?? "unknown";
-  const allowedFields = [
-    "databaseOwner", "schemaOwners", "objectOwners", "enumOwners",
-    "routineOwners", "databaseAcl", "schemaAcls", "defaultAcl",
-    "attributes", "memberships",
-  ];
-  const fingerprintFields = normalised.match(/fingerprint fields:\s*([^;\n]*)/iu)?.[1]
-    ?.split(",").map((field) => field.trim())
-    .filter((field) => allowedFields.includes(field)) ?? [];
-  const tupleCounts = normalised.match(/tuple counts:\s*([^;\n]*)/iu)?.[1]
-    ?.split(",").map((entry) => entry.trim())
-    .filter((entry) => /^[a-zA-Z]+:\d+\/\d+$/u.test(entry)) ?? [];
-  process.stderr.write(`Focused child diagnostic: ${JSON.stringify({
-    subtest,
-    assertionCategory,
-    fingerprintFields: [...new Set(fingerprintFields)],
-    tupleCounts,
-    runnerCategory: category,
-    childExitCode: Number.isInteger(childExitCode) ? childExitCode : null,
-    childSignal: typeof childSignal === "string" ? childSignal : null,
-  })}\n`);
 }
 function markChildFailure(resources, category) {
   if (!resources.failureCategory) {

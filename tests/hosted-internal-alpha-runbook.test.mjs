@@ -612,6 +612,72 @@ test("failure during final absence verification reports the absence-verification
   assert.match(receipt, /"category":"absence_verification"/);
 });
 
+test("structured migrator failure receipts are reporter-independent and fail closed", async () => {
+  const runner = await import(
+    "../scripts/run-disposable-migrator-alignment-tests.mjs"
+  );
+  const prefix = "PLATFORM_MIGRATOR_FAILURE_V1=";
+  const nl = "\n";
+  const receipt = {
+    version: 1,
+    test_id: "DL-128-REPO-003-exact-reverse-rollback",
+    phase: "post_reverse_exact_fingerprint",
+    assertion_category: "exact_reverse_rollback",
+    fingerprint_fields: ["databaseAcl", "memberships"],
+    tuple_counts: ["databaseAcl:3/4", "memberships:0/0"],
+    cleanup_phase: "complete",
+  };
+  const sentinel = `${prefix}${JSON.stringify(receipt)}`;
+  const parsed = runner.parseStructuredFailureReceipt(
+    `# Subtest: noisy spec output${nl}spec detail${nl}${sentinel}${nl}not ok text`,
+  );
+  assert.deepEqual(parsed, receipt);
+  assert.deepEqual(
+    runner.parseStructuredFailureReceipt(
+      `TAP version 13${nl}not ok 1 - unrelated title${nl}${sentinel}${nl}1..1`,
+    ),
+    receipt,
+  );
+  assert.equal(
+    runner.parseStructuredFailureReceipt("exact reverse rollback"),
+    null,
+  );
+  assert.equal(
+    runner.parseStructuredFailureReceipt("AssertionError: exact mismatch"),
+    null,
+  );
+  assert.equal(runner.parseStructuredFailureReceipt(`${prefix}{`), null);
+  assert.equal(
+    runner.parseStructuredFailureReceipt(`${sentinel}${nl}${sentinel}`),
+    null,
+  );
+
+  const forbidden = {
+    ...receipt,
+    password: "do-not-leak",
+    url: "postgresql://private.example.invalid/db",
+    nested: { token: "do-not-leak" },
+  };
+  const projected = runner.parseStructuredFailureReceipt(
+    `${prefix}${JSON.stringify(forbidden)}`,
+  );
+  assert.deepEqual(projected, receipt);
+  assert.doesNotMatch(JSON.stringify(projected), /do-not-leak|postgresql:/i);
+
+  const source = await readFile(
+    "scripts/run-disposable-migrator-alignment-tests.mjs",
+    "utf8",
+  );
+  assert.match(source, /child\.stderr\?\.resume\(\)/);
+  assert.doesNotMatch(source, /child\.stderr\?\.(?:on|pipe)\(/);
+  assert.match(source, /structured_child_receipt_missing/);
+  const missingReceipt = runner.formatDisposableRuntimeFailureReceipt({
+    failurePhase: "runFocusedTests",
+    failureCategory: "structured_child_receipt_missing",
+  });
+  assert.match(missingReceipt, /"category":"structured_child_receipt_missing"/);
+  assert.doesNotMatch(missingReceipt, /do-not-leak|postgresql:/i);
+});
 test("migrator transfer fingerprint covers database/schema ACL and default-ACL state", async () => {
   const source = await readFile(
     "tests/platform-migrator-alignment-postgres.test.mjs",
