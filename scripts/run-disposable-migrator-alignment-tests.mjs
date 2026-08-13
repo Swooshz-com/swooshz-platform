@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
+import { access, mkdtemp, open, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import net from "node:net";
@@ -30,6 +32,11 @@ const volumeOwnershipTokenLabelKey = "com.swooshz.platform.runner-token";
 const ownedPort = 56432;
 const maxChildOutputBytes = 64 * 1024;
 const structuredFailureReceiptPrefix = "PLATFORM_MIGRATOR_FAILURE_V1=";
+const structuredFailureReceiptFileEnvironmentVariable =
+  "PLATFORM_MIGRATOR_FAILURE_RECEIPT_FILE";
+const maxStructuredReceiptSidecarBytes = 16 * 1024;
+const structuredReceiptSidecarDirectoryPrefix =
+  "swooshz-platform-migrator-receipt-";
 const structuredReceiptFingerprintFields = new Set([
   "databaseOwner",
   "schemaOwners",
@@ -475,16 +482,19 @@ function projectStructuredFailureReceipt(value) {
 export function parseStructuredFailureReceipt(output) {
   if (
     typeof output !== "string" ||
-    Buffer.byteLength(output, "utf8") > maxChildOutputBytes
+    Buffer.byteLength(output, "utf8") > maxStructuredReceiptSidecarBytes
   ) {
     return null;
   }
   const lines = output.replace(/\r\n?/gu, "\n").split("\n");
-  const sentinelLines = lines.filter((line) =>
-    line.startsWith(structuredFailureReceiptPrefix),
-  );
-  if (sentinelLines.length !== 1) return null;
-  const payload = sentinelLines[0].slice(structuredFailureReceiptPrefix.length);
+  if (lines.at(-1) === "") lines.pop();
+  if (
+    lines.length !== 1 ||
+    !lines[0].startsWith(structuredFailureReceiptPrefix)
+  ) {
+    return null;
+  }
+  const payload = lines[0].slice(structuredFailureReceiptPrefix.length);
   if (payload.length === 0 || payload.trim() !== payload) return null;
   let parsed;
   try {
@@ -495,6 +505,81 @@ export function parseStructuredFailureReceipt(output) {
   return projectStructuredFailureReceipt(parsed);
 }
 
+export async function createStructuredFailureReceiptSidecar() {
+  const temporaryRoot = resolve(tmpdir());
+  const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
+  const temporaryRootRelativeToRepository = relative(
+    repositoryRoot,
+    temporaryRoot,
+  );
+  if (
+    temporaryRootRelativeToRepository === "" ||
+    (!temporaryRootRelativeToRepository.startsWith("..") &&
+      !isAbsolute(temporaryRootRelativeToRepository))
+  ) {
+    throw new Error();
+  }
+  const directory = await mkdtemp(
+    join(
+      temporaryRoot,
+      structuredReceiptSidecarDirectoryPrefix + randomUUID() + "-",
+    ),
+  );
+  return Object.freeze({
+    directory,
+    filePath: join(directory, "receipt"),
+  });
+}
+
+export async function readStructuredFailureReceiptFile(filePath) {
+  if (typeof filePath !== "string" || filePath.length === 0) return null;
+  let handle = null;
+  try {
+    handle = await open(filePath, "r");
+    const buffer = Buffer.allocUnsafe(maxStructuredReceiptSidecarBytes + 1);
+    let bytesRead = 0;
+    while (bytesRead < buffer.length) {
+      const result = await handle.read(
+        buffer,
+        bytesRead,
+        buffer.length - bytesRead,
+        null,
+      );
+      if (result.bytesRead === 0) break;
+      bytesRead += result.bytesRead;
+    }
+    if (bytesRead > maxStructuredReceiptSidecarBytes) return null;
+    return parseStructuredFailureReceipt(
+      buffer.subarray(0, bytesRead).toString("utf8"),
+    );
+  } catch {
+    return null;
+  } finally {
+    if (handle) await handle.close().catch(() => {});
+  }
+}
+
+export async function cleanupStructuredFailureReceiptSidecar(sidecar) {
+  let cleanupFailed = false;
+  try {
+    await rm(sidecar?.directory, { force: true, recursive: true });
+  } catch {
+    cleanupFailed = true;
+  }
+  for (const path of [sidecar?.filePath, sidecar?.directory]) {
+    if (typeof path !== "string") {
+      cleanupFailed = true;
+      continue;
+    }
+    try {
+      await access(path);
+      cleanupFailed = true;
+    } catch (error) {
+      if (error?.code !== "ENOENT") cleanupFailed = true;
+    }
+  }
+  if (cleanupFailed) throw new Error();
+}
 function projectStructuredChildReceipt(value) {
   const receipt = projectStructuredFailureReceipt(value);
   if (!receipt) return null;
@@ -846,87 +931,101 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
     MIGRATOR_ALIGNMENT_TEST_SECONDARY_OPERATOR_URL: urls.secondaryOperatorUrl,
     MIGRATOR_ALIGNMENT_TEST_CONFIRM: "disposable-only",
   };
-  await new Promise((resolvePromise, reject) => {
-    const output = [];
-    let outputLength = 0;
-    let outputOverflow = false;
-    let child;
-    try {
-      child = spawnImpl(
-        process.execPath,
-        [
-          "--test",
-          "tests/platform-migrator-alignment-postgres.test.mjs",
-        ],
-        { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
-      );
-    } catch (error) {
-      markChildFailure(resources, "child_test_spawn");
-      throw error;
-    }
-    resources.childProcess = child;
-    resources.childExited = false;
-    resources.childTestsStarted = true;
-    child.stdout?.on("data", (chunk) => {
-      const buffer = Buffer.from(chunk);
-      outputLength += buffer.length;
-      if (outputLength <= maxChildOutputBytes) {
-        output.push(buffer);
-      } else {
-        outputOverflow = true;
-      }
-    });
-    child.stderr?.resume();
-    child.once("error", (error) => {
-      markChildFailure(resources, "child_test_spawn");
-      reject(error);
-    });
-    child.once("close", (code, signal) => {
-      resources.childExited = true;
-      resources.childExitCode = Number.isInteger(code) ? code : null;
-      resources.childSignal = signal !== null;
-      if (resources.childSignal) {
-        markChildFailure(resources, "child_signal");
-        reject(new Error());
-        return;
-      }
-      if (outputOverflow) {
-        resources.childOutputOverflow = true;
-        markChildFailure(resources, "child_output_overflow");
-        reject(new Error());
-        return;
-      }
-      if (code !== 0) {
-        const structuredReceipt = parseStructuredFailureReceipt(
-          Buffer.concat(output).toString("utf8"),
+  const sidecar = await createStructuredFailureReceiptSidecar();
+  try {
+    await new Promise((resolvePromise, reject) => {
+      const childEnv = {
+        ...env,
+        [structuredFailureReceiptFileEnvironmentVariable]: sidecar.filePath,
+      };
+      let outputLength = 0;
+      let outputOverflow = false;
+      let child;
+      try {
+        child = spawnImpl(
+          process.execPath,
+          [
+            "--test",
+            "tests/platform-migrator-alignment-postgres.test.mjs",
+          ],
+          {
+            env: childEnv,
+            stdio: ["ignore", "pipe", "pipe"],
+            windowsHide: true,
+          },
         );
-        if (!structuredReceipt) {
-          markChildFailure(resources, "structured_child_receipt_missing");
-          reject(new Error("Focused child test failed without a structured receipt."));
+      } catch (error) {
+        markChildFailure(resources, "child_test_spawn");
+        throw error;
+      }
+      resources.childProcess = child;
+      resources.childExited = false;
+      resources.childTestsStarted = true;
+      child.stdout?.on("data", (chunk) => {
+        outputLength += Buffer.from(chunk).length;
+        if (outputLength > maxChildOutputBytes) outputOverflow = true;
+      });
+      child.stderr?.resume();
+      child.once("error", (error) => {
+        markChildFailure(resources, "child_test_spawn");
+        reject(error);
+      });
+      child.once("close", (code, signal) => {
+        resources.childExited = true;
+        resources.childExitCode = Number.isInteger(code) ? code : null;
+        resources.childSignal = signal !== null;
+        if (resources.childSignal) {
+          markChildFailure(resources, "child_signal");
+          reject(new Error());
           return;
         }
-        resources.structuredChildReceipt = {
-          ...structuredReceipt,
-          child_exit_code: resources.childExitCode,
-          child_signal: typeof signal === "string" ? signal : null,
-          runner_category: "child_test_failure",
-        };
-        markChildFailure(resources, "child_test_failure");
-        reject(new Error("Focused child test failed."));
-        return;
-      }
-      if (code === 0 && signal === null && !outputOverflow) {
-        // Retained as completion evidence for the existing lifecycle contract; no reporter text is parsed.
-        resources.childSummaryParsed = true;
-        process.stdout.write(
-          "Disposable PostgreSQL 17 migrator alignment child exited successfully.\n",
-        );
-        resolvePromise();
-      }
+        if (code !== 0) {
+          void readStructuredFailureReceiptFile(sidecar.filePath).then(
+            (structuredReceipt) => {
+              if (!structuredReceipt) {
+                markChildFailure(resources, "structured_child_receipt_missing");
+                reject(new Error("Focused child test failed without a structured receipt."));
+                return;
+              }
+              resources.structuredChildReceipt = {
+                ...structuredReceipt,
+                child_exit_code: resources.childExitCode,
+                child_signal: typeof signal === "string" ? signal : null,
+                runner_category: "child_test_failure",
+              };
+              resources.childOutputOverflow = outputOverflow;
+              markChildFailure(resources, "child_test_failure");
+              reject(new Error("Focused child test failed."));
+            },
+            () => {
+              markChildFailure(resources, "structured_child_receipt_missing");
+              reject(new Error("Focused child test failed without a structured receipt."));
+            },
+          );
+          return;
+        }
+        if (outputOverflow) {
+          resources.childOutputOverflow = true;
+          markChildFailure(resources, "child_output_overflow");
+          reject(new Error());
+          return;
+        }
+        if (code === 0 && signal === null) {
+          // Retained as completion evidence for the existing lifecycle contract; no reporter text is parsed.
+          resources.childSummaryParsed = true;
+          process.stdout.write(
+            "Disposable PostgreSQL 17 migrator alignment child exited successfully.\n",
+          );
+          resolvePromise();
+        }
+      });
     });
-  });
+  } finally {
+    await cleanupStructuredFailureReceiptSidecar(sidecar);
+  }
   void admission;
 }
+
 function markChildFailure(resources, category) {
   if (!resources.failureCategory) {
     resources.failurePhase = "runFocusedTests";

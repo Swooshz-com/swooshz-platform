@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
@@ -9,7 +9,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, resolve } from "node:path";
 import test from "node:test";
 
 const runbookPath = "docs/hosted-internal-alpha-runbook.md";
@@ -612,72 +612,322 @@ test("failure during final absence verification reports the absence-verification
   assert.match(receipt, /"category":"absence_verification"/);
 });
 
-test("structured migrator failure receipts are reporter-independent and fail closed", async () => {
+test("structured migrator failure receipts use an out-of-band sidecar at the actual child boundary", async () => {
+  const runner = await import(
+    "../scripts/run-disposable-migrator-alignment-tests.mjs"
+  );
+  const result = await runStructuredReceiptTransportChild(runner, "child-boundary");
+  const expected = {
+    version: 1,
+    test_id: "DL-128-REPO-011-A3-child-boundary",
+    phase: "post_reverse_exact_fingerprint",
+    assertion_category: "exact_reverse_rollback",
+    fingerprint_fields: ["databaseAcl"],
+    tuple_counts: ["databaseAcl:1/1"],
+    cleanup_phase: "complete",
+  };
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.signal, null);
+  assert.deepEqual(result.receipt, expected);
+  assert.match(result.stdout, /TAP-looking|spec|not ok/i);
+  assert.match(
+    result.stdout + result.stderr,
+    /spec-looking|failure|not ok/i,
+  );
+  assert.doesNotMatch(
+    result.stdout + result.stderr,
+    /PLATFORM_MIGRATOR_FAILURE_V1=/,
+  );
+  const runnerSource = await readFile(
+    "scripts/run-disposable-migrator-alignment-tests.mjs",
+    "utf8",
+  );
+  const childSource = await readFile(
+    "tests/platform-migrator-alignment-postgres.test.mjs",
+    "utf8",
+  );
+  assert.match(
+    runnerSource,
+    /PLATFORM_MIGRATOR_FAILURE_RECEIPT_FILE/,
+  );
+  assert.doesNotMatch(
+    runnerSource,
+    /parseStructuredFailureReceipt\(\s*Buffer\.concat/,
+  );
+  assert.match(childSource, /flag: "wx"/);
+  assert.doesNotMatch(
+    childSource,
+    /structuredFailureReceiptPrefix[^\\n]*process\\.stdout|process\\.stderr[^\\n]*structuredFailureReceiptPrefix/,
+  );
+  assert.equal(result.filePresentAfterCleanup, false);
+  assert.equal(result.directoryPresentAfterCleanup, false);
+  assert.ok(resolve(result.filePath).startsWith(resolve(tmpdir())));
+  assert.notEqual(
+    relative(resolve(process.cwd()), resolve(result.filePath)).startsWith(".."),
+    false,
+    "sidecar must be outside the repository",
+  );
+  assert.equal(
+    runner.parseStructuredFailureReceipt(
+      "TAP version 13\nnot ok 1 - reporter noise\n" +
+        result.sidecarContent,
+    ),
+    null,
+  );
+
+  const publicReceipt = runner.formatDisposableRuntimeFailureReceipt({
+    failurePhase: "runFocusedTests",
+    failureCategory: "child_test_failure",
+    childExitCode: result.exitCode,
+    childSignal: false,
+    structuredChildReceipt: {
+      ...expected,
+      child_exit_code: result.exitCode,
+      child_signal: null,
+      runner_category: "child_test_failure",
+      sidecar_path: result.filePath,
+      sidecar_content: result.sidecarContent,
+      unknown: "do-not-leak",
+    },
+  });
+  assert.doesNotMatch(publicReceipt, new RegExp(escapeRegExp(result.filePath)));
+  assert.doesNotMatch(publicReceipt, new RegExp(escapeRegExp(result.sidecarContent)));
+  assert.doesNotMatch(publicReceipt, /PLATFORM_MIGRATOR_FAILURE_V1=|do-not-leak/i);
+  assert.match(publicReceipt, /"test_id":"DL-128-REPO-011-A3-child-boundary"/);
+  assert.match(publicReceipt, /"child_exit_code":1/);
+  assert.match(publicReceipt, /"child_signal":null/);
+});
+
+test("structured sidecar duplicate, malformed, missing, oversized, and unknown fields fail closed", async () => {
   const runner = await import(
     "../scripts/run-disposable-migrator-alignment-tests.mjs"
   );
   const prefix = "PLATFORM_MIGRATOR_FAILURE_V1=";
-  const nl = "\n";
   const receipt = {
     version: 1,
-    test_id: "DL-128-REPO-003-exact-reverse-rollback",
+    test_id: "DL-128-REPO-011-A3-sidecar-fixture",
     phase: "post_reverse_exact_fingerprint",
     assertion_category: "exact_reverse_rollback",
     fingerprint_fields: ["databaseAcl", "memberships"],
     tuple_counts: ["databaseAcl:3/4", "memberships:0/0"],
     cleanup_phase: "complete",
   };
-  const sentinel = `${prefix}${JSON.stringify(receipt)}`;
-  const parsed = runner.parseStructuredFailureReceipt(
-    `# Subtest: noisy spec output${nl}spec detail${nl}${sentinel}${nl}not ok text`,
-  );
-  assert.deepEqual(parsed, receipt);
-  assert.deepEqual(
-    runner.parseStructuredFailureReceipt(
-      `TAP version 13${nl}not ok 1 - unrelated title${nl}${sentinel}${nl}1..1`,
-    ),
-    receipt,
-  );
-  assert.equal(
-    runner.parseStructuredFailureReceipt("exact reverse rollback"),
-    null,
-  );
-  assert.equal(
-    runner.parseStructuredFailureReceipt("AssertionError: exact mismatch"),
-    null,
-  );
-  assert.equal(runner.parseStructuredFailureReceipt(`${prefix}{`), null);
-  assert.equal(
-    runner.parseStructuredFailureReceipt(`${sentinel}${nl}${sentinel}`),
-    null,
-  );
+  const serialized = prefix + JSON.stringify(receipt) + "\n";
 
-  const forbidden = {
-    ...receipt,
-    password: "do-not-leak",
-    url: "postgresql://private.example.invalid/db",
-    nested: { token: "do-not-leak" },
-  };
-  const projected = runner.parseStructuredFailureReceipt(
-    `${prefix}${JSON.stringify(forbidden)}`,
-  );
-  assert.deepEqual(projected, receipt);
-  assert.doesNotMatch(JSON.stringify(projected), /do-not-leak|postgresql:/i);
+  const validSidecar = await runner.createStructuredFailureReceiptSidecar();
+  try {
+    await writeFile(validSidecar.filePath, serialized, {
+      encoding: "utf8",
+      flag: "wx",
+    });
+    await assert.rejects(
+      () => writeFile(validSidecar.filePath, prefix + "replacement\n", {
+        encoding: "utf8",
+        flag: "wx",
+      }),
+      (error) => error?.code === "EEXIST",
+    );
+    assert.deepEqual(
+      await runner.readStructuredFailureReceiptFile(validSidecar.filePath),
+      receipt,
+    );
+    assert.equal(
+      await runner.readStructuredFailureReceiptFile(
+        validSidecar.filePath + ".missing",
+      ),
+      null,
+    );
+  } finally {
+    await runner.cleanupStructuredFailureReceiptSidecar(validSidecar);
+  }
 
-  const source = await readFile(
-    "scripts/run-disposable-migrator-alignment-tests.mjs",
-    "utf8",
-  );
-  assert.match(source, /child\.stderr\?\.resume\(\)/);
-  assert.doesNotMatch(source, /child\.stderr\?\.(?:on|pipe)\(/);
-  assert.match(source, /structured_child_receipt_missing/);
+  const malformedSidecar = await runner.createStructuredFailureReceiptSidecar();
+  try {
+    await writeFile(malformedSidecar.filePath, prefix + "{\n", "utf8");
+    assert.equal(
+      await runner.readStructuredFailureReceiptFile(malformedSidecar.filePath),
+      null,
+    );
+  } finally {
+    await runner.cleanupStructuredFailureReceiptSidecar(malformedSidecar);
+  }
+
+  const duplicateSentinelSidecar = await runner.createStructuredFailureReceiptSidecar();
+  try {
+    await writeFile(
+      duplicateSentinelSidecar.filePath,
+      serialized + serialized,
+      "utf8",
+    );
+    assert.equal(
+      await runner.readStructuredFailureReceiptFile(
+        duplicateSentinelSidecar.filePath,
+      ),
+      null,
+    );
+  } finally {
+    await runner.cleanupStructuredFailureReceiptSidecar(
+      duplicateSentinelSidecar,
+    );
+  }
+
+  const oversizedSidecar = await runner.createStructuredFailureReceiptSidecar();
+  try {
+    await writeFile(
+      oversizedSidecar.filePath,
+      serialized + "x".repeat(16 * 1024),
+      "utf8",
+    );
+    assert.equal(
+      await runner.readStructuredFailureReceiptFile(oversizedSidecar.filePath),
+      null,
+    );
+  } finally {
+    await runner.cleanupStructuredFailureReceiptSidecar(oversizedSidecar);
+  }
+
+  const unknownFieldsSidecar = await runner.createStructuredFailureReceiptSidecar();
+  try {
+    await writeFile(
+      unknownFieldsSidecar.filePath,
+      prefix + JSON.stringify({
+        ...receipt,
+        sidecar_path: unknownFieldsSidecar.filePath,
+        secret: "do-not-leak",
+        nested: { token: "do-not-leak" },
+      }) + "\n",
+      "utf8",
+    );
+    assert.deepEqual(
+      await runner.readStructuredFailureReceiptFile(
+        unknownFieldsSidecar.filePath,
+      ),
+      receipt,
+    );
+  } finally {
+    await runner.cleanupStructuredFailureReceiptSidecar(
+      unknownFieldsSidecar,
+    );
+  }
+
   const missingReceipt = runner.formatDisposableRuntimeFailureReceipt({
     failurePhase: "runFocusedTests",
     failureCategory: "structured_child_receipt_missing",
   });
   assert.match(missingReceipt, /"category":"structured_child_receipt_missing"/);
-  assert.doesNotMatch(missingReceipt, /do-not-leak|postgresql:/i);
+  assert.doesNotMatch(missingReceipt, /do-not-leak|PLATFORM_MIGRATOR_FAILURE_V1=/i);
 });
+
+test("duplicate child receipt writes preserve the first sidecar receipt", async () => {
+  const runner = await import(
+    "../scripts/run-disposable-migrator-alignment-tests.mjs"
+  );
+  const result = await runStructuredReceiptTransportChild(
+    runner,
+    "duplicate-boundary",
+  );
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.signal, null);
+  assert.equal(result.receipt?.test_id, "DL-128-REPO-011-A3-first-receipt");
+  assert.equal(result.filePresentAfterCleanup, false);
+  assert.equal(result.directoryPresentAfterCleanup, false);
+});
+
+test("zero child exit succeeds without a failure sidecar", async () => {
+  const runner = await import(
+    "../scripts/run-disposable-migrator-alignment-tests.mjs"
+  );
+  const result = await runStructuredReceiptTransportChild(runner, "zero");
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.signal, null);
+  assert.equal(result.receipt, null);
+  assert.equal(result.sidecarContent, null);
+  assert.equal(result.filePresentAfterCleanup, false);
+  assert.equal(result.directoryPresentAfterCleanup, false);
+});
+
+async function runStructuredReceiptTransportChild(runner, mode) {
+  const sidecar = await runner.createStructuredFailureReceiptSidecar();
+  const output = { stdout: "", stderr: "" };
+  let childResult = null;
+  let receipt = null;
+  let sidecarContent = null;
+  const childEnv = {
+    NODE_ENV: "test",
+    PLATFORM_MIGRATOR_FAILURE_RECEIPT_FILE: sidecar.filePath,
+  };
+  for (const key of ["PATH", "SystemRoot", "WINDIR"]) {
+    if (typeof process.env[key] === "string") childEnv[key] = process.env[key];
+  }
+  try {
+    let child;
+    if (mode === "zero") {
+      child = spawn(
+        process.execPath,
+        ["--input-type=module", "-e", "process.exit(0)"],
+        { cwd: process.cwd(), env: childEnv, stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
+      );
+    } else {
+      childEnv.PLATFORM_MIGRATOR_FAILURE_RECEIPT_TEST = mode;
+      child = spawn(
+        process.execPath,
+        [
+          "--test-reporter=spec",
+          "--test",
+          "tests/platform-migrator-alignment-postgres.test.mjs",
+        ],
+        { cwd: process.cwd(), env: childEnv, stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
+      );
+    }
+    child.stdout?.on("data", (chunk) => {
+      if (output.stdout.length < 8 * 1024) {
+        output.stdout += Buffer.from(chunk).toString("utf8");
+      }
+    });
+    child.stderr?.on("data", (chunk) => {
+      if (output.stderr.length < 8 * 1024) {
+        output.stderr += Buffer.from(chunk).toString("utf8");
+      }
+    });
+    childResult = await new Promise((resolvePromise, reject) => {
+      child.once("error", reject);
+      child.once("close", (code, signal) => {
+        resolvePromise({ exitCode: code, signal });
+      });
+    });
+    receipt = await runner.readStructuredFailureReceiptFile(sidecar.filePath);
+    try {
+      sidecarContent = await readFile(sidecar.filePath, "utf8");
+    } catch {
+      sidecarContent = null;
+    }
+  } finally {
+    await runner.cleanupStructuredFailureReceiptSidecar(sidecar);
+  }
+  let filePresentAfterCleanup = false;
+  let directoryPresentAfterCleanup = false;
+  try {
+    await access(sidecar.filePath);
+    filePresentAfterCleanup = true;
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  try {
+    await access(sidecar.directory);
+    directoryPresentAfterCleanup = true;
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  return {
+    ...childResult,
+    ...output,
+    receipt,
+    sidecarContent,
+    filePath: sidecar.filePath,
+    filePresentAfterCleanup,
+    directoryPresentAfterCleanup,
+  };
+}
 test("migrator transfer fingerprint covers database/schema ACL and default-ACL state", async () => {
   const source = await readFile(
     "tests/platform-migrator-alignment-postgres.test.mjs",
@@ -1660,6 +1910,14 @@ test("Run-15 actual focused child rejects hostile inherited PostgreSQL authentic
           false,
           "runner must remove PGPASSFILE before focused-child spawn",
         );
+        assert.equal(
+          Object.hasOwn(
+            runnerProvidedChildEnv,
+            "PLATFORM_MIGRATOR_FAILURE_RECEIPT_FILE",
+          ),
+          true,
+          "runner must pass the dedicated receipt sidecar path only through the child test environment",
+        );
         const childEnv = { ...runnerProvidedChildEnv };
         delete childEnv.NODE_TEST_CONTEXT;
         const childArgs = [args[0], "--test-reporter=spec", ...args.slice(1)];
@@ -1704,6 +1962,13 @@ test("Run-15 actual focused child rejects hostile inherited PostgreSQL authentic
     );
     assert.equal(Object.hasOwn(focusedChild.childEnv, "PGPASSWORD"), false);
     assert.equal(Object.hasOwn(focusedChild.childEnv, "PGPASSFILE"), false);
+    assert.equal(
+      Object.hasOwn(
+        focusedChild.childEnv,
+        "PLATFORM_MIGRATOR_FAILURE_RECEIPT_FILE",
+      ),
+      true,
+    );
     assert.equal(focusedChild.args.includes("--test"), true);
     assert.equal(
       focusedChild.args.includes(

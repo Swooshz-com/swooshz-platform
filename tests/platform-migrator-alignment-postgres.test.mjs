@@ -1,6 +1,7 @@
 ﻿import assert from "node:assert/strict";
 import test from "node:test";
 
+import { writeFile } from "node:fs/promises";
 import { Pool } from "pg";
 
 import {
@@ -50,6 +51,10 @@ const syntheticMigratorPassword = "synthetic-migrator-password";
 const wrongMigratorPassword = "synthetic-wrong-migrator-password";
 const publicAuthorityProbeTable = "__pgdbowner_authority_probe";
 const structuredFailureReceiptPrefix = "PLATFORM_MIGRATOR_FAILURE_V1=";
+const structuredFailureReceiptFileEnvironmentVariable =
+  "PLATFORM_MIGRATOR_FAILURE_RECEIPT_FILE";
+const structuredReceiptTransportTestMode =
+  process.env.PLATFORM_MIGRATOR_FAILURE_RECEIPT_TEST ?? "";
 const structuredFingerprintFields = [
   "databaseOwner",
   "schemaOwners",
@@ -112,15 +117,18 @@ function withStructuredFailureReceipt(testId, operation) {
   activeStructuredFailureContext = context;
   return Promise.resolve()
     .then(operation)
-    .catch((error) => {
-      emitStructuredFailureReceipt(context);
+    .catch(async (error) => {
+      try {
+        await emitStructuredFailureReceipt(context);
+      } catch {
+        // The original test failure remains the child outcome; the parent fails closed if the receipt is absent.
+      }
       throw error;
     })
     .finally(() => {
       activeStructuredFailureContext = previousContext;
     });
 }
-
 function markStructuredFailurePhase(phase, assertionCategory) {
   if (!activeStructuredFailureContext) return;
   if (structuredFailurePhases.has(phase)) {
@@ -167,7 +175,11 @@ function structuredTupleCount(value) {
   return value === null || value === undefined ? 0 : 1;
 }
 
-function emitStructuredFailureReceipt(context) {
+async function emitStructuredFailureReceipt(context) {
+  const filePath = process.env[structuredFailureReceiptFileEnvironmentVariable];
+  if (typeof filePath !== "string" || filePath.length === 0) {
+    throw new Error();
+  }
   const receipt = {
     version: 1,
     test_id: typeof context.testId === "string" ? context.testId : "unknown",
@@ -192,7 +204,56 @@ function emitStructuredFailureReceipt(context) {
       ? context.cleanupPhase
       : "not_started",
   };
-  process.stdout.write(`${structuredFailureReceiptPrefix}${JSON.stringify(receipt)}\n`);
+  await writeFile(
+    filePath,
+    structuredFailureReceiptPrefix + JSON.stringify(receipt) + "\n",
+    { encoding: "utf8", flag: "wx", mode: 0o600 },
+  );
+}
+
+async function forceStructuredReceiptTransportFailure(testId) {
+  return withStructuredFailureReceipt(testId, async () => {
+    markStructuredFailurePhase(
+      "post_reverse_exact_fingerprint",
+      "exact_reverse_rollback",
+    );
+    recordStructuredFingerprintComparison(
+      { databaseAcl: ["actual"] },
+      { databaseAcl: ["expected"] },
+    );
+    markStructuredCleanupPhase("complete");
+    throw new Error("synthetic structured receipt transport failure");
+  });
+}
+
+if (structuredReceiptTransportTestMode === "child-boundary") {
+  process.stdout.write("# TAP-looking diagnostic noise\n");
+  process.stderr.write("spec-looking diagnostic noise\n");
+  test(
+    "test-only structured receipt transport child failure",
+    async () => forceStructuredReceiptTransportFailure(
+      "DL-128-REPO-011-A3-child-boundary",
+    ),
+  );
+}
+
+if (structuredReceiptTransportTestMode === "duplicate-boundary") {
+  test(
+    "test-only duplicate structured receipt writes fail closed",
+    async () => {
+      await assert.rejects(() =>
+        forceStructuredReceiptTransportFailure(
+          "DL-128-REPO-011-A3-first-receipt",
+        ),
+      );
+      await assert.rejects(() =>
+        forceStructuredReceiptTransportFailure(
+          "DL-128-REPO-011-A3-second-receipt",
+        ),
+      );
+      throw new Error("synthetic duplicate receipt test failure");
+    },
+  );
 }
 let retainedPrimaryPreForwardBaseline;
 
