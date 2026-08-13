@@ -113,6 +113,25 @@ const structuredTransportStates = new Set([
 ]);
 let activeStructuredFailureContext = null;
 
+test(
+  "ACL residue expected grantor derives from the baseline database owner",
+  () => {
+    const baseline = { databaseOwner: "platform_app" };
+    const residue = buildExpectedDatabaseAclResidue(
+      "migrator_alignment_test",
+      baseline,
+    );
+    assert.deepEqual(residue.split("\u0000"), [
+      "migrator_alignment_test",
+      "platform_app",
+      "platform_runtime",
+      "CONNECT",
+      "false",
+    ]);
+    assert.notEqual(residue.split("\u0000")[1], "postgres");
+  },
+);
+
 function withStructuredFailureReceipt(testId, operation) {
   const previousContext = activeStructuredFailureContext;
   const context = {
@@ -1832,16 +1851,47 @@ function assertExactFingerprint(actual, expected, label) {
   assert.deepEqual(actual, expected, label);
 }
 
-async function assertAclResidueNegativeControl(adminPool, databaseName, baseline) {
-  const expectedResidue = [
+function buildExpectedDatabaseAclResidue(databaseName, baseline) {
+  return [
     databaseName,
-    "postgres",
+    baseline.databaseOwner,
     "platform_runtime",
     "CONNECT",
     "false",
   ].join("\u0000");
+}
+
+function parseDatabaseAclResidue(record) {
+  const fields = record.split("\u0000");
+  assert.equal(fields.length, 5);
+  return {
+    database: fields[0],
+    grantor: fields[1],
+    grantee: fields[2],
+    privilege: fields[3],
+    grantable: fields[4],
+  };
+}
+
+async function assertAclResidueNegativeControl(adminPool, databaseName, baseline) {
+  assert.equal(baseline.databaseOwner, "platform_app");
+  const expectedGrantor = baseline.databaseOwner;
+  const expectedResidue = buildExpectedDatabaseAclResidue(
+    databaseName,
+    baseline,
+  );
   markStructuredFailurePhase("acl_residue_setup", "acl_residue_cleanup");
-  assert.equal(baseline.databaseAcl.includes(expectedResidue), false);
+  assert.deepEqual(
+    baseline.databaseAcl
+      .map(parseDatabaseAclResidue)
+      .filter(
+        (record) =>
+          record.database === databaseName &&
+          record.grantee === "platform_runtime" &&
+          record.privilege === "CONNECT",
+      ),
+    [],
+  );
   let grantAttempted = false;
   try {
     grantAttempted = true;
@@ -1855,11 +1905,30 @@ async function assertAclResidueNegativeControl(adminPool, databaseName, baseline
       "acl_residue_cleanup",
     );
     const perturbed = await readOwnershipFingerprint(adminPool, databaseName);
+    const addedDatabaseAcl = perturbed.databaseAcl.filter(
+      (record) => !baseline.databaseAcl.includes(record),
+    );
+    assert.equal(addedDatabaseAcl.length, 1);
+    assert.deepEqual(addedDatabaseAcl, [expectedResidue]);
     assert.deepEqual(
-      perturbed.databaseAcl.filter(
-        (record) => !baseline.databaseAcl.includes(record),
+      parseDatabaseAclResidue(addedDatabaseAcl[0]),
+      {
+        database: databaseName,
+        grantor: expectedGrantor,
+        grantee: "platform_runtime",
+        privilege: "CONNECT",
+        grantable: "false",
+      },
+    );
+    assert.notEqual(
+      parseDatabaseAclResidue(addedDatabaseAcl[0]).grantor,
+      "postgres",
+    );
+    assert.deepEqual(
+      baseline.databaseAcl.filter((record) =>
+        perturbed.databaseAcl.includes(record),
       ),
-      [expectedResidue],
+      baseline.databaseAcl,
     );
     assertBaselineFingerprint(perturbed, "pg_database_owner");
     markStructuredFailurePhase(
@@ -1884,10 +1953,10 @@ async function assertAclResidueNegativeControl(adminPool, databaseName, baseline
     "post_acl_exact_fingerprint",
     "acl_residue_cleanup",
   );
-  assertExactFingerprint(
-    await readOwnershipFingerprint(adminPool, databaseName),
-    baseline,
-  );
+  const restored = await readOwnershipFingerprint(adminPool, databaseName);
+  assert.equal(restored.databaseAcl.includes(expectedResidue), false);
+  assert.deepEqual(restored.databaseAcl, baseline.databaseAcl);
+  assertExactFingerprint(restored, baseline);
 }
 async function assertDefaultAclResidueNegativeControl(
   adminPool,
