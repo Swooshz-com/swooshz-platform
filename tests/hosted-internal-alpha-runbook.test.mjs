@@ -69,6 +69,9 @@ test("hosted internal alpha runbook covers deployment operations", async () => {
     "This evidence does not approve hosted deployment or full production readiness",
     "first owner/admin bootstrap",
     "pending workspace approval",
+    "runner-owned empty PGPASSFILE",
+    "hostile ambient default password file",
+    "omitted-password rejection at the real focused-child boundary",
     "SQAG entitlement",
     "audit/activity verification",
   ];
@@ -1600,7 +1603,15 @@ test("DL-128-REPO-004: migrator credential admission enforces real password auth
   assert.match(postgresTest, /direct migrator login fails before activation/i);
   assert.match(architectureDoc, /scram-sha-256/);
   assert.match(runbook, /scram-sha-256/);
-  assert.match(runbook, /wrong-password and omitted-password rejection/i);
+  assert.match(runbook, /wrong-password rejection/i);
+  assert.match(
+    runbook,
+    /omitted-password rejection at the real focused-child boundary/i,
+  );
+  assert.match(runner, /controlledPassfilePath/);
+  assert.match(postgresTest, /assertFocusedPassfileIsolation/i);
+  assert.match(postgresTest, /APPDATA/i);
+  assert.match(runbook, /hostile ambient default password file/i);
 });
 
 test("DL-128-REPO-004: intermediate membership windows validate the complete inventory across granted-role, member and grantor positions", async () => {
@@ -1948,8 +1959,10 @@ test("Run-15 malformed and ambiguous volume inspection evidence fails closed", a
   }
 });
 
-test("Run-14 focused child environment removes PostgreSQL connection overrides and retains benign env", async () => {
-  const { buildFocusedTestEnvironment } = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+test("Run-14 focused child environment replaces PostgreSQL password-file discovery and retains benign env", async () => {
+  const { buildFocusedTestEnvironment } = await import(
+    "../scripts/run-disposable-migrator-alignment-tests.mjs",
+  );
   const pgKeys = [
     "PGUSER",
     "PGDATABASE",
@@ -1981,287 +1994,242 @@ test("Run-14 focused child environment removes PostgreSQL connection overrides a
     "PGSYNTHETIC",
     "NODE_PG_FORCE_NATIVE",
   ];
-  const input = {
-    PATH: "retained",
-    NODE_ENV: "test",
-    ...Object.fromEntries(pgKeys.map((key) => [key, key])),
-  };
-  const output = buildFocusedTestEnvironment(input);
-  for (const key of pgKeys) assert.equal(output[key], undefined, key);
-  assert.equal(output.PATH, "retained");
-  assert.equal(output.NODE_ENV, "test");
-  assert.equal(input.PGPASSWORD, "PGPASSWORD");
-});
-
-test("Run-15 actual focused child rejects hostile inherited PostgreSQL authentication configuration", async () => {
-  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
-  const passwordFileDirectory = await mkdtemp(
-    join(tmpdir(), "swooshz-platform-run15-pgpass-"),
+  const directory = await mkdtemp(
+    join(tmpdir(), "swooshz-platform-run24-pgpass-env-"),
   );
-  const passwordFilePath = join(passwordFileDirectory, "pgpass");
-  const hostilePassword = "synthetic-migrator-password";
-  await writeFile(
-    passwordFilePath,
-    "*:*:*:platform_migrator:" + hostilePassword + "\n",
-    "utf8",
-  );
-
-  const focusedChildRuns = [];
-  const originalProcessEnv = process.env;
-  const runnerEnvironment = { ...originalProcessEnv };
-  delete runnerEnvironment.PGPASSWORD;
-  delete runnerEnvironment.PGPASSFILE;
-  let focusedParentEnvironmentRequested = false;
-  const parentProcessEnv = { ...runnerEnvironment };
-  Object.defineProperties(parentProcessEnv, {
-    PGPASSWORD: {
-      configurable: true,
-      enumerable: false,
-      value: undefined,
-      writable: true,
-    },
-    PGPASSFILE: {
-      configurable: true,
-      enumerable: false,
-      value: undefined,
-      writable: true,
-    },
-  });
-  process.env = new Proxy(parentProcessEnv, {
-    ownKeys(target) {
-      const stack = new Error().stack ?? "";
-      if (
-        stack.includes("runFocusedTests") &&
-        stack.includes("run-disposable-migrator-alignment-tests.mjs")
-      ) {
-        focusedParentEnvironmentRequested = true;
-      }
-      return Reflect.ownKeys(target);
-    },
-    getOwnPropertyDescriptor(target, key) {
-      const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
-      if (
-        descriptor &&
-        (key === "PGPASSWORD" || key === "PGPASSFILE")
-      ) {
-        return {
-          ...descriptor,
-          enumerable: focusedParentEnvironmentRequested,
-        };
-      }
-      return descriptor;
-    },
-    get(target, key, receiver) {
-      if (focusedParentEnvironmentRequested && key === "PGPASSWORD") {
-        return hostilePassword;
-      }
-      if (focusedParentEnvironmentRequested && key === "PGPASSFILE") {
-        return passwordFilePath;
-      }
-      return Reflect.get(target, key, receiver);
-    },
-  });
+  const controlledPassfilePath = join(directory, "controlled-empty-pgpass");
+  const hostilePassfilePath = join(directory, "hostile-inherited-pgpass");
   try {
-    for (const key of [
-      "MIGRATOR_ALIGNMENT_TEST_DATABASE_URL",
-      "MIGRATOR_ALIGNMENT_TEST_OPERATOR_URL",
-      "MIGRATOR_ALIGNMENT_TEST_SECONDARY_DATABASE_URL",
-      "MIGRATOR_ALIGNMENT_TEST_SECONDARY_OPERATOR_URL",
-      "MIGRATOR_ALIGNMENT_TEST_CONFIRM",
-    ]) {
-      delete runnerEnvironment[key];
-    }
-
-    const spawnImpl = (command, args, options = {}) => {
-      if (
-        command === process.execPath &&
-        args.includes("tests/platform-migrator-alignment-postgres.test.mjs")
-      ) {
-        const runnerProvidedChildEnv = options.env ?? {};
-        const parentEnvAtRunnerBoundary = {
-          PGPASSWORD: process.env.PGPASSWORD,
-          PGPASSFILE: process.env.PGPASSFILE,
-        };
-        assert.equal(
-          parentEnvAtRunnerBoundary.PGPASSWORD,
-          hostilePassword,
-          "hostile PGPASSWORD must exist before the runner boundary",
-        );
-        assert.equal(
-          parentEnvAtRunnerBoundary.PGPASSFILE,
-          passwordFilePath,
-          "hostile PGPASSFILE must exist before the runner boundary",
-        );
-        assert.equal(
-          Object.hasOwn(runnerProvidedChildEnv, "PGPASSWORD"),
-          false,
-          "runner must remove PGPASSWORD before focused-child spawn",
-        );
-        assert.equal(
-          Object.hasOwn(runnerProvidedChildEnv, "PGPASSFILE"),
-          false,
-          "runner must remove PGPASSFILE before focused-child spawn",
-        );
-        assert.equal(
-          Object.hasOwn(
-            runnerProvidedChildEnv,
-            "PLATFORM_MIGRATOR_FAILURE_RECEIPT_FILE",
-          ),
-          true,
-          "runner must pass the dedicated receipt sidecar path only through the child test environment",
-        );
-        assert.equal(
-          Object.hasOwn(
-            runnerProvidedChildEnv,
-            "PLATFORM_MIGRATOR_FAILURE_PROGRESS_FILE",
-          ),
-          true,
-          "runner must pass the dedicated progress sidecar path only through the child test environment",
-        );
-        const childEnv = { ...runnerProvidedChildEnv };
-        delete childEnv.NODE_TEST_CONTEXT;
-        const childArgs = [args[0], "--test-reporter=spec", ...args.slice(1)];
-        const child = spawn(command, childArgs, { ...options, env: childEnv });
-        const record = {
-          args: childArgs,
-          runnerProvidedChildEnv,
-          parentEnvAtRunnerBoundary,
-          childEnv,
-          exitCode: null,
-          signal: null,
-        };
-        focusedChildRuns.push(record);
-        child.once("close", (code, signal) => {
-          record.exitCode = code;
-          record.signal = signal;
-        });
-        return child;
-      }
-      return spawn(command, args, options);
+    await writeFile(controlledPassfilePath, "", {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    const input = {
+      PATH: "retained",
+      NODE_ENV: "test",
+      HOME: join(directory, "home"),
+      APPDATA: join(directory, "appdata"),
+      PGPASSWORD: "hostile-inherited-password",
+      PGPASSFILE: hostilePassfilePath,
+      ...Object.fromEntries(
+        pgKeys
+          .filter((key) => key !== "PGPASSWORD" && key !== "PGPASSFILE")
+          .map((key) => [key, key]),
+      ),
     };
-
-    let resources;
-    try {
-      resources = await runner.run({
-        env: runnerEnvironment,
-        spawnImpl,
-      });
-    } catch (error) {
-      process.stderr.write(
-        `${typeof error?.runtimeFailureReceipt === "string"
-          ? error.runtimeFailureReceipt
-          : runner.formatDisposableRuntimeFailureReceipt()}\n`,
-      );
-      throw error;
+    const output = buildFocusedTestEnvironment(input, controlledPassfilePath);
+    for (const key of pgKeys) {
+      if (key === "PGPASSFILE") {
+        assert.equal(
+          output.PGPASSFILE === controlledPassfilePath,
+          true,
+          "controlled PGPASSFILE must replace inherited password-file selection",
+        );
+      } else {
+        assert.equal(
+          Object.hasOwn(output, key),
+          false,
+          "inherited PostgreSQL environment must be removed",
+        );
+      }
     }
-
-    assert.equal(
-      focusedParentEnvironmentRequested,
-      true,
-      "runner must read the hostile parent environment while building focused-child env",
-    );
-    assert.equal(focusedChildRuns.length, 1);
-    const focusedChild = focusedChildRuns[0];
-    assert.equal(
-      Object.hasOwn(focusedChild.runnerProvidedChildEnv, "PGPASSWORD"),
-      false,
-    );
-    assert.equal(
-      Object.hasOwn(focusedChild.runnerProvidedChildEnv, "PGPASSFILE"),
-      false,
-    );
-    assert.equal(Object.hasOwn(focusedChild.childEnv, "PGPASSWORD"), false);
-    assert.equal(Object.hasOwn(focusedChild.childEnv, "PGPASSFILE"), false);
-    assert.equal(
-      Object.hasOwn(
-        focusedChild.childEnv,
-        "PLATFORM_MIGRATOR_FAILURE_RECEIPT_FILE",
-      ),
-      true,
-    );
-    assert.equal(
-      Object.hasOwn(
-        focusedChild.childEnv,
-        "PLATFORM_MIGRATOR_FAILURE_PROGRESS_FILE",
-      ),
-      true,
-    );
-    assert.equal(focusedChild.args.includes("--test"), true);
-    assert.equal(
-      focusedChild.args.includes(
-        "tests/platform-migrator-alignment-postgres.test.mjs",
-      ),
-      true,
-    );
-    assert.ok(
-      focusedChild.parentEnvAtRunnerBoundary.PGPASSWORD === hostilePassword,
-      "hostile synthetic PGPASSWORD must be present at the focused-child parent seam",
-    );
-    assert.ok(
-      focusedChild.parentEnvAtRunnerBoundary.PGPASSFILE === passwordFilePath,
-      "hostile synthetic PGPASSFILE must be present at the focused-child parent seam",
-    );
-    assert.ok(
-      isRunnerFixtureUrl(
-        focusedChild.childEnv.MIGRATOR_ALIGNMENT_TEST_DATABASE_URL,
-        "platform_app",
-        "migrator_alignment_test",
-      ),
-      "primary target fixture URL must come from the runner",
-    );
-    assert.ok(
-      isRunnerFixtureUrl(
-        focusedChild.childEnv.MIGRATOR_ALIGNMENT_TEST_OPERATOR_URL,
-        "postgres",
-        "migrator_alignment_test",
-      ),
-      "primary operator fixture URL must come from the runner",
-    );
-    assert.ok(
-      isRunnerFixtureUrl(
-        focusedChild.childEnv.MIGRATOR_ALIGNMENT_TEST_SECONDARY_DATABASE_URL,
-        "platform_app",
-        "migrator_alignment_test_secondary",
-      ),
-      "secondary target fixture URL must come from the runner",
-    );
-    assert.ok(
-      isRunnerFixtureUrl(
-        focusedChild.childEnv.MIGRATOR_ALIGNMENT_TEST_SECONDARY_OPERATOR_URL,
-        "postgres",
-        "migrator_alignment_test_secondary",
-      ),
-      "secondary operator fixture URL must come from the runner",
-    );
-    assert.equal(
-      focusedChild.childEnv.MIGRATOR_ALIGNMENT_TEST_CONFIRM,
-      "disposable-only",
-    );
-    assert.equal(focusedChild.exitCode, 0);
-    assert.equal(focusedChild.signal, null);
-
-    // The child suite's five behavioral tests include correct-password
-    // success, wrong-password rejection, omitted-password rejection, and the
-    // reversible NOLOGIN fresh-login control. A correct hostile inherited
-    // password plus a matching synthetic pgpass file would invalidate the
-    // omitted-password assertion if either variable crossed the spawn seam.
-    assert.equal(resources.childTestsStarted, true);
-    assert.equal(resources.childExited, true);
-    assert.equal(resources.childExitCode, 0);
-    assert.equal(resources.childSignal, false);
-    assert.equal(resources.childSummaryParsed, true);
-    assert.equal(resources.cleanupComplete, true);
-    assert.equal(resources.absenceVerified, true);
-    assert.equal(resources.containerRemoved, true);
-    assert.equal(resources.volumeRemoved, true);
-    assert.equal(resources.volumeAbsenceVerified, true);
+    assert.equal(output.PATH, "retained");
+    assert.equal(output.NODE_ENV, "test");
+    assert.equal(output.HOME, input.HOME);
+    assert.equal(output.APPDATA, input.APPDATA);
+    assert.equal(Object.hasOwn(input, "PGPASSWORD"), true);
+    assert.equal(Object.hasOwn(input, "PGPASSFILE"), true);
+    assert.equal((await readFile(controlledPassfilePath, "utf8")).length, 0);
   } finally {
-    process.env = originalProcessEnv;
-    await rm(passwordFileDirectory, { recursive: true, force: true });
-    await assert.rejects(() => access(passwordFilePath));
+    await rm(directory, { recursive: true, force: true });
+    await assert.rejects(
+      () => access(controlledPassfilePath),
+      "controlled passfile must be absent after the unit seam",
+    );
   }
 });
 
+test("Run-15 actual focused child receives a runner-owned empty passfile seam under hostile ambient defaults", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const focusedChildRuns = [];
+  const runnerEnvironment = {
+    ...process.env,
+    PGPASSWORD: "hostile-inherited-password",
+    PGPASSFILE: "hostile-inherited-pgpass",
+  };
+  assert.equal(Object.hasOwn(runnerEnvironment, "PGPASSWORD"), true, "hostile PGPASSWORD must exist before sanitisation");
+  assert.equal(Object.hasOwn(runnerEnvironment, "PGPASSFILE"), true, "hostile PGPASSFILE must exist before sanitisation");
+  for (const key of [
+    "MIGRATOR_ALIGNMENT_TEST_DATABASE_URL",
+    "MIGRATOR_ALIGNMENT_TEST_OPERATOR_URL",
+    "MIGRATOR_ALIGNMENT_TEST_SECONDARY_DATABASE_URL",
+    "MIGRATOR_ALIGNMENT_TEST_SECONDARY_OPERATOR_URL",
+    "MIGRATOR_ALIGNMENT_TEST_CONFIRM",
+  ]) {
+    delete runnerEnvironment[key];
+  }
+
+  const spawnImpl = (command, args, options = {}) => {
+    if (
+      command === process.execPath &&
+      args.includes("tests/platform-migrator-alignment-postgres.test.mjs")
+    ) {
+      const childEnv = { ...(options.env ?? {}) };
+      delete childEnv.NODE_TEST_CONTEXT;
+      const childArgs = [args[0], "--test-reporter=spec", ...args.slice(1)];
+      const child = spawn(command, childArgs, { ...options, env: childEnv });
+      const record = {
+        args: childArgs,
+        childEnv,
+        controlledPassfilePath: childEnv.PGPASSFILE,
+        exitCode: null,
+        signal: null,
+      };
+      focusedChildRuns.push(record);
+      child.once("close", (code, signal) => {
+        record.exitCode = code;
+        record.signal = signal;
+      });
+      return child;
+    }
+    return spawn(command, args, options);
+  };
+
+  const resources = await runner.run({
+    env: runnerEnvironment,
+    spawnImpl,
+  });
+
+  assert.equal(focusedChildRuns.length, 1);
+  const focusedChild = focusedChildRuns[0];
+  assert.equal(
+    Object.hasOwn(focusedChild.childEnv, "PGPASSWORD"),
+    false,
+    "focused child must not receive inherited PGPASSWORD",
+  );
+  assert.equal(
+    Object.hasOwn(focusedChild.childEnv, "PGPASSFILE"),
+    true,
+    "focused child must receive the controlled PGPASSFILE",
+  );
+  assert.equal(
+    typeof focusedChild.controlledPassfilePath === "string" &&
+      focusedChild.controlledPassfilePath.length > 0,
+    true,
+    "focused child controlled PGPASSFILE must be present",
+  );
+  assert.equal(
+    focusedChild.controlledPassfilePath === runnerEnvironment.PGPASSFILE,
+    false,
+    "focused child PGPASSFILE must replace the inherited value",
+  );
+  assert.equal(Object.hasOwn(focusedChild.childEnv, "HOME"), true);
+  assert.equal(Object.hasOwn(focusedChild.childEnv, "APPDATA"), true);
+  assert.equal(
+    Object.keys(focusedChild.childEnv).some(
+      (key) => key.startsWith("PG") && key !== "PGPASSFILE",
+    ),
+    false,
+  );
+  assert.equal(
+    Object.hasOwn(
+      focusedChild.childEnv,
+      "PLATFORM_MIGRATOR_FAILURE_RECEIPT_FILE",
+    ),
+    true,
+  );
+  assert.equal(
+    Object.hasOwn(
+      focusedChild.childEnv,
+      "PLATFORM_MIGRATOR_FAILURE_PROGRESS_FILE",
+    ),
+    true,
+  );
+  assert.equal(focusedChild.args.includes("--test"), true);
+  assert.equal(
+    focusedChild.args.includes(
+      "tests/platform-migrator-alignment-postgres.test.mjs",
+    ),
+    true,
+  );
+  assert.ok(
+    isRunnerFixtureUrl(
+      focusedChild.childEnv.MIGRATOR_ALIGNMENT_TEST_DATABASE_URL,
+      "platform_app",
+      "migrator_alignment_test",
+    ),
+    "primary target fixture URL must come from the runner",
+  );
+  assert.ok(
+    isRunnerFixtureUrl(
+      focusedChild.childEnv.MIGRATOR_ALIGNMENT_TEST_OPERATOR_URL,
+      "postgres",
+      "migrator_alignment_test",
+    ),
+    "primary operator fixture URL must come from the runner",
+  );
+  assert.ok(
+    isRunnerFixtureUrl(
+      focusedChild.childEnv.MIGRATOR_ALIGNMENT_TEST_SECONDARY_DATABASE_URL,
+      "platform_app",
+      "migrator_alignment_test_secondary",
+    ),
+    "secondary target fixture URL must come from the runner",
+  );
+  assert.ok(
+    isRunnerFixtureUrl(
+      focusedChild.childEnv.MIGRATOR_ALIGNMENT_TEST_SECONDARY_OPERATOR_URL,
+      "postgres",
+      "migrator_alignment_test_secondary",
+    ),
+    "secondary operator fixture URL must come from the runner",
+  );
+  assert.equal(
+    focusedChild.childEnv.MIGRATOR_ALIGNMENT_TEST_CONFIRM,
+    "disposable-only",
+  );
+  assert.equal(focusedChild.exitCode, 0);
+  assert.equal(focusedChild.signal, null);
+
+  assert.equal(resources.focusedCredentialIsolationPreSanitization, true);
+  assert.equal(resources.focusedCredentialChildBoundary, true);
+  assert.equal(resources.focusedCredentialIsolationCleaned, true);
+  assert.equal(resources.focusedCredentialIsolationAbsent, true);
+  assert.equal(resources.childTestsStarted, true);
+  assert.equal(resources.childExited, true);
+  assert.equal(resources.childExitCode, 0);
+  assert.equal(resources.childSignal, false);
+  assert.equal(resources.childSummaryParsed, true);
+  assert.equal(resources.cleanupComplete, true);
+  assert.equal(resources.absenceVerified, true);
+  assert.equal(resources.containerRemoved, true);
+  assert.equal(resources.volumeRemoved, true);
+  assert.equal(resources.volumeAbsenceVerified, true);
+
+  await assert.rejects(
+    () => access(focusedChild.controlledPassfilePath),
+    "controlled passfile must be absent after focused-child cleanup",
+  );
+  await assert.rejects(
+    () => access(join(focusedChild.childEnv.HOME, ".pgpass")),
+    "synthetic HOME passfile must be absent after focused-child cleanup",
+  );
+  await assert.rejects(
+    () => access(join(
+      focusedChild.childEnv.APPDATA,
+      "postgresql",
+      "pgpass.conf",
+    )),
+    "synthetic APPDATA passfile must be absent after focused-child cleanup",
+  );
+
+  const publicReceipt = runner.formatDisposableRuntimeFailureReceipt(resources);
+  assert.doesNotMatch(
+    publicReceipt,
+    /swooshz-platform-pgpass-isolation-|hostile-inherited|synthetic-hostile|controlled-empty-pgpass|hostile-explicit-pgpass|synthetic-migrator-password/i,
+  );
+});
 function isRunnerFixtureUrl(value, expectedUser, expectedDatabase) {
   if (typeof value !== "string") return false;
   try {

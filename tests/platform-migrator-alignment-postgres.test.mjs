@@ -1,9 +1,11 @@
 ﻿import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
-import { renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { access, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import test from "node:test";
+import { join } from "node:path";
 
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { Pool } from "pg";
 
 import {
@@ -17,6 +19,9 @@ import {
   createAdmittedMutationPool,
   invalidateDisposablePostgresAdmission,
 } from "./support/disposable-postgres-fixture.mjs";
+
+const requireNode = createRequire(import.meta.url);
+const pgPassHelper = requireNode("pgpass/lib/helper.js");
 
 const primaryDatabaseUrl = process.env.MIGRATOR_ALIGNMENT_TEST_DATABASE_URL;
 const primaryOperatorUrl = process.env.MIGRATOR_ALIGNMENT_TEST_OPERATOR_URL;
@@ -533,6 +538,7 @@ test(
       );
       await assertMigratorRoleAttribute(primary.adminPool, "rolcanlogin", true);
       await assertMigratorPasswordInstalled(primary.adminPool, true);
+      await assertFocusedPassfileIsolation(primary);
 
       // Correct password succeeds: the fresh admitted connection reads back
       // the exact expected role and database before any ownership transfer.
@@ -2127,6 +2133,105 @@ async function schemaPrivileges(adminPool, roleName, schemaName) {
   return result.rows[0];
 }
 
+async function assertFocusedPassfileIsolation(primary) {
+  const homeDirectory = process.env.HOME;
+  const appDataDirectory = process.env.APPDATA;
+  const controlledPassfilePath = process.env.PGPASSFILE;
+  assert.equal(typeof homeDirectory, "string", "synthetic HOME must exist");
+  assert.equal(typeof appDataDirectory, "string", "synthetic APPDATA must exist");
+  assert.equal(
+    typeof controlledPassfilePath,
+    "string",
+    "controlled PGPASSFILE must exist",
+  );
+  assert.equal(
+    Object.hasOwn(process.env, "PGPASSWORD"),
+    false,
+    "PGPASSWORD must be absent at the focused child",
+  );
+  await assertPrivateFilePresent(join(homeDirectory, ".pgpass"));
+  await assertPrivateFilePresent(
+    join(appDataDirectory, "postgresql", "pgpass.conf"),
+  );
+  let controlledPassfileContent;
+  try {
+    controlledPassfileContent = await readFile(
+      controlledPassfilePath,
+      "utf8",
+    );
+  } catch {
+    assert.fail("controlled passfile must be readable");
+  }
+  assert.equal(
+    controlledPassfileContent.length,
+    0,
+    "controlled passfile must be empty",
+  );
+
+  const previousPassfile = process.env.PGPASSFILE;
+  delete process.env.PGPASSFILE;
+  const unquarantinedPool = new Pool({
+    connectionString: roleUrl("platform_migrator", primary.databaseName),
+    max: 1,
+  });
+  try {
+    await validateMigratorLoginAdmission(
+      unquarantinedPool,
+      primary.databaseName,
+    );
+  } finally {
+    await unquarantinedPool.end();
+    if (previousPassfile === undefined) {
+      delete process.env.PGPASSFILE;
+    } else {
+      process.env.PGPASSFILE = previousPassfile;
+    }
+  }
+  assert.equal(process.env.PGPASSFILE === controlledPassfilePath, true, "runner-owned PGPASSFILE must be restored");
+
+  const quarantinedPool = new Pool({
+    connectionString: roleUrl("platform_migrator", primary.databaseName),
+    max: 1,
+  });
+  try {
+    await assertQueryRejected(
+      quarantinedPool,
+      "select 1",
+      /client password must be a string|no password supplied|password authentication failed/i,
+    );
+  } finally {
+    await quarantinedPool.end();
+  }
+
+  const previousIsWin = pgPassHelper.isWin;
+  try {
+    pgPassHelper.isWin = true;
+    assert.equal(
+      pgPassHelper.getFileName({ APPDATA: appDataDirectory }) ===
+        join(appDataDirectory, "postgresql", "pgpass.conf"),
+      true,
+      "Windows APPDATA default passfile must resolve to the synthetic location",
+    );
+    assert.equal(
+      pgPassHelper.getFileName({
+        APPDATA: appDataDirectory,
+        PGPASSFILE: controlledPassfilePath,
+      }) === controlledPassfilePath,
+      true,
+      "explicit PGPASSFILE must override APPDATA",
+    );
+  } finally {
+    pgPassHelper.isWin = previousIsWin;
+  }
+}
+
+async function assertPrivateFilePresent(filePath) {
+  try {
+    await access(filePath);
+  } catch {
+    assert.fail("synthetic passfile must exist");
+  }
+}
 async function assertQueryRejected(pool, sql, pattern) {
   await assert.rejects(
     () => pool.query(sql),

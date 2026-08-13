@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, mkdtemp, open, rm } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, open, readFile, rm, stat as statPath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,6 +31,8 @@ const ownedVolumeName = "deepseek-platform128-pg17-data";
 const volumeOwnershipTokenLabelKey = "com.swooshz.platform.runner-token";
 const ownedPort = 56432;
 const maxChildOutputBytes = 64 * 1024;
+const focusedCredentialIsolationDirectoryPrefix = "swooshz-platform-pgpass-isolation-";
+const syntheticMigratorPassword = "synthetic-migrator-password";
 const structuredFailureReceiptPrefix = "PLATFORM_MIGRATOR_FAILURE_V1=";
 const structuredFailureReceiptFileEnvironmentVariable =
   "PLATFORM_MIGRATOR_FAILURE_RECEIPT_FILE";
@@ -176,6 +178,12 @@ export async function run({
         childTestsStarted: false,
         cleanupComplete: false,
         absenceVerified: false,
+        focusedCredentialIsolationSetupAttempted: false,
+        focusedCredentialIsolationPreSanitization: false,
+        focusedCredentialChildBoundary: false,
+        focusedCredentialIsolationCleaned: false,
+        focusedCredentialIsolationAbsent: false,
+        focusedCredentialIsolation: null,
         containerStartAttempted: false,
         ownedContainer: false,
         containerRemoved: false,
@@ -376,6 +384,7 @@ export async function run({
         urls: lifecycleResources.construction,
         spawnImpl,
         resources: lifecycleResources,
+        parentEnv: env,
       }),
     ),
 
@@ -445,6 +454,14 @@ export function formatDisposableRuntimeFailureReceipt(resources = {}) {
     childTestsStarted: resources.childTestsStarted === true,
     cleanupComplete: resources.cleanupComplete === true,
     absenceVerified: resources.absenceVerified === true,
+    focusedCredentialIsolationPreSanitization:
+      resources.focusedCredentialIsolationPreSanitization === true,
+    focusedCredentialChildBoundary:
+      resources.focusedCredentialChildBoundary === true,
+    focusedCredentialIsolationCleaned:
+      resources.focusedCredentialIsolationCleaned === true,
+    focusedCredentialIsolationAbsent:
+      resources.focusedCredentialIsolationAbsent === true,
   };
   return `Disposable fixture failure receipt: ${JSON.stringify(receipt)}`;
 }
@@ -1027,23 +1044,40 @@ async function provisionFixture(
   }
 }
 
-async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
+async function runFocusedTests({ admission, urls, spawnImpl, resources, parentEnv }) {
+  resources.focusedCredentialIsolationSetupAttempted = true;
+  const isolation = await createFocusedCredentialIsolation(resources);
+  resources.focusedCredentialIsolation = isolation;
   const originalSpawnImpl = spawnImpl;
-  spawnImpl = (command, args, options = {}) =>
-    originalSpawnImpl(command, args, {
+  spawnImpl = (command, args, options = {}) => {
+    const beforeSanitization = options.env ?? {};
+    const childEnv = buildFocusedTestEnvironment(
+      beforeSanitization,
+      isolation.controlledPassfilePath,
+    );
+    assertFocusedCredentialBoundary(
+      resources,
+      beforeSanitization,
+      childEnv,
+      isolation,
+    );
+    return originalSpawnImpl(command, args, {
       ...options,
-      env: buildFocusedTestEnvironment(options.env),
+      env: childEnv,
     });
+  };
   const env = {
-    ...process.env,
+    ...parentEnv,
+    ...isolation.hostileEnvironment,
     MIGRATOR_ALIGNMENT_TEST_DATABASE_URL: urls.primaryTargetUrl,
     MIGRATOR_ALIGNMENT_TEST_OPERATOR_URL: urls.primaryOperatorUrl,
     MIGRATOR_ALIGNMENT_TEST_SECONDARY_DATABASE_URL: urls.secondaryTargetUrl,
     MIGRATOR_ALIGNMENT_TEST_SECONDARY_OPERATOR_URL: urls.secondaryOperatorUrl,
     MIGRATOR_ALIGNMENT_TEST_CONFIRM: "disposable-only",
   };
-  const sidecar = await createStructuredFailureReceiptSidecar();
+  let sidecar = null;
   try {
+    sidecar = await createStructuredFailureReceiptSidecar();
     await new Promise((resolvePromise, reject) => {
       const childEnv = {
         ...env,
@@ -1141,7 +1175,9 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
       });
     });
   } finally {
-    await cleanupStructuredFailureReceiptSidecar(sidecar);
+    if (sidecar) {
+      await cleanupStructuredFailureReceiptSidecar(sidecar);
+    }
   }
   void admission;
 }
@@ -1173,6 +1209,11 @@ async function cleanupRunnerResources(resources, spawnImpl) {
   }
   try {
     await terminateOwnedChild(resources);
+  } catch {
+    firstError ??= new Error();
+  }
+  try {
+    await cleanupFocusedCredentialIsolation(resources);
   } catch {
     firstError ??= new Error();
   }
@@ -1248,6 +1289,9 @@ async function cleanupFixtureDatabases(resources) {
 }
 
 async function verifyRunnerAbsence(resources, spawnImpl) {
+  if (resources.focusedCredentialIsolationSetupAttempted) {
+    await verifyFocusedCredentialIsolationAbsence(resources);
+  }
   if (resources.childProcess && !resources.childExited) throw new Error();
   if (!resources.containerStartAttempted) {
     if (resources.volumeCreateAttempted) {
@@ -1790,16 +1834,249 @@ const postgresqlConnectionEnvironmentKeys = Object.freeze([
   "NODE_PG_FORCE_NATIVE",
 ]);
 
-export function buildFocusedTestEnvironment(env = process.env) {
+export function buildFocusedTestEnvironment(
+  env = process.env,
+  controlledPassfilePath,
+) {
+  if (
+    typeof controlledPassfilePath !== "string" ||
+    controlledPassfilePath.length === 0 ||
+    !isAbsolute(controlledPassfilePath)
+  ) {
+    throw new Error();
+  }
   const childEnv = { ...env };
+  delete childEnv.PGPASSWORD;
+  delete childEnv.PGPASSFILE;
   for (const key of postgresqlConnectionEnvironmentKeys) delete childEnv[key];
   for (const key of Object.keys(childEnv)) {
     if (key.startsWith("PG")) delete childEnv[key];
   }
   delete childEnv.NODE_PG_FORCE_NATIVE;
+  childEnv.PGPASSFILE = controlledPassfilePath;
   return childEnv;
 }
 
+function assertFocusedCredentialBoundary(
+  resources,
+  beforeSanitization,
+  childEnv,
+  isolation,
+) {
+  const hostileNames = [
+    "PGPASSWORD",
+    "PGPASSFILE",
+    "PGUSER",
+    "PGDATABASE",
+    "PGHOST",
+    "PGPORT",
+    "PGSERVICE",
+    "HOME",
+    "APPDATA",
+  ];
+  if (!hostileNames.every((name) => Object.hasOwn(beforeSanitization, name))) {
+    throw new Error();
+  }
+  if (
+    beforeSanitization.PGPASSWORD !== isolation.hostileEnvironment.PGPASSWORD ||
+    beforeSanitization.PGPASSFILE !== isolation.hostileExplicitPassfilePath ||
+    beforeSanitization.HOME !== isolation.hostileHomeDirectory ||
+    beforeSanitization.APPDATA !== isolation.hostileAppDataDirectory
+  ) {
+    throw new Error();
+  }
+  resources.focusedCredentialIsolationPreSanitization = true;
+  if (
+    Object.hasOwn(childEnv, "PGPASSWORD") ||
+    !Object.hasOwn(childEnv, "PGPASSFILE") ||
+    childEnv.PGPASSFILE !== isolation.controlledPassfilePath ||
+    childEnv.HOME !== beforeSanitization.HOME ||
+    childEnv.APPDATA !== beforeSanitization.APPDATA
+  ) {
+    throw new Error();
+  }
+  if (
+    Object.keys(childEnv).some(
+      (key) => key.startsWith("PG") && key !== "PGPASSFILE",
+    )
+  ) {
+    throw new Error();
+  }
+  resources.focusedCredentialChildBoundary = true;
+}
+
+async function createFocusedCredentialIsolation(resources) {
+  const temporaryRoot = resolve(tmpdir());
+  const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
+  const temporaryRootRelativeToRepository = relative(
+    repositoryRoot,
+    temporaryRoot,
+  );
+  if (
+    temporaryRootRelativeToRepository === "" ||
+    (!temporaryRootRelativeToRepository.startsWith("..") &&
+      !isAbsolute(temporaryRootRelativeToRepository))
+  ) {
+    throw new Error();
+  }
+  const directory = join(
+    temporaryRoot,
+    focusedCredentialIsolationDirectoryPrefix + randomUUID(),
+  );
+  let directoryCreated = false;
+  try {
+    await assertFocusedPathAbsent(directory);
+    await mkdir(directory, { mode: 0o700 });
+    directoryCreated = true;
+    const hostileHomeDirectory = join(directory, "home");
+    const hostileAppDataDirectory = join(directory, "appdata");
+    const hostileAppDataPostgresDirectory = join(
+      hostileAppDataDirectory,
+      "postgresql",
+    );
+    const hostileHomePassfilePath = join(hostileHomeDirectory, ".pgpass");
+    const hostileAppDataPassfilePath = join(
+      hostileAppDataPostgresDirectory,
+      "pgpass.conf",
+    );
+    const hostileExplicitPassfilePath = join(
+      directory,
+      "hostile-explicit-pgpass",
+    );
+    const controlledPassfilePath = join(directory, "controlled-empty-pgpass");
+    const isolation = {
+      directory,
+      hostileHomeDirectory,
+      hostileAppDataDirectory,
+      hostileHomePassfilePath,
+      hostileAppDataPassfilePath,
+      hostileExplicitPassfilePath,
+      controlledPassfilePath,
+      hostileEnvironment: {
+        HOME: hostileHomeDirectory,
+        APPDATA: hostileAppDataDirectory,
+        PGPASSWORD: "synthetic-hostile-password",
+        PGPASSFILE: hostileExplicitPassfilePath,
+        PGUSER: "platform_migrator",
+        PGDATABASE: databaseName,
+        PGHOST: "127.0.0.1",
+        PGPORT: String(ownedPort),
+        PGSERVICE: "hostile_service",
+      },
+    };
+    resources.focusedCredentialIsolation = isolation;
+    await mkdir(hostileHomeDirectory, { mode: 0o700 });
+    await mkdir(hostileAppDataDirectory, { mode: 0o700 });
+    await mkdir(hostileAppDataPostgresDirectory, { mode: 0o700 });
+    const hostilePassfileContent =
+      "*:*:" +
+      databaseName +
+      ":platform_migrator:" +
+      syntheticMigratorPassword +
+      "\n";
+    for (const path of [
+      hostileHomePassfilePath,
+      hostileAppDataPassfilePath,
+      hostileExplicitPassfilePath,
+    ]) {
+      await writeFile(path, hostilePassfileContent, {
+        encoding: "utf8",
+        flag: "wx",
+        mode: 0o600,
+      });
+    }
+    await writeFile(controlledPassfilePath, "", {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    if (process.platform !== "win32") {
+      for (const path of [
+        hostileHomePassfilePath,
+        hostileAppDataPassfilePath,
+        hostileExplicitPassfilePath,
+        controlledPassfilePath,
+      ]) {
+        await chmod(path, 0o600);
+      }
+    }
+    if ((await readFile(controlledPassfilePath, "utf8")) !== "") {
+      throw new Error();
+    }
+    for (const path of [
+      hostileHomePassfilePath,
+      hostileAppDataPassfilePath,
+      hostileExplicitPassfilePath,
+      controlledPassfilePath,
+    ]) {
+      await assertFocusedCredentialFile(path);
+    }
+    return Object.freeze(isolation);
+  } catch (error) {
+    if (directoryCreated) {
+      try {
+        await cleanupFocusedCredentialIsolation(resources);
+      } catch {
+        throw new Error();
+      }
+    }
+    throw error;
+  }
+}
+
+async function assertFocusedCredentialFile(path) {
+  const details = await statPath(path);
+  if (!details.isFile()) throw new Error();
+  if (
+    typeof process.getuid === "function" &&
+    details.uid !== process.getuid()
+  ) {
+    throw new Error();
+  }
+  if (process.platform !== "win32" && (details.mode & 0o077) !== 0) {
+    throw new Error();
+  }
+}
+
+async function assertFocusedPathAbsent(path) {
+  try {
+    await access(path);
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw new Error();
+  }
+  throw new Error();
+}
+
+async function cleanupFocusedCredentialIsolation(resources) {
+  const isolation = resources.focusedCredentialIsolation;
+  if (!isolation || resources.focusedCredentialIsolationCleaned) return;
+  await rm(isolation.directory, { recursive: true, force: true });
+  for (const path of [
+    isolation.hostileHomePassfilePath,
+    isolation.hostileAppDataPassfilePath,
+    isolation.hostileExplicitPassfilePath,
+    isolation.controlledPassfilePath,
+    isolation.hostileHomeDirectory,
+    isolation.hostileAppDataDirectory,
+    isolation.directory,
+  ]) {
+    await assertFocusedPathAbsent(path);
+  }
+  resources.focusedCredentialIsolationCleaned = true;
+  resources.focusedCredentialIsolationAbsent = true;
+  resources.focusedCredentialIsolation = null;
+}
+
+async function verifyFocusedCredentialIsolationAbsence(resources) {
+  if (
+    !resources.focusedCredentialIsolationCleaned ||
+    !resources.focusedCredentialIsolationAbsent ||
+    resources.focusedCredentialIsolation
+  ) {
+    throw new Error();
+  }
+}
 function quoteIdentifier(value) {
   if (!safeIdentifier.test(value)) throw new Error();
   return `"${value.replaceAll('"', '""')}"`;
