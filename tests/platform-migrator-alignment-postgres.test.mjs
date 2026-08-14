@@ -77,7 +77,13 @@ try {
     parsed.hash ||
     typeof process.env.HOME !== "string" ||
     typeof process.env.APPDATA !== "string" ||
-    Object.keys(process.env).some((key) => key.startsWith("PG")) ||
+    Object.keys(process.env).some((key) => {
+      const comparisonKey = typeof key === "string" ? key.toUpperCase() : "";
+      return (
+        comparisonKey.startsWith("PG") ||
+        comparisonKey === "NODE_PG_FORCE_NATIVE"
+      );
+    }) ||
     Object.hasOwn(process.env, "NODE_PG_FORCE_NATIVE")
   ) {
     throw new Error();
@@ -2333,12 +2339,21 @@ async function assertFocusedC3Proof(primary) {
   assert.equal(Object.hasOwn(process.env, "PGPASSWORD"), false);
   assert.equal(
     Object.keys(process.env).some(
-      (key) => key.startsWith("PG") && key !== "PGPASSFILE",
+      (key) => {
+        const comparisonKey = typeof key === "string" ? key.toUpperCase() : "";
+        return comparisonKey.startsWith("PG") && comparisonKey !== "PGPASSFILE";
+      },
     ),
     false,
   );
   assert.equal(Object.hasOwn(process.env, "NODE_PG_FORCE_NATIVE"), false);
   assert.equal(process.env.PGPASSFILE === controlledPassfilePath, true);
+  assert.equal(
+    Object.keys(process.env).filter(
+      (key) => (typeof key === "string" ? key.toUpperCase() : "") === "PGPASSFILE",
+    ).length,
+    1,
+  );
 
   // RED/default-pgpass causal control: remove only the bounded child process's
   // quarantine so the parent retains the runner-owned passfile for every

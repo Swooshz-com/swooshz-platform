@@ -3099,6 +3099,154 @@ test("Run-14 focused child environment replaces PostgreSQL password-file discove
   }
 });
 
+test("A9-C1 through A9-C10 shared environment boundary removes every hostile alias", async () => {
+  const {
+    buildFocusedDefaultPgpassControlEnvironment,
+    buildFocusedTestEnvironment,
+  } = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const controlledPassfilePath = join(
+    tmpdir(),
+    "swooshz-platform-a9-controlled-pgpass",
+  );
+  const input = {
+    SAFE_A9_NAME: "safe-value",
+    PATH: "safe-path",
+    HOME: join(tmpdir(), "swooshz-platform-a9-home"),
+    APPDATA: join(tmpdir(), "swooshz-platform-a9-appdata"),
+    PGPASSWORD: "upper-password",
+    pgpassword: "lower-password",
+    PgPassword: "mixed-password",
+    PGPASSFILE: "upper-passfile",
+    pgpassfile: "lower-passfile",
+    PgPassFile: "mixed-passfile",
+    PGSERVICE: "upper-service",
+    pgservice: "lower-service",
+    PgService: "mixed-service",
+    PgSslMode: "disable",
+    pGsYnThEtIc: "mixed-generic-pg",
+    NODE_PG_FORCE_NATIVE: "upper-native",
+    node_pg_force_native: "lower-native",
+    Node_Pg_Force_Native: "mixed-native",
+  };
+  const beforeTestBuilder = { ...input };
+  const isHostileKey = (key) => {
+    const comparisonKey = key.toUpperCase();
+    return (
+      comparisonKey.startsWith("PG") ||
+      comparisonKey === "NODE_PG_FORCE_NATIVE"
+    );
+  };
+
+  const output = buildFocusedTestEnvironment(input, controlledPassfilePath);
+  const outputHostileKeys = Object.keys(output).filter(isHostileKey);
+  assert.deepEqual(outputHostileKeys, ["PGPASSFILE"]);
+  assert.equal(output.PGPASSFILE, controlledPassfilePath);
+  assert.equal(
+    outputHostileKeys.filter((key) => key.toUpperCase() === "PGPASSFILE").length,
+    1,
+  );
+  assert.equal(output.SAFE_A9_NAME, "safe-value");
+  assert.equal(output.PATH, "safe-path");
+  assert.equal(output.HOME, input.HOME);
+  assert.equal(output.APPDATA, input.APPDATA);
+  assert.deepEqual(input, beforeTestBuilder);
+
+  const passwordlessDatabaseUrl =
+    "postgresql://platform_migrator@127.0.0.1:56432/migrator_alignment_test";
+  const beforeDefaultBuilder = { ...input };
+  const defaultOutput = buildFocusedDefaultPgpassControlEnvironment(
+    input,
+    passwordlessDatabaseUrl,
+  );
+  assert.deepEqual(
+    Object.keys(defaultOutput).filter(isHostileKey),
+    [],
+  );
+  assert.equal(
+    defaultOutput.MIGRATOR_ALIGNMENT_TEST_DEFAULT_PGPASS_URL,
+    passwordlessDatabaseUrl,
+  );
+  assert.equal(defaultOutput.SAFE_A9_NAME, "safe-value");
+  assert.equal(defaultOutput.PATH, "safe-path");
+  assert.equal(defaultOutput.HOME, input.HOME);
+  assert.equal(defaultOutput.APPDATA, input.APPDATA);
+  assert.deepEqual(input, beforeDefaultBuilder);
+});
+
+test("A9-C12 bounded child process cannot observe mixed-case or duplicate hostile aliases", async () => {
+  const { buildFocusedTestEnvironment } = await import(
+    "../scripts/run-disposable-migrator-alignment-tests.mjs",
+  );
+  const controlledPassfilePath = join(
+    tmpdir(),
+    "swooshz-platform-a9-real-child-pgpass",
+  );
+  const childEnvironment = buildFocusedTestEnvironment(
+    {
+      ...process.env,
+      A9_SAFE_ENV: "byte-safe-value",
+      A9_EXPECTED_PGPASSFILE: controlledPassfilePath,
+      PGPASSWORD: "upper-password",
+      pgpassword: "lower-password",
+      PgPassword: "mixed-password",
+      PGPASSFILE: "upper-passfile",
+      pgpassfile: "lower-passfile",
+      PgPassFile: "mixed-passfile",
+      PGSSLMODE: "upper-ssl-mode",
+      PgSslMode: "mixed-ssl-mode",
+      NODE_PG_FORCE_NATIVE: "upper-native",
+      node_pg_force_native: "lower-native",
+      Node_Pg_Force_Native: "mixed-native",
+      pGsYnThEtIc: "mixed-generic-pg",
+    },
+    controlledPassfilePath,
+  );
+  const childSource = [
+    'const comparisonForm = (key) => typeof key === "string" ? key.toUpperCase() : "";',
+    'const hostileKeys = Object.keys(process.env).filter((key) => { const comparisonKey = comparisonForm(key); return comparisonKey.startsWith("PG") || comparisonKey === "NODE_PG_FORCE_NATIVE"; });',
+    'const uncontrolledKeys = hostileKeys.filter((key) => comparisonForm(key) !== "PGPASSFILE");',
+    'const controlledKeys = hostileKeys.filter((key) => comparisonForm(key) === "PGPASSFILE");',
+    'if (uncontrolledKeys.length !== 0 || controlledKeys.length !== 1 || process.env.PGPASSFILE !== process.env.A9_EXPECTED_PGPASSFILE || process.env.A9_SAFE_ENV !== "byte-safe-value") process.exitCode = 1;',
+    'else process.stdout.write("A9-C12 child boundary ok");',
+  ].join("\n");
+  const childResult = await new Promise((resolvePromise, reject) => {
+    const child = spawn(
+      process.execPath,
+      ["--input-type=module", "--eval", childSource],
+      {
+        env: childEnvironment,
+        stdio: ["ignore", "pipe", "ignore"],
+        windowsHide: true,
+      },
+    );
+    let settled = false;
+    let output = "";
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill();
+      reject(new Error("A9-C12 child control timed out."));
+    }, 10_000);
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback(value);
+    };
+    child.stdout.on("data", (chunk) => {
+      output += chunk.toString("utf8");
+      if (output.length > 1_024) child.kill();
+    });
+    child.once("error", (error) => finish(reject, error));
+    child.once("close", (code, signal) =>
+      finish(resolvePromise, { code, signal, output }),
+    );
+  });
+  assert.equal(childResult.code, 0);
+  assert.equal(childResult.signal, null);
+  assert.equal(childResult.output, "A9-C12 child boundary ok");
+});
+
 test("Run-15 actual focused child receives a runner-owned empty passfile seam under hostile ambient defaults", async () => {
   const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
   const focusedChildRuns = [];
@@ -3175,12 +3323,11 @@ test("Run-15 actual focused child receives a runner-owned empty passfile seam un
   );
   assert.equal(Object.hasOwn(focusedChild.childEnv, "HOME"), true);
   assert.equal(Object.hasOwn(focusedChild.childEnv, "APPDATA"), true);
-  assert.equal(
-    Object.keys(focusedChild.childEnv).some(
-      (key) => key.startsWith("PG") && key !== "PGPASSFILE",
-    ),
-    false,
-  );
+  const childHostileKeys = Object.keys(focusedChild.childEnv).filter((key) => {
+    const comparisonKey = key.toUpperCase();
+    return comparisonKey.startsWith("PG") || comparisonKey === "NODE_PG_FORCE_NATIVE";
+  });
+  assert.deepEqual(childHostileKeys, ["PGPASSFILE"]);
   assert.equal(
     Object.hasOwn(
       focusedChild.childEnv,

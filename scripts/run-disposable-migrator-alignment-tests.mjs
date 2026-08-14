@@ -2259,11 +2259,7 @@ export function buildFocusedDefaultPgpassControlEnvironment(
   ) {
     throw new Error();
   }
-  const childEnv = { ...env };
-  for (const key of Object.keys(childEnv)) {
-    if (key.startsWith("PG")) delete childEnv[key];
-  }
-  delete childEnv.NODE_PG_FORCE_NATIVE;
+  const childEnv = sanitizeInheritedPostgresqlEnvironment(env);
   childEnv.MIGRATOR_ALIGNMENT_TEST_DEFAULT_PGPASS_URL =
     passwordlessDatabaseUrl;
   return childEnv;
@@ -2280,15 +2276,9 @@ export function buildFocusedTestEnvironment(
   ) {
     throw new Error();
   }
-  const childEnv = { ...env };
-  delete childEnv.PGPASSWORD;
-  delete childEnv.PGPASSFILE;
-  for (const key of postgresqlConnectionEnvironmentKeys) delete childEnv[key];
-  for (const key of Object.keys(childEnv)) {
-    if (key.startsWith("PG")) delete childEnv[key];
-  }
-  delete childEnv.NODE_PG_FORCE_NATIVE;
-  childEnv.PGPASSFILE = controlledPassfilePath;
+  const childEnv = sanitizeInheritedPostgresqlEnvironment(env, {
+    controlledPassfilePath,
+  });
   childEnv.MIGRATOR_ALIGNMENT_TEST_C3_RUNNER_BOUNDARY =
     "runner-sanitised";
   childEnv.MIGRATOR_ALIGNMENT_TEST_C3_PGPASS_OWNER = "runner-test";
@@ -2309,6 +2299,20 @@ function assertFocusedCredentialBoundary(
   if (!hostileNames.every((name) => Object.hasOwn(beforeSanitization, name))) {
     throw new Error();
   }
+  const expectedHostileKeys = Object.keys(isolation.hostileEnvironment).filter(
+    isHostilePostgresqlEnvironmentKey,
+  );
+  if (
+    !expectedHostileKeys.every(
+      (key) =>
+        Object.hasOwn(beforeSanitization, key) &&
+        beforeSanitization[key] === isolation.hostileEnvironment[key],
+    ) ||
+    !expectedHostileKeys.some((key) => key === "pgpassword") ||
+    !expectedHostileKeys.some((key) => key === "PgPassFile")
+  ) {
+    throw new Error();
+  }
   if (
     !postgresqlConnectionEnvironmentKeys.every(
       (key) => beforeSanitization[key] === isolation.hostileEnvironment[key],
@@ -2326,23 +2330,20 @@ function assertFocusedCredentialBoundary(
   }
   resources.focusedCredentialIsolationPreSanitization = true;
   resources.c3HostileEnvironmentRetained = true;
+  const childHostileKeys = Object.keys(childEnv).filter(
+    isHostilePostgresqlEnvironmentKey,
+  );
+  const controlledPassfileKeys = childHostileKeys.filter(
+    (key) => environmentKeyComparisonForm(key) === "PGPASSFILE",
+  );
   if (
-    Object.hasOwn(childEnv, "PGPASSWORD") ||
-    !Object.hasOwn(childEnv, "PGPASSFILE") ||
+    childHostileKeys.length !== 1 ||
+    controlledPassfileKeys.length !== 1 ||
+    controlledPassfileKeys[0] !== "PGPASSFILE" ||
     childEnv.PGPASSFILE !== isolation.controlledPassfilePath ||
     childEnv.HOME !== beforeSanitization.HOME ||
     childEnv.APPDATA !== beforeSanitization.APPDATA
   ) {
-    throw new Error();
-  }
-  if (
-    Object.keys(childEnv).some(
-      (key) => key.startsWith("PG") && key !== "PGPASSFILE",
-    )
-  ) {
-    throw new Error();
-  }
-  if (Object.hasOwn(childEnv, "NODE_PG_FORCE_NATIVE")) {
     throw new Error();
   }
   if (
@@ -2404,6 +2405,16 @@ export async function createFocusedCredentialIsolation(
       PGHOST: "127.0.0.1",
       PGPORT: String(ownedPort),
       PGSERVICE: "hostile_service",
+      pgpassword: "synthetic-lowercase-password",
+      pgpassfile: join(directory, "hostile-lowercase-pgpass"),
+      PgPassword: "synthetic-mixed-case-password",
+      PgPassFile: join(directory, "hostile-mixed-case-pgpass"),
+      pgservice: "hostile_lowercase_service",
+      PgService: "hostile_mixed_case_service",
+      PgSslMode: "disable",
+      node_pg_force_native: "true",
+      Node_Pg_Force_Native: "true",
+      pGsYnThEtIc: "synthetic-generic-mixed-case-pg",
     });
     const isolation = {
       directory,
@@ -2535,4 +2546,61 @@ async function verifyFocusedCredentialIsolationAbsence(resources) {
 function quoteIdentifier(value) {
   if (!safeIdentifier.test(value)) throw new Error();
   return `"${value.replaceAll('"', '""')}"`;
+}
+
+function environmentKeyComparisonForm(key) {
+  return typeof key === "string" ? key.toUpperCase() : "";
+}
+
+function isHostilePostgresqlEnvironmentKey(key) {
+  const comparisonKey = environmentKeyComparisonForm(key);
+  return (
+    comparisonKey.startsWith("PG") ||
+    comparisonKey === "NODE_PG_FORCE_NATIVE"
+  );
+}
+
+function assertExactlyOneEnvironmentKeyIdentity(
+  env,
+  expectedKey,
+  expectedValue,
+) {
+  const expectedComparisonKey = environmentKeyComparisonForm(expectedKey);
+  const matchingKeys = Object.keys(env).filter(
+    (key) => environmentKeyComparisonForm(key) === expectedComparisonKey,
+  );
+  if (
+    matchingKeys.length !== 1 ||
+    matchingKeys[0] !== expectedKey ||
+    env[expectedKey] !== expectedValue
+  ) {
+    throw new Error();
+  }
+}
+
+export function sanitizeInheritedPostgresqlEnvironment(
+  env = process.env,
+  { controlledPassfilePath } = {},
+) {
+  const childEnv = Object.fromEntries(
+    Object.entries(env ?? {}).filter(
+      ([key]) => !isHostilePostgresqlEnvironmentKey(key),
+    ),
+  );
+  if (controlledPassfilePath !== undefined) {
+    if (
+      typeof controlledPassfilePath !== "string" ||
+      controlledPassfilePath.length === 0 ||
+      !isAbsolute(controlledPassfilePath)
+    ) {
+      throw new Error();
+    }
+    childEnv.PGPASSFILE = controlledPassfilePath;
+    assertExactlyOneEnvironmentKeyIdentity(
+      childEnv,
+      "PGPASSFILE",
+      controlledPassfilePath,
+    );
+  }
+  return childEnv;
 }
