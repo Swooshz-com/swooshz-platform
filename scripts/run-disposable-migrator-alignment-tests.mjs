@@ -1834,6 +1834,28 @@ const postgresqlConnectionEnvironmentKeys = Object.freeze([
   "NODE_PG_FORCE_NATIVE",
 ]);
 
+export function buildFocusedDefaultPgpassControlEnvironment(
+  env = process.env,
+  passwordlessDatabaseUrl,
+) {
+  if (
+    typeof passwordlessDatabaseUrl !== "string" ||
+    passwordlessDatabaseUrl.length === 0 ||
+    typeof env?.HOME !== "string" ||
+    typeof env?.APPDATA !== "string"
+  ) {
+    throw new Error();
+  }
+  const childEnv = { ...env };
+  for (const key of Object.keys(childEnv)) {
+    if (key.startsWith("PG")) delete childEnv[key];
+  }
+  delete childEnv.NODE_PG_FORCE_NATIVE;
+  childEnv.MIGRATOR_ALIGNMENT_TEST_DEFAULT_PGPASS_URL =
+    passwordlessDatabaseUrl;
+  return childEnv;
+}
+
 export function buildFocusedTestEnvironment(
   env = process.env,
   controlledPassfilePath,

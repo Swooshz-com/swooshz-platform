@@ -1,5 +1,6 @@
 ﻿import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { access, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import test from "node:test";
@@ -19,6 +20,9 @@ import {
   createAdmittedMutationPool,
   invalidateDisposablePostgresAdmission,
 } from "./support/disposable-postgres-fixture.mjs";
+import {
+  buildFocusedDefaultPgpassControlEnvironment,
+} from "../scripts/run-disposable-migrator-alignment-tests.mjs";
 
 const requireNode = createRequire(import.meta.url);
 const pgPassHelper = requireNode("pgpass/lib/helper.js");
@@ -62,6 +66,45 @@ const structuredFailureReceiptFileEnvironmentVariable =
   "PLATFORM_MIGRATOR_FAILURE_RECEIPT_FILE";
 const structuredFailureProgressFileEnvironmentVariable =
   "PLATFORM_MIGRATOR_FAILURE_PROGRESS_FILE";
+const defaultPgpassControlScript = `
+import { Pool } from "pg";
+
+let pool = null;
+let client = null;
+try {
+  const databaseUrl =
+    process.env.MIGRATOR_ALIGNMENT_TEST_DEFAULT_PGPASS_URL;
+  const parsed = new URL(databaseUrl);
+  if (
+    parsed.password ||
+    parsed.search ||
+    parsed.hash ||
+    typeof process.env.HOME !== "string" ||
+    typeof process.env.APPDATA !== "string" ||
+    Object.keys(process.env).some((key) => key.startsWith("PG"))
+  ) {
+    throw new Error();
+  }
+  pool = new Pool({ connectionString: databaseUrl, max: 1 });
+  client = await pool.connect();
+  const result = await client.query(
+    "select current_user::text as cu, session_user::text as su, current_database()::text as cd",
+  );
+  if (
+    result.rows[0]?.cu !== "platform_migrator" ||
+    result.rows[0]?.su !== "platform_migrator" ||
+    result.rows[0]?.cd !== "migrator_alignment_test"
+  ) {
+    throw new Error();
+  }
+} catch {
+  process.exitCode = 1;
+} finally {
+  client?.release();
+  await pool?.end().catch(() => {});
+}
+`;
+
 const structuredReceiptProgressMaxBytes = 16 * 1024;
 const structuredReceiptTransportTestMode =
   process.env.PLATFORM_MIGRATOR_FAILURE_RECEIPT_TEST ?? "";
@@ -2168,26 +2211,53 @@ async function assertFocusedPassfileIsolation(primary) {
     "controlled passfile must be empty",
   );
 
-  const previousPassfile = process.env.PGPASSFILE;
-  delete process.env.PGPASSFILE;
-  const unquarantinedPool = new Pool({
-    connectionString: roleUrl("platform_migrator", primary.databaseName),
-    max: 1,
-  });
-  try {
-    await validateMigratorLoginAdmission(
-      unquarantinedPool,
-      primary.databaseName,
+  // RED/default-pgpass causal control: remove only the bounded child process's
+  // quarantine so the parent retains the runner-owned passfile for every
+  // subsequent control.
+  assert.equal(
+    process.env.PGPASSFILE,
+    controlledPassfilePath,
+    "runner-owned PGPASSFILE must be active before RED",
+  );
+  const redEnvironment = buildFocusedDefaultPgpassControlEnvironment(
+    {
+      ...process.env,
+      HOME: homeDirectory,
+      APPDATA: appDataDirectory,
+    },
+    roleUrl("platform_migrator", primary.databaseName),
+  );
+  assert.equal(
+    Object.keys(redEnvironment).some((key) => key.startsWith("PG")),
+    false,
+    "RED child must remove inherited PostgreSQL connection state",
+  );
+  assert.equal(redEnvironment.HOME, homeDirectory);
+  assert.equal(redEnvironment.APPDATA, appDataDirectory);
+  await new Promise((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      ["--input-type=module", "--eval", defaultPgpassControlScript],
+      {
+        env: redEnvironment,
+        stdio: "ignore",
+        windowsHide: true,
+      },
     );
-  } finally {
-    await unquarantinedPool.end();
-    if (previousPassfile === undefined) {
-      delete process.env.PGPASSFILE;
-    } else {
-      process.env.PGPASSFILE = previousPassfile;
-    }
-  }
-  assert.equal(process.env.PGPASSFILE === controlledPassfilePath, true, "runner-owned PGPASSFILE must be restored");
+    child.once("error", () => reject(new Error("RED pgpass control failed.")));
+    child.once("close", (code, signal) => {
+      if (code === 0 && signal === null) {
+        resolve();
+      } else {
+        reject(new Error("RED pgpass control failed."));
+      }
+    });
+  });
+  assert.equal(
+    process.env.PGPASSFILE,
+    controlledPassfilePath,
+    "runner-owned PGPASSFILE must remain active after RED",
+  );
 
   const quarantinedPool = new Pool({
     connectionString: roleUrl("platform_migrator", primary.databaseName),
