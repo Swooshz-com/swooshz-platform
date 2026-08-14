@@ -144,6 +144,31 @@ const failureCategories = new Set([
   "absence_verification",
   "ci_environment_unclassified",
 ]);
+const focusedC3DiagnosticStages = new Map([
+  ["C3_RED_DEFAULT_PGPASS_ADMISSION", "C3-A"],
+  ["C3_HOSTILE_ENV_RETAINED", "C3-B"],
+  ["C3_RUNNER_PGPASS_QUARANTINE", "C3-C"],
+  ["C3_INHERITED_PG_STATE_SANITISED", "C3-D"],
+  ["C3_OMITTED_PASSWORD_REJECTED", "C3-E"],
+  ["C3_WRONG_PASSWORD_REJECTED", "C3-F"],
+  ["C3_CORRECT_PASSWORD_ACCEPTED", "C3-G"],
+  ["C3_CLEANUP_CONFIRMED", "C3-H"],
+]);
+const constructionP1FailureCategories = new Set([
+  "volume_create",
+  "volume_mount_inspection",
+  "container_start",
+  "publish_binding_inspection",
+]);
+const constructionP2FailureCategories = new Set([
+  "postgres_readiness",
+  "password_auth_lockdown",
+  "provisioning_authority",
+  "secondary_database_creation",
+  "primary_provisioning",
+  "secondary_provisioning",
+  "configured_fixture_admission",
+]);
 
 if (
   process.argv[1] &&
@@ -423,10 +448,12 @@ export async function run({
     });
   } catch (error) {
     const failure = error instanceof Error ? error : new Error();
+    const diagnostic = formatDisposableRuntimeFailureDiagnostic(resources);
     Object.defineProperty(failure, "runtimeFailureReceipt", {
       configurable: true,
       value: formatDisposableRuntimeFailureReceipt(resources),
     });
+    failure.message = `Disposable runtime lifecycle failed. [${diagnostic}]`;
     throw failure;
   }
 }
@@ -485,6 +512,44 @@ export function formatDisposableRuntimeFailureReceipt(resources = {}) {
       resources.focusedCredentialIsolationAbsent === true,
   };
   return `Disposable fixture failure receipt: ${JSON.stringify(receipt)}`;
+}
+
+function formatDisposableRuntimeFailureDiagnostic(resources = {}) {
+  const runnerPhase = failurePhases.has(resources.failurePhase) ? resources.failurePhase : "construct";
+  const runnerCategory = failureCategories.has(resources.failureCategory) ? resources.failureCategory : "ci_environment_unclassified";
+  const structuredChild =
+    projectStructuredChildReceipt(resources.structuredChildReceipt) ??
+    projectStructuredChildProgress(resources.structuredChildProgress);
+  const stage = classifyDisposableRuntimeFailureStage(runnerPhase, runnerCategory);
+  const fields = [
+    `lifecycle-stage=${stage}`,
+    `phase=${runnerPhase}`,
+    `category=${runnerCategory}`,
+  ];
+  if (structuredChild) {
+    const focusedStage = focusedC3DiagnosticStages.get(structuredChild.phase);
+    if (focusedStage) fields.push(`proof-stage=${focusedStage}`);
+    fields.push(
+      `proof-phase=${structuredChild.phase}`,
+      `proof-category=${structuredChild.assertion_category}`,
+      `proof-cleanup=${structuredChild.cleanup_phase}`,
+    );
+  }
+  fields.push(
+    `runner-cleanup=${resources.cleanupComplete === true ? "complete" : "not_complete"}`,
+    `final-absence=${resources.absenceVerified === true ? "verified" : "not_verified"}`,
+  );
+  return fields.join("; ");
+}
+
+function classifyDisposableRuntimeFailureStage(phase, category) {
+  if (phase === "runFocusedTests") return "C3";
+  if (phase === "cleanup" || phase === "absenceVerification") return "C3-H";
+  if (phase === "admitConstruction") return "P0";
+  if (phase === "deriveProvisioning" || phase === "provision" || phase === "admitConfigured") return "P2";
+  if (constructionP1FailureCategories.has(category)) return "P1";
+  if (constructionP2FailureCategories.has(category)) return "P2";
+  return "P0";
 }
 
 function projectStructuredFailureReceipt(value) {
