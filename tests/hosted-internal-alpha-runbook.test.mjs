@@ -2332,6 +2332,251 @@ async function pathIsPresent(path) {
   }
 }
 
+function createA8SidecarResources(sidecar = null) {
+  return {
+    constructionAuthority: null,
+    configuredAdmission: null,
+    childProcess: null,
+    childExited: true,
+    structuredFailureSidecarSetupAttempted: sidecar !== null,
+    structuredFailureSidecarCreated: sidecar !== null,
+    structuredFailureSidecarEagerCleanupAttempted: false,
+    structuredFailureSidecarCleanupProvenComplete: false,
+    structuredFailureSidecarCleanupPending: sidecar !== null,
+    structuredFailureSidecarAbsenceVerified: false,
+    structuredFailureSidecar: sidecar,
+    focusedCredentialIsolationSetupAttempted: false,
+    focusedCredentialIsolation: null,
+    ownedContainer: false,
+    ownedDatabases: new Set(),
+    containerStartAttempted: false,
+    containerRemoved: false,
+    volumeCreateAttempted: false,
+    volumeCreated: false,
+    volumeRemoved: false,
+  };
+}
+
+function createA8FocusedChildSpawn({ failure = false } = {}) {
+  return (_command, _args, _options) => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stderr.resume = () => {};
+    child.kill = () => true;
+    queueMicrotask(() => {
+      if (!failure) {
+        child.stdout.emit("data", Buffer.from(
+          "# tests 7\n# suites 0\n# pass 7\n# fail 0\n" +
+            "# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 1\n",
+        ));
+      }
+      child.emit("close", failure ? 1 : 0, null);
+    });
+    return child;
+  };
+}
+
+async function runA8FocusedPath(runner, resources, options = {}) {
+  return runner.runFocusedTests({
+    admission: {},
+    urls: {
+      primaryTargetUrl: "postgresql://synthetic/primary",
+      primaryOperatorUrl: "postgresql://synthetic/primary-operator",
+      secondaryTargetUrl: "postgresql://synthetic/secondary",
+      secondaryOperatorUrl: "postgresql://synthetic/secondary-operator",
+    },
+    spawnImpl: createA8FocusedChildSpawn({ failure: options.failure }),
+    resources,
+    parentEnv: {},
+    createSidecarImpl: options.createSidecarImpl,
+    cleanupSidecarImpl: options.cleanupSidecarImpl,
+  });
+}
+
+test("A8-C1 through A8-C14 structured failure sidecar lifecycle controls execute", async (t) => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+
+  await t.test("A8-C1 normal eager cleanup proves exact absence", async () => {
+    const resources = createA8SidecarResources();
+    let sidecar;
+    await runA8FocusedPath(runner, resources, {
+      createSidecarImpl: async () => {
+        sidecar = await runner.createStructuredFailureReceiptSidecar();
+        await writeFile(sidecar.filePath, "receipt", "utf8");
+        await writeFile(sidecar.progressFilePath, "progress", "utf8");
+        return sidecar;
+      },
+    });
+    assert.equal(resources.structuredFailureSidecar, sidecar);
+    assert.equal(resources.structuredFailureSidecarCleanupProvenComplete, true);
+    await runner.cleanupRunnerResources(resources, createA8FocusedChildSpawn());
+    await runner.verifyRunnerAbsence(resources, createA8FocusedChildSpawn(), async () => {});
+    assert.equal(resources.structuredFailureSidecarAbsenceVerified, true);
+  });
+
+  await t.test("A8-C2 transient eager removal failure is retried by outer cleanup", async () => {
+    const resources = createA8SidecarResources();
+    let sidecar;
+    await assert.rejects(() => runA8FocusedPath(runner, resources, {
+      createSidecarImpl: async () => {
+        sidecar = await runner.createStructuredFailureReceiptSidecar();
+        return sidecar;
+      },
+      cleanupSidecarImpl: async () => { throw new Error("transient"); },
+    }));
+    assert.equal(resources.structuredFailureSidecar, sidecar);
+    assert.equal(resources.structuredFailureSidecarCleanupPending, true);
+    await runner.cleanupRunnerResources(resources, createA8FocusedChildSpawn());
+    await runner.verifyRunnerAbsence(resources, createA8FocusedChildSpawn(), async () => {});
+    assert.equal(resources.structuredFailureSidecarCleanupProvenComplete, true);
+  });
+
+  await t.test("A8-C3 persistent removal failure remains terminal residue", async () => {
+    const sidecar = await runner.createStructuredFailureReceiptSidecar();
+    const resources = createA8SidecarResources(sidecar);
+    await assert.rejects(() => runner.cleanupRunnerResources(
+      resources,
+      createA8FocusedChildSpawn(),
+      async () => { throw new Error("persistent"); },
+    ));
+    await assert.rejects(() => runner.verifyRunnerAbsence(
+      resources,
+      createA8FocusedChildSpawn(),
+      async () => {},
+    ));
+    await runner.cleanupStructuredFailureReceiptSidecar(sidecar);
+  });
+
+  await t.test("A8-C4 final verification does not trust cleanup state", async () => {
+    const sidecar = await runner.createStructuredFailureReceiptSidecar();
+    await runner.cleanupStructuredFailureReceiptSidecar(sidecar);
+    const resources = createA8SidecarResources(sidecar);
+    resources.structuredFailureSidecarCleanupProvenComplete = true;
+    await runner.verifyRunnerAbsence(resources, createA8FocusedChildSpawn(), async () => {});
+    assert.equal(resources.structuredFailureSidecarAbsenceVerified, true);
+  });
+
+  await t.test("A8-C5 failed setup invents no cleanup authority", async () => {
+    const resources = createA8SidecarResources();
+    const unrelated = await mkdtemp(join(tmpdir(), "swooshz-platform-migrator-receipt-unrelated-"));
+    let cleanupCalls = 0;
+    await assert.rejects(() => runA8FocusedPath(runner, resources, {
+      createSidecarImpl: async () => { throw new Error("setup"); },
+      cleanupSidecarImpl: async () => { cleanupCalls += 1; },
+    }));
+    assert.equal(resources.structuredFailureSidecarSetupAttempted, true);
+    assert.equal(resources.structuredFailureSidecarCreated, false);
+    assert.equal(resources.structuredFailureSidecar, null);
+    assert.equal(cleanupCalls, 0);
+    assert.equal(await pathIsPresent(unrelated), true);
+    await runner.cleanupRunnerResources(resources, createA8FocusedChildSpawn());
+    await rm(unrelated, { recursive: true, force: true });
+  });
+
+  await t.test("A8-C6 similarly named adjacent directory is untouched", async () => {
+    const root = await mkdtemp(join(tmpdir(), "swooshz-platform-a8-adjacent-"));
+    const sidecar = await runner.createStructuredFailureReceiptSidecar(root);
+    const unrelated = await mkdtemp(join(root, "swooshz-platform-migrator-receipt-unrelated-"));
+    const resources = createA8SidecarResources(sidecar);
+    await runner.cleanupRunnerResources(resources, createA8FocusedChildSpawn());
+    assert.equal(await pathIsPresent(sidecar.directory), false);
+    assert.equal(await pathIsPresent(unrelated), true);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  for (const [control, residue] of [
+    ["A8-C7", "receipt"],
+    ["A8-C8", "progress"],
+    ["A8-C9", "directory"],
+  ]) {
+    await t.test(`${control} detects exact ${residue} residue`, async () => {
+      const sidecar = await runner.createStructuredFailureReceiptSidecar();
+      if (residue === "receipt") await writeFile(sidecar.filePath, "residue", "utf8");
+      if (residue === "progress") await writeFile(sidecar.progressFilePath, "residue", "utf8");
+      await assert.rejects(() => runner.verifyRunnerAbsence(
+        createA8SidecarResources(sidecar),
+        createA8FocusedChildSpawn(),
+        async () => {},
+      ));
+      await runner.cleanupStructuredFailureReceiptSidecar(sidecar);
+    });
+  }
+
+  await t.test("A8-C10 sidecar failure does not skip credential cleanup", async () => {
+    const sidecar = await runner.createStructuredFailureReceiptSidecar();
+    const resources = createA8SidecarResources(sidecar);
+    resources.focusedCredentialIsolationSetupAttempted = true;
+    resources.focusedCredentialIsolation = await runner.createFocusedCredentialIsolation(resources);
+    await assert.rejects(() => runner.cleanupRunnerResources(
+      resources,
+      createA8FocusedChildSpawn(),
+      async () => { throw new Error("persistent"); },
+    ));
+    assert.equal(resources.focusedCredentialIsolationCleaned, true);
+    assert.equal(resources.focusedCredentialIsolationAbsent, true);
+    await runner.cleanupStructuredFailureReceiptSidecar(sidecar);
+  });
+
+  await t.test("A8-C11 sidecar failure does not skip container or volume cleanup", async () => {
+    const sidecar = await runner.createStructuredFailureReceiptSidecar();
+    const spawnImpl = createRun14VolumeSpawn({
+      createdBeforeStart: true,
+      containerPresentBeforeStart: true,
+    });
+    const resources = {
+      ...createA8SidecarResources(sidecar),
+      containerStartAttempted: true,
+      volumeCreateAttempted: true,
+      volumeCreated: true,
+      volumeOwned: true,
+      volumeOwnershipToken: run18VolumeOwnershipToken,
+    };
+    await assert.rejects(() => runner.cleanupRunnerResources(
+      resources,
+      spawnImpl,
+      async () => { throw new Error("persistent"); },
+    ));
+    assert.equal(resources.containerRemoved, true);
+    assert.equal(resources.volumeRemoved, true);
+    await runner.cleanupStructuredFailureReceiptSidecar(sidecar);
+  });
+
+  await t.test("A8-C12 successful retry is idempotent", async () => {
+    const sidecar = await runner.createStructuredFailureReceiptSidecar();
+    const resources = createA8SidecarResources(sidecar);
+    await runner.cleanupRunnerResources(resources, createA8FocusedChildSpawn());
+    await runner.cleanupRunnerResources(resources, createA8FocusedChildSpawn());
+    await runner.verifyRunnerAbsence(resources, createA8FocusedChildSpawn(), async () => {});
+    assert.equal(resources.structuredFailureSidecarCleanupPending, false);
+  });
+
+  await t.test("A8-C13 success and diagnostic failure retain identical authority", async () => {
+    for (const failure of [false, true]) {
+      const resources = createA8SidecarResources();
+      const invocation = runA8FocusedPath(runner, resources, { failure });
+      if (failure) await assert.rejects(() => invocation);
+      else await invocation;
+      assert.equal(resources.structuredFailureSidecarCreated, true);
+      assert.equal(Object.isFrozen(resources.structuredFailureSidecar), true);
+      assert.equal(resources.structuredFailureSidecarCleanupProvenComplete, true);
+      await runner.cleanupRunnerResources(resources, createA8FocusedChildSpawn());
+    }
+  });
+
+  await t.test("A8-C14 rejected paths leave no isolated-root artifact", async () => {
+    const root = await mkdtemp(join(tmpdir(), "swooshz-platform-a8-interruption-"));
+    const resources = createA8SidecarResources();
+    await assert.rejects(() => runA8FocusedPath(runner, resources, {
+      failure: true,
+      createSidecarImpl: () => runner.createStructuredFailureReceiptSidecar(root),
+    }));
+    await runner.cleanupRunnerResources(resources, createA8FocusedChildSpawn());
+    assert.deepEqual(await readdir(root), []);
+    await rm(root, { recursive: true, force: true });
+  });
+});
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

@@ -209,6 +209,13 @@ export async function run({
         childSummaryParsed: false,
         structuredChildReceipt: null,
         structuredChildProgress: null,
+        structuredFailureSidecarSetupAttempted: false,
+        structuredFailureSidecarCreated: false,
+        structuredFailureSidecarEagerCleanupAttempted: false,
+        structuredFailureSidecarCleanupProvenComplete: false,
+        structuredFailureSidecarCleanupPending: false,
+        structuredFailureSidecarAbsenceVerified: false,
+        structuredFailureSidecar: null,
         containerStarted: false,
         postgresReady: false,
         constructionAdmission: false,
@@ -947,6 +954,21 @@ export async function cleanupStructuredFailureReceiptSidecar(sidecar) {
   }
   if (cleanupFailed) throw new Error();
 }
+export async function verifyStructuredFailureReceiptSidecarAbsence(
+  sidecar,
+  accessImpl = access,
+) {
+  for (const path of [sidecar?.filePath, sidecar?.progressFilePath, sidecar?.directory]) {
+    if (typeof path !== "string" || path.length === 0) throw new Error();
+    try {
+      await accessImpl(path);
+      throw new Error();
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
+}
+
 function projectStructuredChildProgress(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   if (value.version !== 1 || typeof value.test_id !== "string") return null;
@@ -1338,7 +1360,15 @@ async function provisionFixture(
   }
 }
 
-async function runFocusedTests({ admission, urls, spawnImpl, resources, parentEnv }) {
+export async function runFocusedTests({
+  admission,
+  urls,
+  spawnImpl,
+  resources,
+  parentEnv,
+  createSidecarImpl = createStructuredFailureReceiptSidecar,
+  cleanupSidecarImpl = cleanupStructuredFailureReceiptSidecar,
+}) {
   resources.focusedCredentialIsolationSetupAttempted = true;
   const isolation = await createFocusedCredentialIsolation(resources);
   resources.focusedCredentialIsolation = isolation;
@@ -1369,9 +1399,12 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources, parentEn
     MIGRATOR_ALIGNMENT_TEST_SECONDARY_OPERATOR_URL: urls.secondaryOperatorUrl,
     MIGRATOR_ALIGNMENT_TEST_CONFIRM: "disposable-only",
   };
-  let sidecar = null;
+  resources.structuredFailureSidecarSetupAttempted = true;
   try {
-    sidecar = await createStructuredFailureReceiptSidecar();
+    const sidecar = await createSidecarImpl();
+    resources.structuredFailureSidecar = sidecar;
+    resources.structuredFailureSidecarCreated = true;
+    resources.structuredFailureSidecarCleanupPending = true;
     await new Promise((resolvePromise, reject) => {
       const childEnv = {
         ...env,
@@ -1487,8 +1520,17 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources, parentEn
       });
     });
   } finally {
-    if (sidecar) {
-      await cleanupStructuredFailureReceiptSidecar(sidecar);
+    if (resources.structuredFailureSidecarCreated) {
+      resources.structuredFailureSidecarEagerCleanupAttempted = true;
+      try {
+        await cleanupSidecarImpl(resources.structuredFailureSidecar);
+        resources.structuredFailureSidecarCleanupProvenComplete = true;
+        resources.structuredFailureSidecarCleanupPending = false;
+      } catch (error) {
+        resources.structuredFailureSidecarCleanupProvenComplete = false;
+        resources.structuredFailureSidecarCleanupPending = true;
+        throw error;
+      }
     }
   }
   void admission;
@@ -1520,7 +1562,11 @@ async function reconcileOwnedContainerRemoval(spawnImpl, resources) {
     return "absent";
   }
 }
-export async function cleanupRunnerResources(resources, spawnImpl) {
+export async function cleanupRunnerResources(
+  resources,
+  spawnImpl,
+  cleanupSidecarImpl = cleanupStructuredFailureReceiptSidecar,
+) {
   let firstError = null;
   try {
     if (resources.constructionAuthority) {
@@ -1541,6 +1587,21 @@ export async function cleanupRunnerResources(resources, spawnImpl) {
   try {
     await terminateOwnedChild(resources);
   } catch {
+    firstError ??= new Error();
+  }
+  try {
+    if (
+      resources.structuredFailureSidecarSetupAttempted &&
+      resources.structuredFailureSidecarCreated &&
+      !resources.structuredFailureSidecarCleanupProvenComplete
+    ) {
+      await cleanupSidecarImpl(resources.structuredFailureSidecar);
+      resources.structuredFailureSidecarCleanupProvenComplete = true;
+      resources.structuredFailureSidecarCleanupPending = false;
+    }
+  } catch {
+    resources.structuredFailureSidecarCleanupProvenComplete = false;
+    resources.structuredFailureSidecarCleanupPending = true;
     firstError ??= new Error();
   }
   try {
@@ -1619,6 +1680,17 @@ export async function verifyRunnerAbsence(
   spawnImpl,
   assertPortAbsentImpl = assertPortAbsent,
 ) {
+  if (resources.structuredFailureSidecarSetupAttempted) {
+    if (resources.structuredFailureSidecarCreated) {
+      await verifyStructuredFailureReceiptSidecarAbsence(
+        resources.structuredFailureSidecar,
+      );
+      resources.structuredFailureSidecarAbsenceVerified = true;
+      resources.structuredFailureSidecarCleanupPending = false;
+    } else if (resources.structuredFailureSidecar !== null) {
+      throw new Error();
+    }
+  }
   if (resources.focusedCredentialIsolationSetupAttempted) {
     await verifyFocusedCredentialIsolationAbsence(resources);
   }
