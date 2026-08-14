@@ -438,6 +438,15 @@ test("the disposable migrator alignment rehearsal surfaces exist with a fixed pu
   await assertRehearsalSurface();
 });
 
+test("the runbook distinguishes mechanical DROP rejection from controller-gated NOLOGIN", async () => {
+  const runbook = await readRunbook();
+  assert.match(runbook, /\x60DROP ROLE platform_app\x60 is mechanically rejected while dependent objects or ownership remain/i);
+  assert.match(runbook, /\x60ALTER ROLE platform_app NOLOGIN\x60 is not mechanically prevented by PostgreSQL/i);
+  assert.match(runbook, /controller-sequenced and separately live-authorised/i);
+  assert.match(runbook, /disposable rehearsal deliberately proves only reversible NOLOGIN behaviour/i);
+  assert.match(runbook, /no live NOLOGIN authority is granted/i);
+  assert.match(runbook, /legacy authority remains available for rollback until the completion point/i);
+});
 test("Run-12 dedicated migrator volume finality contract is complete", async () => {
   const runner = await readFile(
     "scripts/run-disposable-migrator-alignment-tests.mjs",
@@ -1015,6 +1024,49 @@ test("zero child exit succeeds without a failure sidecar", async () => {
   assert.equal(result.directoryPresentAfterCleanup, false);
 });
 
+test("zero-exit migrator child summary validation fails closed except for the exact seven-test shape", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const summary = ({
+    tests = 7,
+    suites = 0,
+    passed = 7,
+    failed = 0,
+    cancelled = 0,
+    skipped = 0,
+    todo = 0,
+    duration = "12.5",
+  } = {}) =>
+    [
+      "# tests " + tests,
+      "# suites " + suites,
+      "# pass " + passed,
+      "# fail " + failed,
+      "# cancelled " + cancelled,
+      "# skipped " + skipped,
+      "# todo " + todo,
+      "# duration_ms " + duration,
+    ].join("\n");
+  const exactSummary = summary();
+  const controls = [
+    ["zero exit + missing summary", ""],
+    ["zero exit + malformed summary", "# tests 7\n# suites 0\n# pass 7"],
+    ["zero exit + wrong totals", summary({ tests: 6, passed: 6 })],
+    ["zero exit + unexpected skipped count", summary({ passed: 6, skipped: 1 })],
+    ["zero exit + duplicated summary", exactSummary + "\n" + exactSummary],
+    ["zero exit + inconsistent totals", summary({ failed: 1 })],
+  ];
+  for (const [label, output] of controls) {
+    assert.equal(
+      runner.validateDisposableMigratorAlignmentChildSummary({ code: 0, signal: null, output }),
+      null,
+      label,
+    );
+  }
+  assert.deepEqual(
+    runner.validateDisposableMigratorAlignmentChildSummary({ code: 0, signal: null, output: exactSummary }),
+    { cancelled: 0, failed: 0, passed: 7, skipped: 0, todo: 0, total: 7 },
+  );
+});
 async function runStructuredReceiptTransportChild(runner, mode) {
   const sidecar = await runner.createStructuredFailureReceiptSidecar();
   const output = { stdout: "", stderr: "" };
@@ -1761,6 +1813,7 @@ function escapeRegExp(value) {
 }
 
 const run14OwnedVolumeName = "deepseek-platform128-pg17-data";
+const run29OwnedContainerName = "deepseek-platform128-pg17";
 const run18VolumeOwnershipToken = "run18-owned-token";
 const run18VolumeOwnershipTokenLabelKey = "com.swooshz.platform.runner-token";
 
@@ -1780,6 +1833,8 @@ function createRun14VolumeSpawn({
   createExitCode = 0,
   signalOnCreate = false,
   createdBeforeStart = false,
+  containerPresentBeforeStart = false,
+  containerRemovalExitCode = 0,
   createdLabels = {
     "com.swooshz.platform.runner": "deepseek-platform128-migrator",
     [run18VolumeOwnershipTokenLabelKey]: run18VolumeOwnershipToken,
@@ -1787,6 +1842,7 @@ function createRun14VolumeSpawn({
   inspectOutput,
 } = {}) {
   let exists = createdBeforeStart;
+  let containerExists = containerPresentBeforeStart;
   let labels = { ...createdLabels };
   const calls = [];
   const spawnImpl = (command, args, options = {}) => {
@@ -1801,8 +1857,16 @@ function createRun14VolumeSpawn({
       let stdout = "";
       let code = 0;
       let signal = null;
-      if (args.includes("ls")) {
-        stdout = exists ? `${run14OwnedVolumeName}\n` : "";
+      if (args[0] === "ps") {
+        stdout = containerExists ? run29OwnedContainerName + "\n" : "";
+      } else if (args[0] === "rm" && args[1] === "--force") {
+        code = containerRemovalExitCode;
+        if (code === 0) {
+          containerExists = false;
+          stdout = run29OwnedContainerName + "\n";
+        }
+      } else if (args.includes("ls")) {
+        stdout = exists ? run14OwnedVolumeName + "\n" : "";
       } else if (args.includes("inspect")) {
         stdout = inspectOutput ?? `${JSON.stringify({ Name: run14OwnedVolumeName, Labels: labels })}\n`;
       } else if (args.includes("create")) {
@@ -1827,7 +1891,7 @@ function createRun14VolumeSpawn({
 }
 
 function run14VolumeRmCalls(spawnImpl) {
-  return spawnImpl.calls.filter(({ args }) => args.includes("rm"));
+  return spawnImpl.calls.filter(({ args }) => args[0] === "volume" && args[1] === "rm");
 }
 
 test("Run-14 named-volume cleanup reconciles daemon-side create ambiguity by exact ownership", async () => {
@@ -1959,6 +2023,47 @@ test("Run-15 malformed and ambiguous volume inspection evidence fails closed", a
   }
 });
 
+test("Run-29 failed container-start cleanup reconciles exact absence before token-owned volume removal", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const spawnImpl = createRun14VolumeSpawn({ createdBeforeStart: true, containerRemovalExitCode: 1 });
+  const resources = {
+    constructionAuthority: null,
+    configuredAdmission: null,
+    childProcess: null,
+    childExited: true,
+    focusedCredentialIsolationSetupAttempted: false,
+    ownedContainer: false,
+    ownedDatabases: new Set(),
+    containerStartAttempted: true,
+    containerRemoved: false,
+    volumeCreateAttempted: true,
+    volumeCreated: true,
+    volumeOwned: true,
+    volumeRemoved: false,
+    volumeOwnershipToken: run18VolumeOwnershipToken,
+  };
+  await runner.cleanupRunnerResources(resources, spawnImpl);
+  assert.equal(resources.containerRemoved, true);
+  assert.equal(resources.volumeRemoved, true);
+  assert.equal(
+    spawnImpl.calls.filter(({ args }) => args[0] === "rm" && args[1] === "--force").length,
+    1,
+  );
+  assert.equal(
+    spawnImpl.calls.some(
+      ({ args }) =>
+        args[0] === "ps" &&
+        args.includes("name=^/" + run29OwnedContainerName + "$"),
+    ),
+    true,
+  );
+  assert.equal(run14VolumeRmCalls(spawnImpl).length, 1);
+  await runner.verifyRunnerAbsence(resources, spawnImpl, async () => {});
+  assert.deepEqual(
+    await runner.inspectOwnedVolumeOwnership(spawnImpl, run18VolumeOwnershipToken),
+    { state: "absent" },
+  );
+});
 test("Run-14 focused child environment replaces PostgreSQL password-file discovery and retains benign env", async () => {
   const { buildFocusedTestEnvironment } = await import(
     "../scripts/run-disposable-migrator-alignment-tests.mjs",

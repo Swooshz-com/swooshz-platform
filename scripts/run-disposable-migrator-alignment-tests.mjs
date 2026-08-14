@@ -31,6 +31,8 @@ const ownedVolumeName = "deepseek-platform128-pg17-data";
 const volumeOwnershipTokenLabelKey = "com.swooshz.platform.runner-token";
 const ownedPort = 56432;
 const maxChildOutputBytes = 64 * 1024;
+const maxChildDurationMs = 120_000;
+const expectedPostgresTestCount = 7;
 const focusedCredentialIsolationDirectoryPrefix = "swooshz-platform-pgpass-isolation-";
 const syntheticMigratorPassword = "synthetic-migrator-password";
 const structuredFailureReceiptPrefix = "PLATFORM_MIGRATOR_FAILURE_V1=";
@@ -134,6 +136,7 @@ const failureCategories = new Set([
   "child_test_spawn",
   "child_test_failure",
   "structured_child_receipt_missing",
+  "child_summary_parse",
   "structured_child_failure_receipt_absent_with_progress",
   "structured_child_failure_receipt_invalid",
   "structured_child_context_missing",
@@ -542,6 +545,128 @@ function formatDisposableRuntimeFailureDiagnostic(resources = {}) {
   return fields.join("; ");
 }
 
+export function parseDisposableMigratorAlignmentTestSummary(output) {
+  if (
+    typeof output !== "string" ||
+    Buffer.byteLength(output, "utf8") > maxChildOutputBytes
+  ) {
+    return null;
+  }
+  const normalised = output
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "")
+    .replace(/\r\n?/gu, "\n");
+  const lines = normalised.split("\n");
+  while (lines.at(-1) === "") lines.pop();
+  if (lines.length === 0) return null;
+
+  const fieldPattern =
+    /^\s*([#ℹ])\s+(tests|suites|pass|fail|cancelled|skipped|todo|duration_ms)(?:\s+([^\s].*?))?\s*$/u;
+  const summaryStarts = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = lines[index].match(fieldPattern);
+    if (match?.[2] === "tests") summaryStarts.push(index);
+  }
+  if (summaryStarts.length !== 1) return null;
+  const start = summaryStarts[0];
+  const fields = new Map();
+  let marker = null;
+  let expectedIndex = 0;
+  const expectedFields = [
+    "tests",
+    "suites",
+    "pass",
+    "fail",
+    "cancelled",
+    "skipped",
+    "todo",
+    "duration_ms",
+  ];
+  for (let index = start; index < lines.length; index += 1) {
+    const match = lines[index].match(fieldPattern);
+    if (!match || (marker !== null && match[1] !== marker)) return null;
+    marker ??= match[1];
+    if (match[2] !== expectedFields[expectedIndex] || fields.has(match[2])) {
+      return null;
+    }
+    if (typeof match[3] !== "string" || match[3].length === 0) return null;
+    fields.set(match[2], match[3]);
+    expectedIndex += 1;
+    if (match[2] === "duration_ms") {
+      if (index !== lines.length - 1) return null;
+      break;
+    }
+  }
+  if (expectedIndex !== expectedFields.length) return null;
+  if (start > 0) {
+    for (const line of lines.slice(0, start)) {
+      if (fieldPattern.test(line)) return null;
+    }
+  }
+
+  const counts = {};
+  for (const field of [
+    "tests",
+    "suites",
+    "pass",
+    "fail",
+    "cancelled",
+    "skipped",
+    "todo",
+  ]) {
+    const value = fields.get(field);
+    if (!/^(?:0|[1-9]\d*)$/u.test(value)) return null;
+    const count = Number(value);
+    if (!Number.isSafeInteger(count)) return null;
+    counts[field] = count;
+  }
+  if (
+    counts.tests !== expectedPostgresTestCount ||
+    counts.suites !== 0 ||
+    counts.pass !== expectedPostgresTestCount ||
+    counts.fail !== 0 ||
+    counts.skipped !== 0 ||
+    counts.cancelled !== 0 ||
+    counts.todo !== 0 ||
+    counts.pass +
+      counts.fail +
+      counts.skipped +
+      counts.cancelled +
+      counts.todo !==
+      counts.tests
+  ) {
+    return null;
+  }
+  const durationText = fields.get("duration_ms");
+  if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(durationText)) {
+    return null;
+  }
+  const durationMs = Number(durationText);
+  if (
+    !Number.isFinite(durationMs) ||
+    durationMs < 0 ||
+    durationMs > maxChildDurationMs ||
+    String(durationMs) !== durationText
+  ) {
+    return null;
+  }
+  return {
+    cancelled: counts.cancelled,
+    failed: counts.fail,
+    passed: counts.pass,
+    skipped: counts.skipped,
+    todo: counts.todo,
+    total: counts.tests,
+  };
+}
+
+export function validateDisposableMigratorAlignmentChildSummary({
+  code,
+  signal,
+  output,
+} = {}) {
+  if (code !== 0 || signal !== null) return null;
+  return parseDisposableMigratorAlignmentTestSummary(output);
+}
 function classifyDisposableRuntimeFailureStage(phase, category) {
   if (phase === "runFocusedTests") return "C3";
   if (phase === "cleanup" || phase === "absenceVerification") return "C3-H";
@@ -1170,6 +1295,7 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources, parentEn
         [structuredFailureReceiptFileEnvironmentVariable]: sidecar.filePath,
         [structuredFailureProgressFileEnvironmentVariable]: sidecar.progressFilePath,
       };
+      const output = [];
       let outputLength = 0;
       let outputOverflow = false;
       let child;
@@ -1194,8 +1320,13 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources, parentEn
       resources.childExited = false;
       resources.childTestsStarted = true;
       child.stdout?.on("data", (chunk) => {
-        outputLength += Buffer.from(chunk).length;
-        if (outputLength > maxChildOutputBytes) outputOverflow = true;
+        const buffer = Buffer.from(chunk);
+        outputLength += buffer.length;
+        if (outputLength <= maxChildOutputBytes) {
+          output.push(buffer);
+        } else {
+          outputOverflow = true;
+        }
       });
       child.stderr?.resume();
       child.once("error", (error) => {
@@ -1251,10 +1382,22 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources, parentEn
           return;
         }
         if (code === 0 && signal === null) {
-          // Retained as completion evidence for the existing lifecycle contract; no reporter text is parsed.
+          const summary =
+            validateDisposableMigratorAlignmentChildSummary({
+              code,
+              signal,
+              output: Buffer.concat(output).toString("utf8"),
+            });
+          if (!summary) {
+            markChildFailure(resources, "child_summary_parse");
+            reject(new Error());
+            return;
+          }
           resources.childSummaryParsed = true;
           process.stdout.write(
-            "Disposable PostgreSQL 17 migrator alignment child exited successfully.\n",
+            `Disposable PostgreSQL 17 migrator alignment tests: ${summary.total} tests, ` +
+              `${summary.passed} passed, ${summary.failed} failed, ` +
+              `${summary.skipped} skipped.\n`,
           );
           resolvePromise();
         }
@@ -1275,7 +1418,26 @@ function markChildFailure(resources, category) {
   }
 }
 
-async function cleanupRunnerResources(resources, spawnImpl) {
+async function reconcileOwnedContainerRemoval(spawnImpl, resources) {
+  if (!resources.containerStartAttempted || resources.containerRemoved) {
+    return "not-required";
+  }
+  try {
+    await runCommand(spawnImpl, "docker", [
+      "rm",
+      "--force",
+      ownedContainerName,
+    ]);
+    resources.containerRemoved = true;
+    return "removed";
+  } catch (removalError) {
+    const names = await assertExactContainerAbsent(spawnImpl);
+    if (names !== "") throw removalError;
+    resources.containerRemoved = true;
+    return "absent";
+  }
+}
+export async function cleanupRunnerResources(resources, spawnImpl) {
   let firstError = null;
   try {
     if (resources.constructionAuthority) {
@@ -1310,12 +1472,7 @@ async function cleanupRunnerResources(resources, spawnImpl) {
   }
   if (resources.containerStartAttempted) {
     try {
-      await runCommand(spawnImpl, "docker", [
-        "rm",
-        "--force",
-        ownedContainerName,
-      ]);
-      resources.containerRemoved = true;
+      await reconcileOwnedContainerRemoval(spawnImpl, resources);
     } catch {
       firstError ??= new Error();
     }
@@ -1374,7 +1531,11 @@ async function cleanupFixtureDatabases(resources) {
   }
 }
 
-async function verifyRunnerAbsence(resources, spawnImpl) {
+export async function verifyRunnerAbsence(
+  resources,
+  spawnImpl,
+  assertPortAbsentImpl = assertPortAbsent,
+) {
   if (resources.focusedCredentialIsolationSetupAttempted) {
     await verifyFocusedCredentialIsolationAbsence(resources);
   }
@@ -1395,7 +1556,7 @@ async function verifyRunnerAbsence(resources, spawnImpl) {
     resources.volumeAbsenceVerified = true;
     if (resources.volumeCreated && !resources.volumeRemoved) throw new Error();
   }
-  await assertPortAbsent();
+  await assertPortAbsentImpl();
 }
 
 async function terminateOwnedChild(resources) {
