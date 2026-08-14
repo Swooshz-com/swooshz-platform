@@ -5,11 +5,12 @@ import {
   access,
   mkdtemp,
   readFile,
+  readdir,
   rm,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 
 const runbookPath = "docs/hosted-internal-alpha-runbook.md";
@@ -573,6 +574,38 @@ test("Run-12 dedicated migrator volume finality contract is complete", async () 
   );
 });
 
+test("A6 structural source shape centralizes exact volume and temporary-root authority", async () => {
+  const runner = await readFile(
+    "scripts/run-disposable-migrator-alignment-tests.mjs",
+    "utf8",
+  );
+  assert.match(
+    runner,
+    /const ownedVolumeExactNameFilter = `name=\^\$\{ownedVolumeName\}\$`;/,
+  );
+  assert.equal(
+    (runner.match(
+      /const presence = await inspectExactOwnedVolumePresence\(spawnImpl\);/g,
+    ) ?? []).length,
+    2,
+  );
+  assert.doesNotMatch(runner, /`name=\$\{ownedVolumeName\}`/);
+  assert.equal(
+    (runner.match(
+      /const temporaryRoot = resolveOutsideRepositoryTemporaryRoot\(temporaryRootPath\);/g,
+    ) ?? []).length,
+    2,
+  );
+  assert.doesNotMatch(
+    runner,
+    /temporaryRootRelativeToRepository\.startsWith\("\.\."\)/,
+  );
+  assert.match(
+    runner,
+    /temporaryRootRelativeToRepository\.startsWith\(`\.\.\$\{sep\}`\)/,
+  );
+});
+
 test("disposable PostgreSQL runners use loopback binding with runtime ephemeral allocation", async () => {
   const migratorRunner = await readFile(
     "scripts/run-disposable-migrator-alignment-tests.mjs",
@@ -681,9 +714,12 @@ test("structured migrator failure receipts use an out-of-band sidecar at the act
   assert.equal(result.filePresentAfterCleanup, false);
   assert.equal(result.directoryPresentAfterCleanup, false);
   assert.ok(resolve(result.filePath).startsWith(resolve(tmpdir())));
-  assert.notEqual(
-    relative(resolve(process.cwd()), resolve(result.filePath)).startsWith(".."),
-    false,
+  assert.equal(
+    runner.isTemporaryRootOutsideRepository(
+      resolve(process.cwd()),
+      resolve(result.filePath),
+    ),
+    true,
     "sidecar must be outside the repository",
   );
   assert.equal(
@@ -724,6 +760,109 @@ test("structured migrator failure receipts use an out-of-band sidecar at the act
   assert.match(publicReceipt, /"child_exit_code":1/);
   assert.match(publicReceipt, /"child_signal":null/);
   assert.match(publicReceipt, /"transport_state":"failure_receipt_write_armed"/);
+});
+
+test("A6-T1 through A6-T5 shared temporary-root classification uses path components", async () => {
+  const runner = await import(
+    "../scripts/run-disposable-migrator-alignment-tests.mjs"
+  );
+  const repositoryRoot = resolve(process.cwd());
+  const rejectedPaths = [
+    ["A6-T1 repository root", repositoryRoot],
+    ["A6-T2 normal in-repository child", join(repositoryRoot, "tests")],
+    ["A6-T2 in-repository .tmp child", join(repositoryRoot, ".tmp")],
+    ["A6-T3 in-repository ..cache child", join(repositoryRoot, "..cache")],
+    ["A6-T4 in-repository ..anything child", join(repositoryRoot, "..anything")],
+  ];
+  for (const [label, candidate] of rejectedPaths) {
+    assert.equal(
+      runner.isTemporaryRootOutsideRepository(repositoryRoot, candidate),
+      false,
+      label,
+    );
+  }
+  assert.equal(
+    runner.isTemporaryRootOutsideRepository(
+      repositoryRoot,
+      resolve(repositoryRoot, "..", "swooshz-run30-outside-root"),
+    ),
+    true,
+    "A6-T5 genuine outside temporary root",
+  );
+  assert.equal(
+    runner.isTemporaryRootOutsideRepository(repositoryRoot, null),
+    false,
+    "ambiguous candidate classification must fail closed",
+  );
+  if (process.platform === "win32") {
+    const crossDriveLetter = repositoryRoot[0].toUpperCase() === "Z" ? "Y" : "Z";
+    assert.equal(
+      runner.isTemporaryRootOutsideRepository(
+        repositoryRoot,
+        `${crossDriveLetter}:\\swooshz-run30-outside-root`,
+      ),
+      true,
+      "cross-drive absolute temporary root must remain supported on Windows",
+    );
+  }
+});
+
+test("A6-T6 through A6-T8 both temporary-root consumers fail closed without worktree artifacts", async () => {
+  const runner = await import(
+    "../scripts/run-disposable-migrator-alignment-tests.mjs"
+  );
+  const repositoryRoot = resolve(process.cwd());
+  const inRepositoryDotPrefixRoot = await mkdtemp(
+    join(repositoryRoot, "..cache-a6-temp-root-"),
+  );
+  const resources = {
+    focusedCredentialIsolation: null,
+    focusedCredentialIsolationCleaned: false,
+    focusedCredentialIsolationAbsent: false,
+  };
+  try {
+    assert.equal(
+      runner.isTemporaryRootOutsideRepository(
+        repositoryRoot,
+        inRepositoryDotPrefixRoot,
+      ),
+      false,
+      "the in-repository ..cache fixture must not be classified as outside",
+    );
+    await assert.rejects(
+      () => runner.createStructuredFailureReceiptSidecar(
+        inRepositoryDotPrefixRoot,
+      ),
+      "A6-T6 receipt sidecars must not be created inside the repository",
+    );
+    assert.deepEqual(
+      await readdir(inRepositoryDotPrefixRoot),
+      [],
+      "receipt rejection must leave the controlled worktree fixture empty",
+    );
+    await assert.rejects(
+      () => runner.createFocusedCredentialIsolation(
+        resources,
+        inRepositoryDotPrefixRoot,
+      ),
+      "A6-T7 credential fixtures must not be created inside the repository",
+    );
+    assert.deepEqual(
+      await readdir(inRepositoryDotPrefixRoot),
+      [],
+      "credential rejection must leave the controlled worktree fixture empty",
+    );
+    assert.equal(resources.focusedCredentialIsolation, null);
+    assert.equal(resources.focusedCredentialIsolationCleaned, false);
+    assert.equal(resources.focusedCredentialIsolationAbsent, false);
+  } finally {
+    await rm(inRepositoryDotPrefixRoot, { recursive: true, force: true });
+  }
+  assert.equal(
+    await pathIsPresent(inRepositoryDotPrefixRoot),
+    false,
+    "A6-T8 the controlled worktree fixture must be absent after error cleanup",
+  );
 });
 
 test("abrupt child exit leaves durable progress without a final receipt", async () => {
@@ -1813,6 +1952,7 @@ function escapeRegExp(value) {
 }
 
 const run14OwnedVolumeName = "deepseek-platform128-pg17-data";
+const run30SimilarlyNamedCallerVolumeName = `${run14OwnedVolumeName}-caller-managed`;
 const run29OwnedContainerName = "deepseek-platform128-pg17";
 const run18VolumeOwnershipToken = "run18-owned-token";
 const run18VolumeOwnershipTokenLabelKey = "com.swooshz.platform.runner-token";
@@ -1835,6 +1975,10 @@ function createRun14VolumeSpawn({
   createdBeforeStart = false,
   containerPresentBeforeStart = false,
   containerRemovalExitCode = 0,
+  similarlyNamedVolumePresentBeforeStart = false,
+  volumeRemovalExitCode = 0,
+  signalOnVolumeRemoval = false,
+  removeExactVolumeOnRemovalAttempt = true,
   createdLabels = {
     "com.swooshz.platform.runner": "deepseek-platform128-migrator",
     [run18VolumeOwnershipTokenLabelKey]: run18VolumeOwnershipToken,
@@ -1842,6 +1986,7 @@ function createRun14VolumeSpawn({
   inspectOutput,
 } = {}) {
   let exists = createdBeforeStart;
+  let similarlyNamedExists = similarlyNamedVolumePresentBeforeStart;
   let containerExists = containerPresentBeforeStart;
   let labels = { ...createdLabels };
   const calls = [];
@@ -1866,7 +2011,17 @@ function createRun14VolumeSpawn({
           stdout = run29OwnedContainerName + "\n";
         }
       } else if (args.includes("ls")) {
-        stdout = exists ? run14OwnedVolumeName + "\n" : "";
+        const filterIndex = args.indexOf("--filter");
+        const nameFilter = filterIndex >= 0 ? args[filterIndex + 1] : null;
+        const names = [];
+        if (exists) names.push(run14OwnedVolumeName);
+        if (
+          similarlyNamedExists &&
+          nameFilter !== `name=^${run14OwnedVolumeName}$`
+        ) {
+          names.push(run30SimilarlyNamedCallerVolumeName);
+        }
+        stdout = names.length > 0 ? names.join("\n") + "\n" : "";
       } else if (args.includes("inspect")) {
         stdout = inspectOutput ?? `${JSON.stringify({ Name: run14OwnedVolumeName, Labels: labels })}\n`;
       } else if (args.includes("create")) {
@@ -1878,7 +2033,11 @@ function createRun14VolumeSpawn({
           signal = "SIGTERM";
         }
       } else if (args.includes("rm")) {
-        exists = false;
+        if (removeExactVolumeOnRemovalAttempt || volumeRemovalExitCode === 0) {
+          exists = false;
+        }
+        code = signalOnVolumeRemoval ? null : volumeRemovalExitCode;
+        signal = signalOnVolumeRemoval ? "SIGTERM" : null;
         stdout = `${run14OwnedVolumeName}\n`;
       }
       if (stdout) child.stdout.emit("data", Buffer.from(stdout));
@@ -1887,11 +2046,29 @@ function createRun14VolumeSpawn({
     return child;
   };
   spawnImpl.calls = calls;
+  spawnImpl.exactVolumeExists = () => exists;
+  spawnImpl.similarlyNamedVolumeExists = () => similarlyNamedExists;
   return spawnImpl;
 }
 
 function run14VolumeRmCalls(spawnImpl) {
   return spawnImpl.calls.filter(({ args }) => args[0] === "volume" && args[1] === "rm");
+}
+
+function createA6OwnedVolumeResources() {
+  return {
+    focusedCredentialIsolationSetupAttempted: false,
+    childProcess: null,
+    childExited: true,
+    volumeCreateAttempted: true,
+    volumeCreated: true,
+    volumeOwned: true,
+    volumeRemoved: false,
+    volumeAbsenceVerified: false,
+    containerStartAttempted: false,
+    containerRemoved: false,
+    volumeOwnershipToken: run18VolumeOwnershipToken,
+  };
 }
 
 test("Run-14 named-volume cleanup reconciles daemon-side create ambiguity by exact ownership", async () => {
@@ -2021,6 +2198,143 @@ test("Run-15 malformed and ambiguous volume inspection evidence fails closed", a
       label + " volume must remain present and unowned by proof",
     );
   }
+});
+
+test("A6-V1 exact-name ownership ignores similarly named caller-managed coexistence", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const spawnImpl = createRun14VolumeSpawn({
+    createdBeforeStart: true,
+    similarlyNamedVolumePresentBeforeStart: true,
+  });
+  assert.deepEqual(
+    await runner.inspectOwnedVolumeOwnership(
+      spawnImpl,
+      run18VolumeOwnershipToken,
+    ),
+    { state: "owned" },
+  );
+  const resources = createA6OwnedVolumeResources();
+  assert.equal(
+    await runner.cleanupOwnedVolumeAfterCreateAttempt(spawnImpl, resources),
+    "removed",
+  );
+  assert.equal(resources.volumeRemoved, true);
+  assert.equal(spawnImpl.exactVolumeExists(), false);
+  assert.equal(spawnImpl.similarlyNamedVolumeExists(), true);
+  assert.deepEqual(
+    run14VolumeRmCalls(spawnImpl).map(({ args }) => args[2]),
+    [run14OwnedVolumeName],
+  );
+  const volumeListCalls = spawnImpl.calls.filter(
+    ({ args }) => args[0] === "volume" && args[1] === "ls",
+  );
+  assert.ok(volumeListCalls.length > 0);
+  assert.equal(
+    volumeListCalls.every(({ args }) => {
+      const filterIndex = args.indexOf("--filter");
+      return args[filterIndex + 1] === `name=^${run14OwnedVolumeName}$`;
+    }),
+    true,
+  );
+  assert.deepEqual(
+    await runner.inspectOwnedVolumeOwnership(
+      spawnImpl,
+      run18VolumeOwnershipToken,
+    ),
+    { state: "absent" },
+  );
+  assert.equal(spawnImpl.similarlyNamedVolumeExists(), true);
+});
+
+test("A6-V2 wrong-label and wrong-token exact volumes have no removal authority", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const cases = [
+    {
+      label: "missing runner ownership marker",
+      labels: { [run18VolumeOwnershipTokenLabelKey]: run18VolumeOwnershipToken },
+    },
+    {
+      label: "wrong per-run ownership token",
+      labels: {
+        "com.swooshz.platform.runner": "deepseek-platform128-migrator",
+        [run18VolumeOwnershipTokenLabelKey]: "another-run-token",
+      },
+    },
+    {
+      label: "missing per-run ownership token",
+      labels: {
+        "com.swooshz.platform.runner": "deepseek-platform128-migrator",
+      },
+      omitOwnershipToken: true,
+    },
+  ];
+  for (const { label, labels, omitOwnershipToken = false } of cases) {
+    const spawnImpl = createRun14VolumeSpawn({
+      createdBeforeStart: true,
+      createdLabels: labels,
+    });
+    const resources = createA6OwnedVolumeResources();
+    if (omitOwnershipToken) delete resources.volumeOwnershipToken;
+    await assert.rejects(
+      () => runner.cleanupOwnedVolumeAfterCreateAttempt(spawnImpl, resources),
+      /owned volume evidence was unowned/,
+      label,
+    );
+    assert.equal(resources.volumeRemoved, false, label);
+    assert.equal(run14VolumeRmCalls(spawnImpl).length, 0, label);
+    assert.equal(spawnImpl.exactVolumeExists(), true, label);
+  }
+});
+
+test("A6-V3 daemon-side volume removal reconciles client nonzero and signal failures", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  for (const failureMode of ["nonzero", "signal"]) {
+    const spawnImpl = createRun14VolumeSpawn({
+      createdBeforeStart: true,
+      volumeRemovalExitCode: failureMode === "nonzero" ? 1 : 0,
+      signalOnVolumeRemoval: failureMode === "signal",
+      removeExactVolumeOnRemovalAttempt: true,
+    });
+    const resources = createA6OwnedVolumeResources();
+    assert.equal(
+      await runner.cleanupOwnedVolumeAfterCreateAttempt(spawnImpl, resources),
+      "absent",
+      failureMode,
+    );
+    assert.equal(resources.volumeRemoved, true, failureMode);
+    assert.equal(spawnImpl.exactVolumeExists(), false, failureMode);
+    assert.equal(run14VolumeRmCalls(spawnImpl).length, 1, failureMode);
+    await runner.verifyRunnerAbsence(resources, spawnImpl, async () => {});
+    assert.equal(resources.volumeAbsenceVerified, true, failureMode);
+    assert.deepEqual(
+      await runner.inspectOwnedVolumeOwnership(
+        spawnImpl,
+        run18VolumeOwnershipToken,
+      ),
+      { state: "absent" },
+      failureMode,
+    );
+  }
+});
+
+test("A6-V4 failed volume removal with the exact volume remaining fails closed", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const spawnImpl = createRun14VolumeSpawn({
+    createdBeforeStart: true,
+    volumeRemovalExitCode: 1,
+    removeExactVolumeOnRemovalAttempt: false,
+  });
+  const resources = createA6OwnedVolumeResources();
+  await assert.rejects(
+    () => runner.cleanupOwnedVolumeAfterCreateAttempt(spawnImpl, resources),
+  );
+  assert.equal(resources.volumeRemoved, false);
+  assert.equal(spawnImpl.exactVolumeExists(), true);
+  assert.equal(run14VolumeRmCalls(spawnImpl).length, 1);
+  await assert.rejects(
+    () => runner.verifyRunnerAbsence(resources, spawnImpl, async () => {}),
+  );
+  assert.equal(resources.volumeAbsenceVerified, false);
 });
 
 test("Run-29 failed container-start cleanup reconciles exact absence before token-owned volume removal", async () => {

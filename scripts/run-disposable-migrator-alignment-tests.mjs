@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { access, chmod, mkdir, mkdtemp, open, readFile, rm, stat as statPath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import net from "node:net";
@@ -28,6 +28,7 @@ const databaseName = "migrator_alignment_test";
 const secondaryDatabaseName = "migrator_alignment_test_secondary";
 const ownedContainerName = "deepseek-platform128-pg17";
 const ownedVolumeName = "deepseek-platform128-pg17-data";
+const ownedVolumeExactNameFilter = `name=^${ownedVolumeName}$`;
 const volumeOwnershipTokenLabelKey = "com.swooshz.platform.runner-token";
 const ownedPort = 56432;
 const maxChildOutputBytes = 64 * 1024;
@@ -43,6 +44,7 @@ const structuredFailureProgressFileEnvironmentVariable =
 const maxStructuredReceiptSidecarBytes = 16 * 1024;
 const structuredReceiptSidecarDirectoryPrefix =
   "swooshz-platform-migrator-receipt-";
+const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const structuredReceiptFingerprintFields = new Set([
   "databaseOwner",
   "schemaOwners",
@@ -748,20 +750,54 @@ export function parseStructuredFailureReceipt(output) {
   return projectStructuredFailureReceipt(parsed);
 }
 
-export async function createStructuredFailureReceiptSidecar() {
-  const temporaryRoot = resolve(tmpdir());
-  const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
-  const temporaryRootRelativeToRepository = relative(
-    repositoryRoot,
-    temporaryRoot,
-  );
+export function isTemporaryRootOutsideRepository(
+  repositoryPath,
+  temporaryRootPath,
+) {
+  if (
+    typeof repositoryPath !== "string" ||
+    repositoryPath.length === 0 ||
+    typeof temporaryRootPath !== "string" ||
+    temporaryRootPath.length === 0
+  ) {
+    return false;
+  }
+
+  let temporaryRootRelativeToRepository;
+  try {
+    temporaryRootRelativeToRepository = relative(
+      resolve(repositoryPath),
+      resolve(temporaryRootPath),
+    );
+  } catch {
+    return false;
+  }
+
   if (
     temporaryRootRelativeToRepository === "" ||
-    (!temporaryRootRelativeToRepository.startsWith("..") &&
-      !isAbsolute(temporaryRootRelativeToRepository))
+    temporaryRootRelativeToRepository === "."
   ) {
+    return false;
+  }
+  if (isAbsolute(temporaryRootRelativeToRepository)) return true;
+  return (
+    temporaryRootRelativeToRepository === ".." ||
+    temporaryRootRelativeToRepository.startsWith(`..${sep}`)
+  );
+}
+
+function resolveOutsideRepositoryTemporaryRoot(temporaryRootPath) {
+  const temporaryRoot = resolve(temporaryRootPath);
+  if (!isTemporaryRootOutsideRepository(repositoryRoot, temporaryRoot)) {
     throw new Error();
   }
+  return temporaryRoot;
+}
+
+export async function createStructuredFailureReceiptSidecar(
+  temporaryRootPath = tmpdir(),
+) {
+  const temporaryRoot = resolveOutsideRepositoryTemporaryRoot(temporaryRootPath);
   const directory = await mkdtemp(
     join(
       temporaryRoot,
@@ -1603,16 +1639,15 @@ function malformedOwnedVolumeState() {
   return { state: "ambiguous" };
 }
 
-export async function inspectOwnedVolumeOwnership(spawnImpl, ownershipToken) {
+async function inspectExactOwnedVolumePresence(spawnImpl) {
   let listedOutput;
   try {
     listedOutput = await runCommand(spawnImpl, "docker", [
       "volume",
       "ls",
+      "--quiet",
       "--filter",
-      `name=${ownedVolumeName}`,
-      "--format",
-      "{{.Name}}",
+      ownedVolumeExactNameFilter,
     ]);
   } catch {
     return malformedOwnedVolumeState();
@@ -1623,9 +1658,17 @@ export async function inspectOwnedVolumeOwnership(spawnImpl, ownershipToken) {
     .map((value) => value.trim())
     .filter(Boolean);
   if (names.length === 0) return { state: "absent" };
-  if (names.length !== 1 || names[0] !== ownedVolumeName) {
+  if (names.length !== 1 || names.some((name) => name !== ownedVolumeName)) {
     return malformedOwnedVolumeState();
   }
+  return { state: "present" };
+}
+
+export async function inspectOwnedVolumeOwnership(spawnImpl, ownershipToken) {
+  const presence = await inspectExactOwnedVolumePresence(spawnImpl);
+  if (presence.state === "absent") return presence;
+  if (presence.state !== "present") return malformedOwnedVolumeState();
+  if (!isVolumeOwnershipToken(ownershipToken)) return { state: "unowned" };
 
   let inspectedOutput;
   try {
@@ -1687,12 +1730,27 @@ export async function cleanupOwnedVolumeAfterCreateAttempt(spawnImpl, resources)
     resources.volumeOwnershipToken,
   );
   resources.volumeOwnershipState = state.state;
-  if (state.state === "absent") return state.state;
+  if (state.state === "absent") {
+    resources.volumeRemoved = true;
+    return state.state;
+  }
   if (state.state !== "owned") {
     throw new Error(`owned volume evidence was ${state.state}`);
   }
 
+  try {
     await runCommand(spawnImpl, "docker", ["volume", "rm", ownedVolumeName]);
+  } catch (removalError) {
+    try {
+      await assertExactVolumeAbsent(spawnImpl);
+    } catch {
+      throw removalError;
+    }
+    resources.volumeCreated = true;
+    resources.volumeOwned = true;
+    resources.volumeRemoved = true;
+    return "absent";
+  }
   resources.volumeCreated = true;
   resources.volumeOwned = true;
   resources.volumeRemoved = true;
@@ -1934,19 +1992,8 @@ async function assertExactVolumeMount(spawnImpl) {
 }
 
 async function assertExactVolumeAbsent(spawnImpl) {
-  const output = await runCommand(spawnImpl, "docker", [
-    "volume",
-    "ls",
-    "--quiet",
-    "--filter",
-    `name=^${ownedVolumeName}$`,
-  ]);
-  const names = output
-    .trim()
-    .split(/\r?\n/u)
-    .filter((name) => name.length > 0);
-  if (names.some((name) => name !== ownedVolumeName)) throw new Error();
-  if (names.length !== 0) throw new Error();
+  const presence = await inspectExactOwnedVolumePresence(spawnImpl);
+  if (presence.state !== "absent") throw new Error();
 }
 
 async function assertExactContainerAbsent(spawnImpl) {
@@ -2194,20 +2241,11 @@ function assertFocusedCredentialBoundary(
   resources.c3ChildPostSanitisation = true;
 }
 
-async function createFocusedCredentialIsolation(resources) {
-  const temporaryRoot = resolve(tmpdir());
-  const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
-  const temporaryRootRelativeToRepository = relative(
-    repositoryRoot,
-    temporaryRoot,
-  );
-  if (
-    temporaryRootRelativeToRepository === "" ||
-    (!temporaryRootRelativeToRepository.startsWith("..") &&
-      !isAbsolute(temporaryRootRelativeToRepository))
-  ) {
-    throw new Error();
-  }
+export async function createFocusedCredentialIsolation(
+  resources,
+  temporaryRootPath = tmpdir(),
+) {
+  const temporaryRoot = resolveOutsideRepositoryTemporaryRoot(temporaryRootPath);
   const directory = join(
     temporaryRoot,
     focusedCredentialIsolationDirectoryPrefix + randomUUID(),
