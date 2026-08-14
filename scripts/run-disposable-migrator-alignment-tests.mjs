@@ -70,6 +70,14 @@ const structuredReceiptPhases = new Set([
   "default_acl_exact_rejection",
   "default_acl_residue_cleanup",
   "post_default_acl_exact_fingerprint",
+  "C3_RED_DEFAULT_PGPASS_ADMISSION",
+  "C3_HOSTILE_ENV_RETAINED",
+  "C3_RUNNER_PGPASS_QUARANTINE",
+  "C3_INHERITED_PG_STATE_SANITISED",
+  "C3_OMITTED_PASSWORD_REJECTED",
+  "C3_WRONG_PASSWORD_REJECTED",
+  "C3_CORRECT_PASSWORD_ACCEPTED",
+  "C3_CLEANUP_CONFIRMED",
 ]);
 const structuredReceiptAssertionCategories = new Set([
   "baseline_lifecycle",
@@ -80,6 +88,7 @@ const structuredReceiptAssertionCategories = new Set([
   "default_acl_residue_cleanup",
   "membership_inventory",
   "focused_child_defect",
+  "c3_security_invariant",
 ]);
 const structuredReceiptCleanupPhases = new Set([
   "not_started",
@@ -181,6 +190,10 @@ export async function run({
         focusedCredentialIsolationSetupAttempted: false,
         focusedCredentialIsolationPreSanitization: false,
         focusedCredentialChildBoundary: false,
+        c3HostileEnvironmentRetained: false,
+        c3RunnerPgpassQuarantine: false,
+        c3InheritedPgStateSanitised: false,
+        c3ChildPostSanitisation: false,
         focusedCredentialIsolationCleaned: false,
         focusedCredentialIsolationAbsent: false,
         focusedCredentialIsolation: null,
@@ -458,6 +471,14 @@ export function formatDisposableRuntimeFailureReceipt(resources = {}) {
       resources.focusedCredentialIsolationPreSanitization === true,
     focusedCredentialChildBoundary:
       resources.focusedCredentialChildBoundary === true,
+    c3HostileEnvironmentRetained:
+      resources.c3HostileEnvironmentRetained === true,
+    c3RunnerPgpassQuarantine:
+      resources.c3RunnerPgpassQuarantine === true,
+    c3InheritedPgStateSanitised:
+      resources.c3InheritedPgStateSanitised === true,
+    c3ChildPostSanitisation:
+      resources.c3ChildPostSanitisation === true,
     focusedCredentialIsolationCleaned:
       resources.focusedCredentialIsolationCleaned === true,
     focusedCredentialIsolationAbsent:
@@ -1876,6 +1897,9 @@ export function buildFocusedTestEnvironment(
   }
   delete childEnv.NODE_PG_FORCE_NATIVE;
   childEnv.PGPASSFILE = controlledPassfilePath;
+  childEnv.MIGRATOR_ALIGNMENT_TEST_C3_RUNNER_BOUNDARY =
+    "runner-sanitised";
+  childEnv.MIGRATOR_ALIGNMENT_TEST_C3_PGPASS_OWNER = "runner-test";
   return childEnv;
 }
 
@@ -1886,17 +1910,18 @@ function assertFocusedCredentialBoundary(
   isolation,
 ) {
   const hostileNames = [
-    "PGPASSWORD",
-    "PGPASSFILE",
-    "PGUSER",
-    "PGDATABASE",
-    "PGHOST",
-    "PGPORT",
-    "PGSERVICE",
+    ...postgresqlConnectionEnvironmentKeys,
     "HOME",
     "APPDATA",
   ];
   if (!hostileNames.every((name) => Object.hasOwn(beforeSanitization, name))) {
+    throw new Error();
+  }
+  if (
+    !postgresqlConnectionEnvironmentKeys.every(
+      (key) => beforeSanitization[key] === isolation.hostileEnvironment[key],
+    )
+  ) {
     throw new Error();
   }
   if (
@@ -1908,6 +1933,7 @@ function assertFocusedCredentialBoundary(
     throw new Error();
   }
   resources.focusedCredentialIsolationPreSanitization = true;
+  resources.c3HostileEnvironmentRetained = true;
   if (
     Object.hasOwn(childEnv, "PGPASSWORD") ||
     !Object.hasOwn(childEnv, "PGPASSFILE") ||
@@ -1924,7 +1950,22 @@ function assertFocusedCredentialBoundary(
   ) {
     throw new Error();
   }
+  if (Object.hasOwn(childEnv, "NODE_PG_FORCE_NATIVE")) {
+    throw new Error();
+  }
+  if (
+    childEnv.MIGRATOR_ALIGNMENT_TEST_C3_RUNNER_BOUNDARY !==
+    "runner-sanitised"
+  ) {
+    throw new Error();
+  }
+  if (childEnv.MIGRATOR_ALIGNMENT_TEST_C3_PGPASS_OWNER !== "runner-test") {
+    throw new Error();
+  }
   resources.focusedCredentialChildBoundary = true;
+  resources.c3RunnerPgpassQuarantine = true;
+  resources.c3InheritedPgStateSanitised = true;
+  resources.c3ChildPostSanitisation = true;
 }
 
 async function createFocusedCredentialIsolation(resources) {
@@ -1966,6 +2007,21 @@ async function createFocusedCredentialIsolation(resources) {
       "hostile-explicit-pgpass",
     );
     const controlledPassfilePath = join(directory, "controlled-empty-pgpass");
+    const hostileEnvironment = Object.fromEntries(
+      postgresqlConnectionEnvironmentKeys.map((key) => [
+        key,
+        `synthetic-${key.toLowerCase()}`,
+      ]),
+    );
+    Object.assign(hostileEnvironment, {
+      PGPASSWORD: "synthetic-hostile-password",
+      PGPASSFILE: hostileExplicitPassfilePath,
+      PGUSER: "platform_migrator",
+      PGDATABASE: databaseName,
+      PGHOST: "127.0.0.1",
+      PGPORT: String(ownedPort),
+      PGSERVICE: "hostile_service",
+    });
     const isolation = {
       directory,
       hostileHomeDirectory,
@@ -1975,15 +2031,9 @@ async function createFocusedCredentialIsolation(resources) {
       hostileExplicitPassfilePath,
       controlledPassfilePath,
       hostileEnvironment: {
+        ...hostileEnvironment,
         HOME: hostileHomeDirectory,
         APPDATA: hostileAppDataDirectory,
-        PGPASSWORD: "synthetic-hostile-password",
-        PGPASSFILE: hostileExplicitPassfilePath,
-        PGUSER: "platform_migrator",
-        PGDATABASE: databaseName,
-        PGHOST: "127.0.0.1",
-        PGPORT: String(ownedPort),
-        PGSERVICE: "hostile_service",
       },
     };
     resources.focusedCredentialIsolation = isolation;

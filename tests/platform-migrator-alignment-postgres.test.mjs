@@ -1,5 +1,4 @@
 ﻿import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { access, renameSync, unlinkSync, writeFileSync } from "node:fs";
@@ -23,9 +22,6 @@ import {
 import {
   buildFocusedDefaultPgpassControlEnvironment,
 } from "../scripts/run-disposable-migrator-alignment-tests.mjs";
-
-const requireNode = createRequire(import.meta.url);
-const pgPassHelper = requireNode("pgpass/lib/helper.js");
 
 const primaryDatabaseUrl = process.env.MIGRATOR_ALIGNMENT_TEST_DATABASE_URL;
 const primaryOperatorUrl = process.env.MIGRATOR_ALIGNMENT_TEST_OPERATOR_URL;
@@ -81,7 +77,8 @@ try {
     parsed.hash ||
     typeof process.env.HOME !== "string" ||
     typeof process.env.APPDATA !== "string" ||
-    Object.keys(process.env).some((key) => key.startsWith("PG"))
+    Object.keys(process.env).some((key) => key.startsWith("PG")) ||
+    Object.hasOwn(process.env, "NODE_PG_FORCE_NATIVE")
   ) {
     throw new Error();
   }
@@ -137,6 +134,14 @@ const structuredFailurePhases = new Set([
   "default_acl_exact_rejection",
   "default_acl_residue_cleanup",
   "post_default_acl_exact_fingerprint",
+  "C3_RED_DEFAULT_PGPASS_ADMISSION",
+  "C3_HOSTILE_ENV_RETAINED",
+  "C3_RUNNER_PGPASS_QUARANTINE",
+  "C3_INHERITED_PG_STATE_SANITISED",
+  "C3_OMITTED_PASSWORD_REJECTED",
+  "C3_WRONG_PASSWORD_REJECTED",
+  "C3_CORRECT_PASSWORD_ACCEPTED",
+  "C3_CLEANUP_CONFIRMED",
 ]);
 const structuredAssertionCategories = new Set([
   "baseline_lifecycle",
@@ -147,6 +152,7 @@ const structuredAssertionCategories = new Set([
   "default_acl_residue_cleanup",
   "membership_inventory",
   "focused_child_defect",
+  "c3_security_invariant",
 ]);
 const structuredCleanupPhases = new Set([
   "not_started",
@@ -530,6 +536,60 @@ test(
 );
 
 test(
+  "DL-128-REPO-011-A5: focused-child structural C3 default-pgpass proof",
+  { skip: skipReason },
+  async () => withStructuredFailureReceipt(
+    "DL-128-REPO-011-A5-C3",
+    async () => {
+      let fixture = null;
+      let roleCreationAttempted = false;
+      let baseline = null;
+      try {
+        fixture = await openFixtures();
+        const primary = fixture.primary;
+        baseline = await readOwnershipFingerprint(
+          primary.adminPool,
+          primary.databaseName,
+        );
+        roleCreationAttempted = true;
+        await createMigratorRoleAsLegacyOwner(primary.appPool);
+        await primary.appPool.query(
+          `grant connect on database ${identifier(primary.databaseName)} to platform_migrator`,
+        );
+        await primary.adminPool.query(
+          `alter role platform_migrator login password '${syntheticMigratorPassword}'`,
+        );
+        await assertFocusedPassfileIsolation(primary);
+      } finally {
+        if (fixture) {
+          markStructuredFailurePhase(
+            "C3_CLEANUP_CONFIRMED",
+            "c3_security_invariant",
+          );
+          try {
+            await cleanupC3MigratorRole(
+              fixture.primary.adminPool,
+              roleCreationAttempted,
+            );
+            if (baseline) {
+              assertExactFingerprint(
+                await readOwnershipFingerprint(
+                  fixture.primary.adminPool,
+                  fixture.primary.databaseName,
+                ),
+                baseline,
+              );
+            }
+          } finally {
+            await closeFixtures(fixture);
+          }
+        }
+      }
+    },
+  ),
+);
+
+test(
   "bounded supplemental SET edge, real password credential admission, target-NOCREATEDB negative control, pg_database_owner authority transfer, provider final revocation, pre-completion legacy-retirement guard",
   { skip: skipReason },
   async () => withStructuredFailureReceipt(
@@ -581,7 +641,6 @@ test(
       );
       await assertMigratorRoleAttribute(primary.adminPool, "rolcanlogin", true);
       await assertMigratorPasswordInstalled(primary.adminPool, true);
-      await assertFocusedPassfileIsolation(primary);
 
       // Correct password succeeds: the fresh admitted connection reads back
       // the exact expected role and database before any ownership transfer.
@@ -1136,6 +1195,26 @@ async function createMigratorRoleAsLegacyOwner(appPool) {
   await appPool.query(
     `create role platform_migrator nologin nosuperuser nocreatedb nocreaterole noreplication nobypassrls`,
   );
+}
+
+async function cleanupC3MigratorRole(adminPool, creationAttempted) {
+  if (!creationAttempted) return;
+  const roleResult = await adminPool.query(
+    "select 1 from pg_roles where rolname = 'platform_migrator'",
+  );
+  if (roleResult.rows.length === 0) return;
+  await adminPool.query("drop owned by platform_migrator");
+  const defaultPrivilegeResidue = await adminPool.query(
+    `
+      select count(*)::int as c
+        from pg_default_acl default_record
+        join pg_roles role_record on role_record.oid = default_record.defaclrole
+       where role_record.rolname = 'platform_migrator'
+    `,
+  );
+  assert.equal(defaultPrivilegeResidue.rows.length, 1);
+  assert.equal(defaultPrivilegeResidue.rows[0].c, 0);
+  await adminPool.query("drop role platform_migrator");
 }
 
 async function installMigratorDefaultPrivileges(adminPool) {
@@ -2177,6 +2256,14 @@ async function schemaPrivileges(adminPool, roleName, schemaName) {
 }
 
 async function assertFocusedPassfileIsolation(primary) {
+  return assertFocusedC3Proof(primary);
+}
+
+async function assertFocusedC3Proof(primary) {
+  markStructuredFailurePhase(
+    "C3_HOSTILE_ENV_RETAINED",
+    "c3_security_invariant",
+  );
   const homeDirectory = process.env.HOME;
   const appDataDirectory = process.env.APPDATA;
   const controlledPassfilePath = process.env.PGPASSFILE;
@@ -2192,9 +2279,33 @@ async function assertFocusedPassfileIsolation(primary) {
     false,
     "PGPASSWORD must be absent at the focused child",
   );
+  assert.equal(
+    process.env.MIGRATOR_ALIGNMENT_TEST_C3_RUNNER_BOUNDARY,
+    "runner-sanitised",
+  );
+  assert.equal(process.env.MIGRATOR_ALIGNMENT_TEST_C3_PGPASS_OWNER, "runner-test");
   await assertPrivateFilePresent(join(homeDirectory, ".pgpass"));
   await assertPrivateFilePresent(
     join(appDataDirectory, "postgresql", "pgpass.conf"),
+  );
+  let homePassfileContent;
+  try {
+    homePassfileContent = await readFile(
+      join(homeDirectory, ".pgpass"),
+      "utf8",
+    );
+  } catch {
+    assert.fail("synthetic HOME .pgpass must be readable");
+  }
+  assert.equal(
+    homePassfileContent.includes(
+      `*:*:${primary.databaseName}:platform_migrator:${syntheticMigratorPassword}\n`,
+    ),
+    true,
+  );
+  markStructuredFailurePhase(
+    "C3_RUNNER_PGPASS_QUARANTINE",
+    "c3_security_invariant",
   );
   let controlledPassfileContent;
   try {
@@ -2210,10 +2321,32 @@ async function assertFocusedPassfileIsolation(primary) {
     0,
     "controlled passfile must be empty",
   );
+  assert.equal(
+    controlledPassfilePath.includes("swooshz-platform-pgpass-isolation-"),
+    true,
+  );
+
+  markStructuredFailurePhase(
+    "C3_INHERITED_PG_STATE_SANITISED",
+    "c3_security_invariant",
+  );
+  assert.equal(Object.hasOwn(process.env, "PGPASSWORD"), false);
+  assert.equal(
+    Object.keys(process.env).some(
+      (key) => key.startsWith("PG") && key !== "PGPASSFILE",
+    ),
+    false,
+  );
+  assert.equal(Object.hasOwn(process.env, "NODE_PG_FORCE_NATIVE"), false);
+  assert.equal(process.env.PGPASSFILE === controlledPassfilePath, true);
 
   // RED/default-pgpass causal control: remove only the bounded child process's
   // quarantine so the parent retains the runner-owned passfile for every
   // subsequent control.
+  markStructuredFailurePhase(
+    "C3_RED_DEFAULT_PGPASS_ADMISSION",
+    "c3_security_invariant",
+  );
   assert.equal(
     process.env.PGPASSFILE,
     controlledPassfilePath,
@@ -2232,66 +2365,112 @@ async function assertFocusedPassfileIsolation(primary) {
     false,
     "RED child must remove inherited PostgreSQL connection state",
   );
+  assert.equal(
+    Object.hasOwn(redEnvironment, "NODE_PG_FORCE_NATIVE"),
+    false,
+  );
   assert.equal(redEnvironment.HOME, homeDirectory);
   assert.equal(redEnvironment.APPDATA, appDataDirectory);
-  await new Promise((resolve, reject) => {
-    const child = spawn(
-      process.execPath,
-      ["--input-type=module", "--eval", defaultPgpassControlScript],
-      {
-        env: redEnvironment,
-        stdio: "ignore",
-        windowsHide: true,
-      },
-    );
-    child.once("error", () => reject(new Error("RED pgpass control failed.")));
-    child.once("close", (code, signal) => {
-      if (code === 0 && signal === null) {
-        resolve();
-      } else {
-        reject(new Error("RED pgpass control failed."));
-      }
-    });
-  });
+  await runDefaultPgpassControl(redEnvironment);
   assert.equal(
     process.env.PGPASSFILE,
     controlledPassfilePath,
     "runner-owned PGPASSFILE must remain active after RED",
   );
 
-  const quarantinedPool = new Pool({
-    connectionString: roleUrl("platform_migrator", primary.databaseName),
+  markStructuredFailurePhase(
+    "C3_OMITTED_PASSWORD_REJECTED",
+    "c3_security_invariant",
+  );
+  await assertC3AuthenticationRejected(
+    roleUrl("platform_migrator", primary.databaseName),
+    /client password must be a string|no password supplied|password authentication failed/i,
+  );
+
+  markStructuredFailurePhase(
+    "C3_WRONG_PASSWORD_REJECTED",
+    "c3_security_invariant",
+  );
+  await assertC3AuthenticationRejected(
+    roleUrl(
+      "platform_migrator",
+      primary.databaseName,
+      wrongMigratorPassword,
+    ),
+    /password authentication failed/i,
+    "28P01",
+  );
+
+  markStructuredFailurePhase(
+    "C3_CORRECT_PASSWORD_ACCEPTED",
+    "c3_security_invariant",
+  );
+  const correctPasswordPool = new Pool({
+    connectionString: roleUrl(
+      "platform_migrator",
+      primary.databaseName,
+      syntheticMigratorPassword,
+    ),
     max: 1,
   });
   try {
-    await assertQueryRejected(
-      quarantinedPool,
-      "select 1",
-      /client password must be a string|no password supplied|password authentication failed/i,
+    await validateMigratorLoginAdmission(
+      correctPasswordPool,
+      primary.databaseName,
     );
   } finally {
-    await quarantinedPool.end();
+    await correctPasswordPool.end();
   }
+}
 
-  const previousIsWin = pgPassHelper.isWin;
+async function runDefaultPgpassControl(environment) {
+  await new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      if (error) reject(error);
+      else resolve();
+    };
+    let child;
+    try {
+      child = spawn(
+        process.execPath,
+        ["--input-type=module", "--eval", defaultPgpassControlScript],
+        {
+          env: environment,
+          stdio: "ignore",
+          windowsHide: true,
+        },
+      );
+    } catch {
+      finish(new Error("C3 RED default-pgpass admission failed."));
+      return;
+    }
+    child.once("error", () =>
+      finish(new Error("C3 RED default-pgpass admission failed.")));
+    child.once("close", (code, signal) => {
+      if (code === 0 && signal === null) finish();
+      else finish(new Error("C3 RED default-pgpass admission failed."));
+    });
+  });
+}
+
+async function assertC3AuthenticationRejected(
+  connectionString,
+  pattern,
+  expectedCode = null,
+) {
+  const pool = new Pool({ connectionString, max: 1 });
   try {
-    pgPassHelper.isWin = true;
-    assert.equal(
-      pgPassHelper.getFileName({ APPDATA: appDataDirectory }) ===
-        join(appDataDirectory, "postgresql", "pgpass.conf"),
-      true,
-      "Windows APPDATA default passfile must resolve to the synthetic location",
-    );
-    assert.equal(
-      pgPassHelper.getFileName({
-        APPDATA: appDataDirectory,
-        PGPASSFILE: controlledPassfilePath,
-      }) === controlledPassfilePath,
-      true,
-      "explicit PGPASSFILE must override APPDATA",
+    await assert.rejects(
+      () => pool.query("select 1"),
+      (error) =>
+        pattern.test(String(error?.message ?? error)) &&
+        (expectedCode === null || error?.code === expectedCode),
     );
   } finally {
-    pgPassHelper.isWin = previousIsWin;
+    await pool.end();
   }
 }
 
