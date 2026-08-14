@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, chmod, mkdir, mkdtemp, open, readFile, rm, stat as statPath, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, open, readFile, realpath, rm, stat as statPath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -750,7 +750,7 @@ export function parseStructuredFailureReceipt(output) {
   return projectStructuredFailureReceipt(parsed);
 }
 
-export function isTemporaryRootOutsideRepository(
+function isLexicallyOutsideRepository(
   repositoryPath,
   temporaryRootPath,
 ) {
@@ -785,19 +785,66 @@ export function isTemporaryRootOutsideRepository(
     temporaryRootRelativeToRepository.startsWith(`..${sep}`)
   );
 }
+export function isTemporaryRootLexicallyOutsideRepository(
+  repositoryPath,
+  temporaryRootPath,
+) {
+  return isLexicallyOutsideRepository(repositoryPath, temporaryRootPath);
+}
 
-function resolveOutsideRepositoryTemporaryRoot(temporaryRootPath) {
-  const temporaryRoot = resolve(temporaryRootPath);
-  if (!isTemporaryRootOutsideRepository(repositoryRoot, temporaryRoot)) {
+
+async function canonicalOutsideRepositoryTemporaryRoot(
+  repositoryPath,
+  temporaryRootPath,
+) {
+  if (!isLexicallyOutsideRepository(repositoryPath, temporaryRootPath)) {
+    return null;
+  }
+  let canonicalRepositoryPath;
+  let canonicalTemporaryRootPath;
+  try {
+    [canonicalRepositoryPath, canonicalTemporaryRootPath] = await Promise.all([
+      realpath(resolve(repositoryPath)),
+      realpath(resolve(temporaryRootPath)),
+    ]);
+  } catch {
+    return null;
+  }
+  return isLexicallyOutsideRepository(
+    canonicalRepositoryPath,
+    canonicalTemporaryRootPath,
+  )
+    ? canonicalTemporaryRootPath
+    : null;
+}
+
+export async function isTemporaryRootOutsideRepository(
+  repositoryPath,
+  temporaryRootPath,
+) {
+  return (
+    (await canonicalOutsideRepositoryTemporaryRoot(
+      repositoryPath,
+      temporaryRootPath,
+    )) !== null
+  );
+}
+
+async function resolveOutsideRepositoryTemporaryRoot(temporaryRootPath) {
+  const canonicalTemporaryRoot = await canonicalOutsideRepositoryTemporaryRoot(
+    repositoryRoot,
+    temporaryRootPath,
+  );
+  if (canonicalTemporaryRoot === null) {
     throw new Error();
   }
-  return temporaryRoot;
+  return canonicalTemporaryRoot;
 }
 
 export async function createStructuredFailureReceiptSidecar(
   temporaryRootPath = tmpdir(),
 ) {
-  const temporaryRoot = resolveOutsideRepositoryTemporaryRoot(temporaryRootPath);
+  const temporaryRoot = await resolveOutsideRepositoryTemporaryRoot(temporaryRootPath);
   const directory = await mkdtemp(
     join(
       temporaryRoot,
@@ -2245,7 +2292,7 @@ export async function createFocusedCredentialIsolation(
   resources,
   temporaryRootPath = tmpdir(),
 ) {
-  const temporaryRoot = resolveOutsideRepositoryTemporaryRoot(temporaryRootPath);
+  const temporaryRoot = await resolveOutsideRepositoryTemporaryRoot(temporaryRootPath);
   const directory = join(
     temporaryRoot,
     focusedCredentialIsolationDirectoryPrefix + randomUUID(),

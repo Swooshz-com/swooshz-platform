@@ -6,11 +6,14 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rm,
+  symlink,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import test from "node:test";
 
 const runbookPath = "docs/hosted-internal-alpha-runbook.md";
@@ -592,7 +595,7 @@ test("A6 structural source shape centralizes exact volume and temporary-root aut
   assert.doesNotMatch(runner, /`name=\$\{ownedVolumeName\}`/);
   assert.equal(
     (runner.match(
-      /const temporaryRoot = resolveOutsideRepositoryTemporaryRoot\(temporaryRootPath\);/g,
+      /const temporaryRoot = await resolveOutsideRepositoryTemporaryRoot\(temporaryRootPath\);/g,
     ) ?? []).length,
     2,
   );
@@ -600,6 +603,10 @@ test("A6 structural source shape centralizes exact volume and temporary-root aut
     runner,
     /temporaryRootRelativeToRepository\.startsWith\("\.\."\)/,
   );
+  assert.match(runner, /async function canonicalOutsideRepositoryTemporaryRoot/);
+  assert.match(runner, /realpath\(resolve\(repositoryPath\)\)/);
+  assert.match(runner, /realpath\(resolve\(temporaryRootPath\)\)/);
+  assert.equal((runner.match(/await resolveOutsideRepositoryTemporaryRoot\(temporaryRootPath\)/g) ?? []).length, 2);
   assert.match(
     runner,
     /temporaryRootRelativeToRepository\.startsWith\(`\.\.\$\{sep\}`\)/,
@@ -715,7 +722,7 @@ test("structured migrator failure receipts use an out-of-band sidecar at the act
   assert.equal(result.directoryPresentAfterCleanup, false);
   assert.ok(resolve(result.filePath).startsWith(resolve(tmpdir())));
   assert.equal(
-    runner.isTemporaryRootOutsideRepository(
+    runner.isTemporaryRootLexicallyOutsideRepository(
       resolve(process.cwd()),
       resolve(result.filePath),
     ),
@@ -776,28 +783,28 @@ test("A6-T1 through A6-T5 shared temporary-root classification uses path compone
   ];
   for (const [label, candidate] of rejectedPaths) {
     assert.equal(
-      runner.isTemporaryRootOutsideRepository(repositoryRoot, candidate),
+      await runner.isTemporaryRootOutsideRepository(repositoryRoot, candidate),
       false,
       label,
     );
   }
   assert.equal(
-    runner.isTemporaryRootOutsideRepository(
+    await runner.isTemporaryRootOutsideRepository(
       repositoryRoot,
-      resolve(repositoryRoot, "..", "swooshz-run30-outside-root"),
+      tmpdir(),
     ),
     true,
     "A6-T5 genuine outside temporary root",
   );
   assert.equal(
-    runner.isTemporaryRootOutsideRepository(repositoryRoot, null),
+    await runner.isTemporaryRootOutsideRepository(repositoryRoot, null),
     false,
     "ambiguous candidate classification must fail closed",
   );
   if (process.platform === "win32") {
     const crossDriveLetter = repositoryRoot[0].toUpperCase() === "Z" ? "Y" : "Z";
     assert.equal(
-      runner.isTemporaryRootOutsideRepository(
+      runner.isTemporaryRootLexicallyOutsideRepository(
         repositoryRoot,
         `${crossDriveLetter}:\\swooshz-run30-outside-root`,
       ),
@@ -822,7 +829,7 @@ test("A6-T6 through A6-T8 both temporary-root consumers fail closed without work
   };
   try {
     assert.equal(
-      runner.isTemporaryRootOutsideRepository(
+      await runner.isTemporaryRootOutsideRepository(
         repositoryRoot,
         inRepositoryDotPrefixRoot,
       ),
@@ -865,6 +872,384 @@ test("A6-T6 through A6-T8 both temporary-root consumers fail closed without work
   );
 });
 
+test("A7-C1 through A7-C14 enforce lexical and filesystem-canonical temporary-root containment", async () => {
+  const runner = await import(
+    "../scripts/run-disposable-migrator-alignment-tests.mjs"
+  );
+  const repositoryRoot = resolve(process.cwd());
+  const directoryLinkType =
+    process.platform === "win32" ? "junction" : "dir";
+  const repositoryEntriesBefore = (await readdir(repositoryRoot)).sort();
+  const outsideWorkspace = await mkdtemp(
+    join(tmpdir(), "swooshz-run31-a7-links-"),
+  );
+  const inRepositoryChild = await mkdtemp(
+    join(repositoryRoot, "a7-in-repository-child-"),
+  );
+  const canonicalOutsideRoot = await mkdtemp(
+    join(outsideWorkspace, "canonical-outside-"),
+  );
+  const genuineOutsideRoot = await mkdtemp(
+    join(outsideWorkspace, "genuine-outside-"),
+  );
+  const repositoryRootLink = join(outsideWorkspace, "link-to-repository-root");
+  const repositoryChildLink = join(outsideWorkspace, "link-to-repository-child");
+  const outsideCanonicalLink = join(outsideWorkspace, "link-to-canonical-outside");
+  const inRepositoryOutsideLink = join(
+    repositoryRoot,
+    "a7-in-repository-outside-link",
+  );
+  const links = [
+    {
+      label: "A7-C4 lexically outside link to repository root",
+      path: repositoryRootLink,
+      target: repositoryRoot,
+      parent: repositoryRoot,
+    },
+    {
+      label: "A7-C5 lexically outside link to in-repository child",
+      path: repositoryChildLink,
+      target: inRepositoryChild,
+      parent: inRepositoryChild,
+    },
+    {
+      label: "A7-C6 lexically in-repository link to genuine outside directory",
+      path: inRepositoryOutsideLink,
+      target: canonicalOutsideRoot,
+      parent: repositoryRoot,
+    },
+  ];
+  async function removeDirectoryLink(path) {
+    try {
+      await unlink(path);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
+  try {
+    for (const link of [
+      ...links,
+      {
+        path: outsideCanonicalLink,
+        target: canonicalOutsideRoot,
+      },
+    ]) {
+      await symlink(link.target, link.path, directoryLinkType);
+    }
+
+    assert.equal(
+      await runner.isTemporaryRootOutsideRepository(
+        repositoryRoot,
+        repositoryRoot,
+      ),
+      false,
+      "A7-C1 repository root must be rejected",
+    );
+    assert.equal(
+      await runner.isTemporaryRootOutsideRepository(
+        repositoryRoot,
+        inRepositoryChild,
+      ),
+      false,
+      "A7-C2 ordinary in-repository child must be rejected",
+    );
+    assert.equal(
+      await runner.isTemporaryRootOutsideRepository(
+        repositoryRoot,
+        join(repositoryRoot, "..cache-a7-in-repository"),
+      ),
+      false,
+      "A7-C3 in-repository ..prefix child must be rejected",
+    );
+    for (const link of links) {
+      assert.equal(
+        await runner.isTemporaryRootOutsideRepository(
+          repositoryRoot,
+          link.path,
+        ),
+        false,
+        link.label,
+      );
+    }
+    assert.equal(
+      await runner.isTemporaryRootOutsideRepository(
+        repositoryRoot,
+        genuineOutsideRoot,
+      ),
+      true,
+      "A7-C7 genuine outside temporary root must be accepted",
+    );
+
+    const canonicalOutsideTarget = await realpath(canonicalOutsideRoot);
+    assert.equal(
+      await realpath(outsideCanonicalLink),
+      canonicalOutsideTarget,
+      "A7-C8 outside link must resolve to the genuine outside target",
+    );
+    assert.equal(
+      await runner.isTemporaryRootOutsideRepository(
+        repositoryRoot,
+        outsideCanonicalLink,
+      ),
+      true,
+      "A7-C8 outside link to canonical outside directory must be accepted",
+    );
+
+    const nonexistentOutsideRoot = join(
+      outsideWorkspace,
+      "a7-nonexistent-outside-root",
+    );
+    assert.equal(
+      await runner.isTemporaryRootOutsideRepository(
+        repositoryRoot,
+        nonexistentOutsideRoot,
+      ),
+      false,
+      "A7-C9 unresolved temporary root must fail closed",
+    );
+
+    const rejectedCandidates = [
+      ...links,
+      {
+        label: "A7-C9 unresolved temporary root",
+        path: nonexistentOutsideRoot,
+        parent: outsideWorkspace,
+      },
+    ];
+    for (const consumer of ["receipt", "credential"]) {
+      for (const candidate of rejectedCandidates) {
+        const before = (await readdir(candidate.parent)).sort();
+        const resources = {
+          focusedCredentialIsolation: null,
+          focusedCredentialIsolationCleaned: false,
+          focusedCredentialIsolationAbsent: false,
+        };
+        if (consumer === "receipt") {
+          await assert.rejects(() =>
+            runner.createStructuredFailureReceiptSidecar(candidate.path),
+          );
+        } else {
+          await assert.rejects(() =>
+            runner.createFocusedCredentialIsolation(resources, candidate.path),
+          );
+          assert.equal(resources.focusedCredentialIsolation, null);
+        }
+        assert.deepEqual(
+          (await readdir(candidate.parent)).sort(),
+          before,
+          "A7-" + (consumer === "receipt" ? "C10" : "C11") +
+            " rejected " + candidate.label +
+            " without creating an artifact",
+        );
+      }
+    }
+
+    const sidecar = await runner.createStructuredFailureReceiptSidecar(
+      outsideCanonicalLink,
+    );
+    try {
+      assert.notEqual(
+        relative(canonicalOutsideTarget, sidecar.directory),
+        "",
+        "A7-C14 sidecar must be created below the canonical target",
+      );
+      assert.equal(
+        relative(canonicalOutsideTarget, sidecar.directory).startsWith(".."),
+        false,
+        "A7-C14 sidecar must be created below the canonical target",
+      );
+      assert.equal(
+        relative(outsideCanonicalLink, sidecar.directory).startsWith(".."),
+        true,
+        "A7-C14 sidecar creation must not reuse the caller link path",
+      );
+    } finally {
+      await runner.cleanupStructuredFailureReceiptSidecar(sidecar);
+    }
+
+    const resources = {
+      focusedCredentialIsolation: null,
+      focusedCredentialIsolationCleaned: false,
+      focusedCredentialIsolationAbsent: false,
+    };
+    const isolation = await runner.createFocusedCredentialIsolation(
+      resources,
+      outsideCanonicalLink,
+    );
+    try {
+      assert.notEqual(
+        relative(canonicalOutsideTarget, isolation.directory),
+        "",
+        "A7-C14 credential directory must be created below the canonical target",
+      );
+      assert.equal(
+        relative(canonicalOutsideTarget, isolation.directory).startsWith(".."),
+        false,
+        "A7-C14 credential directory must be created below the canonical target",
+      );
+      assert.equal(
+        relative(outsideCanonicalLink, isolation.directory).startsWith(".."),
+        true,
+        "A7-C14 credential creation must not reuse the caller link path",
+      );
+    } finally {
+      await rm(isolation.directory, { recursive: true, force: true });
+      assert.equal(await pathIsPresent(isolation.directory), false);
+    }
+  } finally {
+    await removeDirectoryLink(repositoryRootLink);
+    await removeDirectoryLink(repositoryChildLink);
+    await removeDirectoryLink(outsideCanonicalLink);
+    await removeDirectoryLink(inRepositoryOutsideLink);
+    await rm(inRepositoryChild, { recursive: true, force: true });
+    await rm(outsideWorkspace, { recursive: true, force: true });
+    assert.deepEqual(
+      (await readdir(repositoryRoot)).sort(),
+      repositoryEntriesBefore,
+      "A7-C12 cleanup must leave no new repository artifact",
+    );
+  }
+});
+
+test("A7-C13 executes canonical cross-drive acceptance on Windows", async () => {
+  const runner = await import(
+    "../scripts/run-disposable-migrator-alignment-tests.mjs"
+  );
+  const repositoryRoot = resolve(process.cwd());
+  if (process.platform !== "win32") {
+    const outsideRoot = await mkdtemp(
+      join(tmpdir(), "swooshz-run31-a7-unix-canonical-outside-"),
+    );
+    try {
+      assert.equal(
+        await runner.isTemporaryRootOutsideRepository(
+          repositoryRoot,
+          outsideRoot,
+        ),
+        true,
+        "A7-C13 Unix control must execute the canonical outside-root path",
+      );
+    } finally {
+      await rm(outsideRoot, { recursive: true, force: true });
+    }
+    return;
+  }
+
+  async function runLocalCommand(command, args) {
+    return await new Promise((resolvePromise, reject) => {
+      const child = spawn(command, args, {
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout?.on("data", (chunk) => {
+        stdout += chunk.toString();
+      });
+      child.stderr?.on("data", (chunk) => {
+        stderr += chunk.toString();
+      });
+      child.once("error", reject);
+      child.once("close", (code, signal) => {
+        resolvePromise({ code, signal, stdout, stderr });
+      });
+    });
+  }
+
+  const slash = String.fromCharCode(92);
+  let driveLetter = null;
+  for (const candidate of [
+    "Z",
+    "Y",
+    "X",
+    "W",
+    "V",
+    "U",
+    "T",
+    "S",
+    "R",
+    "Q",
+    "P",
+    "O",
+    "N",
+    "M",
+    "L",
+    "K",
+    "J",
+    "I",
+    "H",
+    "G",
+    "F",
+    "E",
+    "D",
+  ]) {
+    try {
+      await access(candidate + ":" + slash);
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        driveLetter = candidate;
+        break;
+      }
+      throw error;
+    }
+  }
+  assert.ok(
+    driveLetter,
+    "A7-C13 requires an available Windows drive letter for the disposable control",
+  );
+
+  const backingRoot = await mkdtemp(
+    join(tmpdir(), "swooshz-run31-a7-cross-drive-"),
+  );
+  let mapped = false;
+  try {
+    const mapping = await runLocalCommand("subst", [
+      driveLetter + ":",
+      backingRoot,
+    ]);
+    assert.equal(
+      mapping.code,
+      0,
+      "A7-C13 subst setup must succeed: " + mapping.stderr,
+    );
+    mapped = true;
+    const mappedRoot = driveLetter + ":" + slash;
+    const canonicalRoot = await realpath(mappedRoot);
+    assert.equal(
+      await runner.isTemporaryRootOutsideRepository(
+        repositoryRoot,
+        mappedRoot,
+      ),
+      true,
+      "A7-C13 genuine canonical cross-drive root must be accepted",
+    );
+    const sidecar = await runner.createStructuredFailureReceiptSidecar(
+      mappedRoot,
+    );
+    try {
+      assert.equal(
+        relative(canonicalRoot, sidecar.directory).startsWith(".."),
+        false,
+        "A7-C13 artifact must be created below the canonical cross-drive target",
+      );
+    } finally {
+      await runner.cleanupStructuredFailureReceiptSidecar(sidecar);
+    }
+  } finally {
+    if (mapped) {
+      const unmapping = await runLocalCommand("subst", [
+        driveLetter + ":",
+        "/D",
+      ]);
+      assert.equal(
+        unmapping.code,
+        0,
+        "A7-C13 subst cleanup must succeed: " + unmapping.stderr,
+      );
+    }
+    await rm(backingRoot, { recursive: true, force: true });
+  }
+});
 test("abrupt child exit leaves durable progress without a final receipt", async () => {
   const runner = await import(
     "../scripts/run-disposable-migrator-alignment-tests.mjs"
