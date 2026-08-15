@@ -2377,6 +2377,40 @@ function createA8FocusedChildSpawn({ failure = false } = {}) {
   };
 }
 
+
+function createA11ChildResources() {
+  return {
+    childProcess: null,
+    childExited: true,
+    childExitCode: null,
+    childSignal: false,
+    childTimeout: false,
+    childTerminationStarted: false,
+    childTerminationEscalated: false,
+    childTerminationFinished: false,
+    childTerminationUnconfirmed: false,
+    childTerminationSignals: [],
+    childLifecycleState: "not_started",
+    childLifecycleSettlement: null,
+    childLifecycleTimersCleared: false,
+    childOutputOverflow: false,
+    childSummaryParsed: false,
+    childTestsStarted: false,
+    structuredChildReceipt: null,
+    structuredChildProgress: null,
+    failurePhase: null,
+    failureCategory: null,
+  };
+}
+
+function createA11EventChild() {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.stderr.resume = () => {};
+  return child;
+}
+
 async function runA8FocusedPath(runner, resources, options = {}) {
   return runner.runFocusedTests({
     admission: {},
@@ -2386,11 +2420,15 @@ async function runA8FocusedPath(runner, resources, options = {}) {
       secondaryTargetUrl: "postgresql://synthetic/secondary",
       secondaryOperatorUrl: "postgresql://synthetic/secondary-operator",
     },
-    spawnImpl: createA8FocusedChildSpawn({ failure: options.failure }),
+    spawnImpl:
+      options.spawnImpl ?? createA8FocusedChildSpawn({ failure: options.failure }),
     resources,
     parentEnv: {},
     createSidecarImpl: options.createSidecarImpl,
     cleanupSidecarImpl: options.cleanupSidecarImpl,
+    childDurationMs: options.childDurationMs,
+    terminationGraceMs: options.terminationGraceMs,
+    terminationEscalationMs: options.terminationEscalationMs,
   });
 }
 
@@ -2575,6 +2613,296 @@ test("A8-C1 through A8-C14 structured failure sidecar lifecycle controls execute
     assert.deepEqual(await readdir(root), []);
     await rm(root, { recursive: true, force: true });
   });
+});
+
+
+test("A11-C1 normal representative focused child completes inside the outer lifecycle envelope", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const resources = createA8SidecarResources();
+  const spawnImpl = createA8FocusedChildSpawn();
+  await runA8FocusedPath(runner, resources, {
+    spawnImpl,
+    childDurationMs: 100,
+    terminationGraceMs: 50,
+    terminationEscalationMs: 50,
+  });
+  assert.equal(resources.childLifecycleSettlement, "close");
+  assert.equal(resources.childLifecycleState, "settled");
+  assert.equal(resources.childLifecycleTimersCleared, true);
+  assert.equal(resources.childExited, true);
+  assert.equal(resources.childTimeout, false);
+  assert.equal(resources.childSummaryParsed, true);
+  await runner.cleanupRunnerResources(resources, spawnImpl);
+  await runner.verifyRunnerAbsence(resources, spawnImpl, async () => {});
+});
+
+test("A11-C2 real outer-child stall times out and returns control to the enclosing lifecycle", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const { runDisposableRuntimeLifecycle } = await import(
+    "../scripts/disposable-runtime-lifecycle.mjs",
+  );
+  let lifecycleResources = null;
+  let cleanupCalls = 0;
+  let absenceCalls = 0;
+  const stallSpawn = (command, _args, options) => spawn(
+    command,
+    ["--input-type=module", "--eval", "setInterval(() => {}, 1000);"],
+    options,
+  );
+  await assert.rejects(() => runDisposableRuntimeLifecycle({
+    construct: async (resources) => {
+      lifecycleResources = resources;
+      return {};
+    },
+    admitConstruction: async () => null,
+    deriveProvisioning: async () => null,
+    provision: async () => {},
+    admitConfigured: async () => null,
+    runFocusedTests: async (_admission, resources) => runner.runFocusedTests({
+      admission: {},
+      urls: {
+        primaryTargetUrl: "postgresql://synthetic/primary",
+        primaryOperatorUrl: "postgresql://synthetic/primary-operator",
+        secondaryTargetUrl: "postgresql://synthetic/secondary",
+        secondaryOperatorUrl: "postgresql://synthetic/secondary-operator",
+      },
+      spawnImpl: stallSpawn,
+      resources,
+      parentEnv: {},
+      childDurationMs: 75,
+      terminationGraceMs: 75,
+      terminationEscalationMs: 75,
+    }),
+    cleanup: async (resources) => {
+      cleanupCalls += 1;
+      await runner.cleanupRunnerResources(resources, stallSpawn);
+      resources.cleanupComplete = true;
+    },
+    verifyAbsence: async (resources) => {
+      absenceCalls += 1;
+      await runner.verifyRunnerAbsence(resources, stallSpawn, async () => {});
+      resources.absenceVerified = true;
+    },
+  }));
+  assert.ok(lifecycleResources);
+  assert.equal(cleanupCalls, 1);
+  assert.equal(absenceCalls, 1);
+  assert.equal(lifecycleResources.failureCategory, "child_timeout");
+  assert.equal(lifecycleResources.childTimeout, true);
+  assert.equal(lifecycleResources.childTerminationStarted, true);
+  assert.equal(lifecycleResources.childLifecycleSettlement, "timeout");
+  assert.equal(lifecycleResources.childLifecycleTimersCleared, true);
+  assert.equal(lifecycleResources.childExited, true);
+  assert.equal(lifecycleResources.cleanupComplete, true);
+  assert.equal(lifecycleResources.absenceVerified, true);
+});
+
+test("A11-C3 timeout, error, and close races settle once with inert late events", async (t) => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+
+  await t.test("error wins and later close cannot replace it", async () => {
+    const resources = createA11ChildResources();
+    const child = createA11EventChild();
+    const pending = runner.runFocusedChildLifecycle({
+      spawnImpl: () => {
+        queueMicrotask(() => {
+          child.emit("error", new Error("synthetic child error"));
+          child.emit("close", 1, null);
+        });
+        return child;
+      },
+      command: "synthetic-node",
+      args: [],
+      resources,
+      sidecar: null,
+      childDurationMs: 100,
+      terminationGraceMs: 20,
+      terminationEscalationMs: 20,
+    });
+    await assert.rejects(pending);
+    assert.equal(resources.failureCategory, "child_test_spawn");
+    assert.equal(resources.childLifecycleSettlement, "error");
+    assert.equal(resources.childLifecycleTimersCleared, true);
+    assert.equal(resources.childExited, false);
+  });
+
+  await t.test("timeout remains the winner after close and error race events", async () => {
+    const resources = createA11ChildResources();
+    const child = createA11EventChild();
+    const killSignals = [];
+    child.kill = (signal) => {
+      killSignals.push(signal);
+      if (signal === "SIGTERM") child.emit("close", null, "SIGTERM");
+      return true;
+    };
+    const pending = runner.runFocusedChildLifecycle({
+      spawnImpl: () => child,
+      command: "synthetic-node",
+      args: [],
+      resources,
+      sidecar: null,
+      childDurationMs: 20,
+      terminationGraceMs: 100,
+      terminationEscalationMs: 100,
+    });
+    await assert.rejects(pending);
+    child.emit("error", new Error("late child error"));
+    child.emit("close", 0, null);
+    assert.deepEqual(killSignals, ["SIGTERM"]);
+    assert.equal(resources.failureCategory, "child_timeout");
+    assert.equal(resources.childLifecycleSettlement, "timeout");
+    assert.equal(resources.childTimeout, true);
+    assert.equal(resources.childExited, true);
+    assert.equal(resources.childLifecycleTimersCleared, true);
+  });
+
+  await t.test("normal close resolves the same state machine", async () => {
+    const resources = createA11ChildResources();
+    const child = createA11EventChild();
+    const pending = runner.runFocusedChildLifecycle({
+      spawnImpl: () => {
+        queueMicrotask(() => {
+          child.stdout.emit(
+            "data",
+            Buffer.from(
+              "# tests 7\n# suites 0\n# pass 7\n# fail 0\n" +
+                "# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 1\n",
+            ),
+          );
+          child.emit("close", 0, null);
+        });
+        return child;
+      },
+      command: "synthetic-node",
+      args: [],
+      resources,
+      sidecar: null,
+      childDurationMs: 100,
+      terminationGraceMs: 20,
+      terminationEscalationMs: 20,
+    });
+    await pending;
+    child.emit("close", 0, null);
+    assert.equal(resources.failureCategory, null);
+    assert.equal(resources.childLifecycleSettlement, "close");
+    assert.equal(resources.childLifecycleTimersCleared, true);
+    assert.equal(resources.childSummaryParsed, true);
+  });
+});
+
+test("A11-C4 unacknowledged termination escalates and returns bounded unproven-exit failure", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const resources = createA11ChildResources();
+  const child = createA11EventChild();
+  const killSignals = [];
+  child.kill = (signal) => {
+    killSignals.push(signal);
+    return true;
+  };
+  const startedAt = Date.now();
+  await assert.rejects(() => runner.runFocusedChildLifecycle({
+    spawnImpl: () => child,
+    command: "synthetic-node",
+    args: [],
+    resources,
+    sidecar: null,
+    childDurationMs: 20,
+    terminationGraceMs: 20,
+    terminationEscalationMs: 20,
+  }));
+  assert.ok(Date.now() - startedAt < 1_000);
+  assert.deepEqual(killSignals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(resources.childTerminationStarted, true);
+  assert.equal(resources.childTerminationEscalated, true);
+  assert.equal(resources.childTerminationFinished, true);
+  assert.equal(resources.childTerminationUnconfirmed, true);
+  assert.equal(resources.childExited, false);
+  assert.equal(resources.childLifecycleSettlement, "timeout");
+  assert.equal(resources.childLifecycleTimersCleared, true);
+  await assert.rejects(
+    () => runner.verifyRunnerAbsence(resources, () => {}),
+  );
+  assert.equal(resources.childExited, false);
+});
+
+test("A11-C5 outer timeout hands off to lifecycle cleanup and applicable final absence", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const { runDisposableRuntimeLifecycle } = await import(
+    "../scripts/disposable-runtime-lifecycle.mjs",
+  );
+  let lifecycleResources = null;
+  let cleanupCalls = 0;
+  let absenceCalls = 0;
+  const signals = [];
+  const timeoutSpawn = () => {
+    const child = createA11EventChild();
+    child.kill = (signal) => {
+      signals.push(signal);
+      if (signal === "SIGTERM") {
+        queueMicrotask(() => child.emit("close", null, "SIGTERM"));
+      }
+      return true;
+    };
+    return child;
+  };
+  await assert.rejects(() => runDisposableRuntimeLifecycle({
+    construct: async (resources) => {
+      lifecycleResources = resources;
+      return {};
+    },
+    admitConstruction: async () => null,
+    deriveProvisioning: async () => null,
+    provision: async () => {},
+    admitConfigured: async () => null,
+    runFocusedTests: async (_admission, resources) => runner.runFocusedTests({
+      admission: {},
+      urls: {
+        primaryTargetUrl: "postgresql://synthetic/primary",
+        primaryOperatorUrl: "postgresql://synthetic/primary-operator",
+        secondaryTargetUrl: "postgresql://synthetic/secondary",
+        secondaryOperatorUrl: "postgresql://synthetic/secondary-operator",
+      },
+      spawnImpl: timeoutSpawn,
+      resources,
+      parentEnv: {},
+      childDurationMs: 20,
+      terminationGraceMs: 50,
+      terminationEscalationMs: 50,
+    }),
+    cleanup: async (resources) => {
+      cleanupCalls += 1;
+      await runner.cleanupRunnerResources(resources, timeoutSpawn);
+      resources.cleanupComplete = true;
+    },
+    verifyAbsence: async (resources) => {
+      absenceCalls += 1;
+      await runner.verifyRunnerAbsence(resources, timeoutSpawn, async () => {});
+      resources.absenceVerified = true;
+    },
+  }));
+  assert.ok(lifecycleResources);
+  assert.equal(cleanupCalls, 1);
+  assert.equal(absenceCalls, 1);
+  assert.deepEqual(signals, ["SIGTERM"]);
+  assert.equal(lifecycleResources.childTimeout, true);
+  assert.equal(lifecycleResources.childExited, true);
+  assert.equal(lifecycleResources.cleanupComplete, true);
+  assert.equal(lifecycleResources.absenceVerified, true);
+  assert.equal(lifecycleResources.focusedCredentialIsolationAbsent, true);
+  assert.equal(lifecycleResources.structuredFailureSidecarAbsenceVerified, true);
+  assert.equal(lifecycleResources.containerStartAttempted, undefined);
+  assert.equal(lifecycleResources.volumeCreateAttempted, undefined);
+});
+
+test("A11-C6 final absence fails closed when child exit remains unproven", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const resources = createA11ChildResources();
+  resources.childProcess = createA11EventChild();
+  resources.childExited = false;
+  await assert.rejects(
+    () => runner.verifyRunnerAbsence(resources, () => {}),
+  );
+  assert.equal(resources.childExited, false);
 });
 
 function escapeRegExp(value) {

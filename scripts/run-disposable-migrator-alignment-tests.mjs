@@ -33,6 +33,9 @@ const volumeOwnershipTokenLabelKey = "com.swooshz.platform.runner-token";
 const ownedPort = 56432;
 const maxChildOutputBytes = 64 * 1024;
 const maxChildDurationMs = 120_000;
+const focusedChildTerminationGraceMs = 2_000;
+const focusedChildTerminationEscalationMs = 2_000;
+const focusedChildEscalationSignal = "SIGKILL";
 const expectedPostgresTestCount = 7;
 const focusedCredentialIsolationDirectoryPrefix = "swooshz-platform-pgpass-isolation-";
 const syntheticMigratorPassword = "synthetic-migrator-password";
@@ -137,6 +140,7 @@ const failureCategories = new Set([
   "configured_fixture_admission",
   "child_test_spawn",
   "child_test_failure",
+  "child_timeout",
   "structured_child_receipt_missing",
   "child_summary_parse",
   "structured_child_failure_receipt_absent_with_progress",
@@ -206,6 +210,15 @@ export async function run({
         failurePhase: null,
         failureCategory: null,
         childExitCode: null,
+        childTimeout: false,
+        childTerminationStarted: false,
+        childTerminationEscalated: false,
+        childTerminationFinished: false,
+        childTerminationUnconfirmed: false,
+        childTerminationSignals: [],
+        childLifecycleState: "not_started",
+        childLifecycleSettlement: null,
+        childLifecycleTimersCleared: false,
         childSignal: false,
         childOutputOverflow: false,
         childSummaryParsed: false,
@@ -499,6 +512,12 @@ export function formatDisposableRuntimeFailureReceipt(resources = {}) {
       ? resources.childExitCode
       : null,
     childSignal: resources.childSignal === true,
+    childExited: resources.childExited === true,
+    childTimeout: resources.childTimeout === true,
+    childTerminationStarted: resources.childTerminationStarted === true,
+    childTerminationEscalated: resources.childTerminationEscalated === true,
+    childTerminationUnconfirmed:
+      resources.childTerminationUnconfirmed === true,
     outputOverflow: resources.childOutputOverflow === true,
     summaryParsed: resources.childSummaryParsed === true,
     structuredChildReceipt: projectStructuredChildReceipt(
@@ -1387,6 +1406,9 @@ export async function runFocusedTests({
   parentEnv,
   createSidecarImpl = createStructuredFailureReceiptSidecar,
   cleanupSidecarImpl = cleanupStructuredFailureReceiptSidecar,
+  childDurationMs = maxChildDurationMs,
+  terminationGraceMs = focusedChildTerminationGraceMs,
+  terminationEscalationMs = focusedChildTerminationEscalationMs,
 }) {
   resources.focusedCredentialIsolationSetupAttempted = true;
   const isolation = await createFocusedCredentialIsolation(resources);
@@ -1424,119 +1446,27 @@ export async function runFocusedTests({
     resources.structuredFailureSidecar = sidecar;
     resources.structuredFailureSidecarCreated = true;
     resources.structuredFailureSidecarCleanupPending = true;
-    await new Promise((resolvePromise, reject) => {
-      const childEnv = {
-        ...env,
-        [structuredFailureReceiptFileEnvironmentVariable]: sidecar.filePath,
-        [structuredFailureProgressFileEnvironmentVariable]: sidecar.progressFilePath,
-      };
-      const output = [];
-      let outputLength = 0;
-      let outputOverflow = false;
-      let child;
-      try {
-        child = spawnImpl(
-          process.execPath,
-          [
-            "--test",
-            "tests/platform-migrator-alignment-postgres.test.mjs",
-          ],
-          {
-            env: childEnv,
-            stdio: ["ignore", "pipe", "pipe"],
-            windowsHide: true,
-          },
-        );
-      } catch (error) {
-        markChildFailure(resources, "child_test_spawn");
-        throw error;
-      }
-      resources.childProcess = child;
-      resources.childExited = false;
-      resources.childTestsStarted = true;
-      child.stdout?.on("data", (chunk) => {
-        const buffer = Buffer.from(chunk);
-        outputLength += buffer.length;
-        if (outputLength <= maxChildOutputBytes) {
-          output.push(buffer);
-        } else {
-          outputOverflow = true;
-        }
-      });
-      child.stderr?.resume();
-      child.once("error", (error) => {
-        markChildFailure(resources, "child_test_spawn");
-        reject(error);
-      });
-      child.once("close", (code, signal) => {
-        resources.childExited = true;
-        resources.childExitCode = Number.isInteger(code) ? code : null;
-        resources.childSignal = signal !== null;
-        if (code !== 0 || resources.childSignal) {
-          void readStructuredChildFailureDiagnostics(sidecar).then((diagnostic) => {
-            if (diagnostic.kind === "final") {
-              resources.structuredChildReceipt = {
-                ...diagnostic.receipt,
-                child_exit_code: resources.childExitCode,
-                child_signal: typeof signal === "string" ? signal : null,
-                runner_category: "child_test_failure",
-              };
-              resources.childOutputOverflow = outputOverflow;
-              markChildFailure(resources, "child_test_failure");
-              reject(new Error("Focused child test failed."));
-              return;
-            }
-            if (diagnostic.kind === "final_invalid") {
-              markChildFailure(resources, "structured_child_failure_receipt_invalid");
-              reject(new Error("Focused child test failed with an invalid structured receipt."));
-              return;
-            }
-            if (diagnostic.kind === "progress") {
-              resources.structuredChildProgress = diagnostic.progress;
-              markChildFailure(
-                resources,
-                "structured_child_failure_receipt_absent_with_progress",
-              );
-              reject(new Error("Focused child test failed with durable progress."));
-              return;
-            }
-            if (diagnostic.kind === "progress_invalid") {
-              markChildFailure(resources, "structured_child_progress_invalid");
-              reject(new Error("Focused child test failed with invalid durable progress."));
-              return;
-            }
-            markChildFailure(resources, "structured_child_context_missing");
-            reject(new Error("Focused child test failed without bounded context."));
-          });
-          return;
-        }
-        if (outputOverflow) {
-          resources.childOutputOverflow = true;
-          markChildFailure(resources, "child_output_overflow");
-          reject(new Error());
-          return;
-        }
-        if (code === 0 && signal === null) {
-          const summary =
-            validateDisposableMigratorAlignmentChildSummary({
-              code,
-              signal,
-              output: Buffer.concat(output).toString("utf8"),
-            });
-          if (!summary) {
-            markChildFailure(resources, "child_summary_parse");
-            reject(new Error());
-            return;
-          }
-          resources.childSummaryParsed = true;
-          process.stdout.write(
-            `Disposable PostgreSQL 17 migrator alignment tests: ${summary.total} tests, ` +
-              `${summary.passed} passed, ${summary.failed} failed, ` +
-              `${summary.skipped} skipped.\n`,
-          );
-          resolvePromise();
-        }
-      });
+    await runFocusedChildLifecycle({
+      spawnImpl,
+      command: process.execPath,
+      args: [
+        "--test",
+        "tests/platform-migrator-alignment-postgres.test.mjs",
+      ],
+      options: {
+        env: {
+          ...env,
+          [structuredFailureReceiptFileEnvironmentVariable]: sidecar.filePath,
+          [structuredFailureProgressFileEnvironmentVariable]: sidecar.progressFilePath,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      },
+      resources,
+      sidecar,
+      childDurationMs,
+      terminationGraceMs,
+      terminationEscalationMs,
     });
   } finally {
     if (resources.structuredFailureSidecarCreated) {
@@ -1553,6 +1483,348 @@ export async function runFocusedTests({
     }
   }
   void admission;
+}
+
+export async function runFocusedChildLifecycle({
+  spawnImpl,
+  command,
+  args,
+  options = {},
+  resources,
+  sidecar,
+  childDurationMs = maxChildDurationMs,
+  terminationGraceMs = focusedChildTerminationGraceMs,
+  terminationEscalationMs = focusedChildTerminationEscalationMs,
+} = {}) {
+  const executionDuration = assertFocusedChildDuration(childDurationMs);
+  const terminationGrace = assertFocusedChildTerminationDuration(
+    terminationGraceMs,
+  );
+  const terminationEscalation = assertFocusedChildTerminationDuration(
+    terminationEscalationMs,
+  );
+  if (!resources || typeof spawnImpl !== "function") throw new Error();
+
+  return new Promise((resolvePromise, rejectPromise) => {
+    let child = null;
+    let executionTimer = null;
+    let terminalKind = null;
+    let settled = false;
+    let outputLength = 0;
+    let outputOverflow = false;
+    const output = [];
+
+    const clearExecutionTimer = () => {
+      if (executionTimer !== null) {
+        clearTimeout(executionTimer);
+        executionTimer = null;
+      }
+    };
+
+    const removeListener = (target, event, listener) => {
+      if (typeof target?.removeListener === "function") {
+        target.removeListener(event, listener);
+      }
+    };
+
+    const retainLateErrorGuard = () => {
+      if (!child || typeof child.on !== "function") return;
+      const ignoreLateError = () => {};
+      const removeGuardOnClose = () => {
+        removeListener(child, "error", ignoreLateError);
+        removeListener(child, "close", removeGuardOnClose);
+      };
+      child.on("error", ignoreLateError);
+      if (typeof child.once === "function") {
+        child.once("close", removeGuardOnClose);
+      }
+    };
+
+    const finish = (error = null) => {
+      if (settled) return;
+      settled = true;
+      clearExecutionTimer();
+      resources.childLifecycleTimersCleared = true;
+      const childExitUnproven = Boolean(child && !resources.childExited);
+      removeListener(child?.stdout, "data", onStdout);
+      removeListener(child, "error", onError);
+      removeListener(child, "close", onClose);
+      if (
+        childExitUnproven ||
+        terminalKind === "timeout" ||
+        terminalKind === "output_overflow"
+      ) {
+        retainLateErrorGuard();
+      }
+      resources.childLifecycleState = "settled";
+      resources.childLifecycleSettlement = terminalKind;
+      if (error) rejectPromise(error);
+      else resolvePromise();
+    };
+
+    const claimTerminal = (kind) => {
+      if (terminalKind !== null) return false;
+      terminalKind = kind;
+      resources.childLifecycleSettlement = kind;
+      resources.childLifecycleState =
+        kind === "timeout" || kind === "output_overflow"
+          ? "terminating"
+          : "settling";
+      return true;
+    };
+
+    const failAfterTermination = (error) => {
+      void terminateFocusedChild(resources, {
+        graceMs: terminationGrace,
+        escalationMs: terminationEscalation,
+      }).then(
+        () => finish(error),
+        () => finish(error),
+      );
+    };
+
+    const onStdout = (chunk) => {
+      if (settled) return;
+      const buffer = Buffer.from(chunk);
+      outputLength += buffer.length;
+      if (outputLength <= maxChildOutputBytes) {
+        output.push(buffer);
+        return;
+      }
+      outputOverflow = true;
+      resources.childOutputOverflow = true;
+      if (!claimTerminal("output_overflow")) return;
+      markChildFailure(resources, "child_output_overflow");
+      clearExecutionTimer();
+      failAfterTermination(new Error("Focused child test output exceeded the bounded limit."));
+    };
+
+    const onError = (error) => {
+      if (!claimTerminal("error")) return;
+      clearExecutionTimer();
+      markChildFailure(resources, "child_test_spawn");
+      finish(error instanceof Error ? error : new Error("Focused child process failed."));
+    };
+
+    const onClose = (code, signal) => {
+      recordFocusedChildExit(resources, code, signal);
+      if (!claimTerminal("close")) return;
+      clearExecutionTimer();
+      if (code !== 0 || signal !== null) {
+        void (async () => {
+          let diagnostic;
+          try {
+            diagnostic = await readStructuredChildFailureDiagnostics(sidecar);
+          } catch {
+            diagnostic = { kind: "missing" };
+          }
+          if (diagnostic.kind === "final") {
+            resources.structuredChildReceipt = {
+              ...diagnostic.receipt,
+              child_exit_code: resources.childExitCode,
+              child_signal: typeof signal === "string" ? signal : null,
+              runner_category: "child_test_failure",
+            };
+            resources.childOutputOverflow = outputOverflow;
+            markChildFailure(resources, "child_test_failure");
+            finish(new Error("Focused child test failed."));
+            return;
+          }
+          if (diagnostic.kind === "final_invalid") {
+            markChildFailure(resources, "structured_child_failure_receipt_invalid");
+            finish(new Error("Focused child test failed with an invalid structured receipt."));
+            return;
+          }
+          if (diagnostic.kind === "progress") {
+            resources.structuredChildProgress = diagnostic.progress;
+            markChildFailure(
+              resources,
+              "structured_child_failure_receipt_absent_with_progress",
+            );
+            finish(new Error("Focused child test failed with durable progress."));
+            return;
+          }
+          if (diagnostic.kind === "progress_invalid") {
+            markChildFailure(resources, "structured_child_progress_invalid");
+            finish(new Error("Focused child test failed with invalid durable progress."));
+            return;
+          }
+          markChildFailure(resources, "structured_child_context_missing");
+          finish(new Error("Focused child test failed without bounded context."));
+        })().catch(() => {
+          markChildFailure(resources, "structured_child_context_missing");
+          finish(new Error("Focused child test failed without bounded context."));
+        });
+        return;
+      }
+      if (outputOverflow) {
+        resources.childOutputOverflow = true;
+        markChildFailure(resources, "child_output_overflow");
+        finish(new Error("Focused child test output exceeded the bounded limit."));
+        return;
+      }
+      let summary;
+      try {
+        summary = validateDisposableMigratorAlignmentChildSummary({
+          code,
+          signal,
+          output: Buffer.concat(output).toString("utf8"),
+        });
+      } catch {
+        summary = null;
+      }
+      if (!summary) {
+        markChildFailure(resources, "child_summary_parse");
+        finish(new Error("Focused child test summary was invalid."));
+        return;
+      }
+      resources.childSummaryParsed = true;
+      process.stdout.write(
+        "Disposable PostgreSQL 17 migrator alignment tests: " +
+          summary.total +
+          " tests, " +
+          summary.passed +
+          " passed, " +
+          summary.failed +
+          " failed, " +
+          summary.skipped +
+          " skipped.\n",
+      );
+      finish();
+    };
+
+    const onTimeout = () => {
+      if (!claimTerminal("timeout")) return;
+      resources.childTimeout = true;
+      markChildFailure(resources, "child_timeout");
+      clearExecutionTimer();
+      failAfterTermination(
+        new Error("Focused child test exceeded its execution deadline."),
+      );
+    };
+
+    try {
+      child = spawnImpl(command, args, options);
+      if (!child || typeof child.once !== "function") throw new Error();
+    } catch (error) {
+      claimTerminal("error");
+      markChildFailure(resources, "child_test_spawn");
+      finish(error instanceof Error ? error : new Error("Focused child process failed to spawn."));
+      return;
+    }
+
+    resources.childProcess = child;
+    resources.childExited = false;
+    resources.childExitCode = null;
+    resources.childSignal = false;
+    resources.childTimeout = false;
+    resources.childTerminationStarted = false;
+    resources.childTerminationEscalated = false;
+    resources.childTerminationFinished = false;
+    resources.childTerminationUnconfirmed = false;
+    resources.childTerminationSignals = [];
+    resources.childOutputOverflow = false;
+    resources.childSummaryParsed = false;
+    resources.childLifecycleState = "active";
+    resources.childLifecycleSettlement = null;
+    resources.childLifecycleTimersCleared = false;
+    resources.childTerminationFinished = false;
+    resources.childTerminationUnconfirmed = false;
+    resources.childTerminationSignals = [];
+    resources.childTestsStarted = true;
+    child.stdout?.on("data", onStdout);
+    child.stderr?.resume();
+    child.once("error", onError);
+    child.once("close", onClose);
+    executionTimer = setTimeout(onTimeout, executionDuration);
+  });
+}
+
+function assertFocusedChildDuration(value) {
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error();
+  return value;
+}
+
+function assertFocusedChildTerminationDuration(value) {
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error();
+  return value;
+}
+
+function recordFocusedChildExit(resources, code, signal) {
+  if (resources.childExited === true) return;
+  resources.childExited = true;
+  resources.childExitCode = Number.isInteger(code) ? code : null;
+  resources.childSignal = signal !== null;
+  resources.childTerminationUnconfirmed = false;
+}
+
+function waitForFocusedChildExit(resources, child, timeoutMs) {
+  if (resources.childExited === true) return Promise.resolve(true);
+  return new Promise((resolvePromise) => {
+    let finished = false;
+    let timer = null;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      if (timer !== null) clearTimeout(timer);
+      if (typeof child?.removeListener === "function") {
+        child.removeListener("close", onClose);
+      }
+      resolvePromise(resources.childExited === true);
+    };
+    const onClose = (code, signal) => {
+      recordFocusedChildExit(resources, code, signal);
+      finish();
+    };
+    timer = setTimeout(finish, timeoutMs);
+    if (typeof child?.once === "function") child.once("close", onClose);
+  });
+}
+
+function requestFocusedChildTermination(resources, child, signal) {
+  resources.childTerminationStarted = true;
+  resources.childTerminationSignals ??= [];
+  resources.childTerminationSignals.push(signal);
+  try {
+    return typeof child?.kill === "function" && child.kill(signal);
+  } catch {
+    return false;
+  }
+}
+
+async function terminateFocusedChild(
+  resources,
+  {
+    graceMs = focusedChildTerminationGraceMs,
+    escalationMs = focusedChildTerminationEscalationMs,
+  } = {},
+) {
+  const child = resources.childProcess;
+  if (!child || resources.childExited === true) {
+    resources.childTerminationFinished = true;
+    resources.childTerminationUnconfirmed = false;
+    return { exited: resources.childExited === true };
+  }
+  if (resources.childTerminationFinished) {
+    return { exited: resources.childExited === true };
+  }
+
+  resources.childTerminationStarted = true;
+  const firstWait = waitForFocusedChildExit(resources, child, graceMs);
+  requestFocusedChildTermination(resources, child, "SIGTERM");
+  if (await firstWait) {
+    resources.childTerminationFinished = true;
+    resources.childTerminationUnconfirmed = false;
+    return { exited: true };
+  }
+
+  resources.childTerminationEscalated = true;
+  const escalationWait = waitForFocusedChildExit(resources, child, escalationMs);
+  requestFocusedChildTermination(resources, child, focusedChildEscalationSignal);
+  const exited = await escalationWait;
+  resources.childTerminationFinished = true;
+  resources.childTerminationUnconfirmed = !exited;
+  return { exited };
 }
 
 function markChildFailure(resources, category) {
@@ -1762,17 +2034,9 @@ export async function verifyRunnerAbsence(
 async function terminateOwnedChild(resources) {
   const child = resources.childProcess;
   if (!child || resources.childExited) return;
-  if (typeof child.kill !== "function" || !child.kill("SIGTERM")) {
-    throw new Error();
-  }
-  await new Promise((resolvePromise, reject) => {
-    const timer = setTimeout(() => reject(new Error()), 2_000);
-    child.once("close", () => {
-      clearTimeout(timer);
-      resources.childExited = true;
-      resolvePromise();
-    });
-  });
+  if (resources.childTerminationFinished) throw new Error();
+  const result = await terminateFocusedChild(resources);
+  if (!result.exited) throw new Error();
 }
 
 function ownedVolumeOwnershipMarker() {
