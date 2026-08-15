@@ -192,6 +192,8 @@ if (
 export async function run({
   env = process.env,
   spawnImpl = spawn,
+  assertOwnedListenerAbsentImpl = assertOwnedListenerAbsent,
+  assertPortAbsentImpl = assertPortAbsent,
 } = {}) {
   let resources = null;
 
@@ -242,6 +244,7 @@ export async function run({
         volumeCreated: false,
         volumeAttached: false,
         volumeOwned: false,
+        volumeCallerManagedPreserved: false,
         volumeRemoved: false,
         volumeOwnershipToken: createVolumeOwnershipToken(),
         volumeAbsenceVerified: false,
@@ -281,7 +284,7 @@ export async function run({
         resources.volumePreAbsenceVerified = true;
       });
       await runAt(resources, "construct", "listener_preexistence", async () => {
-        await assertOwnedListenerAbsent();
+        await assertOwnedListenerAbsentImpl();
       });
       resources.volumeCreateAttempted = true;
       await runAt(resources, "construct", "volume_create", async () => {
@@ -304,6 +307,16 @@ export async function run({
       await runAt(resources, "construct", "volume_mount_inspection", async () => {
         await assertExactVolumeMount(spawnImpl);
         resources.volumeAttached = true;
+        const ownership = await inspectOwnedVolumeOwnership(
+          spawnImpl,
+          resources.volumeOwnershipToken,
+        );
+        resources.volumeOwnershipState = ownership.state;
+        if (ownership.state !== "owned") {
+          throw new Error(
+            `mounted volume ownership evidence was ${ownership.state}`,
+          );
+        }
         resources.volumeOwned = true;
         resources.runnerOwned.add(`volume:${ownedVolumeName}`);
       });
@@ -453,7 +466,11 @@ export async function run({
       "absenceVerification",
       "absence_verification",
       async () => {
-        await verifyRunnerAbsence(lifecycleResources, spawnImpl);
+        await verifyRunnerAbsence(
+          lifecycleResources,
+          spawnImpl,
+          assertPortAbsentImpl,
+        );
         lifecycleResources.absenceVerified = true;
       },
     ),
@@ -496,6 +513,8 @@ export function formatDisposableRuntimeFailureReceipt(resources = {}) {
     volumeCreated: resources.volumeCreated === true,
     volumeAttached: resources.volumeAttached === true,
     volumeOwned: resources.volumeOwned === true,
+    volumeCallerManagedPreserved:
+      resources.volumeCallerManagedPreserved === true,
     volumeOwnershipState: resources.volumeOwnershipState ?? "unknown",
     volumeRemoved: resources.volumeRemoved === true,
     volumeAbsenceVerified: resources.volumeAbsenceVerified === true,
@@ -1697,9 +1716,22 @@ export async function verifyRunnerAbsence(
   if (resources.childProcess && !resources.childExited) throw new Error();
   if (!resources.containerStartAttempted) {
     if (resources.volumeCreateAttempted) {
-      await assertExactVolumeAbsent(spawnImpl);
-      resources.volumeAbsenceVerified = true;
-      if (resources.volumeCreated && !resources.volumeRemoved) throw new Error();
+      const ownership = await inspectOwnedVolumeOwnership(
+        spawnImpl,
+        resources.volumeOwnershipToken,
+      );
+      resources.volumeOwnershipState = ownership.state;
+      if (
+        ownership.state === "unowned" &&
+        resources.volumeOwned !== true &&
+        resources.volumeRemoved !== true
+      ) {
+        resources.volumeCallerManagedPreserved = true;
+      } else {
+        await assertExactVolumeAbsent(spawnImpl);
+        resources.volumeAbsenceVerified = true;
+        if (resources.volumeCreated && !resources.volumeRemoved) throw new Error();
+      }
     }
     return;
   }
@@ -1707,9 +1739,22 @@ export async function verifyRunnerAbsence(
   if (names !== "") throw new Error();
   if (!resources.containerRemoved) throw new Error();
   if (resources.volumeCreateAttempted) {
-    await assertExactVolumeAbsent(spawnImpl);
-    resources.volumeAbsenceVerified = true;
-    if (resources.volumeCreated && !resources.volumeRemoved) throw new Error();
+    const ownership = await inspectOwnedVolumeOwnership(
+      spawnImpl,
+      resources.volumeOwnershipToken,
+    );
+    resources.volumeOwnershipState = ownership.state;
+    if (
+      ownership.state === "unowned" &&
+      resources.volumeOwned !== true &&
+      resources.volumeRemoved !== true
+    ) {
+      resources.volumeCallerManagedPreserved = true;
+    } else {
+      await assertExactVolumeAbsent(spawnImpl);
+      resources.volumeAbsenceVerified = true;
+      if (resources.volumeCreated && !resources.volumeRemoved) throw new Error();
+    }
   }
   await assertPortAbsentImpl();
 }
@@ -1899,7 +1944,7 @@ export async function createOwnedVolume(spawnImpl, ownershipToken) {
 }
 
 
-async function startOwnedContainer(spawnImpl) {
+export async function startOwnedContainer(spawnImpl) {
   await runCommand(spawnImpl, "docker", [
     "run",
     "--detach",
@@ -2100,7 +2145,7 @@ export function assertSingleOwnedVolumeMount(mounts) {
   }
 }
 
-async function assertExactVolumeMount(spawnImpl) {
+export async function assertExactVolumeMount(spawnImpl) {
   const output = await runCommand(spawnImpl, "docker", [
     "inspect",
     "--format",

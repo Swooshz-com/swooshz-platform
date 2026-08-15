@@ -1851,7 +1851,7 @@ test("Run-18 production runner reconciles daemon-created nonzero volume once wit
         assert.match(receipt, /"volumeAbsenceVerified":true/);
         assert.equal(spawnImpl.volumeRmCalls(), 1);
         assert.equal(spawnImpl.volumeExists(), false);
-        assert.equal(spawnImpl.volumeLsCalls(), 3);
+        assert.equal(spawnImpl.volumeLsCalls(), 4);
         assert.doesNotMatch(
           receipt,
           new RegExp(escapeRegExp(spawnImpl.ownershipToken)),
@@ -2681,6 +2681,90 @@ function createRun14VolumeSpawn({
   return spawnImpl;
 }
 
+function createA10PostMountVolumeSpawn({
+  replaceOnContainerStart = false,
+  replacementLabels = {
+    "com.swooshz.platform.runner": "deepseek-platform128-migrator",
+    [run18VolumeOwnershipTokenLabelKey]: "caller-managed-token",
+  },
+  replacementInspectOutput = null,
+} = {}) {
+  let exists = false;
+  let containerExists = false;
+  let replacementAttached = false;
+  let labels = {};
+  const calls = [];
+  const spawnImpl = (command, args, options = {}) => {
+    calls.push({ command, args: [...args], options });
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = () => {
+      child.emit("close", null, "SIGTERM");
+      return true;
+    };
+    queueMicrotask(() => {
+      let stdout = "";
+      let code = 0;
+      let signal = null;
+      const argText = args.map((value) => String(value));
+      if (args[0] === "ps") {
+        stdout = containerExists ? run29OwnedContainerName + "\n" : "";
+      } else if (args[0] === "run") {
+        containerExists = true;
+        if (replaceOnContainerStart) {
+          labels = { ...replacementLabels };
+          replacementAttached = true;
+        }
+      } else if (args[0] === "rm" && args[1] === "--force") {
+        containerExists = false;
+        stdout = run29OwnedContainerName + "\n";
+      } else if (args[0] === "volume" && args[1] === "ls") {
+        stdout = exists ? run14OwnedVolumeName + "\n" : "";
+      } else if (args[0] === "volume" && args[1] === "create") {
+        labels = parseVolumeCreateLabels(args);
+        exists = true;
+        stdout = run14OwnedVolumeName + "\n";
+      } else if (args[0] === "volume" && args[1] === "inspect") {
+        stdout = replacementAttached && replacementInspectOutput !== null
+          ? replacementInspectOutput
+          : `${JSON.stringify({ Name: run14OwnedVolumeName, Labels: labels })}\n`;
+      } else if (args[0] === "volume" && args[1] === "rm") {
+        exists = false;
+        stdout = run14OwnedVolumeName + "\n";
+      } else if (
+        args[0] === "inspect" &&
+        argText.some((value) => value.includes(".NetworkSettings.Ports"))
+      ) {
+        stdout = JSON.stringify({
+          "5432/tcp": [{ HostIp: "127.0.0.1", HostPort: "56432" }],
+        }) + "\n";
+      } else if (
+        args[0] === "inspect" &&
+        argText.some((value) => value.includes(".Mounts"))
+      ) {
+        stdout = JSON.stringify([{
+          Type: "volume",
+          Name: run14OwnedVolumeName,
+          Destination: "/var/lib/postgresql/data",
+          RW: true,
+        }]) + "\n";
+      }
+      if (stdout) child.stdout.emit("data", Buffer.from(stdout));
+      child.emit("close", code, signal);
+    });
+    return child;
+  };
+  spawnImpl.calls = calls;
+  spawnImpl.exactVolumeExists = () => exists;
+  spawnImpl.containerExists = () => containerExists;
+  spawnImpl.volumeLabels = () => ({ ...labels });
+  spawnImpl.volumeRemovalCalls = () => calls.filter(
+    ({ args }) => args[0] === "volume" && args[1] === "rm",
+  ).length;
+  return spawnImpl;
+}
+
 function run14VolumeRmCalls(spawnImpl) {
   return spawnImpl.calls.filter(({ args }) => args[0] === "volume" && args[1] === "rm");
 }
@@ -3008,6 +3092,203 @@ test("Run-29 failed container-start cleanup reconciles exact absence before toke
     { state: "absent" },
   );
 });
+test("A10-H2-C1 clean mounted volume re-attestation retains the exact run token", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const token = run18VolumeOwnershipToken;
+  const spawnImpl = createA10PostMountVolumeSpawn();
+  await runner.createOwnedVolume(spawnImpl, token);
+  await runner.startOwnedContainer(spawnImpl);
+  await runner.assertExactVolumeMount(spawnImpl);
+  assert.deepEqual(
+    await runner.inspectOwnedVolumeOwnership(spawnImpl, token),
+    { state: "owned" },
+  );
+  const mountIndex = spawnImpl.calls.findIndex(
+    ({ args }) =>
+      args[0] === "inspect" &&
+      args.some((value) => String(value).includes(".Mounts")),
+  );
+  const ownershipListIndex = spawnImpl.calls.findIndex(
+    ({ args }, index) =>
+      index > mountIndex && args[0] === "volume" && args[1] === "ls",
+  );
+  assert.ok(ownershipListIndex > mountIndex);
+  assert.equal(spawnImpl.volumeLabels()[run18VolumeOwnershipTokenLabelKey], token);
+});
+
+test("A10-H2-C2 same-name replacement is detected only after attachment inspection", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const token = run18VolumeOwnershipToken;
+  const spawnImpl = createA10PostMountVolumeSpawn({
+    replaceOnContainerStart: true,
+  });
+  await runner.createOwnedVolume(spawnImpl, token);
+  await runner.startOwnedContainer(spawnImpl);
+  await runner.assertExactVolumeMount(spawnImpl);
+  assert.deepEqual(
+    await runner.inspectOwnedVolumeOwnership(spawnImpl, token),
+    { state: "unowned" },
+  );
+  assert.equal(spawnImpl.exactVolumeExists(), true);
+  assert.equal(spawnImpl.volumeRemovalCalls(), 0);
+});
+
+test("A10-H2-C3 missing, malformed, and mismatched token state fails before PostgreSQL activity", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const cases = [
+    {
+      label: "missing token",
+      replacementLabels: {
+        "com.swooshz.platform.runner": "deepseek-platform128-migrator",
+      },
+      expectedState: "unowned",
+    },
+    {
+      label: "malformed inspection",
+      replacementInspectOutput: "not-json\n",
+      expectedState: "ambiguous",
+    },
+    {
+      label: "mismatched token",
+      expectedState: "unowned",
+    },
+  ];
+  for (const testCase of cases) {
+    const token = run18VolumeOwnershipToken;
+    const spawnImpl = createA10PostMountVolumeSpawn({
+      ...testCase,
+      replaceOnContainerStart: true,
+    });
+    let listenerAbsenceCalls = 0;
+    await assert.rejects(
+      () => runner.run({
+        env: {},
+        spawnImpl,
+        assertOwnedListenerAbsentImpl: async () => {},
+        assertPortAbsentImpl: async () => {
+          listenerAbsenceCalls += 1;
+        },
+      }),
+      (error) => {
+        const receipt = error.runtimeFailureReceipt;
+        assert.match(
+          receipt,
+          new RegExp(`\"volumeOwnershipState\":\"${testCase.expectedState}\"`),
+          testCase.label,
+        );
+        assert.match(receipt, /"postgresReady":false/, testCase.label);
+        return true;
+      },
+      testCase.label,
+    );
+    assert.equal(
+      listenerAbsenceCalls,
+      testCase.expectedState === "unowned" ? 1 : 0,
+      testCase.label,
+    );
+    assert.equal(spawnImpl.exactVolumeExists(), true, testCase.label);
+    assert.equal(spawnImpl.volumeRemovalCalls(), 0, testCase.label);
+    assert.equal(
+      spawnImpl.calls.some(
+        ({ args }) => args[0] === "exec" || args[0] === "psql",
+      ),
+      false,
+      testCase.label,
+    );
+  }
+});
+
+test("A10-H2-C4/C5 replacement volume is preserved while runner-owned cleanup reconciles", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const spawnImpl = createA10PostMountVolumeSpawn({
+    replaceOnContainerStart: true,
+  });
+  let listenerAbsenceCalls = 0;
+  await assert.rejects(
+    () => runner.run({
+      env: {},
+      spawnImpl,
+      assertOwnedListenerAbsentImpl: async () => {},
+      assertPortAbsentImpl: async () => {
+        listenerAbsenceCalls += 1;
+      },
+    }),
+    (error) => {
+      const receipt = error.runtimeFailureReceipt;
+      assert.match(receipt, /"volumeCallerManagedPreserved":true/);
+      assert.match(receipt, /"postgresReady":false/);
+      return true;
+    },
+  );
+  assert.equal(listenerAbsenceCalls, 1);
+  assert.equal(spawnImpl.containerExists(), false);
+  assert.equal(spawnImpl.exactVolumeExists(), true);
+  assert.equal(spawnImpl.volumeRemovalCalls(), 0);
+  assert.equal(
+    spawnImpl.volumeLabels()[run18VolumeOwnershipTokenLabelKey],
+    "caller-managed-token",
+  );
+  assert.equal(
+    spawnImpl.calls.some(
+      ({ args }) => args.includes("prune"),
+    ),
+    false,
+  );
+  assert.equal(
+    spawnImpl.calls.some(
+      ({ args }) => args[0] === "exec" || args[0] === "psql",
+    ),
+    false,
+  );
+  assert.deepEqual(
+    await runner.inspectOwnedVolumeOwnership(
+      spawnImpl,
+      "caller-managed-token-does-not-match",
+    ),
+    { state: "unowned" },
+  );
+});
+
+test("A10-H2-C6 clean post-mount ownership and exact final cleanup remain deterministic", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const token = run18VolumeOwnershipToken;
+  const spawnImpl = createA10PostMountVolumeSpawn();
+  await runner.createOwnedVolume(spawnImpl, token);
+  await runner.startOwnedContainer(spawnImpl);
+  await runner.assertExactVolumeMount(spawnImpl);
+  assert.deepEqual(
+    await runner.inspectOwnedVolumeOwnership(spawnImpl, token),
+    { state: "owned" },
+  );
+  const resources = {
+    childProcess: null,
+    childExited: true,
+    focusedCredentialIsolationSetupAttempted: false,
+    ownedContainer: false,
+    ownedDatabases: new Set(),
+    containerStartAttempted: true,
+    containerRemoved: false,
+    volumeCreateAttempted: true,
+    volumeCreated: true,
+    volumeOwned: true,
+    volumeCallerManagedPreserved: false,
+    volumeRemoved: false,
+    volumeAbsenceVerified: false,
+    volumeOwnershipToken: token,
+  };
+  await runner.cleanupRunnerResources(resources, spawnImpl);
+  await runner.verifyRunnerAbsence(resources, spawnImpl, async () => {});
+  assert.equal(spawnImpl.containerExists(), false);
+  assert.equal(spawnImpl.exactVolumeExists(), false);
+  assert.equal(resources.volumeRemoved, true);
+  assert.equal(resources.volumeAbsenceVerified, true);
+  assert.equal(resources.volumeCallerManagedPreserved, false);
+  assert.deepEqual(
+    await runner.inspectOwnedVolumeOwnership(spawnImpl, token),
+    { state: "absent" },
+  );
+});
+
 test("Run-14 focused child environment replaces PostgreSQL password-file discovery and retains benign env", async () => {
   const { buildFocusedTestEnvironment } = await import(
     "../scripts/run-disposable-migrator-alignment-tests.mjs",

@@ -1,5 +1,6 @@
 ﻿import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { renameSync, unlinkSync, writeFileSync } from "node:fs";
 import test from "node:test";
@@ -22,6 +23,7 @@ import {
 import {
   buildFocusedDefaultPgpassControlEnvironment,
 } from "../scripts/run-disposable-migrator-alignment-tests.mjs";
+import { runDisposableRuntimeLifecycle } from "../scripts/disposable-runtime-lifecycle.mjs";
 
 const primaryDatabaseUrl = process.env.MIGRATOR_ALIGNMENT_TEST_DATABASE_URL;
 const primaryOperatorUrl = process.env.MIGRATOR_ALIGNMENT_TEST_OPERATOR_URL;
@@ -107,6 +109,9 @@ try {
   await pool?.end().catch(() => {});
 }
 `;
+const defaultPgpassControlTimeoutMs = 30_000;
+const defaultPgpassControlFailureMessage = "C3 RED default-pgpass admission failed.";
+const defaultPgpassControlTimeoutMessage = "C3 RED default-pgpass admission timed out.";
 
 const structuredReceiptProgressMaxBytes = 16 * 1024;
 const structuredReceiptTransportTestMode =
@@ -123,6 +128,12 @@ const structuredFingerprintFields = [
   "attributes",
   "memberships",
 ];
+const isFocusedDisposableChild =
+  typeof process.env.PLATFORM_MIGRATOR_FAILURE_RECEIPT_FILE === "string" &&
+  process.env.PLATFORM_MIGRATOR_FAILURE_RECEIPT_FILE.length > 0 &&
+  typeof process.env.PLATFORM_MIGRATOR_FAILURE_PROGRESS_FILE === "string" &&
+  process.env.PLATFORM_MIGRATOR_FAILURE_PROGRESS_FILE.length > 0;
+const a10CausalControlsEnabled = !isFocusedDisposableChild;
 const structuredFailurePhases = new Set([
   "baseline_capture",
   "forward_migration",
@@ -228,6 +239,171 @@ function withStructuredFailureReceipt(testId, operation) {
     .finally(() => {
       activeStructuredFailureContext = previousContext;
     });
+}
+if (a10CausalControlsEnabled) {
+test("A10-H1-C1/C3 normal child failures remain deterministic under the watchdog", async () => {
+  const child = new EventEmitter();
+  const killSignals = [];
+  child.kill = (signal) => {
+    killSignals.push(signal);
+    return true;
+  };
+  let watchdogCallback = null;
+  const pending = runDefaultPgpassControl({}, {
+    childScript: "process.exitCode = 23;",
+    spawnImpl: () => child,
+    setTimeoutImpl: (callback) => {
+      watchdogCallback = callback;
+      return {};
+    },
+    clearTimeoutImpl: () => {},
+  });
+  queueMicrotask(() => child.emit("close", 23, null));
+  await assert.rejects(
+    pending,
+    (error) =>
+      error instanceof Error &&
+      error.message === defaultPgpassControlFailureMessage,
+  );
+  assert.equal(typeof watchdogCallback, "function");
+  watchdogCallback();
+  assert.deepEqual(killSignals, []);
+});
+
+test("A10-H1-C2 real stalled default-pgpass child is terminated and fails deterministically", async () => {
+  let child = null;
+  const startedAt = Date.now();
+  await assert.rejects(
+    runDefaultPgpassControl({}, {
+      childScript: "setInterval(() => {}, 1000);",
+      timeoutMs: 75,
+      spawnImpl: (...args) => {
+        child = spawn(...args);
+        return child;
+      },
+    }),
+    (error) =>
+      error instanceof Error &&
+      error.message === defaultPgpassControlTimeoutMessage,
+  );
+  assert.ok(child);
+  assert.equal(child.killed, true);
+  await new Promise((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      resolve();
+      return;
+    }
+    child.once("close", resolve);
+  });
+  assert.ok(child.exitCode !== null || child.signalCode !== null);
+  assert.ok(Date.now() - startedAt < 3_000);
+});
+
+test("A10-H1-C3 timeout/error/close races settle once and clear the watchdog", async () => {
+  const child = new EventEmitter();
+  const killSignals = [];
+  child.kill = (signal) => {
+    killSignals.push(signal);
+    child.emit("close", null, signal);
+    return true;
+  };
+  let watchdogCallback = null;
+  const watchdogHandle = {};
+  let clearCount = 0;
+  const pending = runDefaultPgpassControl({}, {
+    childScript: "setInterval(() => {}, 1000);",
+    spawnImpl: () => child,
+    setTimeoutImpl: (callback) => {
+      watchdogCallback = callback;
+      return watchdogHandle;
+    },
+    clearTimeoutImpl: (handle) => {
+      assert.equal(handle, watchdogHandle);
+      clearCount += 1;
+    },
+  });
+  assert.equal(typeof watchdogCallback, "function");
+  watchdogCallback();
+  child.emit("error", new Error("late error"));
+  child.emit("close", 0, null);
+  await assert.rejects(
+    pending,
+    (error) =>
+      error instanceof Error &&
+      error.message === defaultPgpassControlTimeoutMessage,
+  );
+  assert.deepEqual(killSignals, ["SIGTERM"]);
+  assert.equal(clearCount, 1);
+});
+
+test("A10-H1-C4 timeout failure reaches disposable lifecycle cleanup and final absence", async () => {
+  const residue = {
+    container: true,
+    volume: true,
+    listener: true,
+    passfile: true,
+    receipt: true,
+    sidecar: true,
+  };
+  const runnerOwnedResidue = [
+    "container:owned",
+    "volume:owned",
+    "listener:127.0.0.1:56432",
+    "passfile:owned",
+    "receipt:owned",
+    "sidecar:owned",
+  ];
+  let cleanupCalls = 0;
+  let absenceCalls = 0;
+  await assert.rejects(
+    runDisposableRuntimeLifecycle({
+      construct: (resources) => {
+        for (const resource of runnerOwnedResidue) {
+          resources.runnerOwned.add(resource);
+        }
+        return runDefaultPgpassControl({}, {
+          childScript: "setInterval(() => {}, 1000);",
+          timeoutMs: 75,
+        });
+      },
+      admitConstruction: async () => null,
+      deriveProvisioning: async () => null,
+      provision: async () => {},
+      admitConfigured: async () => null,
+      runFocusedTests: async () => {},
+      cleanup: async (resources) => {
+        cleanupCalls += 1;
+        resources.runnerOwned.clear();
+        for (const resource of Object.keys(residue)) {
+          residue[resource] = false;
+        }
+      },
+      verifyAbsence: async (resources) => {
+        absenceCalls += 1;
+        assert.equal(resources.runnerOwned.size, 0);
+        assert.deepEqual(residue, {
+          container: false,
+          volume: false,
+          listener: false,
+          passfile: false,
+          receipt: false,
+          sidecar: false,
+        });
+      },
+    }),
+  );
+  assert.equal(cleanupCalls, 1);
+  assert.equal(absenceCalls, 1);
+  assert.deepEqual(residue, {
+    container: false,
+    volume: false,
+    listener: false,
+    passfile: false,
+    receipt: false,
+    sidecar: false,
+  });
+});
+
 }
 function markStructuredFailurePhase(phase, assertionCategory) {
   if (!activeStructuredFailureContext) return;
@@ -2438,20 +2614,36 @@ async function assertFocusedC3Proof(primary) {
   }
 }
 
-async function runDefaultPgpassControl(environment) {
-  await new Promise((resolve, reject) => {
+export async function runDefaultPgpassControl(
+  environment,
+  {
+    childScript = defaultPgpassControlScript,
+    timeoutMs = defaultPgpassControlTimeoutMs,
+    spawnImpl = spawn,
+    setTimeoutImpl = setTimeout,
+    clearTimeoutImpl = clearTimeout,
+  } = {},
+) {
+  return new Promise((resolve, reject) => {
     let settled = false;
+    let timedOut = false;
+    let watchdog = null;
+    let child;
     const finish = (error) => {
       if (settled) return;
       settled = true;
+      if (watchdog !== null) {
+        clearTimeoutImpl(watchdog);
+        watchdog = null;
+      }
       if (error) reject(error);
       else resolve();
     };
-    let child;
+    const fail = () => finish(new Error(defaultPgpassControlFailureMessage));
     try {
-      child = spawn(
+      child = spawnImpl(
         process.execPath,
-        ["--input-type=module", "--eval", defaultPgpassControlScript],
+        ["--input-type=module", "--eval", childScript],
         {
           env: environment,
           stdio: "ignore",
@@ -2459,15 +2651,26 @@ async function runDefaultPgpassControl(environment) {
         },
       );
     } catch {
-      finish(new Error("C3 RED default-pgpass admission failed."));
+      fail();
       return;
     }
-    child.once("error", () =>
-      finish(new Error("C3 RED default-pgpass admission failed.")));
+    child.once("error", fail);
     child.once("close", (code, signal) => {
+      if (timedOut) return;
       if (code === 0 && signal === null) finish();
-      else finish(new Error("C3 RED default-pgpass admission failed."));
+      else fail();
     });
+    watchdog = setTimeoutImpl(() => {
+      if (settled) return;
+      timedOut = true;
+      try {
+        if (typeof child?.kill !== "function") throw new Error();
+        child.kill("SIGTERM");
+      } catch {
+        // The timeout remains the deterministic failure even if termination races.
+      }
+      finish(new Error(defaultPgpassControlTimeoutMessage));
+    }, timeoutMs);
   });
 }
 
