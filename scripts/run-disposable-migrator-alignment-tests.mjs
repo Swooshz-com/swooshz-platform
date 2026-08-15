@@ -210,6 +210,7 @@ export async function run({
         failurePhase: null,
         failureCategory: null,
         childExitCode: null,
+        childExitSignal: null,
         childTimeout: false,
         childTerminationStarted: false,
         childTerminationEscalated: false,
@@ -219,6 +220,8 @@ export async function run({
         childLifecycleState: "not_started",
         childLifecycleSettlement: null,
         childLifecycleTimersCleared: false,
+        childLateEventObserversRetained: false,
+        childLateEventObserversReleased: false,
         childSignal: false,
         childOutputOverflow: false,
         childSummaryParsed: false,
@@ -263,6 +266,8 @@ export async function run({
         volumeAbsenceVerified: false,
         childProcess: null,
         childExited: true,
+        focusedChildTerminationGraceMs: null,
+        focusedChildTerminationEscalationMs: null,
         databaseUrls: new Map(),
         ownedDatabases: new Set(),
         ownedRoles: new Set([
@@ -511,6 +516,10 @@ export function formatDisposableRuntimeFailureReceipt(resources = {}) {
     childExitCode: Number.isInteger(resources.childExitCode)
       ? resources.childExitCode
       : null,
+    childExitSignal:
+      typeof resources.childExitSignal === "string"
+        ? resources.childExitSignal
+        : null,
     childSignal: resources.childSignal === true,
     childExited: resources.childExited === true,
     childTimeout: resources.childTimeout === true,
@@ -1504,6 +1513,8 @@ export async function runFocusedChildLifecycle({
     terminationEscalationMs,
   );
   if (!resources || typeof spawnImpl !== "function") throw new Error();
+  resources.focusedChildTerminationGraceMs = terminationGrace;
+  resources.focusedChildTerminationEscalationMs = terminationEscalation;
 
   return new Promise((resolvePromise, rejectPromise) => {
     let child = null;
@@ -1527,17 +1538,31 @@ export async function runFocusedChildLifecycle({
       }
     };
 
-    const retainLateErrorGuard = () => {
-      if (!child || typeof child.on !== "function") return;
-      const ignoreLateError = () => {};
-      const removeGuardOnClose = () => {
-        removeListener(child, "error", ignoreLateError);
-        removeListener(child, "close", removeGuardOnClose);
-      };
-      child.on("error", ignoreLateError);
-      if (typeof child.once === "function") {
-        child.once("close", removeGuardOnClose);
+    let lateErrorGuard = null;
+    resources.releaseFocusedChildObservers = null;
+
+    const releaseChildEventObservers = () => {
+      if (!child) return;
+      removeListener(child, "error", lateErrorGuard);
+      removeListener(child, "close", onClose);
+      lateErrorGuard = null;
+      resources.childLateEventObserversRetained = false;
+      resources.childLateEventObserversReleased = true;
+      if (resources.releaseFocusedChildObservers === releaseChildEventObservers) {
+        resources.releaseFocusedChildObservers = null;
       }
+    };
+
+    const retainChildEventObservers = () => {
+      if (!child || typeof child.on !== "function") return;
+      if (resources.releaseFocusedChildObservers === releaseChildEventObservers) {
+        return;
+      }
+      lateErrorGuard = () => {};
+      resources.releaseFocusedChildObservers = releaseChildEventObservers;
+      resources.childLateEventObserversRetained = true;
+      resources.childLateEventObserversReleased = false;
+      child.on("error", lateErrorGuard);
     };
 
     const finish = (error = null) => {
@@ -1548,14 +1573,8 @@ export async function runFocusedChildLifecycle({
       const childExitUnproven = Boolean(child && !resources.childExited);
       removeListener(child?.stdout, "data", onStdout);
       removeListener(child, "error", onError);
-      removeListener(child, "close", onClose);
-      if (
-        childExitUnproven ||
-        terminalKind === "timeout" ||
-        terminalKind === "output_overflow"
-      ) {
-        retainLateErrorGuard();
-      }
+      if (!childExitUnproven) removeListener(child, "close", onClose);
+      retainChildEventObservers();
       resources.childLifecycleState = "settled";
       resources.childLifecycleSettlement = terminalKind;
       if (error) rejectPromise(error);
@@ -1608,6 +1627,7 @@ export async function runFocusedChildLifecycle({
 
     const onClose = (code, signal) => {
       recordFocusedChildExit(resources, code, signal);
+      resources.releaseFocusedChildObservers?.();
       if (!claimTerminal("close")) return;
       clearExecutionTimer();
       if (code !== 0 || signal !== null) {
@@ -1716,6 +1736,7 @@ export async function runFocusedChildLifecycle({
     resources.childProcess = child;
     resources.childExited = false;
     resources.childExitCode = null;
+    resources.childExitSignal = null;
     resources.childSignal = false;
     resources.childTimeout = false;
     resources.childTerminationStarted = false;
@@ -1755,6 +1776,7 @@ function recordFocusedChildExit(resources, code, signal) {
   resources.childExited = true;
   resources.childExitCode = Number.isInteger(code) ? code : null;
   resources.childSignal = signal !== null;
+  resources.childExitSignal = typeof signal === "string" ? signal : null;
   resources.childTerminationUnconfirmed = false;
 }
 
@@ -1801,11 +1823,13 @@ async function terminateFocusedChild(
 ) {
   const child = resources.childProcess;
   if (!child || resources.childExited === true) {
+    resources.releaseFocusedChildObservers?.();
     resources.childTerminationFinished = true;
     resources.childTerminationUnconfirmed = false;
     return { exited: resources.childExited === true };
   }
   if (resources.childTerminationFinished) {
+    resources.releaseFocusedChildObservers?.();
     return { exited: resources.childExited === true };
   }
 
@@ -1813,6 +1837,7 @@ async function terminateFocusedChild(
   const firstWait = waitForFocusedChildExit(resources, child, graceMs);
   requestFocusedChildTermination(resources, child, "SIGTERM");
   if (await firstWait) {
+    resources.releaseFocusedChildObservers?.();
     resources.childTerminationFinished = true;
     resources.childTerminationUnconfirmed = false;
     return { exited: true };
@@ -1824,6 +1849,7 @@ async function terminateFocusedChild(
   const exited = await escalationWait;
   resources.childTerminationFinished = true;
   resources.childTerminationUnconfirmed = !exited;
+  resources.releaseFocusedChildObservers?.();
   return { exited };
 }
 
@@ -2033,9 +2059,19 @@ export async function verifyRunnerAbsence(
 
 async function terminateOwnedChild(resources) {
   const child = resources.childProcess;
-  if (!child || resources.childExited) return;
+  if (!child || resources.childExited) {
+    resources.releaseFocusedChildObservers?.();
+    return;
+  }
   if (resources.childTerminationFinished) throw new Error();
-  const result = await terminateFocusedChild(resources);
+  const result = await terminateFocusedChild(resources, {
+    graceMs:
+      resources.focusedChildTerminationGraceMs ??
+      focusedChildTerminationGraceMs,
+    escalationMs:
+      resources.focusedChildTerminationEscalationMs ??
+      focusedChildTerminationEscalationMs,
+  });
   if (!result.exited) throw new Error();
 }
 

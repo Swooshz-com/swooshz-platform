@@ -77,6 +77,7 @@ if (
 export async function run({
   env = process.env,
   spawnImpl = spawn,
+  assertPortAbsentImpl = assertPortAbsent,
 } = {}) {
   let resources = null;
 
@@ -100,6 +101,8 @@ export async function run({
         childTestsStarted: false,
         cleanupComplete: false,
         absenceVerified: false,
+        publishedBindingVerified: false,
+        portAbsenceVerified: false,
         containerStartAttempted: false,
         ownedContainer: false,
         containerRemoved: false,
@@ -132,10 +135,7 @@ export async function run({
       resources.containerStarted = true;
       resources.runnerOwned.add(`container:${ownedContainerName}`);
       await runAt(resources, "construct", "publish_binding_inspection", () =>
-        (async () => {
-          resources.observedPort = await assertExactPublishedBinding(spawnImpl);
-          resources.runnerOwned.add(`listener:127.0.0.1:${resources.observedPort}`);
-        })());
+        assertExactPublishedBinding(spawnImpl, resources));
 
       const urls = fixtureUrls(resources.observedPort);
       resources.databaseUrls = new Map([
@@ -277,7 +277,7 @@ export async function run({
       "absenceVerification",
       "absence_verification",
       async () => {
-        await verifyRunnerAbsence(lifecycleResources, spawnImpl);
+        await verifyRunnerAbsence(lifecycleResources, spawnImpl, assertPortAbsentImpl);
         lifecycleResources.absenceVerified = true;
       },
     ),
@@ -307,10 +307,13 @@ export function formatDisposableRuntimeFailureReceipt(resources = {}) {
     outputOverflow: resources.childOutputOverflow === true,
     summaryParsed: resources.childSummaryParsed === true,
     containerStarted: resources.containerStarted === true,
-    publishedBindingVerified: Number.isInteger(resources.observedPort),
+    publishedBindingVerified: resources.publishedBindingVerified === true,
+    assignedPortAttested: Number.isInteger(resources.observedPort),
     observedPort: Number.isInteger(resources.observedPort)
       ? resources.observedPort
       : null,
+    portAbsenceVerified: resources.portAbsenceVerified === true,
+    portAbsenceFailure: resources.portAbsenceFailure ?? null,
     postgresReady: resources.postgresReady === true,
     constructionAdmission: resources.constructionAdmission === true,
     provisioningComplete: resources.provisioningComplete === true,
@@ -737,12 +740,7 @@ async function cleanupRunnerResources(resources, spawnImpl) {
   }
   if (resources.containerStartAttempted) {
     try {
-      await runCommand(spawnImpl, "docker", [
-        "rm",
-        "--force",
-        ownedContainerName,
-      ]);
-      resources.containerRemoved = true;
+      await reconcileOwnedContainerRemoval(spawnImpl, resources);
     } catch {
       firstError ??= new Error();
     }
@@ -796,14 +794,47 @@ async function cleanupFixtureDatabases(resources) {
   }
 }
 
-async function verifyRunnerAbsence(resources, spawnImpl) {
+async function verifyRunnerAbsence(
+  resources,
+  spawnImpl,
+  assertPortAbsentImpl = assertPortAbsent,
+) {
   if (resources.childProcess && !resources.childExited) throw new Error();
   if (!resources.containerStartAttempted) return;
   const names = await assertExactContainerAbsent(spawnImpl);
   if (names !== "") throw new Error();
   if (!resources.containerRemoved) throw new Error();
-  if (Number.isInteger(resources.observedPort)) {
-    await assertPortAbsent(resources.observedPort);
+  if (!Number.isInteger(resources.observedPort)) {
+    resources.portAbsenceFailure = "assigned_port_unproven";
+    throw new Error();
+  }
+  try {
+    await assertPortAbsentImpl(resources.observedPort);
+  } catch {
+    resources.portAbsenceFailure = "assigned_port_absence_unproven";
+    throw new Error();
+  }
+  resources.portAbsenceVerified = true;
+  resources.portAbsenceFailure = null;
+}
+
+async function reconcileOwnedContainerRemoval(spawnImpl, resources) {
+  if (!resources.containerStartAttempted || resources.containerRemoved) {
+    return "not-required";
+  }
+  try {
+    await runCommand(spawnImpl, "docker", [
+      "rm",
+      "--force",
+      ownedContainerName,
+    ]);
+    resources.containerRemoved = true;
+    return "removed";
+  } catch (removalError) {
+    const names = await assertExactContainerAbsent(spawnImpl);
+    if (names !== "") throw removalError;
+    resources.containerRemoved = true;
+    return "absent";
   }
 }
 
@@ -876,6 +907,43 @@ export function parsePublishedBinding(output) {
   return binding;
 }
 
+export function extractAssignedPortForCleanup(output) {
+  const text = typeof output === "string" ? output.trim() : "";
+  if (text.length === 0 || Buffer.byteLength(text, "utf8") > maxChildOutputBytes) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    const keys = Object.keys(parsed);
+    if (keys.length === 0 || !keys.includes("5432/tcp")) return null;
+    const ports = new Set();
+    for (const key of keys) {
+      if (!/^[0-9]+\/tcp$/u.test(key)) return null;
+      const entries = parsed[key];
+      if (!Array.isArray(entries) || entries.length === 0) return null;
+      for (const entry of entries) {
+        if (
+          !entry ||
+          typeof entry !== "object" ||
+          Array.isArray(entry) ||
+          entry.HostIp !== "127.0.0.1" ||
+          typeof entry.HostPort !== "string" ||
+          !/^[0-9]+$/u.test(entry.HostPort)
+        ) {
+          return null;
+        }
+        ports.add(assertValidObservedPort(Number(entry.HostPort)));
+      }
+    }
+    return ports.size === 1 ? ports.values().next().value : null;
+  } catch {
+    return null;
+  }
+}
+
 function assertValidObservedPort(port) {
   if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error();
   return port;
@@ -896,16 +964,25 @@ export function assertSingleLoopbackPublishedBinding(binding) {
   return assertValidObservedPort(Number(entry.hostPort));
 }
 
-async function assertExactPublishedBinding(spawnImpl) {
+async function assertExactPublishedBinding(spawnImpl, resources = null) {
   const output = await runCommand(spawnImpl, "docker", [
     "inspect",
     "--format",
     "{{json .NetworkSettings.Ports}}",
     ownedContainerName,
   ]);
-  return assertSingleLoopbackPublishedBinding(
-    parsePublishedBinding(output),
-  );
+  const cleanupPort = extractAssignedPortForCleanup(output);
+  if (resources && Number.isInteger(cleanupPort)) {
+    resources.observedPort = cleanupPort;
+    resources.runnerOwned.add(`listener:127.0.0.1:${cleanupPort}`);
+  }
+  const port = assertSingleLoopbackPublishedBinding(parsePublishedBinding(output));
+  if (resources) {
+    resources.observedPort = port;
+    resources.publishedBindingVerified = true;
+    resources.runnerOwned.add(`listener:127.0.0.1:${port}`);
+  }
+  return port;
 }
 
 async function waitForPostgres(connectionString) {

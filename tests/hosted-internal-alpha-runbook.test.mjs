@@ -630,7 +630,7 @@ test("disposable PostgreSQL runners use loopback binding with runtime ephemeral 
   assert.match(runtimeRunner, /--publish[\s\S]*127\.0\.0\.1::5432/);
   assert.doesNotMatch(runtimeRunner, /\b55432\b/);
   assert.match(runtimeRunner, /fixtureUrls\(resources\.observedPort\)/);
-  assert.match(runtimeRunner, /assertPortAbsent\(resources\.observedPort\)/);
+  assert.match(runtimeRunner, /assertPortAbsentImpl\(resources\.observedPort\)/);
   assert.match(runtimeRunner, /resources\.observedPort/);
 });
 
@@ -1736,6 +1736,7 @@ test("dynamic runtime binding validates the assigned port and propagates it", as
   assert.ok(Object.values(urls).every((value) => value.includes(":49152/")));
   const receipt = runner.formatDisposableRuntimeFailureReceipt({
     observedPort: 49152,
+    publishedBindingVerified: true,
   });
   assert.match(receipt, /"publishedBindingVerified":true/);
   assert.match(receipt, /"observedPort":49152/);
@@ -2383,6 +2384,7 @@ function createA11ChildResources() {
     childProcess: null,
     childExited: true,
     childExitCode: null,
+    childExitSignal: null,
     childSignal: false,
     childTimeout: false,
     childTerminationStarted: false,
@@ -2393,6 +2395,8 @@ function createA11ChildResources() {
     childLifecycleState: "not_started",
     childLifecycleSettlement: null,
     childLifecycleTimersCleared: false,
+    childLateEventObserversRetained: false,
+    childLateEventObserversReleased: false,
     childOutputOverflow: false,
     childSummaryParsed: false,
     childTestsStarted: false,
@@ -2723,7 +2727,8 @@ test("A11-C3 timeout, error, and close races settle once with inert late events"
     assert.equal(resources.failureCategory, "child_test_spawn");
     assert.equal(resources.childLifecycleSettlement, "error");
     assert.equal(resources.childLifecycleTimersCleared, true);
-    assert.equal(resources.childExited, false);
+    assert.equal(resources.childExited, true);
+    assert.equal(resources.childExitCode, 1);
   });
 
   await t.test("timeout remains the winner after close and error race events", async () => {
@@ -2908,6 +2913,514 @@ test("A11-C6 final absence fails closed when child exit remains unproven", async
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+function createA12RuntimeBindingSpawn(bindingOutput) {
+  let containerExists = false;
+  const calls = [];
+  const spawnImpl = (command, args, options = {}) => {
+    calls.push({ command, args: [...args], options });
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = () => true;
+    queueMicrotask(() => {
+      let stdout = "";
+      if (args[0] === "ps") {
+        stdout = containerExists ? `${run29OwnedContainerName}\n` : "";
+      } else if (args[0] === "run") {
+        containerExists = true;
+      } else if (args[0] === "inspect") {
+        stdout = bindingOutput;
+      } else if (args[0] === "rm" && args[1] === "--force") {
+        containerExists = false;
+        stdout = `${run29OwnedContainerName}\n`;
+      } else {
+        throw new Error(`unexpected Docker command ${args[0]}`);
+      }
+      if (stdout) child.stdout.emit("data", Buffer.from(stdout));
+      child.emit("close", 0, null);
+    });
+    return child;
+  };
+  spawnImpl.calls = calls;
+  spawnImpl.containerExists = () => containerExists;
+  return spawnImpl;
+}
+
+function createA12EnclosingCleanupSpawn(child) {
+  let containerExists = true;
+  let volumeExists = true;
+  const calls = [];
+  const childKillSignals = [];
+  child.kill = (signal) => {
+    childKillSignals.push(signal);
+    return true;
+  };
+  const spawnImpl = (command, args, options = {}) => {
+    if (command === process.execPath) {
+      queueMicrotask(() => {
+        child.emit("error", new Error("synthetic A12 enclosing child error"));
+        child.emit("close", 19, null);
+      });
+      return child;
+    }
+    calls.push({ command, args: [...args], options });
+    const dockerChild = new EventEmitter();
+    dockerChild.stdout = new EventEmitter();
+    dockerChild.stderr = new EventEmitter();
+    queueMicrotask(() => {
+      let stdout = "";
+      if (args[0] === "ps") {
+        stdout = containerExists ? `${run29OwnedContainerName}\n` : "";
+      } else if (args[0] === "rm" && args[1] === "--force") {
+        containerExists = false;
+        stdout = `${run29OwnedContainerName}\n`;
+      } else if (args[0] === "volume" && args[1] === "ls") {
+        stdout = volumeExists ? `${run14OwnedVolumeName}\n` : "";
+      } else if (args[0] === "volume" && args[1] === "inspect") {
+        stdout = `${JSON.stringify({
+          Name: run14OwnedVolumeName,
+          Labels: {
+            "com.swooshz.platform.runner": "deepseek-platform128-migrator",
+            [run18VolumeOwnershipTokenLabelKey]: run18VolumeOwnershipToken,
+          },
+        })}\n`;
+      } else if (args[0] === "volume" && args[1] === "rm") {
+        volumeExists = false;
+        stdout = `${run14OwnedVolumeName}\n`;
+      } else {
+        throw new Error(`unexpected Docker command ${args[0]}`);
+      }
+      if (stdout) dockerChild.stdout.emit("data", Buffer.from(stdout));
+      dockerChild.emit("close", 0, null);
+    });
+    return dockerChild;
+  };
+  spawnImpl.calls = calls;
+  spawnImpl.childKillSignals = childKillSignals;
+  spawnImpl.containerExists = () => containerExists;
+  spawnImpl.volumeExists = () => volumeExists;
+  return spawnImpl;
+}
+
+test("A12-C1 error -> close preserves error settlement and records exact physical exit", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const resources = createA11ChildResources();
+  const child = createA11EventChild();
+  const killSignals = [];
+  child.kill = (signal) => {
+    killSignals.push(signal);
+    return true;
+  };
+  const pending = runner.runFocusedChildLifecycle({
+    spawnImpl: () => {
+      queueMicrotask(() => {
+        child.emit("error", new Error("synthetic A12 error"));
+        child.emit("close", null, "SIGTERM");
+      });
+      return child;
+    },
+    command: "synthetic-node",
+    args: [],
+    resources,
+    sidecar: null,
+    childDurationMs: 100,
+    terminationGraceMs: 20,
+    terminationEscalationMs: 20,
+  });
+  await assert.rejects(pending);
+  assert.equal(resources.childLifecycleSettlement, "error");
+  assert.equal(resources.childExited, true);
+  assert.equal(resources.childExitCode, null);
+  assert.equal(resources.childExitSignal, "SIGTERM");
+  assert.equal(resources.childSignal, true);
+  await runner.cleanupRunnerResources(resources, () => {});
+  await runner.verifyRunnerAbsence(resources, () => {});
+  assert.deepEqual(killSignals, []);
+  assert.equal(resources.childLateEventObserversReleased, true);
+});
+
+test("A12-C2 error without proven close is bounded and final absence fails closed", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const resources = createA11ChildResources();
+  const child = createA11EventChild();
+  const killSignals = [];
+  child.kill = (signal) => {
+    killSignals.push(signal);
+    return true;
+  };
+  const pending = runner.runFocusedChildLifecycle({
+    spawnImpl: () => {
+      queueMicrotask(() => child.emit("error", new Error("synthetic no-close error")));
+      return child;
+    },
+    command: "synthetic-node",
+    args: [],
+    resources,
+    sidecar: null,
+    childDurationMs: 100,
+    terminationGraceMs: 10,
+    terminationEscalationMs: 10,
+  });
+  await assert.rejects(pending);
+  const startedAt = Date.now();
+  await assert.rejects(() => runner.cleanupRunnerResources(resources, () => {}));
+  assert.ok(Date.now() - startedAt < 1_000);
+  assert.deepEqual(killSignals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(resources.childExited, false);
+  assert.equal(resources.childTerminationUnconfirmed, true);
+  assert.equal(resources.childLateEventObserversReleased, true);
+  assert.equal(child.listenerCount("error"), 0);
+  assert.equal(child.listenerCount("close"), 0);
+  await assert.rejects(() => runner.verifyRunnerAbsence(resources, () => {}));
+  assert.equal(resources.childExited, false);
+});
+
+test("A12-C3 close/error/timeout/overflow ordering matrix settles and accounts once", async (t) => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  await t.test("close -> late error", async () => {
+    const resources = createA11ChildResources();
+    const child = createA11EventChild();
+    const pending = runner.runFocusedChildLifecycle({
+      spawnImpl: () => {
+        queueMicrotask(() => {
+          child.stdout.emit("data", Buffer.from(
+            "# tests 7\n# suites 0\n# pass 7\n# fail 0\n" +
+              "# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 1\n",
+          ));
+          child.emit("close", 0, null);
+        });
+        return child;
+      },
+      command: "synthetic-node",
+      args: [],
+      resources,
+      sidecar: null,
+      childDurationMs: 100,
+      terminationGraceMs: 10,
+      terminationEscalationMs: 10,
+    });
+    await pending;
+    assert.doesNotThrow(() => child.emit("error", new Error("late error")));
+    assert.equal(resources.childLifecycleSettlement, "close");
+    assert.equal(resources.childExited, true);
+    assert.equal(resources.childExitCode, 0);
+    await runner.cleanupRunnerResources(resources, () => {});
+    assert.equal(child.listenerCount("error"), 0);
+  });
+  await t.test("error -> close", async () => {
+    const resources = createA11ChildResources();
+    const child = createA11EventChild();
+    const pending = runner.runFocusedChildLifecycle({
+      spawnImpl: () => {
+        queueMicrotask(() => {
+          child.emit("error", new Error("error first"));
+          child.emit("close", 7, null);
+        });
+        return child;
+      },
+      command: "synthetic-node",
+      args: [],
+      resources,
+      sidecar: null,
+      childDurationMs: 100,
+      terminationGraceMs: 10,
+      terminationEscalationMs: 10,
+    });
+    await assert.rejects(pending);
+    assert.equal(resources.childLifecycleSettlement, "error");
+    assert.equal(resources.childExited, true);
+    assert.equal(resources.childExitCode, 7);
+    await runner.cleanupRunnerResources(resources, () => {});
+  });
+  await t.test("timeout -> late close", async () => {
+    const resources = createA11ChildResources();
+    const child = createA11EventChild();
+    const signals = [];
+    child.kill = (signal) => {
+      signals.push(signal);
+      if (signal === "SIGTERM") queueMicrotask(() => child.emit("close", 0, null));
+      return true;
+    };
+    const pending = runner.runFocusedChildLifecycle({
+      spawnImpl: () => child,
+      command: "synthetic-node",
+      args: [],
+      resources,
+      sidecar: null,
+      childDurationMs: 10,
+      terminationGraceMs: 50,
+      terminationEscalationMs: 50,
+    });
+    await assert.rejects(pending);
+    child.emit("close", 9, "SIGKILL");
+    assert.deepEqual(signals, ["SIGTERM"]);
+    assert.equal(resources.childLifecycleSettlement, "timeout");
+    assert.equal(resources.childExited, true);
+    assert.equal(resources.childExitCode, 0);
+    assert.equal(resources.childExitSignal, null);
+    await runner.cleanupRunnerResources(resources, () => {});
+  });
+  await t.test("output-overflow -> late close", async () => {
+    const resources = createA11ChildResources();
+    const child = createA11EventChild();
+    const signals = [];
+    child.kill = (signal) => {
+      signals.push(signal);
+      if (signal === "SIGTERM") queueMicrotask(() => child.emit("close", 0, null));
+      return true;
+    };
+    const pending = runner.runFocusedChildLifecycle({
+      spawnImpl: () => {
+        queueMicrotask(() => child.stdout.emit("data", Buffer.alloc(64 * 1024 + 1)));
+        return child;
+      },
+      command: "synthetic-node",
+      args: [],
+      resources,
+      sidecar: null,
+      childDurationMs: 100,
+      terminationGraceMs: 50,
+      terminationEscalationMs: 50,
+    });
+    await assert.rejects(pending);
+    child.emit("close", 11, "SIGKILL");
+    assert.deepEqual(signals, ["SIGTERM"]);
+    assert.equal(resources.childLifecycleSettlement, "output_overflow");
+    assert.equal(resources.childExited, true);
+    assert.equal(resources.childExitCode, 0);
+    await runner.cleanupRunnerResources(resources, () => {});
+  });
+});
+
+test("A12-C4 retained late-event observers are removed deterministically", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const resources = createA11ChildResources();
+  const child = createA11EventChild();
+  const pending = runner.runFocusedChildLifecycle({
+    spawnImpl: () => {
+      queueMicrotask(() => {
+        child.stdout.emit("data", Buffer.from(
+          "# tests 7\n# suites 0\n# pass 7\n# fail 0\n" +
+            "# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 1\n",
+        ));
+        child.emit("close", 0, null);
+      });
+      return child;
+    },
+    command: "synthetic-node",
+    args: [],
+    resources,
+    sidecar: null,
+    childDurationMs: 100,
+    terminationGraceMs: 10,
+    terminationEscalationMs: 10,
+  });
+  await pending;
+  assert.equal(resources.childLateEventObserversRetained, true);
+  assert.equal(child.listenerCount("error"), 1);
+  await runner.cleanupRunnerResources(resources, () => {});
+  assert.equal(resources.childLateEventObserversRetained, false);
+  assert.equal(resources.childLateEventObserversReleased, true);
+  assert.equal(child.listenerCount("error"), 0);
+  assert.equal(child.listenerCount("close"), 0);
+});
+
+test("A12-C5 real enclosing cleanup covers child/container/volume/listener/credential/sidecar state", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const { runDisposableRuntimeLifecycle } = await import(
+    "../scripts/disposable-runtime-lifecycle.mjs",
+  );
+  const child = createA11EventChild();
+  const spawnImpl = createA12EnclosingCleanupSpawn(child);
+  const token = run18VolumeOwnershipToken;
+  let lifecycleResources = null;
+  let listenerAbsenceCalls = 0;
+  await assert.rejects(() => runDisposableRuntimeLifecycle({
+    construct: async (resources) => {
+      lifecycleResources = resources;
+      Object.assign(resources, {
+        failurePhase: null,
+        failureCategory: null,
+        childExitCode: null,
+        childExitSignal: null,
+        childSignal: false,
+        childTimeout: false,
+        childTerminationStarted: false,
+        childTerminationEscalated: false,
+        childTerminationFinished: false,
+        childTerminationUnconfirmed: false,
+        childTerminationSignals: [],
+        childLifecycleState: "not_started",
+        childLifecycleSettlement: null,
+        childLifecycleTimersCleared: false,
+        childLateEventObserversRetained: false,
+        childLateEventObserversReleased: false,
+        childOutputOverflow: false,
+        childSummaryParsed: false,
+        structuredChildReceipt: null,
+        structuredChildProgress: null,
+        structuredFailureSidecarSetupAttempted: false,
+        structuredFailureSidecarCreated: false,
+        structuredFailureSidecarEagerCleanupAttempted: false,
+        structuredFailureSidecarCleanupProvenComplete: false,
+        structuredFailureSidecarCleanupPending: false,
+        structuredFailureSidecarAbsenceVerified: false,
+        structuredFailureSidecar: null,
+        containerStartAttempted: true,
+        ownedContainer: true,
+        containerRemoved: false,
+        volumeCreateAttempted: true,
+        volumeCreated: true,
+        volumeOwned: true,
+        volumeRemoved: false,
+        volumeOwnershipToken: token,
+        ownedDatabases: new Set(),
+        childProcess: null,
+        childExited: true,
+        focusedCredentialIsolationSetupAttempted: false,
+        focusedCredentialIsolation: null,
+      });
+      return {};
+    },
+    admitConstruction: async () => null,
+    deriveProvisioning: async () => null,
+    provision: async () => {},
+    admitConfigured: async () => null,
+    runFocusedTests: async (_admission, resources) => runner.runFocusedTests({
+      admission: {},
+      urls: {
+        primaryTargetUrl: "postgresql://synthetic/primary",
+        primaryOperatorUrl: "postgresql://synthetic/primary-operator",
+        secondaryTargetUrl: "postgresql://synthetic/secondary",
+        secondaryOperatorUrl: "postgresql://synthetic/secondary-operator",
+      },
+      spawnImpl,
+      resources,
+      parentEnv: {},
+    }),
+    cleanup: async (resources) => {
+      await runner.cleanupRunnerResources(resources, spawnImpl);
+      resources.cleanupComplete = true;
+    },
+    verifyAbsence: async (resources) => {
+      await runner.verifyRunnerAbsence(
+        resources,
+        spawnImpl,
+        async () => {
+          listenerAbsenceCalls += 1;
+        },
+      );
+      resources.absenceVerified = true;
+    },
+  }));
+  assert.ok(lifecycleResources);
+  assert.equal(lifecycleResources.childExited, true);
+  assert.equal(lifecycleResources.childExitCode, 19);
+  assert.equal(lifecycleResources.containerRemoved, true);
+  assert.equal(lifecycleResources.volumeRemoved, true);
+  assert.equal(lifecycleResources.volumeAbsenceVerified, true);
+  assert.equal(lifecycleResources.focusedCredentialIsolationCleaned, true);
+  assert.equal(lifecycleResources.focusedCredentialIsolationAbsent, true);
+  assert.equal(lifecycleResources.structuredFailureSidecarCleanupProvenComplete, true);
+  assert.equal(lifecycleResources.structuredFailureSidecarAbsenceVerified, true);
+  assert.equal(lifecycleResources.cleanupComplete, true);
+  assert.equal(lifecycleResources.absenceVerified, true);
+  assert.equal(spawnImpl.containerExists(), false);
+  assert.equal(spawnImpl.volumeExists(), false);
+  assert.deepEqual(spawnImpl.childKillSignals, []);
+  assert.equal(listenerAbsenceCalls, 1);
+  assert.equal(await pathIsPresent(lifecycleResources.structuredFailureSidecar.filePath), false);
+  assert.equal(await pathIsPresent(lifecycleResources.structuredFailureSidecar.progressFilePath), false);
+});
+
+test("A12-C6 malformed binding retains one exact cleanup port but never becomes valid", async () => {
+  const runner = await import("../scripts/run-disposable-runtime-postgres-tests.mjs");
+  const spawnImpl = createA12RuntimeBindingSpawn(
+    '{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"49152"}],"5433/tcp":[{"HostIp":"127.0.0.1","HostPort":"49152"}]}',
+  );
+  const portCalls = [];
+  await assert.rejects(
+    () => runner.run({
+      env: {},
+      spawnImpl,
+      assertPortAbsentImpl: async (port) => {
+        portCalls.push(port);
+      },
+    }),
+    (error) => {
+      const receipt = error.runtimeFailureReceipt;
+      assert.match(receipt, /"publishedBindingVerified":false/);
+      assert.match(receipt, /"assignedPortAttested":true/);
+      assert.match(receipt, /"observedPort":49152/);
+      assert.match(receipt, /"portAbsenceVerified":true/);
+      assert.match(receipt, /"absenceVerified":true/);
+      return true;
+    },
+  );
+  assert.deepEqual(portCalls, [49152]);
+  assert.equal(spawnImpl.containerExists(), false);
+  assert.equal(spawnImpl.calls.some(({ args }) => args[0] === "rm" && args[1] === "--force"), true);
+  assert.equal(runner.extractAssignedPortForCleanup(
+    '{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"49152"}],"5433/tcp":[{"HostIp":"127.0.0.1","HostPort":"49152"}]}',
+  ), 49152);
+  assert.throws(() => runner.assertSingleLoopbackPublishedBinding(
+    runner.parsePublishedBinding(
+      '{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"49152"}],"5433/tcp":[{"HostIp":"127.0.0.1","HostPort":"49152"}]}',
+    ),
+  ));
+});
+
+test("A12-C7 malformed binding without a trustworthy port cleans the container but fails port finality closed", async () => {
+  const runner = await import("../scripts/run-disposable-runtime-postgres-tests.mjs");
+  const spawnImpl = createA12RuntimeBindingSpawn(
+    '{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"49152"},{"HostIp":"127.0.0.1","HostPort":"49153"}]}',
+  );
+  const portCalls = [];
+  await assert.rejects(
+    () => runner.run({
+      env: {},
+      spawnImpl,
+      assertPortAbsentImpl: async (port) => {
+        portCalls.push(port);
+      },
+    }),
+    (error) => {
+      const receipt = error.runtimeFailureReceipt;
+      assert.match(receipt, /"publishedBindingVerified":false/);
+      assert.match(receipt, /"assignedPortAttested":false/);
+      assert.match(receipt, /"observedPort":null/);
+      assert.match(receipt, /"portAbsenceVerified":false/);
+      assert.match(receipt, /"portAbsenceFailure":"assigned_port_unproven"/);
+      assert.match(receipt, /"absenceVerified":false/);
+      return true;
+    },
+  );
+  assert.deepEqual(portCalls, []);
+  assert.equal(spawnImpl.containerExists(), false);
+  assert.equal(spawnImpl.calls.some(({ args }) => args[0] === "rm" && args[1] === "--force"), true);
+  assert.equal(runner.extractAssignedPortForCleanup(
+    '{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"49152"},{"HostIp":"127.0.0.1","HostPort":"49153"}]}',
+  ), null);
+});
+
+test("A12-C8 clean runtime and migrator PostgreSQL 17 summary contracts remain exact", async () => {
+  const runtime = await import("../scripts/run-disposable-runtime-postgres-tests.mjs");
+  const migrator = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const runtimeSummary = runtime.parseDisposableRuntimeTestSummary(
+    "# tests 53\n# suites 0\n# pass 53\n# fail 0\n" +
+      "# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 1\n",
+  );
+  const migratorSummary = migrator.parseDisposableMigratorAlignmentTestSummary(
+    "# tests 7\n# suites 0\n# pass 7\n# fail 0\n" +
+      "# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 1\n",
+  );
+  assert.equal(runtimeSummary.total, 53);
+  assert.equal(runtimeSummary.passed, 53);
+  assert.equal(migratorSummary.total, 7);
+  assert.equal(migratorSummary.passed, 7);
+  assert.equal(runtime.fixtureUrls(49152).primaryOperatorUrl.includes(":49152/"), true);
+});
 
 const run14OwnedVolumeName = "deepseek-platform128-pg17-data";
 const run30SimilarlyNamedCallerVolumeName = `${run14OwnedVolumeName}-caller-managed`;
