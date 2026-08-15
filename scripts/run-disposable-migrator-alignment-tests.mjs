@@ -37,6 +37,10 @@ const focusedChildTerminationGraceMs = 2_000;
 const focusedChildTerminationEscalationMs = 2_000;
 const focusedChildEscalationSignal = "SIGKILL";
 const expectedPostgresTestCount = 7;
+const externalCommandExecutionDeadlineDefaultMs = 10_000;
+const externalCommandTerminationGraceDefaultMs = 500;
+const externalCommandReapDeadlineDefaultMs = 500;
+const externalCommandEscalationSignal = "SIGKILL";
 const focusedCredentialIsolationDirectoryPrefix = "swooshz-platform-pgpass-isolation-";
 const syntheticMigratorPassword = "synthetic-migrator-password";
 const structuredFailureReceiptPrefix = "PLATFORM_MIGRATOR_FAILURE_V1=";
@@ -198,6 +202,9 @@ export async function run({
   spawnImpl = spawn,
   assertOwnedListenerAbsentImpl = assertOwnedListenerAbsent,
   assertPortAbsentImpl = assertPortAbsent,
+  externalCommandExecutionDeadlineMs = externalCommandExecutionDeadlineDefaultMs,
+  externalCommandTerminationGraceMs = externalCommandTerminationGraceDefaultMs,
+  externalCommandReapDeadlineMs = externalCommandReapDeadlineDefaultMs,
 } = {}) {
   let resources = null;
 
@@ -266,7 +273,18 @@ export async function run({
         volumeAbsenceVerified: false,
         childProcess: null,
         childExited: true,
+        containerPreAbsenceVerified: false,
         focusedChildTerminationGraceMs: null,
+        externalCommandActive: false,
+        externalCommandLastOutcome: "none",
+        externalCommandLastSettlementCount: 0,
+        externalCommandLastExitObserved: false,
+        externalCommandLastTerminationStarted: false,
+        externalCommandLastTerminationEscalated: false,
+        externalCommandLastFinality: "not_started",
+        externalCommandExitUnproven: false,
+        externalCommandCleanupFailure: false,
+        absenceFinality: "not_verified",
         focusedChildTerminationEscalationMs: null,
         databaseUrls: new Map(),
         ownedDatabases: new Set(),
@@ -293,9 +311,15 @@ export async function run({
           "postgres default database",
         ]),
       });
+      spawnImpl = bindExternalCommandLifecycle(spawnImpl, resources, {
+        executionDeadlineMs: externalCommandExecutionDeadlineMs,
+        terminationGraceMs: externalCommandTerminationGraceMs,
+        reapDeadlineMs: externalCommandReapDeadlineMs,
+      });
       await runAt(resources, "construct", "container_preexistence", async () => {
         assertNoCallerSuppliedFixture(env);
         await assertExactContainerAbsent(spawnImpl);
+        resources.containerPreAbsenceVerified = true;
       });
       await runAt(resources, "construct", "volume_preexistence", async () => {
         await assertExactVolumeAbsent(spawnImpl);
@@ -490,6 +514,7 @@ export async function run({
           assertPortAbsentImpl,
         );
         lifecycleResources.absenceVerified = true;
+        lifecycleResources.absenceFinality = "verified";
       },
     ),
     });
@@ -546,6 +571,7 @@ export function formatDisposableRuntimeFailureReceipt(resources = {}) {
     volumeOwnershipState: resources.volumeOwnershipState ?? "unknown",
     volumeRemoved: resources.volumeRemoved === true,
     volumeAbsenceVerified: resources.volumeAbsenceVerified === true,
+    containerPreAbsenceVerified: resources.containerPreAbsenceVerified === true,
     postgresReady: resources.postgresReady === true,
     constructionAdmission: resources.constructionAdmission === true,
     provisioningComplete: resources.provisioningComplete === true,
@@ -553,6 +579,24 @@ export function formatDisposableRuntimeFailureReceipt(resources = {}) {
     childTestsStarted: resources.childTestsStarted === true,
     cleanupComplete: resources.cleanupComplete === true,
     absenceVerified: resources.absenceVerified === true,
+    absenceFinality: resources.absenceFinality ?? "not_verified",
+    externalCommandActive: resources.externalCommandActive === true,
+    externalCommandLastOutcome: resources.externalCommandLastOutcome ?? "none",
+    externalCommandLastSettlementCount:
+      Number.isSafeInteger(resources.externalCommandLastSettlementCount)
+        ? resources.externalCommandLastSettlementCount
+        : 0,
+    externalCommandLastExitObserved:
+      resources.externalCommandLastExitObserved === true,
+    externalCommandLastTerminationStarted:
+      resources.externalCommandLastTerminationStarted === true,
+    externalCommandLastTerminationEscalated:
+      resources.externalCommandLastTerminationEscalated === true,
+    externalCommandLastFinality:
+      resources.externalCommandLastFinality ?? "not_started",
+    externalCommandExitUnproven: resources.externalCommandExitUnproven === true,
+    externalCommandCleanupFailure:
+      resources.externalCommandCleanupFailure === true,
     focusedCredentialIsolationPreSanitization:
       resources.focusedCredentialIsolationPreSanitization === true,
     focusedCredentialChildBoundary:
@@ -1097,6 +1141,9 @@ async function runAt(resources, phase, category, operation) {
   try {
     return await operation();
   } catch (error) {
+    if (phase === "absenceVerification") {
+      resources.absenceFinality = "unproven";
+    }
     if (!resources.failureCategory) {
       resources.failurePhase = phase;
       resources.failureCategory = category;
@@ -2012,6 +2059,18 @@ export async function verifyRunnerAbsence(
     await verifyFocusedCredentialIsolationAbsence(resources);
   }
   if (resources.childProcess && !resources.childExited) throw new Error();
+  if (resources.externalCommandExitUnproven === true) {
+    resources.absenceFinality = "unproven";
+    throw new Error("external command exit was not proven");
+  }
+  if (
+    resources.containerStartAttempted === false &&
+    (resources.containerPreAbsenceVerified === false ||
+      resources.volumePreAbsenceVerified === false)
+  ) {
+    resources.absenceFinality = "unproven";
+    throw new Error("preexistence absence was not proven");
+  }
   if (!resources.containerStartAttempted) {
     if (resources.volumeCreateAttempted) {
       const ownership = await inspectOwnedVolumeOwnership(
@@ -2502,37 +2561,18 @@ async function assertPortAbsent() {
   await assertOwnedListenerAbsent();
 }
 
-async function runCommand(spawnImpl, command, args) {
-  return new Promise((resolvePromise, reject) => {
-    const child = spawnImpl(command, args, {
-      stdio: ["ignore", "pipe", "ignore"],
-      windowsHide: true,
-    });
-    const output = [];
-    let outputLength = 0;
-    let settled = false;
-    const fail = () => {
-      if (settled) return;
-      settled = true;
-      reject(new Error());
-    };
-    child.once("error", fail);
-    child.once("close", (code, signal) => {
-      if (settled) return;
-      settled = true;
-      if (code !== 0 || signal !== null || outputLength > 1_024) {
-        reject(new Error());
-        return;
-      }
-      resolvePromise(Buffer.concat(output).toString("utf8"));
-    });
-    child.stdout?.on("data", (chunk) => {
-      outputLength += chunk.length;
-      if (outputLength <= maxChildOutputBytes) output.push(Buffer.from(chunk));
-    });
-  });
-}
 
+async function runCommand(spawnImpl, command, args) {
+  const resources = spawnImpl?.externalCommandResources ?? null;
+  const options = spawnImpl?.externalCommandOptions ?? {};
+  const result = await runExternalCommandLifecycle(
+    spawnImpl,
+    command,
+    args,
+    { ...options, resources },
+  );
+  return result.output;
+}
 function assertNoCallerSuppliedFixture(env) {
   const names = [
     "MIGRATOR_ALIGNMENT_TEST_DATABASE_URL",
@@ -2948,4 +2988,315 @@ export function sanitizeInheritedPostgresqlEnvironment(
     );
   }
   return childEnv;
+}
+function assertExternalCommandDeadline(value) {
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error();
+  return value;
+}
+
+function assertExternalCommandTerminationWindow(value) {
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error();
+  return value;
+}
+
+function recordExternalCommandOutcome(resources, state) {
+  if (!resources || !state) return;
+  resources.externalCommandActive = false;
+  resources.externalCommandLastOutcome = state.outcome ?? "error";
+  resources.externalCommandLastSettlementCount =
+    Number.isSafeInteger(state.settlementCount) ? state.settlementCount : 0;
+  resources.externalCommandLastExitObserved = state.exitObserved === true;
+  resources.externalCommandLastTerminationStarted =
+    state.terminationStarted === true;
+  resources.externalCommandLastTerminationEscalated =
+    state.terminationEscalated === true;
+  resources.externalCommandLastFinality = state.finality ?? "not_started";
+  if (state.exitUnproven === true) {
+    resources.externalCommandExitUnproven = true;
+    resources.absenceFinality = "unproven";
+  }
+  if (
+    state.outcome !== "success" &&
+    (resources.phase === "cleanup" || resources.phase === "absenceVerification")
+  ) {
+    resources.externalCommandCleanupFailure = true;
+  }
+}
+
+export function bindExternalCommandLifecycle(spawnImpl, resources, options = {}) {
+  if (typeof spawnImpl !== "function" || !resources) throw new Error();
+  const boundSpawn = (...args) => spawnImpl(...args);
+  Object.defineProperties(boundSpawn, {
+    externalCommandResources: {
+      configurable: false,
+      enumerable: false,
+      value: resources,
+    },
+    externalCommandOptions: {
+      configurable: false,
+      enumerable: false,
+      value: Object.freeze({ ...options }),
+    },
+  });
+  return boundSpawn;
+}
+
+export async function runExternalCommandLifecycle(
+  spawnImpl,
+  command,
+  args,
+  {
+    resources = null,
+    executionDeadlineMs = externalCommandExecutionDeadlineDefaultMs,
+    terminationGraceMs = externalCommandTerminationGraceDefaultMs,
+    reapDeadlineMs = externalCommandReapDeadlineDefaultMs,
+    escalationSignal = externalCommandEscalationSignal,
+    setTimeoutImpl = setTimeout,
+    clearTimeoutImpl = clearTimeout,
+  } = {},
+) {
+  if (typeof spawnImpl !== "function") throw new Error();
+  const executionDeadline = assertExternalCommandDeadline(executionDeadlineMs);
+  const terminationGrace = assertExternalCommandTerminationWindow(
+    terminationGraceMs,
+  );
+  const reapDeadline = assertExternalCommandTerminationWindow(reapDeadlineMs);
+  if (typeof escalationSignal !== "string" || escalationSignal.length === 0) {
+    throw new Error();
+  }
+
+  if (resources) resources.externalCommandActive = true;
+  try {
+    const result = await new Promise((resolvePromise, rejectPromise) => {
+      let child = null;
+      let executionTimer = null;
+      let closeWaiter = null;
+      let terminalKind = null;
+      let terminalError = null;
+      let settled = false;
+      let outputLength = 0;
+      const output = [];
+      const state = {
+        outcome: "pending",
+        settlementCount: 0,
+        childStarted: false,
+        exitObserved: false,
+        processExitObserved: false,
+        terminationStarted: false,
+        terminationEscalated: false,
+        terminationSignals: [],
+        finality: "not_started",
+        exitUnproven: false,
+        outputOverflow: false,
+        timersCleared: false,
+        listenersCleared: false,
+      };
+
+      const clearTimer = (timer) => {
+        if (timer !== null) {
+          try {
+            clearTimeoutImpl(timer);
+          } catch {
+            // Terminal state remains fail-closed even if timer cleanup throws.
+          }
+        }
+      };
+
+      const removeListener = (target, event, listener) => {
+        if (typeof target?.removeListener === "function") {
+          target.removeListener(event, listener);
+        }
+      };
+
+      const clearCloseWaiter = () => {
+        if (!closeWaiter) return;
+        clearTimer(closeWaiter.timer);
+        closeWaiter = null;
+      };
+
+      const clearAllTimers = () => {
+        clearTimer(executionTimer);
+        executionTimer = null;
+        clearCloseWaiter();
+        state.timersCleared = true;
+      };
+
+      const resolveCloseWaiter = () => {
+        if (!closeWaiter) return;
+        const waiter = closeWaiter;
+        closeWaiter = null;
+        clearTimer(waiter.timer);
+        waiter.resolve(true);
+      };
+
+      const cleanupListeners = () => {
+        removeListener(child, "error", onError);
+        removeListener(child, "exit", onExit);
+        removeListener(child, "close", onClose);
+        removeListener(child?.stdout, "data", onStdout);
+        state.listenersCleared = true;
+      };
+
+      const finish = (error = null, outcome = terminalKind ?? "error") => {
+        if (settled) return;
+        settled = true;
+        state.settlementCount += 1;
+        state.outcome = outcome;
+        if (state.exitObserved) state.finality = "reaped";
+        else if (state.childStarted) state.finality = "unproven_exit";
+        else state.finality = "not_started";
+        state.exitUnproven = state.childStarted && !state.exitObserved;
+        clearAllTimers();
+        cleanupListeners();
+        const finalState = Object.freeze({
+          ...state,
+          terminationSignals: [...state.terminationSignals],
+        });
+        if (error) {
+          const failure = error instanceof Error ? error : new Error();
+          Object.defineProperty(failure, "externalCommandState", {
+            configurable: true,
+            value: finalState,
+          });
+          rejectPromise(failure);
+        } else {
+          resolvePromise({
+            output: Buffer.concat(output).toString("utf8"),
+            state: finalState,
+          });
+        }
+      };
+
+      const waitForClose = (timeoutMs) => {
+        if (state.exitObserved) return Promise.resolve(true);
+        return new Promise((resolve) => {
+          const waiter = { resolve, timer: null };
+          waiter.timer = setTimeoutImpl(() => {
+            if (closeWaiter === waiter) closeWaiter = null;
+            waiter.resolve(false);
+          }, timeoutMs);
+          closeWaiter = waiter;
+        });
+      };
+
+      const requestTermination = (signal) => {
+        state.terminationSignals.push(signal);
+        try {
+          return typeof child?.kill === "function" && child.kill(signal);
+        } catch {
+          return false;
+        }
+      };
+
+      const terminateAfterTerminal = async () => {
+        if (settled) return;
+        if (state.exitObserved) {
+          finish(terminalError, terminalKind ?? "error");
+          return;
+        }
+        state.terminationStarted = true;
+        requestTermination("SIGTERM");
+        if (await waitForClose(terminationGrace)) {
+          if (!settled) finish(terminalError, terminalKind ?? "error");
+          return;
+        }
+        if (settled) return;
+        state.terminationEscalated = true;
+        requestTermination(escalationSignal);
+        if (await waitForClose(reapDeadline)) {
+          if (!settled) finish(terminalError, terminalKind ?? "error");
+          return;
+        }
+        if (!settled) finish(
+          terminalError ?? new Error("External command exit was not proven."),
+          terminalKind ?? "error",
+        );
+      };
+
+      const claimTerminal = (kind, error) => {
+        if (settled || terminalKind !== null) return false;
+        terminalKind = kind;
+        terminalError = error;
+        clearTimer(executionTimer);
+        executionTimer = null;
+        return true;
+      };
+
+      const onStdout = (chunk) => {
+        const buffer = Buffer.from(chunk);
+        outputLength += buffer.length;
+        if (outputLength <= maxChildOutputBytes) output.push(buffer);
+        state.outputOverflow = outputLength > 1_024;
+      };
+
+      const onExit = (code, signal) => {
+        state.processExitObserved = true;
+        state.processExitCode = Number.isInteger(code) ? code : null;
+        state.processExitSignal = typeof signal === "string" ? signal : null;
+      };
+
+      const onClose = (code, signal) => {
+        state.exitObserved = true;
+        state.exitCode = Number.isInteger(code) ? code : null;
+        state.exitSignal = typeof signal === "string" ? signal : null;
+        resolveCloseWaiter();
+        if (settled) return;
+        if (terminalKind !== null) {
+          finish(terminalError, terminalKind);
+          return;
+        }
+        if (signal !== null) {
+          finish(new Error("External command terminated by signal."), "signal");
+          return;
+        }
+        if (code !== 0 || state.outputOverflow) {
+          finish(new Error("External command failed."), "error");
+          return;
+        }
+        finish(null, "success");
+      };
+
+      const onError = (error) => {
+        if (!claimTerminal(
+          "error",
+          error instanceof Error ? error : new Error("External command failed."),
+        )) return;
+        void terminateAfterTerminal();
+      };
+
+      const onTimeout = () => {
+        if (!claimTerminal(
+          "timeout",
+          new Error("External command exceeded its execution deadline."),
+        )) return;
+        void terminateAfterTerminal();
+      };
+
+      try {
+        child = spawnImpl(command, args, {
+          stdio: ["ignore", "pipe", "ignore"],
+          windowsHide: true,
+        });
+        if (!child || typeof child.once !== "function") throw new Error();
+        state.childStarted = true;
+        child.stdout?.on("data", onStdout);
+        child.stderr?.resume?.();
+        child.once("error", onError);
+        child.once("exit", onExit);
+        child.once("close", onClose);
+        executionTimer = setTimeoutImpl(onTimeout, executionDeadline);
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error(), "error");
+      }
+    });
+    if (resources) recordExternalCommandOutcome(resources, result.state);
+    return result;
+  } catch (error) {
+    if (resources && error?.externalCommandState) {
+      recordExternalCommandOutcome(resources, error.externalCommandState);
+    }
+    throw error;
+  } finally {
+    if (resources) resources.externalCommandActive = false;
+  }
 }

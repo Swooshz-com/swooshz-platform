@@ -49,6 +49,13 @@ const fixtureRoleNames = [
   "platform_runtime",
   "provider_owner",
 ];
+const ownershipFingerprintDefaultAclCreators = Object.freeze([
+  "platform_app",
+  "platform_migrator",
+  "platform_runtime",
+  "provider_owner",
+  "pg_database_owner",
+]);
 const allowedAclRoles = new Set([
   ...fixtureRoleNames,
   "pg_database_owner",
@@ -151,6 +158,10 @@ const structuredFailurePhases = new Set([
   "default_acl_exact_rejection",
   "default_acl_residue_cleanup",
   "post_default_acl_exact_fingerprint",
+  "unrelated_default_acl_setup",
+  "unrelated_default_acl_exact_equality",
+  "unrelated_default_acl_cleanup",
+  "post_unrelated_default_acl_exact_fingerprint",
   "C3_RED_DEFAULT_PGPASS_ADMISSION",
   "C3_HOSTILE_ENV_RETAINED",
   "C3_RUNNER_PGPASS_QUARANTINE",
@@ -793,6 +804,14 @@ test(
         `grant connect on database ${identifier(primary.databaseName)} to platform_migrator`,
       );
       await installMigratorDefaultPrivileges(primary.adminPool);
+      const migratorDefaultAclFingerprint = await readOwnershipFingerprint(
+        primary.adminPool,
+        primary.databaseName,
+      );
+      assertDefaultAclCreatorPresent(
+        migratorDefaultAclFingerprint.defaultAcl,
+        "platform_migrator",
+      );
       await assertExactProtectedEdge(primary.adminPool);
 
       // platform_migrator begins NOLOGIN with no password: prove catalog state
@@ -1149,6 +1168,16 @@ test(
         primary.databaseName,
         preForwardBaseline,
       );
+      await assertPgDatabaseOwnerDefaultAclResidueNegativeControls(
+        primary.adminPool,
+        primary.databaseName,
+        preForwardBaseline,
+      );
+      await assertUnrelatedDefaultAclCreatorExcluded(
+        primary.adminPool,
+        primary.databaseName,
+        preForwardBaseline,
+      );
       assertExactFingerprint(
         await readOwnershipFingerprint(
           primary.adminPool,
@@ -1231,6 +1260,14 @@ test(
         `grant connect on database ${identifier(secondary.databaseName)} to platform_migrator`,
       );
       await installMigratorDefaultPrivileges(secondary.adminPool);
+      const migratorDefaultAclFingerprint = await readOwnershipFingerprint(
+        secondary.adminPool,
+        secondary.databaseName,
+      );
+      assertDefaultAclCreatorPresent(
+        migratorDefaultAclFingerprint.defaultAcl,
+        "platform_migrator",
+      );
       await assertExactProtectedEdge(secondary.adminPool);
       await secondary.adminPool.query(
         `grant create, usage on schema public to platform_migrator`,
@@ -2012,7 +2049,8 @@ async function readOwnershipFingerprint(adminPool, databaseName) {
         left join pg_roles grantee_role on grantee_role.oid = grant_record.grantee
        where schema_record.nspname in ('public', 'appdata', 'drizzle')
       union all
-      select 'default', coalesce(namespace_record.nspname, '<global>')
+      select 'default', creator_role.rolname || ':'
+             || coalesce(namespace_record.nspname, '<global>')
              || ':' || default_record.defaclobjtype::text,
              coalesce(grantor_role.rolname, 'PUBLIC'),
              coalesce(grantee_role.rolname, 'PUBLIC'),
@@ -2024,12 +2062,13 @@ async function readOwnershipFingerprint(adminPool, databaseName) {
         join lateral aclexplode(default_record.defaclacl) grant_record on true
         left join pg_roles grantor_role on grantor_role.oid = grant_record.grantor
         left join pg_roles grantee_role on grantee_role.oid = grant_record.grantee
+        join pg_roles creator_role on creator_role.oid = default_record.defaclrole
        where default_record.defaclrole in (
          select oid from pg_roles where rolname = any($2::text[])
        )
       order by surface, object_name, grantor, grantee, privilege_type
     `,
-    [databaseName, fixtureRoleNames],
+    [databaseName, ownershipFingerprintDefaultAclCreators],
   );
 
   const attributes = await adminPool.query(
@@ -2130,6 +2169,35 @@ function assertBaselineFingerprint(fingerprint, expectedPublicOwner) {
   assert.ok(fingerprint.databaseAcl.length > 0);
   assert.ok(fingerprint.schemaAcls.length > 0);
   assert.ok(fingerprint.defaultAcl.length > 0);
+  assertDefaultAclCreatorCoverage(fingerprint.defaultAcl, expectedPublicOwner);
+}
+
+function assertDefaultAclCreatorCoverage(records, expectedPublicOwner) {
+  const creatorKinds = (creator) => new Set(
+    records
+      .map((record) => record.split("\u0000"))
+      .filter((fields) => fields[0].startsWith(`${creator}:`))
+      .map((fields) => fields[0].split(":").at(-1)),
+  );
+  for (const creator of ["platform_app", "provider_owner"]) {
+    assert.ok(
+      creatorKinds(creator).size > 0,
+      `expected ${creator} default-ACL state in the bounded fingerprint`,
+    );
+  }
+  if (expectedPublicOwner === "pg_database_owner") {
+    assert.ok(
+      creatorKinds("pg_database_owner").has("f"),
+      "primary fixture must fingerprint its pg_database_owner routine default posture",
+    );
+  }
+}
+
+function assertDefaultAclCreatorPresent(records, creator) {
+  assert.ok(
+    records.some((record) => record.startsWith(`${creator}:`)),
+    `expected ${creator} default-ACL state in the bounded fingerprint`,
+  );
 }
 
 function assertAclSurfaceBounded(records, surface) {
@@ -2274,7 +2342,7 @@ async function assertDefaultAclResidueNegativeControl(
   baseline,
 ) {
   const expectedResidue = [
-    "<global>:f",
+    "platform_app:<global>:f",
     "platform_app",
     "platform_runtime",
     "EXECUTE",
@@ -2333,6 +2401,140 @@ async function assertDefaultAclResidueNegativeControl(
     baseline,
   );
 }
+async function assertPgDatabaseOwnerDefaultAclResidueNegativeControls(
+  adminPool,
+  databaseName,
+  baseline,
+) {
+  const controls = [
+    {
+      kind: "r",
+      privilege: "SELECT",
+      grant: "grant select on tables to platform_runtime",
+      revoke: "revoke select on tables from platform_runtime",
+    },
+    {
+      kind: "S",
+      privilege: "USAGE",
+      grant: "grant usage on sequences to platform_runtime",
+      revoke: "revoke usage on sequences from platform_runtime",
+    },
+    {
+      kind: "f",
+      privilege: "EXECUTE",
+      grant: "grant execute on functions to platform_runtime",
+      revoke: "revoke execute on functions from platform_runtime",
+    },
+  ];
+  for (const control of controls) {
+    const expectedResidue = [
+      `pg_database_owner:<global>:${control.kind}`,
+      "pg_database_owner",
+      "platform_runtime",
+      control.privilege,
+      "false",
+    ].join("\u0000");
+    markStructuredFailurePhase(
+      "default_acl_residue_setup",
+      "default_acl_residue_cleanup",
+    );
+    assert.equal(baseline.defaultAcl.includes(expectedResidue), false);
+    let grantAttempted = false;
+    try {
+      grantAttempted = true;
+      await adminPool.query(
+        `alter default privileges for role pg_database_owner ${control.grant}`,
+      );
+      markStructuredFailurePhase(
+        "default_acl_permissive_helper",
+        "default_acl_residue_cleanup",
+      );
+      const perturbed = await readOwnershipFingerprint(adminPool, databaseName);
+      const additions = perturbed.defaultAcl.filter(
+        (record) => !baseline.defaultAcl.includes(record),
+      );
+      assert.ok(
+        additions.includes(expectedResidue),
+        `expected pg_database_owner ${control.kind} residue in the fingerprint`,
+      );
+      assertBaselineFingerprint(perturbed, "pg_database_owner");
+      markStructuredFailurePhase(
+        "default_acl_exact_rejection",
+        "default_acl_residue_cleanup",
+      );
+      assert.throws(
+        () => assertExactFingerprint(perturbed, baseline),
+        assert.AssertionError,
+      );
+    } finally {
+      markStructuredFailurePhase(
+        "default_acl_residue_cleanup",
+        "default_acl_residue_cleanup",
+      );
+      if (grantAttempted) {
+        await adminPool.query(
+          `alter default privileges for role pg_database_owner ${control.revoke}`,
+        );
+      }
+    }
+    markStructuredFailurePhase(
+      "post_default_acl_exact_fingerprint",
+      "default_acl_residue_cleanup",
+    );
+    assertExactFingerprint(
+      await readOwnershipFingerprint(adminPool, databaseName),
+      baseline,
+    );
+  }
+}
+
+async function assertUnrelatedDefaultAclCreatorExcluded(
+  adminPool,
+  databaseName,
+  baseline,
+) {
+  const roleName = "a13_unrelated_default_creator";
+  let roleCreated = false;
+  markStructuredFailurePhase(
+    "unrelated_default_acl_setup",
+    "default_acl_residue_cleanup",
+  );
+  try {
+    await adminPool.query(
+      `create role ${identifier(roleName)} nologin nosuperuser nocreatedb nocreaterole noreplication nobypassrls`,
+    );
+    roleCreated = true;
+    await adminPool.query(
+      `alter default privileges for role ${identifier(roleName)} grant select on tables to platform_runtime`,
+    );
+    markStructuredFailurePhase(
+      "unrelated_default_acl_exact_equality",
+      "default_acl_residue_cleanup",
+    );
+    assertExactFingerprint(
+      await readOwnershipFingerprint(adminPool, databaseName),
+      baseline,
+    );
+  } finally {
+    if (roleCreated) {
+      markStructuredFailurePhase(
+        "unrelated_default_acl_cleanup",
+        "default_acl_residue_cleanup",
+      );
+      await adminPool.query(`drop owned by ${identifier(roleName)}`);
+      await adminPool.query(`drop role ${identifier(roleName)}`);
+    }
+  }
+  markStructuredFailurePhase(
+    "post_unrelated_default_acl_exact_fingerprint",
+    "default_acl_residue_cleanup",
+  );
+  assertExactFingerprint(
+    await readOwnershipFingerprint(adminPool, databaseName),
+    baseline,
+  );
+}
+
 async function assertRuntimePosture(adminPool) {
   const report = await inspectRuntimeDatabaseRoleAuthorityPosture(
     adminPool,

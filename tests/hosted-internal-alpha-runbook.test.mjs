@@ -4570,3 +4570,334 @@ function isRunnerFixtureUrl(value, expectedUser, expectedDatabase) {
 function whitespaceTolerant(value) {
   return escapeRegExp(value).replaceAll(" ", "\\s+");
 }
+
+function createA13ExternalChild(onKill = () => true) {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.stderr.resume = () => {};
+  child.killSignals = [];
+  child.kill = (signal) => {
+    child.killSignals.push(signal);
+    return onKill(child, signal);
+  };
+  return child;
+}
+
+function createA13StallSpawn() {
+  return () => createA13ExternalChild();
+}
+
+async function captureA13Rejection(operation) {
+  try {
+    await operation();
+  } catch (error) {
+    return error;
+  }
+  throw new Error("expected synthetic A13 rejection");
+}
+
+test("A13-L C1 normal external command succeeds and clears lifecycle state", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const resources = { phase: "construct" };
+  const child = createA13ExternalChild();
+  const result = await runner.runExternalCommandLifecycle(
+    () => {
+      queueMicrotask(() => {
+        child.stdout.emit("data", Buffer.from("inspection\\n"));
+        child.emit("close", 0, null);
+      });
+      return child;
+    },
+    "docker",
+    ["inspect", "synthetic-container"],
+    {
+      resources,
+      executionDeadlineMs: 25,
+      terminationGraceMs: 5,
+      reapDeadlineMs: 5,
+    },
+  );
+
+  assert.equal(result.output, "inspection\\n");
+  assert.equal(result.state.outcome, "success");
+  assert.equal(result.state.settlementCount, 1);
+  assert.equal(result.state.exitObserved, true);
+  assert.equal(result.state.finality, "reaped");
+  assert.equal(result.state.timersCleared, true);
+  assert.equal(result.state.listenersCleared, true);
+  assert.equal(resources.externalCommandActive, false);
+  assert.equal(resources.externalCommandLastOutcome, "success");
+  assert.equal(resources.externalCommandLastSettlementCount, 1);
+  assert.equal(child.listenerCount("error"), 0);
+  assert.equal(child.listenerCount("close"), 0);
+  assert.equal(child.stdout.listenerCount("data"), 0);
+});
+
+test("A13-L C2 stalled HBA docker exec returns control to enclosing cleanup", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const { runDisposableRuntimeLifecycle } = await import(
+    "../scripts/disposable-runtime-lifecycle.mjs",
+  );
+  let lifecycleResources = null;
+  let cleanupCalls = 0;
+  let absenceCalls = 0;
+  const order = [];
+  let seenCommand = null;
+  let seenArgs = null;
+  const stallSpawn = (command, args) => {
+    seenCommand = command;
+    seenArgs = [...args];
+    return createA13StallSpawn()();
+  };
+  const startedAt = Date.now();
+
+  const failure = await captureA13Rejection(() => runDisposableRuntimeLifecycle({
+    construct: async (resources) => {
+      lifecycleResources = resources;
+      resources.phase = "construct";
+      resources.runnerOwned.add("container:synthetic");
+      resources.runnerOwned.add("volume:synthetic");
+      return {};
+    },
+    admitConstruction: async () => null,
+    deriveProvisioning: async () => null,
+    provision: async () => {},
+    admitConfigured: async () => null,
+    runFocusedTests: async (_admission, resources) => {
+      resources.phase = "runFocusedTests";
+      await runner.runExternalCommandLifecycle(
+        stallSpawn,
+        "docker",
+        [
+          "exec",
+          "deepseek-platform128-pg17",
+          "sh",
+          "-c",
+          "cat /var/lib/postgresql/data/pg_hba.conf",
+        ],
+        {
+          resources,
+          executionDeadlineMs: 10,
+          terminationGraceMs: 5,
+          reapDeadlineMs: 5,
+        },
+      );
+    },
+    cleanup: async (resources) => {
+      order.push("cleanup");
+      cleanupCalls += 1;
+      resources.runnerOwned.clear();
+      resources.cleanupComplete = true;
+    },
+    verifyAbsence: async (resources) => {
+      order.push("absence");
+      absenceCalls += 1;
+      resources.absenceFinality = "unproven";
+    },
+  }));
+
+  assert.ok(failure);
+  assert.ok(Date.now() - startedAt < 500);
+  assert.equal(seenCommand, "docker");
+  assert.deepEqual(seenArgs, [
+    "exec",
+    "deepseek-platform128-pg17",
+    "sh",
+    "-c",
+    "cat /var/lib/postgresql/data/pg_hba.conf",
+  ]);
+  assert.ok(lifecycleResources);
+  assert.deepEqual(order, ["cleanup", "absence"]);
+  assert.equal(cleanupCalls, 1);
+  assert.equal(absenceCalls, 1);
+  assert.equal(lifecycleResources.runnerOwned.size, 0);
+  assert.equal(lifecycleResources.cleanupComplete, true);
+  assert.equal(lifecycleResources.externalCommandExitUnproven, true);
+  assert.equal(lifecycleResources.externalCommandLastOutcome, "timeout");
+  assert.equal(lifecycleResources.externalCommandLastFinality, "unproven_exit");
+  assert.equal(lifecycleResources.absenceFinality, "unproven");
+});
+
+test("A13-L C3 timeout versus close/error race settles once", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const resources = { phase: "construct" };
+  const child = createA13ExternalChild((currentChild, signal) => {
+    if (signal === "SIGTERM") {
+      currentChild.emit("error", new Error("synthetic timeout race error"));
+      currentChild.emit("close", null, "SIGTERM");
+    }
+    return true;
+  });
+  const failure = await captureA13Rejection(() => runner.runExternalCommandLifecycle(
+    () => child,
+    "docker",
+    ["exec", "synthetic-hba-read"],
+    {
+      resources,
+      executionDeadlineMs: 10,
+      terminationGraceMs: 25,
+      reapDeadlineMs: 25,
+    },
+  ));
+  const state = failure.externalCommandState;
+
+  assert.equal(state.outcome, "timeout");
+  assert.equal(state.settlementCount, 1);
+  assert.equal(state.exitObserved, true);
+  assert.equal(state.finality, "reaped");
+  assert.equal(state.terminationStarted, true);
+  assert.equal(state.terminationEscalated, false);
+  assert.deepEqual(state.terminationSignals, ["SIGTERM"]);
+  assert.equal(state.timersCleared, true);
+  assert.equal(state.listenersCleared, true);
+  assert.equal(resources.externalCommandLastSettlementCount, 1);
+  assert.equal(child.listenerCount("error"), 0);
+  assert.equal(child.listenerCount("close"), 0);
+});
+
+test("A13-L C4 ignored first termination escalates within a bounded window", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const resources = { phase: "construct" };
+  const child = createA13ExternalChild((currentChild, signal) => {
+    if (signal === "SIGKILL") {
+      queueMicrotask(() => currentChild.emit("close", null, "SIGKILL"));
+    }
+    return true;
+  });
+  const startedAt = Date.now();
+  const failure = await captureA13Rejection(() => runner.runExternalCommandLifecycle(
+    () => child,
+    "docker",
+    ["exec", "synthetic-stall"],
+    {
+      resources,
+      executionDeadlineMs: 10,
+      terminationGraceMs: 10,
+      reapDeadlineMs: 10,
+    },
+  ));
+  const state = failure.externalCommandState;
+
+  assert.ok(Date.now() - startedAt < 500);
+  assert.deepEqual(state.terminationSignals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(state.terminationStarted, true);
+  assert.equal(state.terminationEscalated, true);
+  assert.equal(state.exitObserved, true);
+  assert.equal(state.finality, "reaped");
+  assert.equal(state.exitUnproven, false);
+  assert.equal(resources.externalCommandLastTerminationEscalated, true);
+});
+
+test("A13-L C5 termination without observed close is explicit unproven exit", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const resources = { phase: "construct" };
+  const child = createA13ExternalChild();
+  const startedAt = Date.now();
+  const failure = await captureA13Rejection(() => runner.runExternalCommandLifecycle(
+    () => child,
+    "docker",
+    ["exec", "synthetic-never-reaped"],
+    {
+      resources,
+      executionDeadlineMs: 10,
+      terminationGraceMs: 10,
+      reapDeadlineMs: 10,
+    },
+  ));
+  const state = failure.externalCommandState;
+
+  assert.ok(Date.now() - startedAt < 500);
+  assert.deepEqual(state.terminationSignals, ["SIGTERM", "SIGKILL"]);
+  assert.equal(state.terminationEscalated, true);
+  assert.equal(state.exitObserved, false);
+  assert.equal(state.finality, "unproven_exit");
+  assert.equal(state.exitUnproven, true);
+  assert.equal(state.timersCleared, true);
+  assert.equal(state.listenersCleared, true);
+  assert.equal(resources.externalCommandExitUnproven, true);
+  assert.equal(resources.absenceFinality, "unproven");
+  assert.equal(child.listenerCount("error"), 0);
+  assert.equal(child.listenerCount("close"), 0);
+});
+
+test("A13-L C6 cleanup Docker-command stall remains bounded and fail-closed", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const resources = {
+    phase: "cleanup",
+    constructionAuthority: null,
+    configuredAdmission: null,
+    childProcess: null,
+    childExited: true,
+    structuredFailureSidecarSetupAttempted: false,
+    focusedCredentialIsolationSetupAttempted: false,
+    ownedContainer: false,
+    ownedDatabases: new Set(),
+    containerStartAttempted: true,
+    containerRemoved: false,
+    volumeCreateAttempted: false,
+    volumeRemoved: false,
+  };
+  const boundSpawn = runner.bindExternalCommandLifecycle(
+    createA13StallSpawn(),
+    resources,
+    {
+      executionDeadlineMs: 10,
+      terminationGraceMs: 5,
+      reapDeadlineMs: 5,
+    },
+  );
+  const startedAt = Date.now();
+  const failure = await captureA13Rejection(() =>
+    runner.cleanupRunnerResources(resources, boundSpawn),
+  );
+
+  assert.ok(failure);
+  assert.ok(Date.now() - startedAt < 500);
+  assert.equal(resources.externalCommandActive, false);
+  assert.equal(resources.externalCommandCleanupFailure, true);
+  assert.equal(resources.externalCommandExitUnproven, true);
+  assert.equal(resources.absenceFinality, "unproven");
+  assert.equal(resources.externalCommandLastFinality, "unproven_exit");
+});
+
+test("A13-L C7 persistent Docker failure reports absence-unproven instead of hanging", async () => {
+  const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
+  const startedAt = Date.now();
+  const failure = await captureA13Rejection(() => runner.run({
+    env: {},
+    spawnImpl: createA13StallSpawn(),
+    externalCommandExecutionDeadlineMs: 10,
+    externalCommandTerminationGraceMs: 5,
+    externalCommandReapDeadlineMs: 5,
+  }));
+  const receipt = JSON.parse(
+    failure.runtimeFailureReceipt.replace(
+      "Disposable fixture failure receipt: ",
+      "",
+    ),
+  );
+
+  assert.ok(Date.now() - startedAt < 500);
+  assert.equal(receipt.absenceFinality, "unproven");
+  assert.equal(receipt.absenceVerified, false);
+  assert.equal(receipt.externalCommandExitUnproven, true);
+  assert.equal(receipt.externalCommandLastFinality, "unproven_exit");
+  assert.equal(receipt.volumeAbsenceVerified, false);
+});
+
+test("A13-L structural envelope covers Docker construction, HBA, cleanup, and finality paths", async () => {
+  const runnerSource = await readFile(
+    "scripts/run-disposable-migrator-alignment-tests.mjs",
+    "utf8",
+  );
+  assert.match(runnerSource, /runExternalCommandLifecycle/);
+  assert.match(runnerSource, /externalCommandExecutionDeadlineMs/);
+  assert.match(runnerSource, /externalCommandExitUnproven/);
+  assert.match(runnerSource, /externalCommandCleanupFailure/);
+  assert.match(runnerSource, /applyMigratorPasswordAuth\(spawnImpl\)/);
+  assert.match(runnerSource, /cleanupRunnerResources\((?:resources|lifecycleResources), spawnImpl\)/);
+  assert.match(runnerSource, /verifyRunnerAbsence\(\s*(?:resources|lifecycleResources),\s*spawnImpl/);
+  assert.match(runnerSource, /SIGTERM/);
+  assert.match(runnerSource, /SIGKILL/);
+});
