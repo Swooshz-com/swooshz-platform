@@ -10,6 +10,7 @@ import {
   inspectRuntimeDatabasePosture,
 } from "../dist/db/runtime-posture.js";
 import {
+  admitDisposablePostgresFixture,
   admitDisposablePostgresFixtures,
   createAdmittedMutationPool,
 } from "./support/disposable-postgres-fixture.mjs";
@@ -98,6 +99,7 @@ test(
       sequences.push(value);
       return value;
     };
+    const readOnlyProbeSequence = sequenceName("readonly_probe");
 
     const routine = (label) => {
       const value = `rt_${label}_${suffix}`;
@@ -118,6 +120,124 @@ test(
           server_is_postgresql_17: true,
         },
       ]);
+
+      {
+          const sequenceIdentifier = identifier(readOnlyProbeSequence);
+          await adminPool.query(
+            `create sequence public.${sequenceIdentifier}`,
+          );
+          await adminPool.query(
+            `grant usage, select on sequence public.${sequenceIdentifier} to platform_app`,
+          );
+          const stateBefore = await adminPool.query(
+            `select last_value, is_called from public.${sequenceIdentifier}`,
+          );
+          let ordinarySelects = 0;
+          let mutationRejected = false;
+
+          const customReadOnlyProbe = async ({ client, fixture }) => {
+            const ordinary = await client.query(
+              "select current_database() as database_name",
+            );
+            assert.deepEqual(ordinary.rows, [
+              { database_name: fixture.expectedDatabase },
+            ]);
+            ordinarySelects += 1;
+
+            const authority = await client.query(
+              "show transaction_read_only",
+            );
+            assert.deepEqual(authority.rows, [
+              { transaction_read_only: "on" },
+            ]);
+
+            const identity = await client.query(
+              `
+                select
+                  current_database() = $1 as database_matches,
+                  session_user = $2 as user_matches,
+                  current_setting('server_version_num')::integer / 10000 = 17
+                    as postgres17,
+                  not pg_is_in_recovery() as non_recovery,
+                  (select system_identifier::text from pg_control_system())
+                    as catalog_fingerprint,
+                  (select oid::text from pg_database where datname = current_database())
+                    as lifecycle_fingerprint
+              `,
+              [fixture.expectedDatabase, fixture.expectedUser],
+            );
+            const [row] = identity.rows;
+            assert.ok(row);
+            if (fixture.name === "primary") {
+              await assert.rejects(
+                () =>
+                  client.query(
+                    `select nextval('public.${readOnlyProbeSequence}')`,
+                  ),
+                (error) => {
+                  const matches = /read[ -]only/iu.test(
+                    String(error?.message ?? ""),
+                  );
+                  mutationRejected ||= matches;
+                  return matches;
+                },
+              );
+            }
+            return {
+              databaseMatches: row.database_matches,
+              userMatches: row.user_matches,
+              postgres17: row.postgres17,
+              nonRecovery: row.non_recovery,
+              catalogIdentityPresent: true,
+              lifecycleIdentityPresent: true,
+              runtimePosturePassed: true,
+              ownershipAbsent: true,
+              expectedObjectsPresent: true,
+              targetDatabasePresent: true,
+              catalogFingerprint: row.catalog_fingerprint,
+              lifecycleFingerprint: row.lifecycle_fingerprint,
+            };
+          };
+
+          const probeFixtures = [
+            fixtureDefinition("primary", databaseUrl, operatorUrl),
+            fixtureDefinition(
+              "secondary",
+              secondaryDatabaseUrl,
+              secondaryOperatorUrl,
+            ),
+          ];
+          await admitDisposablePostgresFixtures(probeFixtures, {
+            readOnlyProbe: customReadOnlyProbe,
+          });
+
+          let callbackThrowCalled = false;
+          await assert.rejects(
+            () =>
+              admitDisposablePostgresFixture(
+                fixtureDefinition("primary", databaseUrl, operatorUrl),
+                {
+                  readOnlyProbe: async ({ client }) => {
+                    callbackThrowCalled = true;
+                    await client.query("select 1");
+                    throw new Error();
+                  },
+                },
+              ),
+            (error) => error?.code === "disposable_fixture_admission_failed",
+          );
+          assert.equal(callbackThrowCalled, true);
+
+          await admitDisposablePostgresFixtures(probeFixtures, {
+            readOnlyProbe: customReadOnlyProbe,
+          });
+          const stateAfter = await adminPool.query(
+            `select last_value, is_called from public.${sequenceIdentifier}`,
+          );
+          assert.deepEqual(stateAfter.rows, stateBefore.rows);
+          assert.equal(ordinarySelects, 4);
+          assert.equal(mutationRejected, true);
+      }
 
       neonSuperuserCreated = await ensureRole(adminPool, "neon_superuser");
 

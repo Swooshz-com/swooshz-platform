@@ -1840,6 +1840,12 @@ function staticallyKnownCallableValueKind(expression, scopes, resolving = new Se
     const name = value.text;
     for (let index = scopes.length - 1; index >= 0; index--) {
       const scope = scopes[index];
+      if (
+        scope.valueSnapshots?.has(name) &&
+        profileHasInheritedConstructor(scope.valueSnapshots.get(name))
+      ) {
+        return "callable";
+      }
       if (scope.valueBindings?.has(name)) {
         return scope.valueBindings.get(name);
       }
@@ -2461,6 +2467,22 @@ function staticNonCallableValueProfile(details = {}) {
   return Object.freeze({ kind: "non_callable", ...details });
 }
 
+function staticInheritedConstructorValueProfile() {
+  return staticNonCallableValueProfile({
+    closedValue: true,
+    inheritedConstructor: true,
+  });
+}
+
+function profileHasInheritedConstructor(profile) {
+  if (profile?.inheritedConstructor) return true;
+  return Boolean(
+    profile?.alternatives?.some((alternative) =>
+      profileHasInheritedConstructor(alternative),
+    ),
+  );
+}
+
 function staticValueProfileUnion(profiles) {
   const firstKind = profiles[0]?.kind ?? "unknown";
   const kind =
@@ -2496,7 +2518,7 @@ function staticValueProfileForProperty(objectProfile, propertyName) {
       return staticUnknownValueProfile();
     }
     if (objectProfile.arrayElements || objectProfile.closedValue) {
-      return staticNonCallableValueProfile({ closedValue: true });
+      return staticInheritedConstructorValueProfile();
     }
   }
 

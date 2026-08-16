@@ -63,6 +63,10 @@ const creationIdentitySql = `
     ) as target_database_absent
 `;
 
+const transactionControlKeyword =
+  /\b(?:begin|start\s+transaction|commit|rollback|savepoint|release\s+savepoint|rollback\s+to(?:\s+savepoint)?|prepare\s+transaction|discard)\b/iu;
+const sessionAuthorityKeyword =
+  /\b(?:set|reset|load)\b|set_config\s*\(/iu;
 export class DisposablePostgresFixtureAdmissionError extends Error {
   constructor() {
     super("Disposable fixture admission failed.");
@@ -172,6 +176,7 @@ export async function admitDisposablePostgresConstructionTargets(
       throw new Error();
     }
     const names = new Set();
+    const locatorIdentities = new Set();
     const normalizedTargets = [];
     for (const target of targets) {
       const normalized = normalizeConstructionTarget(target);
@@ -179,10 +184,12 @@ export async function admitDisposablePostgresConstructionTargets(
         throw new Error();
       }
       names.add(normalized.name);
+      assertDistinctCanonicalTargetLocator(locatorIdentities, normalized);
       normalizedTargets.push(normalized);
     }
 
     const admittedTargets = new Map();
+    const physicalIdentities = new Set();
     for (const target of normalizedTargets) {
       const evidence = await probeTarget({
         target,
@@ -190,6 +197,7 @@ export async function admitDisposablePostgresConstructionTargets(
         builtInProbe: !readOnlyProbe,
         clientFactory,
       });
+      assertDistinctObservedPhysicalIdentity(physicalIdentities, evidence);
       admittedTargets.set(
         target.name,
         Object.freeze({
@@ -383,7 +391,11 @@ export function createAuthorizedProvisioningPool(pool, authority, options = {}) 
 
 export async function admitDisposablePostgresFixture(
   fixture,
-  { readOnlyProbe, postureInspector = inspectRuntimeDatabaseRoleAuthorityPosture } = {},
+  {
+    readOnlyProbe,
+    postureInspector = inspectRuntimeDatabaseRoleAuthorityPosture,
+    clientFactory,
+  } = {},
 ) {
   try {
     const normalized = normalizeFixture(fixture);
@@ -392,6 +404,7 @@ export async function admitDisposablePostgresFixture(
       readOnlyProbe: readOnlyProbe ?? ((args) =>
         defaultConfiguredProbe({ ...args, postureInspector })),
       builtInProbe: !readOnlyProbe,
+      clientFactory,
     });
     const token = Object.freeze({});
     configuredTargetValues.set(token, {
@@ -418,7 +431,10 @@ export async function admitDisposablePostgresFixtures(
       throw new Error();
     }
     const names = new Set();
+    const locatorIdentities = new Set();
+    const physicalIdentities = new Set();
     const targets = new Map();
+    const normalizedFixtures = [];
     let phase;
     for (const fixture of fixtures) {
       const normalized = normalizeFixture(fixture);
@@ -426,10 +442,14 @@ export async function admitDisposablePostgresFixtures(
         throw new Error();
       }
       names.add(normalized.name);
+      assertDistinctCanonicalTargetLocator(locatorIdentities, normalized);
       if (phase && normalized.phase !== phase) {
         throw new Error();
       }
       phase ??= normalized.phase;
+      normalizedFixtures.push(normalized);
+    }
+    for (const normalized of normalizedFixtures) {
       const evidence = await probeTarget({
         target: normalized,
         readOnlyProbe: options.readOnlyProbe ?? ((args) =>
@@ -441,6 +461,7 @@ export async function admitDisposablePostgresFixtures(
         builtInProbe: !options.readOnlyProbe,
         clientFactory: options.clientFactory,
       });
+      assertDistinctObservedPhysicalIdentity(physicalIdentities, evidence);
       targets.set(
         normalized.name,
         Object.freeze({ evidence, target: normalized }),
@@ -823,11 +844,16 @@ function poolConnectionMatchesTarget(pool, targetRecord, bindingMode = "target")
 function targetConnectionBinding(targetRecord, bindingMode = "target") {
   const target = targetRecord?.target;
   if (!target || !target.parsedUrl) throw new Error();
-  const selectedBinding = bindingMode === "creation"
-    ? target.creationBinding
-    : target.mutationBinding;
+  const selectedBinding =
+    bindingMode === "creation"
+      ? target.creationBinding
+      : bindingMode === "probe"
+        ? null
+        : target.mutationBinding;
   const parsed = parsedUrlValues.get(
-    selectedBinding?.parsedUrl ?? target.parsedUrl,
+    bindingMode === "probe"
+      ? target.parsedUrl
+      : selectedBinding?.parsedUrl ?? target.parsedUrl,
   );
   if (!parsed) throw new Error();
   return {
@@ -851,7 +877,9 @@ function transportIdentityFor(
   const parsed = parsedUrlValues.get(
     (bindingMode === "creation"
       ? target?.creationBinding?.parsedUrl
-      : target?.mutationBinding?.parsedUrl) ?? target?.parsedUrl,
+      : bindingMode === "probe"
+        ? target?.parsedUrl
+        : target?.mutationBinding?.parsedUrl) ?? target?.parsedUrl,
   );
   if (!parsed) throw new Error();
   if (parsed.transportKind === "loopback") {
@@ -859,9 +887,11 @@ function transportIdentityFor(
   }
   const transport = bindingMode === "creation"
     ? target.creationTransport ?? target.operatorTransport ?? target.transport
-    : target.mutationBinding
-    ? target.mutationTransport ?? target.operatorTransport ?? target.transport
-    : target.transport;
+    : bindingMode === "probe"
+      ? target.transport
+      : target.mutationBinding
+        ? target.mutationTransport ?? target.operatorTransport ?? target.transport
+        : target.transport;
   const transportValue = managedTransportValues.get(transport?.attestation);
   if (!transportValue) throw new Error();
   return `managed-container:${transportValue.alias}:${port}:${transportValue.image}`;
@@ -879,28 +909,47 @@ async function probeTarget({
     const customProbe = readOnlyProbe ?? target.readOnlyProbe;
     let client = target.client;
     let ownedPool = null;
-    if (!client && (builtInProbe || !customProbe)) {
+    let ownedClient = false;
+    if (!client) {
       if (clientFactory) {
         client = await clientFactory(target);
+        ownedClient = true;
       } else {
         ownedPool = new Pool({
           connectionString: target.probeConnectionString ?? target.connectionString,
           max: 1,
         });
         client = await ownedPool.connect();
+        ownedClient = true;
       }
     }
-    if (!client) {
-      client = { query() { throw new Error(); } };
+    if (!client || typeof client.query !== "function") throw new Error();
+    const bindingMode =
+      target.mode === "construction" && target.databaseMayBeAbsent
+        ? "creation"
+        : "probe";
+    if (
+      client.connectionParameters &&
+      !clientConnectionMatchesTarget(client, { target }, bindingMode)
+    ) {
+      throw new Error();
     }
     try {
-      const result = await customProbe({
-        client: readOnlyClient(client, target),
-        fixture: target,
-        parsedUrl,
-        postureInspector: target.postureInspector,
-      });
-      assertProbeResult(result, target.mode === "construction", target);
+      const probeFixture = createReadOnlyProbeFixture(target);
+      const result = await withReadOnlyProbeTransaction(
+        client,
+        probeFixture,
+        async (probeClient) => {
+          const probeResult = await customProbe({
+            client: probeClient,
+            fixture: probeFixture,
+            parsedUrl,
+            postureInspector: target.postureInspector,
+          });
+          assertProbeResult(probeResult, target.mode === "construction", target);
+          return probeResult;
+        },
+      );
       return Object.freeze({
         catalogFingerprint: result.catalogFingerprint,
         databaseMatches: true,
@@ -911,8 +960,13 @@ async function probeTarget({
       });
     } finally {
       if (ownedPool) {
-        client.release();
-        await ownedPool.end();
+        try {
+          await client.release();
+        } finally {
+          await ownedPool.end();
+        }
+      } else if (ownedClient) {
+        await releaseProbeClient(client);
       }
     }
   } catch (error) {
@@ -921,6 +975,56 @@ async function probeTarget({
     }
     throw new DisposablePostgresFixtureAdmissionError();
   }
+}
+
+async function withReadOnlyProbeTransaction(client, fixture, callback) {
+  let transactionStarted = false;
+  try {
+    await client.query("begin");
+    transactionStarted = true;
+    await client.query("set transaction read only");
+    const verification = await client.query("show transaction_read_only");
+    if (
+      !verification ||
+      !Array.isArray(verification.rows) ||
+      verification.rows.length !== 1 ||
+      String(verification.rows[0]?.transaction_read_only ?? "").toLowerCase() !==
+        "on"
+    ) {
+      throw new Error();
+    }
+    return await callback(readOnlyClient(client, fixture));
+  } finally {
+    if (transactionStarted) {
+      await client.query("rollback");
+    }
+  }
+}
+
+async function releaseProbeClient(client) {
+  if (typeof client?.release === "function") {
+    await client.release();
+    return;
+  }
+  if (typeof client?.end === "function") {
+    await client.end();
+    return;
+  }
+  throw new Error();
+}
+
+function createReadOnlyProbeFixture(target) {
+  const fixture = { ...target };
+  for (const key of [
+    "client",
+    "pool",
+    "clientFactory",
+    "readOnlyProbe",
+    "postureInspector",
+  ]) {
+    delete fixture[key];
+  }
+  return Object.freeze(fixture);
 }
 
 async function defaultConstructionProbe({ client, fixture }) {
@@ -1333,6 +1437,23 @@ function normalizeFixture(fixture) {
   return normalized;
 }
 
+function assertDistinctCanonicalTargetLocator(identities, target) {
+  const parsed = parsedUrlValues.get(target.parsedUrl);
+  if (!parsed) throw new Error();
+  const identity = JSON.stringify([parsed.transportIdentity, parsed.database]);
+  if (identities.has(identity)) throw new Error();
+  identities.add(identity);
+}
+
+function assertDistinctObservedPhysicalIdentity(identities, evidence) {
+  const identity = JSON.stringify([
+    requireFingerprint(evidence?.catalogFingerprint),
+    requireFingerprint(evidence?.lifecycleFingerprint),
+  ]);
+  if (identities.has(identity)) throw new Error();
+  identities.add(identity);
+}
+
 function normalizeExpectedObjects(objects) {
   if (!objects || typeof objects !== "object") {
     throw new Error();
@@ -1389,14 +1510,14 @@ function readOnlyClient(client, fixture) {
   if (!client || typeof client.query !== "function") {
     throw new Error();
   }
-  return {
-    query(text, values = []) {
+  return Object.freeze({
+    async query(text, values = []) {
       assertReadOnlySql(text);
       if (!Array.isArray(values)) throw new Error();
-      return client.query(text, values);
+      return await client.query(text, values);
     },
     fixtureName: fixture.name,
-  };
+  });
 }
 
 function assertReadOnlySql(text) {
@@ -1406,7 +1527,9 @@ function assertReadOnlySql(text) {
     .replace(/--[^\r\n]*/gu, "");
   if (
     mutationKeyword.test(withoutLiterals) ||
-    sessionMutationKeyword.test(withoutLiterals)
+    sessionMutationKeyword.test(withoutLiterals) ||
+    transactionControlKeyword.test(withoutLiterals) ||
+    sessionAuthorityKeyword.test(withoutLiterals)
   ) {
     throw new Error();
   }
