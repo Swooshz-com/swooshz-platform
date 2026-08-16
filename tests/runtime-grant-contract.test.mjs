@@ -3734,6 +3734,15 @@ callable.constructor;`],
     ["callable alias", `const callable = function () {};
 const alias = callable;
 alias.constructor;`],
+    ["captured inherited constructor", `const C = ({}).constructor;
+C.constructor("return process")();`],
+    ["captured inherited constructor alias and computed access", `const source = {};
+const C = source.constructor;
+const alias = C;
+alias["constructor"]("return process")();`],
+    ["captured inherited constructor parenthesised alias", `const C = ({}).constructor;
+const alias = (C);
+(alias).constructor("return process")();`],
     ["wrapped callable alias", `const callable = function () {};
 const alias = ((callable));
 (alias).constructor;`],
@@ -3778,6 +3787,8 @@ const value: ConstructorType | null = null;`],
 void kind;`],
     ["discarded callable constructor access", `const object = ((() => {}).constructor, {});
 object.constructor;`],
+    ["captured inherited constructor without capability reachability", `const C = ({}).constructor;
+void C;`],
     ["benign static property inspection", `const object = {};
 object["other"];`],
     ["constructor-related text", `const text = "constructor Function";

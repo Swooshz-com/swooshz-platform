@@ -38,7 +38,7 @@ const baseFixture = Object.freeze({
   transport: { kind: "loopback", phase: "initialization" },
 });
 
-const passingProbe = async () => ({
+const passingProbe = async ({ fixture } = {}) => ({
   databaseMatches: true,
   userMatches: true,
   postgres17: true,
@@ -49,9 +49,58 @@ const passingProbe = async () => ({
   ownershipAbsent: true,
   expectedObjectsPresent: true,
   targetDatabasePresent: true,
-  catalogFingerprint: "catalog-1",
-  lifecycleFingerprint: "lifecycle-1",
+  catalogFingerprint: fixture?.connectionString ?? "catalog-1",
+  lifecycleFingerprint: fixture?.connectionString ?? "lifecycle-1",
 });
+
+function createProbeClient(target) {
+  const parsed = new URL(target.probeConnectionString ?? target.connectionString);
+  let released = false;
+  return {
+    connectionParameters: {
+      database: decodeURIComponent(parsed.pathname.slice(1)),
+      host: parsed.hostname,
+      port: parsed.port || "5432",
+      user: decodeURIComponent(parsed.username),
+    },
+    async query(text) {
+      const normalized = String(text).trim().toLowerCase();
+      if (normalized === "show transaction_read_only") {
+        return { rows: [{ transaction_read_only: "on" }] };
+      }
+      return { rows: [] };
+    },
+    release() {
+      released = true;
+    },
+    wasReleased() {
+      return released;
+    },
+  };
+}
+
+function createBoundaryClient({ readOnlyValue = "on", rejectQuery } = {}) {
+  const calls = [];
+  let released = false;
+  return {
+    calls,
+    async query(text) {
+      const normalized = String(text).trim().toLowerCase();
+      calls.push(normalized);
+      if (normalized === rejectQuery) throw new Error();
+      if (normalized === "show transaction_read_only") {
+        return { rows: [{ transaction_read_only: readOnlyValue }] };
+      }
+      return { rows: [] };
+    },
+    release() {
+      released = true;
+    },
+    wasReleased() {
+      return released;
+    },
+  };
+}
 
 test("disposable fixture admission rejects ambiguous, remote, socket, and unattested targets", () => {
   const rejected = [
@@ -147,10 +196,11 @@ test("every target is admitted before mutation and a secondary failure permits z
           readOnlyProbe: async ({ fixture }) => {
             admitted.push(fixture.name);
             return {
-              ...(await passingProbe()),
+              ...(await passingProbe({ fixture })),
               expectedObjectsPresent: fixture.name !== "secondary",
             };
           },
+           clientFactory: createProbeClient,
         },
       ),
     safeAdmissionError,
@@ -158,7 +208,186 @@ test("every target is admitted before mutation and a secondary failure permits z
 
   assert.deepEqual(admitted, ["primary", "secondary"]);
   assert.equal(mutationCalls, 0);
+  await assertCanonicalLocatorCollisions();
+  await assertObservedPhysicalIdentityCollision();
+  await assertSeparateAggregateTargets();
+  await assertCustomProbeBoundary();
+  await assertCustomProbeCleanup();
+  await assertReadOnlyBoundaryFailures();
 });
+
+async function assertCanonicalLocatorCollisions() {
+  const collisions = [
+    {
+      ...baseFixture,
+      name: "secondary",
+    },
+    {
+      ...baseFixture,
+      name: "secondary",
+      connectionString:
+        "postgresql://alternate_app@127.0.0.1/runtime_posture_test",
+      expectedUser: "alternate_app",
+    },
+  ];
+
+  for (const collision of collisions) {
+    const probed = [];
+    await assert.rejects(
+      () =>
+        admitDisposablePostgresFixtures([baseFixture, collision], {
+          readOnlyProbe: async ({ fixture }) => {
+            probed.push(fixture.name);
+            return passingProbe({ fixture });
+          },
+          clientFactory: createProbeClient,
+        }),
+      safeAdmissionError,
+    );
+    assert.deepEqual(probed, []);
+  }
+}
+
+async function assertObservedPhysicalIdentityCollision() {
+  const secondary = {
+    ...baseFixture,
+    name: "secondary",
+    connectionString:
+      "postgres://platform_app@127.0.0.1:5433/runtime_posture_test",
+  };
+  let probeCalls = 0;
+  let mutationCalls = 0;
+
+  await assert.rejects(
+    () =>
+      withDisposablePostgresFixturesAdmitted(
+        [baseFixture, secondary],
+        async () => {
+          mutationCalls += 1;
+        },
+        {
+          readOnlyProbe: async () => {
+            probeCalls += 1;
+            return {
+              ...(await passingProbe()),
+              catalogFingerprint: "run45-cluster-1",
+              lifecycleFingerprint: "run45-database-1",
+            };
+          },
+          clientFactory: createProbeClient,
+        },
+      ),
+    safeAdmissionError,
+  );
+
+  assert.equal(probeCalls, 2);
+  assert.equal(mutationCalls, 0);
+}
+
+async function assertSeparateAggregateTargets() {
+  const secondary = {
+    ...baseFixture,
+    name: "secondary",
+    connectionString:
+      "postgres://platform_app@127.0.0.1:5433/runtime_posture_test",
+  };
+  const probed = [];
+  const admission = await admitDisposablePostgresFixtures(
+    [baseFixture, secondary],
+    {
+      readOnlyProbe: async ({ fixture }) => {
+        probed.push(fixture.name);
+        return passingProbe({ fixture });
+      },
+      clientFactory: createProbeClient,
+    },
+  );
+
+  assert.deepEqual(probed, ["primary", "secondary"]);
+  assert.doesNotThrow(() => requireDisposablePostgresAdmission(admission));
+}
+
+async function assertCustomProbeBoundary() {
+  const client = createBoundaryClient();
+  await admitDisposablePostgresFixture(baseFixture, {
+    readOnlyProbe: async ({ client: probeClient, fixture }) => {
+      await probeClient.query("select 1");
+      await assert.rejects(() => probeClient.query("commit"));
+      await assert.rejects(() => probeClient.query({ text: "commit" }));
+      await assert.rejects(() => probeClient.query("set transaction read write"));
+      await assert.rejects(() =>
+        probeClient.query("select set_config('transaction_read_only', 'off', false)"),
+      );
+      return passingProbe({ fixture });
+    },
+    clientFactory: () => client,
+  });
+
+  assert.deepEqual(client.calls, [
+    "begin",
+    "set transaction read only",
+    "show transaction_read_only",
+    "select 1",
+    "rollback",
+  ]);
+  assert.equal(client.wasReleased(), true);
+}
+
+async function assertCustomProbeCleanup() {
+  const cases = [
+    ["callback throw", createBoundaryClient(), async () => {
+      throw new Error();
+    }],
+    [
+      "rejected query",
+      createBoundaryClient({ rejectQuery: "select 1" }),
+      async ({ client: probeClient }) => {
+        await probeClient.query("select 1");
+      },
+    ],
+    ["malformed result", createBoundaryClient(), async () => ({})],
+  ];
+
+  for (const [name, client, readOnlyProbe] of cases) {
+    await assert.rejects(
+      () =>
+        admitDisposablePostgresFixture(baseFixture, {
+          readOnlyProbe,
+          clientFactory: () => client,
+        }),
+      safeAdmissionError,
+      name,
+    );
+    assert.equal(client.calls.at(-1), "rollback", name);
+    assert.equal(client.wasReleased(), true, name);
+  }
+}
+
+async function assertReadOnlyBoundaryFailures() {
+  const cases = [
+    ["establishment failure", createBoundaryClient({ rejectQuery: "set transaction read only" })],
+    ["verification failure", createBoundaryClient({ readOnlyValue: "off" })],
+  ];
+
+  for (const [name, client] of cases) {
+    let callbackCalled = false;
+    await assert.rejects(
+      () =>
+        admitDisposablePostgresFixture(baseFixture, {
+          readOnlyProbe: async () => {
+            callbackCalled = true;
+            return passingProbe({ fixture: baseFixture });
+          },
+          clientFactory: () => client,
+        }),
+      safeAdmissionError,
+      name,
+    );
+    assert.equal(callbackCalled, false, name);
+    assert.equal(client.calls.at(-1), "rollback", name);
+    assert.equal(client.wasReleased(), true, name);
+  }
+}
 
 test("mutation clients require an opaque aggregate admission token", async () => {
   const secondary = {
@@ -170,7 +399,8 @@ test("mutation clients require an opaque aggregate admission token", async () =>
   const admission = await admitDisposablePostgresFixtures(
     [baseFixture, secondary],
     {
-    readOnlyProbe: passingProbe,
+      readOnlyProbe: ({ fixture }) => passingProbe({ fixture }),
+      clientFactory: createProbeClient,
     },
   );
   assert.equal(Object.keys(admission).length, 0);
@@ -186,8 +416,8 @@ test("mutation clients require an opaque aggregate admission token", async () =>
     user_matches: true,
     postgres17: true,
     non_recovery: true,
-    catalog_fingerprint: "catalog-1",
-    lifecycle_fingerprint: "lifecycle-1",
+    catalog_fingerprint: baseFixture.connectionString,
+    lifecycle_fingerprint: baseFixture.connectionString,
   };
   const pool = {
     options: { connectionString: baseFixture.connectionString },
@@ -248,6 +478,7 @@ test("mutation clients require an opaque aggregate admission token", async () =>
 test("single-target configured admission cannot satisfy aggregate authority", async () => {
   const singleTarget = await admitDisposablePostgresFixture(baseFixture, {
     readOnlyProbe: passingProbe,
+    clientFactory: createProbeClient,
   });
   assert.throws(
     () => requireDisposablePostgresAdmission(singleTarget),
@@ -275,7 +506,10 @@ test("single-target configured admission cannot satisfy aggregate authority", as
         transport: { kind: "loopback", phase: "initialization" },
       },
     ],
-    { readOnlyProbe: passingProbe },
+    {
+      readOnlyProbe: ({ fixture }) => passingProbe({ fixture }),
+      clientFactory: createProbeClient,
+    },
   );
   const provisioning = deriveDisposablePostgresProvisioningAuthority(
     construction,
@@ -302,12 +536,13 @@ test("single-target configured admission cannot satisfy aggregate authority", as
     [constructionTarget("primary", "runtime_posture_test"), creationSecondary],
     {
       readOnlyProbe: async ({ fixture }) => ({
-        ...(await passingProbe()),
+        ...(await passingProbe({ fixture })),
         lifecycleFingerprint: fixture.name === "secondary"
           ? "absent:runtime_posture_test_secondary"
           : "lifecycle-1",
         targetDatabasePresent: fixture.name !== "secondary",
       }),
+      clientFactory: createProbeClient,
     },
   );
   const authority = deriveDisposablePostgresDatabaseCreationAuthority(creationConstruction, "secondary");
@@ -341,7 +576,7 @@ test("single-target configured admission cannot satisfy aggregate authority", as
                 user_matches: true,
                 postgres17: true,
                 non_recovery: true,
-                catalog_fingerprint: "catalog-1",
+                catalog_fingerprint: creationSecondary.connectionString,
                 lifecycle_fingerprint: created
                   ? "lifecycle-2"
                   : "absent:runtime_posture_test_secondary",
@@ -380,7 +615,7 @@ test("single-target configured admission cannot satisfy aggregate authority", as
                 user_matches: true,
                 postgres17: true,
                 non_recovery: true,
-                catalog_fingerprint: "catalog-1",
+                catalog_fingerprint: creationSecondary.connectionString,
                 lifecycle_fingerprint: "lifecycle-2",
               }],
             };
@@ -421,7 +656,10 @@ test("target authority rejects wrong pool, connection substitution, replay, stal
   };
   const admission = await admitDisposablePostgresFixtures(
     [baseFixture, secondary],
-    { readOnlyProbe: passingProbe },
+    {
+      readOnlyProbe: ({ fixture }) => passingProbe({ fixture }),
+      clientFactory: createProbeClient,
+    },
   );
   const pool = {
     options: { connectionString: baseFixture.connectionString },
@@ -537,6 +775,7 @@ test("managed transport and non-vacuous fingerprints cannot be caller-spoofed", 
               ...(await passingProbe()),
               [field]: "0",
             }),
+            clientFactory: createProbeClient,
           },
         ),
       safeAdmissionError,
@@ -556,8 +795,9 @@ test("fixture probes cannot mutate before aggregate admission", async () => {
       admitDisposablePostgresFixtures([baseFixture, secondary], {
         readOnlyProbe: async ({ client }) => {
           await client.query("grant select on table public.users to platform_runtime");
-          return passingProbe();
+          return passingProbe({ fixture: baseFixture });
         },
+        clientFactory: createProbeClient,
       }),
     safeAdmissionError,
   );
