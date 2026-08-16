@@ -101,6 +101,10 @@ When asking the user to choose, approve, confirm, provide a target path, decide 
 
 Before editing, inspect targeted files first and identify the smallest relevant validation. Avoid broad repo scans unless targeted evidence is insufficient. If the task touches a documented workflow, setup, policy, implementation plan, status note, or operations area, read the relevant docs before editing.
 
+`TEMPORARY TOOLKIT #342 COMPATIBILITY RULE — REMOVE AFTER PROPAGATED TOOLKIT RULE IS VERIFIED`
+
+**Structural-change impact check:** Keep ordinary narrow tasks narrow. Before renaming, removing, moving, re-signaturing, or structurally replacing an existing symbol, path, command, schema field, allowlist, receipt shape, generated shape, or other established contract, run a targeted repo-wide search for the exact current identity plus relevant source-shape/contract consumers. Classify every material consumer as preserved, intentionally updated/superseded, or outside current authority requiring escalation. After editing, run the affected contract/source-shape tests first, then the task’s broader required validation. This is a targeted impact exception, not permission for indiscriminate broad scans.
+
 During editing, keep the diff narrow and maintainable, match existing project style, avoid unrelated refactors, and do not weaken validation, schemas, guardrails, approval gates, safety checks, or error handling just to pass.
 
 Persistent status, reports, plans, handoffs, operations notes, setup notes, CI/CD notes, deployment notes, safety notes, and troubleshooting notes belong under an existing docs path or another repo-documented folder. Do not create root-level files like `STATUS.md`, `REPORT.md`, or `PLAN.md` unless the repo explicitly requires that path.

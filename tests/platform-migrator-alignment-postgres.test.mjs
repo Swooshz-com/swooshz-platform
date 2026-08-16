@@ -1,6 +1,12 @@
 ﻿import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
+import { renameSync, unlinkSync, writeFileSync } from "node:fs";
 import test from "node:test";
+import { join } from "node:path";
 
+import { access, readFile, writeFile } from "node:fs/promises";
 import { Pool } from "pg";
 
 import {
@@ -14,6 +20,10 @@ import {
   createAdmittedMutationPool,
   invalidateDisposablePostgresAdmission,
 } from "./support/disposable-postgres-fixture.mjs";
+import {
+  buildFocusedDefaultPgpassControlEnvironment,
+} from "../scripts/run-disposable-migrator-alignment-tests.mjs";
+import { runDisposableRuntimeLifecycle } from "../scripts/disposable-runtime-lifecycle.mjs";
 
 const primaryDatabaseUrl = process.env.MIGRATOR_ALIGNMENT_TEST_DATABASE_URL;
 const primaryOperatorUrl = process.env.MIGRATOR_ALIGNMENT_TEST_OPERATOR_URL;
@@ -39,26 +49,620 @@ const fixtureRoleNames = [
   "platform_runtime",
   "provider_owner",
 ];
+const ownershipFingerprintDefaultAclCreators = Object.freeze([
+  "platform_app",
+  "platform_migrator",
+  "platform_runtime",
+  "provider_owner",
+  "pg_database_owner",
+]);
 const allowedAclRoles = new Set([
   ...fixtureRoleNames,
+  "pg_database_owner",
   "postgres",
   "PUBLIC",
 ]);
 const safeIdentifier = /^[a-z_][a-z0-9_$]{0,62}$/u;
 const syntheticMigratorPassword = "synthetic-migrator-password";
+const wrongMigratorPassword = "synthetic-wrong-migrator-password";
+const publicAuthorityProbeTable = "__pgdbowner_authority_probe";
+const structuredFailureReceiptPrefix = "PLATFORM_MIGRATOR_FAILURE_V1=";
+const structuredFailureReceiptFileEnvironmentVariable =
+  "PLATFORM_MIGRATOR_FAILURE_RECEIPT_FILE";
+const structuredFailureProgressFileEnvironmentVariable =
+  "PLATFORM_MIGRATOR_FAILURE_PROGRESS_FILE";
+const defaultPgpassControlScript = `
+import { Pool } from "pg";
+
+let pool = null;
+let client = null;
+try {
+  const databaseUrl =
+    process.env.MIGRATOR_ALIGNMENT_TEST_DEFAULT_PGPASS_URL;
+  const parsed = new URL(databaseUrl);
+  if (
+    parsed.password ||
+    parsed.search ||
+    parsed.hash ||
+    typeof process.env.HOME !== "string" ||
+    typeof process.env.APPDATA !== "string" ||
+    Object.keys(process.env).some((key) => {
+      const comparisonKey = typeof key === "string" ? key.toUpperCase() : "";
+      return (
+        comparisonKey.startsWith("PG") ||
+        comparisonKey === "NODE_PG_FORCE_NATIVE"
+      );
+    }) ||
+    Object.hasOwn(process.env, "NODE_PG_FORCE_NATIVE")
+  ) {
+    throw new Error();
+  }
+  pool = new Pool({ connectionString: databaseUrl, max: 1 });
+  client = await pool.connect();
+  const result = await client.query(
+    "select current_user::text as cu, session_user::text as su, current_database()::text as cd",
+  );
+  if (
+    result.rows[0]?.cu !== "platform_migrator" ||
+    result.rows[0]?.su !== "platform_migrator" ||
+    result.rows[0]?.cd !== "migrator_alignment_test"
+  ) {
+    throw new Error();
+  }
+} catch {
+  process.exitCode = 1;
+} finally {
+  client?.release();
+  await pool?.end().catch(() => {});
+}
+`;
+const defaultPgpassControlTimeoutMs = 30_000;
+const defaultPgpassControlFailureMessage = "C3 RED default-pgpass admission failed.";
+const defaultPgpassControlTimeoutMessage = "C3 RED default-pgpass admission timed out.";
+
+const structuredReceiptProgressMaxBytes = 16 * 1024;
+const structuredReceiptTransportTestMode =
+  process.env.PLATFORM_MIGRATOR_FAILURE_RECEIPT_TEST ?? "";
+const structuredFingerprintFields = [
+  "databaseOwner",
+  "schemaOwners",
+  "objectOwners",
+  "enumOwners",
+  "routineOwners",
+  "databaseAcl",
+  "schemaAcls",
+  "defaultAcl",
+  "attributes",
+  "memberships",
+];
+const isFocusedDisposableChild =
+  typeof process.env.PLATFORM_MIGRATOR_FAILURE_RECEIPT_FILE === "string" &&
+  process.env.PLATFORM_MIGRATOR_FAILURE_RECEIPT_FILE.length > 0 &&
+  typeof process.env.PLATFORM_MIGRATOR_FAILURE_PROGRESS_FILE === "string" &&
+  process.env.PLATFORM_MIGRATOR_FAILURE_PROGRESS_FILE.length > 0;
+const a10CausalControlsEnabled = !isFocusedDisposableChild;
+const structuredFailurePhases = new Set([
+  "baseline_capture",
+  "forward_migration",
+  "migrated_state_assertion",
+  "reverse_transfer",
+  "reverse_role_restoration",
+  "post_reverse_exact_fingerprint",
+  "acl_residue_setup",
+  "acl_residue_permissive_helper",
+  "acl_residue_exact_rejection",
+  "acl_residue_cleanup",
+  "post_acl_exact_fingerprint",
+  "default_acl_residue_setup",
+  "default_acl_permissive_helper",
+  "default_acl_exact_rejection",
+  "default_acl_residue_cleanup",
+  "post_default_acl_exact_fingerprint",
+  "unrelated_default_acl_setup",
+  "unrelated_default_acl_exact_equality",
+  "unrelated_default_acl_cleanup",
+  "post_unrelated_default_acl_exact_fingerprint",
+  "C3_RED_DEFAULT_PGPASS_ADMISSION",
+  "C3_HOSTILE_ENV_RETAINED",
+  "C3_RUNNER_PGPASS_QUARANTINE",
+  "C3_INHERITED_PG_STATE_SANITISED",
+  "C3_OMITTED_PASSWORD_REJECTED",
+  "C3_WRONG_PASSWORD_REJECTED",
+  "C3_CORRECT_PASSWORD_ACCEPTED",
+  "C3_CLEANUP_CONFIRMED",
+]);
+const structuredAssertionCategories = new Set([
+  "baseline_lifecycle",
+  "forward_migration",
+  "migrated_state_assertion",
+  "exact_reverse_rollback",
+  "acl_residue_cleanup",
+  "default_acl_residue_cleanup",
+  "membership_inventory",
+  "focused_child_defect",
+  "c3_security_invariant",
+]);
+const structuredCleanupPhases = new Set([
+  "not_started",
+  "started",
+  "complete",
+  "failed",
+]);
+const structuredTransportStates = new Set([
+  "phase_armed",
+  "failure_catch_entered",
+  "failure_receipt_write_armed",
+]);
+let activeStructuredFailureContext = null;
+
+test(
+  "ACL residue expected grantor derives from the baseline database owner",
+  () => {
+    const baseline = { databaseOwner: "platform_app" };
+    const residue = buildExpectedDatabaseAclResidue(
+      "migrator_alignment_test",
+      baseline,
+    );
+    assert.deepEqual(residue.split("\u0000"), [
+      "migrator_alignment_test",
+      "platform_app",
+      "platform_runtime",
+      "CONNECT",
+      "false",
+    ]);
+    assert.notEqual(residue.split("\u0000")[1], "postgres");
+  },
+);
+
+function withStructuredFailureReceipt(testId, operation) {
+  const previousContext = activeStructuredFailureContext;
+  const context = {
+    version: 1,
+    testId,
+    phase: "baseline_capture",
+    assertionCategory: "focused_child_defect",
+    fingerprintFields: [],
+    tupleCounts: [],
+    cleanupPhase: "not_started",
+    transportState: "phase_armed",
+  };
+  activeStructuredFailureContext = context;
+  try {
+    persistStructuredFailureProgress(context);
+  } catch (error) {
+    activeStructuredFailureContext = previousContext;
+    throw error;
+  }
+  return Promise.resolve()
+    .then(operation)
+    .catch(async (error) => {
+      try {
+        context.transportState = "failure_catch_entered";
+        persistStructuredFailureProgress(context);
+        context.transportState = "failure_receipt_write_armed";
+        persistStructuredFailureProgress(context);
+        await emitStructuredFailureReceipt(context);
+      } catch {
+        // Preserve the original test failure; the parent reads durable progress when the final receipt is absent.
+      }
+      throw error;
+    })
+    .finally(() => {
+      activeStructuredFailureContext = previousContext;
+    });
+}
+if (a10CausalControlsEnabled) {
+test("A10-H1-C1/C3 normal child failures remain deterministic under the watchdog", async () => {
+  const child = new EventEmitter();
+  const killSignals = [];
+  child.kill = (signal) => {
+    killSignals.push(signal);
+    return true;
+  };
+  let watchdogCallback = null;
+  const pending = runDefaultPgpassControl({}, {
+    childScript: "process.exitCode = 23;",
+    spawnImpl: () => child,
+    setTimeoutImpl: (callback) => {
+      watchdogCallback = callback;
+      return {};
+    },
+    clearTimeoutImpl: () => {},
+  });
+  queueMicrotask(() => child.emit("close", 23, null));
+  await assert.rejects(
+    pending,
+    (error) =>
+      error instanceof Error &&
+      error.message === defaultPgpassControlFailureMessage,
+  );
+  assert.equal(typeof watchdogCallback, "function");
+  watchdogCallback();
+  assert.deepEqual(killSignals, []);
+});
+
+test("A10-H1-C2 real stalled default-pgpass child is terminated and fails deterministically", async () => {
+  let child = null;
+  const startedAt = Date.now();
+  await assert.rejects(
+    runDefaultPgpassControl({}, {
+      childScript: "setInterval(() => {}, 1000);",
+      timeoutMs: 75,
+      spawnImpl: (...args) => {
+        child = spawn(...args);
+        return child;
+      },
+    }),
+    (error) =>
+      error instanceof Error &&
+      error.message === defaultPgpassControlTimeoutMessage,
+  );
+  assert.ok(child);
+  assert.equal(child.killed, true);
+  await new Promise((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      resolve();
+      return;
+    }
+    child.once("close", resolve);
+  });
+  assert.ok(child.exitCode !== null || child.signalCode !== null);
+  assert.ok(Date.now() - startedAt < 3_000);
+});
+
+test("A10-H1-C3 timeout/error/close races settle once and clear the watchdog", async () => {
+  const child = new EventEmitter();
+  const killSignals = [];
+  child.kill = (signal) => {
+    killSignals.push(signal);
+    child.emit("close", null, signal);
+    return true;
+  };
+  let watchdogCallback = null;
+  const watchdogHandle = {};
+  let clearCount = 0;
+  const pending = runDefaultPgpassControl({}, {
+    childScript: "setInterval(() => {}, 1000);",
+    spawnImpl: () => child,
+    setTimeoutImpl: (callback) => {
+      watchdogCallback = callback;
+      return watchdogHandle;
+    },
+    clearTimeoutImpl: (handle) => {
+      assert.equal(handle, watchdogHandle);
+      clearCount += 1;
+    },
+  });
+  assert.equal(typeof watchdogCallback, "function");
+  watchdogCallback();
+  child.emit("error", new Error("late error"));
+  child.emit("close", 0, null);
+  await assert.rejects(
+    pending,
+    (error) =>
+      error instanceof Error &&
+      error.message === defaultPgpassControlTimeoutMessage,
+  );
+  assert.deepEqual(killSignals, ["SIGTERM"]);
+  assert.equal(clearCount, 1);
+});
+
+test("A10-H1-C4 timeout failure reaches disposable lifecycle cleanup and final absence", async () => {
+  const residue = {
+    container: true,
+    volume: true,
+    listener: true,
+    passfile: true,
+    receipt: true,
+    sidecar: true,
+  };
+  const runnerOwnedResidue = [
+    "container:owned",
+    "volume:owned",
+    "listener:127.0.0.1:56432",
+    "passfile:owned",
+    "receipt:owned",
+    "sidecar:owned",
+  ];
+  let cleanupCalls = 0;
+  let absenceCalls = 0;
+  await assert.rejects(
+    runDisposableRuntimeLifecycle({
+      construct: (resources) => {
+        for (const resource of runnerOwnedResidue) {
+          resources.runnerOwned.add(resource);
+        }
+        return runDefaultPgpassControl({}, {
+          childScript: "setInterval(() => {}, 1000);",
+          timeoutMs: 75,
+        });
+      },
+      admitConstruction: async () => null,
+      deriveProvisioning: async () => null,
+      provision: async () => {},
+      admitConfigured: async () => null,
+      runFocusedTests: async () => {},
+      cleanup: async (resources) => {
+        cleanupCalls += 1;
+        resources.runnerOwned.clear();
+        for (const resource of Object.keys(residue)) {
+          residue[resource] = false;
+        }
+      },
+      verifyAbsence: async (resources) => {
+        absenceCalls += 1;
+        assert.equal(resources.runnerOwned.size, 0);
+        assert.deepEqual(residue, {
+          container: false,
+          volume: false,
+          listener: false,
+          passfile: false,
+          receipt: false,
+          sidecar: false,
+        });
+      },
+    }),
+  );
+  assert.equal(cleanupCalls, 1);
+  assert.equal(absenceCalls, 1);
+  assert.deepEqual(residue, {
+    container: false,
+    volume: false,
+    listener: false,
+    passfile: false,
+    receipt: false,
+    sidecar: false,
+  });
+});
+
+}
+function markStructuredFailurePhase(phase, assertionCategory) {
+  if (!activeStructuredFailureContext) return;
+  if (structuredFailurePhases.has(phase)) {
+    activeStructuredFailureContext.phase = phase;
+  }
+  if (structuredAssertionCategories.has(assertionCategory)) {
+    activeStructuredFailureContext.assertionCategory = assertionCategory;
+  }
+  persistStructuredFailureProgress(activeStructuredFailureContext);
+}
+
+function markStructuredCleanupPhase(phase) {
+  if (
+    activeStructuredFailureContext &&
+    structuredCleanupPhases.has(phase)
+  ) {
+    activeStructuredFailureContext.cleanupPhase = phase;
+    persistStructuredFailureProgress(activeStructuredFailureContext);
+  }
+}
+
+function recordStructuredFingerprintSnapshot(fingerprint) {
+  if (!activeStructuredFailureContext) return;
+  activeStructuredFailureContext.fingerprintFields = [
+    ...structuredFingerprintFields,
+  ];
+  activeStructuredFailureContext.tupleCounts = structuredFingerprintFields.map(
+    (field) => `${field}:${structuredTupleCount(fingerprint[field])}/${structuredTupleCount(fingerprint[field])}`,
+  );
+  persistStructuredFailureProgress(activeStructuredFailureContext);
+}
+
+function recordStructuredFingerprintComparison(actual, expected) {
+  if (!activeStructuredFailureContext) return;
+  const differingFields = structuredFingerprintFields.filter(
+    (field) => JSON.stringify(actual?.[field]) !== JSON.stringify(expected?.[field]),
+  );
+  if (differingFields.length > 0) {
+    activeStructuredFailureContext.fingerprintFields = differingFields;
+    activeStructuredFailureContext.tupleCounts = differingFields.map(
+      (field) => `${field}:${structuredTupleCount(actual?.[field])}/${structuredTupleCount(expected?.[field])}`,
+    );
+  }
+  persistStructuredFailureProgress(activeStructuredFailureContext);
+}
+
+function structuredTupleCount(value) {
+  if (Array.isArray(value)) return value.length;
+  return value === null || value === undefined ? 0 : 1;
+}
+
+async function emitStructuredFailureReceipt(context) {
+  const filePath = process.env[structuredFailureReceiptFileEnvironmentVariable];
+  if (typeof filePath !== "string" || filePath.length === 0) {
+    throw new Error();
+  }
+  if (structuredReceiptTransportTestMode === "writer-failure-boundary") {
+    throw new Error();
+  }
+  const receipt = {
+    version: 1,
+    test_id: typeof context.testId === "string" ? context.testId : "unknown",
+    phase: structuredFailurePhases.has(context.phase)
+      ? context.phase
+      : "baseline_capture",
+    assertion_category: structuredAssertionCategories.has(
+      context.assertionCategory,
+    )
+      ? context.assertionCategory
+      : "focused_child_defect",
+    fingerprint_fields: structuredFingerprintFields.filter((field) =>
+      context.fingerprintFields?.includes(field),
+    ),
+    tuple_counts: Array.isArray(context.tupleCounts)
+      ? context.tupleCounts.filter((entry) =>
+          typeof entry === "string" &&
+          /^(?:databaseOwner|schemaOwners|objectOwners|enumOwners|routineOwners|databaseAcl|schemaAcls|defaultAcl|attributes|memberships):(?:0|[1-9]\d*)\/(?:0|[1-9]\d*)$/u.test(entry),
+        )
+      : [],
+    cleanup_phase: structuredCleanupPhases.has(context.cleanupPhase)
+      ? context.cleanupPhase
+      : "not_started",
+  };
+  await writeFile(
+    filePath,
+    structuredFailureReceiptPrefix + JSON.stringify(receipt) + "\n",
+    { encoding: "utf8", flag: "wx", mode: 0o600 },
+  );
+}
+
+function persistStructuredFailureProgress(context) {
+  const filePath = process.env[structuredFailureProgressFileEnvironmentVariable];
+  if (typeof filePath !== "string" || filePath.length === 0) {
+    throw new Error();
+  }
+  const payload = {
+    version: 1,
+    test_id: isSafeStructuredTestId(context?.testId) ? context.testId : "unknown",
+    phase: structuredFailurePhases.has(context?.phase)
+      ? context.phase
+      : "baseline_capture",
+    assertion_category: structuredAssertionCategories.has(context?.assertionCategory)
+      ? context.assertionCategory
+      : "focused_child_defect",
+    fingerprint_fields: structuredFingerprintFields.filter((field) =>
+      context?.fingerprintFields?.includes(field),
+    ),
+    tuple_counts: Array.isArray(context?.tupleCounts)
+      ? context.tupleCounts.filter(isBoundedStructuredTupleCount)
+      : [],
+    cleanup_phase: structuredCleanupPhases.has(context?.cleanupPhase)
+      ? context.cleanupPhase
+      : "not_started",
+    transport_state: structuredTransportStates.has(context?.transportState)
+      ? context.transportState
+      : "phase_armed",
+  };
+  const serialized = JSON.stringify(payload) + "\n";
+  if (Buffer.byteLength(serialized, "utf8") > structuredReceiptProgressMaxBytes) {
+    throw new Error();
+  }
+  const temporaryPath = filePath + "." + randomUUID() + ".tmp";
+  try {
+    writeFileSync(temporaryPath, serialized, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    renameSync(temporaryPath, filePath);
+  } finally {
+    try {
+      unlinkSync(temporaryPath);
+    } catch {
+      // Parent cleanup removes the runner-owned directory if replacement fails.
+    }
+  }
+}
+
+function isSafeStructuredTestId(value) {
+  return typeof value === "string" && value.length >= 1 && value.length <= 96 && /^[A-Za-z0-9._:-]+$/u.test(value);
+}
+
+function isBoundedStructuredTupleCount(entry) {
+  if (typeof entry !== "string") return false;
+  const parts = entry.split(/[:/]/u);
+  return parts.length === 3 &&
+    structuredFingerprintFields.includes(parts[0]) &&
+    isNonnegativeStructuredCount(parts[1]) &&
+    isNonnegativeStructuredCount(parts[2]);
+}
+
+function isNonnegativeStructuredCount(value) {
+  if (typeof value !== "string" || value.length === 0 || value.length > 6) return false;
+  if (value.length > 1 && value.startsWith("0")) return false;
+  return [...value].every((character) => character >= "0" && character <= "9");
+}
+async function forceStructuredReceiptTransportFailure(testId) {
+  return withStructuredFailureReceipt(testId, async () => {
+    markStructuredFailurePhase(
+      "post_reverse_exact_fingerprint",
+      "exact_reverse_rollback",
+    );
+    recordStructuredFingerprintComparison(
+      { databaseAcl: ["actual"] },
+      { databaseAcl: ["expected"] },
+    );
+    markStructuredCleanupPhase("complete");
+    throw new Error("synthetic structured receipt transport failure");
+  });
+}
+
+if (structuredReceiptTransportTestMode === "child-boundary") {
+  process.stdout.write("# TAP-looking diagnostic noise\n");
+  process.stderr.write("spec-looking diagnostic noise\n");
+  test(
+    "test-only structured receipt transport child failure",
+    async () => forceStructuredReceiptTransportFailure(
+      "DL-128-REPO-011-A3-child-boundary",
+    ),
+  );
+}
+
+if (structuredReceiptTransportTestMode === "writer-failure-boundary") {
+  test(
+    "test-only final receipt writer failure preserves durable progress",
+    async () => forceStructuredReceiptTransportFailure(
+      "DL-128-REPO-011-A3-writer-failure",
+    ),
+  );
+}
+
+if (structuredReceiptTransportTestMode === "abrupt-exit-boundary") {
+  test(
+    "test-only abrupt child exit preserves durable progress",
+    async () => withStructuredFailureReceipt(
+      "DL-128-REPO-011-A3-abrupt-exit",
+      async () => {
+        markStructuredFailurePhase(
+          "post_reverse_exact_fingerprint",
+          "exact_reverse_rollback",
+        );
+        recordStructuredFingerprintComparison(
+          { databaseAcl: ["actual"] },
+          { databaseAcl: ["expected"] },
+        );
+        markStructuredCleanupPhase("complete");
+        process.exit(23);
+      },
+    ),
+  );
+}
+
+if (structuredReceiptTransportTestMode === "duplicate-boundary") {
+  test(
+    "test-only duplicate structured receipt writes fail closed",
+    async () => {
+      await assert.rejects(() =>
+        forceStructuredReceiptTransportFailure(
+          "DL-128-REPO-011-A3-first-receipt",
+        ),
+      );
+      await assert.rejects(() =>
+        forceStructuredReceiptTransportFailure(
+          "DL-128-REPO-011-A3-second-receipt",
+        ),
+      );
+      throw new Error("synthetic duplicate receipt test failure");
+    },
+  );
+}
+let retainedPrimaryPreForwardBaseline;
 
 test(
   "DL-128-REPO-003: the automatic ADMIN=true bootstrap edge is accident protection only and admits latent self-escalation until provider revocation",
   { skip: skipReason },
-  async () => {
+  async () => withStructuredFailureReceipt(
+    "DL-128-REPO-003-bootstrap-edge",
+    async () => {
     const fixture = await openFixtures();
     try {
       const primary = fixture.primary;
+      markStructuredFailurePhase("baseline_capture", "baseline_lifecycle");
       const baseline = await readOwnershipFingerprint(
         primary.adminPool,
         primary.databaseName,
       );
-      assertBaselineFingerprint(baseline);
+      assertBaselineFingerprint(baseline, "pg_database_owner");
 
       await createMigratorRoleAsLegacyOwner(primary.appPool);
 
@@ -112,40 +716,121 @@ test(
       );
 
       await dropMigratorRole(primary.adminPool);
-      assert.deepEqual(
+      markStructuredFailurePhase("baseline_capture", "baseline_lifecycle");
+      assertExactFingerprint(
         await readOwnershipFingerprint(primary.adminPool, primary.databaseName),
         baseline,
       );
     } finally {
       await closeFixtures(fixture);
     }
-  },
+    },
+  ),
 );
 
 test(
-  "bounded supplemental SET edge, credential-before-transfer login admission, one-transaction ownership transfer and provider final revocation to zero membership",
+  "DL-128-REPO-011-A5: focused-child structural C3 default-pgpass proof",
   { skip: skipReason },
-  async () => {
+  async () => withStructuredFailureReceipt(
+    "DL-128-REPO-011-A5-C3",
+    async () => {
+      let fixture = null;
+      let roleCreationAttempted = false;
+      let baseline = null;
+      try {
+        fixture = await openFixtures();
+        const primary = fixture.primary;
+        baseline = await readOwnershipFingerprint(
+          primary.adminPool,
+          primary.databaseName,
+        );
+        roleCreationAttempted = true;
+        await createMigratorRoleAsLegacyOwner(primary.appPool);
+        await primary.appPool.query(
+          `grant connect on database ${identifier(primary.databaseName)} to platform_migrator`,
+        );
+        await primary.adminPool.query(
+          `alter role platform_migrator login password '${syntheticMigratorPassword}'`,
+        );
+        await assertFocusedPassfileIsolation(primary);
+      } finally {
+        if (fixture) {
+          markStructuredFailurePhase(
+            "C3_CLEANUP_CONFIRMED",
+            "c3_security_invariant",
+          );
+          try {
+            await cleanupC3MigratorRole(
+              fixture.primary.adminPool,
+              roleCreationAttempted,
+            );
+            if (baseline) {
+              assertExactFingerprint(
+                await readOwnershipFingerprint(
+                  fixture.primary.adminPool,
+                  fixture.primary.databaseName,
+                ),
+                baseline,
+              );
+            }
+          } finally {
+            await closeFixtures(fixture);
+          }
+        }
+      }
+    },
+  ),
+);
+
+test(
+  "bounded supplemental SET edge, real password credential admission, target-NOCREATEDB negative control, pg_database_owner authority transfer, provider final revocation, pre-completion legacy-retirement guard",
+  { skip: skipReason },
+  async () => withStructuredFailureReceipt(
+    "DL-128-REPO-003-forward-migration",
+    async () => {
     const fixture = await openFixtures();
     try {
       const primary = fixture.primary;
+      markStructuredFailurePhase("baseline_capture", "baseline_lifecycle");
       const baseline = await readOwnershipFingerprint(
         primary.adminPool,
         primary.databaseName,
       );
-      assertBaselineFingerprint(baseline);
+      retainedPrimaryPreForwardBaseline = baseline;
+      assertBaselineFingerprint(baseline, "pg_database_owner");
 
       await createMigratorRoleAsLegacyOwner(primary.appPool);
       await primary.appPool.query(
         `grant connect on database ${identifier(primary.databaseName)} to platform_migrator`,
       );
       await installMigratorDefaultPrivileges(primary.adminPool);
+      const migratorDefaultAclFingerprint = await readOwnershipFingerprint(
+        primary.adminPool,
+        primary.databaseName,
+      );
+      assertDefaultAclCreatorPresent(
+        migratorDefaultAclFingerprint.defaultAcl,
+        "platform_migrator",
+      );
       await assertExactProtectedEdge(primary.adminPool);
 
+      // platform_migrator begins NOLOGIN with no password: prove catalog state
+      // and prove direct migrator login fails before activation. The migrator
+      // host-authentication path is scram-sha-256 enforced by the disposable
+      // runner, so a passwordless connection cannot authenticate and a
+      // password-bearing connection fails until the exact synthetic password
+      // is installed.
+      await assertMigratorRoleAttribute(primary.adminPool, "rolcanlogin", false);
+      await assertMigratorPasswordInstalled(primary.adminPool, false);
       await assertQueryRejected(
-        primary.migratorPool,
+        primary.migratorPasswordPool,
         `select 1`,
-        /not permitted to log in/i,
+        /password authentication failed|no password supplied/i,
+      );
+      await assertQueryRejected(
+        primary.migratorNoPasswordPool,
+        `select 1`,
+        /client password must be a string|no password supplied|password authentication failed/i,
       );
       assertOwnershipFieldsUnchanged(
         await readOwnershipFingerprint(primary.adminPool, primary.databaseName),
@@ -156,7 +841,71 @@ test(
         `alter role platform_migrator login password '${syntheticMigratorPassword}'`,
       );
       await assertMigratorRoleAttribute(primary.adminPool, "rolcanlogin", true);
-      await validateMigratorLoginAdmission(primary.migratorPool);
+      await assertMigratorPasswordInstalled(primary.adminPool, true);
+
+      // Correct password succeeds: the fresh admitted connection reads back
+      // the exact expected role and database before any ownership transfer.
+      await validateMigratorLoginAdmission(
+        primary.migratorPasswordPool,
+        primary.databaseName,
+      );
+      await assertQueryRejected(
+        primary.migratorWrongPasswordPool,
+        `select 1`,
+        /password authentication failed/i,
+      );
+      await assertQueryRejected(
+        primary.migratorNoPasswordPool,
+        `select 1`,
+        /client password must be a string|no password supplied|password authentication failed/i,
+      );
+      assertOwnershipFieldsUnchanged(
+        await readOwnershipFingerprint(primary.adminPool, primary.databaseName),
+        baseline,
+      );
+
+      // Corrected target-NOCREATEDB negative control: the executing legacy
+      // owner holds the automatic bootstrap edge (SET=false) and therefore
+      // lacks the target-role assumption/SET-capable authority required for
+      // the transfer. The transfer is rejected, the target remains
+      // NOCREATEDB with LOGIN unchanged, and no persistent mutation occurs.
+      await assertQueryRejected(
+        primary.appPool,
+        `alter database ${identifier(primary.databaseName)} owner to platform_migrator`,
+        /must be able to SET ROLE|permission denied/i,
+      );
+      await assertMigratorRoleAttribute(primary.adminPool, "rolcreatedb", false);
+      await assertMigratorRoleAttribute(primary.adminPool, "rolcanlogin", true);
+      assertOwnershipFieldsUnchanged(
+        await readOwnershipFingerprint(primary.adminPool, primary.databaseName),
+        baseline,
+      );
+
+      // Real pg_database_owner starting-state proof: the fresh PostgreSQL 17
+      // database leaves `public` owned by the predefined pg_database_owner
+      // role, whose single implicit member is the current database owner
+      // (platform_app at baseline). The database owner therefore exercises
+      // the public owner authority before transfer; platform_migrator does
+      // not.
+      assert.equal(
+        await schemaOwner(primary.adminPool, primary.databaseName, "public"),
+        "pg_database_owner",
+      );
+      await assertCurrentDatabaseOwner(
+        primary.adminPool,
+        primary.databaseName,
+        "platform_app",
+      );
+      await assertCanCreateInPublic(
+        primary.appPool,
+        "platform_app",
+        true,
+      );
+      await assertCanCreateInPublic(
+        primary.migratorPasswordPool,
+        "platform_migrator",
+        false,
+      );
 
       await primary.appPool.query(
         `grant platform_migrator to platform_app with set true, inherit false`,
@@ -164,15 +913,13 @@ test(
       assertExactTransferWindowEdges(await readMembershipEdges(primary.adminPool));
 
       await primary.adminPool.query(
-        `grant create, usage on schema public to platform_migrator`,
-      );
-      await primary.adminPool.query(
         `grant create on schema drizzle to platform_migrator`,
       );
       await primary.adminPool.query(
         `grant create on schema appdata to platform_migrator`,
       );
 
+      markStructuredFailurePhase("forward_migration", "forward_migration");
       await forwardTransferInOneTransaction(primary);
 
       await assertMigratorRoleAttribute(primary.adminPool, "rolcreatedb", false);
@@ -183,6 +930,7 @@ test(
       );
       await assertExactProtectedEdge(primary.adminPool);
 
+      markStructuredFailurePhase("migrated_state_assertion", "migrated_state_assertion");
       const forwardFingerprint = await readOwnershipFingerprint(
         primary.adminPool,
         primary.databaseName,
@@ -191,7 +939,7 @@ test(
       assert.deepEqual(forwardFingerprint.schemaOwners, [
         "appdata=platform_migrator",
         "drizzle=platform_migrator",
-        "public=provider_owner",
+        "public=pg_database_owner",
       ]);
       for (const objectName of [
         "widgets",
@@ -214,7 +962,7 @@ test(
       const ledgerBefore = await primary.adminPool.query(
         "select count(*)::int as c from drizzle.__drizzle_migrations",
       );
-      const migrationClient = await primary.migratorPool.connect();
+      const migrationClient = await primary.migratorPasswordPool.connect();
       try {
         await migrationClient.query("begin");
         await migrationClient.query(
@@ -229,17 +977,29 @@ test(
       );
       assert.equal(ledgerAfter.rows[0].c, ledgerBefore.rows[0].c);
 
+      // Database-owner transfer consequence: `public` remains owned by
+      // pg_database_owner, so the implicit role exercising that public owner
+      // authority is now the new database owner (platform_migrator), and the
+      // former database owner (platform_app) loses it.
       assert.equal(
         await schemaOwner(primary.adminPool, primary.databaseName, "public"),
-        "provider_owner",
+        "pg_database_owner",
       );
-      const publicPrivileges = await schemaPrivileges(
+      await assertCurrentDatabaseOwner(
         primary.adminPool,
+        primary.databaseName,
         "platform_migrator",
-        "public",
       );
-      assert.equal(publicPrivileges.can_create, true);
-      assert.equal(publicPrivileges.can_usage, true);
+      await assertCanCreateInPublic(
+        primary.migratorPasswordPool,
+        "platform_migrator",
+        true,
+      );
+      await assertCanCreateInPublic(
+        primary.appPool,
+        "platform_app",
+        false,
+      );
       await assertRuntimeGrantSetExact(primary.adminPool);
       await assertRuntimePosture(primary.adminPool);
 
@@ -258,6 +1018,18 @@ test(
       );
       await assertZeroMigratorMembership(primary.adminPool);
 
+      // Pre-completion legacy-retirement guard: at the migrated zero-membership
+      // state, before the replacement and rollback proof completes, the legacy
+      // role cannot be retired or dropped and its authority remains available
+      // for rollback.
+      await runReversibleLegacyNoLoginControl(primary);
+      await assertQueryRejected(
+        primary.adminPool,
+        `drop role platform_app`,
+        /depends on it|cannot be dropped/i,
+      );
+      await assertLegacyAuthorityAvailable(primary.appPool);
+
       await assertQueryRejected(
         primary.appPool,
         `grant platform_migrator to platform_app with set true, inherit false`,
@@ -269,6 +1041,7 @@ test(
         /permission denied to set role/i,
       );
 
+      markStructuredFailurePhase("migrated_state_assertion", "migrated_state_assertion");
       const finalFingerprint = await readOwnershipFingerprint(
         primary.adminPool,
         primary.databaseName,
@@ -277,7 +1050,7 @@ test(
       assert.deepEqual(finalFingerprint.schemaOwners, [
         "appdata=platform_migrator",
         "drizzle=platform_migrator",
-        "public=provider_owner",
+        "public=pg_database_owner",
       ]);
       for (const objectName of [
         "widgets",
@@ -301,75 +1074,146 @@ test(
       await assertMigratorFinalAttributes(primary.adminPool);
       assert.equal(
         await schemaOwner(primary.adminPool, primary.databaseName, "public"),
-        "provider_owner",
+        "pg_database_owner",
       );
-      const finalPublicPrivileges = await schemaPrivileges(
-        primary.adminPool,
+      await assertCanCreateInPublic(
+        primary.migratorPasswordPool,
         "platform_migrator",
-        "public",
+        true,
       );
-      assert.equal(finalPublicPrivileges.can_create, true);
-      assert.equal(finalPublicPrivileges.can_usage, true);
-      await assertRuntimeFinalPosture(primary.adminPool);
-    } finally {
-      await closeFixtures(fixture);
-    }
-  },
-);
-
-test(
-  "exact reverse rollback via the provider authority restores the complete baseline from the final zero-membership state",
-  { skip: skipReason },
-  async () => {
-    const fixture = await openFixtures();
-    try {
-      const primary = fixture.primary;
-      const migratedState = await readOwnershipFingerprint(
-        primary.adminPool,
-        primary.databaseName,
-      );
-      assert.equal(migratedState.databaseOwner, "platform_migrator");
-      await assertZeroMigratorMembership(primary.adminPool);
-
-      await reverseTransferViaProviderAuthority(primary);
-      await dropMigratorRole(primary.adminPool);
-
-      const restored = await readOwnershipFingerprint(
-        primary.adminPool,
-        primary.databaseName,
-      );
-      assertBaselineFingerprint(restored);
-      assert.equal(restored.databaseOwner, "platform_app");
-      assert.equal(restored.memberships.length, 0);
-      assert.equal(
-        restored.attributes.some((row) => row.rolname === "platform_migrator"),
+      await assertCanCreateInPublic(
+        primary.appPool,
+        "platform_app",
         false,
       );
       await assertRuntimeFinalPosture(primary.adminPool);
     } finally {
       await closeFixtures(fixture);
     }
-  },
+    },
+  ),
 );
 
 test(
-  "platform_runtime edge revocation and provider-managed public bounded migrator transaction",
+  "exact reverse rollback via the provider authority restores the complete baseline including pg_database_owner authority from the final zero-membership state",
   { skip: skipReason },
-  async () => {
+  async () => withStructuredFailureReceipt(
+    "DL-128-REPO-003-exact-reverse-rollback",
+    async () => {
     const fixture = await openFixtures();
     try {
       const primary = fixture.primary;
+      markStructuredFailurePhase("baseline_capture", "baseline_lifecycle");
+      const preForwardBaseline = retainedPrimaryPreForwardBaseline;
+      assert.ok(preForwardBaseline);
+      markStructuredFailurePhase("migrated_state_assertion", "migrated_state_assertion");
+      const migratedState = await readOwnershipFingerprint(
+        primary.adminPool,
+        primary.databaseName,
+      );
+      assert.equal(migratedState.databaseOwner, "platform_migrator");
+      assert.equal(
+        await schemaOwner(primary.adminPool, primary.databaseName, "public"),
+        "pg_database_owner",
+      );
+      await assertZeroMigratorMembership(primary.adminPool);
+      await assertCanCreateInPublic(
+        primary.migratorPasswordPool,
+        "platform_migrator",
+        true,
+      );
+      await assertCanCreateInPublic(
+        primary.appPool,
+        "platform_app",
+        false,
+      );
+
+      markStructuredFailurePhase("reverse_transfer", "exact_reverse_rollback");
+      await reverseTransferViaProviderAuthority(primary);
+      markStructuredFailurePhase("reverse_role_restoration", "exact_reverse_rollback");
+      await dropMigratorRole(primary.adminPool);
+
+      markStructuredFailurePhase("post_reverse_exact_fingerprint", "exact_reverse_rollback");
+      const restored = await readOwnershipFingerprint(
+        primary.adminPool,
+        primary.databaseName,
+      );
+      assertExactFingerprint(
+        restored,
+        preForwardBaseline,
+      );
+      assertBaselineFingerprint(restored, "pg_database_owner");
+      assert.equal(restored.databaseOwner, "platform_app");
+      assert.equal(restored.memberships.length, 0);
+      assert.equal(
+        restored.attributes.some((row) => row.rolname === "platform_migrator"),
+        false,
+      );
+      assert.equal(
+        await schemaOwner(primary.adminPool, primary.databaseName, "public"),
+        "pg_database_owner",
+      );
+      await assertCanCreateInPublic(
+        primary.appPool,
+        "platform_app",
+        true,
+      );
+      await assertAclResidueNegativeControl(
+        primary.adminPool,
+        primary.databaseName,
+        preForwardBaseline,
+      );
+      await assertDefaultAclResidueNegativeControl(
+        primary.adminPool,
+        primary.databaseName,
+        preForwardBaseline,
+      );
+      await assertPgDatabaseOwnerDefaultAclResidueNegativeControls(
+        primary.adminPool,
+        primary.databaseName,
+        preForwardBaseline,
+      );
+      await assertUnrelatedDefaultAclCreatorExcluded(
+        primary.adminPool,
+        primary.databaseName,
+        preForwardBaseline,
+      );
+      assertExactFingerprint(
+        await readOwnershipFingerprint(
+          primary.adminPool,
+          primary.databaseName,
+        ),
+        preForwardBaseline,
+      );
+      await assertRuntimeFinalPosture(primary.adminPool);
+    } finally {
+      await closeFixtures(fixture);
+    }
+    },
+  ),
+);
+
+test(
+  "platform_runtime edge revocation and the explicitly labelled stable-provider-owner public variant executes the bounded migrator transaction",
+  { skip: skipReason },
+  async () => withStructuredFailureReceipt(
+    "DL-128-REPO-003-secondary-transfer",
+    async () => {
+    const fixture = await openFixtures();
+    try {
+      const primary = fixture.primary;
+      markStructuredFailurePhase("baseline_capture", "baseline_lifecycle");
       const secondary = fixture.secondary;
       const primaryBaseline = await readOwnershipFingerprint(
         primary.adminPool,
         primary.databaseName,
       );
-      assertBaselineFingerprint(primaryBaseline);
+      assertBaselineFingerprint(primaryBaseline, "pg_database_owner");
       const secondaryBaseline = await readOwnershipFingerprint(
         secondary.adminPool,
         secondary.databaseName,
       );
-      assertBaselineFingerprint(secondaryBaseline);
+      assertBaselineFingerprint(secondaryBaseline, "provider_owner");
 
       await primary.adminPool.query(
         `grant platform_runtime to platform_app with admin true, inherit false, set false`,
@@ -405,16 +1249,25 @@ test(
         0,
       );
       await assertRuntimePosture(primary.adminPool);
-      assert.deepEqual(
+      assertExactFingerprint(
         await readOwnershipFingerprint(primary.adminPool, primary.databaseName),
         primaryBaseline,
       );
 
+      markStructuredFailurePhase("forward_migration", "forward_migration");
       await createMigratorRoleAsLegacyOwner(secondary.appPool);
       await secondary.appPool.query(
         `grant connect on database ${identifier(secondary.databaseName)} to platform_migrator`,
       );
       await installMigratorDefaultPrivileges(secondary.adminPool);
+      const migratorDefaultAclFingerprint = await readOwnershipFingerprint(
+        secondary.adminPool,
+        secondary.databaseName,
+      );
+      assertDefaultAclCreatorPresent(
+        migratorDefaultAclFingerprint.defaultAcl,
+        "platform_migrator",
+      );
       await assertExactProtectedEdge(secondary.adminPool);
       await secondary.adminPool.query(
         `grant create, usage on schema public to platform_migrator`,
@@ -422,8 +1275,21 @@ test(
       await secondary.adminPool.query(
         `alter role platform_migrator login password '${syntheticMigratorPassword}'`,
       );
-      await validateMigratorLoginAdmission(secondary.migratorPool);
-      const boundedClient = await secondary.migratorPool.connect();
+      await validateMigratorLoginAdmission(
+        secondary.migratorPasswordPool,
+        secondaryDatabaseName,
+      );
+      await assertQueryRejected(
+        secondary.migratorWrongPasswordPool,
+        `select 1`,
+        /password authentication failed/i,
+      );
+      await assertQueryRejected(
+        secondary.migratorNoPasswordPool,
+        `select 1`,
+        /client password must be a string|no password supplied|password authentication failed/i,
+      );
+      const boundedClient = await secondary.migratorPasswordPool.connect();
       try {
         await boundedClient.query("begin");
         await boundedClient.query(
@@ -467,7 +1333,11 @@ test(
         `revoke platform_migrator from platform_app`,
       );
       await dropMigratorRole(secondary.adminPool);
-      assert.deepEqual(
+      markStructuredFailurePhase(
+        "post_reverse_exact_fingerprint",
+        "exact_reverse_rollback",
+      );
+      assertExactFingerprint(
         await readOwnershipFingerprint(
           secondary.adminPool,
           secondary.databaseName,
@@ -477,13 +1347,93 @@ test(
     } finally {
       await closeFixtures(fixture);
     }
-  },
+    },
+  ),
+);
+
+test(
+  "DL-128-REPO-004: the complete membership inventory rejects unexpected platform_migrator edges in member and grantor positions",
+  { skip: skipReason },
+  async () => withStructuredFailureReceipt(
+    "DL-128-REPO-004-membership-inventory",
+    async () => {
+    const fixture = await openFixtures();
+    try {
+      const primary = fixture.primary;
+      markStructuredFailurePhase("baseline_capture", "baseline_lifecycle");
+      markStructuredFailurePhase("migrated_state_assertion", "membership_inventory");
+      await createMigratorRoleAsLegacyOwner(primary.appPool);
+      await assertExactProtectedEdge(primary.adminPool);
+
+      await primary.adminPool.query(
+        `grant platform_runtime to platform_migrator`,
+      );
+      await assert.rejects(
+        () => assertExactProtectedEdge(primary.adminPool),
+        /exactly/,
+      );
+      await primary.adminPool.query(
+        `revoke platform_runtime from platform_migrator`,
+      );
+      await assertExactProtectedEdge(primary.adminPool);
+
+      await primary.adminPool.query(
+        `grant platform_runtime to platform_migrator with admin true`,
+      );
+      const grantorClient = await primary.adminPool.connect();
+      try {
+        await grantorClient.query(`set role platform_migrator`);
+        await grantorClient.query(`grant platform_runtime to platform_app`);
+        await assert.rejects(
+          () => assertExactProtectedEdge(primary.adminPool),
+          /exactly/,
+        );
+        await grantorClient.query(`revoke platform_runtime from platform_app`);
+        await grantorClient.query(`reset role`);
+      } finally {
+        grantorClient.release();
+      }
+      await primary.adminPool.query(
+        `revoke platform_runtime from platform_migrator`,
+      );
+      await assertExactProtectedEdge(primary.adminPool);
+
+      await primary.adminPool.query(
+        `revoke platform_migrator from platform_app`,
+      );
+      await assertZeroMigratorMembership(primary.adminPool);
+      await dropMigratorRole(primary.adminPool);
+    } finally {
+      await closeFixtures(fixture);
+    }
+    },
+  ),
 );
 
 async function createMigratorRoleAsLegacyOwner(appPool) {
   await appPool.query(
     `create role platform_migrator nologin nosuperuser nocreatedb nocreaterole noreplication nobypassrls`,
   );
+}
+
+async function cleanupC3MigratorRole(adminPool, creationAttempted) {
+  if (!creationAttempted) return;
+  const roleResult = await adminPool.query(
+    "select 1 from pg_roles where rolname = 'platform_migrator'",
+  );
+  if (roleResult.rows.length === 0) return;
+  await adminPool.query("drop owned by platform_migrator");
+  const defaultPrivilegeResidue = await adminPool.query(
+    `
+      select count(*)::int as c
+        from pg_default_acl default_record
+        join pg_roles role_record on role_record.oid = default_record.defaclrole
+       where role_record.rolname = 'platform_migrator'
+    `,
+  );
+  assert.equal(defaultPrivilegeResidue.rows.length, 1);
+  assert.equal(defaultPrivilegeResidue.rows[0].c, 0);
+  await adminPool.query("drop role platform_migrator");
 }
 
 async function installMigratorDefaultPrivileges(adminPool) {
@@ -517,14 +1467,15 @@ async function dropMigratorRole(adminPool) {
   await adminPool.query(`drop role platform_migrator`);
 }
 
-async function validateMigratorLoginAdmission(migratorPool) {
+async function validateMigratorLoginAdmission(migratorPool, expectedDatabase) {
   const client = await migratorPool.connect();
   try {
     const result = await client.query(
-      `select current_user::text as cu, session_user::text as su`,
+      `select current_user::text as cu, session_user::text as su, current_database()::text as cd`,
     );
     assert.equal(result.rows[0].cu, "platform_migrator");
     assert.equal(result.rows[0].su, "platform_migrator");
+    assert.equal(result.rows[0].cd, expectedDatabase);
   } finally {
     client.release();
   }
@@ -555,13 +1506,13 @@ async function forwardTransferInOneTransaction(primary) {
     `alter sequence appdata.counter_seq owner to platform_migrator`,
     `alter type appdata.widget_status owner to platform_migrator`,
     `alter function appdata.widget_summary() owner to platform_migrator`,
+    `alter schema drizzle owner to platform_migrator`,
+    `alter schema appdata owner to platform_migrator`,
+    `alter database ${identifier(databaseName)} owner to platform_migrator`,
     ...[...new Set(["users", ...contractTableNames()])].map(
       (tableName) =>
         `alter table public.${identifier(tableName)} owner to platform_migrator`,
     ),
-    `alter schema drizzle owner to platform_migrator`,
-    `alter schema appdata owner to platform_migrator`,
-    `alter database ${identifier(databaseName)} owner to platform_migrator`,
   ];
   const client = await appPool.connect();
   try {
@@ -597,7 +1548,6 @@ async function reverseTransferViaProviderAuthority(primary) {
     ),
     `revoke create on schema drizzle from platform_migrator`,
     `revoke create on schema appdata from platform_migrator`,
-    `revoke create, usage on schema public from platform_migrator`,
     `revoke connect on database ${identifier(databaseName)} from platform_migrator`,
   ];
   const client = await adminPool.connect();
@@ -630,6 +1580,7 @@ async function readMembershipEdges(adminPool) {
         left join pg_roles grantor_role on grantor_role.oid = membership.grantor
        where member_role.rolname = any($1::text[])
           or roleid_role.rolname = any($1::text[])
+          or grantor_role.rolname = any($1::text[])
        order by granted_role, member, grantor
     `,
     [fixtureRoleNames],
@@ -666,10 +1617,13 @@ async function assertZeroMigratorMembership(adminPool) {
 }
 
 async function assertExactProtectedEdge(adminPool) {
-  const migratorEdges = (await readMembershipEdges(adminPool))
-    .filter((edge) => edge.granted_role === "platform_migrator");
-  assert.equal(migratorEdges.length, 1);
-  const edge = migratorEdges[0];
+  const edges = await readMembershipEdges(adminPool);
+  assert.equal(
+    edges.length,
+    1,
+    "complete membership inventory must contain exactly the protected edge",
+  );
+  const edge = edges[0];
   assert.equal(edge.granted_role, "platform_migrator");
   assert.equal(edge.member, "platform_app");
   assert.equal(edge.grantor, "postgres");
@@ -679,15 +1633,18 @@ async function assertExactProtectedEdge(adminPool) {
 }
 
 function assertExactTransferWindowEdges(edges) {
-  const migratorEdges = edges.filter((edge) => edge.granted_role === "platform_migrator");
-  assert.equal(migratorEdges.length, 2);
-  const protectedEdge = migratorEdges.find((edge) => edge.grantor === "postgres");
+  assert.equal(
+    edges.length,
+    2,
+    "complete membership inventory must contain exactly the two transfer-window edges",
+  );
+  const protectedEdge = edges.find((edge) => edge.grantor === "postgres");
   assert.ok(protectedEdge);
   assert.equal(protectedEdge.member, "platform_app");
   assert.equal(protectedEdge.admin_option, true);
   assert.equal(protectedEdge.inherit_option, false);
   assert.equal(protectedEdge.set_option, false);
-  const supplementalEdge = migratorEdges.find((edge) => edge.grantor === "platform_app");
+  const supplementalEdge = edges.find((edge) => edge.grantor === "platform_app");
   assert.ok(supplementalEdge);
   assert.equal(supplementalEdge.member, "platform_app");
   assert.equal(supplementalEdge.admin_option, false);
@@ -701,6 +1658,22 @@ async function assertMigratorRoleAttribute(adminPool, field, expected) {
   );
   assert.equal(result.rows.length, 1);
   assert.equal(result.rows[0][field], expected);
+}
+
+async function assertMigratorPasswordInstalled(adminPool, installed) {
+  const result = await adminPool.query(
+    `
+      select (rolpassword is null) as missing
+        from pg_authid
+       where rolname = 'platform_migrator'
+    `,
+  );
+  assert.equal(result.rows.length, 1);
+  assert.equal(
+    result.rows[0].missing,
+    !installed,
+    "platform_migrator password must be installed exactly at the admission step",
+  );
 }
 
 async function assertMigratorFinalAttributes(adminPool) {
@@ -771,6 +1744,59 @@ async function assertRuntimeFinalPosture(adminPool) {
   await assertRuntimeGrantSetExact(adminPool);
 }
 
+async function assertCurrentDatabaseOwner(adminPool, databaseName, expected) {
+  const result = await adminPool.query(
+    `
+      select role_record.rolname as owner
+        from pg_database database_record
+        join pg_roles role_record on role_record.oid = database_record.datdba
+       where database_record.datname = $1
+    `,
+    [databaseName],
+  );
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.rows[0].owner, expected);
+}
+
+async function assertCanCreateInPublic(pool, expectedUser, canCreate) {
+  const client = await pool.connect();
+  try {
+    const identity = await client.query(
+      `select current_user::text as cu, session_user::text as su`,
+    );
+    assert.equal(identity.rows[0].cu, expectedUser);
+    await client.query("begin");
+    if (canCreate) {
+      await client.query(
+        `create table public.${identifier(publicAuthorityProbeTable)} (id integer primary key)`,
+      );
+    } else {
+      await assert.rejects(
+        () => client.query(
+          `create table public.${identifier(publicAuthorityProbeTable)} (id integer primary key)`,
+        ),
+        /permission denied for schema public/i,
+      );
+    }
+    await client.query("rollback");
+  } finally {
+    client.release();
+  }
+}
+
+async function assertLegacyAuthorityAvailable(appPool) {
+  const client = await appPool.connect();
+  try {
+    const identity = await client.query(
+      `select current_user::text as cu, session_user::text as su, current_database()::text as cd`,
+    );
+    assert.equal(identity.rows[0].cu, "platform_app");
+    assert.equal(identity.rows[0].su, "platform_app");
+  } finally {
+    client.release();
+  }
+}
+
 async function openFixtures() {
   assertFixtureUrl(primaryDatabaseUrl, {
     expectedUser: "platform_app",
@@ -825,16 +1851,48 @@ async function openFixtures() {
     connectionString: roleUrl("platform_app", primaryDatabaseName),
     max: 2,
   });
-  const primaryMigrator = new Pool({
+  const primaryMigratorNoPassword = new Pool({
     connectionString: roleUrl("platform_migrator", primaryDatabaseName),
+    max: 2,
+  });
+  const primaryMigratorPassword = new Pool({
+    connectionString: roleUrl(
+      "platform_migrator",
+      primaryDatabaseName,
+      syntheticMigratorPassword,
+    ),
+    max: 2,
+  });
+  const primaryMigratorWrongPassword = new Pool({
+    connectionString: roleUrl(
+      "platform_migrator",
+      primaryDatabaseName,
+      wrongMigratorPassword,
+    ),
     max: 2,
   });
   const secondaryApp = new Pool({
     connectionString: roleUrl("platform_app", secondaryDatabaseName),
     max: 2,
   });
-  const secondaryMigrator = new Pool({
+  const secondaryMigratorNoPassword = new Pool({
     connectionString: roleUrl("platform_migrator", secondaryDatabaseName),
+    max: 2,
+  });
+  const secondaryMigratorPassword = new Pool({
+    connectionString: roleUrl(
+      "platform_migrator",
+      secondaryDatabaseName,
+      syntheticMigratorPassword,
+    ),
+    max: 2,
+  });
+  const secondaryMigratorWrongPassword = new Pool({
+    connectionString: roleUrl(
+      "platform_migrator",
+      secondaryDatabaseName,
+      wrongMigratorPassword,
+    ),
     max: 2,
   });
 
@@ -844,29 +1902,44 @@ async function openFixtures() {
       primaryOperatorPool,
       secondaryOperatorPool,
       primaryApp,
-      primaryMigrator,
+      primaryMigratorNoPassword,
+      primaryMigratorPassword,
+      primaryMigratorWrongPassword,
       secondaryApp,
-      secondaryMigrator,
+      secondaryMigratorNoPassword,
+      secondaryMigratorPassword,
+      secondaryMigratorWrongPassword,
     ],
     primary: {
       adminPool: primaryAdmin,
       appPool: primaryApp,
       databaseName: primaryDatabaseName,
-      migratorPool: primaryMigrator,
+      migratorNoPasswordPool: primaryMigratorNoPassword,
+      migratorPasswordPool: primaryMigratorPassword,
+      migratorWrongPasswordPool: primaryMigratorWrongPassword,
     },
     secondary: {
       adminPool: secondaryAdmin,
       appPool: secondaryApp,
       databaseName: secondaryDatabaseName,
-      migratorPool: secondaryMigrator,
+      migratorNoPasswordPool: secondaryMigratorNoPassword,
+      migratorPasswordPool: secondaryMigratorPassword,
+      migratorWrongPasswordPool: secondaryMigratorWrongPassword,
     },
   };
 }
 
 async function closeFixtures(fixture) {
-  invalidateDisposablePostgresAdmission(fixture.admission);
-  for (const pool of fixture.pools) {
-    await pool.end().catch(() => {});
+  markStructuredCleanupPhase("started");
+  try {
+    invalidateDisposablePostgresAdmission(fixture.admission);
+    for (const pool of fixture.pools) {
+      await pool.end().catch(() => {});
+    }
+    markStructuredCleanupPhase("complete");
+  } catch (error) {
+    markStructuredCleanupPhase("failed");
+    throw error;
   }
 }
 
@@ -976,7 +2049,8 @@ async function readOwnershipFingerprint(adminPool, databaseName) {
         left join pg_roles grantee_role on grantee_role.oid = grant_record.grantee
        where schema_record.nspname in ('public', 'appdata', 'drizzle')
       union all
-      select 'default', coalesce(namespace_record.nspname, '<global>')
+      select 'default', creator_role.rolname || ':'
+             || coalesce(namespace_record.nspname, '<global>')
              || ':' || default_record.defaclobjtype::text,
              coalesce(grantor_role.rolname, 'PUBLIC'),
              coalesce(grantee_role.rolname, 'PUBLIC'),
@@ -988,12 +2062,13 @@ async function readOwnershipFingerprint(adminPool, databaseName) {
         join lateral aclexplode(default_record.defaclacl) grant_record on true
         left join pg_roles grantor_role on grantor_role.oid = grant_record.grantor
         left join pg_roles grantee_role on grantee_role.oid = grant_record.grantee
+        join pg_roles creator_role on creator_role.oid = default_record.defaclrole
        where default_record.defaclrole in (
          select oid from pg_roles where rolname = any($2::text[])
        )
       order by surface, object_name, grantor, grantee, privilege_type
     `,
-    [databaseName, fixtureRoleNames],
+    [databaseName, ownershipFingerprintDefaultAclCreators],
   );
 
   const attributes = await adminPool.query(
@@ -1031,7 +2106,7 @@ async function readOwnershipFingerprint(adminPool, databaseName) {
     );
   }
 
-  return {
+  const fingerprint = {
     attributes: attributes.rows,
     databaseAcl: [...new Set(aclSurfaces.database)].sort(),
     databaseOwner: ownership.rows[0].database_owner,
@@ -1043,14 +2118,16 @@ async function readOwnershipFingerprint(adminPool, databaseName) {
     schemaAcls: [...new Set(aclSurfaces.schema)].sort(),
     schemaOwners: ownership.rows[0].schema_owners ?? [],
   };
+  recordStructuredFingerprintSnapshot(fingerprint);
+  return fingerprint;
 }
 
-function assertBaselineFingerprint(fingerprint) {
+function assertBaselineFingerprint(fingerprint, expectedPublicOwner) {
   assert.equal(fingerprint.databaseOwner, "platform_app");
   assert.deepEqual(fingerprint.schemaOwners, [
     "appdata=platform_app",
     "drizzle=platform_app",
-    "public=provider_owner",
+    `public=${expectedPublicOwner}`,
   ]);
   for (const objectName of [
     "widgets",
@@ -1092,6 +2169,35 @@ function assertBaselineFingerprint(fingerprint) {
   assert.ok(fingerprint.databaseAcl.length > 0);
   assert.ok(fingerprint.schemaAcls.length > 0);
   assert.ok(fingerprint.defaultAcl.length > 0);
+  assertDefaultAclCreatorCoverage(fingerprint.defaultAcl, expectedPublicOwner);
+}
+
+function assertDefaultAclCreatorCoverage(records, expectedPublicOwner) {
+  const creatorKinds = (creator) => new Set(
+    records
+      .map((record) => record.split("\u0000"))
+      .filter((fields) => fields[0].startsWith(`${creator}:`))
+      .map((fields) => fields[0].split(":").at(-1)),
+  );
+  for (const creator of ["platform_app", "provider_owner"]) {
+    assert.ok(
+      creatorKinds(creator).size > 0,
+      `expected ${creator} default-ACL state in the bounded fingerprint`,
+    );
+  }
+  if (expectedPublicOwner === "pg_database_owner") {
+    assert.ok(
+      creatorKinds("pg_database_owner").has("f"),
+      "primary fixture must fingerprint its pg_database_owner routine default posture",
+    );
+  }
+}
+
+function assertDefaultAclCreatorPresent(records, creator) {
+  assert.ok(
+    records.some((record) => record.startsWith(`${creator}:`)),
+    `expected ${creator} default-ACL state in the bounded fingerprint`,
+  );
 }
 
 function assertAclSurfaceBounded(records, surface) {
@@ -1116,6 +2222,317 @@ function assertAclSurfaceBounded(records, surface) {
     assert.ok(isGrantable === "true" || isGrantable === "false");
     assert.ok(objectName.length > 0);
   }
+}
+
+function assertExactFingerprint(actual, expected, label) {
+  recordStructuredFingerprintComparison(actual, expected);
+  assert.deepEqual(actual, expected, label);
+}
+
+function buildExpectedDatabaseAclResidue(databaseName, baseline) {
+  return [
+    databaseName,
+    baseline.databaseOwner,
+    "platform_runtime",
+    "CONNECT",
+    "false",
+  ].join("\u0000");
+}
+
+function parseDatabaseAclResidue(record) {
+  const fields = record.split("\u0000");
+  assert.equal(fields.length, 5);
+  return {
+    database: fields[0],
+    grantor: fields[1],
+    grantee: fields[2],
+    privilege: fields[3],
+    grantable: fields[4],
+  };
+}
+
+async function assertAclResidueNegativeControl(adminPool, databaseName, baseline) {
+  assert.equal(baseline.databaseOwner, "platform_app");
+  const expectedGrantor = baseline.databaseOwner;
+  const expectedResidue = buildExpectedDatabaseAclResidue(
+    databaseName,
+    baseline,
+  );
+  markStructuredFailurePhase("acl_residue_setup", "acl_residue_cleanup");
+  assert.deepEqual(
+    baseline.databaseAcl
+      .map(parseDatabaseAclResidue)
+      .filter(
+        (record) =>
+          record.database === databaseName &&
+          record.grantee === "platform_runtime" &&
+          record.privilege === "CONNECT",
+      ),
+    [],
+  );
+  let grantAttempted = false;
+  try {
+    grantAttempted = true;
+    await adminPool.query(
+      "grant connect on database " +
+        identifier(databaseName) +
+        " to platform_runtime",
+    );
+    markStructuredFailurePhase(
+      "acl_residue_permissive_helper",
+      "acl_residue_cleanup",
+    );
+    const perturbed = await readOwnershipFingerprint(adminPool, databaseName);
+    const addedDatabaseAcl = perturbed.databaseAcl.filter(
+      (record) => !baseline.databaseAcl.includes(record),
+    );
+    assert.equal(addedDatabaseAcl.length, 1);
+    assert.deepEqual(addedDatabaseAcl, [expectedResidue]);
+    assert.deepEqual(
+      parseDatabaseAclResidue(addedDatabaseAcl[0]),
+      {
+        database: databaseName,
+        grantor: expectedGrantor,
+        grantee: "platform_runtime",
+        privilege: "CONNECT",
+        grantable: "false",
+      },
+    );
+    assert.notEqual(
+      parseDatabaseAclResidue(addedDatabaseAcl[0]).grantor,
+      "postgres",
+    );
+    assert.deepEqual(
+      baseline.databaseAcl.filter((record) =>
+        perturbed.databaseAcl.includes(record),
+      ),
+      baseline.databaseAcl,
+    );
+    assertBaselineFingerprint(perturbed, "pg_database_owner");
+    markStructuredFailurePhase(
+      "acl_residue_exact_rejection",
+      "acl_residue_cleanup",
+    );
+    assert.throws(
+      () => assertExactFingerprint(perturbed, baseline),
+      assert.AssertionError,
+    );
+  } finally {
+    markStructuredFailurePhase("acl_residue_cleanup", "acl_residue_cleanup");
+    if (grantAttempted) {
+      await adminPool.query(
+        "revoke connect on database " +
+          identifier(databaseName) +
+          " from platform_runtime",
+      );
+    }
+  }
+  markStructuredFailurePhase(
+    "post_acl_exact_fingerprint",
+    "acl_residue_cleanup",
+  );
+  const restored = await readOwnershipFingerprint(adminPool, databaseName);
+  assert.equal(restored.databaseAcl.includes(expectedResidue), false);
+  assert.deepEqual(restored.databaseAcl, baseline.databaseAcl);
+  assertExactFingerprint(restored, baseline);
+}
+async function assertDefaultAclResidueNegativeControl(
+  adminPool,
+  databaseName,
+  baseline,
+) {
+  const expectedResidue = [
+    "platform_app:<global>:f",
+    "platform_app",
+    "platform_runtime",
+    "EXECUTE",
+    "false",
+  ].join("\u0000");
+  markStructuredFailurePhase(
+    "default_acl_residue_setup",
+    "default_acl_residue_cleanup",
+  );
+  assert.equal(baseline.defaultAcl.includes(expectedResidue), false);
+  let grantAttempted = false;
+  try {
+    grantAttempted = true;
+    await adminPool.query(
+      "alter default privileges for role platform_app " +
+        "grant execute on functions to platform_runtime",
+    );
+    markStructuredFailurePhase(
+      "default_acl_permissive_helper",
+      "default_acl_residue_cleanup",
+    );
+    const perturbed = await readOwnershipFingerprint(adminPool, databaseName);
+    assert.deepEqual(
+      perturbed.defaultAcl.filter(
+        (record) => !baseline.defaultAcl.includes(record),
+      ),
+      [expectedResidue],
+    );
+    assertBaselineFingerprint(perturbed, "pg_database_owner");
+    markStructuredFailurePhase(
+      "default_acl_exact_rejection",
+      "default_acl_residue_cleanup",
+    );
+    assert.throws(
+      () => assertExactFingerprint(perturbed, baseline),
+      assert.AssertionError,
+    );
+  } finally {
+    markStructuredFailurePhase(
+      "default_acl_residue_cleanup",
+      "default_acl_residue_cleanup",
+    );
+    if (grantAttempted) {
+      await adminPool.query(
+        "alter default privileges for role platform_app " +
+          "revoke execute on functions from platform_runtime",
+      );
+    }
+  }
+  markStructuredFailurePhase(
+    "post_default_acl_exact_fingerprint",
+    "default_acl_residue_cleanup",
+  );
+  assertExactFingerprint(
+    await readOwnershipFingerprint(adminPool, databaseName),
+    baseline,
+  );
+}
+async function assertPgDatabaseOwnerDefaultAclResidueNegativeControls(
+  adminPool,
+  databaseName,
+  baseline,
+) {
+  const controls = [
+    {
+      kind: "r",
+      privilege: "SELECT",
+      grant: "grant select on tables to platform_runtime",
+      revoke: "revoke select on tables from platform_runtime",
+    },
+    {
+      kind: "S",
+      privilege: "USAGE",
+      grant: "grant usage on sequences to platform_runtime",
+      revoke: "revoke usage on sequences from platform_runtime",
+    },
+    {
+      kind: "f",
+      privilege: "EXECUTE",
+      grant: "grant execute on functions to platform_runtime",
+      revoke: "revoke execute on functions from platform_runtime",
+    },
+  ];
+  for (const control of controls) {
+    const expectedResidue = [
+      `pg_database_owner:<global>:${control.kind}`,
+      "pg_database_owner",
+      "platform_runtime",
+      control.privilege,
+      "false",
+    ].join("\u0000");
+    markStructuredFailurePhase(
+      "default_acl_residue_setup",
+      "default_acl_residue_cleanup",
+    );
+    assert.equal(baseline.defaultAcl.includes(expectedResidue), false);
+    let grantAttempted = false;
+    try {
+      grantAttempted = true;
+      await adminPool.query(
+        `alter default privileges for role pg_database_owner ${control.grant}`,
+      );
+      markStructuredFailurePhase(
+        "default_acl_permissive_helper",
+        "default_acl_residue_cleanup",
+      );
+      const perturbed = await readOwnershipFingerprint(adminPool, databaseName);
+      const additions = perturbed.defaultAcl.filter(
+        (record) => !baseline.defaultAcl.includes(record),
+      );
+      assert.ok(
+        additions.includes(expectedResidue),
+        `expected pg_database_owner ${control.kind} residue in the fingerprint`,
+      );
+      assertBaselineFingerprint(perturbed, "pg_database_owner");
+      markStructuredFailurePhase(
+        "default_acl_exact_rejection",
+        "default_acl_residue_cleanup",
+      );
+      assert.throws(
+        () => assertExactFingerprint(perturbed, baseline),
+        assert.AssertionError,
+      );
+    } finally {
+      markStructuredFailurePhase(
+        "default_acl_residue_cleanup",
+        "default_acl_residue_cleanup",
+      );
+      if (grantAttempted) {
+        await adminPool.query(
+          `alter default privileges for role pg_database_owner ${control.revoke}`,
+        );
+      }
+    }
+    markStructuredFailurePhase(
+      "post_default_acl_exact_fingerprint",
+      "default_acl_residue_cleanup",
+    );
+    assertExactFingerprint(
+      await readOwnershipFingerprint(adminPool, databaseName),
+      baseline,
+    );
+  }
+}
+
+async function assertUnrelatedDefaultAclCreatorExcluded(
+  adminPool,
+  databaseName,
+  baseline,
+) {
+  const roleName = "a13_unrelated_default_creator";
+  let roleCreated = false;
+  markStructuredFailurePhase(
+    "unrelated_default_acl_setup",
+    "default_acl_residue_cleanup",
+  );
+  try {
+    await adminPool.query(
+      `create role ${identifier(roleName)} nologin nosuperuser nocreatedb nocreaterole noreplication nobypassrls`,
+    );
+    roleCreated = true;
+    await adminPool.query(
+      `alter default privileges for role ${identifier(roleName)} grant select on tables to platform_runtime`,
+    );
+    markStructuredFailurePhase(
+      "unrelated_default_acl_exact_equality",
+      "default_acl_residue_cleanup",
+    );
+    assertExactFingerprint(
+      await readOwnershipFingerprint(adminPool, databaseName),
+      baseline,
+    );
+  } finally {
+    if (roleCreated) {
+      markStructuredFailurePhase(
+        "unrelated_default_acl_cleanup",
+        "default_acl_residue_cleanup",
+      );
+      await adminPool.query(`drop owned by ${identifier(roleName)}`);
+      await adminPool.query(`drop role ${identifier(roleName)}`);
+    }
+  }
+  markStructuredFailurePhase(
+    "post_unrelated_default_acl_exact_fingerprint",
+    "default_acl_residue_cleanup",
+  );
+  assertExactFingerprint(
+    await readOwnershipFingerprint(adminPool, databaseName),
+    baseline,
+  );
 }
 
 async function assertRuntimePosture(adminPool) {
@@ -1222,6 +2639,268 @@ async function schemaPrivileges(adminPool, roleName, schemaName) {
   return result.rows[0];
 }
 
+async function assertFocusedPassfileIsolation(primary) {
+  return assertFocusedC3Proof(primary);
+}
+
+async function assertFocusedC3Proof(primary) {
+  markStructuredFailurePhase(
+    "C3_HOSTILE_ENV_RETAINED",
+    "c3_security_invariant",
+  );
+  const homeDirectory = process.env.HOME;
+  const appDataDirectory = process.env.APPDATA;
+  const controlledPassfilePath = process.env.PGPASSFILE;
+  assert.equal(typeof homeDirectory, "string", "synthetic HOME must exist");
+  assert.equal(typeof appDataDirectory, "string", "synthetic APPDATA must exist");
+  assert.equal(
+    typeof controlledPassfilePath,
+    "string",
+    "controlled PGPASSFILE must exist",
+  );
+  assert.equal(
+    Object.hasOwn(process.env, "PGPASSWORD"),
+    false,
+    "PGPASSWORD must be absent at the focused child",
+  );
+  assert.equal(
+    process.env.MIGRATOR_ALIGNMENT_TEST_C3_RUNNER_BOUNDARY,
+    "runner-sanitised",
+  );
+  assert.equal(process.env.MIGRATOR_ALIGNMENT_TEST_C3_PGPASS_OWNER, "runner-test");
+  await assertPrivateFilePresent(join(homeDirectory, ".pgpass"));
+  await assertPrivateFilePresent(
+    join(appDataDirectory, "postgresql", "pgpass.conf"),
+  );
+  let homePassfileContent;
+  try {
+    homePassfileContent = await readFile(
+      join(homeDirectory, ".pgpass"),
+      "utf8",
+    );
+  } catch {
+    assert.fail("synthetic HOME .pgpass must be readable");
+  }
+  assert.equal(
+    homePassfileContent.includes(
+      `*:*:${primary.databaseName}:platform_migrator:${syntheticMigratorPassword}\n`,
+    ),
+    true,
+  );
+  markStructuredFailurePhase(
+    "C3_RUNNER_PGPASS_QUARANTINE",
+    "c3_security_invariant",
+  );
+  let controlledPassfileContent;
+  try {
+    controlledPassfileContent = await readFile(
+      controlledPassfilePath,
+      "utf8",
+    );
+  } catch {
+    assert.fail("controlled passfile must be readable");
+  }
+  assert.equal(
+    controlledPassfileContent.length,
+    0,
+    "controlled passfile must be empty",
+  );
+  assert.equal(
+    controlledPassfilePath.includes("swooshz-platform-pgpass-isolation-"),
+    true,
+  );
+
+  markStructuredFailurePhase(
+    "C3_INHERITED_PG_STATE_SANITISED",
+    "c3_security_invariant",
+  );
+  assert.equal(Object.hasOwn(process.env, "PGPASSWORD"), false);
+  assert.equal(
+    Object.keys(process.env).some(
+      (key) => {
+        const comparisonKey = typeof key === "string" ? key.toUpperCase() : "";
+        return comparisonKey.startsWith("PG") && comparisonKey !== "PGPASSFILE";
+      },
+    ),
+    false,
+  );
+  assert.equal(Object.hasOwn(process.env, "NODE_PG_FORCE_NATIVE"), false);
+  assert.equal(process.env.PGPASSFILE === controlledPassfilePath, true);
+  assert.equal(
+    Object.keys(process.env).filter(
+      (key) => (typeof key === "string" ? key.toUpperCase() : "") === "PGPASSFILE",
+    ).length,
+    1,
+  );
+
+  // RED/default-pgpass causal control: remove only the bounded child process's
+  // quarantine so the parent retains the runner-owned passfile for every
+  // subsequent control.
+  markStructuredFailurePhase(
+    "C3_RED_DEFAULT_PGPASS_ADMISSION",
+    "c3_security_invariant",
+  );
+  assert.equal(
+    process.env.PGPASSFILE,
+    controlledPassfilePath,
+    "runner-owned PGPASSFILE must be active before RED",
+  );
+  const redEnvironment = buildFocusedDefaultPgpassControlEnvironment(
+    {
+      ...process.env,
+      HOME: homeDirectory,
+      APPDATA: appDataDirectory,
+    },
+    roleUrl("platform_migrator", primary.databaseName),
+  );
+  assert.equal(
+    Object.keys(redEnvironment).some((key) => key.startsWith("PG")),
+    false,
+    "RED child must remove inherited PostgreSQL connection state",
+  );
+  assert.equal(
+    Object.hasOwn(redEnvironment, "NODE_PG_FORCE_NATIVE"),
+    false,
+  );
+  assert.equal(redEnvironment.HOME, homeDirectory);
+  assert.equal(redEnvironment.APPDATA, appDataDirectory);
+  await runDefaultPgpassControl(redEnvironment);
+  assert.equal(
+    process.env.PGPASSFILE,
+    controlledPassfilePath,
+    "runner-owned PGPASSFILE must remain active after RED",
+  );
+
+  markStructuredFailurePhase(
+    "C3_OMITTED_PASSWORD_REJECTED",
+    "c3_security_invariant",
+  );
+  await assertC3AuthenticationRejected(
+    roleUrl("platform_migrator", primary.databaseName),
+    /client password must be a string|no password supplied|password authentication failed/i,
+  );
+
+  markStructuredFailurePhase(
+    "C3_WRONG_PASSWORD_REJECTED",
+    "c3_security_invariant",
+  );
+  await assertC3AuthenticationRejected(
+    roleUrl(
+      "platform_migrator",
+      primary.databaseName,
+      wrongMigratorPassword,
+    ),
+    /password authentication failed/i,
+    "28P01",
+  );
+
+  markStructuredFailurePhase(
+    "C3_CORRECT_PASSWORD_ACCEPTED",
+    "c3_security_invariant",
+  );
+  const correctPasswordPool = new Pool({
+    connectionString: roleUrl(
+      "platform_migrator",
+      primary.databaseName,
+      syntheticMigratorPassword,
+    ),
+    max: 1,
+  });
+  try {
+    await validateMigratorLoginAdmission(
+      correctPasswordPool,
+      primary.databaseName,
+    );
+  } finally {
+    await correctPasswordPool.end();
+  }
+}
+
+export async function runDefaultPgpassControl(
+  environment,
+  {
+    childScript = defaultPgpassControlScript,
+    timeoutMs = defaultPgpassControlTimeoutMs,
+    spawnImpl = spawn,
+    setTimeoutImpl = setTimeout,
+    clearTimeoutImpl = clearTimeout,
+  } = {},
+) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timedOut = false;
+    let watchdog = null;
+    let child;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      if (watchdog !== null) {
+        clearTimeoutImpl(watchdog);
+        watchdog = null;
+      }
+      if (error) reject(error);
+      else resolve();
+    };
+    const fail = () => finish(new Error(defaultPgpassControlFailureMessage));
+    try {
+      child = spawnImpl(
+        process.execPath,
+        ["--input-type=module", "--eval", childScript],
+        {
+          env: environment,
+          stdio: "ignore",
+          windowsHide: true,
+        },
+      );
+    } catch {
+      fail();
+      return;
+    }
+    child.once("error", fail);
+    child.once("close", (code, signal) => {
+      if (timedOut) return;
+      if (code === 0 && signal === null) finish();
+      else fail();
+    });
+    watchdog = setTimeoutImpl(() => {
+      if (settled) return;
+      timedOut = true;
+      try {
+        if (typeof child?.kill !== "function") throw new Error();
+        child.kill("SIGTERM");
+      } catch {
+        // The timeout remains the deterministic failure even if termination races.
+      }
+      finish(new Error(defaultPgpassControlTimeoutMessage));
+    }, timeoutMs);
+  });
+}
+
+async function assertC3AuthenticationRejected(
+  connectionString,
+  pattern,
+  expectedCode = null,
+) {
+  const pool = new Pool({ connectionString, max: 1 });
+  try {
+    await assert.rejects(
+      () => pool.query("select 1"),
+      (error) =>
+        pattern.test(String(error?.message ?? error)) &&
+        (expectedCode === null || error?.code === expectedCode),
+    );
+  } finally {
+    await pool.end();
+  }
+}
+
+async function assertPrivateFilePresent(filePath) {
+  try {
+    await access(filePath);
+  } catch {
+    assert.fail("synthetic passfile must exist");
+  }
+}
 async function assertQueryRejected(pool, sql, pattern) {
   await assert.rejects(
     () => pool.query(sql),
@@ -1252,11 +2931,60 @@ function assertFixtureUrl(url, { expectedUser, expectedDatabase }) {
   }
 }
 
-function roleUrl(user, databaseName) {
+function roleUrl(user, databaseName, password) {
   if (!safeIdentifier.test(user) || !safeIdentifier.test(databaseName)) {
     throw new Error();
   }
-  return `postgres://${user}@127.0.0.1:${ownedPort}/${databaseName}`;
+  const authority = password
+    ? `${user}:${encodeURIComponent(password)}`
+    : user;
+  return `postgres://${authority}@127.0.0.1:${ownedPort}/${databaseName}`;
+}
+
+async function assertFreshPlatformAppLogin(primary) {
+  const pool = new Pool({
+    connectionString: roleUrl("platform_app", primary.databaseName),
+    max: 1,
+  });
+  try {
+    const client = await pool.connect();
+    try {
+      const result = await client.query(
+        "select current_user, session_user",
+      );
+      assert.equal(result.rows[0]?.current_user, "platform_app");
+      assert.equal(result.rows[0]?.session_user, "platform_app");
+    } finally {
+      client.release();
+    }
+  } finally {
+    await pool.end();
+  }
+}
+
+async function assertFreshPlatformAppLoginRejected(primary) {
+  const pool = new Pool({
+    connectionString: roleUrl("platform_app", primary.databaseName),
+    max: 1,
+  });
+  try {
+    await assert.rejects(
+      async () => {
+        const client = await pool.connect();
+        try {
+          await client.query("select 1");
+        } finally {
+          client.release();
+        }
+      },
+      (error) =>
+        /not permitted to log in|cannot log in|authentication failed/i.test(
+          String(error?.message ?? ""),
+        ),
+    );
+  } finally {
+    await pool.end();
+  }
 }
 
 function contractTableNames() {
@@ -1265,6 +2993,57 @@ function contractTableNames() {
   )];
 }
 
+export async function runReversibleLegacyNoLoginControl(primary) {
+  const baselineFingerprint = await readOwnershipFingerprint(
+    primary.adminPool,
+    primary.databaseName,
+  );
+  let existingClient;
+  let noLoginAttempted = false;
+
+  try {
+    const initialRole = await primary.adminPool.query(
+      "select rolcanlogin from pg_roles where rolname = 'platform_app'",
+    );
+    assert.equal(initialRole.rows[0]?.rolcanlogin, true);
+
+    await assertFreshPlatformAppLogin(primary);
+
+    existingClient = await primary.appPool.connect();
+    await existingClient.query("select 1");
+
+    noLoginAttempted = true;
+    await primary.adminPool.query("ALTER ROLE platform_app NOLOGIN");
+    const noLoginRole = await primary.adminPool.query(
+      "select rolcanlogin from pg_roles where rolname = 'platform_app'",
+    );
+    assert.equal(noLoginRole.rows[0]?.rolcanlogin, false);
+
+    await assertFreshPlatformAppLoginRejected(primary);
+
+    await existingClient.query("select 1");
+
+    await primary.adminPool.query("ALTER ROLE platform_app LOGIN");
+    noLoginAttempted = false;
+    await assertFreshPlatformAppLogin(primary);
+
+    const restoredRole = await primary.adminPool.query(
+      "select rolcanlogin from pg_roles where rolname = 'platform_app'",
+    );
+    assert.equal(restoredRole.rows[0]?.rolcanlogin, true);
+  } finally {
+    existingClient?.release();
+    if (noLoginAttempted) {
+      await primary.adminPool.query("ALTER ROLE platform_app LOGIN");
+    }
+  }
+
+  const finalFingerprint = await readOwnershipFingerprint(
+    primary.adminPool,
+    primary.databaseName,
+  );
+  assertExactFingerprint(finalFingerprint, baselineFingerprint);
+}
 function identifier(value) {
   assert.match(value, /^[a-z_][a-z0-9_$]{0,62}$/);
   return `"${value.replaceAll('"', '""')}"`;

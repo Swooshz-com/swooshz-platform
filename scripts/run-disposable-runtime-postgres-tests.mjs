@@ -24,7 +24,6 @@ import { runDisposableRuntimeLifecycle } from "./disposable-runtime-lifecycle.mj
 const databaseName = "runtime_posture_test";
 const secondaryDatabaseName = "runtime_posture_test_secondary";
 const ownedContainerName = "codex-platform127-pg17";
-const ownedPort = 55432;
 const maxChildOutputBytes = 64 * 1024;
 const maxChildDurationMs = 120_000;
 const expectedPostgresTestCount = 53;
@@ -78,6 +77,7 @@ if (
 export async function run({
   env = process.env,
   spawnImpl = spawn,
+  assertPortAbsentImpl = assertPortAbsent,
 } = {}) {
   let resources = null;
 
@@ -101,9 +101,12 @@ export async function run({
         childTestsStarted: false,
         cleanupComplete: false,
         absenceVerified: false,
+        publishedBindingVerified: false,
+        portAbsenceVerified: false,
         containerStartAttempted: false,
         ownedContainer: false,
         containerRemoved: false,
+        observedPort: null,
         childProcess: null,
         childExited: true,
         databaseUrls: new Map(),
@@ -131,11 +134,10 @@ export async function run({
       resources.ownedContainer = true;
       resources.containerStarted = true;
       resources.runnerOwned.add(`container:${ownedContainerName}`);
-      resources.runnerOwned.add(`listener:127.0.0.1:${ownedPort}`);
       await runAt(resources, "construct", "publish_binding_inspection", () =>
-        assertExactPublishedBinding(spawnImpl));
+        assertExactPublishedBinding(spawnImpl, resources));
 
-      const urls = fixtureUrls();
+      const urls = fixtureUrls(resources.observedPort);
       resources.databaseUrls = new Map([
         [databaseName, urls.primaryOperatorUrl],
         [secondaryDatabaseName, urls.secondaryOperatorUrl],
@@ -275,7 +277,7 @@ export async function run({
       "absenceVerification",
       "absence_verification",
       async () => {
-        await verifyRunnerAbsence(lifecycleResources, spawnImpl);
+        await verifyRunnerAbsence(lifecycleResources, spawnImpl, assertPortAbsentImpl);
         lifecycleResources.absenceVerified = true;
       },
     ),
@@ -305,6 +307,13 @@ export function formatDisposableRuntimeFailureReceipt(resources = {}) {
     outputOverflow: resources.childOutputOverflow === true,
     summaryParsed: resources.childSummaryParsed === true,
     containerStarted: resources.containerStarted === true,
+    publishedBindingVerified: resources.publishedBindingVerified === true,
+    assignedPortAttested: Number.isInteger(resources.observedPort),
+    observedPort: Number.isInteger(resources.observedPort)
+      ? resources.observedPort
+      : null,
+    portAbsenceVerified: resources.portAbsenceVerified === true,
+    portAbsenceFailure: resources.portAbsenceFailure ?? null,
     postgresReady: resources.postgresReady === true,
     constructionAdmission: resources.constructionAdmission === true,
     provisioningComplete: resources.provisioningComplete === true,
@@ -425,21 +434,23 @@ async function runAt(resources, phase, category, operation) {
   }
 }
 
-function fixtureUrls() {
+export function fixtureUrls(port) {
+  assertValidObservedPort(port);
   return {
-    rootOperatorUrl: buildUrl("postgres", "postgres"),
-    primaryTargetUrl: buildUrl("platform_app", databaseName),
-    primaryOperatorUrl: buildUrl("postgres", databaseName),
-    secondaryTargetUrl: buildUrl("platform_app", secondaryDatabaseName),
-    secondaryOperatorUrl: buildUrl("postgres", secondaryDatabaseName),
+    rootOperatorUrl: buildUrl("postgres", "postgres", port),
+    primaryTargetUrl: buildUrl("platform_app", databaseName, port),
+    primaryOperatorUrl: buildUrl("postgres", databaseName, port),
+    secondaryTargetUrl: buildUrl("platform_app", secondaryDatabaseName, port),
+    secondaryOperatorUrl: buildUrl("postgres", secondaryDatabaseName, port),
   };
 }
 
-function buildUrl(user, database) {
+function buildUrl(user, database, port) {
   if (!safeIdentifier.test(user) || !safeIdentifier.test(database)) {
     throw new Error();
   }
-  return `postgres://${user}@127.0.0.1:${ownedPort}/${database}`;
+  assertValidObservedPort(port);
+  return `postgres://${user}@127.0.0.1:${port}/${database}`;
 }
 
 function constructionTargetDefinition(
@@ -729,12 +740,7 @@ async function cleanupRunnerResources(resources, spawnImpl) {
   }
   if (resources.containerStartAttempted) {
     try {
-      await runCommand(spawnImpl, "docker", [
-        "rm",
-        "--force",
-        ownedContainerName,
-      ]);
-      resources.containerRemoved = true;
+      await reconcileOwnedContainerRemoval(spawnImpl, resources);
     } catch {
       firstError ??= new Error();
     }
@@ -746,9 +752,12 @@ async function cleanupFixtureDatabases(resources) {
   if (!resources.ownedContainer || resources.ownedDatabases.size === 0) {
     return;
   }
-  const rootUrl = buildUrl("postgres", "postgres");
+  const rootUrl = buildUrl("postgres", "postgres", resources.observedPort);
   for (const database of resources.ownedDatabases) {
-    const pool = new Pool({ connectionString: buildUrl("postgres", database), max: 1 });
+    const pool = new Pool({
+      connectionString: buildUrl("postgres", database, resources.observedPort),
+      max: 1,
+    });
     try {
       for (const tableName of ["users", ...contractTableNames()]) {
         await pool.query(
@@ -785,13 +794,48 @@ async function cleanupFixtureDatabases(resources) {
   }
 }
 
-async function verifyRunnerAbsence(resources, spawnImpl) {
+async function verifyRunnerAbsence(
+  resources,
+  spawnImpl,
+  assertPortAbsentImpl = assertPortAbsent,
+) {
   if (resources.childProcess && !resources.childExited) throw new Error();
   if (!resources.containerStartAttempted) return;
   const names = await assertExactContainerAbsent(spawnImpl);
   if (names !== "") throw new Error();
   if (!resources.containerRemoved) throw new Error();
-  await assertPortAbsent();
+  if (!Number.isInteger(resources.observedPort)) {
+    resources.portAbsenceFailure = "assigned_port_unproven";
+    throw new Error();
+  }
+  try {
+    await assertPortAbsentImpl(resources.observedPort);
+  } catch {
+    resources.portAbsenceFailure = "assigned_port_absence_unproven";
+    throw new Error();
+  }
+  resources.portAbsenceVerified = true;
+  resources.portAbsenceFailure = null;
+}
+
+async function reconcileOwnedContainerRemoval(spawnImpl, resources) {
+  if (!resources.containerStartAttempted || resources.containerRemoved) {
+    return "not-required";
+  }
+  try {
+    await runCommand(spawnImpl, "docker", [
+      "rm",
+      "--force",
+      ownedContainerName,
+    ]);
+    resources.containerRemoved = true;
+    return "removed";
+  } catch (removalError) {
+    const names = await assertExactContainerAbsent(spawnImpl);
+    if (names !== "") throw removalError;
+    resources.containerRemoved = true;
+    return "absent";
+  }
 }
 
 async function terminateOwnedChild(resources) {
@@ -817,7 +861,7 @@ async function startOwnedContainer(spawnImpl) {
     "--name",
     ownedContainerName,
     "--publish",
-    `127.0.0.1:${ownedPort}:5432`,
+    "127.0.0.1::5432",
     "--env",
     "POSTGRES_DB=runtime_posture_test",
     "--env",
@@ -863,7 +907,49 @@ export function parsePublishedBinding(output) {
   return binding;
 }
 
-export function assertSingleLoopbackPublishedBinding(binding, expectedHostPort) {
+export function extractAssignedPortForCleanup(output) {
+  const text = typeof output === "string" ? output.trim() : "";
+  if (text.length === 0 || Buffer.byteLength(text, "utf8") > maxChildOutputBytes) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    const keys = Object.keys(parsed);
+    if (keys.length === 0 || !keys.includes("5432/tcp")) return null;
+    const ports = new Set();
+    for (const key of keys) {
+      if (!/^[0-9]+\/tcp$/u.test(key)) return null;
+      const entries = parsed[key];
+      if (!Array.isArray(entries) || entries.length === 0) return null;
+      for (const entry of entries) {
+        if (
+          !entry ||
+          typeof entry !== "object" ||
+          Array.isArray(entry) ||
+          entry.HostIp !== "127.0.0.1" ||
+          typeof entry.HostPort !== "string" ||
+          !/^[0-9]+$/u.test(entry.HostPort)
+        ) {
+          return null;
+        }
+        ports.add(assertValidObservedPort(Number(entry.HostPort)));
+      }
+    }
+    return ports.size === 1 ? ports.values().next().value : null;
+  } catch {
+    return null;
+  }
+}
+
+function assertValidObservedPort(port) {
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error();
+  return port;
+}
+
+export function assertSingleLoopbackPublishedBinding(binding) {
   if (!(binding instanceof Map)) throw new Error();
   if (binding.size !== 1) throw new Error();
   const entries = binding.get("5432/tcp");
@@ -871,23 +957,32 @@ export function assertSingleLoopbackPublishedBinding(binding, expectedHostPort) 
   const entry = entries[0];
   if (
     entry.hostIp !== "127.0.0.1" ||
-    entry.hostPort !== String(expectedHostPort)
+    !/^[0-9]+$/u.test(entry.hostPort)
   ) {
     throw new Error();
   }
+  return assertValidObservedPort(Number(entry.hostPort));
 }
 
-async function assertExactPublishedBinding(spawnImpl) {
+async function assertExactPublishedBinding(spawnImpl, resources = null) {
   const output = await runCommand(spawnImpl, "docker", [
     "inspect",
     "--format",
     "{{json .NetworkSettings.Ports}}",
     ownedContainerName,
   ]);
-  assertSingleLoopbackPublishedBinding(
-    parsePublishedBinding(output),
-    ownedPort,
-  );
+  const cleanupPort = extractAssignedPortForCleanup(output);
+  if (resources && Number.isInteger(cleanupPort)) {
+    resources.observedPort = cleanupPort;
+    resources.runnerOwned.add(`listener:127.0.0.1:${cleanupPort}`);
+  }
+  const port = assertSingleLoopbackPublishedBinding(parsePublishedBinding(output));
+  if (resources) {
+    resources.observedPort = port;
+    resources.publishedBindingVerified = true;
+    resources.runnerOwned.add(`listener:127.0.0.1:${port}`);
+  }
+  return port;
 }
 
 async function waitForPostgres(connectionString) {
@@ -917,11 +1012,12 @@ async function assertExactContainerAbsent(spawnImpl) {
   return output.trim();
 }
 
-async function assertPortAbsent() {
+async function assertPortAbsent(port) {
+  const observedPort = assertValidObservedPort(port);
   await new Promise((resolvePromise, reject) => {
     const socket = net.createConnection({
       host: "127.0.0.1",
-      port: ownedPort,
+      port: observedPort,
     });
     let settled = false;
     const finish = (error) => {
