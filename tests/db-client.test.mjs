@@ -160,9 +160,35 @@ test("migration confirmation remains mandatory with operator URL", () => {
 test("DB client module does not connect during import or pool creation", async () => {
   const pool = createDatabasePool(readDatabaseConfig({ DATABASE_URL: syntheticDatabaseUrl }));
 
+  assert.equal(pool.options.enableChannelBinding, true);
+  assert.equal(pool.options.ssl, undefined);
   assert.equal(pool.totalCount, 0);
   assert.equal(pool.idleCount, 0);
   await pool.end();
+});
+
+test("DB client preserves explicit SSL-mode construction semantics", async () => {
+  const requiredPool = createDatabasePool({
+    databaseUrl: syntheticDatabaseUrl,
+    sslMode: "require",
+  });
+  const disabledPool = createDatabasePool({
+    databaseUrl: syntheticDatabaseUrl,
+    sslMode: "disable",
+  });
+
+  try {
+    assert.equal(requiredPool.options.ssl, true);
+    assert.equal(disabledPool.options.ssl, false);
+    assert.equal(requiredPool.options.enableChannelBinding, true);
+    assert.equal(disabledPool.options.enableChannelBinding, true);
+    assert.equal(requiredPool.totalCount, 0);
+    assert.equal(requiredPool.idleCount, 0);
+    assert.equal(disabledPool.totalCount, 0);
+    assert.equal(disabledPool.idleCount, 0);
+  } finally {
+    await Promise.all([requiredPool.end(), disabledPool.end()]);
+  }
 });
 
 test("migration command is explicit and delegates to guarded config", async () => {
