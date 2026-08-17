@@ -4418,6 +4418,7 @@ test("Run-15 actual focused child receives a runner-owned empty passfile seam un
   const resources = await runner.run({
     env: runnerEnvironment,
     spawnImpl,
+    externalCommandExecutionDeadlineMs: 60_000,
   });
 
   assert.equal(focusedChildRuns.length, 1);
