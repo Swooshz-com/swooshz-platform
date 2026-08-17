@@ -95,6 +95,9 @@ export function createDatabasePool(config: DatabaseConfig): Pool {
   return new Pool({
     connectionString: config.databaseUrl,
     ...(config.sslMode ? { ssl: config.sslMode === "require" } : {}),
+    enableChannelBinding: true,
+  } as NonNullable<ConstructorParameters<typeof Pool>[0]> & {
+    enableChannelBinding: true;
   });
 }
 

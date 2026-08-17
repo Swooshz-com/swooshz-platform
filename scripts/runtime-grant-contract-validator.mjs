@@ -81,7 +81,7 @@ const databaseSourceShapeAuthority = new Map([
   ],
   [
     "src/db/client.ts",
-    "ef50968061d83e2c7217a215b68067eca27aae5c30005aec1b48ba4e3c377189",
+    "16daeb348cd33b5632735ac119b5e214da2e057b394d02dac09485fde59280eb",
   ],
   [
     "src/db/csrf-token-repository.ts",
