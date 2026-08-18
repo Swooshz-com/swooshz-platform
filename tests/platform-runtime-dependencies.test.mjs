@@ -37,8 +37,8 @@ const authConfig = readAuthConfig({
   AUTH_TOKEN_URL: "https://auth.example.invalid/oauth2/token",
   AUTH_ISSUER_URL: issuerUrl,
   AUTH_JWKS_URL: jwksUrl,
-  AUTH_CLIENT_ID: "synthetic-client-id",
-  AUTH_CLIENT_SECRET: "synthetic-client-secret-value",
+  OIDC_CLIENT_ID: "synthetic-client-id",
+  OIDC_CLIENT_SECRET: "synthetic-client-secret-value",
   AUTH_REDIRECT_URI: "https://platform.example.invalid/api/platform/auth/callback",
   SESSION_SECRET: "synthetic-session-secret-value-32",
 });
@@ -813,7 +813,7 @@ test("runtime composition modules do not import frontend SQAG provider SDK frame
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:react|next|vite|express|fastify|hono)/i);
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:sqag|clerk|auth0|supabase)/i);
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:pg|node-postgres|migrations?)/i);
-    assert.doesNotMatch(contents, /DATABASE_URL|AUTH_CLIENT_SECRET|SESSION_SECRET/);
+    assert.doesNotMatch(contents, /DATABASE_URL|OIDC_CLIENT_SECRET|SESSION_SECRET/);
   }
 });
 

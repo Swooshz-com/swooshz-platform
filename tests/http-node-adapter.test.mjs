@@ -40,8 +40,8 @@ const authConfig = readAuthConfig({
   AUTH_PROVIDER_KEY: "Example-OIDC",
   AUTH_AUTHORIZATION_URL: "https://auth.example.invalid/oauth2/authorize",
   AUTH_TOKEN_URL: "https://auth.example.invalid/oauth2/token",
-  AUTH_CLIENT_ID: "synthetic-client-id",
-  AUTH_CLIENT_SECRET: "synthetic-client-secret-value",
+  OIDC_CLIENT_ID: "synthetic-client-id",
+  OIDC_CLIENT_SECRET: "synthetic-client-secret-value",
   AUTH_REDIRECT_URI: "https://platform.example.invalid/api/platform/auth/callback",
   SESSION_SECRET: "synthetic-session-secret-value-32",
 });
@@ -1367,7 +1367,7 @@ test("auth callback unapproved provider account renders safe retry UI", async ()
   assert.equal(fixture.calls.authTokenExchange, 1);
   assert.equal(fixture.calls.authIdentityResolve, 1);
   assert.doesNotMatch(body, /synthetic-auth-code|synthetic-browser-state-reference/);
-  assert.doesNotMatch(body, /email_not_allowed|AUTH_ALLOWED_EMAILS|provider-subject|raw-claim/i);
+  assert.doesNotMatch(body, /email_not_allowed|provider-subject|raw-claim/i);
   assertResponseIsPrivacySafe(response);
 });
 

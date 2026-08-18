@@ -30,11 +30,10 @@ export const HOSTED_READINESS_ENV_CHECKS = [
   required("AUTH_TOKEN_URL", "oidc", validateHttpsUrl),
   required("AUTH_JWKS_URL", "oidc", validateHttpsUrl),
   optional("AUTH_USERINFO_URL", "oidc", validateHttpsUrl),
-  required("AUTH_CLIENT_ID", "oidc"),
-  required("AUTH_CLIENT_SECRET", "oidc", validatePresent, { secret: true }),
+  required("OIDC_CLIENT_ID", "oidc"),
+  required("OIDC_CLIENT_SECRET", "oidc", validatePresent, { secret: true }),
   required("AUTH_REDIRECT_URI", "oidc", validateHostedAuthRedirectUri),
-  required("AUTH_ALLOWED_EMAILS", "oidc"),
-  optional("AUTH_ALLOWED_DOMAINS", "oidc"),
+
   required("PLATFORM_SQAG_LAUNCH_MODE", "sqag_handoff", validateSqagLaunchMode),
   conditional(
     "PLATFORM_SQAG_APP_BASE_URL",

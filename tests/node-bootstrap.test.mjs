@@ -872,8 +872,8 @@ function createBootstrapFixture(options = {}) {
           AUTH_PROVIDER_KEY: "Example-OIDC",
           AUTH_AUTHORIZATION_URL: "https://auth.example.invalid/oauth2/authorize",
           AUTH_TOKEN_URL: "https://auth.example.invalid/oauth2/token",
-          AUTH_CLIENT_ID: "synthetic-client-id",
-          AUTH_CLIENT_SECRET: "synthetic-client-secret-value",
+          OIDC_CLIENT_ID: "synthetic-client-id",
+          OIDC_CLIENT_SECRET: "synthetic-client-secret-value",
           AUTH_REDIRECT_URI: "https://swooshz.com/api/platform/auth/callback",
           SESSION_SECRET: "synthetic-session-secret-value-32",
         }
@@ -887,8 +887,8 @@ function createBootstrapFixture(options = {}) {
           AUTH_AUTHORIZATION_URL: "https://auth.example.invalid/oauth2/authorize",
           AUTH_TOKEN_URL: "https://auth.example.invalid/oauth2/token",
           AUTH_JWKS_URL: jwksUrl,
-          AUTH_CLIENT_ID: "synthetic-client-id",
-          AUTH_CLIENT_SECRET: "synthetic-client-secret-value",
+          OIDC_CLIENT_ID: "synthetic-client-id",
+          OIDC_CLIENT_SECRET: "synthetic-client-secret-value",
           AUTH_REDIRECT_URI: "https://swooshz.com/api/platform/auth/callback",
           SESSION_SECRET: "synthetic-session-secret-value-32",
         }

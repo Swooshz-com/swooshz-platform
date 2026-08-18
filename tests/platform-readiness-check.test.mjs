@@ -69,7 +69,7 @@ test("readiness check fails with safe missing and invalid env names only", () =>
       NODE_ENV: "production",
       DATABASE_URL: privateValues[0],
       SESSION_SECRET: "short",
-      AUTH_CLIENT_SECRET: privateValues[2],
+      OIDC_CLIENT_SECRET: privateValues[2],
       PLATFORM_SQAG_LAUNCH_MODE: "server_handoff",
     },
     writeLine(line) {
@@ -293,8 +293,7 @@ test("readiness output never prints private-looking env values", () => {
     env: reportEnvWithOverride({
       DATABASE_URL: privateOutputProbeValues[0],
       SESSION_SECRET: privateOutputProbeValues[1],
-      AUTH_CLIENT_SECRET: privateOutputProbeValues[2],
-      AUTH_ALLOWED_EMAILS: privateOutputProbeValues[4],
+      OIDC_CLIENT_SECRET: privateOutputProbeValues[2],
       AUTH_REDIRECT_URI: privateOutputProbeValues[5],
     }),
     writeLine(line) {
@@ -361,11 +360,9 @@ function completeEnv() {
     AUTH_TOKEN_URL: "https://issuer.placeholder.invalid/oauth2/token",
     AUTH_JWKS_URL: "https://issuer.placeholder.invalid/.well-known/jwks.json",
     AUTH_USERINFO_URL: "https://issuer.placeholder.invalid/oauth2/userinfo",
-    AUTH_CLIENT_ID: "placeholder-client-id",
-    AUTH_CLIENT_SECRET: privateValues[2],
+    OIDC_CLIENT_ID: "placeholder-client-id",
+    OIDC_CLIENT_SECRET: privateValues[2],
     AUTH_REDIRECT_URI: "https://swooshz.com/api/platform/auth/callback",
-    AUTH_ALLOWED_EMAILS: "<comma-separated-allowlisted-emails>",
-    AUTH_ALLOWED_DOMAINS: "",
     PLATFORM_SQAG_LAUNCH_MODE: "server_handoff",
     PLATFORM_SQAG_APP_BASE_URL: "https://quote.swooshz.com",
     PLATFORM_SQAG_SERVICE_SECRET: "private-sqag-service-secret-value-32-chars",

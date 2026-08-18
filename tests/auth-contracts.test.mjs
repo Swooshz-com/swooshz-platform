@@ -16,8 +16,8 @@ const validSyntheticAuthEnv = {
   AUTH_PROVIDER_KEY: " Example-OIDC ",
   AUTH_AUTHORIZATION_URL: "https://auth.example.invalid/oauth2/authorize",
   AUTH_TOKEN_URL: "https://auth.example.invalid/oauth2/token",
-  AUTH_CLIENT_ID: "synthetic-client-id",
-  AUTH_CLIENT_SECRET: "synthetic-client-secret-value",
+  OIDC_CLIENT_ID: "synthetic-client-id",
+  OIDC_CLIENT_SECRET: "synthetic-client-secret-value",
   AUTH_REDIRECT_URI: "https://platform.example.invalid/auth/callback",
   SESSION_SECRET: "synthetic-session-secret-value-32",
 };
@@ -26,7 +26,7 @@ test("readAuthConfig requires auth env without leaking secret-like values", () =
   assert.throws(
     () =>
       readAuthConfig({
-        AUTH_CLIENT_SECRET: "do-not-leak-client-secret",
+        OIDC_CLIENT_SECRET: "do-not-leak-client-secret",
         SESSION_SECRET: "do-not-leak-session-secret",
       }),
     (error) => {
@@ -45,7 +45,7 @@ test("readAuthConfig rejects invalid URLs without leaking secrets", () => {
       readAuthConfig({
         ...validSyntheticAuthEnv,
         AUTH_AUTHORIZATION_URL: "not a url",
-        AUTH_CLIENT_SECRET: "do-not-leak-invalid-url-secret",
+        OIDC_CLIENT_SECRET: "do-not-leak-invalid-url-secret",
       }),
     (error) => {
       assert.equal(error instanceof AuthConfigError, true);
@@ -67,10 +67,61 @@ test("readAuthConfig parses valid synthetic config", () => {
   assert.equal(config.clientSecret, "synthetic-client-secret-value");
   assert.equal(config.redirectUri, "https://platform.example.invalid/auth/callback");
   assert.equal(config.sessionSecret, "synthetic-session-secret-value-32");
-  assert.deepEqual(config.allowedEmails, []);
-  assert.deepEqual(config.allowedDomains, []);
+  assert.equal(Object.hasOwn(config, "allowedEmails"), false);
+  assert.equal(Object.hasOwn(config, "allowedDomains"), false);
 });
 
+test("readAuthConfig rejects retired client credential names alone", () => {
+  const env = { ...validSyntheticAuthEnv };
+  delete env.OIDC_CLIENT_ID;
+  delete env.OIDC_CLIENT_SECRET;
+  env.AUTH_CLIENT_ID = "retired-client-id";
+  env.AUTH_CLIENT_SECRET = "retired-client-secret";
+
+  assert.throws(() => readAuthConfig(env), (error) => {
+    assert.equal(error instanceof AuthConfigError, true);
+    assert.equal(error.code, "missing_required_env");
+    assert.doesNotMatch(error.message, /retired-client-secret/);
+    return true;
+  });
+});
+
+test("readAuthConfig rejects mixed retired and canonical client credential names", () => {
+  assert.throws(
+    () =>
+      readAuthConfig({
+        ...validSyntheticAuthEnv,
+        AUTH_CLIENT_ID: "retired-client-id",
+        AUTH_CLIENT_SECRET: "retired-client-secret",
+      }),
+    (error) => {
+      assert.equal(error instanceof AuthConfigError, true);
+      assert.equal(error.code, "missing_required_env");
+      assert.doesNotMatch(error.message, /retired-client-secret/);
+      return true;
+    },
+  );
+});
+
+test("readAuthConfig fails closed when either canonical OIDC credential is missing", () => {
+  const missingId = { ...validSyntheticAuthEnv };
+  delete missingId.OIDC_CLIENT_ID;
+  assert.throws(() => readAuthConfig(missingId), (error) => {
+    assert.equal(error instanceof AuthConfigError, true);
+    assert.equal(error.code, "missing_required_env");
+    assert.match(error.message, /OIDC_CLIENT_ID/);
+    return true;
+  });
+
+  const missingSecret = { ...validSyntheticAuthEnv };
+  delete missingSecret.OIDC_CLIENT_SECRET;
+  assert.throws(() => readAuthConfig(missingSecret), (error) => {
+    assert.equal(error instanceof AuthConfigError, true);
+    assert.equal(error.code, "missing_required_env");
+    assert.match(error.message, /OIDC_CLIENT_SECRET/);
+    return true;
+  });
+});
 test("readAuthConfig preserves issuer identifiers without adding a trailing slash", () => {
   const config = readAuthConfig({
     ...validSyntheticAuthEnv,
@@ -79,18 +130,16 @@ test("readAuthConfig preserves issuer identifiers without adding a trailing slas
 
   assert.equal(config.issuerUrl, "https://accounts.google.com");
 });
-
-test("readAuthConfig normalizes allowed emails and domains", () => {
+test("readAuthConfig ignores legacy email and domain variables", () => {
   const config = readAuthConfig({
     ...validSyntheticAuthEnv,
     AUTH_ALLOWED_EMAILS: " Owner@Example.COM, MEMBER@Example.com ,,",
     AUTH_ALLOWED_DOMAINS: " Example.COM, @Team.Example.COM ,,",
   });
 
-  assert.deepEqual(config.allowedEmails, ["owner@example.com", "member@example.com"]);
-  assert.deepEqual(config.allowedDomains, ["example.com", "team.example.com"]);
+  assert.equal(Object.hasOwn(config, "allowedEmails"), false);
+  assert.equal(Object.hasOwn(config, "allowedDomains"), false);
 });
-
 test("readAuthConfig enforces session secret minimum length", () => {
   assert.throws(
     () =>
@@ -114,7 +163,7 @@ test("auth errors keep caller messages privacy-safe", () => {
       readAuthConfig({
         ...validSyntheticAuthEnv,
         AUTH_TOKEN_URL: "not a url",
-        AUTH_CLIENT_SECRET: "synthetic-secret-must-stay-hidden",
+        OIDC_CLIENT_SECRET: "synthetic-secret-must-stay-hidden",
       }),
     (error) => {
       assert.equal(error instanceof AuthConfigError, true);

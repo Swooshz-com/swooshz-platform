@@ -13,11 +13,7 @@ Secret runtime names:
 - `CSRF_TOKEN_HASH_SECRET`
 - `AUTH_STATE_HASH_SECRET`
 - `APP_LAUNCH_TOKEN_HASH_SECRET`
-- `AUTH_CLIENT_SECRET`
-
-Private operational data names:
-
-- `AUTH_ALLOWED_EMAILS`
+- `OIDC_CLIENT_SECRET`
 
 One-off operator names that must not live on the long-running service:
 
@@ -42,11 +38,12 @@ Non-secret runtime names that still require reviewed values:
 - `AUTH_TOKEN_URL`
 - `AUTH_JWKS_URL`
 - `AUTH_USERINFO_URL`
-- `AUTH_CLIENT_ID`
+- `OIDC_CLIENT_ID`
 - `AUTH_REDIRECT_URI`
-- `AUTH_ALLOWED_DOMAINS`
 - `PLATFORM_SQAG_LAUNCH_MODE`
 - `PLATFORM_SQAG_APP_BASE_URL`
+
+Email and domain environment variables are not part of the active auth or admission contract. Rotate only the canonical OIDC credentials and other explicitly documented runtime secrets.
 
 ## Routine Rotation
 
@@ -62,7 +59,7 @@ Use this only after an operator approves the target environment, owner, and main
    - `CSRF_TOKEN_HASH_SECRET` can invalidate outstanding CSRF tokens.
    - `AUTH_STATE_HASH_SECRET` can invalidate outstanding auth state/nonce references.
    - `APP_LAUNCH_TOKEN_HASH_SECRET` can invalidate outstanding app launch tokens.
-   - `AUTH_CLIENT_SECRET` can affect OIDC callback token exchange.
+   - `OIDC_CLIENT_SECRET` can affect OIDC callback token exchange.
 6. Restart or redeploy only in a separately approved hosted execution window.
 7. Run env readiness and DB readiness checks from the reviewed environment, recording sanitized pass/fail categories only.
 8. Run hosted login/logout, CSRF, admin, entitlement, and launch smoke only after hosted smoke is explicitly approved.

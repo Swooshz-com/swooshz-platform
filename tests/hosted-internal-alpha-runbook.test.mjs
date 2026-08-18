@@ -1,4 +1,4 @@
-﻿import assert from "node:assert/strict";
+import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
@@ -116,11 +116,9 @@ test("hosted internal alpha runbook has an env checklist with safe examples and 
     ["AUTH_TOKEN_URL", "Required", "No"],
     ["AUTH_JWKS_URL", "Required", "No"],
     ["AUTH_USERINFO_URL", "Optional", "No"],
-    ["AUTH_CLIENT_ID", "Required", "No"],
-    ["AUTH_CLIENT_SECRET", "Required", "Yes"],
+    ["OIDC_CLIENT_ID", "Required", "No"],
+    ["OIDC_CLIENT_SECRET", "Required", "Yes"],
     ["AUTH_REDIRECT_URI", "Required", "No"],
-    ["AUTH_ALLOWED_EMAILS", "Required", "No"],
-    ["AUTH_ALLOWED_DOMAINS", "Optional", "No"],
     ["PLATFORM_SQAG_LAUNCH_MODE", "Required", "No"],
     ["PLATFORM_SQAG_APP_BASE_URL", "Required when server_handoff", "No"],
     ["PLATFORM_SEED_CONFIRM", "Required for bootstrap only", "No"],
@@ -137,7 +135,6 @@ test("hosted internal alpha runbook has an env checklist with safe examples and 
   assert.match(runbook, /<runtime-database-url-from-secret-store>/);
   assert.match(runbook, /<operator-database-url-from-secret-store>/);
   assert.match(runbook, /<hosted-owner-admin-email-after-login>/);
-  assert.match(runbook, /<comma-separated-allowlisted-emails>/);
 });
 
 test("hosted runbook preserves the rollback-gated runtime activation contract", async () => {
@@ -320,7 +317,7 @@ test("hosted internal alpha runbook covers Hostinger Coolify readiness without d
     "Deploy-time env categories",
     "Non-secret operator choices",
     "Secret values",
-    "Private allowlist values",
+    "Platform authorization contract",
     "Operator-only database values",
     "Bootstrap-only values",
     "Product handoff configuration",

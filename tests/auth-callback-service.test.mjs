@@ -18,8 +18,8 @@ const baseEnv = {
   AUTH_PROVIDER_KEY: "Example-OIDC",
   AUTH_AUTHORIZATION_URL: "https://auth.example.invalid/oauth2/authorize",
   AUTH_TOKEN_URL: "https://auth.example.invalid/oauth2/token",
-  AUTH_CLIENT_ID: "synthetic-client-id",
-  AUTH_CLIENT_SECRET: "synthetic-client-secret-value",
+  OIDC_CLIENT_ID: "synthetic-client-id",
+  OIDC_CLIENT_SECRET: "synthetic-client-secret-value",
   AUTH_REDIRECT_URI: "https://platform.example.invalid/auth/callback",
   SESSION_SECRET: "synthetic-session-secret-value-32",
 };
@@ -217,11 +217,12 @@ test("raw tokens claims and provider responses are never present in service resu
   assertServiceResultIsSafe(result);
 });
 
-test("allowlisted email passes", async () => {
+test("legacy email and domain variables do not control Platform admission", async () => {
   const deps = createServiceDependencies({
     authConfig: readAuthConfig({
       ...baseEnv,
-      AUTH_ALLOWED_EMAILS: "owner@example.com",
+      AUTH_ALLOWED_EMAILS: "other@example.com",
+      AUTH_ALLOWED_DOMAINS: "other.example.com",
     }),
   });
 
@@ -232,96 +233,24 @@ test("allowlisted email passes", async () => {
 
   assert.equal(result.outcome, "authenticated");
   assert.equal(result.verifiedEmail, "owner@example.com");
+  assert.equal(Object.hasOwn(deps.platformIdentityResolver.resolvedInputs[0], "authPolicy"), false);
+  assert.equal(result.workspaceMembershipGranted, false);
+  assert.equal(result.appAccessGranted, false);
 });
 
-test("non-allowlisted email fails", async () => {
+test("provider identity without Platform approval is denied safely", async () => {
   const deps = createServiceDependencies({
-    authConfig: readAuthConfig({
-      ...baseEnv,
-      AUTH_ALLOWED_EMAILS: "other@example.com",
-    }),
-  });
-
-  await assert.rejects(
-    () =>
-      handleAuthCallback(deps, {
-        params: { code: "synthetic-auth-code", state: "synthetic-state" },
-        now,
-      }),
-    (error) => {
-      assert.equal(error instanceof AuthCallbackError, true);
-      assert.equal(error.code, "onboarding_approval_required");
-      assert.doesNotMatch(error.message, /owner@example.com|other@example.com/);
-      return true;
-    },
-  );
-});
-
-test("non-allowlisted email can continue to the resolver for pending approval checks", async () => {
-  const deps = createServiceDependencies({
-    authConfig: readAuthConfig({
-      ...baseEnv,
-      AUTH_ALLOWED_EMAILS: "owner@example.com",
-    }),
     verifiedIdentity: {
       providerKey: "example-oidc",
-      providerSubject: "pending-provider-subject",
-      verifiedEmail: "pending.user@example.test",
-      displayName: "Pending User",
+      providerSubject: "unapproved-provider-subject",
+      verifiedEmail: "unapproved@example.test",
+      displayName: "Unapproved User",
       metadata: { emailVerified: true },
     },
-    allowDisallowedIdentityResolution: true,
-    platformIdentityResolution: {
-      platformUserId: "user_pending",
-      providerIdentityId: "provider_identity_pending",
-      session: {
-        id: "session_pending",
-        userId: "user_pending",
-        createdAt: now,
-        expiresAt: future,
-        lastSeenAt: now,
-        revokedAt: null,
-      },
-      workspaceMembershipGranted: true,
-    },
-  });
-
-  const result = await handleAuthCallback(deps, {
-    params: { code: "synthetic-auth-code", state: "synthetic-state" },
-    now,
-  });
-
-  assert.equal(result.outcome, "authenticated");
-  assert.equal(result.platformUserId, "user_pending");
-  assert.equal(result.workspaceMembershipGranted, true);
-  assert.deepEqual(deps.platformIdentityResolver.resolvedInputs[0].authPolicy, {
-    providerEmailAllowed: false,
-  });
-  assertServiceResultIsSafe(result);
-});
-
-test("allowlisted domain passes", async () => {
-  const deps = createServiceDependencies({
-    authConfig: readAuthConfig({
-      ...baseEnv,
-      AUTH_ALLOWED_DOMAINS: "example.com",
-    }),
-  });
-
-  const result = await handleAuthCallback(deps, {
-    params: { code: "synthetic-auth-code", state: "synthetic-state" },
-    now,
-  });
-
-  assert.equal(result.outcome, "authenticated");
-});
-
-test("non-allowlisted domain fails", async () => {
-  const deps = createServiceDependencies({
-    authConfig: readAuthConfig({
-      ...baseEnv,
-      AUTH_ALLOWED_DOMAINS: "team.example.com",
-    }),
+    platformIdentityError: new AuthCallbackError(
+      "onboarding_approval_required",
+      "Workspace membership approval is required for this provider identity.",
+    ),
   });
 
   await assert.rejects(
@@ -333,48 +262,15 @@ test("non-allowlisted domain fails", async () => {
     (error) => {
       assert.equal(error instanceof AuthCallbackError, true);
       assert.equal(error.code, "onboarding_approval_required");
-      assert.doesNotMatch(error.message, /owner@example.com|team.example.com/);
+      assert.doesNotMatch(error.message, /unapproved@example.test|unapproved-provider-subject/);
       return true;
     },
   );
+  assert.equal(deps.platformIdentityResolver.resolvedInputs.length, 1);
 });
 
-test("verified email is required when allowlist is configured", async () => {
-  const deps = createServiceDependencies({
-    authConfig: readAuthConfig({
-      ...baseEnv,
-      AUTH_ALLOWED_DOMAINS: "example.com",
-    }),
-    verifiedIdentity: {
-      providerKey: "example-oidc",
-      providerSubject: "provider-subject-123",
-      verifiedEmail: null,
-      displayName: "Synthetic Owner",
-      metadata: {},
-    },
-  });
-
-  await assert.rejects(
-    () =>
-      handleAuthCallback(deps, {
-        params: { code: "synthetic-auth-code", state: "synthetic-state" },
-        now,
-      }),
-    (error) => {
-      assert.equal(error instanceof AuthCallbackError, true);
-      assert.equal(error.code, "verified_email_required");
-      return true;
-    },
-  );
-});
-
-test("email allowlist passing does not grant app access or workspace membership automatically", async () => {
-  const deps = createServiceDependencies({
-    authConfig: readAuthConfig({
-      ...baseEnv,
-      AUTH_ALLOWED_EMAILS: "owner@example.com",
-    }),
-  });
+test("authentication alone does not grant workspace membership or app access", async () => {
+  const deps = createServiceDependencies();
 
   const result = await handleAuthCallback(deps, {
     params: { code: "synthetic-auth-code", state: "synthetic-state" },
@@ -387,7 +283,6 @@ test("email allowlist passing does not grant app access or workspace membership 
   assert.equal(Object.hasOwn(result, "appKey"), false);
   assert.equal(Object.hasOwn(result, "role"), false);
 });
-
 test("existing app-access decision service remains separate", () => {
   const decision = decideAppAccess({
     now,
@@ -491,14 +386,8 @@ function createServiceDependencies(options = {}) {
     resolvedInputs: [],
     async resolveAuthenticatedIdentity(input) {
       this.resolvedInputs.push(input);
-      if (
-        input.authPolicy?.providerEmailAllowed === false &&
-        !options.allowDisallowedIdentityResolution
-      ) {
-        throw new AuthCallbackError(
-          "onboarding_approval_required",
-          "Workspace membership approval is required for this provider identity.",
-        );
+      if (options.platformIdentityError) {
+        throw options.platformIdentityError;
       }
 
       return options.platformIdentityResolution ?? {
@@ -515,7 +404,6 @@ function createServiceDependencies(options = {}) {
       };
     },
   };
-
   return {
     authConfig,
     oidcAdapter,

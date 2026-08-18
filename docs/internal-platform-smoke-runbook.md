@@ -96,13 +96,12 @@ AUTH_AUTHORIZATION_URL=<provider-authorization-url>
 AUTH_TOKEN_URL=<provider-token-url>
 AUTH_USERINFO_URL=<provider-userinfo-url-if-used>
 AUTH_JWKS_URL=<provider-jwks-url>
-AUTH_CLIENT_ID=<provider-client-id>
-AUTH_CLIENT_SECRET=<provider-client-secret-placeholder>
+OIDC_CLIENT_ID=<provider-client-id>
+OIDC_CLIENT_SECRET=<provider-client-secret-placeholder>
 AUTH_REDIRECT_URI=<platform-auth-callback-url>
-AUTH_ALLOWED_EMAILS=<optional-comma-separated-allowed-emails>
-AUTH_ALLOWED_DOMAINS=<optional-comma-separated-allowed-domains>
 ```
 
+OIDC authenticates identity only; Platform authorizes access through pending workspace approval, active membership, and independent app entitlement checks. A valid identity without approval or membership receives safe approval-required denial. No email/domain environment variable, automatic membership, inferred role, or public signup fallback is allowed.
 Generic OIDC runtime mode, if used:
 
 ```text

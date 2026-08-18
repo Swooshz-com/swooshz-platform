@@ -265,7 +265,7 @@ test("auth state adapter modules do not import frontend SQAG provider SDK live D
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:react|next|vite|express|fastify|hono)/i);
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:sqag|clerk|auth0|supabase)/i);
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:pg|node-postgres)/i);
-    assert.doesNotMatch(contents, /DATABASE_URL|AUTH_CLIENT_SECRET|SESSION_SECRET/);
+    assert.doesNotMatch(contents, /DATABASE_URL|OIDC_CLIENT_SECRET|SESSION_SECRET/);
   }
 });
 

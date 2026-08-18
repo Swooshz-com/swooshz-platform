@@ -54,7 +54,7 @@ Runtime secrets for a future hosted Platform deployment:
 - `CSRF_TOKEN_HASH_SECRET`
 - `AUTH_STATE_HASH_SECRET`
 - `APP_LAUNCH_TOKEN_HASH_SECRET`
-- `AUTH_CLIENT_SECRET`
+- `OIDC_CLIENT_SECRET`
 
 Potential future deployment secrets, only if deployment automation is separately approved:
 

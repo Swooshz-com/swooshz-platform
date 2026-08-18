@@ -71,7 +71,7 @@ Provider identities should map to platform users by:
 - Provider key.
 - Provider subject.
 
-Provider subject is the durable external identity key. Email may be stored for display, notification, invitation matching, or allowlist checks only after normalization and provider verification. Email alone must not be the primary immutable identity key.
+Provider subject is the durable external identity key. Email may be stored for display, notification, or pending workspace-membership approval matching only after normalization and provider verification. Email alone must not be the primary immutable identity key.
 
 Provider identity records remain separate from:
 
@@ -83,16 +83,13 @@ Provider identity records remain separate from:
 
 Platform user ids remain the ids used by memberships, sessions, audit events, entitlements, app launch context, and SQAG launch context.
 
-## Invitation And Allowlist Posture
+## Platform Approval, Membership, And Entitlement Posture
 
-For internal UAT, access should be gated by invitation and/or approved email or domain allowlist.
+Authentication proves provider identity only. A valid identity without a matching pending Platform workspace-membership approval or active membership receives a safe approval-required denial. Google sign-in is not public signup; it does not create a workspace, membership, role, organization authority, or app entitlement.
 
-Public signup remains deferred. Workspace creation remains controlled or admin-created unless a later ADR or implementation plan explicitly approves a self-serve workspace creation flow.
+Pending onboarding matches the provider verified, normalized email to persisted approval and accepts the approval transactionally. The membership role comes only from that approval. Existing linked identities require active workspace membership for continuing access, and product launch requires the independent app-entitlement and role checks.
 
-Membership role assignment remains platform-owned. Provider identity, email domain, display name, or successful authentication alone must not grant workspace membership or app access.
-
-Invitation matching should use normalized email only after provider verification confirms the email. Accepting an invitation should create or activate exactly one membership for the target workspace and role.
-
+Workspace creation, membership, role assignment, and app entitlement remain Platform-owned. Email and domain environment variables are not admission authority.
 ## Future Environment Variables
 
 Future auth implementation may use:
@@ -103,11 +100,9 @@ Future auth implementation may use:
 - `AUTH_TOKEN_URL`.
 - `AUTH_USERINFO_URL`.
 - `AUTH_JWKS_URL`.
-- `AUTH_CLIENT_ID`.
-- `AUTH_CLIENT_SECRET`.
+- `OIDC_CLIENT_ID`.
+- `OIDC_CLIENT_SECRET`.
 - `AUTH_REDIRECT_URI`.
-- `AUTH_ALLOWED_EMAILS`.
-- `AUTH_ALLOWED_DOMAINS`.
 - `SESSION_SECRET`.
 
 This ADR does not add populated `.env` files, real URLs, real domains, client ids, client secrets, session secrets, provider tokens, or auth codes.
@@ -256,7 +251,7 @@ Cons:
 - Does not prove identity through a real provider.
 - Can weaken security expectations before real login exists.
 
-Conclusion: not selected as an auth strategy. Internal UAT should use invitation and/or allowlist gates after provider identity is verified, not bypass authentication.
+Conclusion: not selected as an auth strategy. Internal UAT must use real provider verification plus Platform pending approval, active membership, and app-entitlement checks; it must not use environment allowlists or bypass authentication.
 
 ## Future Implementation Sequence
 
@@ -288,7 +283,7 @@ Positive consequences:
 - Avoids premature vendor lock-in.
 - Keeps Supabase Auth separate from managed Postgres considerations.
 - Gives implementation work a clear adapter contract and privacy boundary.
-- Supports internal UAT through invitation and allowlist posture without public signup.
+- Supports internal UAT through Platform pending approval, active membership, and entitlement posture without public signup.
 
 Tradeoffs:
 

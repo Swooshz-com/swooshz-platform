@@ -47,11 +47,9 @@ test("Google OIDC runbook documents exact endpoint env mapping with placeholders
     "AUTH_TOKEN_URL=https://oauth2.googleapis.com/token",
     "AUTH_JWKS_URL=https://www.googleapis.com/oauth2/v3/certs",
     "AUTH_USERINFO_URL=https://openidconnect.googleapis.com/v1/userinfo",
-    "AUTH_CLIENT_ID=<google-oauth-client-id>",
-    "AUTH_CLIENT_SECRET=<google-oauth-client-secret>",
+    "OIDC_CLIENT_ID=<google-oauth-client-id>",
+    "OIDC_CLIENT_SECRET=<google-oauth-client-secret>",
     "AUTH_REDIRECT_URI=https://swooshz.com/api/platform/auth/callback",
-    "AUTH_ALLOWED_EMAILS=<comma-separated-allowlisted-emails>",
-    "AUTH_ALLOWED_DOMAINS=<comma-separated-allowed-domains>",
   ];
 
   for (const envLine of requiredEnv) {
@@ -78,8 +76,7 @@ test("Google OIDC runbook covers setup, security posture, smoke flow, and troubl
     "profile",
     "With personal Gmail, Swooshz cannot enforce the user's Google 2FA policy",
     "Google Workspace, administrators can enforce 2-Step Verification",
-    "exact `AUTH_ALLOWED_EMAILS` is preferred over open domain allow",
-    "Do not use broad domain allow unless intentionally approved",
+    "OIDC authenticates identity; Platform authorizes access.",
     "Do not commit `.env` files or real provider secrets",
     "docs/internal-platform-smoke-runbook.md",
     "npm run platform:start",
