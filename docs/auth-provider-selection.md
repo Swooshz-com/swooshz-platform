@@ -8,6 +8,8 @@ The external auth provider proves identity. Swooshz Platform owns users, provide
 
 Provider claims are inputs to the platform identity boundary. They are not the workspace model, not app authorization, and not the SQAG access model. Apps should receive only platform-scoped context through approved platform contracts.
 
+A valid provider identity is not Platform authorization. Without a matching pending workspace-membership approval or active workspace membership, the identity receives a safe approval-required denial. Pending onboarding matches verified normalized email transactionally; membership does not infer role or create app entitlement, and product access continues to require the existing entitlement checks. Google sign-in is not public signup, and email/domain environment variables do not admit users.
+
 ## Current Runtime Choice
 
 The current runtime supports one active generic OIDC provider through environment configuration:
@@ -15,7 +17,7 @@ The current runtime supports one active generic OIDC provider through environmen
 - `PLATFORM_AUTH_PROVIDER_MODE=generic_oidc`
 - `AUTH_PROVIDER_KEY=<provider-key>`
 - provider endpoint env such as issuer, authorization, token, JWKS, and userinfo URLs
-- provider client env such as client id, client secret, redirect URI, and allowlists
+- canonical OIDC client env: `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, and `AUTH_REDIRECT_URI`
 
 Do not implement true active multi-provider login in this phase. Do not build platform-owned email/password auth in this phase. Do not add fake login.
 

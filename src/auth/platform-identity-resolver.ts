@@ -8,6 +8,7 @@ import {
   type Session,
   type User,
 } from "../accounts/types.js";
+import { normalizeEmail } from "../accounts/normalization.js";
 import type {
   ProviderIdentity,
   ProviderIdentityRepository,
@@ -117,10 +118,7 @@ async function resolveAuthenticatedIdentity(
     };
   }
 
-  const pendingApprovalRequired = input.authPolicy?.providerEmailAllowed === false;
-  const pendingApprovalResolution = await resolvePendingApprovedIdentity(dependencies, input, {
-    requireApproval: pendingApprovalRequired,
-  });
+  const pendingApprovalResolution = await resolvePendingApprovedIdentity(dependencies, input);
 
   if (pendingApprovalResolution) {
     return pendingApprovalResolution;
@@ -132,35 +130,17 @@ async function resolveAuthenticatedIdentity(
 async function resolvePendingApprovedIdentity(
   dependencies: PlatformIdentitySessionResolverDependencies,
   input: AuthenticatedPlatformIdentityInput,
-  options: { requireApproval: boolean },
 ): Promise<AuthCallbackPlatformIdentityResolution | null> {
-  if (!input.identity.verifiedEmail) {
-    if (!options.requireApproval) {
-      return null;
-    }
+  const verifiedEmail = readVerifiedEmail(input.identity.verifiedEmail);
 
-    throw new AuthCallbackError(
-      "verified_email_required",
-      "Verified provider email is required to accept workspace membership approval.",
-    );
+  if (!verifiedEmail) {
+    return null;
   }
 
   const transaction = dependencies.repositories.workspaceAdminTransactions;
 
-  if (!transaction) {
-    if (!options.requireApproval) {
-      return null;
-    }
-
-    throw membershipApprovalAcceptanceError();
-  }
-
-  if (!dependencies.repositories.membershipApprovals) {
-    if (!options.requireApproval) {
-      return null;
-    }
-
-    throw membershipApprovalAcceptanceError();
+  if (!transaction || !dependencies.repositories.membershipApprovals) {
+    return null;
   }
 
   try {
@@ -174,22 +154,23 @@ async function resolvePendingApprovedIdentity(
       };
       const approvals = await listPendingApprovalsForEmailSafely(
         transactionDependencies,
-        input.identity.verifiedEmail ?? "",
+        verifiedEmail,
       );
 
       if (approvals.length === 0) {
-        if (!options.requireApproval) {
-          return null;
-        }
-
-        throw new AuthCallbackError(
-          "onboarding_approval_required",
-          "Workspace membership approval is required for this provider identity.",
-        );
+        return null;
       }
 
-      await assertApprovalsCanBeAccepted(transactionDependencies, approvals, input);
-      const user = await findOrCreatePendingApprovedUser(transactionDependencies, input);
+      await assertApprovalsCanBeAccepted(
+        transactionDependencies,
+        approvals,
+        verifiedEmail,
+      );
+      const user = await findOrCreatePendingApprovedUser(
+        transactionDependencies,
+        input,
+        verifiedEmail,
+      );
       const linkedProviderIdentity = await createProviderIdentity(
         transactionDependencies,
         user.id,
@@ -215,10 +196,6 @@ async function resolvePendingApprovedIdentity(
       throw error;
     }
 
-    if (error instanceof AuthCallbackError && error.code === "verified_email_required") {
-      throw error;
-    }
-
     throw membershipApprovalAcceptanceError();
   }
 }
@@ -226,20 +203,12 @@ async function resolvePendingApprovedIdentity(
 async function findOrCreatePendingApprovedUser(
   dependencies: PlatformIdentitySessionResolverDependencies,
   input: AuthenticatedPlatformIdentityInput,
+  verifiedEmail: string,
 ): Promise<User> {
-  const verifiedEmail = input.identity.verifiedEmail;
-
-  if (!verifiedEmail) {
-    throw new AuthCallbackError(
-      "verified_email_required",
-      "Verified provider email is required to create a platform user.",
-    );
-  }
-
   const existingUser = await findUserByNormalizedEmailSafely(dependencies, verifiedEmail);
 
   if (!existingUser) {
-    return createUserForNewProviderIdentity(dependencies, input);
+    return createUserForNewProviderIdentity(dependencies, input, verifiedEmail);
   }
 
   assertUserCanCreateSession(existingUser);
@@ -278,7 +247,7 @@ async function listPendingApprovalsForEmailSafely(
 async function assertApprovalsCanBeAccepted(
   dependencies: PlatformIdentitySessionResolverDependencies,
   approvals: readonly WorkspaceMembershipApprovalRecord[],
-  input: AuthenticatedPlatformIdentityInput,
+  verifiedEmail: string,
 ): Promise<void> {
   const workspaces = dependencies.repositories.workspaces;
   const memberships = dependencies.repositories.memberships;
@@ -311,9 +280,7 @@ async function assertApprovalsCanBeAccepted(
       throw membershipApprovalAcceptanceError();
     }
 
-    const existingUser = input.identity.verifiedEmail
-      ? await findUserByNormalizedEmailSafely(dependencies, input.identity.verifiedEmail)
-      : null;
+    const existingUser = await findUserByNormalizedEmailSafely(dependencies, verifiedEmail);
 
     if (existingUser) {
       const existingMembership = await memberships.findForUserInWorkspace(
@@ -397,17 +364,11 @@ async function acceptPendingApproval(
 async function createUserForNewProviderIdentity(
   dependencies: PlatformIdentitySessionResolverDependencies,
   input: AuthenticatedPlatformIdentityInput,
+  verifiedEmail: string,
 ): Promise<User> {
-  if (!input.identity.verifiedEmail) {
-    throw new AuthCallbackError(
-      "verified_email_required",
-      "Verified provider email is required to create a platform user.",
-    );
-  }
-
   const existingUser = await findUserByNormalizedEmailSafely(
     dependencies,
-    input.identity.verifiedEmail,
+    verifiedEmail,
   );
 
   if (existingUser) {
@@ -422,11 +383,11 @@ async function createUserForNewProviderIdentity(
       id: dependencies.userIdFactory({
         providerKey: input.identity.providerKey,
         providerSubject: input.identity.providerSubject,
-        verifiedEmail: input.identity.verifiedEmail,
+        verifiedEmail,
         now: input.now,
       }),
-      email: input.identity.verifiedEmail,
-      displayName: input.identity.displayName?.trim() || input.identity.verifiedEmail,
+      email: verifiedEmail,
+      displayName: input.identity.displayName?.trim() || verifiedEmail,
       status: UserStatus.Active,
       createdAt: input.now,
       updatedAt: input.now,
@@ -599,6 +560,12 @@ function signInApprovalRequiredError(): AuthCallbackError {
     "onboarding_approval_required",
     "Workspace membership approval is required for this provider identity.",
   );
+}
+
+function readVerifiedEmail(value: string | null): string | null {
+  const normalized = value ? normalizeEmail(value) : "";
+
+  return normalized || null;
 }
 
 function membershipApprovalAcceptanceError(): AuthCallbackError {

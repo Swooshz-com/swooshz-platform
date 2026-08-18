@@ -52,9 +52,8 @@ Non-secret runtime names:
 - `AUTH_TOKEN_URL`
 - `AUTH_JWKS_URL`
 - `AUTH_USERINFO_URL`
-- `AUTH_CLIENT_ID`
+- `OIDC_CLIENT_ID`
 - `AUTH_REDIRECT_URI`
-- `AUTH_ALLOWED_DOMAINS`
 - `PLATFORM_SQAG_LAUNCH_MODE`
 - `PLATFORM_SQAG_APP_BASE_URL`
 
@@ -66,13 +65,9 @@ Secret runtime names:
 - `AUTH_STATE_HASH_SECRET`
 - `APP_LAUNCH_TOKEN_HASH_SECRET`
 - `PLATFORM_SQAG_SERVICE_SECRET`
-- `AUTH_CLIENT_SECRET`
+- `OIDC_CLIENT_SECRET`
 
 Platform and SQAG must receive the same `PLATFORM_SQAG_SERVICE_SECRET` value through their separate Coolify secret stores. Platform uses `https://swooshz.com`; SQAG uses `https://quote.swooshz.com`. Do not scope either app's browser cookie to `.swooshz.com`: each service owns only its host cookie.
-
-Private operational data names:
-
-- `AUTH_ALLOWED_EMAILS`
 
 One-off operator names, not long-running service env:
 
@@ -85,6 +80,14 @@ One-off operator names, not long-running service env:
 - `PLATFORM_SEED_MEMBERSHIP_ROLE`
 
 Do not commit, print, screenshot, or paste real values for these names into repo files, tickets, PRs, logs, or chat.
+
+## Platform Authorization Contract
+
+OIDC authenticates identity; Swooshz Platform authorizes access. A verified Google identity without a matching pending workspace-membership approval or active workspace membership receives a safe approval-required denial. Authentication does not create a workspace, membership, role, organization authority, app entitlement, or SQAG access.
+
+Pending onboarding matches the provider verified, normalized email to persisted Platform approval and accepts the approval transactionally. Continuing access requires active membership, and product launch still requires the existing app-entitlement and role checks. Email and domain environment variables are not admission authority.
+
+The long-running Platform runtime uses `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET` for generic OIDC only. Coolify API tokens, Neon control-plane credentials, privileged database operator URLs, and other operator-only credentials stay outside the runtime container and are never placed in its environment contract.
 
 ## Canonical Public Origins And OAuth Callback
 

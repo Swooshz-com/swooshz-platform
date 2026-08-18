@@ -85,13 +85,19 @@ Deploy-time env categories:
 
 | Category | Env names | Coolify handling | Notes |
 | --- | --- | --- | --- |
-| Non-secret operator choices | `NODE_ENV`, `PLATFORM_HTTP_HOST`, `PLATFORM_HTTP_PORT`, `PLATFORM_PUBLIC_BASE_URL`, `PLATFORM_ALLOWED_ORIGINS`, `PLATFORM_COOKIE_SECURE`, `DATABASE_SSL_MODE`, `DATABASE_EXPECTED_RUNTIME_ROLE`, `PLATFORM_AUTH_PROVIDER_MODE`, `AUTH_PROVIDER_KEY`, `AUTH_ISSUER_URL`, `AUTH_AUTHORIZATION_URL`, `AUTH_TOKEN_URL`, `AUTH_JWKS_URL`, `AUTH_USERINFO_URL`, `AUTH_CLIENT_ID`, `AUTH_REDIRECT_URI`, `AUTH_ALLOWED_DOMAINS`, `PLATFORM_SQAG_LAUNCH_MODE`, `PLATFORM_SQAG_APP_BASE_URL` | Set as reviewed environment entries. | Hosted runtime uses `NODE_ENV=production`, the exact canonical origins, HTTPS provider URLs, `PLATFORM_COOKIE_SECURE=true`, and `server_handoff` for the implemented separate-origin SQAG flow. |
-| Secret values | `DATABASE_URL`, `SESSION_SECRET`, `CSRF_TOKEN_HASH_SECRET`, `AUTH_STATE_HASH_SECRET`, `APP_LAUNCH_TOKEN_HASH_SECRET`, `PLATFORM_SQAG_SERVICE_SECRET`, `AUTH_CLIENT_SECRET` | Inject through Coolify secret/env storage only. | Platform and SQAG receive the same service secret through their separate secret stores. Do not commit, print, screenshot, paste, or expose values in build logs, app logs, tickets, shell history, or PRs. |
-| Private allowlist values | `AUTH_ALLOWED_EMAILS` | Treat as private operational data, even though it is not a credential. | Keep real staff addresses outside the repo; use placeholders in docs and tickets. |
+| Non-secret operator choices | `NODE_ENV`, `PLATFORM_HTTP_HOST`, `PLATFORM_HTTP_PORT`, `PLATFORM_PUBLIC_BASE_URL`, `PLATFORM_ALLOWED_ORIGINS`, `PLATFORM_COOKIE_SECURE`, `DATABASE_SSL_MODE`, `DATABASE_EXPECTED_RUNTIME_ROLE`, `PLATFORM_AUTH_PROVIDER_MODE`, `AUTH_PROVIDER_KEY`, `AUTH_ISSUER_URL`, `AUTH_AUTHORIZATION_URL`, `AUTH_TOKEN_URL`, `AUTH_JWKS_URL`, `AUTH_USERINFO_URL`, `OIDC_CLIENT_ID`, `AUTH_REDIRECT_URI`, `PLATFORM_SQAG_LAUNCH_MODE`, `PLATFORM_SQAG_APP_BASE_URL` | Set as reviewed environment entries. | Hosted runtime uses `NODE_ENV=production`, the exact canonical origins, HTTPS provider URLs, `PLATFORM_COOKIE_SECURE=true`, and `server_handoff` for the implemented separate-origin SQAG flow. |
+| Secret values | `DATABASE_URL`, `SESSION_SECRET`, `CSRF_TOKEN_HASH_SECRET`, `AUTH_STATE_HASH_SECRET`, `APP_LAUNCH_TOKEN_HASH_SECRET`, `PLATFORM_SQAG_SERVICE_SECRET`, `OIDC_CLIENT_SECRET` | Inject through Coolify secret/env storage only. | Platform and SQAG receive the same service secret through their separate secret stores. Do not commit, print, screenshot, paste, or expose values in build logs, app logs, tickets, shell history, or PRs. |
 | Operator-only database values | `DATABASE_OPERATOR_URL`, `DATABASE_MIGRATIONS_CONFIRM` | Do not keep on the long-running Coolify app service. Set only in a separately controlled operator process for readiness or a reviewed migration. | The migrated Neon database should already return `ready` from `npm run platform:db-readiness-check` before app start. |
 | Bootstrap-only values | `PLATFORM_SEED_CONFIRM`, `PLATFORM_SEED_USER_EMAIL`, `PLATFORM_SEED_WORKSPACE_SLUG`, `PLATFORM_SEED_WORKSPACE_NAME`, `PLATFORM_SEED_MEMBERSHIP_ROLE` | Do not keep on the long-running Coolify app service. Set only for a reviewed one-off bootstrap after real hosted auth creates the user. | These values must not become env-controlled business/admin state, default production data, or a fake login path. |
 | Product handoff configuration | `PLATFORM_SQAG_LAUNCH_MODE`, `PLATFORM_SQAG_APP_BASE_URL`, `PLATFORM_SQAG_SERVICE_SECRET` | Use `server_handoff`, exact `https://quote.swooshz.com`, and a shared secret injected separately into both services. | Platform stores launch checks/tokens and entitlements only; product workflow/runtime data remains outside Platform. |
 
+Platform authorization contract:
+
+- Google/OIDC authenticates identity only; Platform authorizes access.
+- A verified identity without pending Platform approval or active membership receives a safe approval-required denial and no usable workspace or product authority.
+- Pending onboarding matches verified normalized email transactionally, and the membership role comes only from the persisted approval.
+- Existing linked identities require active membership for continuing access; SQAG launch still requires the independent app entitlement and role checks.
+- No email/domain environment variable, automatic workspace, automatic membership, inferred role, or self-service entitlement is permitted.
 Coolify readiness sequence:
 
 1. Confirm the repo branch or release reference includes the reviewed Neon migration evidence and this runbook.
@@ -752,11 +758,9 @@ Stop and redact the log collection process if a log includes secret values, data
 | `AUTH_TOKEN_URL` | OIDC token endpoint. | Required | `<provider-token-url>` | No | Hosted readiness requires HTTPS; called only during auth callback. |
 | `AUTH_JWKS_URL` | OIDC JWKS endpoint. | Required | `<provider-jwks-url>` | No | Hosted readiness requires HTTPS; called only during token verification. |
 | `AUTH_USERINFO_URL` | Optional OIDC userinfo endpoint. | Optional | `<provider-userinfo-url-if-used>` | No | Hosted readiness requires HTTPS when set; called only after token verification succeeds. |
-| `AUTH_CLIENT_ID` | OIDC client id. | Required | `<oidc-client-id-placeholder>` | No | Missing value fails auth config/readiness. |
-| `AUTH_CLIENT_SECRET` | OIDC client secret. | Required | `<oidc-client-secret-placeholder>` | Yes | Missing value fails auth config/readiness; never print it. |
+| `OIDC_CLIENT_ID` | OIDC client id. | Required | `<oidc-client-id-placeholder>` | No | Missing value fails auth config/readiness. |
+| `OIDC_CLIENT_SECRET` | OIDC client secret. | Required | `<oidc-client-secret-placeholder>` | Yes | Missing value fails auth config/readiness; never print it. |
 | `AUTH_REDIRECT_URI` | Hosted callback URI configured with the provider. | Required | `https://swooshz.com/api/platform/auth/callback` | No | Production readiness requires this exact callback URI. |
-| `AUTH_ALLOWED_EMAILS` | Bootstrap/emergency exact allowlist for internal-alpha users. | Required | `<comma-separated-allowlisted-emails>` | No | Provider-entry filter only. It does not create a Platform user, workspace, membership, or first owner by itself. Day-to-day teammate onboarding can use pending workspace approvals; malformed values fail auth config. Treat as private. |
-| `AUTH_ALLOWED_DOMAINS` | Optional reviewed domain allowlist. | Optional | `<comma-separated-allowed-domains-if-approved>` | No | Leave unset unless broad domain allow is reviewed; malformed values fail auth config. |
 | `PLATFORM_SQAG_LAUNCH_MODE` | Controls SQAG browser handoff behavior. | Required | `server_handoff` | No | Unsupported values fail startup/readiness; production cross-subdomain launch uses the implemented server handoff. |
 | `PLATFORM_SQAG_APP_BASE_URL` | SQAG hosted base URL for browser handoff. | Required when server_handoff | `https://quote.swooshz.com` | No | Production `server_handoff` readiness requires this exact SQAG origin. |
 | `PLATFORM_SQAG_SERVICE_SECRET` | Shared service authorization for Platform-to-SQAG calls. | Required when server_handoff | `<strong-random-placeholder>` | Yes | Must be at least 32 characters and injected separately into Platform and SQAG; never expose it to browser code or logs. |
@@ -791,7 +795,7 @@ This command uses `DATABASE_OPERATOR_URL` to reach PostgreSQL in production, che
 
 Use this sequence after hosted auth, migrations, and the reviewed first owner/admin email are approved:
 
-1. Confirm `AUTH_ALLOWED_EMAILS` contains the private reviewed first-owner email outside repo notes. This only allows the provider entry path; it does not create Platform ownership or workspace records.
+1. Confirm the reviewed first-owner/admin email is kept outside repo notes and prepare a pending Platform workspace-membership approval for its normalized value.
 2. In the operator shell, set `PLATFORM_SEED_CONFIRM=seed-reviewed-internal-access`.
 3. Set `PLATFORM_SEED_BOOTSTRAP_MODE=first-owner-pending-approval`.
 4. Set `PLATFORM_SEED_USER_EMAIL=<hosted-owner-admin-email-after-login>` outside the repo.

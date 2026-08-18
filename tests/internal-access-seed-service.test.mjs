@@ -281,7 +281,7 @@ test("internal access seed modules do not import DB frontend SQAG provider SDK f
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?|sqag)/i);
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:react|next|vite|express|fastify|hono|node:http)/i);
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:clerk|auth0|supabase|stripe)/i);
-    assert.doesNotMatch(contents, /DATABASE_URL|AUTH_CLIENT_SECRET|SESSION_SECRET/);
+    assert.doesNotMatch(contents, /DATABASE_URL|OIDC_CLIENT_SECRET|SESSION_SECRET/);
   }
 });
 

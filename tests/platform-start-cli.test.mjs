@@ -442,7 +442,7 @@ test("startup summary contains only safe fields", () => {
     authMode: "generic_oidc",
     env: {
       DATABASE_URL: privateDatabaseUrl,
-      AUTH_CLIENT_SECRET: privateMarker,
+      OIDC_CLIENT_SECRET: privateMarker,
     },
   });
 
@@ -483,7 +483,7 @@ test("platform start CLI keeps runtime boundaries clean", async () => {
     assert.doesNotMatch(contents, /db-migrate|platform-seed-internal-access|drizzle-orm\/node-postgres\/migrator|migrate\(/i);
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:sqag|clerk|auth0|supabase|stripe)/i);
     assert.doesNotMatch(contents, /from\s+["'][^"']*(?:react|next|vite|express|fastify|hono)/i);
-    assert.doesNotMatch(contents, /DATABASE_URL\s*=|CSRF_TOKEN_HASH_SECRET\s*=|AUTH_CLIENT_SECRET\s*=/);
+    assert.doesNotMatch(contents, /DATABASE_URL\s*=|CSRF_TOKEN_HASH_SECRET\s*=|OIDC_CLIENT_SECRET\s*=/);
   }
 
   const scriptFiles = await listFiles("scripts");
@@ -510,8 +510,8 @@ function createEnv(overrides = {}) {
     AUTH_AUTHORIZATION_URL: "https://issuer.example.invalid/oauth2/authorize",
     AUTH_TOKEN_URL: "https://issuer.example.invalid/oauth2/token",
     AUTH_JWKS_URL: "https://issuer.example.invalid/.well-known/jwks.json",
-    AUTH_CLIENT_ID: "synthetic-client-id",
-    AUTH_CLIENT_SECRET: "synthetic-client-secret-placeholder",
+    OIDC_CLIENT_ID: "synthetic-client-id",
+    OIDC_CLIENT_SECRET: "synthetic-client-secret-placeholder",
     AUTH_REDIRECT_URI: "http://127.0.0.1:4317/api/platform/auth/callback",
     SESSION_SECRET: "synthetic_session_secret_32_chars_min",
     ...overrides,

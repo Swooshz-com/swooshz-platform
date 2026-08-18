@@ -277,8 +277,8 @@ test("generic OIDC provider adapter can use the JWKS verifier", async () => {
     AUTH_TOKEN_URL: "https://auth.example.invalid/oauth2/token",
     AUTH_JWKS_URL: jwksUrl,
     AUTH_ISSUER_URL: issuerUrl,
-    AUTH_CLIENT_ID: clientId,
-    AUTH_CLIENT_SECRET: "synthetic-client-secret-value",
+    OIDC_CLIENT_ID: clientId,
+    OIDC_CLIENT_SECRET: "synthetic-client-secret-value",
     AUTH_REDIRECT_URI: "https://platform.example.invalid/api/platform/auth/callback",
     SESSION_SECRET: "synthetic-session-secret-value-32",
   });

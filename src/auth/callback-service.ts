@@ -39,11 +39,6 @@ export interface AuthenticatedPlatformIdentityInput {
   identity: AuthProviderIdentity;
   stateReference: AuthStateReference;
   now: string;
-  authPolicy?: AuthenticatedPlatformIdentityPolicy;
-}
-
-export interface AuthenticatedPlatformIdentityPolicy {
-  providerEmailAllowed: boolean;
 }
 
 export interface AuthStateReference {
@@ -107,8 +102,6 @@ export async function handleAuthCallback(
     expectedNonceHash: storedState.nonceHash,
   });
   const identity = createAuthProviderIdentity(verifiedIdentity);
-  const authPolicy = readIdentityAuthPolicy(identity, dependencies.authConfig);
-
   const resolution = await dependencies.platformIdentityResolver.resolveAuthenticatedIdentity({
     identity,
     stateReference: {
@@ -117,7 +110,6 @@ export async function handleAuthCallback(
       nonceHash: storedState.nonceHash,
     },
     now: input.now,
-    authPolicy,
   });
 
   return {
@@ -159,35 +151,4 @@ function assertStoredStateUsable(
       "Authentication callback state has expired.",
     );
   }
-}
-
-function readIdentityAuthPolicy(
-  identity: AuthProviderIdentity,
-  config: AuthConfig,
-): { providerEmailAllowed: boolean } {
-  const hasEmailAllowlist = config.allowedEmails.length > 0;
-  const hasDomainAllowlist = config.allowedDomains.length > 0;
-
-  if (!hasEmailAllowlist && !hasDomainAllowlist) {
-    return {
-      providerEmailAllowed: true,
-    };
-  }
-
-  if (!identity.verifiedEmail) {
-    throw new AuthCallbackError(
-      "verified_email_required",
-      "Verified provider email is required for this authentication policy.",
-    );
-  }
-
-  const emailDomain = identity.verifiedEmail.split("@").at(-1) ?? "";
-  const emailAllowed =
-    !hasEmailAllowlist || config.allowedEmails.includes(identity.verifiedEmail);
-  const domainAllowed =
-    !hasDomainAllowlist || config.allowedDomains.includes(emailDomain);
-
-  return {
-    providerEmailAllowed: emailAllowed && domainAllowed,
-  };
 }

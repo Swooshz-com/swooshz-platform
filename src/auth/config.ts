@@ -1,23 +1,24 @@
-import { normalizeEmail } from "../accounts/normalization.js";
 import { AuthConfigError } from "./errors.js";
 
 export const AUTH_SESSION_SECRET_MIN_LENGTH = 32;
 
 const providerKeyPattern = /^[a-z][a-z0-9-]{1,63}$/;
-const allowedDomainPattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+const retiredClientCredentialEnvNames = [
+  "AUTH_CLIENT_ID",
+  "AUTH_CLIENT_SECRET",
+] as const;
 
 export interface AuthEnvironment {
+  [key: string]: string | undefined;
   AUTH_PROVIDER_KEY?: string;
   AUTH_ISSUER_URL?: string;
   AUTH_AUTHORIZATION_URL?: string;
   AUTH_TOKEN_URL?: string;
   AUTH_USERINFO_URL?: string;
   AUTH_JWKS_URL?: string;
-  AUTH_CLIENT_ID?: string;
-  AUTH_CLIENT_SECRET?: string;
+  OIDC_CLIENT_ID?: string;
+  OIDC_CLIENT_SECRET?: string;
   AUTH_REDIRECT_URI?: string;
-  AUTH_ALLOWED_EMAILS?: string;
-  AUTH_ALLOWED_DOMAINS?: string;
   SESSION_SECRET?: string;
 }
 
@@ -32,16 +33,15 @@ export interface AuthConfig {
   issuerUrl: string | null;
   userinfoUrl: string | null;
   jwksUrl: string | null;
-  allowedEmails: readonly string[];
-  allowedDomains: readonly string[];
 }
 
 export function readAuthConfig(env: AuthEnvironment): AuthConfig {
+  assertRetiredClientCredentialNamesAbsent(env);
   const providerKey = normalizeProviderKey(readRequiredEnv(env, "AUTH_PROVIDER_KEY"));
   const authorizationUrl = readRequiredUrl(env, "AUTH_AUTHORIZATION_URL");
   const tokenUrl = readRequiredUrl(env, "AUTH_TOKEN_URL");
-  const clientId = readRequiredEnv(env, "AUTH_CLIENT_ID");
-  const clientSecret = readRequiredEnv(env, "AUTH_CLIENT_SECRET");
+  const clientId = readRequiredEnv(env, "OIDC_CLIENT_ID");
+  const clientSecret = readRequiredEnv(env, "OIDC_CLIENT_SECRET");
   const redirectUri = readRequiredUrl(env, "AUTH_REDIRECT_URI");
   const sessionSecret = readRequiredEnv(env, "SESSION_SECRET");
 
@@ -63,8 +63,6 @@ export function readAuthConfig(env: AuthEnvironment): AuthConfig {
     issuerUrl: readOptionalIssuerUrl(env, "AUTH_ISSUER_URL"),
     userinfoUrl: readOptionalUrl(env, "AUTH_USERINFO_URL"),
     jwksUrl: readOptionalUrl(env, "AUTH_JWKS_URL"),
-    allowedEmails: readAllowedEmails(env.AUTH_ALLOWED_EMAILS),
-    allowedDomains: readAllowedDomains(env.AUTH_ALLOWED_DOMAINS),
   };
 }
 
@@ -79,6 +77,15 @@ export function normalizeProviderKey(value: string): string {
   }
 
   return normalized;
+}
+
+function assertRetiredClientCredentialNamesAbsent(env: AuthEnvironment): void {
+  if (retiredClientCredentialEnvNames.some((key) => env[key] !== undefined)) {
+    throw new AuthConfigError(
+      "missing_required_env",
+      "Retired OIDC client credential names are not accepted.",
+    );
+  }
 }
 
 function readRequiredEnv(env: AuthEnvironment, key: keyof AuthEnvironment): string {
@@ -141,56 +148,4 @@ function validateUrl(value: string, key: keyof AuthEnvironment): URL {
   } catch {
     throw new AuthConfigError("invalid_url", `${key} must be a valid URL.`);
   }
-}
-
-function readAllowedEmails(value: string | undefined): readonly string[] {
-  return uniqueCommaSeparatedValues(value).map((email) => {
-    const normalized = normalizeEmail(email);
-
-    if (!normalized.includes("@")) {
-      throw new AuthConfigError(
-        "invalid_allowed_email",
-        "AUTH_ALLOWED_EMAILS must contain valid email-like values.",
-      );
-    }
-
-    return normalized;
-  });
-}
-
-function readAllowedDomains(value: string | undefined): readonly string[] {
-  return uniqueCommaSeparatedValues(value).map((domain) => {
-    const normalized = domain.trim().toLowerCase().replace(/^@+/, "");
-
-    if (!allowedDomainPattern.test(normalized)) {
-      throw new AuthConfigError(
-        "invalid_allowed_domain",
-        "AUTH_ALLOWED_DOMAINS must contain valid domain names.",
-      );
-    }
-
-    return normalized;
-  });
-}
-
-function uniqueCommaSeparatedValues(value: string | undefined): string[] {
-  if (!value) {
-    return [];
-  }
-
-  const seen = new Set<string>();
-  const values: string[] = [];
-
-  for (const item of value.split(",")) {
-    const normalized = item.trim().toLowerCase();
-
-    if (!normalized || seen.has(normalized)) {
-      continue;
-    }
-
-    seen.add(normalized);
-    values.push(item.trim());
-  }
-
-  return values;
 }

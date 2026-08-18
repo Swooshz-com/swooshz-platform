@@ -143,14 +143,11 @@ test("pending approval activates only after real provider-backed sign-in with ma
     identity: {
       ...verifiedIdentity,
       providerSubject: "pending-provider-subject",
-      verifiedEmail: "pending.user@example.test",
+      verifiedEmail: "PENDING.USER@EXAMPLE.TEST",
       displayName: "Pending User",
     },
     stateReference: createStateReference(),
     now,
-    authPolicy: {
-      providerEmailAllowed: false,
-    },
   });
 
   assert.equal(result.platformUserId, "user_auth_callback_1");
@@ -203,7 +200,34 @@ test("pending approval activates only after real provider-backed sign-in with ma
   assert.equal(accessDecision.result, AccessDecisionResult.Allowed);
 });
 
-test("pending approval activates even when provider email passes auth policy", async () => {
+test("pending membership does not create SQAG entitlement", async () => {
+  const deps = createResolverDependencies({
+    membershipApprovals: [pendingApproval()],
+    appEntitlements: [],
+  });
+  const resolver = createPlatformIdentitySessionResolver(deps);
+
+  const result = await resolver.resolveAuthenticatedIdentity({
+    identity: {
+      ...verifiedIdentity,
+      providerSubject: "pending-provider-subject-without-entitlement",
+      verifiedEmail: "PENDING.USER@EXAMPLE.TEST",
+      displayName: "Pending User",
+    },
+    stateReference: createStateReference(),
+    now,
+  });
+
+  assert.equal(result.workspaceMembershipGranted, true);
+  const accessDecision = await decidePlatformAppAccess(deps.repositories, {
+    sessionId: result.session.id,
+    selectedWorkspaceId: "workspace_koncept_images",
+    appKey: "sqag",
+    now,
+  });
+  assert.equal(accessDecision.result, AccessDecisionResult.AppNotEnabledForWorkspace);
+});
+test("pending approval activates from normalized verified email without env policy", async () => {
   const deps = createResolverDependencies({
     membershipApprovals: [pendingApproval()],
     membershipIdFactory: () => "membership_from_pending_approval",
@@ -215,14 +239,11 @@ test("pending approval activates even when provider email passes auth policy", a
     identity: {
       ...verifiedIdentity,
       providerSubject: "pending-provider-subject",
-      verifiedEmail: "pending.user@example.test",
+      verifiedEmail: "PENDING.USER@EXAMPLE.TEST",
       displayName: "Pending User",
     },
     stateReference: createStateReference(),
     now,
-    authPolicy: {
-      providerEmailAllowed: true,
-    },
   });
 
   assert.equal(result.workspaceMembershipGranted, true);
@@ -269,9 +290,6 @@ test("first-owner bootstrap approval activates owner only on zero-member workspa
     },
     stateReference: createStateReference(),
     now,
-    authPolicy: {
-      providerEmailAllowed: true,
-    },
   });
 
   assert.equal(result.platformUserId, "user_auth_callback_1");
@@ -335,9 +353,6 @@ test("revoked or missing pending approval does not authorize non-allowlisted sig
           },
           stateReference: createStateReference(),
           now,
-          authPolicy: {
-            providerEmailAllowed: false,
-          },
         }),
       (error) => {
         assert.equal(error instanceof AuthCallbackError, true);
@@ -431,9 +446,6 @@ test("pending approval acceptance fails closed for unsafe approval and user stat
           },
           stateReference: createStateReference(),
           now,
-          authPolicy: {
-            providerEmailAllowed: false,
-          },
         }),
       (error) => {
         assert.equal(error instanceof AuthCallbackError, true);
@@ -469,9 +481,6 @@ test("pending approval activation rolls back identity and membership state when 
         },
         stateReference: createStateReference(),
         now,
-        authPolicy: {
-          providerEmailAllowed: false,
-        },
       }),
     (error) => {
       assert.equal(error instanceof AuthCallbackError, true);
@@ -504,9 +513,6 @@ test("pending approval activation fails closed when approval is concurrently rev
         },
         stateReference: createStateReference(),
         now,
-        authPolicy: {
-          providerEmailAllowed: false,
-        },
       }),
     (error) => {
       assert.equal(error instanceof AuthCallbackError, true);
@@ -777,7 +783,7 @@ function createResolverDependencies(options = {}) {
         updatedAt: now,
       },
     ],
-    appEntitlements: [
+    appEntitlements: options.appEntitlements ?? [
       {
         id: "entitlement_sqag",
         workspaceId: "workspace_koncept_images",
