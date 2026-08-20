@@ -4,21 +4,22 @@ import { join } from "node:path";
 import test from "node:test";
 
 const providerSelectionPath = "docs/auth-provider-selection.md";
-const googleRunbookPath = "docs/google-oidc-setup-runbook.md";
+const auth0RunbookPath = "docs/auth0-passwordless-email-otp-runbook.md";
 const workosNotesPath = "docs/workos-authkit-fit-notes.md";
+const retiredConnectionSelector = ["AUTH0", "PASSWORDLESS", "CONNECTION"].join("_");
 
 test("external auth provider docs exist and are linked", async () => {
   const readme = await readFile("README.md", "utf8");
   const roadmap = await readFile("docs/roadmap.md", "utf8");
 
-  for (const path of [providerSelectionPath, googleRunbookPath, workosNotesPath]) {
+  for (const path of [providerSelectionPath, auth0RunbookPath, workosNotesPath]) {
     await assert.doesNotReject(() => readFile(path, "utf8"));
     assert.match(readme, new RegExp(escapeRegExp(path)));
     assert.match(roadmap, new RegExp(escapeRegExp(path)));
   }
 });
 
-test("provider selection doc preserves platform ownership and one-provider runtime boundaries", async () => {
+test("provider selection preserves Platform ownership and accepted Auth0 boundaries", async () => {
   const doc = await readFile(providerSelectionPath, "utf8");
 
   assert.match(doc, /external auth provider proves identity/i);
@@ -28,80 +29,88 @@ test("provider selection doc preserves platform ownership and one-provider runti
   assert.match(doc, /app access decisions/i);
   assert.match(doc, /app launch tokens/i);
   assert.match(doc, /one active generic OIDC provider through environment configuration/i);
+  assert.match(doc, /AUTH_PROVIDER_KEY=auth0/i);
+  assert.match(doc, /Auth0 Universal Login with passwordless email OTP/i);
+  assert.match(doc, /fixed `connection=email` parameter/i);
   assert.match(doc, /Do not implement true active multi-provider login/i);
   assert.match(doc, /Do not build platform-owned email\/password auth/i);
   assert.match(doc, /Do not add fake login/i);
-  assert.match(doc, /Google OIDC is the first practical smoke target/i);
   assert.match(doc, /WorkOS\/AuthKit is a strong future B2B\/hosted-auth candidate/i);
   assert.match(doc, /provider subject ids differ/i);
   assert.match(doc, /Future active multi-provider login should be a separate architecture PR/i);
 });
 
-test("Google OIDC runbook documents exact endpoint env mapping with placeholders", async () => {
-  const doc = await readFile(googleRunbookPath, "utf8");
+test("Auth0 passwordless runbook documents synthetic endpoint mapping and fixed selector", async () => {
+  const doc = await readFile(auth0RunbookPath, "utf8");
   const requiredEnv = [
     "PLATFORM_AUTH_PROVIDER_MODE=generic_oidc",
-    "AUTH_PROVIDER_KEY=google",
-    "AUTH_ISSUER_URL=https://accounts.google.com",
-    "AUTH_AUTHORIZATION_URL=https://accounts.google.com/o/oauth2/v2/auth",
-    "AUTH_TOKEN_URL=https://oauth2.googleapis.com/token",
-    "AUTH_JWKS_URL=https://www.googleapis.com/oauth2/v3/certs",
-    "AUTH_USERINFO_URL=https://openidconnect.googleapis.com/v1/userinfo",
-    "OIDC_CLIENT_ID=<google-oauth-client-id>",
-    "OIDC_CLIENT_SECRET=<google-oauth-client-secret>",
+    "AUTH_PROVIDER_KEY=auth0",
+    "AUTH_ISSUER_URL=https://auth0.example.invalid/",
+    "AUTH_AUTHORIZATION_URL=https://auth0.example.invalid/authorize",
+    "AUTH_TOKEN_URL=https://auth0.example.invalid/oauth/token",
+    "AUTH_USERINFO_URL=https://auth0.example.invalid/userinfo",
+    "AUTH_JWKS_URL=https://auth0.example.invalid/.well-known/jwks.json",
+    "OIDC_CLIENT_ID=<oidc-client-id-placeholder>",
+    "OIDC_CLIENT_SECRET=<oidc-client-secret-placeholder>",
     "AUTH_REDIRECT_URI=https://swooshz.com/api/platform/auth/callback",
+    "SESSION_SECRET=<session-secret-placeholder>",
+    "AUTH_STATE_HASH_SECRET=<auth-state-hash-secret-placeholder>",
+    "CSRF_TOKEN_HASH_SECRET=<csrf-token-hash-secret-placeholder>",
+    "APP_LAUNCH_TOKEN_HASH_SECRET=<app-launch-token-hash-secret-placeholder>",
   ];
 
   for (const envLine of requiredEnv) {
     assert.match(doc, new RegExp(escapeRegExp(envLine)));
   }
 
-  assert.match(doc, /DATABASE_URL=<database-url-from-existing-service>/);
-  assert.match(doc, /SESSION_SECRET=<strong-random-placeholder>/);
-  assert.match(doc, /CSRF_TOKEN_HASH_SECRET=<strong-random-placeholder>/);
-  assert.match(doc, /APP_LAUNCH_TOKEN_HASH_SECRET=<strong-random-placeholder>/);
-  assert.match(doc, /AUTH_STATE_HASH_SECRET=<strong-random-placeholder>/);
+  assert.match(doc, /fixed provider parameter `connection=email`/i);
+  assert.doesNotMatch(doc, new RegExp(escapeRegExp(retiredConnectionSelector)));
+  assert.match(doc, /no second auth-method or connection selector/i);
+  assert.match(doc, /does not add an Auth0 SDK/i);
+  assert.match(doc, /platform-owned passwords/i);
+  assert.match(doc, /OTP generation/i);
+  assert.match(doc, /platform-owned OTP email delivery/i);
 });
 
-test("Google OIDC runbook covers setup, security posture, smoke flow, and troubleshooting", async () => {
-  const doc = await readFile(googleRunbookPath, "utf8");
+test("Auth0 passwordless runbook covers identity, authorization, fail-closed security, and no live calls", async () => {
+  const doc = await readFile(auth0RunbookPath, "utf8");
   const requiredPhrases = [
-    "Google proves identity through OIDC",
-    "Swooshz Platform still owns users, sessions, workspaces, memberships, roles, app access, app entitlements, invitations, and app launch tokens",
-    "Google does not own workspace roles or SQAG access",
-    "Use External audience if personal Google accounts or Gmail accounts need to log in",
-    "Use Internal audience only if testing is limited to Google Workspace organization accounts",
-    "openid",
-    "email",
-    "profile",
-    "With personal Gmail, Swooshz cannot enforce the user's Google 2FA policy",
-    "Google Workspace, administrators can enforce 2-Step Verification",
-    "OIDC authenticates identity; Platform authorizes access.",
-    "Do not commit `.env` files or real provider secrets",
-    "docs/internal-platform-smoke-runbook.md",
-    "npm run platform:start",
-    "Complete Google login",
-    "first-owner-pending-approval",
-    "redirects to `/app`",
-    "activates the pending first-owner approval",
-    "npm run platform:seed-internal-access",
-    "redirect_uri_mismatch",
-    "callback state or nonce failure",
-    "Seed says user not found",
-    "Seed says missing provider identity",
-    "`/app` has a session but no workspace or app access",
+    "Auth0 Universal Login with passwordless email OTP owns human authentication",
+    "sole authority for pending approval, active workspace membership, role, app entitlement, Platform session, and app-launch authority",
+    "verified, mutable attribute",
+    "approved provider authority plus provider subject (`sub`)",
+    "exact configured issuer",
+    "audience and authorized party",
+    "RS256 signatures",
+    "exp`/`nbf`/`iat",
+    "nonce",
+    "exact-sub userinfo",
+    "State remains hashed, expiring, browser-bound, and one-time",
+    "Session cookies, CSRF, Origin/Referer checks",
+    "authenticated but unapproved identity receives no Platform session",
+    "different subject or provider authority cannot merge or hijack",
+    "short-lived, hashed, one-time, header-only",
+    "intercepted provider fixtures only",
+    "Synthetic evidence must never be described as live Auth0 validation",
+    "passwordless email OTP flow",
+    "approval-required denial",
+    "No application access after sign-in",
   ];
 
   for (const phrase of requiredPhrases) {
     assert.match(doc, new RegExp(escapeRegExp(phrase), "i"));
   }
+
+  assert.doesNotMatch(doc, /https:\/\/(?:[a-z0-9-]+\.)*auth0\.com/i);
+  assert.doesNotMatch(doc, /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  assert.doesNotMatch(doc, new RegExp(escapeRegExp(retiredConnectionSelector)));
 });
 
-test("WorkOS/AuthKit notes keep WorkOS future-only and require provider fit review", async () => {
+test("WorkOS/AuthKit notes keep WorkOS future-only and preserve subject/email identity rules", async () => {
   const doc = await readFile(workosNotesPath, "utf8");
   const requiredPhrases = [
     "potential future hosted-auth provider candidate",
-    "stronger than plain Google OAuth for B2B",
+    "current Auth0 passwordless OIDC authority",
     "Do not wire WorkOS runtime integration in this PR",
     "Do not implement active multi-provider login in this PR",
     "A future provider-fit PR should verify",
@@ -128,7 +137,7 @@ test("WorkOS/AuthKit notes keep WorkOS future-only and require provider fit revi
   }
 });
 
-test("external auth docs avoid real secrets private data and provider payload examples", async () => {
+test("external auth docs avoid real secrets, private data, and provider payload examples", async () => {
   const docs = await readExternalAuthDocs();
   const combined = docs.join("\n");
 
@@ -146,9 +155,9 @@ test("external auth docs avoid real secrets private data and provider payload ex
   assert.doesNotMatch(combined, new RegExp(`logo_data_url|${dataUrlPrefix}|pricing file|quote export`, "i"));
   assert.doesNotMatch(combined, /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
   assert.doesNotMatch(combined, /C:\\Users\\|\/Users\/|\/home\//i);
-  assert.match(combined, /<platform-base-url>/);
-  assert.match(combined, /<google-oauth-client-secret>/);
-  assert.match(combined, /<database-url-from-existing-service>/);
+  assert.match(combined, /<oidc-client-secret-placeholder>/);
+  assert.match(combined, /<session-secret-placeholder>/);
+  assert.doesNotMatch(combined, /<google-oauth-client-secret>|accounts\.google\.com|google-auth-library/i);
 });
 
 test("external auth docs state deferred runtime boundaries instead of adding implementation scope", async () => {
@@ -157,15 +166,14 @@ test("external auth docs state deferred runtime boundaries instead of adding imp
   const scripts = JSON.stringify(packageJson.scripts);
 
   assert.match(combined, /does not add runtime behavior/i);
-  assert.match(combined, /does not add platform-owned email\/password auth/i);
+  assert.match(combined, /platform-owned email\/password auth/i);
   assert.match(combined, /fake login/i);
-  assert.match(combined, /active multi-provider runtime behavior/i);
-  assert.match(combined, /provider SDKs/i);
-  assert.match(combined, /SQAG integration/i);
-  assert.match(combined, /deployment/i);
+  assert.match(combined, /active multi-provider/i);
+  assert.match(combined, /Auth0 SDK/i);
+  assert.match(combined, /SQAG/i);
+  assert.match(combined, /hosted execution/i);
   assert.match(combined, /database provisioning/i);
   assert.match(combined, /migration automation/i);
-  assert.match(combined, /billing, or Stripe/i);
   assert.doesNotMatch(scripts, /deploy|provision|stripe/i);
 });
 
@@ -175,14 +183,14 @@ test("source tree still has no forbidden provider or frontend dependencies", asy
   const packageJson = await readFile("package.json", "utf8");
   const combined = `${packageJson}\n${allSource}`;
 
-  assert.doesNotMatch(combined, /from ["'](?:@workos|workos|google-auth-library|next|react|vite|express|fastify|hono|stripe)/i);
-  assert.doesNotMatch(combined, /require\(["'](?:@workos|workos|google-auth-library|next|react|vite|express|fastify|hono|stripe)/i);
+  assert.doesNotMatch(combined, /from ["'](?:@workos|workos|google-auth-library|next|react|vite|express|fastify|hono|stripe)["']/i);
+  assert.doesNotMatch(combined, /require\(["'](?:@workos|workos|google-auth-library|next|react|vite|express|fastify|hono|stripe)["']/i);
   assert.doesNotMatch(combined, /fake login|email\/password auth implementation|multi-provider runtime/i);
 });
 
 async function readExternalAuthDocs() {
   return Promise.all(
-    [providerSelectionPath, googleRunbookPath, workosNotesPath].map((path) => readFile(path, "utf8")),
+    [providerSelectionPath, auth0RunbookPath, workosNotesPath].map((path) => readFile(path, "utf8")),
   );
 }
 

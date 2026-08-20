@@ -139,7 +139,7 @@ export function renderLandingPage(): string {
               </p>
               <div class="closing-actions">
                 <a class="public-button" href="/request-access"><span>Understand access</span><b aria-hidden="true">&nearr;</b></a>
-                <a class="public-button-secondary" href="/login">Continue with Google</a>
+                <a class="public-button-secondary" href="/login">Continue with email</a>
               </div>
             </aside>
           </div>
@@ -373,14 +373,14 @@ export function renderRequestAccessPage(): string {
         <section class="form-hero" aria-labelledby="request-access-heading">
           <p class="public-label">Workspace access</p>
           <h1 id="request-access-heading">A connected path into your workspace.</h1>
-          <p class="lede">Access begins with an approved workspace and continues through the provider account associated with it.</p>
+          <p class="lede">Access begins with an approved workspace and continues through the approved provider-backed account associated with it.</p>
           <div class="truth-note"><strong>No public signup is available.</strong> This page does not create an account, send a request, or grant product access.</div>
         </section>
         <section aria-label="Access journey">
           <div class="journey-list">
             <article><span>01</span><div><h2>Speak with your sponsor</h2><p>Use your existing Swooshz or workspace sponsor channel to request review.</p></div></article>
             <article><span>02</span><div><h2>Workspace approval is recorded</h2><p>Membership and role establish the workspace context available after sign-in.</p></div></article>
-            <article><span>03</span><div><h2>Continue with Google</h2><p>Use the approved provider-backed account associated with your workspace.</p></div></article>
+            <article><span>03</span><div><h2>Continue with email</h2><p>Use the approved email sign-in associated with your workspace.</p></div></article>
             <article><span>04</span><div><h2>Open the product</h2><p>Your approved workspace determines whether Swooshz Quote Auto Generator can open.</p></div></article>
           </div>
           <div class="prestige-hero-actions">
@@ -407,10 +407,10 @@ export function renderLoginPage(): string {
         <section class="login-panel" aria-labelledby="login-heading">
           <p class="public-label">Secure Access Portal</p>
           <h1 id="login-heading">Continue to your workspace.</h1>
-          <p id="signedOutNotice" class="signed-out" hidden>You are signed out of Swooshz Platform. Your Google account may still be signed in.</p>
-          <p class="lede">Access requires an approved provider-backed account. Use the approved Google account for your workspace. No public signup is available.</p>
+          <p id="signedOutNotice" class="signed-out" hidden>You are signed out of Swooshz Platform. Your previous email sign-in may still be active.</p>
+          <p class="lede">Access requires an approved provider-backed account. Use the approved email sign-in associated with your workspace. No public signup is available.</p>
           <div class="login-actions">
-            <a class="public-button" href="/api/platform/auth/start"><span>Continue with Google</span><b aria-hidden="true">&nearr;</b></a>
+            <a class="public-button" href="/api/platform/auth/start"><span>Continue with email</span><b aria-hidden="true">&nearr;</b></a>
             <a class="public-button-secondary" href="/app">Already signed in? Continue to app</a>
             <a class="public-quiet-link" href="/request-access"><span>Understand access</span><b aria-hidden="true">&rarr;</b></a>
           </div>

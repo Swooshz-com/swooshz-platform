@@ -320,6 +320,24 @@ test("production bootstrap requires the exact canonical auth callback before DB 
   assert.equal(fixture.calls.listen, 0);
 });
 
+test("production bootstrap rejects non-Auth0 provider authority before DB or listen", async () => {
+  const fixture = createBootstrapFixture({
+    withGenericAuth: true,
+    env: {
+      AUTH_PROVIDER_KEY: "other-oidc",
+    },
+  });
+  const bootstrap = createPlatformNodeBootstrap(fixture.input);
+
+  await assert.rejects(
+    () => bootstrap.start(),
+    assertPrivacySafeBootstrapError("invalid_config"),
+  );
+  assert.equal(fixture.calls.databaseClientFactory, 0);
+  assert.equal(fixture.calls.serverFactory, 0);
+  assert.equal(fixture.calls.listen, 0);
+});
+
 test("bootstrap composes runtime dependencies with secure cookie origin and CSRF config", async () => {
   const fixture = createBootstrapFixture();
   const bootstrap = createPlatformNodeBootstrap(fixture.input);
@@ -869,7 +887,7 @@ function createBootstrapFixture(options = {}) {
     ...(options.withAuth
       ? {
           AUTH_STATE_HASH_SECRET: authStateHashSecret,
-          AUTH_PROVIDER_KEY: "Example-OIDC",
+          AUTH_PROVIDER_KEY: "auth0",
           AUTH_AUTHORIZATION_URL: "https://auth.example.invalid/oauth2/authorize",
           AUTH_TOKEN_URL: "https://auth.example.invalid/oauth2/token",
           OIDC_CLIENT_ID: "synthetic-client-id",
@@ -882,7 +900,7 @@ function createBootstrapFixture(options = {}) {
       ? {
           PLATFORM_AUTH_PROVIDER_MODE: "generic_oidc",
           AUTH_STATE_HASH_SECRET: authStateHashSecret,
-          AUTH_PROVIDER_KEY: "Example-OIDC",
+          AUTH_PROVIDER_KEY: "auth0",
           AUTH_ISSUER_URL: issuerUrl,
           AUTH_AUTHORIZATION_URL: "https://auth.example.invalid/oauth2/authorize",
           AUTH_TOKEN_URL: "https://auth.example.invalid/oauth2/token",
@@ -1115,7 +1133,7 @@ function seedExistingAuthMember(
     {
       id: providerIdentityId,
       userId,
-      providerKey: "example-oidc",
+      providerKey: "auth0",
       providerSubject,
       createdAt: now,
       updatedAt: now,
@@ -1408,7 +1426,7 @@ function createBootstrapOidcAdapter(calls) {
       assert.equal(input.tokenExchange.tokenSetRef, "adapter_internal");
 
       return {
-        providerKey: "example-oidc",
+        providerKey: "auth0",
         providerSubject: "provider-subject-bootstrap",
         verifiedEmail: "bootstrap-owner@example.com",
         displayName: "Bootstrap Owner",

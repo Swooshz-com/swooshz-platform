@@ -103,7 +103,7 @@ test("auth start requests provider account selection without exposing auth mater
   const response = await handleAuthStartRequest(fixture.dependencies, { now });
 
   assert.equal(response.status, 302);
-  assert.equal(fixture.oidcAuthorizationInputs[0].additionalParams.prompt, "select_account");
+  assert.equal(fixture.oidcAuthorizationInputs[0].additionalParams.connection, "email");
   assertHttpAuthResponseIsSafe(response);
 });
 

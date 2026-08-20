@@ -369,6 +369,10 @@ function assertProductionHostedUrlConfig(input: {
   const authConfig = input.authConfig;
 
   if (authConfig) {
+    if (authConfig.providerKey !== "auth0") {
+      throw new PlatformNodeBootstrapError("invalid_config");
+    }
+
     assertHttpsUrl(authConfig.authorizationUrl);
     assertHttpsUrl(authConfig.tokenUrl);
     assertHttpsUrl(authConfig.issuerUrl);

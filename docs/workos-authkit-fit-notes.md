@@ -1,8 +1,8 @@
 # WorkOS/AuthKit Fit Notes
 
-WorkOS/AuthKit is a potential future hosted-auth provider candidate for Swooshz Platform. It may be stronger than plain Google OAuth for B2B, organization, and customer-facing SaaS needs.
+WorkOS/AuthKit is a potential future hosted-auth provider candidate for Swooshz Platform. It may offer different B2B, organization, and customer-facing SaaS capabilities than the current Auth0 passwordless OIDC authority.
 
-Do not wire WorkOS runtime integration in this PR. Do not implement active multi-provider login in this PR. Keep the current operational smoke target on one active generic OIDC provider until a separate provider-fit decision is reviewed.
+Do not wire WorkOS runtime integration in this PR. Do not implement active multi-provider login in this PR. Keep the current Auth0 passwordless email-OTP smoke target on one active generic OIDC provider until a separate provider-fit decision is reviewed.
 
 ## Fit Check Before Runtime Wiring
 
@@ -32,6 +32,6 @@ The WorkOS organization or team model may be useful context, but it must not sil
 
 ## Migration Notes
 
-Future migration from Google to WorkOS requires deliberate provider-identity linking or migration because provider subject ids differ. A matching email address is not enough to prove the same external identity.
+Future migration from the current Auth0/passwordless OIDC authority to WorkOS requires deliberate provider-identity linking or migration because provider subject ids differ. A matching email address is not enough to prove the same external identity.
 
 A future migration PR should define operator review, account-linking rules, duplicate handling, audit events, rollback posture, and privacy-safe troubleshooting before changing real users to a new provider.

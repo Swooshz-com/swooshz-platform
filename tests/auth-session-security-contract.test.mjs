@@ -43,7 +43,7 @@ const deferredItems = [
 
 const alphaMinimumPosture = [
   "single provider-backed login",
-  "allowlisted users",
+  "approved provider-backed users",
   "secure cookie in hosted production",
   "fail-closed sessions",
   "owner/admin audit browsing",

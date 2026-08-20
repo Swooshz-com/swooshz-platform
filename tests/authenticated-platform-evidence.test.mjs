@@ -36,7 +36,7 @@ test("authenticated evidence requires an exact checked-out head SHA", () => {
 
 test("authenticated evidence blocks external network calls", () => {
   assert.equal(assertAllowedEvidenceRequest("http://127.0.0.1:43123/api/platform/session/context", "http://127.0.0.1:43123").pathname, "/api/platform/session/context");
-  assert.throws(() => assertAllowedEvidenceRequest("https://accounts.google.com/", "http://127.0.0.1:43123"), /External network request blocked/);
+  assert.throws(() => assertAllowedEvidenceRequest("https://auth0.example.invalid/", "http://127.0.0.1:43123"), /External network request blocked/);
   assert.throws(() => assertAllowedEvidenceRequest("https://database.example.invalid/", "http://127.0.0.1:43123"), /External network request blocked/);
 });
 
