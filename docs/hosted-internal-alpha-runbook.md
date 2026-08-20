@@ -13,7 +13,7 @@ Use the canonical public routing contract in this repo and shared notes:
 - Platform canonical origin: `https://swooshz.com`.
 - Platform redirect-only origin: `https://www.swooshz.com`.
 - SQAG canonical origin: `https://quote.swooshz.com`.
-- Google/OIDC redirect URI: `https://swooshz.com/api/platform/auth/callback`.
+- Auth0/OIDC redirect URI: `https://swooshz.com/api/platform/auth/callback`.
 
 The hosted redirect URI should resolve to the platform callback route, end with `/api/platform/auth/callback`, and avoid query parameters or fragments. Real configured domains, real staff addresses, database URLs, OAuth values, cookies, tokens, provider identity material, callback URLs with query parameters, and SQAG private app data do not belong in this repository, tickets, screenshots, or shared logs.
 
@@ -93,11 +93,11 @@ Deploy-time env categories:
 
 Platform authorization contract:
 
-- Google/OIDC authenticates identity only; Platform authorizes access.
+- Auth0/OIDC authenticates identity only; Platform authorizes access.
 - A verified identity without pending Platform approval or active membership receives a safe approval-required denial and no usable workspace or product authority.
 - Pending onboarding matches verified normalized email transactionally, and the membership role comes only from the persisted approval.
 - Existing linked identities require active membership for continuing access; SQAG launch still requires the independent app entitlement and role checks.
-- No email/domain environment variable, automatic workspace, automatic membership, inferred role, or self-service entitlement is permitted.
+- Email/domain environment variables are unsupported and are not authorization authority; automatic workspace, automatic membership, inferred role, and self-service entitlement are not permitted.
 Coolify readiness sequence:
 
 1. Confirm the repo branch or release reference includes the reviewed Neon migration evidence and this runbook.
@@ -752,7 +752,7 @@ Stop and redact the log collection process if a log includes secret values, data
 | `AUTH_STATE_HASH_SECRET` | HMAC secret for OIDC state/nonce references. | Required | `<strong-random-placeholder>` | Yes | Required when auth is enabled; short/missing value fails startup/readiness. |
 | `APP_LAUNCH_TOKEN_HASH_SECRET` | HMAC secret for one-time app launch token hashes. | Required | `<strong-random-placeholder>` | Yes | Required for launch issue/consume; short/missing value fails startup/readiness. |
 | `PLATFORM_AUTH_PROVIDER_MODE` | Selects explicit auth provider runtime mode. | Required | `generic_oidc` | No | Hosted internal alpha uses `generic_oidc`; other values fail startup/readiness. |
-| `AUTH_PROVIDER_KEY` | Stable provider key for linked identities. | Required | `<provider-key>` | No | Must match the auth config parser rules; invalid values fail auth config. |
+| `AUTH_PROVIDER_KEY` | Stable provider key for linked identities. | Required | `auth0` | No | Production readiness and bootstrap fail closed unless the accepted Auth0 authority key is configured. |
 | `AUTH_ISSUER_URL` | OIDC issuer URL. | Required | `<provider-issuer-url>` | No | Hosted readiness requires HTTPS; called only during explicit auth verification paths. |
 | `AUTH_AUTHORIZATION_URL` | OIDC authorization endpoint. | Required | `<provider-authorization-url>` | No | Hosted readiness requires HTTPS; called only during auth start. |
 | `AUTH_TOKEN_URL` | OIDC token endpoint. | Required | `<provider-token-url>` | No | Hosted readiness requires HTTPS; called only during auth callback. |

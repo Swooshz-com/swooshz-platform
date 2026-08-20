@@ -174,7 +174,7 @@ test("roadmap records docs-only pre-VPS progress while hosted and final gates st
   const uncheckedLaunchItems = [
     "Hosted visual evidence complete",
     "Coolify Platform app created",
-    "Hosted Google OAuth client/redirect configured outside repo",
+    "Hosted Auth0 passwordless email OTP connection/redirect configured outside repo",
     "CSRF smoke",
     "Rate limiting review",
     "Security headers review",

@@ -24,7 +24,7 @@ export const HOSTED_READINESS_ENV_CHECKS = [
   required("AUTH_STATE_HASH_SECRET", "oidc", validateMinimumLength(32), { secret: true }),
   required("APP_LAUNCH_TOKEN_HASH_SECRET", "app_launch", validateMinimumLength(32), { secret: true }),
   required("PLATFORM_AUTH_PROVIDER_MODE", "oidc", validateAuthProviderMode),
-  required("AUTH_PROVIDER_KEY", "oidc"),
+  required("AUTH_PROVIDER_KEY", "oidc", validateAuthProviderKey),
   required("AUTH_ISSUER_URL", "oidc", validateHttpsUrl),
   required("AUTH_AUTHORIZATION_URL", "oidc", validateHttpsUrl),
   required("AUTH_TOKEN_URL", "oidc", validateHttpsUrl),
@@ -316,6 +316,10 @@ function validateDatabaseUrl(value) {
 
 function validateMigrationConfirm(value) {
   return value === "apply-reviewed-migrations" ? ok() : invalid("unexpected_confirmation");
+}
+
+function validateAuthProviderKey(value) {
+  return value.trim().toLowerCase() === "auth0" ? ok() : invalid("must_be_auth0");
 }
 
 function validateAuthProviderMode(value) {

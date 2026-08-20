@@ -77,6 +77,31 @@ test("existing provider identity resolves existing active user and creates sessi
   assert.equal(Object.hasOwn(result, "appKey"), false);
 });
 
+test("same provider authority and subject resolve the existing identity after email changes", async () => {
+  const deps = createResolverDependencies({
+    users: [activeUser],
+    providerIdentities: [existingProviderIdentity],
+    memberships: [activeMembership()],
+  });
+  const resolver = createPlatformIdentitySessionResolver(deps);
+
+  const result = await resolver.resolveAuthenticatedIdentity({
+    identity: {
+      ...verifiedIdentity,
+      verifiedEmail: "renamed-owner@example.test",
+    },
+    stateReference: createStateReference(),
+    now,
+  });
+
+  assert.equal(result.platformUserId, activeUser.id);
+  assert.equal(result.providerIdentityId, existingProviderIdentity.id);
+  assert.equal(deps.records.users.length, 1);
+  assert.equal(deps.records.providerIdentities.length, 1);
+  assert.equal(deps.records.users[0].id, activeUser.id);
+  assert.equal(deps.records.users[0].email, activeUser.email);
+});
+
 test("fresh sign-in after workspace removal is rejected before session creation", async () => {
   const deps = createResolverDependencies({
     users: [activeUser],

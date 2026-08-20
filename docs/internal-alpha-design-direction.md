@@ -44,7 +44,7 @@ swooshz platform
 ├─ /                      PUBLIC WEBSITE + SIGN-IN GATEHOUSE (one page, 4 states)
 │   ├─ brand + mono "internal alpha" chip
 │   ├─ hero: eyebrow (mandated) · headline · capability line · body line (mandated)
-│   ├─ ACCESS block: "Continue with Google" (mandated) + state notice slot
+│   ├─ ACCESS block: "Continue with email" (mandated) + state notice slot
 │   └─ footer: single plain-text line + contact (no invented legal routes)
 │
 ├─ /app                   PRODUCT LAUNCHER (authenticated)
@@ -189,7 +189,7 @@ rigour to close the gap.
    Mandated copy verbatim: "Access requires an approved provider-backed account for
    your workspace. No public signup is available." No request-access form, no
    waitlist, no pricing.
-2. **Provider-backed login only.** CTA verbatim: "Continue with Google". No password
+2. **Provider-backed login only.** CTA verbatim: "Continue with email". Passwordless email OTP is provider-owned. No password
    fields, no magic links, no fallback auth, no demo mode — ever, on any state.
 3. **Nothing secret has a home.** No component may render: raw tokens (session, CSRF,
    launch), provider claims, cookies, OAuth values, DB URLs, stack traces, CMS
@@ -200,7 +200,7 @@ rigour to close the gap.
    they render verbatim in mono only inside the admin audit register.
 5. **Platform-only logout, said explicitly.** Button verbatim: "Sign out of Swooshz
    Platform" (a CSRF-protected POST, never a link). Post-logout notice verbatim:
-   "You are signed out of Swooshz Platform. Your Google account may still be signed
+   "You are signed out of Swooshz Platform. Your previous email sign-in may still be signed
    in." Styled as a calm neutral notice — logout is a success, not an error.
 6. **Internal-alpha status always visible** on every authenticated surface: the 28px
    mono strip (first in DOM) plus a mono "internal alpha" chip beside the brand mark
@@ -302,7 +302,7 @@ Motion: 120ms opacity/border only; none under `prefers-reduced-motion`.
 | Internal-alpha strip | 28px mono environment strip, first in DOM on authenticated pages | static; workspace/role readout; `{n} workspaces` variant |
 | Record tag (signature) | Mono label seated on every block's top border + Verdigris tick | denied context: tick greys AND tag gains text suffix `– UNAVAILABLE` |
 | Registry block | Base container for every content unit | loading skeleton bars; inert placeholder (Mineral fill); inline error |
-| Primary button | Continue with Google, Launch, submits | hover/focus/disabled(+reason)/busy (label swap, aria-live mirror) |
+| Primary button | Continue with email, Launch, submits | hover/focus/disabled(+reason)/busy (label swap, aria-live mirror) |
 | Quiet button | Sign out, Cancel, Keep enabled, Copy | sign-out is always a POST form |
 | Destructive confirm row | Inline expanding confirm (no modal) on Clay wash | focus moves in on open + scroll-into-view; Escape collapses; error inside with ref chip |
 | Status line | `role=status aria-live=polite` session/async line | idle/busy/error |
@@ -339,7 +339,7 @@ Order, top to bottom:
 5. ACCESS registry block (record tag `ACCESS`):
    - Body line (mandated, verbatim): "Access requires an approved provider-backed
      account for your workspace. No public signup is available."
-   - Primary CTA (mandated, verbatim): **Continue with Google** — the page's only
+   - Primary CTA (mandated, verbatim): **Continue with email** — the page's only
      Verdigris element
    - Helper line: "Expecting access? Ask a workspace owner or admin to add your
      account."
@@ -352,7 +352,7 @@ Entry states (mutually exclusive; precedence: error > post-logout > signed-in):
 | State | Rendering |
 |---|---|
 | 1 Default | Heading "Sign in to continue." + block as above |
-| 2 Post-logout | Calm neutral NOTICE above the heading, verbatim: "You are signed out of Swooshz Platform. Your Google account may still be signed in." CTA unchanged |
+| 2 Post-logout | Calm neutral NOTICE above the heading, verbatim: "You are signed out of Swooshz Platform. Your previous email sign-in may still be signed in." CTA unchanged |
 | 3 Auth error | ERROR banner on Clay wash: "Sign-in did not complete. Nothing was changed on your account." + mono chip `ref SWZ-XXXXXX`. Heading "Try signing in again." One category sentence covers all causes — never distinguishes wrong-account / not-approved / provider-outage. Helper: "If this repeats, give the reference above to a workspace owner or admin." |
 | 4 Already signed in | No CTA, no body line. Heading "You are signed in." + mono identity row. Primary "Go to your workspaces" (→ `/app`); quiet "Sign out of Swooshz Platform" |
 
@@ -470,8 +470,8 @@ display form, copyable) / Your role (`role: owner`).
 
 **02 Add member** (`#add-member`) — email input + role select (admin / member /
 viewer — owner never offered) + primary "Add to workspace" (CSRF POST). Helper:
-"No invitation email is sent. Ask the teammate to sign in with the approved Google
-account."
+"No invitation email is sent. Ask the teammate to complete passwordless email
+sign-in."
 
 Flow (pending-approval membership model): the owner/admin enters email + role. If a
 provider-backed user with that normalised email already exists, Platform adds an
@@ -483,7 +483,7 @@ public signup. A pending approval grants no launch or admin access until activat
 
 Outcome banner, identical on every path: "Access request recorded. If this account
 already exists, the membership is active now. If not, it will activate after the
-teammate signs in with the approved Google account." Server failure: generic
+teammate completes passwordless email sign-in." Server failure: generic
 sentence + `ref` chip.
 
 Members table: pending memberships render as ordinary rows with a mono `pending`
@@ -553,11 +553,11 @@ Error: "Activity could not be loaded." + `ref` chip + quiet Retry.
 | Hero headline (recommended) | Access your workspace's AI business tools. |
 | Hero capability line | Swooshz builds and hosts AI-powered tools for business operations — from quote automation to SEO and AI-search content. |
 | Hero body (mandated) | Access requires an approved provider-backed account for your workspace. No public signup is available. |
-| CTA (mandated) | Continue with Google |
+| CTA (mandated) | Continue with email |
 | Login helper | Expecting access? Ask a workspace owner or admin to add your account. |
-| Post-logout notice (mandated) | You are signed out of Swooshz Platform. Your Google account may still be signed in. |
-| Add-member helper | No invitation email is sent. Ask the teammate to sign in with the approved Google account. |
-| Add-member outcome (all paths) | Access request recorded. If this account already exists, the membership is active now. If not, it will activate after the teammate signs in with the approved Google account. |
+| Post-logout notice (mandated) | You are signed out of Swooshz Platform. Your previous email sign-in may still be signed in. |
+| Add-member helper | No invitation email is sent. Ask the teammate to complete passwordless email sign-in. |
+| Add-member outcome (all paths) | Access request recorded. If this account already exists, the membership is active now. If not, it will activate after the teammate completes passwordless email sign-in. |
 | Launcher status line | signed in as {email} · {n} workspaces |
 | Workspace header | WS – {NAME} · role: {role} |
 | SQAG card | SQAG · private preview · "Generate quotes and manage quotation workflows." · [Launch SQAG] |

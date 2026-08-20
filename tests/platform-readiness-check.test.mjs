@@ -49,6 +49,13 @@ test("readiness check passes for complete hosted internal-alpha env without prin
   assertNoPrivateMaterial(lines.join("\n"));
 });
 
+test("hosted readiness rejects a non-Auth0 provider authority", () => {
+  const report = reportWithOverride({ AUTH_PROVIDER_KEY: "other-oidc" });
+
+  assert.equal(report.ok, false);
+  assertInvalid(report, "AUTH_PROVIDER_KEY", "must_be_auth0");
+});
+
 test("readiness check rejects alternate and ported Platform origins", () => {
   const result = createPlatformReadinessReport({
     ...completeEnv(),
@@ -354,7 +361,7 @@ function completeEnv() {
     AUTH_STATE_HASH_SECRET: privateValues[4],
     APP_LAUNCH_TOKEN_HASH_SECRET: privateValues[5],
     PLATFORM_AUTH_PROVIDER_MODE: "generic_oidc",
-    AUTH_PROVIDER_KEY: "google",
+    AUTH_PROVIDER_KEY: "auth0",
     AUTH_ISSUER_URL: "https://issuer.placeholder.invalid",
     AUTH_AUTHORIZATION_URL: "https://issuer.placeholder.invalid/oauth2/authorize",
     AUTH_TOKEN_URL: "https://issuer.placeholder.invalid/oauth2/token",

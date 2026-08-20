@@ -161,13 +161,13 @@ test("production roadmap records only repo-side CI/container readiness and keeps
   assert.match(roadmap, /Docker image build without push\/deploy/i);
   assert.match(roadmap, /docs\/coolify-deployment-readiness\.md/i);
   assert.match(roadmap, /- \[ \] Coolify Platform app created/i);
-  assert.match(roadmap, /- \[ \] Hosted Google OAuth client\/redirect configured outside repo/i);
+  assert.match(roadmap, /- \[ \] Hosted Auth0 passwordless email OTP connection\/redirect configured outside repo/i);
   assert.match(roadmap, /- \[ \] Platform entitlement and launch-token flow smoke tested/i);
   assert.match(roadmap, /- \[ \] Hosted visual evidence complete/i);
   assert.match(roadmap, /- \[ \] Restore test evidence/i);
   assert.match(roadmap, /- \[ \] Final launch checklist/i);
   assert.doesNotMatch(roadmap, /- \[x\] Coolify Platform app created/i);
-  assert.doesNotMatch(roadmap, /- \[x\] Hosted Google OAuth client\/redirect configured outside repo/i);
+  assert.doesNotMatch(roadmap, /- \[x\] Hosted Auth0 passwordless email OTP connection\/redirect configured outside repo/i);
   assert.doesNotMatch(roadmap, /- \[x\] Platform entitlement and launch-token flow smoke tested/i);
 });
 

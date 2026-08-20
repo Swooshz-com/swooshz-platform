@@ -83,9 +83,9 @@ Do not commit, print, screenshot, or paste real values for these names into repo
 
 ## Platform Authorization Contract
 
-OIDC authenticates identity; Swooshz Platform authorizes access. A verified Google identity without a matching pending workspace-membership approval or active workspace membership receives a safe approval-required denial. Authentication does not create a workspace, membership, role, organization authority, app entitlement, or SQAG access.
+Auth0/OIDC authenticates identity; Swooshz Platform authorizes access. A verified Auth0 identity without a matching pending workspace-membership approval or active workspace membership receives a safe approval-required denial. Authentication does not create a workspace, membership, role, organization authority, app entitlement, or SQAG access.
 
-Pending onboarding matches the provider verified, normalized email to persisted Platform approval and accepts the approval transactionally. Continuing access requires active membership, and product launch still requires the existing app-entitlement and role checks. Email and domain environment variables are not admission authority.
+Pending onboarding matches the provider verified, normalized email to persisted Platform approval and accepts the approval transactionally. Continuing access requires active membership, and product launch still requires the existing app-entitlement and role checks. Email and domain environment variables are unsupported and are not admission authority.
 
 The long-running Platform runtime uses `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET` for generic OIDC only. Coolify API tokens, Neon control-plane credentials, privileged database operator URLs, and other operator-only credentials stay outside the runtime container and are never placed in its environment contract.
 

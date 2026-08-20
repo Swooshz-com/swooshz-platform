@@ -165,7 +165,7 @@ export function renderAppShellPage(): string {
             message.textContent = "You are not signed in. ";
             const link = document.createElement("a");
             link.href = "/api/platform/auth/start";
-            link.textContent = "Continue with Google";
+            link.textContent = "Continue with email";
             status.append(message, link);
             status.hidden = false;
           }
@@ -431,7 +431,7 @@ export function renderAdminShellPage(): string {
             <button id="closeAddMemberModalButton" class="modal-close" type="button" aria-label="Close add member form">&times;</button>
           </div>
           <div class="modal-body">
-            <p id="addMemberModalBody">Add a teammate by email. Existing Swooshz accounts are added immediately. Otherwise, access activates after the same email signs in with Google. No invitation email is sent.</p>
+            <p id="addMemberModalBody">Add a teammate by email. Existing Swooshz accounts are added immediately. Otherwise, access activates after the same email completes passwordless sign-in. No invitation email is sent.</p>
             <p id="addMemberResult" class="inline-feedback" role="status" aria-live="polite" hidden></p>
             <form id="addMemberForm" class="field-stack">
               <label><strong>Email address</strong><input name="email" type="email" autocomplete="email" placeholder="name@example.com" required></label>
@@ -721,7 +721,7 @@ export function renderAdminShellPage(): string {
             message.textContent = "No active platform session. ";
             const link = document.createElement("a");
             link.href = "/api/platform/auth/start";
-            link.textContent = "Continue with Google";
+            link.textContent = "Continue with email";
             status.append(message, link);
           }
 
@@ -1835,7 +1835,7 @@ export function renderAuthErrorPage(): string {
             account or contact your workspace admin.
           </p>
           <div class="login-actions">
-            <a class="primary-action" href="/api/platform/auth/start">Try another Google account</a>
+            <a class="primary-action" href="/api/platform/auth/start">Try another approved email sign-in</a>
             <a class="secondary-action" href="/">Back to sign in</a>
           </div>
         </section>

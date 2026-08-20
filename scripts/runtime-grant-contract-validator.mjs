@@ -105,7 +105,7 @@ const databaseSourceShapeAuthority = new Map([
   ],
   [
     "src/runtime/node-bootstrap.ts",
-    "c752bf40ac0e0efde65e248e48d7b491b5855665cd583e3fde93825a98aac972",
+    "1b7780af70466eea8ec96f2998d71ddb4e76d83134c2d596583b7ca10fc4ac37",
   ],
   [
     "src/runtime/platform-runtime-dependencies.ts",

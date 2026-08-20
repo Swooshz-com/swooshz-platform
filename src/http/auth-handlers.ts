@@ -244,7 +244,7 @@ export async function handleAuthStartRequest(
       state,
       nonce,
       additionalParams: {
-        prompt: "select_account",
+        connection: "email",
       },
     });
     authorizationUrl = authorization.url;

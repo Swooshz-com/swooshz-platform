@@ -13,7 +13,7 @@ test("production readiness roadmap records required launch gates and Codex rules
     "Checklist Update Rules For Codex",
     "Hostinger/Coolify shared hosting foundation gate",
     "hosted deployment gate",
-    "hosted OAuth/auth/member smoke gate",
+    "hosted Auth0/passwordless email OTP/auth/member smoke gate",
     "backup/restore gate",
     "logging/monitoring/incident gate",
     "security hardening gate",

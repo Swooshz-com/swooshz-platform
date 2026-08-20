@@ -55,7 +55,7 @@ ADR 0006 selects the auth provider strategy: start with a provider-agnostic OIDC
 
 The repo now includes the first auth foundation layer: environment/config parsing, provider-agnostic OIDC adapter contracts, callback parameter/state contracts, a DB-free callback service skeleton, and privacy-safe auth error types. These are contract-driven modules only. They do not perform real login route handling, logout, provider network calls, real token exchange, cookie issuance, DB writes, or frontend work.
 
-The auth callback service consumes stored auth state by hash/reference, delegates provider exchange and identity verification to an injected OIDC adapter, applies configured email/domain allowlists, and now persists platform sessions through storage-agnostic repository ports. It resolves provider identity by provider key plus provider subject, creates or links platform users only through repository boundaries, and returns a safe platform identity plus persisted session record. Workspace membership and app access remain separate platform decisions.
+The auth callback service consumes stored auth state by hash/reference, delegates provider exchange and identity verification to an injected OIDC adapter, uses verified email only for the transactional pending-approval match, and persists platform sessions through storage-agnostic repository ports. It resolves provider identity by provider key plus provider subject, creates or links platform users only through repository boundaries, and returns a safe platform identity plus persisted session record. Workspace membership and app access remain separate platform decisions; email/domain environment variables are unsupported and are not admission authority.
 
 The repo also includes a storage-agnostic session revocation service for logout/session lifecycle work. It can revoke active or expired sessions through repository ports, treats already revoked sessions idempotently, and returns privacy-safe results without issuing cookies or exposing HTTP routes.
 
@@ -116,7 +116,7 @@ The hosted operator decision record is documented in `docs/hosted-internal-alpha
 
 The auth/session security contract is documented in `docs/auth-session-security-contract.md`. It records the implemented generic OIDC, provider-backed user, server-side session, secure cookie, CSRF/origin, app-launch token, read-only route, and audit-event posture, plus the pre-alpha gap inventory for deferred session-management UI and future security/admin surfaces.
 
-External provider setup notes are documented in `docs/auth-provider-selection.md`, `docs/google-oidc-setup-runbook.md`, and `docs/workos-authkit-fit-notes.md`. Google OIDC is the first operational provider setup target for internal UAT. WorkOS/AuthKit remains documented as a likely future B2B/hosted-auth candidate, not runtime-wired. Platform-owned email/password auth, fake login, and active multi-provider login remain deferred.
+External provider setup notes are documented in `docs/auth-provider-selection.md`, `docs/auth0-passwordless-email-otp-runbook.md`, and `docs/workos-authkit-fit-notes.md`. Auth0 Universal Login with passwordless email OTP is the first operational provider setup target for internal UAT; the generic OIDC authorization request uses the fixed `connection=email` selector. WorkOS/AuthKit remains documented as a likely future B2B/hosted-auth candidate, not runtime-wired. Platform-owned passwords, OTP generation/delivery, fake login, and active multi-provider login remain deferred.
 
 The next likely platform PR should keep provider configuration operational review separate from broadening browser routes. Polished dashboard work, actual hosted deployment execution, and SQAG app-data changes should still wait for separately approved phases.
 
@@ -141,7 +141,7 @@ The platform provides SQAG with platform-issued identity and workspace context t
 - `docs/adr/0006-auth-provider-selection.md`
 - `docs/adr/0007-http-transport-and-csrf-strategy.md`
 - `docs/auth-provider-selection.md`
-- `docs/google-oidc-setup-runbook.md`
+- `docs/auth0-passwordless-email-otp-runbook.md`
 - `docs/workos-authkit-fit-notes.md`
 - `docs/internal-platform-smoke-runbook.md`
 - `docs/hosted-internal-alpha-runbook.md`

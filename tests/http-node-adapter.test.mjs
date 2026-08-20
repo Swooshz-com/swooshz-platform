@@ -1358,7 +1358,7 @@ test("auth callback unapproved provider account renders safe retry UI", async ()
   assert.equal(response.headers["content-type"], "text/html; charset=utf-8");
   assert.equal(response.headers["x-auth-failure"], "access_not_approved");
   assert.match(body, /Access not approved/);
-  assert.match(body, /Try another Google account/);
+  assert.match(body, /Try another approved email sign-in/);
   assert.match(body, /href="\/api\/platform\/auth\/start"/);
   assert.equal(setCookieHeaders(response).length, 1);
   assert.match(setCookieHeaders(response)[0], /^swooshz_auth_state=;/);

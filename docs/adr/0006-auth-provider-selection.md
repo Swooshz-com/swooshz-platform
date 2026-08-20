@@ -27,9 +27,9 @@ The first implementation should support a generic OIDC provider contract with:
 - Provider key from environment.
 - Platform-owned session creation after provider identity is verified.
 
-The implementation now includes a provider-agnostic JWT/JWKS verifier behind the generic OIDC verifier interface. It performs real RS256 signature verification with JWKS, validates issuer, audience, expiry, not-before, issued-at, and subject claims, returns nonce for platform-side nonce hash comparison, and only trusts email when `email_verified === true`. It does not add provider SDKs, frontend login UI, SQAG launch/storage integration, app launch tokens, billing, deployment, migration execution, or fake-login shortcuts.
+The accepted production human-authentication flow is Auth0 Universal Login with passwordless email OTP behind this generic OIDC boundary. The authorization request uses the fixed `connection=email` parameter. The platform does not add an Auth0 SDK, platform-owned passwords, OTP generation, or platform-owned OTP email delivery.
 
-Do not hard-couple the platform account model to Clerk, Auth0, Supabase Auth, or another provider SDK in the first implementation. A specific managed provider may still be used behind the generic OIDC contract if it fits the environment and security needs, but platform user, workspace, membership, invitation, session, app entitlement, and app access logic must remain provider-owned only at the identity-proof boundary.
+Do not hard-couple the platform account model to a provider SDK. Auth0 tenant values and connection operations remain external operational concerns; platform user, workspace, membership, invitation, session, app entitlement, and app access logic must remain provider-independent beyond the identity-proof boundary.
 
 Do not select Supabase Auth in this ADR. Supabase remains only a possible managed Postgres provider from the database ADRs, not an auth decision.
 
@@ -85,7 +85,7 @@ Platform user ids remain the ids used by memberships, sessions, audit events, en
 
 ## Platform Approval, Membership, And Entitlement Posture
 
-Authentication proves provider identity only. A valid identity without a matching pending Platform workspace-membership approval or active membership receives a safe approval-required denial. Google sign-in is not public signup; it does not create a workspace, membership, role, organization authority, or app entitlement.
+Authentication proves provider identity only. A valid identity without a matching pending Platform workspace-membership approval or active membership receives a safe approval-required denial. Auth0 passwordless email sign-in is not public signup; it does not create a workspace, membership, role, organization authority, or app entitlement.
 
 Pending onboarding matches the provider verified, normalized email to persisted approval and accepts the approval transactionally. The membership role comes only from that approval. Existing linked identities require active workspace membership for continuing access, and product launch requires the independent app-entitlement and role checks.
 
@@ -171,14 +171,14 @@ Pros:
 
 - Mature OIDC/OAuth provider with broad enterprise patterns.
 - Strong fit for a generic OIDC adapter contract.
-- Useful if future customer or enterprise requirements demand it.
+- Accepted production human-authentication target for passwordless email OTP through the generic OIDC boundary.
 
 Cons:
 
 - Vendor-specific SDK and tenant configuration could leak into platform logic if selected too early.
 - Pricing and operational setup should be evaluated when implementation is ready.
 
-Conclusion: not selected as a hard dependency now; remains compatible with the selected OIDC adapter direction.
+Conclusion: accepted behind the generic OIDC boundary; no Auth0 SDK, tenant mutation, or provider-specific authorization architecture is added to the repository.
 
 ### Supabase Auth
 
@@ -293,8 +293,7 @@ Tradeoffs:
 
 ## Deferred Decisions
 
-- Exact OIDC provider used for internal UAT.
-- Whether Clerk, Auth0, another managed provider, or a generic OIDC tenant is used behind the adapter.
+- Provider-specific operational setup, tenant values, and callback registration outside the repository.
 - Cookie name, cookie max age, rotation behavior, and CSRF details.
 - State and nonce storage implementation.
 - MFA assurance requirements.

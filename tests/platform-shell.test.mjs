@@ -54,8 +54,8 @@ test("login page preserves provider-backed auth start without public signup or p
   assert.match(html, /Secure Access Portal/);
   assert.match(html, /approved provider-backed account/);
   assert.match(html, /href="\/api\/platform\/auth\/start"/);
-  assert.match(html, /Continue with Google|Continue with approved provider/);
-  assert.match(html, /Use the approved Google account for your workspace/);
+  assert.match(html, /Continue with email|Continue with approved provider/);
+  assert.match(html, /Use the approved email sign-in associated with your workspace/);
   assert.match(html, /No public signup is available/);
   assert.match(html, /href="\/app"/);
   assert.doesNotMatch(html, /<form/i);
@@ -332,7 +332,7 @@ test("admin shell includes an accessible add-member flow with allowed non-owner 
   assert.match(html, /id="addMemberModal"/);
   assert.match(html, /role="dialog" aria-modal="true"/);
   assert.match(html, /Existing Swooshz accounts are added immediately\./);
-  assert.match(html, /access activates after the same email signs in with Google\./);
+  assert.match(html, /access activates after the same email completes passwordless sign-in\./);
   assert.match(html, /No invitation email is sent\./);
   assert.match(html, /id="addMemberSubmitButton"[^>]*type="submit">Add member<\/button>/);
   assert.match(html, /<option value="member" selected>Member<\/option><option value="admin">Admin<\/option>/);
@@ -440,7 +440,7 @@ test("platform shells use CSRF-protected logout and preserve the signed-out acco
     assert.match(html, /"x-csrf-token": csrfToken/);
     assert.match(html, /window\.location\.assign\("\/login\?signedOut=1"\)/);
   }
-  assert.match(loginHtml, /You are signed out of Swooshz Platform\.\s+Your Google account may\s+still be signed in\./);
+  assert.match(loginHtml, /You are signed out of Swooshz Platform\.\s+Your previous email sign-in may\s+still be active\./);
   assert.match(loginHtml, /URLSearchParams\(window\.location\.search\)/);
 });
 
@@ -629,7 +629,7 @@ test("auth error page renders safe retry actions", () => {
   assert.match(html, /Access not approved/);
   assert.match(html, /not approved for Swooshz Platform/);
   assert.match(html, /href="\/api\/platform\/auth\/start"/);
-  assert.match(html, /Try another Google account/);
+  assert.match(html, /Try another approved email sign-in/);
   assert.match(html, /href="\/"/);
   assert.doesNotMatch(html, /auth-code|raw-state|raw-nonce|provider-token|raw-claim/i);
   assert.doesNotMatch(html, /cookie|DATABASE_URL|postgresql:\/\//i);

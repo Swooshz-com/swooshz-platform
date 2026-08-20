@@ -163,31 +163,31 @@ Gate status: blocked until Gate 1 exists and Platform hosted values are injected
   Next action: Review Coolify hooks, commands, jobs, and health checks before start.
   Evidence required: Sanitized process configuration review confirming no `npm run db:migrate` or `npm run platform:seed-internal-access` in normal lifecycle hooks.
 
-## Gate 3: Hosted OAuth/Auth/Member Smoke Gate
+## Gate 3: Hosted Auth0/OIDC/Auth/Member Smoke Gate
 
-Gate status: blocked until hosted deployment exists and real OAuth/provider configuration is completed outside the repo. This hosted OAuth/auth/member smoke gate must use hosted evidence, not local UAT.
+Gate status: blocked until hosted deployment exists and the reviewed Auth0/OIDC configuration is completed outside the repo. This hosted Auth0/passwordless email OTP/auth/member smoke gate must use hosted evidence, not local UAT.
 
-- [ ] Hosted Google OAuth client/redirect configured outside repo.
+- [ ] Hosted Auth0 passwordless email OTP connection/redirect configured outside repo.
   Blocker: Hosted Platform URL and provider client are not approved/configured.
   Next action: Configure provider console outside repo after hosted base URL is finalized.
   Evidence required: Sanitized operator note that redirect ends with `/api/platform/auth/callback`, without client secret, auth codes, query strings, or screenshots.
 - [ ] Login/logout smoke.
-  Blocker: Hosted OAuth and app service do not exist.
+  Blocker: Hosted Auth0/OIDC and app service do not exist.
   Next action: Run hosted login/logout only after provider setup.
   Evidence required: Sanitized smoke result with route names, status categories, and timestamp.
 - [ ] First owner/admin bootstrap.
   Blocker: Hosted owner/admin identity is not approved outside repo and hosted first-owner bootstrap has not run.
-  Next action: Approve first owner/admin identity outside repo, run the reviewed first-owner pending approval seed, then complete real OIDC login for activation.
+  Next action: Approve first owner/admin identity outside repo, run the reviewed first-owner pending approval seed, then complete Auth0 passwordless email OTP sign-in for activation.
   Evidence required: Sanitized owner/admin bootstrap result; no real email or seed env values.
 - [ ] Pending member activation.
   Blocker: Hosted owner/admin and teammate smoke users are not approved.
-  Next action: Create pending approval from `/app/admin`, complete real OIDC sign-in for the matching user, and verify activation.
+  Next action: Create pending approval from `/app/admin`, complete Auth0 passwordless email OTP sign-in for the matching user, and verify activation.
   Evidence required: Sanitized audit/activity event types and pass/fail result.
 - [ ] Remove/disable member denial.
   Blocker: Hosted member smoke users are not configured.
   Next action: Disable/remove a non-owner member in hosted smoke workspace and confirm app/admin/launch denial.
   Evidence required: Sanitized hosted smoke result and relevant audit event types.
-- [ ] Removed member cannot regain access through Google sign-in.
+- [ ] Removed member cannot regain access through Auth0 passwordless email sign-in.
   Blocker: Hosted provider smoke has not run.
   Next action: Attempt sign-in after removal and confirm no active workspace membership or matching pending approval allows a new session.
   Evidence required: Sanitized denial category and timestamp; no provider payload or private identity values.

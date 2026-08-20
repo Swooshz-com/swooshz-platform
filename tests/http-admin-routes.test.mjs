@@ -905,7 +905,7 @@ test("add existing user route returns safe operator guidance without mutation", 
       { extraUsers: [existingProviderBackedUser()] },
       { email: "existing.user@example.test", role: "member" },
       201,
-      "Pending approval created. The teammate can sign in with that Google account to activate access.",
+      "Pending approval created. The teammate can complete passwordless email sign-in to activate access.",
     ],
     [
       "disabled target",

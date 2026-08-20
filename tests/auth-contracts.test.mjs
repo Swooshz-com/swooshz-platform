@@ -125,10 +125,10 @@ test("readAuthConfig fails closed when either canonical OIDC credential is missi
 test("readAuthConfig preserves issuer identifiers without adding a trailing slash", () => {
   const config = readAuthConfig({
     ...validSyntheticAuthEnv,
-    AUTH_ISSUER_URL: " https://accounts.google.com ",
+    AUTH_ISSUER_URL: " https://auth0.example.invalid ",
   });
 
-  assert.equal(config.issuerUrl, "https://accounts.google.com");
+  assert.equal(config.issuerUrl, "https://auth0.example.invalid");
 });
 test("readAuthConfig ignores legacy email and domain variables", () => {
   const config = readAuthConfig({
