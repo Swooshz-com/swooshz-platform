@@ -64,8 +64,8 @@ test("internal alpha platform contract preserves Stitch and implementation bound
 test("internal alpha platform contract documents the admin foundation status", async () => {
   const contract = await readContract();
 
-  assert.match(contract, /Owner\/admin service methods and protected HTTP routes can list workspace members/i);
-  assert.match(contract, /disable and reactivate non-owner memberships/i);
+  assert.match(contract, /Admin service methods and protected HTTP routes can list workspace members/i);
+  assert.match(contract, /disable and reactivate other memberships/i);
   assert.match(contract, /change roles/i);
   assert.match(contract, /list app entitlements, and enable\/disable SQAG app entitlement/i);
   assert.match(contract, /addWorkspaceMemberByEmail/i);
@@ -82,7 +82,7 @@ test("internal alpha platform contract documents the admin foundation status", a
   assert.match(contract, /workspace\.membership\.reactivated/i);
   assert.match(contract, /no invitation delivery/i);
   assert.match(contract, /Full email invitation delivery remains future scope/i);
-  assert.match(contract, /disabled non-owner workspace membership/i);
+  assert.match(contract, /disabled other workspace membership/i);
   assert.match(contract, /listWorkspaceAuditEventsForAdmin/i);
   assert.match(contract, /\/api\/platform\/workspaces\/:workspaceId\/audit-events\?limit=<number>/i);
   assert.match(contract, /Pending Approvals/i);
@@ -94,7 +94,7 @@ test("internal alpha platform contract documents the admin foundation status", a
   assert.match(contract, /route manifest marks adapter-wired routes as implemented/i);
   assert.match(contract, /same transaction\/unit-of-work/i);
   assert.match(contract, /audit append failure cannot leave membership, approval, or entitlement state changed/i);
-  assert.match(contract, /Quote operators remain mapped to `member`/i);
+  assert.match(contract, /Quote operators use the explicit `operator` role/i);
   assert.match(contract, /approved compact authenticated interface exists for `\/app` and `\/app\/admin`/i);
   assert.match(contract, /CSRF\/origin validation/i);
 });

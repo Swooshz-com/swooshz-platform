@@ -13,7 +13,7 @@ test("finalization registration, consume, replay protection, and live validation
   assert.equal(await registerFinalizationHandle(fixture.dependencies, { validationGrantId: fixture.grant.id, handleHashSha256: handleHash, expiresAt: later, intendedSqagOrigin: fixture.origin, now }), true);
   const consumed = await consumeFinalizationHandle(fixture.dependencies, { rawHandle: handle, intendedSqagOrigin: fixture.origin, now });
   assert.equal(consumed?.validationGrantId, fixture.grant.id);
-  assert.equal(consumed?.currentRole, "member");
+  assert.equal(consumed?.currentRole, "operator");
   assert.equal(await consumeFinalizationHandle(fixture.dependencies, { rawHandle: handle, intendedSqagOrigin: fixture.origin, now }), null);
   const validation = await validateAccessValidationGrant(fixture.dependencies, { validationGrantId: fixture.grant.id, workspaceId: "workspace_1", appKey: "sqag", now });
   assert.equal(validation?.userId, "user_1");
@@ -61,13 +61,13 @@ test("live validation returns the role from the final membership read", async ()
   let membershipReads = 0;
   fixture.repositories.memberships.findForUserInWorkspace = async () => {
     membershipReads += 1;
-    return { ...fixture.membership, role: membershipReads === 1 ? "owner" : "member" };
+    return { ...fixture.membership, role: membershipReads === 1 ? "admin" : "operator" };
   };
 
   const validation = await validateAccessValidationGrant(fixture.dependencies, { validationGrantId: fixture.grant.id, workspaceId: "workspace_1", appKey: "sqag", now });
 
   assert.equal(membershipReads, 2);
-  assert.equal(validation?.currentRole, "member");
+  assert.equal(validation?.currentRole, "operator");
 });
 
 test("expired handle, revoke, and repository failure remain fail closed", async () => {
@@ -86,7 +86,7 @@ function createFixture() {
   const grant = { id: "grant_abcdefghijklmnopqrstuvwxyz_1234567890", sessionId: session.id, userId: "user_1", workspaceId: "workspace_1", appId: "app_sqag", intendedOrigin: origin, launchTokenExpiresAt: later, handleHash: null, createdAt: now, handleExpiresAt: null, consumedAt: null, revokedAt: null };
   const user = { id: "user_1", email: "u@example.test", displayName: "User", status: "active", createdAt: now, updatedAt: now, lastLoginAt: now };
   const workspace = { id: "workspace_1", slug: "one", displayName: "One", status: "active", createdAt: now, updatedAt: now };
-  const membership = { id: "membership_1", workspaceId: workspace.id, userId: user.id, role: "member", status: "active", createdAt: now, updatedAt: now };
+  const membership = { id: "membership_1", workspaceId: workspace.id, userId: user.id, role: "operator", status: "active", createdAt: now, updatedAt: now };
   const app = { id: "app_sqag", key: "sqag", name: "SQAG", status: "available", launchUrl: null, createdAt: now, updatedAt: now };
   const entitlement = { id: "ent_1", workspaceId: workspace.id, appId: app.id, status: "enabled", grantedByUserId: user.id, createdAt: now, updatedAt: now };
   const grants = {

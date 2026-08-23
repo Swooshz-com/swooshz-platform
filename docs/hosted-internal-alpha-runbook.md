@@ -46,6 +46,9 @@ This PR does not add a session-management UI. Security/session management remain
 11. Start the platform process through the reviewed process manager or container entrypoint that runs `npm run platform:start`.
 12. Run the hosted smoke checklist before inviting broader internal-alpha use.
 
+### Run-151 Role Migration Contract (Not Executed Here)
+
+For the accepted application-role collapse, the reviewed sequence is: quiesce old writers; apply the reviewed 0010 migration; verify the post-migration role enum and active-admin invariant; then start/serve the new application contract. Mixed application versions across the role migration are unsupported. Before commit, transaction rollback is the recovery path; after commit, use only approved backup/snapshot restore. Run-151 does not connect to Neon/PostgreSQL or perform any live migration, restart, or deployment.
 Migrations are never automatic on app startup. `npm run platform:start`, Node bootstrap creation, auth routes, app routes, seed commands, and readiness checks must not run migrations.
 
 ## Process Manager And Container Notes
@@ -648,7 +651,7 @@ Operator-provided sanitized evidence for the reviewed Neon target records the cu
 
 This evidence records only readiness categories and the guarded command path. It does not include database URLs, hostnames, usernames with passwords, table data, provider console values, backup exports, screenshots, OAuth values, cookies, tokens, or private SQAG data.
 
-This evidence does not approve hosted deployment or full production readiness. Hosted execution still requires the remaining operator decisions, backup/restore evidence, OIDC configuration, hosted smoke evidence, SQAG handoff/session review, log/incident review, first owner/admin approval, and final go/no-go outside the repo.
+This evidence does not approve hosted deployment or full production readiness. Hosted execution still requires the remaining operator decisions, backup/restore evidence, OIDC configuration, hosted smoke evidence, SQAG handoff/session review, log/incident review, first admin approval, and final go/no-go outside the repo.
 
 ## Migration Procedure
 
@@ -764,12 +767,12 @@ Stop and redact the log collection process if a log includes secret values, data
 | `PLATFORM_SQAG_LAUNCH_MODE` | Controls SQAG browser handoff behavior. | Required | `server_handoff` | No | Unsupported values fail startup/readiness; production cross-subdomain launch uses the implemented server handoff. |
 | `PLATFORM_SQAG_APP_BASE_URL` | SQAG hosted base URL for browser handoff. | Required when server_handoff | `https://quote.swooshz.com` | No | Production `server_handoff` readiness requires this exact SQAG origin. |
 | `PLATFORM_SQAG_SERVICE_SECRET` | Shared service authorization for Platform-to-SQAG calls. | Required when server_handoff | `<strong-random-placeholder>` | Yes | Must be at least 32 characters and injected separately into Platform and SQAG; never expose it to browser code or logs. |
-| `PLATFORM_SEED_CONFIRM` | Explicit first owner/admin bootstrap confirmation. | Required for bootstrap only | `seed-reviewed-internal-access` | No | Required only for `npm run platform:seed-internal-access`; unexpected value fails seed config. |
-| `PLATFORM_SEED_USER_EMAIL` | Reviewed owner/admin email for bootstrap. | Required for bootstrap only | `<hosted-owner-admin-email-after-login>` | No | Required only for seed; treat as private and do not commit real values. In first-owner mode this is the email that will complete real OIDC after the pending approval is prepared. |
+| `PLATFORM_SEED_CONFIRM` | Explicit first-admin bootstrap confirmation. | Required for bootstrap only | `seed-reviewed-internal-access` | No | Required only for `npm run platform:seed-internal-access`; unexpected value fails seed config. |
+| `PLATFORM_SEED_USER_EMAIL` | Reviewed first-admin email for bootstrap. | Required for bootstrap only | `<hosted-admin-email-after-login>` | No | Required only for seed; treat as private and do not commit real values. In first-admin mode this is the email that will complete real OIDC after the pending approval is prepared. |
 | `PLATFORM_SEED_WORKSPACE_SLUG` | Reviewed bootstrap workspace slug. | Required for bootstrap only | `<reviewed-workspace-slug>` | No | Required only for seed; no default workspace is created when missing. |
 | `PLATFORM_SEED_WORKSPACE_NAME` | Reviewed bootstrap workspace display name. | Required for bootstrap only | `<reviewed-workspace-name>` | No | Required only for seed; do not use placeholders as real hosted data. |
-| `PLATFORM_SEED_BOOTSTRAP_MODE` | Explicit first-owner pending approval mode. | Optional bootstrap only | `first-owner-pending-approval` | No | Required for fresh hosted DB first-owner bootstrap before any Platform user exists. When omitted, the seed expects an existing provider-backed user. |
-| `PLATFORM_SEED_MEMBERSHIP_ROLE` | Bootstrap role. | Optional | `owner` | No | First-owner pending approval mode requires `owner` when set. Existing-user seeding allows `owner`, `admin`, or `member`; `viewer` is rejected for SQAG launch. |
+| `PLATFORM_SEED_BOOTSTRAP_MODE` | Explicit first-admin pending approval mode. | Optional bootstrap only | `first-admin-pending-approval` | No | Required for fresh hosted DB first-admin bootstrap before any Platform user exists. When omitted, the seed expects an existing provider-backed user. |
+| `PLATFORM_SEED_MEMBERSHIP_ROLE` | Bootstrap role. | Optional | `admin` | No | First-admin pending approval mode requires `admin` when set. Existing-user seeding allows `admin`, `operator`, or `viewer`; `viewer` is denied SQAG launch. |
 
 ## Readiness Check
 
@@ -791,31 +794,31 @@ npm run platform:db-readiness-check
 
 This command uses `DATABASE_OPERATOR_URL` to reach PostgreSQL in production, checks required Platform tables, and checks Drizzle migration metadata. It prints sanitized status only. It must not print the database URL, host, user, password, driver error details, table data, provider console values, or backup details. It exits non-zero for `db_config_missing`, `db_config_invalid`, `db_unreachable`, and `schema_not_ready`.
 
-## First Owner/Admin Bootstrap Sequence
+## First Admin Bootstrap Sequence
 
-Use this sequence after hosted auth, migrations, and the reviewed first owner/admin email are approved:
+Use this sequence after hosted auth, migrations, and the reviewed first-admin email are approved:
 
-1. Confirm the reviewed first-owner/admin email is kept outside repo notes and prepare a pending Platform workspace-membership approval for its normalized value.
+1. Confirm the reviewed first-admin email is kept outside repo notes and prepare a pending Platform workspace-membership approval for its normalized value.
 2. In the operator shell, set `PLATFORM_SEED_CONFIRM=seed-reviewed-internal-access`.
-3. Set `PLATFORM_SEED_BOOTSTRAP_MODE=first-owner-pending-approval`.
-4. Set `PLATFORM_SEED_USER_EMAIL=<hosted-owner-admin-email-after-login>` outside the repo.
+3. Set `PLATFORM_SEED_BOOTSTRAP_MODE=first-admin-pending-approval`.
+4. Set `PLATFORM_SEED_USER_EMAIL=<hosted-admin-email-after-login>` outside the repo.
 5. Set `PLATFORM_SEED_WORKSPACE_SLUG=<reviewed-workspace-slug>` and `PLATFORM_SEED_WORKSPACE_NAME=<reviewed-workspace-name>` outside the repo.
-6. Leave `PLATFORM_SEED_MEMBERSHIP_ROLE` unset or set it to `owner`.
+6. Leave `PLATFORM_SEED_MEMBERSHIP_ROLE` unset or set it to `admin`.
 7. Run `npm run platform:seed-internal-access`.
-8. Confirm the safe seed output says first-owner bootstrap is pending and does not print the email, workspace slug/name, database values, provider values, launch URLs, tokens, cookies, or secrets.
+8. Confirm the safe seed output says first-admin bootstrap is pending and does not print the email, workspace slug/name, database values, provider values, launch URLs, tokens, cookies, or secrets.
 9. Start Platform through the reviewed hosted process.
-10. The reviewed first owner/admin signs in once through Platform with real OIDC.
+10. The reviewed first admin signs in once through Platform with real OIDC.
 11. Stop if real OIDC sign-in does not complete; the seed must not create users, provider identities, sessions, or fake login state.
 12. Confirm `/app` shows the workspace and SQAG app access.
-13. Confirm `/app/admin` is reachable only for the owner/admin.
+13. Confirm `/app/admin` is reachable only for the admin.
 
 ## Pending Workspace Approval Sequence
 
 Use this before a teammate signs in through hosted Platform:
 
-1. Owner/admin opens `/app/admin`.
+1. Admin opens `/app/admin`.
 2. Create pending workspace approval before teammate sign-in with the teammate placeholder address and approved role outside repo notes.
-3. Use `member` for quote operators unless the teammate needs workspace administration.
+3. Use `operator` for quote operators unless the teammate needs workspace administration.
 4. Confirm the Pending Approvals list shows the normalized placeholder address, role, and pending status.
 5. Confirm Activity shows `workspace.membership_approval.created` with safe metadata only.
 6. The teammate completes real OIDC sign-in with the matching normalized email.
@@ -823,19 +826,19 @@ Use this before a teammate signs in through hosted Platform:
 8. Confirm the teammate can reach `/app` after refresh only according to normal role and entitlement gates.
 9. Create a second pending approval in a reviewed smoke workspace and revoke it before sign-in.
 10. Confirm revoked approval does not activate on sign-in and Activity shows `workspace.membership_approval.revoked`.
-11. Confirm member/viewer users are denied admin access to `/app/admin`.
+11. Confirm operator/viewer users are denied admin access to `/app/admin`.
 12. Confirm no invitation email, invitation link, invitation token, fake provider identity, or public signup path is used.
 
-Existing active provider-backed users are still added immediately by the same add route. Pending approvals do not reactivate disabled memberships; owners/admins must use the explicit Reactivate action for disabled non-owner memberships.
+Existing active provider-backed users are still added immediately by the same add route. Pending approvals do not reactivate disabled memberships; admins must use the explicit Reactivate action for disabled other memberships.
 
 ## SQAG Entitlement Check
 
-1. Owner/admin opens `/app/admin`.
+1. Admin opens `/app/admin`.
 2. Confirm the SQAG entitlement row is present.
 3. Disable the SQAG entitlement in a reviewed smoke workspace.
 4. Confirm SQAG launch fails closed and does not create a browser-visible raw token.
 5. Re-enable the entitlement.
-6. Confirm owner/admin/member launch eligibility is restored.
+6. Confirm admin/operator launch eligibility is restored.
 7. Confirm viewer launch remains denied while SQAG has no read-only mode.
 
 ## Audit/Activity Verification
@@ -861,16 +864,16 @@ Run this checklist after hosted startup and before broader internal-alpha use:
 4. Complete login and confirm the callback returns to `/app`.
 5. Fetch login session context through the platform shell and confirm no provider tokens, cookies, or secrets are rendered.
 6. Visit `/app` and confirm the workspace/app access summary is present.
-7. Visit `/app/admin` as owner/admin and confirm the admin surface loads.
+7. Visit `/app/admin` as admin and confirm the admin surface loads.
 8. Create pending workspace approval before teammate sign-in, then complete real OIDC sign-in and confirm activation.
-9. Change a non-owner member role and confirm last-owner/self-demotion guardrails still fail closed.
-10. Run membership disable on a non-owner membership and confirm the disabled user cannot launch SQAG.
-11. Run membership reactivation on the disabled non-owner membership and confirm access is restored only according to role, entitlement, and app-status gates.
+9. Change another membership role and confirm last-admin/self-demotion guardrails still fail closed.
+10. Run membership disable on another membership and confirm the disabled user cannot launch SQAG.
+11. Run membership reactivation on the disabled other membership and confirm access is restored only according to role, entitlement, and app-status gates.
 12. Run SQAG entitlement enable/disable and confirm app access updates.
 13. Confirm audit/activity shows admin events for add-user, role-change, membership-disable, membership-reactivation, and entitlement-change actions.
 14. Launch SQAG through the browser-safe path and confirm no raw token in browser URL, storage, or logs.
 15. Logout through the platform route and confirm the browser session is cleared.
-16. Confirm denied member/viewer admin access for `/app/admin` and admin APIs.
+16. Confirm denied operator/viewer admin access for `/app/admin` and admin APIs.
 17. Confirm missing, expired, or disabled session fail closed behavior for `/app`, `/app/admin`, launch, and logout.
 18. Review logs for category-only diagnostics and no secret values.
 
@@ -898,7 +901,7 @@ Before actual hosted internal-alpha execution, operators still need reviewed dec
 - OIDC client registration outside the repo.
 - hosted SQAG handoff and host-only session-cookie/finalization evidence.
 - log retention and incident review process.
-- first owner/admin identity outside repo notes.
+- first admin identity outside repo notes.
 - any infrastructure change approval required by the operator team.
 
 Track these approvals in `docs/hosted-internal-alpha-operator-decisions.md` using placeholders only. Do not deploy until every required decision is approved outside repo.

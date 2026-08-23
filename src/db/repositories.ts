@@ -63,7 +63,8 @@ type Condition = unknown;
 type Row = Record<string, unknown>;
 
 export interface DrizzleSelectResult extends PromiseLike<readonly Row[]> {
-  limit(limit: number): Promise<readonly Row[]>;
+  limit(limit: number): DrizzleSelectResult;
+  for(strength: "update"): DrizzleSelectResult;
 }
 
 export interface DrizzleDatabase {
@@ -176,6 +177,18 @@ export function createDrizzlePlatformRepositories(
           await selectOne(db, workspaces, eq(workspaces.slug, slug)),
           mapWorkspaceRow,
         );
+      },
+      async lockForAdminMutation(id) {
+        const rows = await db
+          .select()
+          .from(workspaces)
+          .where(eq(workspaces.id, id))
+          .limit(1)
+          .for("update");
+
+        if (!rows[0]) {
+          throw new Error("Workspace was not found.");
+        }
       },
       async create(workspace) {
         const rows = await db
@@ -419,12 +432,20 @@ export function createDrizzlePlatformRepositories(
     },
     workspaceAdminTransactions: transaction
       ? {
-          run(operation) {
-            return transaction(
-              (transactionDb) =>
-                operation(createDrizzlePlatformRepositories(transactionDb)),
-              { isolationLevel: "serializable" },
-            );
+          async run(operation) {
+            for (let attempt = 0; ; attempt += 1) {
+              try {
+                return await transaction(
+                  (transactionDb) =>
+                    operation(createDrizzlePlatformRepositories(transactionDb)),
+                  { isolationLevel: "serializable" },
+                );
+              } catch (error) {
+                if (!isSerializationFailure(error) || attempt >= 2) {
+                  throw error;
+                }
+              }
+            }
           },
         }
       : undefined,
@@ -485,6 +506,15 @@ function mapOneRequired<T, RowType>(
   }
 
   return mapper(row as unknown as RowType);
+}
+
+function isSerializationFailure(error: unknown): boolean {
+  return Boolean(
+    error &&
+      typeof error === "object" &&
+      "code" in error &&
+      (error as { code?: unknown }).code === "40001",
+  );
 }
 
 function userToValues(user: User): Row {

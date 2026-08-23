@@ -202,6 +202,7 @@ const runtimeTableSpecifications: readonly RuntimeTableSpecification[] = [
     SELECT: [
       "src/db/repositories.ts#workspaces.findById",
       "src/db/repositories.ts#workspaces.findBySlug",
+      "src/db/repositories.ts#workspaces.lockForAdminMutation",
     ],
   }),
 ] as const;

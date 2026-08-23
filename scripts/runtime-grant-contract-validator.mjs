@@ -93,7 +93,7 @@ const databaseSourceShapeAuthority = new Map([
   ],
   [
     "src/db/repositories.ts",
-    "0fcba5cbb615dd52e7063d506df51d150a7ea67bee3ec01e0815c5143448655c",
+    "79329b71a434e5e7b78b4e7edd274a4d42b9d60374bfbc9c575ee15820aba835",
   ],
   [
     "src/db/runtime-posture.ts",
@@ -101,7 +101,7 @@ const databaseSourceShapeAuthority = new Map([
   ],
   [
     "src/db/schema.ts",
-    "1f05ac9ec79a25b4d0fb49cd01af7d44fdad8fedbeedd9c1544803ee8beecfeb",
+    "f9a93c10fb2588e52e8106013cb7f3992f63238c3036ded1292d0476638a6e79",
   ],
   [
     "src/runtime/node-bootstrap.ts",
@@ -451,6 +451,7 @@ const operationPrivileges = new Map([
 const allowedDatabaseChainMethods = new Set([
   ...operationPrivileges.keys(),
   "bind",
+  "for",
   "limit",
   "returning",
   "select",

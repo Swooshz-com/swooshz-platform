@@ -85,9 +85,9 @@ test("successful consume returns safe context and marks launch token consumed ex
   assert.deepEqual(result, {
     outcome: "consumed",
     user: {
-      userId: "user_owner_example",
-      email: "owner@example.com",
-      displayName: "Owner Example",
+      userId: "user_admin_example",
+      email: "admin@example.com",
+      displayName: "Admin Example",
       status: "active",
     },
     workspace: {
@@ -99,7 +99,7 @@ test("successful consume returns safe context and marks launch token consumed ex
       appKey: "sqag",
       appName: "SQAG",
     },
-    membershipRole: "owner",
+    membershipRole: "admin",
     launchTokenExpiresAt: future,
   });
   assert.equal(records.appLaunchTokens[0].consumedAt, now);
@@ -132,12 +132,12 @@ test("future app consume re-check keeps viewer launch denied by default", async 
     workspaceId: "workspace_koncept_images",
     appId: futureApp.id,
     status: "enabled",
-    grantedByUserId: "user_owner_example",
+    grantedByUserId: "user_admin_example",
     createdAt: now,
     updatedAt: now,
   };
 
-  for (const role of ["owner", "admin", "member"]) {
+  for (const role of ["admin", "operator"]) {
     const { dependencies, input, records } = consumeFixture({
       role,
       app: futureApp,
@@ -231,7 +231,7 @@ function consumeFixture(overrides = {}) {
     updatedAt: now,
     ...overrides.app,
   };
-  const role = overrides.role ?? "owner";
+  const role = overrides.role ?? "admin";
   const user = {
     id: `user_${role}_example`,
     email: `${role}@example.com`,
@@ -263,7 +263,7 @@ function consumeFixture(overrides = {}) {
     workspaceId: workspace.id,
     appId: app.id,
     status: "enabled",
-    grantedByUserId: "user_owner_example",
+    grantedByUserId: "user_admin_example",
     createdAt: now,
     updatedAt: now,
     ...overrides.entitlement,

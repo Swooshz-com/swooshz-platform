@@ -23,18 +23,22 @@ export type WorkspaceAdminServiceErrorCode =
   | "invalid_entitlement_status"
   | "membership_conflict"
   | "approval_conflict"
-  | "last_owner_required"
+  | "last_admin_required"
   | "self_change_not_allowed"
   | "repository_failure";
 
 export class WorkspaceAdminServiceError extends Error {
   readonly code: WorkspaceAdminServiceErrorCode;
-  readonly publicMessage = "Workspace admin action could not be completed.";
+  readonly publicMessage: string;
 
   constructor(code: WorkspaceAdminServiceErrorCode, message: string) {
     super(message);
     this.name = "WorkspaceAdminServiceError";
     this.code = code;
+    this.publicMessage =
+      code === "last_admin_required"
+        ? "Workspace must retain at least one active admin."
+        : "Workspace admin action could not be completed.";
   }
 }
 
@@ -224,21 +228,24 @@ export async function changeWorkspaceMemberRole(
 
   return runWorkspaceAdminTransaction(repositories, async (transactionRepositories) => {
     const context = await requireAdminContext(transactionRepositories, input);
+    await transactionRepositories.workspaces.lockForAdminMutation(input.workspaceId);
     requireAuditRepository(transactionRepositories);
-    const memberships = await transactionRepositories.memberships.listForWorkspace(
-      input.workspaceId,
+    const memberships = await transactionRepositories.memberships.listForWorkspace(      input.workspaceId,
     );
     const target = findTargetMembership(memberships, input.membershipId);
     const previousRole = target.role;
     const previousStatus = target.status;
 
-    assertOwnerMutationAllowed(context, target, input.role);
-
-    if (previousRole === "owner" && input.role !== "owner" && activeOwnerCount(memberships) <= 1) {
-      throw adminError("last_owner_required", "Workspace must keep at least one active owner.");
+    if (
+      previousRole === "admin" &&
+      previousStatus === "active" &&
+      input.role !== "admin" &&
+      activeAdminCount(memberships) <= 1
+    ) {
+      throw adminError("last_admin_required", "Workspace must retain at least one active admin.");
     }
 
-    if (target.userId === context.actor.id && previousRole !== input.role) {
+    if (target.userId === context.actor.id) {
       throw adminError("self_change_not_allowed", "Administrators cannot change their own role.");
     }
 
@@ -278,6 +285,7 @@ export async function disableWorkspaceMembership(
 ): Promise<Membership> {
   return runWorkspaceAdminTransaction(repositories, async (transactionRepositories) => {
     const context = await requireAdminContext(transactionRepositories, input);
+    await transactionRepositories.workspaces.lockForAdminMutation(input.workspaceId);
     requireAuditRepository(transactionRepositories);
     const memberships = await transactionRepositories.memberships.listForWorkspace(
       input.workspaceId,
@@ -286,10 +294,12 @@ export async function disableWorkspaceMembership(
     const previousRole = target.role;
     const previousStatus = target.status;
 
-    assertOwnerMutationAllowed(context, target);
-
-    if (previousRole === "owner" && previousStatus === "active" && activeOwnerCount(memberships) <= 1) {
-      throw adminError("last_owner_required", "Workspace must keep at least one active owner.");
+    if (
+      previousRole === "admin" &&
+      previousStatus === "active" &&
+      activeAdminCount(memberships) <= 1
+    ) {
+      throw adminError("last_admin_required", "Workspace must retain at least one active admin.");
     }
 
     if (target.userId === context.actor.id) {
@@ -336,6 +346,7 @@ export async function reactivateWorkspaceMembership(
 ): Promise<Membership> {
   return runWorkspaceAdminTransaction(repositories, async (transactionRepositories) => {
     const context = await requireAdminContext(transactionRepositories, input);
+    await transactionRepositories.workspaces.lockForAdminMutation(input.workspaceId);
     requireAuditRepository(transactionRepositories);
     const memberships = await transactionRepositories.memberships.listForWorkspace(
       input.workspaceId,
@@ -344,14 +355,8 @@ export async function reactivateWorkspaceMembership(
     const previousRole = target.role;
     const previousStatus = target.status;
 
-    assertOwnerMutationAllowed(context, target);
-
     if (target.userId === context.actor.id) {
       throw adminError("self_change_not_allowed", "Administrators cannot reactivate themselves.");
-    }
-
-    if (previousRole === "owner") {
-      throw adminError("invalid_role", "Owner membership reactivation is not supported here.");
     }
 
     if (previousStatus !== "disabled") {
@@ -394,6 +399,7 @@ export async function removeWorkspaceMembership(
 ): Promise<Membership> {
   return runWorkspaceAdminTransaction(repositories, async (transactionRepositories) => {
     const context = await requireAdminContext(transactionRepositories, input);
+    await transactionRepositories.workspaces.lockForAdminMutation(input.workspaceId);
     requireAuditRepository(transactionRepositories);
     const memberships = await transactionRepositories.memberships.listForWorkspace(
       input.workspaceId,
@@ -402,22 +408,16 @@ export async function removeWorkspaceMembership(
     const previousRole = target.role;
     const previousStatus = target.status;
 
-    assertOwnerMutationAllowed(context, target);
-
     if (
-      target.role === "owner" &&
+      target.role === "admin" &&
       target.status === "active" &&
-      activeOwnerCount(memberships) <= 1
+      activeAdminCount(memberships) <= 1
     ) {
-      throw adminError("last_owner_required", "Workspace must keep at least one active owner.");
+      throw adminError("last_admin_required", "Workspace must retain at least one active admin.");
     }
 
     if (target.userId === context.actor.id) {
       throw adminError("self_change_not_allowed", "Administrators cannot remove themselves.");
-    }
-
-    if (target.role === "owner") {
-      throw adminError("invalid_role", "Owner membership removal is not supported here.");
     }
 
     const removalTarget = {
@@ -679,10 +679,7 @@ export async function revokeWorkspaceMembershipApproval(
       throw adminError("not_found", "Workspace membership approval was not found.");
     }
 
-    if (approval.role === "owner") {
-      throw adminError("invalid_role", "Owner membership approval is not supported.");
-    }
-
+    assertValidRole(approval.role);
     const previousStatus = approval.status;
     const updated = await approvals.updatePendingStatus(approval.id, "revoked", {
       updatedAt: input.now,
@@ -823,8 +820,7 @@ async function requireAdminContext(
     workspace.status !== "active" ||
     !actorMembership ||
     actorMembership.status !== "active" ||
-    !["owner", "admin"].includes(actorMembership.role)
-  ) {
+    actorMembership.role !== "admin"  ) {
     throw adminError("not_authorized", "Workspace admin authorization failed.");
   }
 
@@ -955,37 +951,23 @@ function findTargetMembership(
     throw adminError("not_found", "Workspace membership was not found.");
   }
 
+  assertValidRole(target.role);
   return target;
 }
 
-function activeOwnerCount(memberships: readonly Membership[]): number {
+function activeAdminCount(memberships: readonly Membership[]): number {
   return memberships.filter(
-    (membership) => membership.role === "owner" && membership.status === "active",
+    (membership) => membership.role === "admin" && membership.status === "active",
   ).length;
 }
 
-function assertOwnerMutationAllowed(
-  context: AdminContext,
-  target: Membership,
-  nextRole?: Role,
-): void {
-  if (
-    context.actorMembership.role !== "owner" &&
-    (target.role === "owner" || nextRole === "owner")
-  ) {
-    throw adminError("not_authorized", "Only workspace owners can manage owner memberships.");
-  }
-}
-
 function assertValidRole(role: Role): void {
-  if (!["owner", "admin", "member", "viewer"].includes(role)) {
-    throw adminError("invalid_role", "Workspace role is not supported.");
+  if (!["admin", "operator", "viewer"].includes(role)) {    throw adminError("invalid_role", "Workspace role is not supported.");
   }
 }
 
 function assertValidAddRole(role: Role): void {
-  if (!["admin", "member", "viewer"].includes(role)) {
-    throw adminError("invalid_role", "Workspace role is not supported.");
+  if (!["admin", "operator", "viewer"].includes(role)) {    throw adminError("invalid_role", "Workspace role is not supported.");
   }
 }
 

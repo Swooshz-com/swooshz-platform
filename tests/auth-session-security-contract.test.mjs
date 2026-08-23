@@ -46,7 +46,7 @@ const alphaMinimumPosture = [
   "approved provider-backed users",
   "secure cookie in hosted production",
   "fail-closed sessions",
-  "owner/admin audit browsing",
+  "admin audit browsing",
   "no raw token exposure",
   "manual/operator incident process",
 ];

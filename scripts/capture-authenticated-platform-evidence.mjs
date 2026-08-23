@@ -36,17 +36,17 @@ const membersPayload = {
   outcome: "listed",
   workspaceId: "workspace-example-primary",
   members: [
-    member("membership-owner-example", "user-owner-example", "Alex Example", "alex@example.invalid", "owner", "active"),
+    member("membership-owner-example", "user-owner-example", "Alex Example", "alex@example.invalid", "admin", "active"),
     member("membership-admin-example", "user-admin-example", "Morgan Example", "morgan@example.invalid", "admin", "active"),
-    member("membership-member-example", "user-member-example", "Casey Example", "casey@example.invalid", "member", "active"),
-    member("membership-disabled-example", "user-disabled-example", "Taylor Example", "taylor@example.invalid", "member", "disabled"),
+    member("membership-member-example", "user-member-example", "Casey Example", "casey@example.invalid", "operator", "active"),
+    member("membership-disabled-example", "user-disabled-example", "Taylor Example", "taylor@example.invalid", "operator", "disabled"),
   ],
 };
 const approvalsPayload = {
   outcome: "listed",
   workspaceId: "workspace-example-primary",
   approvals: [
-    { approvalId: "approval-example-one", workspaceId: "workspace-example-primary", email: "pending@example.invalid", role: "member", status: "pending", createdAt: earlier, updatedAt: earlier },
+    { approvalId: "approval-example-one", workspaceId: "workspace-example-primary", email: "pending@example.invalid", role: "operator", status: "pending", createdAt: earlier, updatedAt: earlier },
     { approvalId: "approval-example-two", workspaceId: "workspace-example-primary", email: "admin.pending@example.invalid", role: "admin", status: "pending", createdAt: now, updatedAt: now },
   ],
 };
@@ -61,7 +61,7 @@ const auditPayload = {
   outcome: "listed",
   workspaceId: "workspace-example-primary",
   events: [
-    { eventId: "audit-example-one", workspaceId: "workspace-example-primary", actorUserId: "user-owner-example", actorDisplayName: "Alex Example", actorEmail: "alex@example.invalid", eventType: "workspace.membership.added", targetType: "membership", targetId: "membership-member-example", targetLabel: "Casey Example", createdAt: now, metadata: { newRole: "member", newStatus: "active" } },
+    { eventId: "audit-example-one", workspaceId: "workspace-example-primary", actorUserId: "user-owner-example", actorDisplayName: "Alex Example", actorEmail: "alex@example.invalid", eventType: "workspace.membership.added", targetType: "membership", targetId: "membership-member-example", targetLabel: "Casey Example", createdAt: now, metadata: { newRole: "operator", newStatus: "active" } },
     { eventId: "audit-example-two", workspaceId: "workspace-example-primary", actorUserId: "user-admin-example", actorDisplayName: "Morgan Example", actorEmail: "morgan@example.invalid", eventType: "workspace.app_entitlement.enabled", targetType: "app_entitlement", targetId: "entitlement-example-sqag", targetLabel: "Swooshz Quote Auto Generator access", createdAt: earlier, metadata: { appKey: "sqag", previousStatus: "disabled", newStatus: "enabled" } },
   ],
 };
@@ -359,7 +359,7 @@ function contextPayload(scenario) {
   };
 }
 
-function workspace(workspaceId, workspaceSlug, workspaceName, allowed, membershipRole = "owner") {
+function workspace(workspaceId, workspaceSlug, workspaceName, allowed, membershipRole = "admin") {
   return {
     workspaceId,
     workspaceSlug,

@@ -46,7 +46,7 @@ test("viewer SQAG access is denied without creating a launch token", async () =>
 
 test("removed member existing session cannot create a launch token for that workspace", async () => {
   const { dependencies, input, records } = launchFixture({
-    role: "member",
+    role: "operator",
     memberships: [],
   });
 
@@ -68,7 +68,7 @@ test("future app launch uses the same least-privilege role policy", async () => 
     launchUrl: "https://apps.example.invalid/ops-console",
   };
 
-  for (const role of ["owner", "admin", "member"]) {
+  for (const role of ["admin", "operator"]) {
     const { dependencies, input, records } = launchFixture({
       role,
       app: futureApp,
@@ -105,8 +105,8 @@ test("future app launch uses the same least-privilege role policy", async () => 
   assertResponseIsPrivacySafe(viewerResult);
 });
 
-test("allowed owner admin and member SQAG access creates one hash-only launch token record", async () => {
-  for (const role of ["owner", "admin", "member"]) {
+test("allowed admin and operator SQAG access creates one hash-only launch token record", async () => {
+  for (const role of ["admin", "operator"]) {
     const { dependencies, input, records } = launchFixture({
       role,
       app: { launchUrl: "https://apps.example.invalid/sqag" },
@@ -192,7 +192,7 @@ function launchFixture(overrides = {}) {
     updatedAt: now,
   };
   const usersByRole = Object.fromEntries(
-    ["owner", "admin", "member", "viewer"].map((role) => [
+    ["admin", "operator", "viewer"].map((role) => [
       role,
       {
         id: `user_${role}_example`,
@@ -205,7 +205,7 @@ function launchFixture(overrides = {}) {
       },
     ]),
   );
-  const role = overrides.role ?? "owner";
+  const role = overrides.role ?? "admin";
   const user = usersByRole[role];
   const session = {
     id: `session_${role}_example`,
@@ -230,7 +230,7 @@ function launchFixture(overrides = {}) {
     workspaceId: workspace.id,
     appId: app.id,
     status: "enabled",
-    grantedByUserId: "user_owner_example",
+    grantedByUserId: "user_admin_example",
     createdAt: now,
     updatedAt: now,
     ...overrides.entitlement,

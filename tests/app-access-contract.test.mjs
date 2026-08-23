@@ -8,9 +8,8 @@ test("app access contract documents role and product access matrix", async () =>
   const contract = await readContract();
 
   assert.match(contract, /## Role And Product Access Matrix/i);
-  assert.match(contract, /\| `owner` \| Yes, for active memberships\. \| Yes/i);
   assert.match(contract, /\| `admin` \| Yes, for active memberships\. \| Yes/i);
-  assert.match(contract, /\| `member` \| Yes, for active memberships\. \| No\. \| Allowed/i);
+  assert.match(contract, /\| `operator` \| Yes, for active memberships\. \| No\. \| Allowed/i);
   assert.match(contract, /\| `viewer` \| Yes, for active memberships\. \| No\. \| Blocked unless a future app-specific read-only launch policy/i);
   assert.match(contract, /SQAG has no read-only launch mode/i);
   assert.match(contract, /Future apps inherit the same blocked viewer launch default/i);

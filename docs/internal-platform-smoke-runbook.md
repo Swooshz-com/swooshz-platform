@@ -117,7 +117,7 @@ PLATFORM_SEED_CONFIRM=seed-reviewed-internal-access
 PLATFORM_SEED_USER_EMAIL=<email-used-for-login>
 PLATFORM_SEED_WORKSPACE_SLUG=<reviewed-workspace-slug>
 PLATFORM_SEED_WORKSPACE_NAME=<reviewed-workspace-name>
-PLATFORM_SEED_MEMBERSHIP_ROLE=<optional-owner-admin-or-member>
+PLATFORM_SEED_MEMBERSHIP_ROLE=<optional-admin-or-operator-or-viewer>
 PLATFORM_SEED_APP_LAUNCH_URL=<optional-app-launch-url>
 ```
 
@@ -149,6 +149,10 @@ npm run db:migrate
 ```
 
 This command should be run deliberately by an operator. It is not called by bootstrap, server creation, auth routes, the browser shell, or the seed CLI.
+
+### Run-151 Role Migration Contract (Not Executed Here)
+
+For the accepted role-collapse migration, the reviewed operator sequence is: quiesce old writers; apply `drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql`; verify the migration and post-migration admin invariant; then start and serve the new application contract. Mixed application versions across the role migration are unsupported. A pre-commit transaction rollback is the only migration rollback path; after commit, restore only from an approved backup/snapshot. Run-151 performs none of these live operations.
 
 ### D. Start Platform Server
 
@@ -217,11 +221,11 @@ test snapshots.
 Use this internal-alpha fallback only for a teammate who has completed real OIDC login at least once. That means the teammate is already an existing active provider-backed Platform user. The admin UI does not create provider accounts, does not create provider identities, and no invitation email is sent.
 
 1. Have the teammate sign in once through `/` and confirm they reach `/app`.
-2. As an owner/admin, open `/app/admin`.
+2. As an admin, open `/app/admin`.
 3. Use the Add Existing User form with the placeholder email value the teammate used for login.
-4. For this check, set role to `member` for quote operators unless the teammate should administer the workspace.
+4. For this check, set role to `operator` for quote operators unless the teammate should administer the workspace.
 5. Submit the form and confirm the member appears in the team list with active membership status.
-6. Change a non-owner member role when appropriate, disable a non-owner membership when appropriate, reactivate a disabled non-owner membership when appropriate, and enable or disable the SQAG entitlement only for this local smoke workspace.
+6. Change another membership role when appropriate, disable another membership when appropriate, reactivate another disabled membership when appropriate, and enable or disable the SQAG entitlement only for this local smoke workspace.
 7. Confirm the Activity section shows recent add-user, role-change, membership-disable, membership-reactivation, and entitlement-change audit events with event type, target type/id, actor user id, created timestamp, and safe metadata only.
 8. If the form shows a generic failure, confirm the teammate completed real OIDC login, has an active provider-backed Platform user, is not already a workspace member, and that the browser request has a fresh CSRF token.
 

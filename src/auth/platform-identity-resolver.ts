@@ -251,8 +251,9 @@ async function assertApprovalsCanBeAccepted(
 ): Promise<void> {
   const workspaces = dependencies.repositories.workspaces;
   const memberships = dependencies.repositories.memberships;
+  const approvalRepository = dependencies.repositories.membershipApprovals;
 
-  if (!workspaces || !memberships) {
+  if (!workspaces || !memberships || !approvalRepository) {
     throw membershipApprovalAcceptanceError();
   }
 
@@ -268,18 +269,26 @@ async function assertApprovalsCanBeAccepted(
     }
 
     const workspaceMemberships = await memberships.listForWorkspace(approval.workspaceId);
-    const firstOwnerBootstrap =
-      approval.role === "owner" &&
+    const pendingWorkspaceApprovals = await approvalRepository.listPendingForWorkspace(
+      approval.workspaceId,
+    );
+    const bootstrapApprovals = pendingWorkspaceApprovals.filter(
+      (candidate) =>
+        candidate.role === "admin" && candidate.requestedByUserId === null,
+    );
+    const firstAdminBootstrap =
+      approval.role === "admin" &&
       approval.requestedByUserId === null &&
       workspaceMemberships.length === 0;
 
     if (
-      !firstOwnerBootstrap &&
-      !["admin", "member", "viewer"].includes(approval.role)
+      firstAdminBootstrap
+        ? bootstrapApprovals.length !== 1 || bootstrapApprovals[0]?.id !== approval.id
+        : approval.requestedByUserId === null ||
+          !["admin", "operator", "viewer"].includes(approval.role)
     ) {
       throw membershipApprovalAcceptanceError();
     }
-
     const existingUser = await findUserByNormalizedEmailSafely(dependencies, verifiedEmail);
 
     if (existingUser) {

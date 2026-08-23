@@ -110,6 +110,7 @@ export interface SessionRepository {
 export interface WorkspaceRepository {
   findById(id: string): Promise<Workspace | null>;
   findBySlug(slug: string): Promise<Workspace | null>;
+  lockForAdminMutation(id: string): Promise<void>;
   create(workspace: Workspace): Promise<Workspace>;
 }
 

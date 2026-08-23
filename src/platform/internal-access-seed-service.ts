@@ -114,7 +114,7 @@ export interface InternalAccessSeedResult {
   created: InternalAccessSeedCreatedFlags;
 }
 
-export interface FirstOwnerBootstrapApprovalSeedInput {
+export interface FirstAdminBootstrapApprovalSeedInput {
   now: string;
   workspace: InternalWorkspaceSeedInput;
   app: InternalAppSeedInput;
@@ -126,28 +126,26 @@ export interface FirstOwnerBootstrapApprovalSeedInput {
   };
 }
 
-export interface FirstOwnerBootstrapApprovalCreatedFlags {
+export interface FirstAdminBootstrapApprovalCreatedFlags {
   workspace: boolean;
   app: boolean;
   entitlement: boolean;
   approval: boolean;
 }
 
-export interface FirstOwnerBootstrapApprovalSeedResult {
-  outcome: "first_owner_bootstrap_pending";
+export interface FirstAdminBootstrapApprovalSeedResult {
+  outcome: "first_admin_bootstrap_pending";
   workspace: Workspace;
   app: App;
   entitlement: AppEntitlement;
   approval: WorkspaceMembershipApprovalRecord;
-  created: FirstOwnerBootstrapApprovalCreatedFlags;
+  created: FirstAdminBootstrapApprovalCreatedFlags;
 }
 
-const defaultAppKey = "sqag";
-const defaultAppStatus = AppStatus.PrivatePreview;
+const defaultAppKey = "sqag";const defaultAppStatus = AppStatus.PrivatePreview;
 const defaultEntitlementStatus = EntitlementStatus.Enabled;
-const defaultMembershipRole = Role.Owner;
-const seedableRoles = new Set<Role>([Role.Owner, Role.Admin, Role.Member]);
-
+const defaultMembershipRole = Role.Admin;
+const seedableRoles = new Set<Role>([Role.Admin, Role.Operator, Role.Viewer]);
 export async function ensureInternalWorkspaceAppAccess(
   repositories: PlatformRepositories,
   input: InternalAccessSeedInput,
@@ -163,14 +161,12 @@ export async function ensureInternalWorkspaceAppAccess(
   }
 }
 
-export async function ensureFirstOwnerBootstrapApproval(
+export async function ensureFirstAdminBootstrapApproval(
   repositories: PlatformRepositories,
-  input: FirstOwnerBootstrapApprovalSeedInput,
-): Promise<FirstOwnerBootstrapApprovalSeedResult> {
-  try {
+  input: FirstAdminBootstrapApprovalSeedInput,
+): Promise<FirstAdminBootstrapApprovalSeedResult> {  try {
     return await runSeedTransaction(repositories, (transactionRepositories) =>
-      ensureFirstOwnerBootstrapApprovalSafely(transactionRepositories, input),
-    );
+      ensureFirstAdminBootstrapApprovalSafely(transactionRepositories, input),    );
   } catch (error) {
     if (error instanceof InternalAccessSeedError) {
       throw error;
@@ -180,20 +176,20 @@ export async function ensureFirstOwnerBootstrapApproval(
   }
 }
 
-async function ensureFirstOwnerBootstrapApprovalSafely(
+async function ensureFirstAdminBootstrapApprovalSafely(
   repositories: PlatformRepositories,
-  input: FirstOwnerBootstrapApprovalSeedInput,
-): Promise<FirstOwnerBootstrapApprovalSeedResult> {
-  const created: FirstOwnerBootstrapApprovalCreatedFlags = {
+  input: FirstAdminBootstrapApprovalSeedInput,
+): Promise<FirstAdminBootstrapApprovalSeedResult> {
+  const created: FirstAdminBootstrapApprovalCreatedFlags = {
     workspace: false,
     app: false,
     entitlement: false,
     approval: false,
   };
-  const role = input.approval.role ?? Role.Owner;
+  const role = input.approval.role ?? Role.Admin;
   const email = normalizeEmail(input.approval.email);
 
-  if (role !== Role.Owner || !email) {
+  if (role !== Role.Admin || !email) {
     throw new InternalAccessSeedError("role_not_seedable");
   }
 
@@ -216,7 +212,7 @@ async function ensureFirstOwnerBootstrapApprovalSafely(
     app,
     created,
   );
-  const approval = await ensureFirstOwnerApproval(
+  const approval = await ensureFirstAdminApproval(
     repositories,
     input,
     workspace,
@@ -225,7 +221,7 @@ async function ensureFirstOwnerBootstrapApprovalSafely(
   );
 
   return {
-    outcome: "first_owner_bootstrap_pending",
+    outcome: "first_admin_bootstrap_pending",
     workspace,
     app,
     entitlement,
@@ -234,14 +230,13 @@ async function ensureFirstOwnerBootstrapApprovalSafely(
   };
 }
 
-async function ensureFirstOwnerApproval(
+async function ensureFirstAdminApproval(
   repositories: PlatformRepositories,
-  input: FirstOwnerBootstrapApprovalSeedInput,
+  input: FirstAdminBootstrapApprovalSeedInput,
   workspace: Workspace,
   email: string,
-  created: FirstOwnerBootstrapApprovalCreatedFlags,
-): Promise<WorkspaceMembershipApprovalRecord> {
-  const approvals = repositories.membershipApprovals;
+  created: FirstAdminBootstrapApprovalCreatedFlags,
+): Promise<WorkspaceMembershipApprovalRecord> {  const approvals = repositories.membershipApprovals;
 
   if (!approvals) {
     throw new InternalAccessSeedError("repository_failure");
@@ -251,9 +246,8 @@ async function ensureFirstOwnerApproval(
 
   if (existing) {
     if (
-      existing.role !== Role.Owner ||
-      existing.requestedByUserId !== null ||
-      existing.acceptedAt ||
+      existing.role !== Role.Admin ||
+      existing.requestedByUserId !== null ||      existing.acceptedAt ||
       existing.revokedAt ||
       existing.acceptedUserId ||
       existing.revokedByUserId
@@ -269,9 +263,8 @@ async function ensureFirstOwnerApproval(
   const conflictingBootstrapApproval = pendingWorkspaceApprovals.find(
     (approval) =>
       approval.id === input.approval.id ||
-      (approval.role === Role.Owner && approval.requestedByUserId === null),
+      (approval.role === Role.Admin && approval.requestedByUserId === null),
   );
-
   if (conflictingBootstrapApproval) {
     throw new InternalAccessSeedError("approval_conflict");
   }
@@ -281,8 +274,7 @@ async function ensureFirstOwnerApproval(
     id: input.approval.id,
     workspaceId: workspace.id,
     email,
-    role: Role.Owner,
-    status: "pending",
+    role: Role.Admin,    status: "pending",
     requestedByUserId: null,
     createdAt: input.now,
     updatedAt: input.now,

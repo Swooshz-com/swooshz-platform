@@ -183,7 +183,7 @@ test("pending approval activates only after real provider-backed sign-in with ma
       id: "membership_from_pending_approval",
       workspaceId: "workspace_koncept_images",
       userId: "user_auth_callback_1",
-      role: "member",
+      role: "operator",
       status: "active",
       createdAt: now,
       updatedAt: now,
@@ -208,7 +208,7 @@ test("pending approval activates only after real provider-backed sign-in with ma
       targetId: "approval_pending_example",
       createdAt: now,
       metadata: {
-        newRole: "member",
+        newRole: "operator",
         newStatus: "active",
         targetUserId: "user_auth_callback_1",
         source: "provider_backed_sign_in",
@@ -277,7 +277,7 @@ test("pending approval activates from normalized verified email without env poli
       id: "membership_from_pending_approval",
       workspaceId: "workspace_koncept_images",
       userId: "user_auth_callback_1",
-      role: "member",
+      role: "operator",
       status: "active",
       createdAt: now,
       updatedAt: now,
@@ -294,24 +294,24 @@ test("pending approval activates from normalized verified email without env poli
   ]);
 });
 
-test("first-owner bootstrap approval activates owner only on zero-member workspace", async () => {
+test("first-admin bootstrap approval activates admin only on zero-member workspace", async () => {
   const firstOwnerApproval = pendingApproval({
-    role: "owner",
+    role: "admin",
     requestedByUserId: null,
   });
   const deps = createResolverDependencies({
     membershipApprovals: [firstOwnerApproval],
-    membershipIdFactory: () => "membership_first_owner_bootstrap",
-    auditEventIdFactory: () => "audit_first_owner_bootstrap_accepted",
+    membershipIdFactory: () => "membership_first_admin_bootstrap",
+    auditEventIdFactory: () => "audit_first_admin_bootstrap_accepted",
   });
   const resolver = createPlatformIdentitySessionResolver(deps);
 
   const result = await resolver.resolveAuthenticatedIdentity({
     identity: {
       ...verifiedIdentity,
-      providerSubject: "first-owner-provider-subject",
+      providerSubject: "first-admin-provider-subject",
       verifiedEmail: "pending.user@example.test",
-      displayName: "First Owner",
+      displayName: "First Admin",
     },
     stateReference: createStateReference(),
     now,
@@ -322,10 +322,10 @@ test("first-owner bootstrap approval activates owner only on zero-member workspa
   assert.equal(result.workspaceMembershipGranted, true);
   assert.deepEqual(deps.records.memberships, [
     {
-      id: "membership_first_owner_bootstrap",
+      id: "membership_first_admin_bootstrap",
       workspaceId: "workspace_koncept_images",
       userId: "user_auth_callback_1",
-      role: "owner",
+      role: "admin",
       status: "active",
       createdAt: now,
       updatedAt: now,
@@ -343,7 +343,7 @@ test("first-owner bootstrap approval activates owner only on zero-member workspa
   assert.equal(deps.records.sessions.length, 1);
   assert.deepEqual(deps.records.auditEvents, [
     {
-      id: "audit_first_owner_bootstrap_accepted",
+      id: "audit_first_admin_bootstrap_accepted",
       workspaceId: "workspace_koncept_images",
       actorUserId: "user_auth_callback_1",
       eventType: "workspace.membership_approval.accepted",
@@ -351,7 +351,7 @@ test("first-owner bootstrap approval activates owner only on zero-member workspa
       targetId: "approval_pending_example",
       createdAt: now,
       metadata: {
-        newRole: "owner",
+        newRole: "admin",
         newStatus: "active",
         targetUserId: "user_auth_callback_1",
         source: "provider_backed_sign_in",
@@ -404,7 +404,7 @@ test("pending approval acceptance fails closed for unsafe approval and user stat
     id: "membership_existing_pending",
     workspaceId: "workspace_koncept_images",
     userId: existingPendingUser.id,
-    role: "member",
+    role: "operator",
     status: "active",
     createdAt: "2026-06-26T00:00:00.000Z",
     updatedAt: "2026-06-26T00:00:00.000Z",
@@ -419,17 +419,17 @@ test("pending approval acceptance fails closed for unsafe approval and user stat
       },
     ],
     [
-      "owner approval after workspace already has a member",
+      "bootstrap admin approval after workspace already has a member",
       {
         users: [existingPendingUser],
         memberships: [existingPendingMembership],
         membershipApprovals: [
-          pendingApproval({ role: "owner", requestedByUserId: null }),
+          pendingApproval({ role: "admin", requestedByUserId: null }),
         ],
       },
     ],
     [
-      "owner approval without bootstrap actor",
+      "legacy owner approval",
       {
         membershipApprovals: [pendingApproval({ role: "owner" })],
       },
@@ -1088,7 +1088,7 @@ function pendingApproval(overrides = {}) {
     id: "approval_pending_example",
     workspaceId: "workspace_koncept_images",
     email: "pending.user@example.test",
-    role: "member",
+    role: "operator",
     status: "pending",
     requestedByUserId: "user_owner",
     createdAt: "2026-06-26T00:00:00.000Z",
@@ -1106,7 +1106,7 @@ function activeMembership(overrides = {}) {
     id: "membership_owner",
     workspaceId: "workspace_koncept_images",
     userId: activeUser.id,
-    role: "owner",
+    role: "admin",
     status: "active",
     createdAt: "2026-06-26T00:00:00.000Z",
     updatedAt: "2026-06-26T00:00:00.000Z",

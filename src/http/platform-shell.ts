@@ -203,7 +203,7 @@ export function renderAppShellPage(): string {
             workspaceName.textContent = workspace.workspaceName || workspace.workspaceId;
             workspaceRole.textContent = displayWorkspaceRole(workspace.membershipRole);
             noWorkspace.hidden = true;
-            const canAdmin = workspace.membershipRole === "owner" || workspace.membershipRole === "admin";
+            const canAdmin = workspace.membershipRole === "admin";
             adminLink.hidden = !canAdmin;
             if (canAdmin) {
               adminLink.href = "/app/admin?workspace=" + encodeURIComponent(workspace.workspaceSlug);
@@ -329,9 +329,12 @@ export function renderAppShellPage(): string {
           }
 
           function displayWorkspaceRole(role) {
-            if (role === "owner") return "Owner";
             if (role === "admin") return "Admin";
-            return "Member";
+            if (role === "operator") return "Operator";
+            if (role === "viewer") return "Viewer";
+            if (role === "owner") return "Legacy owner (historical)";
+            if (role === "member") return "Legacy member (historical)";
+            return "Not available";
           }
 
           async function readJson(response) {
@@ -416,7 +419,6 @@ export function renderAdminShellPage(): string {
           </section>
           <section id="identity" hidden></section>
           <section id="workspaceSummary" hidden></section>
-          <section id="ownerTransfer" hidden></section>
           <section id="members" class="admin-panel" data-admin-section="members" hidden></section>
           <section id="pendingApprovals" class="admin-panel" data-admin-section="pending-approvals" hidden></section>
           <section id="entitlements" class="admin-panel" data-admin-section="app-access" hidden></section>
@@ -435,7 +437,7 @@ export function renderAdminShellPage(): string {
             <p id="addMemberResult" class="inline-feedback" role="status" aria-live="polite" hidden></p>
             <form id="addMemberForm" class="field-stack">
               <label><strong>Email address</strong><input name="email" type="email" autocomplete="email" placeholder="name@example.com" required></label>
-              <label><strong>Role</strong><select name="role" required><option value="member" selected>Member</option><option value="admin">Admin</option></select></label>
+              <label><strong>Role</strong><select name="role" required><option value="admin">Admin</option><option value="operator" selected>Operator</option><option value="viewer">Viewer</option></select></label>
               <div class="modal-actions">
                 <button id="cancelAddMemberModalButton" class="auth-secondary-button" type="button">Cancel</button>
                 <button id="addMemberSubmitButton" class="auth-primary-button" type="submit">Add member</button>
@@ -509,7 +511,6 @@ export function renderAdminShellPage(): string {
           const addMemberResult = document.getElementById("addMemberResult");
           const addMemberForm = document.getElementById("addMemberForm");
           const addMemberSubmitButton = document.getElementById("addMemberSubmitButton");
-          const ownerTransfer = document.getElementById("ownerTransfer");
           const pendingApprovals = document.getElementById("pendingApprovals");
           const members = document.getElementById("members");
           const entitlements = document.getElementById("entitlements");
@@ -531,7 +532,7 @@ export function renderAdminShellPage(): string {
           workspaceSelect.addEventListener("change", () => {
             const workspace = state.context?.workspaces?.find((candidate) =>
               candidate.workspaceId === workspaceSelect.value &&
-              (candidate.membershipRole === "owner" || candidate.membershipRole === "admin")
+              candidate.membershipRole === "admin"
             );
             if (!workspace) return;
             state.workspace = workspace;
@@ -697,7 +698,7 @@ export function renderAdminShellPage(): string {
             const requested = params.get("workspaceId");
             const adminWorkspaces = Array.isArray(context.workspaces)
               ? context.workspaces.filter((workspace) =>
-                  workspace.membershipRole === "owner" || workspace.membershipRole === "admin"
+                  workspace.membershipRole === "admin"
                 )
               : [];
 
@@ -727,7 +728,7 @@ export function renderAdminShellPage(): string {
 
           function renderForbidden() {
             hideAdminSections();
-            setStatus("Workspace admin is available to workspace owners and admins only.");
+            setStatus("Workspace admin is available to workspace admins only.");
           }
 
           function renderIdentity(context) {
@@ -737,7 +738,7 @@ export function renderAdminShellPage(): string {
             headerAccountEmail.textContent = context.user.email || "";
             const adminWorkspaces = Array.isArray(context.workspaces)
               ? context.workspaces.filter((workspace) =>
-                  workspace.membershipRole === "owner" || workspace.membershipRole === "admin"
+                  workspace.membershipRole === "admin"
                 )
               : [];
             workspaceSelect.replaceChildren();
@@ -772,18 +773,18 @@ export function renderAdminShellPage(): string {
             const table = document.createElement("table");
             table.append(tableHead(["Member", "Role", "Status", "Last active", "Actions"]));
             const body = document.createElement("tbody");
-            const activeOwnerCount = memberList.filter((member) =>
-              member.role === "owner" && member.status === "active"
+            const activeAdminCount = memberList.filter((member) =>
+              member.role === "admin" && member.status === "active"
             ).length;
 
             for (const [memberIndex, member] of memberList.entries()) {
               const row = document.createElement("tr");
               row.append(
                 memberIdentityCell(member, "Member"),
-                roleCell(member, "Role"),
+                roleCell(member, "Role", activeAdminCount),
                 tableCell(displayStatus(member.status || ""), "Status"),
                 timeCell(member.user?.lastLoginAt, "Last active"),
-                memberActionsCell(member, activeOwnerCount, "Actions", memberIndex)
+                memberActionsCell(member, activeAdminCount, "Actions", memberIndex)
               );
               body.append(row);
             }
@@ -948,25 +949,26 @@ export function renderAdminShellPage(): string {
             return pager;
           }
 
-          function roleCell(member, label) {
+          function roleCell(member, label, activeAdminCount) {
             const cell = document.createElement("td");
             setCellLabel(cell, label);
             const select = document.createElement("select");
-            const roles = ["owner", "admin", "member"];
+            const roles = ["admin", "operator", "viewer"];
             const isSelf = member.user?.id === state.context?.user?.userId;
-            const actorIsOwner = state.workspace?.membershipRole === "owner";
+            const hasCurrentRole = roles.includes(member.role);
+            const isLastActiveAdmin =
+              member.role === "admin" && member.status === "active" && activeAdminCount <= 1;
 
             for (const role of roles) {
               const option = document.createElement("option");
               option.value = role;
               option.textContent = displayRole(role);
-              option.selected = member.role === role || (!roles.includes(member.role) && role === "member");
-              option.disabled = role === "owner" && !actorIsOwner;
+              option.selected = member.role === role;
               select.append(option);
             }
 
             select.disabled =
-              isSelf || member.status !== "active" || (member.role === "owner" && !actorIsOwner);
+              isSelf || member.status !== "active" || !hasCurrentRole || isLastActiveAdmin;
             select.addEventListener("change", () => {
               const nextRole = select.value;
               select.value = member.role;
@@ -975,24 +977,20 @@ export function renderAdminShellPage(): string {
             cell.append(select);
             return cell;
           }
-
-          function memberActionsCell(member, activeOwnerCount, label, memberIndex) {
+          function memberActionsCell(member, activeAdminCount, label, memberIndex) {
             const cell = document.createElement("td");
             setCellLabel(cell, label);
             const isSelf = member.user?.id === state.context?.user?.userId;
-            const isProtectedOwner = member.role === "owner";
-            const isLastActiveOwner =
-              member.role === "owner" && member.status === "active" && activeOwnerCount <= 1;
-            const canAct = !isSelf && !isProtectedOwner && !isLastActiveOwner;
+            const isLastActiveAdmin =
+              member.role === "admin" && member.status === "active" && activeAdminCount <= 1;
+            const canAct = !isSelf && !isLastActiveAdmin;
 
             if (!canAct) {
               const protectedLabel = document.createElement("span");
               protectedLabel.className = "protected-label";
-              protectedLabel.textContent = isProtectedOwner || isLastActiveOwner
-                ? "Protected owner"
-                : "Your account";
-              protectedLabel.title = isProtectedOwner || isLastActiveOwner
-                ? "The workspace owner cannot be removed."
+              protectedLabel.textContent = isLastActiveAdmin ? "Protected admin" : "Your account";
+              protectedLabel.title = isLastActiveAdmin
+                ? "The workspace must retain at least one active admin."
                 : "Use another administrator for changes to your own access.";
               cell.append(protectedLabel);
               return cell;
@@ -1046,40 +1044,6 @@ export function renderAdminShellPage(): string {
             cell.append(menu);
             return cell;
           }
-
-          function closeAllActionMenus(restoreFocus = false, preserveTrigger = false) {
-            const restoreTarget = state.lastActionMenuButton;
-            for (const panel of document.querySelectorAll(".action-menu-panel")) panel.hidden = true;
-            for (const button of document.querySelectorAll(".action-menu > button[aria-controls]")) {
-              button.setAttribute("aria-expanded", "false");
-            }
-            if (!preserveTrigger) state.lastActionMenuButton = null;
-            if (restoreFocus) restoreTarget?.focus();
-          }
-          function actionButton(label, onClick) {
-            const button = document.createElement("button");
-            button.type = "button";
-            button.className = "secondary-action compact";
-            button.textContent = label;
-            button.addEventListener("click", onClick);
-            return button;
-          }
-
-          function approvalActionsCell(approval, label) {
-            const cell = document.createElement("td");
-            setCellLabel(cell, label);
-            const button = document.createElement("button");
-            button.type = "button";
-            button.className = "secondary-action compact";
-            button.textContent = "Revoke";
-            button.disabled = approval.status !== "pending";
-            button.addEventListener("click", () => {
-              void revokeApproval(approval.approvalId);
-            });
-            cell.append(button);
-            return cell;
-          }
-
           function changeMemberRole(membershipId, role) {
             openActionModal({
               title: "Change role?",
@@ -1155,7 +1119,7 @@ export function renderAdminShellPage(): string {
             event.preventDefault();
             const formData = new FormData(addMemberForm);
             const email = String(formData.get("email") || "");
-            const role = String(formData.get("role") || "member");
+            const role = String(formData.get("role") || "operator");
             if (!email.trim()) {
               setAddMemberResult("We could not add this member. Check the email address and try again.");
               return;
@@ -1560,7 +1524,6 @@ export function renderAdminShellPage(): string {
             addMember.hidden = true;
             addMemberResult.hidden = true;
             addMemberResult.textContent = "";
-            ownerTransfer.hidden = true;
             pendingApprovals.hidden = true;
             members.hidden = true;
             entitlements.hidden = true;
@@ -1697,15 +1660,20 @@ export function renderAdminShellPage(): string {
 
           function displayRole(role) {
             switch (role) {
-              case "owner":
-                return "Owner";
               case "admin":
                 return "Admin";
+              case "operator":
+                return "Operator";
+              case "viewer":
+                return "Viewer";
+              case "owner":
+                return "Legacy owner (historical)";
+              case "member":
+                return "Legacy member (historical)";
               default:
-                return "Member";
+                return "Not available";
             }
           }
-
           function displayStatus(status) {
             switch (status) {
               case "active":

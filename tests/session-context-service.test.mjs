@@ -66,7 +66,7 @@ test("active session returns safe user workspace and app context", async () => {
     [
       {
         workspaceId: "workspace_koncept_images",
-        membershipRole: "owner",
+        membershipRole: "admin",
         membershipStatus: "active",
         appResults: [AccessDecisionResult.Allowed],
       },
@@ -257,7 +257,7 @@ function sessionContextFixture(overrides = {}) {
     id: "membership_owner_example",
     workspaceId: workspace.id,
     userId: user.id,
-    role: "owner",
+    role: "admin",
     status: "active",
     createdAt: now,
     updatedAt: now,
@@ -275,7 +275,7 @@ function sessionContextFixture(overrides = {}) {
     id: "membership_disabled_example",
     workspaceId: archivedWorkspace.id,
     userId: user.id,
-    role: "member",
+    role: "operator",
     status: "disabled",
     createdAt: now,
     updatedAt: now,

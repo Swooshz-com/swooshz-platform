@@ -57,11 +57,11 @@ test("protected app-access handler returns 401 for revoked and expired sessions"
 
   const revokedResponse = await handleProtectedAppAccessRequest(
     revoked.repositories,
-    requestWithCookie("session_owner_example"),
+    requestWithCookie("session_admin_example"),
   );
   const expiredResponse = await handleProtectedAppAccessRequest(
     expired.repositories,
-    requestWithCookie("session_owner_example"),
+    requestWithCookie("session_admin_example"),
   );
 
   assert.deepEqual(revokedResponse, {
@@ -85,13 +85,13 @@ test("protected app-access handler returns 200 safe body for allowed access", as
 
   const response = await handleProtectedAppAccessRequest(
     repositories,
-    requestWithCookie("session_owner_example"),
+    requestWithCookie("session_admin_example"),
   );
 
   assert.equal(response.status, 200);
   assert.deepEqual(response.body, {
     outcome: "allowed",
-    userId: "user_owner_example",
+    userId: "user_admin_example",
     workspaceId: "workspace_koncept_images",
     appKey: "sqag",
     decision: {
@@ -131,7 +131,7 @@ test("protected app-access handler returns 500 safe body for service failure", a
 
   const response = await handleProtectedAppAccessRequest(
     repositories,
-    requestWithCookie("session_owner_example"),
+    requestWithCookie("session_admin_example"),
   );
 
   assert.equal(response.status, 500);
@@ -166,7 +166,7 @@ test("session context handler returns 200 safe context for active session", asyn
 
   const response = await handleSessionContextRequest(repositories, {
     headers: {
-      cookie: "swooshz_session=session_owner_example; unrelated=value",
+      cookie: "swooshz_session=session_admin_example; unrelated=value",
     },
     now,
     selectedWorkspaceId: "workspace_koncept_images",
@@ -175,7 +175,7 @@ test("session context handler returns 200 safe context for active session", asyn
   assert.equal(response.status, 200);
   assertNoStoreHeaders(response.headers);
   assert.equal(response.body.outcome, "authenticated");
-  assert.equal(response.body.user.userId, "user_owner_example");
+  assert.equal(response.body.user.userId, "user_admin_example");
   assert.equal(response.body.selectedWorkspaceId, "workspace_koncept_images");
   assert.deepEqual(
     response.body.workspaces.map((workspace) => ({
@@ -200,7 +200,7 @@ test("session context handler returns 500 safe body for repository failure", asy
 
   const response = await handleSessionContextRequest(repositories, {
     headers: {
-      cookie: "swooshz_session=session_owner_example",
+      cookie: "swooshz_session=session_admin_example",
     },
     now,
   });
@@ -240,7 +240,7 @@ test("logout handler revokes active session and returns safe idempotent response
 
   const response = await handleLogoutRequest(
     { sessions: repositories.sessions },
-    logoutRequestWithCookie("session_owner_example"),
+    logoutRequestWithCookie("session_admin_example"),
   );
 
   assert.equal(response.status, 200);
@@ -261,11 +261,11 @@ test("logout handler remains safe for already revoked and not found sessions", a
 
   const alreadyRevokedResponse = await handleLogoutRequest(
     { sessions: alreadyRevoked.repositories.sessions },
-    logoutRequestWithCookie("session_owner_example"),
+    logoutRequestWithCookie("session_admin_example"),
   );
   const notFoundResponse = await handleLogoutRequest(
     { sessions: notFound.repositories.sessions },
-    logoutRequestWithCookie("session_owner_example"),
+    logoutRequestWithCookie("session_admin_example"),
   );
 
   assert.equal(alreadyRevokedResponse.status, 200);
@@ -282,7 +282,7 @@ test("logout handler returns privacy-safe response for revocation failure", asyn
 
   const response = await handleLogoutRequest(
     { sessions: repositories.sessions },
-    logoutRequestWithCookie("session_owner_example"),
+    logoutRequestWithCookie("session_admin_example"),
   );
 
   assert.equal(response.status, 200);
@@ -321,15 +321,15 @@ test("CSRF issue handler denies unknown revoked and expired sessions safely", as
 
   const unknownResponse = await handleCsrfTokenIssueRequest(
     { sessions: unknown.repositories.sessions, csrf: csrfIssueFixture().dependencies },
-    csrfIssueRequestWithCookie("session_owner_example"),
+    csrfIssueRequestWithCookie("session_admin_example"),
   );
   const revokedResponse = await handleCsrfTokenIssueRequest(
     { sessions: revoked.repositories.sessions, csrf: csrfIssueFixture().dependencies },
-    csrfIssueRequestWithCookie("session_owner_example"),
+    csrfIssueRequestWithCookie("session_admin_example"),
   );
   const expiredResponse = await handleCsrfTokenIssueRequest(
     { sessions: expired.repositories.sessions, csrf: csrfIssueFixture().dependencies },
-    csrfIssueRequestWithCookie("session_owner_example"),
+    csrfIssueRequestWithCookie("session_admin_example"),
   );
 
   assert.deepEqual(unknownResponse.body, {
@@ -361,7 +361,7 @@ test("CSRF issue handler issues a token for an active session and stores only th
 
   const response = await handleCsrfTokenIssueRequest(
     { sessions: repositories.sessions, csrf: csrf.dependencies },
-    csrfIssueRequestWithCookie("session_owner_example"),
+    csrfIssueRequestWithCookie("session_admin_example"),
   );
 
   assert.equal(response.status, 200);
@@ -373,7 +373,7 @@ test("CSRF issue handler issues a token for an active session and stores only th
   assertNoStoreHeaders(response.headers);
   assert.equal("tokenHash" in response.body, false);
   assert.equal(csrf.records.length, 1);
-  assert.equal(csrf.records[0].sessionId, "session_owner_example");
+  assert.equal(csrf.records[0].sessionId, "session_admin_example");
   assert.equal(csrf.records[0].tokenHash, issuedCsrfTokenHash);
   assert.equal(csrf.records[0].csrfToken, undefined);
   assert.doesNotMatch(JSON.stringify(csrf.records), new RegExp(issuedCsrfToken));
@@ -394,7 +394,7 @@ test("CSRF issue handler handles token lifecycle failures safely", async () => {
     const csrf = csrfIssueFixture({ [failure]: true });
     const response = await handleCsrfTokenIssueRequest(
       { sessions: repositories.sessions, csrf: csrf.dependencies },
-      csrfIssueRequestWithCookie("session_owner_example", {
+      csrfIssueRequestWithCookie("session_admin_example", {
         ttlSeconds: failure === "invalidTtl" ? 0 : 900,
         now: failure === "invalidNow" ? "not-a-date raw-session-token" : now,
       }),
@@ -436,7 +436,7 @@ test("app launch handler returns 400 for missing query fields without creating a
 
   const response = await handleAppLaunchIntentRequest(launch.dependencies, {
     headers: {
-      cookie: "swooshz_session=session_owner_example",
+      cookie: "swooshz_session=session_admin_example",
     },
     selectedWorkspaceId: "",
     appKey: "sqag",
@@ -483,7 +483,7 @@ test("app launch handler disables direct browser raw-token responses", async () 
 
   const response = await handleAppLaunchIntentRequest(launch.dependencies, {
     headers: {
-      cookie: "swooshz_session=session_owner_example",
+      cookie: "swooshz_session=session_admin_example",
     },
     selectedWorkspaceId: "workspace_koncept_images",
     appKey: "sqag",
@@ -508,7 +508,7 @@ test("app launch handler does not touch launch-token storage when direct respons
 
   const response = await handleAppLaunchIntentRequest(launch.dependencies, {
     headers: {
-      cookie: "swooshz_session=session_owner_example",
+      cookie: "swooshz_session=session_admin_example",
     },
     selectedWorkspaceId: "workspace_koncept_images",
     appKey: "sqag",
@@ -627,9 +627,9 @@ test("app launch consume handler returns safe launch context and consumes once",
   assert.deepEqual(response.body, {
     outcome: "consumed",
     user: {
-      userId: "user_owner_example",
-      email: "owner@example.com",
-      displayName: "Owner Example",
+      userId: "user_admin_example",
+      email: "admin@example.com",
+      displayName: "Admin Example",
       status: "active",
     },
     workspace: {
@@ -641,7 +641,7 @@ test("app launch consume handler returns safe launch context and consumes once",
       appKey: "sqag",
       appName: "SQAG",
     },
-    membershipRole: "owner",
+    membershipRole: "admin",
     launchTokenExpiresAt,
   });
   assert.equal(records.appLaunchTokens[0].consumedAt, now);
@@ -730,7 +730,7 @@ function httpFixture(overrides = {}) {
     updatedAt: now,
   };
   const usersByRole = Object.fromEntries(
-    ["owner", "admin", "member", "viewer"].map((role) => [
+    ["admin", "operator", "viewer"].map((role) => [
       role,
       {
         id: `user_${role}_example`,
@@ -743,7 +743,7 @@ function httpFixture(overrides = {}) {
       },
     ]),
   );
-  const role = overrides.role ?? "owner";
+  const role = overrides.role ?? "admin";
   const user = { ...usersByRole[role], ...overrides.user };
   const session = {
     id: `session_${role}_example`,
@@ -768,7 +768,7 @@ function httpFixture(overrides = {}) {
     workspaceId: workspace.id,
     appId: app.id,
     status: "enabled",
-    grantedByUserId: "user_owner_example",
+    grantedByUserId: "user_admin_example",
     createdAt: now,
     updatedAt: now,
   };

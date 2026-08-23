@@ -188,7 +188,7 @@ export function renderSolutionsPage(): string {
               <h2>Shared access. Separate product ownership.</h2>
             </div>
             <div class="editorial-copy">
-              <article><h3>Platform owns the entry</h3><p>Platform access covers accounts, sessions, workspaces, memberships, roles, product access, launch, administration, and audit boundaries. Visible workspace roles remain Owner, Admin, Member, and Pending.</p></article>
+              <article><h3>Platform owns the entry</h3><p>Platform access covers accounts, sessions, workspaces, memberships, roles, product access, launch, administration, and audit boundaries. Visible workspace roles remain Admin, Operator, and Viewer; pending approvals are separate.</p></article>
               <article><h3>The product owns the workflow</h3><p>Swooshz Quote Auto Generator keeps quotation logic and product runtime data within its own application.</p></article>
             </div>
           </div>

@@ -72,10 +72,10 @@ test("solutions page presents one approved product and no abandoned product chap
   assert.match(html, /Swooshz Quote Auto Generator/);
   assert.match(html, /separate product app launched from Platform/i);
   assert.match(html, /Platform owns the entry/);
-  assert.match(html, /Owner/);
   assert.match(html, /Admin/);
-  assert.match(html, /Member/);
-  assert.match(html, /Pending/);
+  assert.match(html, /Operator/);
+  assert.match(html, /Viewer/);
+  assert.match(html, /pending approvals are separate/i);
   assert.equal((html.match(/product-chapter-number/g) ?? []).length, 1);
   assert.doesNotMatch(html, /SEO \/ GEO \/ Seozilla|Vendor workflow pending|Unavailable until confirmed|SKR/i);
 });
@@ -255,7 +255,7 @@ test("launcher and admin shells format workspace roles without unsupported role 
   assert.match(adminHtml, /headerWorkspaceRole\.textContent = displayRole\(workspace\.membershipRole\)/);
   assert.match(adminHtml, /tableCell\(displayStatus\(member\.status \|\| ""\), "Status"\)/);
   assert.match(adminHtml, /tableCell\(displayRole\(approval\.role\), "Role"\)/);
-  assert.doesNotMatch(appHtml + adminHtml, /\bViewer\b/);
+  assert.match(appHtml + adminHtml, /\bViewer\b/);
 });
 
 test("app shell presents the approved product name while preserving the internal app key contract", () => {
@@ -325,7 +325,7 @@ test("admin shell references protected admin APIs and CSRF-protected actions", (
   assert.match(html, /"x-csrf-token": csrfToken/);
 });
 
-test("admin shell includes an accessible add-member flow with allowed non-owner roles", () => {
+test("admin shell includes an accessible add-member flow with allowed current roles", () => {
   const html = renderAdminShellPage();
 
   assert.match(html, /id="addMemberForm"/);
@@ -335,8 +335,8 @@ test("admin shell includes an accessible add-member flow with allowed non-owner 
   assert.match(html, /access activates after the same email completes passwordless sign-in\./);
   assert.match(html, /No invitation email is sent\./);
   assert.match(html, /id="addMemberSubmitButton"[^>]*type="submit">Add member<\/button>/);
-  assert.match(html, /<option value="member" selected>Member<\/option><option value="admin">Admin<\/option>/);
-  assert.doesNotMatch(html, /value="owner"|value="viewer"|send invite|invitation (?:is|was) sent|confirmation email/i);
+  assert.match(html, /<option value="admin">Admin<\/option><option value="operator" selected>Operator<\/option><option value="viewer">Viewer<\/option>/);
+  assert.doesNotMatch(html, /value="owner"|value="member"|send invite|invitation (?:is|was) sent|confirmation email/i);
   assert.match(html, /addExistingMember/);
   assert.match(html, /Pending approval created\./);
   assert.match(html, /Existing user added to workspace\./);
@@ -360,13 +360,14 @@ test("admin shell renders pending approvals with revoke controls", () => {
   assert.doesNotMatch(html, /owner approval|email delivery is implied/i);
 });
 
-test("admin shell protects owners without exposing an unfinished owner-transfer surface", () => {
+test("admin shell protects last admins without exposing an unfinished workspace-lifecycle surface", () => {
   const html = renderAdminShellPage();
 
-  assert.match(html, /id="ownerTransfer" hidden/);
-  assert.match(html, /isProtectedOwner = member\.role === "owner"/);
-  assert.match(html, /"Protected owner"/);
-  assert.doesNotMatch(html, /Owner transfer is not available|transferOwner|owner-transfer-confirmation|\/owner-transfer/);
+  assert.match(html, /function memberActionsCell\(member, activeAdminCount, label, memberIndex\)/);
+  assert.match(html, /isLastActiveAdmin/);
+  assert.match(html, /Protected admin/);
+  assert.match(html, /at least one active admin/);
+  assert.doesNotMatch(html, /Owner transfer|transferOwner|owner-transfer-confirmation|\/owner-transfer/);
 });
 
 test("admin shell includes an Audit activity section for safe audit browsing", () => {
@@ -444,24 +445,23 @@ test("platform shells use CSRF-protected logout and preserve the signed-out acco
   assert.match(loginHtml, /URLSearchParams\(window\.location\.search\)/);
 });
 
-test("admin shell limits usable controls to owner/admin workspace context", () => {
+test("admin shell limits usable controls to admin workspace context", () => {
   const html = renderAdminShellPage();
 
-  assert.match(html, /workspace\.membershipRole === "owner" \|\| workspace\.membershipRole === "admin"/);
+  assert.match(html, /workspace\.membershipRole === "admin"/);
   assert.match(html, /params\.get\("workspace"\)/);
   assert.match(html, /workspace\.workspaceSlug === requestedSlug/);
-  assert.match(html, /Workspace admin is available to workspace owners and admins only\./);
-  assert.match(html, /actorIsOwner = state\.workspace\?\.membershipRole === "owner"/);
-  assert.match(html, /option\.disabled = role === "owner" && !actorIsOwner/);
-  assert.match(html, /isProtectedOwner = member\.role === "owner"/);
+  assert.match(html, /Workspace admin is available to workspace admins only\./);
+  assert.match(html, /const roles = \["admin", "operator", "viewer"\]/);
+  assert.match(html, /member\.role === "admin" && member\.status === "active" && activeAdminCount <= 1/);
   assert.match(html, /"Member disabled\."|"Member reactivated\."|"Member removed\."/);
-  assert.doesNotMatch(html, /\bviewer\b/i);
+  assert.match(html, /\bviewer\b/i);
 });
 
 test("admin shell renders compact accessible member actions with confirmations", () => {
   const html = renderAdminShellPage();
 
-  assert.match(html, /function memberActionsCell\(member, activeOwnerCount, label, memberIndex\)/);
+  assert.match(html, /function memberActionsCell\(member, activeAdminCount, label, memberIndex\)/);
   assert.match(html, /menuButton\.textContent = "Manage"/);
   assert.match(html, /menuButton\.id = "member-actions-trigger-"/);
   assert.match(html, /menuPanel\.id = "member-actions-panel-"/);
@@ -575,7 +575,7 @@ test("admin shell mobile tables expose row labels without horizontal overflow", 
 
   assert.match(html, /setCellLabel\(cell, label\)/);
   assert.match(html, /memberIdentityCell\(member, "Member"\)/);
-  assert.match(html, /roleCell\(member, "Role"\)/);
+  assert.match(html, /roleCell\(member, "Role", activeAdminCount\)/);
   assert.match(html, /metadataCell\(event\.metadata, "Details"\)/);
   assert.match(html, /min-width: 220px/);
   assert.match(html, /table-layout: auto/);

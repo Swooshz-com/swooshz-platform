@@ -13,8 +13,8 @@ const validCsrfToken = "csrf-token-valid-example";
 const privateStorageError =
   "database exploded postgresql://private-host raw-session-token provider-token select *";
 
-test("owner and admin can list workspace members through admin route", async () => {
-  for (const role of ["owner", "admin"]) {
+test("admin can list workspace members through admin route", async () => {
+  for (const role of ["admin"]) {
     const fixture = createAdminRouteFixture();
 
     const { response, body } = await request({
@@ -37,22 +37,16 @@ test("owner and admin can list workspace members through admin route", async () 
       })),
       [
         {
-          membershipId: "membership_owner_example",
-          role: "owner",
-          status: "active",
-          email: "owner@example.test",
-        },
-        {
           membershipId: "membership_admin_example",
           role: "admin",
           status: "active",
           email: "admin@example.test",
         },
         {
-          membershipId: "membership_member_example",
-          role: "member",
+          membershipId: "membership_operator_example",
+          role: "operator",
           status: "active",
-          email: "member@example.test",
+          email: "operator@example.test",
         },
         {
           membershipId: "membership_viewer_example",
@@ -67,8 +61,8 @@ test("owner and admin can list workspace members through admin route", async () 
   }
 });
 
-test("member and viewer cannot list or mutate workspace admin routes", async () => {
-  for (const role of ["member", "viewer"]) {
+test("operator and viewer cannot list or mutate workspace admin routes", async () => {
+  for (const role of ["operator", "viewer"]) {
     const fixture = createAdminRouteFixture({
       membershipApprovals: [pendingApproval()],
     });
@@ -81,19 +75,19 @@ test("member and viewer cannot list or mutate workspace admin routes", async () 
     });
     const mutate = await request({
       method: "POST",
-      url: "/api/platform/workspaces/workspace_koncept_images/members/membership_viewer_example/role?role=member",
+      url: "/api/platform/workspaces/workspace_koncept_images/members/membership_viewer_example/role?role=operator",
       headers: secureSessionHeaders(role),
       dependencies: fixture.dependencies,
     });
     const reactivate = await request({
       method: "POST",
-      url: "/api/platform/workspaces/workspace_koncept_images/members/membership_member_example/reactivate",
+      url: "/api/platform/workspaces/workspace_koncept_images/members/membership_operator_example/reactivate",
       headers: secureSessionHeaders(role),
       dependencies: fixture.dependencies,
     });
     const remove = await request({
       method: "POST",
-      url: "/api/platform/workspaces/workspace_koncept_images/members/membership_member_example/remove",
+      url: "/api/platform/workspaces/workspace_koncept_images/members/membership_operator_example/remove",
       headers: secureSessionHeaders(role),
       dependencies: fixture.dependencies,
     });
@@ -102,7 +96,7 @@ test("member and viewer cannot list or mutate workspace admin routes", async () 
       url: "/api/platform/workspaces/workspace_koncept_images/members/add",
       body: JSON.stringify({
         email: "existing.user@example.test",
-        role: "member",
+        role: "operator",
       }),
       headers: secureSessionHeaders(role),
       dependencies: fixture.dependencies,
@@ -198,37 +192,36 @@ test("missing expired revoked or disabled admin context fails closed", async () 
   const cases = [
     [{}, 401, { outcome: "denied", reason: "missing_session" }],
     [
-      sessionHeaders("owner"),
+      sessionHeaders("admin"),
       403,
       { outcome: "denied", reason: "not_authorized" },
       { session: { expiresAt: past } },
     ],
     [
-      sessionHeaders("owner"),
+      sessionHeaders("admin"),
       403,
       { outcome: "denied", reason: "not_authorized" },
       { session: { revokedAt: earlier } },
     ],
     [
-      sessionHeaders("owner"),
+      sessionHeaders("admin"),
       403,
       { outcome: "denied", reason: "not_authorized" },
       { actorMembership: { status: "disabled" } },
     ],
     [
-      sessionHeaders("owner"),
+      sessionHeaders("admin"),
       403,
       { outcome: "denied", reason: "not_authorized" },
-      { userByRole: { owner: { status: "disabled" } } },
-    ],
+      { userByRole: { admin: { status: "disabled" } } },    ],
     [
-      sessionHeaders("owner"),
+      sessionHeaders("admin"),
       403,
       { outcome: "denied", reason: "not_authorized" },
       { workspace: { status: "suspended" } },
     ],
     [
-      sessionHeaders("owner"),
+      sessionHeaders("admin"),
       403,
       { outcome: "denied", reason: "not_authorized" },
       { memberships: [] },
@@ -251,8 +244,8 @@ test("missing expired revoked or disabled admin context fails closed", async () 
   }
 });
 
-test("owner and admin can list workspace audit events through admin route", async () => {
-  for (const role of ["owner", "admin"]) {
+test("admin can list workspace audit events through admin route", async () => {
+  for (const role of ["admin"]) {
     const fixture = createAdminRouteFixture({
       extraUsers: [existingProviderBackedUser()],
       auditEvents: [
@@ -262,7 +255,7 @@ test("owner and admin can list workspace audit events through admin route", asyn
           targetId: "membership_http_1",
           createdAt: earlier,
           metadata: {
-            newRole: "member",
+            newRole: "operator",
             newStatus: "active",
             targetUserId: "user_existing_example",
             source: "existing_provider_backed_user",
@@ -286,13 +279,13 @@ test("owner and admin can list workspace audit events through admin route", asyn
         auditEvent({
           id: "audit_reactivated",
           eventType: "workspace.membership.reactivated",
-          targetId: "membership_member_example",
+          targetId: "membership_operator_example",
           createdAt: future,
           metadata: {
-            previousRole: "member",
+            previousRole: "operator",
             previousStatus: "disabled",
             newStatus: "active",
-            targetUserId: "user_member_example",
+            targetUserId: "user_operator_example",
             providerSubject: "raw-provider-subject",
             cookie: "raw-session-token",
           },
@@ -316,27 +309,27 @@ test("owner and admin can list workspace audit events through admin route", asyn
         {
           eventId: "audit_reactivated",
           workspaceId: "workspace_koncept_images",
-          actorUserId: "user_owner_example",
-          actorDisplayName: "Owner Example",
-          actorEmail: "owner@example.test",
+          actorUserId: "user_admin_example",
+          actorDisplayName: "Admin Example",
+          actorEmail: "admin@example.test",
           eventType: "workspace.membership.reactivated",
           targetType: "membership",
-          targetId: "membership_member_example",
-          targetLabel: "Member Example",
+          targetId: "membership_operator_example",
+          targetLabel: "Operator Example",
           createdAt: future,
           metadata: {
-            previousRole: "member",
+            previousRole: "operator",
             previousStatus: "disabled",
             newStatus: "active",
-            targetUserId: "user_member_example",
+            targetUserId: "user_operator_example",
           },
         },
         {
           eventId: "audit_new",
           workspaceId: "workspace_koncept_images",
-          actorUserId: "user_owner_example",
-          actorDisplayName: "Owner Example",
-          actorEmail: "owner@example.test",
+          actorUserId: "user_admin_example",
+          actorDisplayName: "Admin Example",
+          actorEmail: "admin@example.test",
           eventType: "workspace.app_entitlement.enabled",
           targetType: "app_entitlement",
           targetId: "entitlement_koncept_sqag",
@@ -352,16 +345,15 @@ test("owner and admin can list workspace audit events through admin route", asyn
         {
           eventId: "audit_old",
           workspaceId: "workspace_koncept_images",
-          actorUserId: "user_owner_example",
-          actorDisplayName: "Owner Example",
-          actorEmail: "owner@example.test",
-          eventType: "workspace.membership.added",
+          actorUserId: "user_admin_example",
+          actorDisplayName: "Admin Example",
+          actorEmail: "admin@example.test",          eventType: "workspace.membership.added",
           targetType: "membership",
           targetId: "membership_http_1",
           targetLabel: "Existing User",
           createdAt: earlier,
           metadata: {
-            newRole: "member",
+            newRole: "operator",
             newStatus: "active",
             targetUserId: "user_existing_example",
             source: "existing_provider_backed_user",
@@ -375,7 +367,7 @@ test("owner and admin can list workspace audit events through admin route", asyn
 });
 
 test("workspace audit event route fails closed and does not require CSRF", async () => {
-  for (const role of ["member", "viewer"]) {
+  for (const role of ["operator", "viewer"]) {
     const fixture = createAdminRouteFixture();
 
     const { response, body } = await request({
@@ -419,19 +411,19 @@ test("workspace audit event route enforces default and max limits", async () => 
   const invalid = await request({
     method: "GET",
     url: "/api/platform/workspaces/workspace_koncept_images/audit-events?limit=0",
-    headers: sessionHeaders("owner"),
+    headers: sessionHeaders("admin"),
     dependencies: fixture.dependencies,
   });
   const capped = await request({
     method: "GET",
     url: "/api/platform/workspaces/workspace_koncept_images/audit-events?limit=1000",
-    headers: sessionHeaders("owner"),
+    headers: sessionHeaders("admin"),
     dependencies: fixture.dependencies,
   });
   const small = await request({
     method: "GET",
     url: "/api/platform/workspaces/workspace_koncept_images/audit-events?limit=3",
-    headers: sessionHeaders("owner"),
+    headers: sessionHeaders("admin"),
     dependencies: fixture.dependencies,
   });
 
@@ -448,9 +440,9 @@ test("state-changing admin routes validate Origin and CSRF before mutation", asy
   const missingOrigin = createAdminRouteFixture();
   const roleWithoutOrigin = await request({
     method: "POST",
-    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_viewer_example/role?role=member",
+    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_viewer_example/role?role=operator",
     headers: {
-      cookie: "swooshz_session=session_owner_example",
+      cookie: "swooshz_session=session_admin_example",
       "x-csrf-token": validCsrfToken,
     },
     dependencies: missingOrigin.dependencies,
@@ -458,25 +450,25 @@ test("state-changing admin routes validate Origin and CSRF before mutation", asy
   const missingCsrf = createAdminRouteFixture();
   const disableWithoutCsrf = await request({
     method: "POST",
-    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_member_example/disable",
+    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_operator_example/disable",
     headers: {
       origin: allowedOrigin,
-      cookie: "swooshz_session=session_owner_example",
+      cookie: "swooshz_session=session_admin_example",
     },
     dependencies: missingCsrf.dependencies,
   });
   const reactivateWithoutOriginFixture = createAdminRouteFixture({
     memberships: baseMemberships().map((membership) =>
-      membership.id === "membership_member_example"
+      membership.id === "membership_operator_example"
         ? { ...membership, status: "disabled" }
         : membership,
     ),
   });
   const reactivateWithoutOrigin = await request({
     method: "POST",
-    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_member_example/reactivate",
+    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_operator_example/reactivate",
     headers: {
-      cookie: "swooshz_session=session_owner_example",
+      cookie: "swooshz_session=session_admin_example",
       "x-csrf-token": validCsrfToken,
     },
     dependencies: reactivateWithoutOriginFixture.dependencies,
@@ -485,7 +477,7 @@ test("state-changing admin routes validate Origin and CSRF before mutation", asy
   const entitlementWithInvalidCsrf = await request({
     method: "POST",
     url: "/api/platform/workspaces/workspace_koncept_images/app-entitlements/sqag/status?status=disabled",
-    headers: secureSessionHeaders("owner"),
+    headers: secureSessionHeaders("admin"),
     dependencies: invalidCsrf.dependencies,
   });
   const addWithoutOriginFixture = createAdminRouteFixture({
@@ -497,10 +489,10 @@ test("state-changing admin routes validate Origin and CSRF before mutation", asy
     url: "/api/platform/workspaces/workspace_koncept_images/members/add",
     body: JSON.stringify({
       email: "existing.user@example.test",
-      role: "member",
+      role: "operator",
     }),
     headers: {
-      cookie: "swooshz_session=session_owner_example",
+      cookie: "swooshz_session=session_admin_example",
       "x-csrf-token": validCsrfToken,
     },
     dependencies: addWithoutOriginFixture.dependencies,
@@ -512,7 +504,7 @@ test("state-changing admin routes validate Origin and CSRF before mutation", asy
     method: "POST",
     url: "/api/platform/workspaces/workspace_koncept_images/member-approvals/approval_pending_example/revoke",
     headers: {
-      cookie: "swooshz_session=session_owner_example",
+      cookie: "swooshz_session=session_admin_example",
       "x-csrf-token": validCsrfToken,
     },
     dependencies: revokeWithoutOriginFixture.dependencies,
@@ -525,7 +517,7 @@ test("state-changing admin routes validate Origin and CSRF before mutation", asy
     url: "/api/platform/workspaces/workspace_koncept_images/member-approvals/approval_pending_example/revoke",
     headers: {
       origin: allowedOrigin,
-      cookie: "swooshz_session=session_owner_example",
+      cookie: "swooshz_session=session_admin_example",
     },
     dependencies: revokeWithoutCsrfFixture.dependencies,
   });
@@ -536,7 +528,7 @@ test("state-changing admin routes validate Origin and CSRF before mutation", asy
   const revokeWithInvalidCsrf = await request({
     method: "POST",
     url: "/api/platform/workspaces/workspace_koncept_images/member-approvals/approval_pending_example/revoke",
-    headers: secureSessionHeaders("owner"),
+    headers: secureSessionHeaders("admin"),
     dependencies: revokeInvalidCsrfFixture.dependencies,
   });
 
@@ -559,7 +551,7 @@ test("state-changing admin routes validate Origin and CSRF before mutation", asy
   });
   assert.equal(missingCsrf.calls.csrfValidate, 0);
   assert.equal(
-    missingCsrf.records.memberships.find((membership) => membership.id === "membership_member_example")
+    missingCsrf.records.memberships.find((membership) => membership.id === "membership_operator_example")
       ?.status,
     "active",
   );
@@ -572,7 +564,7 @@ test("state-changing admin routes validate Origin and CSRF before mutation", asy
   assert.equal(reactivateWithoutOriginFixture.calls.csrfValidate, 0);
   assert.equal(
     reactivateWithoutOriginFixture.records.memberships.find(
-      (membership) => membership.id === "membership_member_example",
+      (membership) => membership.id === "membership_operator_example",
     )?.status,
     "disabled",
   );
@@ -641,9 +633,9 @@ test("membership removal route validates Origin and CSRF before mutation", async
   const withoutOriginFixture = createAdminRouteFixture();
   const withoutOrigin = await request({
     method: "POST",
-    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_member_example/remove",
+    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_operator_example/remove",
     headers: {
-      cookie: "swooshz_session=session_owner_example",
+      cookie: "swooshz_session=session_admin_example",
       "x-csrf-token": validCsrfToken,
     },
     dependencies: withoutOriginFixture.dependencies,
@@ -651,18 +643,18 @@ test("membership removal route validates Origin and CSRF before mutation", async
   const withoutCsrfFixture = createAdminRouteFixture();
   const withoutCsrf = await request({
     method: "POST",
-    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_member_example/remove",
+    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_operator_example/remove",
     headers: {
       origin: allowedOrigin,
-      cookie: "swooshz_session=session_owner_example",
+      cookie: "swooshz_session=session_admin_example",
     },
     dependencies: withoutCsrfFixture.dependencies,
   });
   const invalidCsrfFixture = createAdminRouteFixture({ csrfValid: false });
   const invalidCsrf = await request({
     method: "POST",
-    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_member_example/remove",
-    headers: secureSessionHeaders("owner"),
+    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_operator_example/remove",
+    headers: secureSessionHeaders("admin"),
     dependencies: invalidCsrfFixture.dependencies,
   });
 
@@ -674,7 +666,7 @@ test("membership removal route validates Origin and CSRF before mutation", async
   assert.equal(withoutOriginFixture.calls.csrfValidate, 0);
   assert.equal(
     withoutOriginFixture.records.memberships.some(
-      (membership) => membership.id === "membership_member_example",
+      (membership) => membership.id === "membership_operator_example",
     ),
     true,
   );
@@ -688,7 +680,7 @@ test("membership removal route validates Origin and CSRF before mutation", async
   assert.equal(withoutCsrfFixture.calls.csrfValidate, 0);
   assert.equal(
     withoutCsrfFixture.records.memberships.some(
-      (membership) => membership.id === "membership_member_example",
+      (membership) => membership.id === "membership_operator_example",
     ),
     true,
   );
@@ -702,7 +694,7 @@ test("membership removal route validates Origin and CSRF before mutation", async
   assert.equal(invalidCsrfFixture.calls.csrfValidate, 1);
   assert.equal(
     invalidCsrfFixture.records.memberships.some(
-      (membership) => membership.id === "membership_member_example",
+      (membership) => membership.id === "membership_operator_example",
     ),
     true,
   );
@@ -712,8 +704,8 @@ test("membership removal route validates Origin and CSRF before mutation", async
   assertResponseIsPrivacySafe(invalidCsrf.response);
 });
 
-test("owner and admin can add an existing provider-backed user through admin route", async () => {
-  for (const role of ["owner", "admin"]) {
+test("admin can add an existing provider-backed user through admin route", async () => {
+  for (const role of ["admin"]) {
     const fixture = createAdminRouteFixture({
       extraUsers: [existingProviderBackedUser()],
       providerBackedUserIds: ["user_existing_example"],
@@ -724,7 +716,7 @@ test("owner and admin can add an existing provider-backed user through admin rou
       url: "/api/platform/workspaces/workspace_koncept_images/members/add",
       body: JSON.stringify({
         email: " Existing.User@Example.Test ",
-        role: "member",
+        role: "operator",
       }),
       headers: secureSessionHeaders(role),
       dependencies: fixture.dependencies,
@@ -738,7 +730,7 @@ test("owner and admin can add an existing provider-backed user through admin rou
         membershipId: "membership_http_1",
         userId: "user_existing_example",
         workspaceId: "workspace_koncept_images",
-        role: "member",
+        role: "operator",
         status: "active",
         updatedAt: now,
       },
@@ -758,7 +750,7 @@ test("owner and admin can add an existing provider-backed user through admin rou
       targetId: "membership_http_1",
       createdAt: now,
       metadata: {
-        newRole: "member",
+        newRole: "operator",
         newStatus: "active",
         targetUserId: "user_existing_example",
         source: "existing_provider_backed_user",
@@ -776,8 +768,8 @@ test("add member route reads reviewed mutation inputs from JSON body only", asyn
   });
   const queryOnly = await request({
     method: "POST",
-    url: "/api/platform/workspaces/workspace_koncept_images/members/add?email=existing.user%40example.test&role=member",
-    headers: secureSessionHeaders("owner"),
+    url: "/api/platform/workspaces/workspace_koncept_images/members/add?email=existing.user%40example.test&role=operator",
+    headers: secureSessionHeaders("admin"),
     dependencies: queryFixture.dependencies,
   });
   const bodyFixture = createAdminRouteFixture({
@@ -789,9 +781,9 @@ test("add member route reads reviewed mutation inputs from JSON body only", asyn
     url: "/api/platform/workspaces/workspace_koncept_images/members/add",
     body: JSON.stringify({
       email: "existing.user@example.test",
-      role: "member",
+      role: "operator",
     }),
-    headers: secureSessionHeaders("owner"),
+    headers: secureSessionHeaders("admin"),
     dependencies: bodyFixture.dependencies,
   });
 
@@ -819,8 +811,8 @@ test("add member route reads reviewed mutation inputs from JSON body only", asyn
   assertResponseIsPrivacySafe(bodyRequest.response);
 });
 
-test("owner and admin can create list and revoke pending approvals through admin routes", async () => {
-  for (const role of ["owner", "admin"]) {
+test("admin can create list and revoke pending approvals through admin routes", async () => {
+  for (const role of ["admin"]) {
     const fixture = createAdminRouteFixture();
 
     const created = await request({
@@ -903,7 +895,7 @@ test("add existing user route returns safe operator guidance without mutation", 
     [
       "target without provider identity",
       { extraUsers: [existingProviderBackedUser()] },
-      { email: "existing.user@example.test", role: "member" },
+      { email: "existing.user@example.test", role: "operator" },
       201,
       "Pending approval created. The teammate can complete passwordless email sign-in to activate access.",
     ],
@@ -913,7 +905,7 @@ test("add existing user route returns safe operator guidance without mutation", 
         extraUsers: [existingProviderBackedUser({ status: "disabled" })],
         providerBackedUserIds: ["user_existing_example"],
       },
-      { email: "existing.user@example.test", role: "member" },
+      { email: "existing.user@example.test", role: "operator" },
       404,
       guidance,
     ],
@@ -927,14 +919,14 @@ test("add existing user route returns safe operator guidance without mutation", 
             id: "membership_existing_user",
             workspaceId: "workspace_koncept_images",
             userId: "user_existing_example",
-            role: "member",
+            role: "operator",
             status: "active",
             createdAt: earlier,
             updatedAt: earlier,
           },
         ],
       },
-      { email: "existing.user@example.test", role: "member" },
+      { email: "existing.user@example.test", role: "operator" },
       409,
       "User is already a member of this workspace.",
     ],
@@ -944,8 +936,7 @@ test("add existing user route returns safe operator guidance without mutation", 
         extraUsers: [existingProviderBackedUser()],
         providerBackedUserIds: ["user_existing_example"],
       },
-      { email: "existing.user@example.test", role: "owner" },
-      400,
+      { email: "existing.user@example.test", role: "owner" },      400,
       "Selected role is not allowed.",
     ],
     [
@@ -958,7 +949,7 @@ test("add existing user route returns safe operator guidance without mutation", 
           }),
         ],
       },
-      { email: "existing.user@example.test", role: "member" },
+      { email: "existing.user@example.test", role: "operator" },
       409,
       "Pending approval already exists for this email.",
     ],
@@ -969,7 +960,7 @@ test("add existing user route returns safe operator guidance without mutation", 
       method: "POST",
       url: "/api/platform/workspaces/workspace_koncept_images/members/add",
       body: JSON.stringify(bodyInput),
-      headers: secureSessionHeaders("owner"),
+      headers: secureSessionHeaders("admin"),
       dependencies: fixture.dependencies,
     });
 
@@ -981,7 +972,7 @@ test("add existing user route returns safe operator guidance without mutation", 
           approvalId: "approval_http_1",
           workspaceId: "workspace_koncept_images",
           email: "existing.user@example.test",
-          role: "member",
+          role: "operator",
           status: "pending",
           createdAt: now,
           updatedAt: now,
@@ -1016,9 +1007,9 @@ test("audit append failure through add existing user route rolls back membership
     url: "/api/platform/workspaces/workspace_koncept_images/members/add",
     body: JSON.stringify({
       email: "existing.user@example.test",
-      role: "member",
+      role: "operator",
     }),
-    headers: secureSessionHeaders("owner"),
+    headers: secureSessionHeaders("admin"),
     dependencies: fixture.dependencies,
   });
 
@@ -1044,9 +1035,9 @@ test("audit append failure through pending approval create route rolls back appr
     url: "/api/platform/workspaces/workspace_koncept_images/members/add",
     body: JSON.stringify({
       email: "new.teammate@example.test",
-      role: "member",
+      role: "operator",
     }),
-    headers: secureSessionHeaders("owner"),
+    headers: secureSessionHeaders("admin"),
     dependencies: fixture.dependencies,
   });
 
@@ -1074,7 +1065,7 @@ test("audit append failure through approval revoke route rolls back status chang
   const { response, body } = await request({
     method: "POST",
     url: "/api/platform/workspaces/workspace_koncept_images/member-approvals/approval_pending_example/revoke",
-    headers: secureSessionHeaders("owner"),
+    headers: secureSessionHeaders("admin"),
     dependencies: fixture.dependencies,
   });
 
@@ -1089,25 +1080,25 @@ test("audit append failure through approval revoke route rolls back status chang
   assertResponseIsPrivacySafe(response);
 });
 
-test("owner can change role disable and reactivate membership through admin routes", async () => {
+test("admin can change role disable and reactivate membership through admin routes", async () => {
   const fixture = createAdminRouteFixture();
 
   const roleChange = await request({
     method: "POST",
-    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_viewer_example/role?role=member",
-    headers: secureSessionHeaders("owner"),
+    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_viewer_example/role?role=operator",
+    headers: secureSessionHeaders("admin"),
     dependencies: fixture.dependencies,
   });
   const disable = await request({
     method: "POST",
-    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_member_example/disable",
-    headers: secureSessionHeaders("owner"),
+    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_operator_example/disable",
+    headers: secureSessionHeaders("admin"),
     dependencies: fixture.dependencies,
   });
   const reactivate = await request({
     method: "POST",
-    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_member_example/reactivate",
-    headers: secureSessionHeaders("owner"),
+    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_operator_example/reactivate",
+    headers: secureSessionHeaders("admin"),
     dependencies: fixture.dependencies,
   });
 
@@ -1118,22 +1109,22 @@ test("owner can change role disable and reactivate membership through admin rout
       membershipId: "membership_viewer_example",
       userId: "user_viewer_example",
       workspaceId: "workspace_koncept_images",
-      role: "member",
+      role: "operator",
       status: "active",
       updatedAt: now,
     },
   });
   assert.equal(disable.response.statusCode, 200);
-  assert.equal(disable.body.membership.membershipId, "membership_member_example");
+  assert.equal(disable.body.membership.membershipId, "membership_operator_example");
   assert.equal(disable.body.membership.status, "disabled");
   assert.equal(reactivate.response.statusCode, 200);
   assert.deepEqual(reactivate.body, {
     outcome: "updated",
     membership: {
-      membershipId: "membership_member_example",
-      userId: "user_member_example",
+      membershipId: "membership_operator_example",
+      userId: "user_operator_example",
       workspaceId: "workspace_koncept_images",
-      role: "member",
+      role: "operator",
       status: "active",
       updatedAt: now,
     },
@@ -1152,11 +1143,11 @@ test("owner can change role disable and reactivate membership through admin rout
   assertResponseIsPrivacySafe(reactivate.response);
 });
 
-test("owner and admin can remove membership through admin route", async () => {
-  for (const role of ["owner", "admin"]) {
+test("admin can remove membership through admin route", async () => {
+  for (const role of ["admin"]) {
     const fixture = createAdminRouteFixture({
       memberships: baseMemberships().map((membership) =>
-        membership.id === "membership_member_example" && role === "admin"
+        membership.id === "membership_operator_example" && role === "admin"
           ? { ...membership, status: "disabled" }
           : membership,
       ),
@@ -1164,7 +1155,7 @@ test("owner and admin can remove membership through admin route", async () => {
 
     const removed = await request({
       method: "POST",
-      url: "/api/platform/workspaces/workspace_koncept_images/members/membership_member_example/remove",
+      url: "/api/platform/workspaces/workspace_koncept_images/members/membership_operator_example/remove",
       headers: secureSessionHeaders(role),
       dependencies: fixture.dependencies,
     });
@@ -1173,24 +1164,23 @@ test("owner and admin can remove membership through admin route", async () => {
     assert.deepEqual(removed.body, {
       outcome: "removed",
       membership: {
-        membershipId: "membership_member_example",
-        userId: "user_member_example",
+        membershipId: "membership_operator_example",
+        userId: "user_operator_example",
         workspaceId: "workspace_koncept_images",
-        role: "member",
+        role: "operator",
         status: role === "admin" ? "disabled" : "active",
         updatedAt: now,
       },
     });
     assert.equal(
       fixture.records.memberships.some(
-        (membership) => membership.id === "membership_member_example",
+        (membership) => membership.id === "membership_operator_example",
       ),
       false,
     );
     assert.equal(
-      fixture.records.sessions.find((session) => session.id === "session_member_example")
-        ?.revokedAt,
-      now,
+      fixture.records.sessions.find((session) => session.id === "session_operator_example")
+        ?.revokedAt,      now,
     );
     assert.equal(
       fixture.records.sessions.find((session) => session.id === `session_${role}_example`)
@@ -1206,150 +1196,139 @@ test("owner and admin can remove membership through admin route", async () => {
   }
 });
 
-test("last-owner and self-change guards surface safely through admin routes", async () => {
-  const onlyOwnerFixture = createAdminRouteFixture({
+test("last-admin and self-change guards surface safely through admin routes", async () => {
+  const onlyAdminFixture = createAdminRouteFixture({
     memberships: [
       {
-        id: "membership_owner_example",
+        id: "membership_admin_example",
         workspaceId: "workspace_koncept_images",
-        userId: "user_owner_example",
-        role: "owner",
+        userId: "user_admin_example",
+        role: "admin",
         status: "active",
         createdAt: now,
         updatedAt: now,
       },
     ],
   });
-  const lastOwner = await request({
+  const lastAdminRole = await request({
     method: "POST",
-    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_owner_example/role?role=admin",
-    headers: secureSessionHeaders("owner"),
-    dependencies: onlyOwnerFixture.dependencies,
+    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_admin_example/role?role=operator",
+    headers: secureSessionHeaders("admin"),
+    dependencies: onlyAdminFixture.dependencies,
   });
-  const selfChangeFixture = createAdminRouteFixture();
+  const lastAdminDisable = await request({
+    method: "POST",
+    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_admin_example/disable",
+    headers: secureSessionHeaders("admin"),
+    dependencies: onlyAdminFixture.dependencies,
+  });
+  const lastAdminRemove = await request({
+    method: "POST",
+    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_admin_example/remove",
+    headers: secureSessionHeaders("admin"),
+    dependencies: onlyAdminFixture.dependencies,
+  });
+  const selfChangeFixture = createAdminRouteFixture({
+    extraMemberships: [{
+      id: "membership_second_admin_self_change",
+      workspaceId: "workspace_koncept_images",
+      userId: "user_viewer_example",
+      role: "admin",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    }],
+  });
   const selfChange = await request({
     method: "POST",
     url: "/api/platform/workspaces/workspace_koncept_images/members/membership_admin_example/disable",
     headers: secureSessionHeaders("admin"),
     dependencies: selfChangeFixture.dependencies,
   });
-  const selfRemoveFixture = createAdminRouteFixture();
+  const selfRemoveFixture = createAdminRouteFixture({
+    extraMemberships: [{
+      id: "membership_second_admin_self_remove",
+      workspaceId: "workspace_koncept_images",
+      userId: "user_viewer_example",
+      role: "admin",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    }],
+  });
   const selfRemove = await request({
     method: "POST",
     url: "/api/platform/workspaces/workspace_koncept_images/members/membership_admin_example/remove",
     headers: secureSessionHeaders("admin"),
     dependencies: selfRemoveFixture.dependencies,
   });
-  const lastOwnerRemoveFixture = createAdminRouteFixture({
-    memberships: [
+
+  for (const response of [lastAdminRole.response, lastAdminDisable.response, lastAdminRemove.response]) {
+    assert.equal(response.statusCode, 409);
+    assertResponseIsPrivacySafe(response);
+  }
+  for (const body of [lastAdminRole.body, lastAdminDisable.body, lastAdminRemove.body]) {
+    assert.deepEqual(body, {
+      outcome: "error",
+      message: "Workspace must retain at least one active admin.",
+    });
+  }
+  for (const response of [selfChange.response, selfRemove.response]) {
+    assert.equal(response.statusCode, 409);
+    assertResponseIsPrivacySafe(response);
+  }
+  assert.deepEqual(selfChange.body, {
+    outcome: "error",
+    message: "Workspace admin action could not be completed.",
+  });
+  assert.deepEqual(selfRemove.body, {
+    outcome: "error",
+    message: "Workspace admin action could not be completed.",
+  });
+  assert.equal(onlyAdminFixture.records.auditEvents.length, 0);
+  assert.equal(selfChangeFixture.records.auditEvents.length, 0);
+  assert.equal(selfRemoveFixture.records.auditEvents.length, 0);
+});
+
+test("admin can change another admin and rejects legacy roles through admin routes", async () => {
+  const fixture = createAdminRouteFixture({
+    extraMemberships: [
       {
-        id: "membership_owner_example",
+        id: "membership_second_admin_example",
         workspaceId: "workspace_koncept_images",
-        userId: "user_owner_example",
-        role: "owner",
+        userId: "user_viewer_example",
+        role: "admin",
         status: "active",
         createdAt: now,
         updatedAt: now,
       },
     ],
   });
-  const lastOwnerRemove = await request({
+
+  const demote = await request({
     method: "POST",
-    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_owner_example/remove",
-    headers: secureSessionHeaders("owner"),
-    dependencies: lastOwnerRemoveFixture.dependencies,
+    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_second_admin_example/role?role=operator",
+    headers: secureSessionHeaders("admin"),
+    dependencies: fixture.dependencies,
   });
+  assert.equal(demote.response.statusCode, 200);
+  assert.equal(demote.body.membership.role, "operator");
 
-  assert.equal(lastOwner.response.statusCode, 409);
-  assert.deepEqual(lastOwner.body, {
-    outcome: "error",
-    message: "Workspace admin action could not be completed.",
-  });
-  assert.equal(selfChange.response.statusCode, 409);
-  assert.deepEqual(selfChange.body, {
-    outcome: "error",
-    message: "Workspace admin action could not be completed.",
-  });
-  assert.equal(selfRemove.response.statusCode, 409);
-  assert.deepEqual(selfRemove.body, {
-    outcome: "error",
-    message: "Workspace admin action could not be completed.",
-  });
-  assert.equal(lastOwnerRemove.response.statusCode, 409);
-  assert.deepEqual(lastOwnerRemove.body, {
-    outcome: "error",
-    message: "Workspace admin action could not be completed.",
-  });
-  assert.equal(onlyOwnerFixture.records.auditEvents.length, 0);
-  assert.equal(selfChangeFixture.records.auditEvents.length, 0);
-  assert.equal(selfRemoveFixture.records.auditEvents.length, 0);
-  assert.equal(lastOwnerRemoveFixture.records.auditEvents.length, 0);
-  assertResponseIsPrivacySafe(lastOwner.response);
-  assertResponseIsPrivacySafe(selfChange.response);
-  assertResponseIsPrivacySafe(selfRemove.response);
-  assertResponseIsPrivacySafe(lastOwnerRemove.response);
-});
-
-test("admin cannot change owner memberships through admin routes", async () => {
-  for (const [name, url, expectedMembershipId, expectedField, expectedValue] of [
-    [
-      "demote owner",
-      "/api/platform/workspaces/workspace_koncept_images/members/membership_owner_example/role?role=admin",
-      "membership_owner_example",
-      "role",
-      "owner",
-    ],
-    [
-      "promote member to owner",
-      "/api/platform/workspaces/workspace_koncept_images/members/membership_member_example/role?role=owner",
-      "membership_member_example",
-      "role",
-      "member",
-    ],
-    [
-      "disable owner",
-      "/api/platform/workspaces/workspace_koncept_images/members/membership_owner_example/disable",
-      "membership_owner_example",
-      "status",
-      "active",
-    ],
-    [
-      "reactivate owner",
-      "/api/platform/workspaces/workspace_koncept_images/members/membership_owner_example/reactivate",
-      "membership_owner_example",
-      "status",
-      "active",
-    ],
-    [
-      "remove owner",
-      "/api/platform/workspaces/workspace_koncept_images/members/membership_owner_example/remove",
-      "membership_owner_example",
-      "status",
-      "active",
-    ],
-  ]) {
-    const fixture = createAdminRouteFixture();
-    const result = await request({
+  for (const legacyRole of ["owner", "member"]) {
+    const rejected = await request({
       method: "POST",
-      url,
+      url: `/api/platform/workspaces/workspace_koncept_images/members/membership_operator_example/role?role=${legacyRole}`,
       headers: secureSessionHeaders("admin"),
       dependencies: fixture.dependencies,
     });
-
-    assert.equal(result.response.statusCode, 403, name);
-    assert.deepEqual(result.body, {
-      outcome: "denied",
-      reason: "not_authorized",
+    assert.equal(rejected.response.statusCode, 400, legacyRole);
+    assert.deepEqual(rejected.body, {
+      outcome: "error",
+      message: "Workspace admin action could not be completed.",
     });
-    assert.equal(
-      fixture.records.memberships.find((membership) => membership.id === expectedMembershipId)?.[
-        expectedField
-      ],
-      expectedValue,
-    );
-    assert.equal(fixture.records.auditEvents.length, 0);
-    assertResponseIsPrivacySafe(result.response);
+    assertResponseIsPrivacySafe(rejected.response);
   }
+  assert.equal(fixture.records.auditEvents.length, 1);
 });
 
 test("reactivation route fails safely for missing target and audit failure", async () => {
@@ -1357,12 +1336,12 @@ test("reactivation route fails safely for missing target and audit failure", asy
   const missing = await request({
     method: "POST",
     url: "/api/platform/workspaces/workspace_koncept_images/members/membership_missing_example/reactivate",
-    headers: secureSessionHeaders("owner"),
+    headers: secureSessionHeaders("admin"),
     dependencies: missingFixture.dependencies,
   });
   const auditFailureFixture = createAdminRouteFixture({
     memberships: baseMemberships().map((membership) =>
-      membership.id === "membership_member_example"
+      membership.id === "membership_operator_example"
         ? { ...membership, status: "disabled" }
         : membership,
     ),
@@ -1370,8 +1349,8 @@ test("reactivation route fails safely for missing target and audit failure", asy
   });
   const auditFailure = await request({
     method: "POST",
-    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_member_example/reactivate",
-    headers: secureSessionHeaders("owner"),
+    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_operator_example/reactivate",
+    headers: secureSessionHeaders("admin"),
     dependencies: auditFailureFixture.dependencies,
   });
 
@@ -1388,7 +1367,7 @@ test("reactivation route fails safely for missing target and audit failure", asy
   });
   assert.equal(
     auditFailureFixture.records.memberships.find(
-      (membership) => membership.id === "membership_member_example",
+      (membership) => membership.id === "membership_operator_example",
     )?.status,
     "disabled",
   );
@@ -1402,14 +1381,14 @@ test("membership removal route fails safely for missing target and audit failure
   const missing = await request({
     method: "POST",
     url: "/api/platform/workspaces/workspace_koncept_images/members/membership_missing_example/remove",
-    headers: secureSessionHeaders("owner"),
+    headers: secureSessionHeaders("admin"),
     dependencies: missingFixture.dependencies,
   });
   const auditFailureFixture = createAdminRouteFixture({ failAuditAppend: true });
   const auditFailure = await request({
     method: "POST",
-    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_member_example/remove",
-    headers: secureSessionHeaders("owner"),
+    url: "/api/platform/workspaces/workspace_koncept_images/members/membership_operator_example/remove",
+    headers: secureSessionHeaders("admin"),
     dependencies: auditFailureFixture.dependencies,
   });
 
@@ -1426,7 +1405,7 @@ test("membership removal route fails safely for missing target and audit failure
   });
   assert.equal(
     auditFailureFixture.records.memberships.some(
-      (membership) => membership.id === "membership_member_example",
+      (membership) => membership.id === "membership_operator_example",
     ),
     true,
   );
@@ -1435,25 +1414,25 @@ test("membership removal route fails safely for missing target and audit failure
   assertResponseIsPrivacySafe(auditFailure.response);
 });
 
-test("owner can list and update SQAG app entitlement through admin routes", async () => {
+test("admin can list and update SQAG app entitlement through admin routes", async () => {
   const fixture = createAdminRouteFixture();
 
   const list = await request({
     method: "GET",
     url: "/api/platform/workspaces/workspace_koncept_images/app-entitlements",
-    headers: sessionHeaders("owner"),
+    headers: sessionHeaders("admin"),
     dependencies: fixture.dependencies,
   });
   const disabled = await request({
     method: "POST",
     url: "/api/platform/workspaces/workspace_koncept_images/app-entitlements/sqag/status?status=disabled",
-    headers: secureSessionHeaders("owner"),
+    headers: secureSessionHeaders("admin"),
     dependencies: fixture.dependencies,
   });
   const enabled = await request({
     method: "POST",
     url: "/api/platform/workspaces/workspace_koncept_images/app-entitlements/sqag/status?status=enabled",
-    headers: secureSessionHeaders("owner"),
+    headers: secureSessionHeaders("admin"),
     dependencies: fixture.dependencies,
   });
 
@@ -1467,8 +1446,7 @@ test("owner can list and update SQAG app entitlement through admin routes", asyn
       appName: "SQAG",
       appStatus: "private_preview",
       status: "enabled",
-      grantedByUserId: "user_owner_example",
-      updatedAt: now,
+      grantedByUserId: "user_admin_example",      updatedAt: now,
     },
   ]);
   assert.equal(disabled.response.statusCode, 200);
@@ -1493,7 +1471,7 @@ test("audit append failure through admin route rolls back missing SQAG entitleme
   const { response, body } = await request({
     method: "POST",
     url: "/api/platform/workspaces/workspace_koncept_images/app-entitlements/sqag/status?status=enabled",
-    headers: secureSessionHeaders("owner"),
+    headers: secureSessionHeaders("admin"),
     dependencies: fixture.dependencies,
   });
 
@@ -1528,7 +1506,7 @@ async function request({
 }
 
 function createAdminRouteFixture(overrides = {}) {
-  const users = ["owner", "admin", "member", "viewer"].map((role) => ({
+  const users = ["admin", "operator", "viewer"].map((role) => ({
     id: `user_${role}_example`,
     email: `${role}@example.test`,
     displayName: `${role[0].toUpperCase()}${role.slice(1)} Example`,
@@ -1541,7 +1519,7 @@ function createAdminRouteFixture(overrides = {}) {
   const userByRole = Object.fromEntries(users.map((user) => [user.id.split("_")[1], user]));
   const memberships =
     overrides.memberships ??
-    ["owner", "admin", "member", "viewer"].map((role) => ({
+    ["admin", "operator", "viewer"].map((role) => ({
       id: `membership_${role}_example`,
       workspaceId: "workspace_koncept_images",
       userId: `user_${role}_example`,
@@ -1549,7 +1527,7 @@ function createAdminRouteFixture(overrides = {}) {
       status: "active",
       createdAt: now,
       updatedAt: now,
-      ...(overrides.actorMembership && ["owner", "admin"].includes(role)
+      ...(overrides.actorMembership && ["admin"].includes(role)
         ? overrides.actorMembership
         : {}),
     }));
@@ -1567,7 +1545,7 @@ function createAdminRouteFixture(overrides = {}) {
     providerIdentities: [
       {
         id: "provider_identity_private",
-        userId: "user_owner_example",
+        userId: "user_admin_example",
         providerKey: "example_oidc",
         providerSubject: "raw-provider-claim-subject",
         createdAt: now,
@@ -1575,14 +1553,14 @@ function createAdminRouteFixture(overrides = {}) {
       },
       ...(overrides.extraProviderIdentities ?? []),
     ],
-    sessions: ["owner", "admin", "member", "viewer"].map((role) => ({
+    sessions: ["admin", "operator", "viewer"].map((role) => ({
       id: `session_${role}_example`,
       userId: userByRole[role].id,
       createdAt: earlier,
       expiresAt: future,
       lastSeenAt: earlier,
       revokedAt: null,
-      ...(role === "owner" ? overrides.session : {}),
+      ...(role === "admin" ? overrides.session : {}),
     })),
     workspaces: [
       {
@@ -1606,7 +1584,7 @@ function createAdminRouteFixture(overrides = {}) {
           workspaceId: "workspace_koncept_images",
           appId: app.id,
           status: "enabled",
-          grantedByUserId: "user_owner_example",
+          grantedByUserId: "user_admin_example",
           createdAt: now,
           updatedAt: now,
         },
@@ -1676,7 +1654,7 @@ function createAdminRouteFixture(overrides = {}) {
 }
 
 function baseMemberships() {
-  return ["owner", "admin", "member", "viewer"].map((role) => ({
+  return ["admin", "operator", "viewer"].map((role) => ({
     id: `membership_${role}_example`,
     workspaceId: "workspace_koncept_images",
     userId: `user_${role}_example`,
@@ -1704,15 +1682,15 @@ function auditEvent(overrides = {}) {
   return {
     id: "audit_event_example",
     workspaceId: "workspace_koncept_images",
-    actorUserId: "user_owner_example",
+    actorUserId: "user_admin_example",
     eventType: "workspace.membership.disabled",
     targetType: "membership",
-    targetId: "membership_member_example",
+    targetId: "membership_operator_example",
     createdAt: now,
     metadata: {
-      previousRole: "member",
+      previousRole: "operator",
       previousStatus: "active",
-      targetUserId: "user_member_example",
+      targetUserId: "user_operator_example",
     },
     ...overrides,
   };
@@ -1723,10 +1701,9 @@ function pendingApproval(overrides = {}) {
     id: "approval_pending_example",
     workspaceId: "workspace_koncept_images",
     email: "pending.user@example.test",
-    role: "member",
+    role: "operator",
     status: "pending",
-    requestedByUserId: "user_owner_example",
-    createdAt: earlier,
+    requestedByUserId: "user_admin_example",    createdAt: earlier,
     updatedAt: earlier,
     acceptedAt: null,
     revokedAt: null,

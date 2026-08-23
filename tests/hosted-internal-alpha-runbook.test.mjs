@@ -71,7 +71,7 @@ test("hosted internal alpha runbook covers deployment operations", async () => {
     "guarded manual migration through `npm run db:migrate`",
     "Post-migration DB readiness: `ready`",
     "This evidence does not approve hosted deployment or full production readiness",
-    "first owner/admin bootstrap",
+    "first admin bootstrap",
     "pending workspace approval",
     "runner-owned empty PGPASSFILE",
     "hostile ambient default password file",
@@ -134,7 +134,7 @@ test("hosted internal alpha runbook has an env checklist with safe examples and 
   assert.match(runbook, /<strong-random-placeholder>/);
   assert.match(runbook, /<runtime-database-url-from-secret-store>/);
   assert.match(runbook, /<operator-database-url-from-secret-store>/);
-  assert.match(runbook, /<hosted-owner-admin-email-after-login>/);
+  assert.match(runbook, /<hosted-admin-email-after-login>/);
 });
 
 test("hosted runbook preserves the rollback-gated runtime activation contract", async () => {
@@ -359,7 +359,7 @@ test("hosted internal alpha smoke checklist covers fail-closed access and token 
     "audit/activity shows admin events",
     "no raw token in browser URL, storage, or logs",
     "logout",
-    "denied member/viewer admin access",
+    "denied operator/viewer admin access",
     "missing, expired, or disabled session fail closed",
     "what not to paste into tickets/screenshots/logs",
   ];

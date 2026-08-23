@@ -104,10 +104,10 @@ A role defines workspace-level permissions. Roles are platform concepts; app per
 
 MVP roles:
 
-- `owner`: full workspace administration, including membership and app access management.
-- `admin`: workspace administration except destructive ownership transfer.
-- `member`: normal app usage where entitlement allows it.
-- `viewer`: read-only app usage where supported.
+- `admin`: full workspace administration, including membership and app access management.
+- `operator`: normal internal application use where entitlement allows it; no workspace administration.
+- `viewer`: read-only Platform workspace visibility; no operational app launch by default.
+
 
 MVP fields if stored:
 
@@ -125,10 +125,22 @@ Deferred fields:
 
 Invariants:
 
-- Every active workspace should have at least one active `owner`.
-- Role grants are necessary but not sufficient for app launch; workspace app entitlement must also allow the app.
+- Every active workspace with memberships must retain at least one active `admin`. Zero-member state is valid only for the defined first-admin bootstrap case.
+- Role grants are necessary but not sufficient for app launch; workspace app entitlement must also allow the app. Current stored role values are exactly `admin`, `operator`, and `viewer`.
 - Billing state must not silently grant platform admin permissions.
 
+### Current Role Migration
+
+The current role vocabulary is exactly `admin`, `operator`, and `viewer`.
+
+The atomic migration in `drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql` maps current stored values as follows:
+
+- `owner` -> `admin`.
+- `admin` -> `admin`.
+- `member` -> `operator`.
+- `viewer` -> `viewer`.
+
+The mapping applies to membership, pending workspace membership approval, and invitation role columns. Historical audit JSON is factual evidence and is not rewritten; old `owner` and `member` values shown there are historical, not selectable current roles. Quiesce old writers, apply the migration, verify the post-migration admin invariant, then start or serve the new application contract. Mixed application versions across this migration are unsupported.
 ### Invitation
 
 An invitation allows a new or existing user to join a workspace.
@@ -376,16 +388,16 @@ Workspace:
 
 User:
 
-- `id`: `user_owner_example`
-- `email`: `owner@example.com`
-- `display_name`: `Platform Owner`
+- `id`: `user_admin_example`
+- `email`: `admin@example.com`
+- `display_name`: `Platform Admin`
 - `status`: `active`
 
 Membership:
 
 - `workspace_id`: `workspace_koncept_images`
-- `user_id`: `user_owner_example`
-- `role`: `owner`
+- `user_id`: `user_admin_example`
+- `role`: `admin`
 - `status`: `active`
 
 App:
@@ -401,4 +413,4 @@ App entitlement:
 - `app_id`: `app_sqag`
 - `status`: `enabled`
 
-Expected launch decision for `user_owner_example` in `workspace_koncept_images` launching `app_sqag`: `allowed`.
+Expected launch decision for `user_admin_example` in `workspace_koncept_images` launching `app_sqag`: `allowed`.

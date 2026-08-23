@@ -64,14 +64,14 @@ test("expired session denies safely using deterministic now", async () => {
   assert.equal(calls.appsFindByKey, 0);
 });
 
-test("active unexpired owner session delegates and allows SQAG access", async () => {
-  const { repositories, input, calls } = protectedFixture({ role: "owner" });
+test("active unexpired admin session delegates and allows SQAG access", async () => {
+  const { repositories, input, calls } = protectedFixture({ role: "admin" });
 
   const result = await decideProtectedAppAccess(repositories, input);
 
   assert.equal(result.outcome, "allowed");
-  assert.equal(result.sessionId, "session_owner_example");
-  assert.equal(result.userId, "user_owner_example");
+  assert.equal(result.sessionId, "session_admin_example");
+  assert.equal(result.userId, "user_admin_example");
   assert.equal(result.workspaceId, "workspace_koncept_images");
   assert.equal(result.appKey, "sqag");
   assert.deepEqual(result.decision, {
@@ -121,7 +121,7 @@ test("removed user with another workspace keeps access only to the remaining wor
     updatedAt: now,
   };
   const { repositories, input } = protectedFixture({
-    role: "member",
+    role: "operator",
     workspaces: [
       {
         id: "workspace_koncept_images",
@@ -135,10 +135,10 @@ test("removed user with another workspace keeps access only to the remaining wor
     ],
     memberships: [
       {
-        id: "membership_member_other_example",
+        id: "membership_operator_other_example",
         workspaceId: otherWorkspace.id,
-        userId: "user_member_example",
-        role: "member",
+        userId: "user_operator_example",
+        role: "operator",
         status: "active",
         createdAt: now,
         updatedAt: now,
@@ -150,7 +150,7 @@ test("removed user with another workspace keeps access only to the remaining wor
         workspaceId: "workspace_koncept_images",
         appId: "app_sqag",
         status: "enabled",
-        grantedByUserId: "user_owner_example",
+        grantedByUserId: "user_admin_example",
         createdAt: now,
         updatedAt: now,
       },
@@ -159,7 +159,7 @@ test("removed user with another workspace keeps access only to the remaining wor
         workspaceId: otherWorkspace.id,
         appId: "app_sqag",
         status: "enabled",
-        grantedByUserId: "user_owner_example",
+        grantedByUserId: "user_admin_example",
         createdAt: now,
         updatedAt: now,
       },
@@ -194,9 +194,8 @@ test("billing gate denial is delegated without creating launch tokens or grants"
   assert.equal(calls.providerIdentitiesCreate, 0);
   assert.equal(calls.auditEventsAppend, 0);
   assert.deepEqual(records.memberships.map((membership) => membership.id), [
-    "membership_owner_example",
     "membership_admin_example",
-    "membership_member_example",
+    "membership_operator_example",
     "membership_viewer_example",
   ]);
   assert.deepEqual(records.appEntitlements.map((entitlement) => entitlement.id), [
@@ -288,7 +287,7 @@ function protectedFixture(overrides = {}) {
   };
 
   const usersByRole = Object.fromEntries(
-    ["owner", "admin", "member", "viewer"].map((role) => [
+    ["admin", "operator", "viewer"].map((role) => [
       role,
       {
         id: `user_${role}_example`,
@@ -302,7 +301,7 @@ function protectedFixture(overrides = {}) {
     ]),
   );
 
-  const role = overrides.role ?? "owner";
+  const role = overrides.role ?? "admin";
   const user = { ...usersByRole[role], ...overrides.user };
   const session = {
     id: `session_${role}_example`,
@@ -329,7 +328,7 @@ function protectedFixture(overrides = {}) {
     workspaceId: workspace.id,
     appId: app.id,
     status: "enabled",
-    grantedByUserId: "user_owner_example",
+    grantedByUserId: "user_admin_example",
     createdAt: now,
     updatedAt: now,
     ...overrides.entitlement,

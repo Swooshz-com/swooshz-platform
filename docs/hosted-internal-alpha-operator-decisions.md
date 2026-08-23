@@ -35,7 +35,7 @@ The auth/session security contract documents implemented auth/session behavior, 
 - Exact hosted callback registration owner: decide who registers `https://swooshz.com/api/platform/auth/callback` with the OIDC provider outside the repo.
 - Secret storage owner and rotation owner: decide where secrets are stored, who can read them, and who rotates them.
 - Log retention/access owner: decide who owns hosted logs, retention, access review, and redaction process.
-- First owner/admin identity approval outside repo: decide the first internal owner/admin identity outside source control.
+- First admin identity approval outside repo: decide the first internal admin identity outside source control.
 - Add-existing-user internal alpha process owner: decide who runs and reviews the add-existing-user process after teammates sign in once.
 - SQAG `server_handoff` smoke approval: decide who approves the implemented production handoff after hosted evidence passes.
 - Host-only SQAG session/finalization evidence: decide who reviews the two host-only cookies, header-only finalization, and live-validation smoke evidence.
@@ -58,7 +58,7 @@ Every private or operational row uses placeholders only. Fill actual owners, pro
 | Exact hosted callback registration owner | `<owner-or-approver-placeholder>` | `<approved-hosted-redirect-uri-process-evidence>` | Register `https://swooshz.com/api/platform/auth/callback`; no provider action in this repo. | `<status-placeholder>` |
 | Secret storage owner and rotation owner | `<owner-or-approver-placeholder>` | `<approved-secret-storage-rotation-evidence>` | Hosted docs only; no secrets committed. | `<status-placeholder>` |
 | Log retention/access owner | `<owner-or-approver-placeholder>` | `<approved-log-retention-access-evidence>` | Hosted docs only; no log backend config. | `<status-placeholder>` |
-| First owner/admin identity approval outside repo | `<owner-or-approver-placeholder>` | `<approved-first-owner-admin-identity-evidence>` | Hosted docs only; no real identity values. | `<status-placeholder>` |
+| First admin identity approval outside repo | `<owner-or-approver-placeholder>` | `<approved-first-admin-identity-evidence>` | Hosted docs only; no real identity values. | `<status-placeholder>` |
 | Add-existing-user internal alpha process owner | `<owner-or-approver-placeholder>` | `<approved-add-existing-user-process-evidence>` | Existing Platform flow only; no invitation delivery. | `<status-placeholder>` |
 | SQAG `server_handoff` smoke approval | `<owner-or-approver-placeholder>` | `<approved-sqag-handoff-mode-evidence>` | Hosted evidence only; no SQAG call from this record. | `<status-placeholder>` |
 | Host-only SQAG session/finalization evidence | `<owner-or-approver-placeholder>` | `<approved-cross-host-session-cookie-evidence>` | Review the implemented contract and hosted smoke; no live action from this record. | `<status-placeholder>` |
