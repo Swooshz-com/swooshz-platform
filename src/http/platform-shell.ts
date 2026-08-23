@@ -1044,6 +1044,39 @@ export function renderAdminShellPage(): string {
             cell.append(menu);
             return cell;
           }
+          function closeAllActionMenus(restoreFocus = false, preserveTrigger = false) {
+            const restoreTarget = state.lastActionMenuButton;
+            for (const panel of document.querySelectorAll(".action-menu-panel")) panel.hidden = true;
+            for (const button of document.querySelectorAll(".action-menu > button[aria-controls]")) {
+              button.setAttribute("aria-expanded", "false");
+            }
+            if (!preserveTrigger) state.lastActionMenuButton = null;
+            if (restoreFocus) restoreTarget?.focus();
+          }
+          function actionButton(label, onClick) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "secondary-action compact";
+            button.textContent = label;
+            button.addEventListener("click", onClick);
+            return button;
+          }
+
+          function approvalActionsCell(approval, label) {
+            const cell = document.createElement("td");
+            setCellLabel(cell, label);
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "secondary-action compact";
+            button.textContent = "Revoke";
+            button.disabled = approval.status !== "pending";
+            button.addEventListener("click", () => {
+              void revokeApproval(approval.approvalId);
+            });
+            cell.append(button);
+            return cell;
+          }
+
           function changeMemberRole(membershipId, role) {
             openActionModal({
               title: "Change role?",
