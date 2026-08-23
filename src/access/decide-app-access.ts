@@ -78,13 +78,11 @@ const launchableEntitlementStatuses = new Set<EntitlementStatus>([
 ]);
 
 const defaultLaunchRoles = new Set<Role>([
-  Role.Owner,
   Role.Admin,
-  Role.Member,
+  Role.Operator,
 ]);
 
-export function decideAppAccess(input: DecideAppAccessInput): AccessDecision {
-  const { session, user } = input;
+export function decideAppAccess(input: DecideAppAccessInput): AccessDecision {  const { session, user } = input;
 
   if (!session || !user || session.userId !== user.id || !isSessionUsable(session, input.now)) {
     return decision(AccessDecisionResult.NotAuthenticated);

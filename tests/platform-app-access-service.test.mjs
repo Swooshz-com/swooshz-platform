@@ -33,7 +33,7 @@ function platformFixture(overrides = {}) {
   };
 
   const usersByRole = Object.fromEntries(
-    ["owner", "admin", "member", "viewer"].map((role) => [
+    ["admin", "operator", "viewer"].map((role) => [
       role,
       {
         id: `user_${role}_example`,
@@ -47,7 +47,7 @@ function platformFixture(overrides = {}) {
     ]),
   );
 
-  const role = overrides.role ?? "owner";
+  const role = overrides.role ?? "admin";
   const user = { ...usersByRole[role], ...overrides.user };
   const session = {
     id: `session_${role}_example`,
@@ -74,7 +74,7 @@ function platformFixture(overrides = {}) {
     workspaceId: workspace.id,
     appId: app.id,
     status: "enabled",
-    grantedByUserId: "user_owner_example",
+    grantedByUserId: "user_admin_example",
     createdAt: now,
     updatedAt: now,
     ...overrides.entitlement,
@@ -112,8 +112,8 @@ async function decisionFor(overrides = {}) {
 }
 
 // Synthetic fixtures only. These values are not production seed data.
-test("allows SQAG for owner, admin, and member through repository-loaded records", async () => {
-  for (const role of ["owner", "admin", "member"]) {
+test("allows SQAG for admin and operator through repository-loaded records", async () => {
+  for (const role of ["admin", "operator"]) {
     const decision = await decisionFor({ role });
 
     assert.equal(decision.result, AccessDecisionResult.Allowed);
@@ -141,12 +141,12 @@ test("blocks viewer launch for future apps unless a read-only policy exists", as
     workspaceId: "workspace_koncept_images",
     appId: futureApp.id,
     status: "enabled",
-    grantedByUserId: "user_owner_example",
+    grantedByUserId: "user_admin_example",
     createdAt: now,
     updatedAt: now,
   };
 
-  for (const role of ["owner", "admin", "member"]) {
+  for (const role of ["admin", "operator"]) {
     const decision = await decisionFor({
       role,
       appKey: futureApp.key,
@@ -201,7 +201,7 @@ test("blocks missing and disabled membership", async () => {
 
   const disabledFixture = platformFixture();
   const disabledMemberships = (await disabledFixture.repositories.memberships.listForUser(
-    "user_owner_example",
+    "user_admin_example",
   )).map((membership) => ({ ...membership, status: "disabled" }));
 
   const disabledDecision = await decisionFor({ memberships: disabledMemberships });

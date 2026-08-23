@@ -83,6 +83,11 @@ export function createInMemoryPlatformRepositories(records = {}) {
         workspaces.push(workspace);
         return workspace;
       },
+      async lockForAdminMutation(id) {
+        if (!workspaces.some((workspace) => workspace.id === id)) {
+          throw new Error("Workspace was not found.");
+        }
+      },
     },
     memberships: {
       async findForUserInWorkspace(userId, workspaceId) {

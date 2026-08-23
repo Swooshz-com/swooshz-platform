@@ -6,7 +6,7 @@ import {
   PlatformSeedInternalAccessError,
   executePlatformSeedInternalAccess,
   readPlatformSeedInternalAccessConfig,
-  seedFirstOwnerBootstrapApproval,
+  seedFirstAdminBootstrapApproval,
   seedInternalAccessForExistingUser,
 } from "../scripts/platform-seed-internal-access.mjs";
 import { createInMemoryPlatformRepositories } from "./helpers/in-memory-platform-repositories.mjs";
@@ -99,7 +99,7 @@ test("seed CLI config requires explicit workspace identity without exposing priv
     workspaceName: "Internal Workspace",
     appKey: "sqag",
     appName: "SQAG",
-    membershipRole: "owner",
+    membershipRole: "admin",
     appLaunchUrl: null,
   });
 });
@@ -149,7 +149,7 @@ test("existing user with provider identity gets idempotent workspace app entitle
   assert.equal(first.workspace.slug, "internal-workspace");
   assert.equal(first.app.key, "sqag");
   assert.equal(first.app.name, "SQAG");
-  assert.equal(first.membership.role, "owner");
+  assert.equal(first.membership.role, "admin");
   assert.deepEqual(first.created, {
     workspace: true,
     app: true,
@@ -176,17 +176,17 @@ test("existing user with provider identity gets idempotent workspace app entitle
   assert.equal(fixture.writeCounts.appLaunchTokens, 0);
 });
 
-test("first-owner bootstrap creates reviewed pending owner approval on fresh DB", async () => {
+test("first-admin bootstrap creates reviewed pending admin approval on fresh DB", async () => {
   const fixture = createSeedFixture();
   const config = readPlatformSeedInternalAccessConfig({
     ...validEnv(),
-    PLATFORM_SEED_BOOTSTRAP_MODE: "first-owner-pending-approval",
+    PLATFORM_SEED_BOOTSTRAP_MODE: "first-admin-pending-approval",
   });
 
-  const first = await seedFirstOwnerBootstrapApproval(fixture.repositories, config, now);
-  const second = await seedFirstOwnerBootstrapApproval(fixture.repositories, config, now);
+  const first = await seedFirstAdminBootstrapApproval(fixture.repositories, config, now);
+  const second = await seedFirstAdminBootstrapApproval(fixture.repositories, config, now);
 
-  assert.equal(first.outcome, "first_owner_bootstrap_pending");
+  assert.equal(first.outcome, "first_admin_bootstrap_pending");
   assert.equal(first.workspace.slug, "internal-workspace");
   assert.equal(first.app.key, "sqag");
   assert.equal(first.entitlement.status, "enabled");
@@ -194,8 +194,7 @@ test("first-owner bootstrap creates reviewed pending owner approval on fresh DB"
   assert.doesNotMatch(first.approval.id, /example/i);
   assert.doesNotMatch(first.approval.id, /test/i);
   assert.doesNotMatch(first.approval.id, /owner_example_test/i);
-  assert.equal(first.approval.role, "owner");
-  assert.equal(first.approval.status, "pending");
+  assert.equal(first.approval.role, "admin");
   assert.deepEqual(first.created, {
     workspace: true,
     app: true,
@@ -218,14 +217,14 @@ test("first-owner bootstrap creates reviewed pending owner approval on fresh DB"
   assert.equal(fixture.writeCounts.sessions, 0);
 });
 
-test("first-owner bootstrap fails closed when workspace already has membership drift", async () => {
+test("first-admin bootstrap fails closed when workspace already has membership drift", async () => {
   const fixture = createSeedFixture({
     users: [existingUser()],
     memberships: [{
       id: "membership_existing_owner",
       workspaceId: "workspace_internal_workspace_seed",
       userId: "user_owner",
-      role: "owner",
+      role: "admin",
       status: "active",
       createdAt: now,
       updatedAt: now,
@@ -233,18 +232,18 @@ test("first-owner bootstrap fails closed when workspace already has membership d
   });
   const config = readPlatformSeedInternalAccessConfig({
     ...validEnv(),
-    PLATFORM_SEED_BOOTSTRAP_MODE: "first-owner-pending-approval",
+    PLATFORM_SEED_BOOTSTRAP_MODE: "first-admin-pending-approval",
   });
 
   await assert.rejects(
-    () => seedFirstOwnerBootstrapApproval(fixture.repositories, config, now),
+    () => seedFirstAdminBootstrapApproval(fixture.repositories, config, now),
     assertSeedCliError("seed_failed"),
   );
 
   assert.equal(fixture.records.membershipApprovals.length, 0);
 });
 
-test("first-owner bootstrap fails closed when another pending bootstrap owner exists", async () => {
+test("first-admin bootstrap fails closed when another pending bootstrap admin exists", async () => {
   const fixture = createSeedFixture({
     workspaces: [
       {
@@ -261,7 +260,7 @@ test("first-owner bootstrap fails closed when another pending bootstrap owner ex
         id: "approval_internal_workspace_sqag_first_owner_seed",
         workspaceId: "workspace_internal_workspace_seed",
         email: "other.owner@example.test",
-        role: "owner",
+        role: "admin",
         status: "pending",
         requestedByUserId: null,
         createdAt: now,
@@ -275,11 +274,11 @@ test("first-owner bootstrap fails closed when another pending bootstrap owner ex
   });
   const config = readPlatformSeedInternalAccessConfig({
     ...validEnv(),
-    PLATFORM_SEED_BOOTSTRAP_MODE: "first-owner-pending-approval",
+    PLATFORM_SEED_BOOTSTRAP_MODE: "first-admin-pending-approval",
   });
 
   await assert.rejects(
-    () => seedFirstOwnerBootstrapApproval(fixture.repositories, config, now),
+    () => seedFirstAdminBootstrapApproval(fixture.repositories, config, now),
     assertSeedCliError("seed_failed"),
   );
 
@@ -326,28 +325,9 @@ test("seed rejects unavailable provider identity repository safely", async () =>
   assert.equal(fixture.records.workspaces.length, 0);
 });
 
-test("seed rejects viewer role for SQAG and permits owner admin member roles", async () => {
-  await assert.rejects(
-    async () => {
-      const config = readPlatformSeedInternalAccessConfig({
-        ...validEnv(),
-        PLATFORM_SEED_MEMBERSHIP_ROLE: "viewer",
-      });
-      return seedInternalAccessForExistingUser(
-        createSeedFixture({
-          users: [existingUser()],
-          providerIdentities: [providerIdentity()],
-        }).repositories,
-        config,
-        now,
-      );
-    },
-    assertSeedCliError("unsupported_role"),
-  );
-
-  for (const role of ["owner", "admin", "member"]) {
-    const fixture = createSeedFixture({
-      users: [existingUser({ id: `user_${role}`, email: `${role}@example.test` })],
+test("seed accepts the exact roles and viewer remains blocked from SQAG", async () => {
+  for (const role of ["admin", "operator", "viewer"]) {
+    const fixture = createSeedFixture({      users: [existingUser({ id: `user_${role}`, email: `${role}@example.test` })],
       providerIdentities: [providerIdentity({ userId: `user_${role}` })],
     });
     const result = await seedInternalAccessForExistingUser(
@@ -398,13 +378,13 @@ test("seed supports optional app launch URL without printing it in summary outpu
   assert.doesNotMatch(lines.join("\n"), /internal-workspace|Internal Workspace/);
   assert.match(lines.join("\n"), /app=sqag/);
   assert.match(lines.join("\n"), /user=existing_provider_backed_user/);
-  assert.match(lines.join("\n"), /role=owner/);
+  assert.match(lines.join("\n"), /role=admin/);
   assert.doesNotMatch(lines.join("\n"), /apps\.example\.test/);
   assert.doesNotMatch(lines.join("\n"), /owner@example\.test/);
   assertOutputPrivacySafe(lines.join("\n"));
 });
 
-test("first-owner bootstrap CLI output is value-safe and creates no fake login state", async () => {
+test("first-admin bootstrap CLI output is value-safe and creates no fake login state", async () => {
   const fixture = createSeedFixture();
   const lines = [];
   const client = {
@@ -419,7 +399,7 @@ test("first-owner bootstrap CLI output is value-safe and creates no fake login s
   await executePlatformSeedInternalAccess({
     env: {
       ...validEnv(),
-      PLATFORM_SEED_BOOTSTRAP_MODE: "first-owner-pending-approval",
+      PLATFORM_SEED_BOOTSTRAP_MODE: "first-admin-pending-approval",
     },
     now: () => now,
     createDatabaseRepositories() {
@@ -432,12 +412,10 @@ test("first-owner bootstrap CLI output is value-safe and creates no fake login s
 
   const output = lines.join("\n");
   assert.equal(fixture.closed, true);
-  assert.match(output, /first_owner_bootstrap=pending_approval/);
-  assert.match(output, /workspace=configured/);
+  assert.match(output, /first_admin_bootstrap=pending_approval/);
   assert.match(output, /app=sqag/);
   assert.match(output, /user=created_by_real_oidc_sign_in/);
-  assert.match(output, /role=owner/);
-  assert.doesNotMatch(output, /internal-workspace|Internal Workspace/);
+  assert.match(output, /role=admin/);  assert.doesNotMatch(output, /internal-workspace|Internal Workspace/);
   assert.doesNotMatch(output, /owner@example\.test/);
   assert.equal(fixture.records.users.length, 0);
   assert.equal(fixture.records.providerIdentities.length, 0);

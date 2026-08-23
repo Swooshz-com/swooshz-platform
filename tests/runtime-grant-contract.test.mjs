@@ -988,7 +988,7 @@ ${cryptoSource}`,
   assert.equal(inventory.length, 11);
 
   const operations = await extractProductionAdapterOperations();
-  assert.equal(operations.length, 59);
+  assert.equal(operations.length, 60);
   assert.doesNotThrow(() =>
     assertProductionAdapterGrantEquality(
       RUNTIME_TABLE_GRANT_CONTRACT,
@@ -1730,10 +1730,9 @@ test("no-import authority preserves existing 11-source inventory", async () => {
   assert.equal(inventory.length, 11);
 });
 
-test("no-import authority preserves existing 59 operation-source tuples", async () => {
+test("no-import authority preserves existing 60 operation-source tuples", async () => {
   const operations = await extractProductionAdapterOperations();
-  assert.equal(operations.length, 59);
-  assert.doesNotThrow(() =>
+  assert.equal(operations.length, 60);  assert.doesNotThrow(() =>
     assertProductionAdapterGrantEquality(
       RUNTIME_TABLE_GRANT_CONTRACT,
       operations,

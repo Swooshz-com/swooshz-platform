@@ -2,7 +2,7 @@
 
 This briefing helps a human operator decide whether Swooshz Platform should move toward a later hosted internal-alpha execution window. It is planning guidance only. It does not deploy, provision, expose, configure, restart, run migrations, connect to databases, call OIDC, call SQAG, seed access, add runtime features, or approve hosted execution.
 
-Default posture: No-go until approved. Hosted execution remains blocked until the operator approvals, real infrastructure choices, real OIDC configuration, hosted SQAG handoff/session strategy, real secret storage/log/incident process, first owner/admin identity approval, and hosted smoke evidence are reviewed outside the repo.
+Default posture: No-go until approved. Hosted execution remains blocked until the operator approvals, real infrastructure choices, real OIDC configuration, hosted SQAG handoff/session strategy, real secret storage/log/incident process, first admin identity approval, and hosted smoke evidence are reviewed outside the repo.
 
 ## Purpose and non-goals
 
@@ -26,7 +26,7 @@ The local/internal UAT platform-admin foundation is mostly implemented/documente
 
 - Provider-backed generic OIDC login and Platform-owned server-side sessions are documented.
 - `/app` and `/app/admin` use the approved compact production interface locally; hosted visual evidence and hosted smoke remain pending.
-- Owner/admin flows can add existing provider-backed users by email after first sign-in, change roles, disable and reactivate non-owner memberships, enable/disable SQAG entitlement, and browse recent activity.
+- Admin flows can add existing provider-backed users by email after first sign-in, change roles, disable and reactivate other memberships, enable/disable SQAG entitlement, and browse recent activity.
 - App launch checks fail closed across session, user, workspace, membership, entitlement, role, and app availability conditions.
 - The SQAG handoff path keeps the raw one-time launch token out of browser URLs and storage.
 - Local UAT references should use `127.0.0.1` where a local address is needed.
@@ -46,7 +46,7 @@ Hosted internal alpha remains no-go until all of these are approved and evidence
 - OIDC provider/client owner and reviewed hosted callback value.
 - Secret storage owner and rotation owner.
 - Log retention/access owner and privacy review process.
-- First owner/admin identity approval.
+- First admin identity approval.
 - Add-existing-user process owner.
 - SQAG handoff mode and cross-host session/cookie strategy.
 - Incident contact/escalation path.
@@ -69,7 +69,7 @@ Before execution, the operator must collect approval evidence outside the repo f
 | OIDC | Approved provider/client owner and hosted redirect value registration. | Docs only; no provider call. |
 | Secrets | Approved storage, access review, and rotation owner. | No secrets committed. |
 | Logs/incidents | Approved retention/access owner, redaction process, and escalation path. | No log backend config. |
-| First owner/admin | Approved first identity outside source control after real provider sign-in. | No real identity values in repo. |
+| First admin | Approved first identity outside source control after real provider sign-in. | No real identity values in repo. |
 | SQAG handoff | Approved hosted smoke of `server_handoff`, host-only cookies, header-only finalization, and live validation. | Platform handoff contract only. |
 | Final decision | Go/no-go approver signs off after smoke evidence. | Hosted execution stays blocked until approved. |
 
@@ -107,7 +107,7 @@ Do not move SQAG quote data into Platform. Do not propose Platform storage for S
 - Store real env values, secrets, OAuth values, database connection values, hosted URLs, staff identities, provider material, cookies, and tokens outside the repo.
 - Use placeholders only in repo docs and PRs.
 - Run `npm run platform:readiness-check` only as a dry-run env-shape check before migration or startup.
-- Treat allowlists, first owner/admin identity, log excerpts, screenshots, callback traces, provider diagnostics, and incident notes as private operational material.
+- Treat allowlists, first admin identity, log excerpts, screenshots, callback traces, provider diagnostics, and incident notes as private operational material.
 - Stop and redact any workflow that prints or captures secret values, database connection values, OAuth values, browser session material, provider identity material, or SQAG private data.
 
 ## Migration/backup/restore decision requirements
@@ -125,13 +125,13 @@ Do not move SQAG quote data into Platform. Do not propose Platform storage for S
 - Smoke evidence should record pass/fail status, timestamps, command names, and safe categories only.
 - If private material appears in logs, screenshots, tickets, or shared notes, stop the hosted window and follow the operator incident path.
 
-## First owner/admin identity approval requirements
+## First admin identity approval requirements
 
-- Approve the first owner/admin identity outside the repo before any hosted seed operation.
-- The first owner/admin must sign in once through the real hosted OIDC provider so Platform has a provider-backed user.
+- Approve the first admin identity outside the repo before any hosted seed operation.
+- The first admin must sign in once through the real hosted OIDC provider so Platform has a provider-backed user.
 - The seed path must not create fake users, provider identities, sessions, hidden fallback auth, or sample data.
-- The owner/admin identity value must not be committed, rendered in docs, pasted into PRs, or logged in shared artifacts.
-- Confirm owner/admin access to `/app/admin`, member/viewer denial, and safe audit/activity evidence during hosted smoke.
+- The admin identity value must not be committed, rendered in docs, pasted into PRs, or logged in shared artifacts.
+- Confirm admin access to `/app/admin`, operator/viewer denial, and safe audit/activity evidence during hosted smoke.
 
 ## Hosted smoke evidence requirements
 
@@ -141,12 +141,12 @@ Hosted smoke is required after reviewed infrastructure exists and before broader
 - Manual migration approval and backup prerequisite were recorded outside repo.
 - `GET /healthz` reached the hosted Platform process.
 - Auth start/callback completed without logging callback query details or provider material.
-- `/app` and `/app/admin` loaded for the approved owner/admin.
+- `/app` and `/app/admin` loaded for the approved admin.
 - Add-existing-user worked only after teammate first sign-in.
 - Role change, membership disable/reactivation, SQAG entitlement enable/disable, and audit/activity checks passed.
 - SQAG launch mode behaved as approved and did not expose raw launch tokens.
 - Logout and missing/expired/disabled session checks failed closed.
-- Member/viewer admin access was denied.
+- Operator/viewer admin access was denied.
 
 Smoke evidence does not create production readiness. It is one input to a hosted internal-alpha go/no-go decision.
 
@@ -163,7 +163,7 @@ Default decision: No-go until approved.
 | SQAG handoff/session strategy | `<approved-sqag-strategy-placeholder>` |
 | Secret/log/incident owners approved | `<yes-or-no-placeholder>` |
 | Migration/backup/restore owners approved | `<yes-or-no-placeholder>` |
-| First owner/admin identity approved | `<yes-or-no-placeholder>` |
+| First admin identity approved | `<yes-or-no-placeholder>` |
 | Hosted smoke evidence reviewed | `<yes-or-no-placeholder>` |
 | Remaining blockers | `<blocker-summary-placeholder>` |
 

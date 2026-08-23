@@ -14,7 +14,7 @@ const now = "2026-06-27T00:00:00.000Z";
 const earlier = "2026-06-26T23:00:00.000Z";
 const future = "2026-06-27T01:00:00.000Z";
 const allowedOrigin = "https://platform.example.test";
-const sessionId = "session_owner_example";
+const sessionId = "session_admin_example";
 const validCsrfToken = "csrf-token-valid-example";
 const issuedCsrfToken = "issued-csrf-token-reference";
 const issuedCsrfTokenHash = "hash_issued_csrf_token_reference";
@@ -427,7 +427,7 @@ test("session context route returns safe no-store context and does not require C
   assert.equal(response.statusCode, 200);
   assertNoStoreHeaders(response.headers);
   assert.equal(body.outcome, "authenticated");
-  assert.equal(body.user.userId, "user_owner_example");
+  assert.equal(body.user.userId, "user_admin_example");
   assert.equal(body.selectedWorkspaceId, "workspace_koncept_images");
   assert.deepEqual(body.workspaces[0].apps[0].access, {
     result: "allowed",
@@ -832,11 +832,11 @@ test("SQAG internal finalization routes enforce service auth and atomic replay d
   assertNoStoreHeaders(consumed.response.headers);
   assert.deepEqual(consumed.body, {
     validationGrantId,
-    userId: "user_owner_example",
+    userId: "user_admin_example",
     workspaceId: "workspace_koncept_images",
     appKey: "sqag",
     launchTokenExpiresAt,
-    currentRole: "owner",
+    currentRole: "admin",
   });
 
   const replay = await request({
@@ -870,7 +870,7 @@ test("SQAG internal validation and revoke routes re-check bindings and fail clos
   assertNoStoreHeaders(validation.response.headers);
   assert.equal(validation.body.valid, true);
   assert.equal(validation.body.validationGrantId, validationGrantId);
-  assert.equal(validation.body.currentRole, "owner");
+  assert.equal(validation.body.currentRole, "admin");
 
   const wrongWorkspace = await request({
     method: "POST",
@@ -1128,9 +1128,9 @@ test("app launch consume route consumes token without browser cookie or CSRF", a
   assert.deepEqual(body, {
     outcome: "consumed",
     user: {
-      userId: "user_owner_example",
-      email: "owner@example.com",
-      displayName: "Owner Example",
+      userId: "user_admin_example",
+      email: "admin@example.com",
+      displayName: "Admin Example",
       status: "active",
     },
     workspace: {
@@ -1142,7 +1142,7 @@ test("app launch consume route consumes token without browser cookie or CSRF", a
       appKey: "sqag",
       appName: "SQAG",
     },
-    membershipRole: "owner",
+    membershipRole: "admin",
     launchTokenExpiresAt,
   });
   assert.equal(fixture.calls.csrfValidate, 0);
@@ -1679,9 +1679,9 @@ function createAdapterFixture(overrides = {}) {
   const records = {
     users: [
       {
-        id: "user_owner_example",
-        email: "owner@example.com",
-        displayName: "Owner Example",
+        id: "user_admin_example",
+        email: "admin@example.com",
+        displayName: "Admin Example",
         status: "active",
         createdAt: now,
         updatedAt: now,
@@ -1692,7 +1692,7 @@ function createAdapterFixture(overrides = {}) {
     sessions: [
       {
         id: sessionId,
-        userId: "user_owner_example",
+        userId: "user_admin_example",
         createdAt: earlier,
         expiresAt: future,
         lastSeenAt: earlier,
@@ -1713,8 +1713,8 @@ function createAdapterFixture(overrides = {}) {
       {
         id: "membership_owner_example",
         workspaceId: "workspace_koncept_images",
-        userId: "user_owner_example",
-        role: "owner",
+        userId: "user_admin_example",
+        role: "admin",
         status: "active",
         createdAt: now,
         updatedAt: now,
@@ -1738,7 +1738,7 @@ function createAdapterFixture(overrides = {}) {
         workspaceId: "workspace_koncept_images",
         appId: "app_sqag",
         status: "enabled",
-        grantedByUserId: "user_owner_example",
+        grantedByUserId: "user_admin_example",
         createdAt: now,
         updatedAt: now,
       },
@@ -1752,7 +1752,7 @@ function createAdapterFixture(overrides = {}) {
     records.appLaunchTokens.push({
       id: "app_launch_token_1",
       sessionId,
-      userId: "user_owner_example",
+      userId: "user_admin_example",
       workspaceId: "workspace_koncept_images",
       appId: "app_sqag",
       tokenHash: launchTokenHash,
@@ -1894,11 +1894,11 @@ function createAdapterFixture(overrides = {}) {
           }
 
           return {
-            platformUserId: "user_owner_example",
+            platformUserId: "user_admin_example",
             providerIdentityId: "provider_identity_auth_callback_1",
             session: {
               id: "session_auth_callback_1",
-              userId: "user_owner_example",
+              userId: "user_admin_example",
               createdAt: input.now,
               expiresAt: future,
               lastSeenAt: input.now,
@@ -1976,7 +1976,7 @@ function attachAccessValidationGrantCapability(fixture, overrides = {}) {
   const grant = {
     id: validationGrantId,
     sessionId,
-    userId: "user_owner_example",
+    userId: "user_admin_example",
     workspaceId: "workspace_koncept_images",
     appId: "app_sqag",
     intendedOrigin: origin,
@@ -2079,8 +2079,8 @@ function createAuthOidcAdapter(calls, overrides) {
       return {
         providerKey: "example-oidc",
         providerSubject: "provider-subject-123",
-        verifiedEmail: "owner@example.com",
-        displayName: "Synthetic Owner",
+        verifiedEmail: "admin@example.com",
+        displayName: "Synthetic Admin",
         metadata: { emailVerified: true },
       };
     },

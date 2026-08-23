@@ -49,7 +49,7 @@ Repository tests use intercepted provider fixtures only. They must prove the fix
 
 ## Operator smoke outline
 
-After separate controller approval and external provider configuration, an operator may verify that Universal Login completes the passwordless email OTP flow, the callback returns to the exact hosted redirect URI, and the platform applies the existing approval and membership rules. This repository runbook does not authorize those external actions. The first-owner/pending-approval path must be prepared through the existing Platform contract before a reviewed email sign-in.
+After separate controller approval and external provider configuration, an operator may verify that Universal Login completes the passwordless email OTP flow, the callback returns to the exact hosted redirect URI, and the platform applies the existing approval and membership rules. This repository runbook does not authorize those external actions. The first-admin/pending-approval path must be prepared through the existing Platform contract before a reviewed email sign-in.
 
 Verify that `/app` exposes only the active workspace membership and entitled app, and that app launch uses the separate-origin, header-only token handoff. Do not infer Platform authorization from a successful Universal Login screen.
 

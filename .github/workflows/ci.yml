@@ -59,6 +59,9 @@ jobs:
         # Its disposable container uses POSTGRES_HOST_AUTH_METHOD=trust only locally.
         run: npm run test:disposable-runtime-postgres
 
+      - name: PostgreSQL 17 disposable role-collapse migration and concurrency proofs
+        run: npm run test:disposable-role-collapse-postgres
+
   container:
     name: Container build
     runs-on: ubuntu-latest

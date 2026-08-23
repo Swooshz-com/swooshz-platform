@@ -44,7 +44,7 @@ function baseFixture(overrides = {}) {
   };
 
   const usersByRole = Object.fromEntries(
-    ["owner", "admin", "member", "viewer"].map((role) => [
+    ["admin", "operator", "viewer"].map((role) => [
       role,
       {
         id: `user_${role}_example`,
@@ -68,7 +68,7 @@ function baseFixture(overrides = {}) {
     updatedAt: now,
   }));
 
-  const role = overrides.role ?? "owner";
+  const role = overrides.role ?? "admin";
   const user = { ...usersByRole[role], ...overrides.user };
   const session = {
     id: `session_${role}_example`,
@@ -115,16 +115,16 @@ test("normalizes workspace slugs to URL-safe lowercase values", () => {
   assert.equal(normalizeWorkspaceSlug("  Swooshz / SQAG Preview!  "), "swooshz-sqag-preview");
 });
 
-test("allows SQAG for owner role", () => {
-  assert.equal(resultFor({ role: "owner" }).result, AccessDecisionResult.Allowed);
+test("maps former owner to admin launch behavior", () => {
+  assert.equal(resultFor({ role: "admin" }).result, AccessDecisionResult.Allowed);
 });
 
 test("allows SQAG for admin role", () => {
   assert.equal(resultFor({ role: "admin" }).result, AccessDecisionResult.Allowed);
 });
 
-test("allows SQAG for member role", () => {
-  assert.equal(resultFor({ role: "member" }).result, AccessDecisionResult.Allowed);
+test("maps former member to operator launch behavior", () => {
+  assert.equal(resultFor({ role: "operator" }).result, AccessDecisionResult.Allowed);
 });
 
 test("blocks SQAG for viewer role until a viewer adapter exists", () => {
@@ -139,7 +139,7 @@ test("uses least-privilege launch roles for future apps by default", () => {
     status: "available",
   };
 
-  for (const role of ["owner", "admin", "member"]) {
+  for (const role of ["admin", "operator"]) {
     assert.equal(
       resultFor({
         role,

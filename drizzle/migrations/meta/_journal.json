@@ -64,6 +64,13 @@
       "when": 1784620602227,
       "tag": "0009_wonderful_star_brand",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1787479999088,
+      "tag": "0010_admin_operator_viewer_role_collapse",
+      "breakpoints": true
     }
   ]
 }

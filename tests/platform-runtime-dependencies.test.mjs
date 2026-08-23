@@ -290,7 +290,7 @@ test("runtime composition wires app launch token consume dependencies when enabl
   assert.equal(consumeBody.user.userId, userId);
   assert.equal(consumeBody.workspace.workspaceId, "workspace_koncept_images");
   assert.equal(consumeBody.app.appKey, "sqag");
-  assert.equal(consumeBody.membershipRole, "owner");
+  assert.equal(consumeBody.membershipRole, "admin");
   assert.equal(fixture.records.appLaunchTokens[0].consumedAt.toISOString(), now);
   assert.doesNotMatch(JSON.stringify(consumeResponse), new RegExp(issue.launchToken));
   assertResponseIsPrivacySafe(consumeResponse);
@@ -602,7 +602,7 @@ test("runtime composition wires auth callback through injected provider adapter 
       id: "membership_runtime_owner",
       workspaceId: "workspace_runtime",
       userId: "user_auth_runtime_1",
-      role: "owner",
+      role: "admin",
       status: "active",
       createdAt: now,
       updatedAt: now,
@@ -893,7 +893,7 @@ function createRuntimeFixture(options = {}) {
             id: "membership_owner_example",
             workspaceId: "workspace_koncept_images",
             userId,
-            role: "owner",
+            role: "admin",
             status: "active",
             createdAt: now,
             updatedAt: now,

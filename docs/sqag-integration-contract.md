@@ -45,7 +45,7 @@ SQAG must not grow:
 
 ## Current Platform Launch Handoff Contract
 
-The platform-side handoff contract is now explicit:
+The platform-side handoff contract is now explicit. Current launch roles are admin and operator; viewer is denied with the existing fail-closed role-not-permitted result, and no SQAG viewer mode is introduced:
 
 1. Browser user signs in to Swooshz Platform through OIDC.
 2. Swooshz Platform owns the browser session, platform user, workspace membership, membership role, app entitlement, and app access decision.
@@ -140,7 +140,7 @@ Safe consume success response shape:
     "appKey": "sqag",
     "appName": "SQAG"
   },
-  "membershipRole": "owner",
+  "membershipRole": "admin",
   "launchTokenExpiresAt": "<iso-expiry>",
   "validationGrantId": "<non-secret-grant-id>"
 }

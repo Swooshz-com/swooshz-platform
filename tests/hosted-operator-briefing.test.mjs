@@ -14,7 +14,7 @@ const requiredSections = [
   "Secret/config handling requirements",
   "Migration/backup/restore decision requirements",
   "Logging/privacy/incident handling requirements",
-  "First owner/admin identity approval requirements",
+  "First admin identity approval requirements",
   "Hosted smoke evidence requirements",
   "Final go/no-go decision template",
 ];

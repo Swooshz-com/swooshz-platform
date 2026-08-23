@@ -104,10 +104,10 @@ A role defines workspace-level permissions. Roles are platform concepts; app per
 
 MVP roles:
 
-- `owner`: full workspace administration, including membership and app access management.
-- `admin`: workspace administration except destructive ownership transfer.
-- `member`: normal app usage where entitlement allows it.
-- `viewer`: read-only app usage where supported.
+- `admin`: full workspace administration, including membership and app access management.
+- `operator`: normal internal application use where entitlement allows it; no workspace administration.
+- `viewer`: read-only Platform workspace visibility; no operational app launch by default.
+
 
 MVP fields if stored:
 
@@ -125,10 +125,22 @@ Deferred fields:
 
 Invariants:
 
-- Every active workspace should have at least one active `owner`.
-- Role grants are necessary but not sufficient for app launch; workspace app entitlement must also allow the app.
+- Every active workspace with memberships must retain at least one active `admin`. Zero-member state is valid only for the defined first-admin bootstrap case.
+- Role grants are necessary but not sufficient for app launch; workspace app entitlement must also allow the app. Current stored role values are exactly `admin`, `operator`, and `viewer`.
 - Billing state must not silently grant platform admin permissions.
 
+### Current Role Migration
+
+The current role vocabulary is exactly `admin`, `operator`, and `viewer`.
+
+The atomic migration in `drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql` maps current stored values as follows:
+
+- `owner` -> `admin`.
+- `admin` -> `admin`.
+- `member` -> `operator`.
+- `viewer` -> `viewer`.
+
+The mapping applies to membership, pending workspace membership approval, and invitation role columns. Historical audit JSON is factual evidence and is not rewritten; old `owner` and `member` values shown there are historical, not selectable current roles. Quiesce old writers, apply the migration, verify the post-migration admin invariant, then start or serve the new application contract. Mixed application versions across this migration are unsupported.
 ### Invitation
 
 An invitation allows a new or existing user to join a workspace.
@@ -275,7 +287,7 @@ Invariants:
 
 - A workspace can have at most one active entitlement record per app.
 - Entitlement does not replace membership or role checks.
-- Suspended entitlement blocks app launch even for owners.
+- Suspended entitlement blocks app launch even for `admin`, `operator`, or `viewer` memberships.
 - Billing/credits can later influence entitlement status but must not be mixed into the membership model.
 
 ## Internal Access Seed Contract
@@ -285,7 +297,7 @@ Internal workspace/app-access seed code is a platform-only backend contract. It 
 - An active internal workspace by stable slug.
 - The `sqag` app registry record.
 - An enabled or trial workspace entitlement for that app.
-- An active membership grant for an owner, admin, or member.
+- An active membership grant for an `admin`, `operator`, or `viewer`.
 
 The seed contract must be idempotent. Existing matching workspace, app, entitlement, membership, or user records may be reused. Existing conflicting records must fail with privacy-safe stable errors instead of being overwritten silently.
 
@@ -295,7 +307,7 @@ Identity-linking safety is required:
 - Creating a new user together with a provider identity is deferred until an explicit transactional identity seed boundary exists.
 - Provider-identity user creation must fail before any platform writes in this PR so it cannot leave behind a partial active user or identity record.
 - The seed must never create an email-only user intended for future provider linking. The auth resolver intentionally rejects linking a new provider identity to an existing email-only user to avoid account takeover, and seed code must preserve that behaviour.
-- Viewer grants must not be seeded for SQAG launch because the current app-access decision blocks SQAG viewer launch.
+- Membership grants may be seeded for `admin`, `operator`, or `viewer`; a valid `viewer` membership remains denied SQAG launch by the current app-access decision.
 
 This contract does not add a fake-login shortcut, hardcoded production account, provider SDK, provider network call, migration execution path, frontend, SQAG adapter, app launch token, billing, deployment script, or live seed command.
 
@@ -376,16 +388,16 @@ Workspace:
 
 User:
 
-- `id`: `user_owner_example`
-- `email`: `owner@example.com`
-- `display_name`: `Platform Owner`
+- `id`: `user_admin_example`
+- `email`: `admin@example.com`
+- `display_name`: `Platform Admin`
 - `status`: `active`
 
 Membership:
 
 - `workspace_id`: `workspace_koncept_images`
-- `user_id`: `user_owner_example`
-- `role`: `owner`
+- `user_id`: `user_admin_example`
+- `role`: `admin`
 - `status`: `active`
 
 App:
@@ -401,4 +413,4 @@ App entitlement:
 - `app_id`: `app_sqag`
 - `status`: `enabled`
 
-Expected launch decision for `user_owner_example` in `workspace_koncept_images` launching `app_sqag`: `allowed`.
+Expected launch decision for `user_admin_example` in `workspace_koncept_images` launching `app_sqag`: `allowed`.

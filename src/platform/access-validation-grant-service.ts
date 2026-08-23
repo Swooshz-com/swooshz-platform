@@ -57,4 +57,4 @@ async function validateGrant(deps: AccessValidationGrantDependencies, id: string
 
 function validGrantId(value: string) { return value.length >= 32 && value.length <= 256 && /^[A-Za-z0-9_-]+$/.test(value); }
 function validHandle(value: string) { return value.length >= 32 && value.length <= 512 && /^[A-Za-z0-9_-]+$/.test(value); }
-function isSqagLaunchRole(value: string): value is "owner" | "admin" | "member" { return value === "owner" || value === "admin" || value === "member"; }
+function isSqagLaunchRole(value: string): value is "admin" | "operator" { return value === "admin" || value === "operator"; }

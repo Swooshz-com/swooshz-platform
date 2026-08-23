@@ -20,7 +20,7 @@ export const workspaceMembershipApprovalStatusEnum = pgEnum(
   "workspace_membership_approval_status",
   ["pending", "accepted", "revoked"],
 );
-export const roleEnum = pgEnum("role", ["owner", "admin", "member", "viewer"]);
+export const roleEnum = pgEnum("role", ["admin", "operator", "viewer"]);
 export const invitationStatusEnum = pgEnum("invitation_status", [
   "pending",
   "accepted",

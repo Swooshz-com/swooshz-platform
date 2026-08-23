@@ -54,18 +54,18 @@ swooshz platform
 │   ├─ identity block (name · email · user status)
 │   └─ one WS group per membership:
 │       ├─ record tag "WS – {NAME}" + chip "role: {role}"
-│       ├─ "Manage workspace" link (only if role in THIS workspace is owner/admin)
+│       ├─ "Manage workspace" link (only if role in THIS workspace is admin)
 │       │     → /app/admin?workspaceId=…
 │       └─ product card grid (registry order by app key):
 │           ├─ APP – SQAG   (quote automation)
 │           └─ APP – SGCA   (SEO/GEO Content Automation; placeholder key)
 │
-└─ /app/admin?workspaceId=…   WORKSPACE ADMIN (owner/admin of that workspace only)
+└─ /app/admin?workspaceId=…   WORKSPACE ADMIN (admin of that workspace only)
     ├─ same strip + header + "Back to launcher"
     ├─ section index: 01–06 anchor links (one document, no tabs)
     ├─ 01 WORKSPACE      #workspace       name · id · your role
-    ├─ 02 ADD MEMBER     #add-member      email + role select (admin/member/viewer)
-    ├─ 03 OWNER TRANSFER #owner-transfer  placeholder (mandated copy)
+    ├─ 02 ADD MEMBER     #add-member      email + role select (admin/operator/viewer)
+    ├─ 03 WORKSPACE LIFECYCLE #workspace-lifecycle  placeholder (mandated copy)
     ├─ 04 MEMBERS        #members         table + guardrails
     ├─ 05 PRODUCT ACCESS #app-access      per-app entitlement table (2 rows)
     └─ 06 ACTIVITY       #activity        last 50 audit events
@@ -75,7 +75,7 @@ IA rules (these resolve every issue raised by the adversarial IA review):
 
 1. **Admin is workspace-scoped.** The admin entry point lives inside each workspace
    group on `/app` ("Manage workspace"), shown only where the viewer's role in that
-   workspace is owner/admin, carrying `?workspaceId=…` — matching the shipped
+   workspace is admin, carrying `?workspaceId=…` — matching the shipped
    implementation. No global header Admin link.
 2. **Six admin sections in contract order** (as documented and guarded by tests),
    one scrolling document with stable anchor ids. Anchors, not tabs (simpler
@@ -210,7 +210,7 @@ rigour to close the gap.
    Copy button. The error component has no slot for exception text.
 8. **No user enumeration.** The add-member outcome banner is identical on every
    path. Membership state (active vs pending) is visible only to that workspace's
-   owners and admins in the Members table — documented, accepted for internal alpha.
+   admins in the Members table — documented, accepted for internal alpha.
 9. **Denial is a designed state**, not an error: full-contrast copy, no dead buttons,
    reason from the fixed enum only, naming who can fix it.
 10. **State-changing actions are forms with real buttons** (matching their
@@ -310,9 +310,9 @@ Motion: 120ms opacity/border only; none under `prefers-reduced-motion`.
 | Reference-code chip | `ref SWZ-XXXXXX` mono + quiet Copy button | per-incident, updates in place, never stacks |
 | Identity block | Name; mono email + user status | inactive: text + explanation, no colour-only badge |
 | Product card | One per registered app per workspace (spec §7.2) | idle/busy/failure/denied ×4 entitlement states |
-| Role/status chip | Mono lowercase words; glyph+text for entitlements | `role: member`; `● enabled ○ disabled ◔ trial ⊘ suspended` |
+| Role/status chip | Mono lowercase words; glyph+text for entitlements | `role: operator`; `● enabled ○ disabled ◔ trial ⊘ suspended` |
 | Data table | Members, Activity, Product access | mobile stacking; empty; skeleton; static-text guardrail cells |
-| Form field + select | Email input, role select (owner never offered) | focus ring; existence-safe errors; disabled + adjacent reason |
+| Form field + select | Email input, role select (admin / operator / viewer) | focus ring; existence-safe errors; disabled + adjacent reason |
 | Section index | Mono anchor row `01–06` on admin | current section underlined + bold (not colour-only) |
 | Empty-state block | Mineral fill, mono tag EMPTY, one sentence + one next step | permission-derived emptiness stays privacy-safe |
 | Footer | Public: one plain-text line + contact; authenticated: one mono line | no invented legal routes |
@@ -341,7 +341,7 @@ Order, top to bottom:
      account for your workspace. No public signup is available."
    - Primary CTA (mandated, verbatim): **Continue with email** — the page's only
      Verdigris element
-   - Helper line: "Expecting access? Ask a workspace owner or admin to add your
+   - Helper line: "Expecting access? Ask a workspace admin to add your
      account."
    - Notice slot (`role=status`) directly above the heading — one banner at a time
 6. Footer: single plain-text hairline row + contact address. Privacy/Terms links only
@@ -353,7 +353,7 @@ Entry states (mutually exclusive; precedence: error > post-logout > signed-in):
 |---|---|
 | 1 Default | Heading "Sign in to continue." + block as above |
 | 2 Post-logout | Calm neutral NOTICE above the heading, verbatim: "You are signed out of Swooshz Platform. Your previous email sign-in may still be signed in." CTA unchanged |
-| 3 Auth error | ERROR banner on Clay wash: "Sign-in did not complete. Nothing was changed on your account." + mono chip `ref SWZ-XXXXXX`. Heading "Try signing in again." One category sentence covers all causes — never distinguishes wrong-account / not-approved / provider-outage. Helper: "If this repeats, give the reference above to a workspace owner or admin." |
+| 3 Auth error | ERROR banner on Clay wash: "Sign-in did not complete. Nothing was changed on your account." + mono chip `ref SWZ-XXXXXX`. Heading "Try signing in again." One category sentence covers all causes — never distinguishes wrong-account / not-approved / provider-outage. Helper: "If this repeats, give the reference above to a workspace admin." |
 | 4 Already signed in | No CTA, no body line. Heading "You are signed in." + mono identity row. Primary "Go to your workspaces" (→ `/app`); quiet "Sign out of Swooshz Platform" |
 
 ### 7.2 Product launcher (`/app`)
@@ -365,7 +365,7 @@ workspace groups → footer.
 - **Status line** (mono, Slate): `signed in as {email} · {n} workspaces`
   (singular: `1 workspace`). No greeting, no first names, no time-of-day copy.
 - **Workspace group:** record tag `WS – {NAME}` + chip `role: {role}`; a
-  "Manage workspace" quiet link (owner/admin in that workspace only) →
+  "Manage workspace" quiet link (admin in that workspace only) →
   `/app/admin?workspaceId=…`; then the card grid (auto-fill, 320–420px tracks,
   16px gap, registry order by app key).
 
@@ -382,7 +382,7 @@ workspace groups → footer.
 └────────────────────────────────────────┘   │ Unavailable                            │
                                              │ SEO/GEO Content Automation is not      │
                                              │ enabled for this workspace. Ask a      │
-                                             │ workspace owner or admin about access. │
+                                             │ workspace admin about access. │
                                              └────────────────────────────────────────┘
 ```
 
@@ -427,16 +427,16 @@ card to prove the system is n-ary, not to authorise integration work.
 |---|---|---|
 | enabled | `● enabled` | Launch button (if role permits) |
 | trial | `◔ trial` | Launch button, identical to enabled — no countdown, no billing language |
-| disabled | `○ disabled` | `Unavailable` + "{App} is not enabled for this workspace. Ask a workspace owner or admin about access." |
-| suspended | `⊘ suspended` | `Unavailable` + "Access is suspended for this workspace. A workspace owner or admin can contact the platform operator." |
+| disabled | `○ disabled` | `Unavailable` + "{App} is not enabled for this workspace. Ask a workspace admin about access." |
+| suspended | `⊘ suspended` | `Unavailable` + "Access is suspended for this workspace. A workspace admin can contact the platform operator." |
 
 **Denial templates (one per token, app name the only variable):**
 
 - `role_not_permitted` (chip still renders truthfully): "Your role does not permit
-  launching apps. Ask a workspace owner or admin about access." — identical across
+  launching apps. Ask a workspace admin about access." — identical across
   cards by design; no read-only mode offered.
 - `app_not_enabled_for_workspace`: "{App} is not enabled for this workspace. Ask a
-  workspace owner or admin about access."
+  workspace admin about access."
 - `app_not_available`: "{App} is not available right now. No action is needed from
   you." (Sanctioned exception to the name-the-fixer grammar: there is genuinely no
   user step.)
@@ -450,30 +450,29 @@ retry, never stacks.
 
 **Empty states:** no workspaces → ACCESS block: "No workspaces are linked to this
 account." / "Your sign-in worked, but this account is not a member of any workspace
-yet. Ask a workspace owner or admin to add you." (no retry button — the fix is
+yet. Ask a workspace admin to add you." (no retry button — the fix is
 human). Workspace with no products enabled → quiet row: "No products are enabled for
-this workspace. Ask a workspace owner or admin about access." All-unavailable: cards
+this workspace. Ask a workspace admin about access." All-unavailable: cards
 still render in their denied states — hiding an app would misreport the registry.
 
 ### 7.3 Workspace admin (`/app/admin?workspaceId=…`)
 
 Frame: alpha strip (always the scoped workspace: `INTERNAL ALPHA · {WS} ·
 role: {role}`) → header + "Back to launcher" → title "Workspace admin" + mono
-workspace name → section index `01 Workspace / 02 Add member / 03 Owner transfer /
+workspace name → section index `01 Workspace / 02 Add member / 03 Workspace lifecycle transfer /
 04 Members / 05 Product access / 06 Activity` (anchors) → six registry blocks in
 contract order. Non-admin or mis-scoped access → redirect to `/app` with generic
-notice: "Workspace admin is available to owners and admins." — no partial render, no
+notice: "Workspace admin is available to workspace admins." — no partial render, no
 workspace-existence leak.
 
 **01 Workspace** (`#workspace`) — definition rows: Name / Workspace id (mono, safe
-display form, copyable) / Your role (`role: owner`).
+display form, copyable) / Your role (`role: admin`).
 
-**02 Add member** (`#add-member`) — email input + role select (admin / member /
-viewer — owner never offered) + primary "Add to workspace" (CSRF POST). Helper:
+**02 Add member** (`#add-member`) — email input + role select (admin / operator / viewer — legacy owner/member values never offered) + primary "Add to workspace" (CSRF POST). Helper:
 "No invitation email is sent. Ask the teammate to complete passwordless email
 sign-in."
 
-Flow (pending-approval membership model): the owner/admin enters email + role. If a
+Flow (pending-approval membership model): the admin enters email + role. If a
 provider-backed user with that normalised email already exists, Platform adds an
 active membership immediately. If the user has not signed in yet, Platform records a
 **pending workspace approval**; when the teammate later completes a real
@@ -497,15 +496,15 @@ entries honestly rather than hiding them.
 > once first. No invitation delivery.") strictly as a temporary bootstrap state — it
 > is not the target production UX and must not be presented as such.
 
-**03 Owner transfer** (`#owner-transfer`) — inert placeholder sub-block (Mineral
-fill, tag `OWNER TRANSFER`), mandated copy: "Owner transfer is not available in
+**03 Workspace lifecycle transfer** (`#workspace-lifecycle`) — inert placeholder sub-block (Mineral
+fill, tag `WORKSPACE LIFECYCLE`), mandated copy: "Workspace lifecycle transfer is not available in
 internal alpha yet." No fake button.
 
 **04 Members** (`#members`) — table: Name / Email (mono) / Role / Status / Last login
 (mono absolute + visible muted relative) / Actions. Guardrails render as static text
 + visually-hidden reason, never greyed controls: own row → role as static chip,
-"You cannot change your own role.", no Disable; sole owner → "A workspace must keep
-at least one active owner."; inactive member → static role + status text. Disable
+"You cannot change your own role.", no Disable; sole active admin → "A workspace must keep
+at least one active admin."; inactive member → static role + status text. Disable
 opens the inline destructive confirm row beneath the member row (Clay wash, focus
 moves in, scrolls into view): "Disable {name} for this workspace? They keep their
 history but cannot use this workspace. Nothing is deleted." → [Disable member]
@@ -554,7 +553,7 @@ Error: "Activity could not be loaded." + `ref` chip + quiet Retry.
 | Hero capability line | Swooshz builds and hosts AI-powered tools for business operations — from quote automation to SEO and AI-search content. |
 | Hero body (mandated) | Access requires an approved provider-backed account for your workspace. No public signup is available. |
 | CTA (mandated) | Continue with email |
-| Login helper | Expecting access? Ask a workspace owner or admin to add your account. |
+| Login helper | Expecting access? Ask a workspace admin to add your account. |
 | Post-logout notice (mandated) | You are signed out of Swooshz Platform. Your previous email sign-in may still be signed in. |
 | Add-member helper | No invitation email is sent. Ask the teammate to complete passwordless email sign-in. |
 | Add-member outcome (all paths) | Access request recorded. If this account already exists, the membership is active now. If not, it will activate after the teammate completes passwordless email sign-in. |
@@ -562,8 +561,8 @@ Error: "Activity could not be loaded." + `ref` chip + quiet Retry.
 | Workspace header | WS – {NAME} · role: {role} |
 | SQAG card | SQAG · private preview · "Generate quotes and manage quotation workflows." · [Launch SQAG] |
 | SEO card | SEO/GEO Content Automation · private preview · "Create, approve, and publish SEO and GEO content for search and AI discovery." · [Launch] |
-| Denied — role | Your role does not permit launching apps. Ask a workspace owner or admin about access. |
-| Denied — not enabled | {App} is not enabled for this workspace. Ask a workspace owner or admin about access. |
+| Denied — role | Your role does not permit launching apps. Ask a workspace admin about access. |
+| Denied — not enabled | {App} is not enabled for this workspace. Ask a workspace admin about access. |
 | Launch busy / failure | Opening… / Could not open {App}. Try again. `ref SWZ-XXXXXX` |
 | Sign-out button (mandated) | Sign out of Swooshz Platform |
 | Alpha strip | INTERNAL ALPHA · {WORKSPACE} · role: {role} (multi: INTERNAL ALPHA · {n} workspaces) |

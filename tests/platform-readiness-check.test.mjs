@@ -374,11 +374,11 @@ function completeEnv() {
     PLATFORM_SQAG_APP_BASE_URL: "https://quote.swooshz.com",
     PLATFORM_SQAG_SERVICE_SECRET: "private-sqag-service-secret-value-32-chars",
     PLATFORM_SEED_CONFIRM: "seed-reviewed-internal-access",
-    PLATFORM_SEED_USER_EMAIL: "<hosted-owner-admin-email-after-login>",
+    PLATFORM_SEED_USER_EMAIL: "<hosted-admin-email-after-login>",
     PLATFORM_SEED_WORKSPACE_SLUG: "<reviewed-workspace-slug>",
     PLATFORM_SEED_WORKSPACE_NAME: "<reviewed-workspace-name>",
-    PLATFORM_SEED_BOOTSTRAP_MODE: "first-owner-pending-approval",
-    PLATFORM_SEED_MEMBERSHIP_ROLE: "owner",
+    PLATFORM_SEED_BOOTSTRAP_MODE: "first-admin-pending-approval",
+    PLATFORM_SEED_MEMBERSHIP_ROLE: "admin",
   };
 }
 

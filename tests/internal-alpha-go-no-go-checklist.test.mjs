@@ -25,7 +25,7 @@ const deferredItems = [
   "active-session viewer",
   "auth failure dashboard",
   "rate limiting/lockout",
-  "first-class `operator` role",
+
   "Google Stitch / UI polish",
   "billing/credits",
   "production observability/alerts",
@@ -85,6 +85,7 @@ test("internal-alpha go/no-go checklist lists required deferred items", async ()
 
   assert.match(checklist, /pending workspace approval onboarding/i);
   assert.match(checklist, /real OIDC sign-in activates the pending approval/i);
+  assert.match(checklist, /Current `admin`\/`operator`\/`viewer` role model/i);
 
   for (const item of deferredItems) {
     assert.match(checklist, new RegExp(escapeRegExp(item), "i"));

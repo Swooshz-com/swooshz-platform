@@ -110,7 +110,7 @@ Evidence limits:
 ## Customer Workspace Admin Checklist
 
 - [ ] Members list.
-  Evidence required: approved Stitch design, implemented member list route/component, owner/admin authorization test, and screenshot comparison.
+  Evidence required: approved Stitch design, implemented member list route/component, admin authorization test, and screenshot comparison.
 - [ ] Pending approvals.
   Evidence required: approved Stitch design, implemented pending approvals route/component, deterministic approval list/revoke tests, and screenshot comparison.
 - [ ] Add member modal.

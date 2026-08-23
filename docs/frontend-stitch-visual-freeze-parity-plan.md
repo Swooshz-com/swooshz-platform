@@ -41,7 +41,7 @@ Each row below represents one desktop Stitch screen and one mobile Stitch screen
 | 10 | Portal home | `portal_home_desktop_freeze_final` | `portal_home_mobile_freeze_final` | Authenticated workspace/product portal; no product workflow data. |
 | 11 | App launcher | `app_launcher_desktop_freeze_final` | `app_launcher_mobile_freeze_final` | Launches separate apps through existing entitlement and launch-token logic. |
 | 12 | Product unavailable | `product_unavailable_desktop_freeze_final` | `product_unavailable_mobile_freeze_final` | Entitlement/access wording only; no billing or upgrade prompt unless approved. |
-| 13 | Workspace members | `workspace_members_desktop_freeze_final` | `workspace_members_mobile_freeze_final` | Preserve owner/admin/member/pending access model and existing admin checks. |
+| 13 | Workspace members | `workspace_members_desktop_freeze_final` | `workspace_members_mobile_freeze_final` | Preserve admin/operator/viewer/pending access model and existing admin checks. |
 | 14 | Pending approvals | `pending_approvals_desktop_freeze_final` | `pending_approvals_mobile_freeze_final` | Pending approval state only; do not imply sent email invitations. |
 | 15 | Add member modal | `add_member_modal_desktop_freeze_final` | `add_member_modal_mobile_freeze_final` | Must preserve pending approval and provider-backed activation behavior. |
 | 16 | Member actions | `member_actions_desktop_freeze_final` | `member_actions_mobile_freeze_final` | Workspace access actions only; no project/data-loss wording. |
@@ -70,7 +70,7 @@ Swooshz Quote Auto Generator launches as a separate product app through Platform
 
 ## Access, Member, And Admin State Screens
 
-Access/member/admin parity covers workspace members, pending approvals, add member modal, member actions, and activity/audit log. These screens must preserve existing owner/admin authorization, membership guardrails, pending approval activation, session revocation on removal, entitlement checks, audit appends, no-store responses, and privacy-minimized output.
+Access/member/admin parity covers workspace members, pending approvals, add member modal, member actions, and activity/audit log. These screens must preserve existing admin authorization, membership guardrails, pending approval activation, session revocation on removal, entitlement checks, audit appends, no-store responses, and privacy-minimized output.
 
 Visible roles for the Stitch parity target are:
 
@@ -107,8 +107,8 @@ These rules override raw Stitch copy before screenshot parity is judged.
    - Do not imply payment, plan, trial countdown, or upgrade workflows until billing is approved.
 
 4. Member/access flows:
-   - Use visible roles Owner, Admin, Member, and Pending.
-   - Avoid Viewer and Editor unless explicitly approved later.
+   - Use visible roles Admin, Operator, Viewer, and Pending.
+   - Avoid Editor unless explicitly approved later.
    - Do not imply email invitation delivery unless implemented.
    - Do not reference projects, files, data loss, quote history, or product records during member removal.
    - Member removal copy should describe workspace access only.

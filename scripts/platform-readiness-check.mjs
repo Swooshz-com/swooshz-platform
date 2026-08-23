@@ -335,14 +335,12 @@ function validateSeedConfirm(value) {
 }
 
 function validateSeedBootstrapMode(value) {
-  return value === "first-owner-pending-approval"
+  return value === "first-admin-pending-approval"
     ? ok()
     : invalid("unsupported_seed_bootstrap_mode");
 }
-
 function validateSeedRole(value) {
-  return ["owner", "admin", "member"].includes(value) ? ok() : invalid("unsupported_role");
-}
+  return ["admin", "operator", "viewer"].includes(value) ? ok() : invalid("unsupported_role");}
 
 function hasQueryOrFragment(parsed) {
   return parsed.search !== "" || parsed.hash !== "";

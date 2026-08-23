@@ -119,6 +119,83 @@ test("database migrations include one-way SQAG app-key data migration", async ()
   assert.match(migrationSql, /DELETE FROM "apps"\s+WHERE "key" = 'kqag'/);
 });
 
+test("role-collapse migration maps every current role column to the exact new vocabulary", async () => {
+  const migration = await readFile(
+    "drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql",
+    "utf8",
+  );
+  const mapping = "'owner' THEN 'admin'";
+  assert.equal(
+    migration.split(mapping).length - 1,
+    3,
+    "owner mapping must cover invitations, memberships, and approvals",
+  );
+
+  for (const tableName of [
+    "invitations",
+    "memberships",
+    "workspace_membership_approvals",
+  ]) {
+    assert.match(
+      migration,
+      new RegExp('UPDATE "' + tableName + '"\\s+SET "role" = CASE "role"'),
+    );
+    assert.match(migration, new RegExp('ALTER TABLE "' + tableName + '"'));
+  }
+
+  assert.match(
+    migration,
+    /CREATE TYPE "public"\."role" AS ENUM\('admin', 'operator', 'viewer'\)/,
+  );
+  assert.doesNotMatch(migration, /UPDATE "audit_events"/i);
+  assert.doesNotMatch(migration, /ALTER TABLE "audit_events"/i);
+});
+
+test("role-collapse migration fails closed on invalid bootstrap and admin state", async () => {
+  const migration = await readFile(
+    "drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql",
+    "utf8",
+  );
+
+  for (const phrase of [
+    "invalid nullable requester state",
+    "duplicate or missing first-admin bootstrap approval",
+    "active zero-member workspace lacks first-admin bootstrap approval",
+    "active workspace would have no active admin after role collapse",
+  ]) {
+    assert.match(migration, new RegExp(phrase));
+  }
+
+  assert.match(migration, /DO \$\$/);
+  assert.match(migration, /RAISE EXCEPTION/);
+  assert.match(migration, /statement-breakpoint/);
+  assert.match(migration, /role_old/);
+  assert.doesNotMatch(migration, /down migration/i);
+});
+
+test("role-collapse generated metadata follows the 0009 snapshot and appends journal entry 0010", async () => {
+  const journal = JSON.parse(
+    await readFile("drizzle/migrations/meta/_journal.json", "utf8"),
+  );
+  const previousSnapshot = JSON.parse(
+    await readFile("drizzle/migrations/meta/0009_snapshot.json", "utf8"),
+  );
+  const currentSnapshot = JSON.parse(
+    await readFile("drizzle/migrations/meta/0010_snapshot.json", "utf8"),
+  );
+  const entry = journal.entries.find(
+    (candidate) => candidate.tag === "0010_admin_operator_viewer_role_collapse",
+  );
+
+  assert.equal(entry.idx, 9);
+  assert.equal(entry.breakpoints, true);
+  assert.equal(currentSnapshot.prevId, previousSnapshot.id);
+  assert.deepEqual(currentSnapshot.enums["public.role"].values, [
+    "admin",
+    "operator",
+    "viewer",
+  ]);
+});
 test("pure domain modules do not import database implementation details", async () => {
   const domainFiles = [
     "src/accounts/types.ts",

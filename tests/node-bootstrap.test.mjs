@@ -432,7 +432,7 @@ test("bootstrap-created server can serve POST /api/platform/apps/launch/consume 
   assert.equal(consumeBody.user.userId, "user_owner_example");
   assert.equal(consumeBody.workspace.workspaceId, "workspace_koncept_images");
   assert.equal(consumeBody.app.appKey, "sqag");
-  assert.equal(consumeBody.membershipRole, "owner");
+  assert.equal(consumeBody.membershipRole, "admin");
   assert.equal(fixture.records.appLaunchTokens[0].consumedAt.toISOString(), now);
   assert.doesNotMatch(JSON.stringify(consumeResponse), new RegExp(launch.launchToken));
   assertResponseIsPrivacySafe(consumeResponse);
@@ -837,7 +837,7 @@ function createBootstrapFixture(options = {}) {
             id: "membership_owner_example",
             workspaceId: "workspace_koncept_images",
             userId: "user_owner_example",
-            role: "owner",
+            role: "admin",
             status: "active",
             createdAt: now,
             updatedAt: now,
@@ -1155,7 +1155,7 @@ function seedExistingAuthMember(
       id: "membership_auth_bootstrap",
       workspaceId,
       userId,
-      role: "owner",
+      role: "admin",
       status: "active",
       createdAt: now,
       updatedAt: now,

@@ -15,7 +15,7 @@ const requiredDecisionItems = [
   "Exact hosted callback registration owner",
   "Secret storage owner and rotation owner",
   "Log retention/access owner",
-  "First owner/admin identity approval outside repo",
+  "First admin identity approval outside repo",
   "Add-existing-user internal alpha process owner",
   "SQAG `server_handoff` smoke approval",
   "Host-only SQAG session/finalization evidence",

@@ -24,9 +24,8 @@ export const MembershipStatus = {
 export type MembershipStatus = (typeof MembershipStatus)[keyof typeof MembershipStatus];
 
 export const Role = {
-  Owner: "owner",
   Admin: "admin",
-  Member: "member",
+  Operator: "operator",
   Viewer: "viewer",
 } as const;
 

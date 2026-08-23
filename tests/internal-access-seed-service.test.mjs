@@ -26,7 +26,7 @@ test("internal access seed creates and reuses workspace app entitlement and memb
   assert.equal(first.app.key, "sqag");
   assert.equal(first.app.name, "SQAG");
   assert.equal(first.entitlement.status, "enabled");
-  assert.equal(first.membership.role, "owner");
+  assert.equal(first.membership.role, "admin");
   assert.deepEqual(first.created, {
     workspace: true,
     app: true,
@@ -191,8 +191,8 @@ test("internal access seed refuses conflicting provider identity state safely", 
   assert.equal(fixture.writeCounts.providerIdentities, 0);
 });
 
-test("seeded SQAG access is allowed for owner admin member and viewer remains blocked", async () => {
-  for (const role of ["owner", "admin", "member"]) {
+test("seeded SQAG access is allowed for admin/operator and viewer remains blocked", async () => {
+  for (const role of ["admin", "operator"]) {
     const fixture = createSeedFixture({
       users: [existingUser({ id: `user_${role}_existing`, email: `${role}@example.test` })],
     });
@@ -254,19 +254,18 @@ test("seeded SQAG access is allowed for owner admin member and viewer remains bl
   });
 
   assert.equal(viewerDecision.result, AccessDecisionResult.RoleNotPermitted);
-  await assert.rejects(
-    () => ensureInternalWorkspaceAppAccess(
-      createSeedFixture({
-        users: [existingUser({ id: "user_viewer_existing", email: "viewer@example.test" })],
-      }).repositories,
-      existingUserSeed({
-        userId: "user_viewer_existing",
-        role: "viewer",
-        membershipId: "membership_viewer_seed",
-      }),
-    ),
-    assertSeedError("role_not_seedable"),
+  const viewerSeedFixture = createSeedFixture({
+    users: [existingUser({ id: "user_viewer_existing", email: "viewer@example.test" })],
+  });
+  const viewerSeed = await ensureInternalWorkspaceAppAccess(
+    viewerSeedFixture.repositories,
+    existingUserSeed({
+      userId: "user_viewer_existing",
+      role: "viewer",
+      membershipId: "membership_viewer_seed",
+    }),
   );
+  assert.equal(viewerSeed.membership.role, "viewer");
 });
 
 test("internal access seed modules do not import DB frontend SQAG provider SDK framework billing or migrations", async () => {
@@ -292,7 +291,7 @@ function existingUserSeed(overrides = {}) {
       userId: overrides.userId ?? "user_internal_existing",
       normalizedEmail: overrides.normalizedEmail,
     },
-    role: overrides.role ?? "owner",
+    role: overrides.role ?? "admin",
     membershipId: overrides.membershipId ?? "membership_internal_seed",
   });
 }
@@ -352,7 +351,7 @@ function baseSeed(overrides = {}) {
     },
     membership: {
       id: overrides.membershipId ?? "membership_internal_seed",
-      role: overrides.role ?? "owner",
+      role: overrides.role ?? "admin",
     },
     ...overrides,
   };
@@ -540,7 +539,7 @@ function membershipRecord() {
     id: "membership_internal_seed",
     workspaceId: "workspace_koncept_images_seed",
     userId: "user_internal_existing",
-    role: "owner",
+    role: "admin",
     status: "active",
     createdAt: now,
     updatedAt: now,

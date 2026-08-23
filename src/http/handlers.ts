@@ -1040,8 +1040,7 @@ function workspaceAdminErrorStatus(error: WorkspaceAdminServiceError): number {
     case "invalid_role":
     case "invalid_entitlement_status":
       return 400;
-    case "last_owner_required":
-    case "self_change_not_allowed":
+    case "last_admin_required":    case "self_change_not_allowed":
     case "membership_conflict":
     case "approval_conflict":
       return 409;

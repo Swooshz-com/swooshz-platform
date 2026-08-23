@@ -40,10 +40,9 @@ It answers: "Can this user's role launch or administer this app?"
 
 Default launch permission is intentionally least-privilege:
 
-- `owner`: can launch and manage app access.
-- `admin`: can launch and manage app access unless ownership-only.
-- `member`: can launch enabled apps.
-- `viewer`: can see read-only workspace/app visibility in Platform only. It cannot administer the workspace and cannot launch operational products unless a future app-specific read-only launch contract is deliberately designed and tested.
+- `admin`: can launch and manage workspace/app access.
+- `operator`: can launch enabled apps but cannot administer membership, approvals, entitlements, or audit.
+- `viewer`: can see read-only workspace/app visibility in Platform but cannot launch operational products.
 
 SQAG initially has no read-only mode, so `viewer` app launch is blocked. Future apps inherit the same blocked viewer launch default until an explicit per-product read-only use case exists.
 
@@ -51,9 +50,8 @@ SQAG initially has no read-only mode, so `viewer` app launch is blocked. Future 
 
 | Role | Platform workspace visibility | `/app/admin` and admin APIs | Product launch default | SQAG launch today |
 | --- | --- | --- | --- | --- |
-| `owner` | Yes, for active memberships. | Yes, including workspace control except owner-transfer flows that remain guarded/deferred. | Allowed when session, user, workspace, app status, and entitlement all allow. | Allowed when SQAG is `available` or `private_preview` and entitlement is `enabled` or `trial`. |
-| `admin` | Yes, for active memberships. | Yes, except ownership-only operations. | Allowed when session, user, workspace, app status, and entitlement all allow. | Allowed when SQAG is `available` or `private_preview` and entitlement is `enabled` or `trial`. |
-| `member` | Yes, for active memberships. | No. | Allowed when session, user, workspace, app status, and entitlement all allow. | Allowed when SQAG is `available` or `private_preview` and entitlement is `enabled` or `trial`. |
+| `admin` | Yes, for active memberships. | Yes, subject to last-admin and self-change safety. | Allowed when session, user, workspace, app status, and entitlement all allow. | Allowed when SQAG is `available` or `private_preview` and entitlement is `enabled` or `trial`. |
+| `operator` | Yes, for active memberships. | No. | Allowed when session, user, workspace, app status, and entitlement all allow. | Allowed when SQAG is `available` or `private_preview` and entitlement is `enabled` or `trial`. |
 | `viewer` | Yes, for active memberships. | No. | Blocked unless a future app-specific read-only launch policy is designed, implemented, and tested. | Blocked because SQAG has no read-only launch mode. |
 
 Only `available` and `private_preview` app statuses are launchable. Unknown, inactive, unavailable, private-disabled, and globally disabled app states fail closed as `app_not_available`. Only `enabled` and `trial` entitlement statuses are launchable; missing, `disabled`, and `suspended` entitlements fail closed as `app_not_enabled_for_workspace`.
@@ -103,13 +101,13 @@ The platform may prepare internal SQAG access before a frontend or SQAG launch a
 - Active workspace.
 - App registry entry with key `sqag`.
 - Workspace app entitlement.
-- Active owner/admin/member membership for an authenticated platform user, or a pending first-owner approval for a reviewed email on a fresh hosted DB.
+- Active admin/operator/viewer membership for an authenticated platform user, or one pending first-admin approval for a reviewed email on a fresh hosted DB.
 
 The seed must be explicit and idempotent. It may reuse matching records and must fail safely on conflicts. It must not create fake login state, create app launch tokens, call SQAG, write SQAG storage, run migrations, call provider networks, or grant viewer launch access for `sqag`.
 
-Membership can be granted to an existing active user by user id or normalized email lookup. First-owner bootstrap mode may create a pending owner approval only when the reviewed workspace has no memberships; real OIDC sign-in for the matching email creates/links the provider-backed user and activates membership transactionally. Creating a user together with a provider identity directly in the seed remains forbidden. This avoids partial identity state such as an active email-only user without the intended provider identity. Email-only user precreation for future provider linking is forbidden.
+Membership can be granted to an existing active user by user id or normalized email lookup. First-admin bootstrap mode may create one pending admin approval only when the reviewed workspace has no memberships; real OIDC sign-in for the matching email creates/links the provider-backed user and activates the admin membership transactionally. Creating a user together with a provider identity directly in the seed remains forbidden. This avoids partial identity state such as an active email-only user without the intended provider identity. Email-only user precreation for future provider linking is forbidden.
 
-The internal seed CLI, `npm run platform:seed-internal-access`, requires `PLATFORM_SEED_CONFIRM=seed-reviewed-internal-access`, `PLATFORM_SEED_USER_EMAIL`, `PLATFORM_SEED_WORKSPACE_SLUG`, and `PLATFORM_SEED_WORKSPACE_NAME`, validates those before connecting to the database, and refuses unsafe drift. With `PLATFORM_SEED_BOOTSTRAP_MODE=first-owner-pending-approval`, it creates or reuses reviewed platform-owned workspace, app registry, entitlement, and pending owner approval records for the first real OIDC sign-in. Without that mode, it grants app access only to a platform user who has already logged in through real OIDC and therefore already has a provider identity. It does not create users, provider identities, sessions, app launch tokens, fake login state, SQAG storage, default production workspace data, private SQAG profile/pricing data, migrations, provider network calls, or deployment changes.
+The internal seed CLI, `npm run platform:seed-internal-access`, requires `PLATFORM_SEED_CONFIRM=seed-reviewed-internal-access`, `PLATFORM_SEED_USER_EMAIL`, `PLATFORM_SEED_WORKSPACE_SLUG`, and `PLATFORM_SEED_WORKSPACE_NAME`, validates those before connecting to the database, and refuses unsafe drift. With `PLATFORM_SEED_BOOTSTRAP_MODE=first-admin-pending-approval`, it creates or reuses reviewed platform-owned workspace, app registry, entitlement, and one pending admin approval for the first real OIDC sign-in. Without that mode, it grants app access only to a platform user who has already logged in through real OIDC and therefore already has a provider identity. It does not create users, provider identities, sessions, app launch tokens, fake login state, SQAG storage, default production workspace data, private SQAG profile/pricing data, migrations, provider network calls, or deployment changes.
 
 ## Current Session Context
 

@@ -55,7 +55,7 @@ const membershipRow = {
   id: "membership_owner_example",
   workspaceId: workspaceRow.id,
   userId: userRow.id,
-  role: "owner",
+  role: "admin",
   status: "active",
   createdAt,
   updatedAt,
@@ -65,7 +65,7 @@ const invitationRow = {
   id: "invitation_owner_example",
   workspaceId: workspaceRow.id,
   email: "invitee@example.com",
-  role: "member",
+  role: "operator",
   status: "pending",
   tokenHash: "sha256:synthetic-token-hash",
   invitedByUserId: userRow.id,
@@ -712,6 +712,83 @@ test("Drizzle repositories expose a transaction runner for admin mutations", asy
   assert.equal(result, "committed");
   assert.equal(transactionCalled, true);
   assert.deepEqual(transactionConfig, { isolationLevel: "serializable" });
+});
+
+test("Drizzle admin transactions replay the whole operation after SQLSTATE 40001", async () => {
+  const fakeDb = createFakeDrizzleDb();
+  let transactionAttempts = 0;
+  let operationCalls = 0;
+  fakeDb.transaction = async (operation, config) => {
+    transactionAttempts += 1;
+    assert.deepEqual(config, { isolationLevel: "serializable" });
+    const result = await operation(fakeDb);
+    if (transactionAttempts === 1) {
+      const error = new Error("synthetic serialization failure");
+      error.code = "40001";
+      throw error;
+    }
+    return result;
+  };
+
+  const repositories = createDrizzlePlatformRepositories(fakeDb);
+  const result = await repositories.workspaceAdminTransactions.run(async () => {
+    operationCalls += 1;
+    return "committed";
+  });
+
+  assert.equal(result, "committed");
+  assert.equal(transactionAttempts, 2);
+  assert.equal(operationCalls, 2);
+});
+
+test("Drizzle admin transactions bound SQLSTATE 40001 retries and fail deterministically", async () => {
+  async function runExhaustedSequence() {
+    const fakeDb = createFakeDrizzleDb();
+    const serializationError = (message) => {
+      const error = new Error(message);
+      error.code = "40001";
+      return error;
+    };
+    const errors = [
+      serializationError("serialization failure one"),
+      serializationError("serialization failure two"),
+      serializationError("serialization failure three"),
+    ];
+    let transactionAttempts = 0;
+    let operationCalls = 0;
+    fakeDb.transaction = async (operation, config) => {
+      transactionAttempts += 1;
+      assert.deepEqual(config, { isolationLevel: "serializable" });
+      await operation(fakeDb);
+      throw errors[transactionAttempts - 1];
+    };
+
+    const repositories = createDrizzlePlatformRepositories(fakeDb);
+    let error;
+    try {
+      await repositories.workspaceAdminTransactions.run(async () => {
+        operationCalls += 1;
+        return "never committed";
+      });
+      assert.fail("serialization retries unexpectedly committed");
+    } catch (candidate) {
+      error = candidate;
+      assert.equal(candidate, errors[2]);
+    }
+
+    return { error, transactionAttempts, operationCalls };
+  }
+
+  const first = await runExhaustedSequence();
+  const second = await runExhaustedSequence();
+  assert.equal(first.error.code, "40001");
+  assert.equal(first.error.message, "serialization failure three");
+  assert.equal(second.error.code, first.error.code);
+  assert.equal(second.error.message, first.error.message);
+  assert.equal(first.transactionAttempts, 3);
+  assert.equal(second.transactionAttempts, 3);
+  assert.equal(first.operationCalls, 3);
+  assert.equal(second.operationCalls, 3);
 });
 
 test("pure domain and platform port modules do not import database adapter details", async () => {
