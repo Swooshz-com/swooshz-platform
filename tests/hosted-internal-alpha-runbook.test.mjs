@@ -85,6 +85,38 @@ test("hosted internal alpha runbook covers deployment operations", async () => {
   }
 });
 
+test("hosted runbook binds the 0010 migration and coordinated rollback contract", async () => {
+  const runbook = await readRunbook();
+  const orderedContract = [
+    "Quiesce all old application writers",
+    "provider-approved backup and verified restore evidence",
+    "0010_admin_operator_viewer_role_collapse",
+    "Serve only the new binary after successful migration verification",
+  ];
+  let previousIndex = -1;
+  for (const phrase of orderedContract) {
+    const index = runbook.indexOf(phrase);
+    assert.notEqual(index, -1, phrase);
+    assert.ok(index > previousIndex, phrase);
+    previousIndex = index;
+  }
+
+  for (const phrase of [
+    "transactional rollback",
+    "coordinated, verified snapshot restoration",
+    "compatible old binary",
+    "Application-only rollback against the migrated database is prohibited",
+    "Mixed old/new application versions are prohibited",
+    "lossy logical down migration is prohibited",
+  ]) {
+    assert.match(runbook, new RegExp(escapeRegExp(phrase), "i"));
+  }
+
+  assert.doesNotMatch(
+    runbook,
+    /Confirm no migration was added for this readiness-only PR/i,
+  );
+});
 test("hosted internal alpha runbook has an env checklist with safe examples and secret classification", async () => {
   const runbook = await readRunbook();
 

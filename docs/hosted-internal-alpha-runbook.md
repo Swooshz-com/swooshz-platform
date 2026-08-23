@@ -46,9 +46,16 @@ This PR does not add a session-management UI. Security/session management remain
 11. Start the platform process through the reviewed process manager or container entrypoint that runs `npm run platform:start`.
 12. Run the hosted smoke checklist before inviting broader internal-alpha use.
 
-### Run-151 Role Migration Contract (Not Executed Here)
+### 0010 Admin/Operator/Viewer Role Migration Contract (Not Executed Here)
 
-For the accepted application-role collapse, the reviewed sequence is: quiesce old writers; apply the reviewed 0010 migration; verify the post-migration role enum and active-admin invariant; then start/serve the new application contract. Mixed application versions across the role migration are unsupported. Before commit, transaction rollback is the recovery path; after commit, use only approved backup/snapshot restore. Run-151 does not connect to Neon/PostgreSQL or perform any live migration, restart, or deployment.
+For the accepted application-role collapse, the operative sequence is:
+
+1. Quiesce all old application writers before the migration window.
+2. Establish a provider-approved backup and verified restore evidence for the reviewed target.
+3. Apply `0010_admin_operator_viewer_role_collapse` through the guarded repository migrator, then verify the migration journal, exact `admin`/`operator`/`viewer` enum, role mappings, historical audit JSON, and active-admin/bootstrap invariants.
+4. Serve only the new binary after successful migration verification.
+
+If migration fails before commit, retain the failed transaction's transactional rollback and do not start either application version. After commit, rollback requires a coordinated, verified snapshot restoration together with the compatible old binary, or a separately reviewed fix-forward. Application-only rollback against the migrated database is prohibited. Mixed old/new application versions are prohibited, and a lossy logical down migration is prohibited. Run-153 adds only disposable repository proof; it does not connect to Neon/PostgreSQL or perform any live migration, restart, or deployment.
 Migrations are never automatic on app startup. `npm run platform:start`, Node bootstrap creation, auth routes, app routes, seed commands, and readiness checks must not run migrations.
 
 ## Process Manager And Container Notes
@@ -657,11 +664,11 @@ This evidence does not approve hosted deployment or full production readiness. H
 
 1. Confirm the branch and migration files under review.
 2. Confirm the target database is the reviewed Neon database name `swooshz_platform` in project `swooshz-platform`, with runtime using the pooled restricted-role `DATABASE_URL` and the operator shell using `DATABASE_OPERATOR_URL`.
-3. Confirm no migration was added for this readiness-only PR.
-4. If a future reviewed PR adds migrations, review generated SQL before applying it.
+3. Confirm the reviewed `0010_admin_operator_viewer_role_collapse` migration is present and review its generated SQL before applying it.
+4. Confirm old writers are quiesced and backup plus verified restore evidence is recorded before the migration window.
 5. Run `npm run platform:readiness-check` and fix missing or malformed env before any database operation.
 6. Run `npm run platform:db-readiness-check` to confirm the database is reachable. For a new database before migrations, `schema_not_ready` is expected; `db_unreachable` blocks migration.
-7. Take a database backup and confirm restore access before migration execution.
+7. Take a database backup and confirm verified restore access before migration execution.
 8. Set the migration guard only for the manual migration command:
 
 ```powershell
@@ -670,9 +677,9 @@ $env:DATABASE_MIGRATIONS_CONFIRM="apply-reviewed-migrations"
 npm run db:migrate
 ```
 
-9. Remove the migration guard from the operator shell after the manual command if it is not needed for the next command.
+9. Verify the migration journal, exact `admin`/`operator`/`viewer` enum, role mappings, historical audit JSON, and active-admin/bootstrap invariants. Remove the migration guard from the operator shell after the manual command if it is not needed for the next command.
 10. Run `npm run platform:db-readiness-check` again. It must report `ready` before server start.
-11. Run `/healthz`, auth, `/app`, `/app/admin`, SQAG entitlement, and audit/activity smoke checks after startup.
+11. Serve only the new binary after migration verification, then run `/healthz`, auth, `/app`, `/app/admin`, SQAG entitlement, and audit/activity smoke checks.
 
 Do not add startup hooks, package install hooks, deployment hooks, or background jobs that run migrations automatically.
 
@@ -694,16 +701,17 @@ Rollback is an operator decision, not an automatic script in this repo.
 
 Application rollback:
 
-1. Stop new traffic at the hosting layer if needed.
-2. Revert the process manager or container image to the last reviewed build.
-3. Restart through the same reviewed command path.
-4. Run `/healthz`, login, `/app`, `/app/admin`, SQAG entitlement, and audit/activity smoke checks.
+1. Application-only rollback against the migrated database is prohibited.
+2. Mixed old/new application versions are prohibited during and after the migration window.
+3. Before migration commit, a failure uses the migrator's transactional rollback; do not start an old or new binary from a failed migration attempt.
+4. After commit, stop/quiesce the service and use only a coordinated, verified snapshot restoration with the compatible old binary, or use a separately reviewed fix-forward.
+5. Run `/healthz`, login, `/app`, `/app/admin`, SQAG entitlement, and audit/activity smoke checks before reopening access.
 
 Database rollback:
 
-1. Prefer fix-forward for reviewed additive migrations when practical.
-2. If restore is required, stop the platform process, restore from the approved backup, and rerun smoke checks before reopening access.
-3. Do not run ad hoc destructive SQL from this repo.
+1. Prefer a reviewed fix-forward when it preserves the migrated schema and data safely.
+2. If restore is required, stop old and new writers, restore the approved snapshot into the reviewed target, verify the restore, run the compatible old binary against that restored state, and rerun smoke checks before reopening access.
+3. Do not run a lossy logical down migration or ad hoc destructive SQL from this repo.
 
 SQAG handoff rollback:
 

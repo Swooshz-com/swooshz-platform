@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const workflowPath = ".github/workflows/ci.yml";
+const roleCollapseRunnerPath = "scripts/run-disposable-role-collapse-postgres-tests.mjs";
 const dockerfilePath = "Dockerfile";
 const dockerignorePath = ".dockerignore";
 const coolifyDocPath = "docs/coolify-deployment-readiness.md";
@@ -11,6 +12,7 @@ const roadmapPath = "docs/production-readiness-roadmap.md";
 
 test("CI workflow runs guardrails, install, typecheck, build, test, and container build without deploy", async () => {
   const workflow = await readFile(workflowPath, "utf8");
+  const roleCollapseRunner = await readFile(roleCollapseRunnerPath, "utf8");
 
   const requiredPhrases = [
     "workflow_dispatch:",
@@ -23,12 +25,17 @@ test("CI workflow runs guardrails, install, typecheck, build, test, and containe
     "npm run build",
     "npm test",
     "npm run test:disposable-runtime-postgres",
+    "npm run test:disposable-role-collapse-postgres",
     "codex-platform127-pg17",
     "POSTGRES_HOST_AUTH_METHOD=trust",
     "postgres:17",
     "npm run test:disposable-runtime-postgres",
     "docker build --pull --tag swooshz-platform:ci .",
   ];
+
+  assert.match(roleCollapseRunner, /codex-platform153-role-collapse-pg17/i);
+  assert.match(roleCollapseRunner, /postgres:17/i);
+  assert.match(roleCollapseRunner, /POSTGRES_HOST_AUTH_METHOD=trust/i);
 
   for (const phrase of requiredPhrases) {
     assert.match(workflow, new RegExp(escapeRegExp(phrase), "i"));
