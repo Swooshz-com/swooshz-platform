@@ -109,4 +109,4 @@ CREATE TYPE "public"."role" AS ENUM('admin', 'operator', 'viewer');--> statement
 ALTER TABLE "invitations" ALTER COLUMN "role" SET DATA TYPE "public"."role" USING "role"::"public"."role";--> statement-breakpoint
 ALTER TABLE "memberships" ALTER COLUMN "role" SET DATA TYPE "public"."role" USING "role"::"public"."role";--> statement-breakpoint
 ALTER TABLE "workspace_membership_approvals" ALTER COLUMN "role" SET DATA TYPE "public"."role" USING "role"::"public"."role";--> statement-breakpoint
-DROP TYPE "public"."role_old";
+DROP TYPE "public"."role_old";
