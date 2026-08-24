@@ -16,6 +16,7 @@ import {
   extractProductionAdapterOperations,
   inspectProductionDatabaseAccessInventory,
   readCanonicalMigrationObjects,
+  sourceShapeDigest,
 } from "../scripts/runtime-grant-contract-validator.mjs";
 
 const requiredUpdates = [
@@ -30,6 +31,12 @@ const staleUpdates = [
   "users",
   "workspaces",
 ];
+const staleRun164SourceShapeDigests = new Map([
+  ["src/db/client.ts", "16daeb348cd33b5632735ac119b5e214da2e057b394d02dac09485fde59280eb"],
+  ["src/db/readiness.ts", "f12f570935e42867de9fd8bb94bb12b9ba8139b8dfecfc2d8c5bd3a4d012c7e3"],
+  ["src/db/runtime-posture.ts", "ba35c50483c3b60e0be47606b004f4cf687710b12ac85f2a67cdc280864719da"],
+  ["src/runtime/node-bootstrap.ts", "1b7780af70466eea8ec96f2998d71ddb4e76d83134c2d596583b7ca10fc4ac37"],
+]);
 
 test("canonical runtime table-grant contract is a deterministic closed 39-record set", () => {
   assert.equal(RUNTIME_TABLE_GRANT_CONTRACT.length, 39);
@@ -194,6 +201,55 @@ test("production database access inventory is recursive, explicit, and closed", 
     ["src/runtime/node-bootstrap.ts", "operational_control_plane"],
     ["src/runtime/platform-runtime-dependencies.ts", "runtime_data_adapter"],
   ]);
+});
+
+test("Run-165 source-shape authority admits the accepted tree and rejects drift", async () => {
+  const inventory = await inspectProductionDatabaseAccessInventory();
+  assert.equal(inventory.length, 11);
+
+  for (const [sourcePath, staleDigest] of staleRun164SourceShapeDigests) {
+    const currentSource = await readFile(sourcePath, "utf8");
+    assert.notEqual(
+      sourceShapeDigest(currentSource),
+      staleDigest,
+      "stale pre-Run-165 source shape must not be authoritative: " + sourcePath,
+    );
+  }
+
+  const clientSource = await readFile("src/db/client.ts", "utf8");
+  await assert.doesNotReject(() =>
+    inspectProductionDatabaseAccessInventory({
+      sourceOverrides: new Map([
+        ["src/db/client.ts", `// formatting-only probe\n${clientSource}`],
+      ]),
+    }),
+  );
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/db/client.ts",
+            `${clientSource}\nexport const run165UnauthorizedToken = true;\n`,
+          ],
+        ]),
+      }),
+    contractError("runtime_grant_inventory_unclassified"),
+    "token-level source-shape drift must fail closed",
+  );
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/db/unclassified-run165-authority.ts",
+            `export function probe(client) {\n  return client.query(\"select 1\");\n}`,
+          ],
+        ]),
+      }),
+    contractError("runtime_grant_inventory_unclassified"),
+    "unclassified database/runtime source must fail closed",
+  );
 });
 
 const nodeServerPath = "src/http/node-server.ts";

@@ -85,10 +85,7 @@ export function readOperatorDatabaseConfig(
       DATABASE_URL: operatorUrl,
     });
   }
-  if (env.NODE_ENV?.trim() === "production") {
-    throw new DatabaseConfigError("missing_database_operator_url");
-  }
-  return readDatabaseConfig(env);
+  throw new DatabaseConfigError("missing_database_operator_url");
 }
 
 export function createDatabasePool(config: DatabaseConfig): Pool {
@@ -156,7 +153,7 @@ function readDatabaseConfigErrorMessage(code: DatabaseConfigErrorCode): string {
     case "missing_database_url":
       return "DATABASE_URL is required for database connections.";
     case "missing_database_operator_url":
-      return "DATABASE_OPERATOR_URL is required for production operator database connections.";
+      return "DATABASE_OPERATOR_URL is required for operator database connections.";
     case "invalid_database_url":
       return "DATABASE_URL must be a valid Postgres connection string.";
     case "invalid_database_ssl_mode":

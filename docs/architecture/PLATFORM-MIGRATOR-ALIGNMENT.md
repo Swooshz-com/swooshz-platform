@@ -15,6 +15,77 @@ It is repository contract and disposable-rehearsal evidence only. It creates no
 role, grants no privilege, transfers no ownership, rotates no credential,
 creates no projection, accesses no Neon/provider API, touches no Coolify state
 and performs no deployment. It releases no live-system authority.
+## Current Run-164 contract (authoritative)
+
+Run-164 and `DL-122-LIVE-098-RUNTIME-MIGRATOR-CONTROL-PLANE-CONTRACT-IMPLEMENTATION-G3`
+lock the current Platform repository contract. This section supersedes any
+conflicting historical rehearsal language later in this document. It does not
+claim that live Neon roles or ownership have already converged.
+
+### Technical roles
+
+- `platform_runtime` is the direct long-running application identity. It is
+  `LOGIN`, `NOINHERIT`, non-superuser, `NOCREATEDB`, `NOCREATEROLE`,
+  `NOREPLICATION`, and `NOBYPASSRLS`; it owns no database, schema, relation,
+  type, sequence, index, routine, or application object. It has no migration
+  or DDL authority and retains only the accepted 39-record direct grant set.
+  `DATABASE_URL` must connect directly as `platform_runtime`, with
+  `session_user = current_user = platform_runtime`. `DATABASE_EXPECTED_RUNTIME_ROLE`
+  is not an identity selector; the expected role is fixed in code and any
+  supplied value must be exactly `platform_runtime`.
+- `platform_migrator` is the direct one-off migration/operator identity. It
+  is `NOINHERIT`, non-superuser, `NOCREATEDB`, `NOCREATEROLE`,
+  `NOREPLICATION`, and `NOBYPASSRLS`; it is `LOGIN` only during a controlled
+  operator window and may be returned to `NOLOGIN` while dormant. It is never
+  the Coolify runtime identity and never uses `DATABASE_URL`.
+  `DATABASE_OPERATOR_URL` must connect directly as `platform_migrator`; the
+  operator path requires `DATABASE_MIGRATIONS_CONFIRM=apply-reviewed-migrations`
+  for migration execution and has no `DATABASE_URL` fallback.
+- `platform_app` remains the initial Platform database owner and privileged
+  control-plane/rollback identity. It is not an application runtime or
+  migrator binding. After a healthy Platform deployment and bounded rollback
+  observation, a separately authorised operation may invalidate its ordinary
+  credential and set `NOLOGIN`; it must not be dropped while it remains the
+  database owner.
+- `platform_maintenance` is not a Platform application role. No distinct
+  workload justifies a fourth role.
+
+### Ownership and membership
+
+The intended converged ownership matrix is: application database owner
+`platform_app`; `public` schema owner `pg_database_owner`; application
+namespace schemas and canonical application objects owned by
+`platform_migrator`; and zero application ownership for `platform_runtime`.
+The namespace includes the Drizzle schema and ledger, Platform tables,
+enums/types, sequences, indexes, routines and other canonical application
+objects. `platform_migrator` receives only the schema/database privileges
+needed for reviewed migrations; it is not made database owner and does not
+receive `CREATEDB`. `platform_runtime` has effective database `CONNECT=true`,
+`CREATE=false`, and `TEMPORARY=false`.
+
+Every membership read is scoped to rows where a selected role is the granted
+role, member, or grantor. The only accepted creator-admin tuple touching
+`platform_runtime` is `granted_role=platform_runtime`,
+`member=platform_app`, `grantor=cloud_admin`, `ADMIN=true`,
+`INHERIT=false`, `SET=false`. The only accepted future creator-admin tuple
+touching `platform_migrator` has the same member, grantor, and options with
+`granted_role=platform_migrator`. `ADMIN=true` is real administrative
+authority, even with `INHERIT=false` and `SET=false`; `cloud_admin` remains
+outside ordinary Platform runtime configuration. Missing, extra, reversed, or
+option-drifted tuples fail closed.
+
+### Later migration and live-operation boundary
+
+Migration `0010_admin_operator_viewer_role_collapse.sql` and its Drizzle
+journal remain unchanged and unapplied. A later controlled window must prove
+recovery/restore, writer quiescence, role provisioning and direct migrator
+identity, trusted journal state, canonical migration execution, post-migration
+journal state, the exact `admin`/`operator`/`viewer` enum and mapping,
+membership/invitation/approval invariants, the active-workspace admin
+invariant, runtime privilege/ownership separation, and containment or
+retirement of temporary authority. Migration, DNS/TLS, deployment, Coolify,
+Neon/provider role convergence, and application activation remain separately
+gated and are not authorised by this repository contract.
 
 ## Sources of authority
 
@@ -36,7 +107,13 @@ and performs no deployment. It releases no live-system authority.
   `VALID_OPEN` by the controller and repaired under Run-09.
 - Blocked successor #122.
 
-## Locked role model
+## Historical Run-09 rehearsal record (non-operative)
+
+The following material preserves earlier disposable evidence and its
+provenance. It is not the current live topology or an instruction to retain
+zero migrator memberships, transfer database ownership, or mutate a provider.
+Where it conflicts with the Current Run-164 contract above, the current
+contract controls.
 
 The following model is the intended future state. None of it is claimed to
 already exist in the live system, and no recovery branch, role, membership,
