@@ -3503,7 +3503,7 @@ function assertExactBuiltInImportAuthority(observed) {
   }
 }
 
-function sourceShapeDigest(source) {
+export function sourceShapeDigest(source) {
   const normalizedSource = source.replace(/\r\n?/gu, "\n");
   const scanner = ts.createScanner(
     ts.ScriptTarget.Latest,

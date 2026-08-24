@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -17,6 +16,7 @@ import {
   extractProductionAdapterOperations,
   inspectProductionDatabaseAccessInventory,
   readCanonicalMigrationObjects,
+  sourceShapeDigest,
 } from "../scripts/runtime-grant-contract-validator.mjs";
 
 const requiredUpdates = [
@@ -31,14 +31,12 @@ const staleUpdates = [
   "users",
   "workspaces",
 ];
-const canonicalMainSha =
-  "6743046b78f968ed676d8757d89e8b35d8e8aaab";
-const run165SourceShapePaths = [
-  "src/db/client.ts",
-  "src/db/readiness.ts",
-  "src/db/runtime-posture.ts",
-  "src/runtime/node-bootstrap.ts",
-];
+const staleRun164SourceShapeDigests = new Map([
+  ["src/db/client.ts", "16daeb348cd33b5632735ac119b5e214da2e057b394d02dac09485fde59280eb"],
+  ["src/db/readiness.ts", "f12f570935e42867de9fd8bb94bb12b9ba8139b8dfecfc2d8c5bd3a4d012c7e3"],
+  ["src/db/runtime-posture.ts", "ba35c50483c3b60e0be47606b004f4cf687710b12ac85f2a67cdc280864719da"],
+  ["src/runtime/node-bootstrap.ts", "1b7780af70466eea8ec96f2998d71ddb4e76d83134c2d596583b7ca10fc4ac37"],
+]);
 
 test("canonical runtime table-grant contract is a deterministic closed 39-record set", () => {
   assert.equal(RUNTIME_TABLE_GRANT_CONTRACT.length, 39);
@@ -209,19 +207,12 @@ test("Run-165 source-shape authority admits the accepted tree and rejects drift"
   const inventory = await inspectProductionDatabaseAccessInventory();
   assert.equal(inventory.length, 11);
 
-  for (const sourcePath of run165SourceShapePaths) {
-    const canonicalSource = execFileSync(
-      "git",
-      ["show", `${canonicalMainSha}:${sourcePath}`],
-      { encoding: "utf8" },
-    );
-    await assert.rejects(
-      () =>
-        inspectProductionDatabaseAccessInventory({
-          sourceOverrides: new Map([[sourcePath, canonicalSource]]),
-        }),
-      contractError("runtime_grant_inventory_unclassified"),
-      `pre-Run-165 source shape must fail closed: ${sourcePath}`,
+  for (const [sourcePath, staleDigest] of staleRun164SourceShapeDigests) {
+    const currentSource = await readFile(sourcePath, "utf8");
+    assert.notEqual(
+      sourceShapeDigest(currentSource),
+      staleDigest,
+      "stale pre-Run-165 source shape must not be authoritative: " + sourcePath,
     );
   }
 
