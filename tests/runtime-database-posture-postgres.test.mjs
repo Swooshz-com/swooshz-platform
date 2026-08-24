@@ -74,6 +74,7 @@ test(
     const suffix = randomUUID().replaceAll("-", "").slice(0, 10);
     let sequence = 0;
     let neonSuperuserCreated = false;
+    let providerControlRoleRenamed = false;
 
     const role = (label) => {
       sequence += 1;
@@ -238,6 +239,14 @@ test(
           assert.equal(ordinarySelects, 4);
           assert.equal(mutationRejected, true);
       }
+      providerControlRoleRenamed = await ensureProviderControlRole(adminPool, operatorUrl);
+      await installAcceptedCreatorEdge(rawAdminPool, operatorUrl);
+      await assertAcceptedCreatorEdge(rawAdminPool);
+      await assertPosturePasses(rawAdminPool, "platform_runtime");
+      await restoreProviderControlRole(operatorUrl);
+      await adminPool.query("drop owned by provider_admin");
+      await adminPool.query("drop role if exists provider_admin");
+      providerControlRoleRenamed = false;
 
       neonSuperuserCreated = await ensureRole(adminPool, "neon_superuser");
 
@@ -1052,6 +1061,12 @@ test(
         await adminPool.query(`drop schema if exists ${identifier(schemaName)} cascade`).catch(() => {});
       }
       await adminPool.query("drop schema if exists drizzle cascade").catch(() => {});
+      await adminPool.query("revoke platform_runtime from platform_app").catch(() => {});
+      if (providerControlRoleRenamed) {
+        await restoreProviderControlRole(operatorUrl).catch(() => {});
+      }
+      await adminPool.query("drop owned by provider_admin").catch(() => {});
+      await adminPool.query("drop role if exists provider_admin").catch(() => {});
       await adminPool.query("drop table if exists public.users cascade").catch(() => {});
       for (const roleName of roles.reverse()) {
         await adminPool.query(`drop role if exists ${identifier(roleName)}`).catch(() => {});
@@ -1116,7 +1131,101 @@ async function ensureRole(pool, roleName) {
   }
   return false;
 }
+async function ensureProviderControlRole(pool, operatorConnectionString) {
+  const result = await pool.query(
+    "select 1 from pg_roles where rolname = 'cloud_admin'",
+  );
+  if (result.rowCount !== 0) {
+    throw new Error();
+  }
+  await pool.query(
+    "create role provider_admin superuser login noinherit",
+  );
+  await pool.query(
+    "alter default privileges for role provider_admin revoke all on tables from public",
+  );
+  await pool.query(
+    "alter default privileges for role provider_admin revoke all on sequences from public",
+  );
+  await pool.query(
+    "alter default privileges for role provider_admin revoke all on functions from public",
+  );
+  const providerPool = new Pool({
+    connectionString: connectionStringForRole(operatorConnectionString, "provider_admin"),
+    max: 1,
+  });
+  try {
+    await providerPool.query("alter role postgres rename to cloud_admin");
+  } finally {
+    await providerPool.end();
+  }
+  return true;
+}
 
+async function installAcceptedCreatorEdge(pool, operatorConnectionString) {
+  await pool.query("revoke platform_runtime from platform_app");
+  const providerPool = new Pool({
+    connectionString: connectionStringForRole(operatorConnectionString, "provider_admin"),
+    max: 1,
+  });
+  try {
+    await providerPool.query("set session authorization cloud_admin");
+    await providerPool.query(
+      "grant platform_runtime to platform_app with admin true, set false, inherit false granted by cloud_admin",
+    );
+  } finally {
+    await providerPool.query("reset session authorization").catch(() => {});
+    await providerPool.end();
+  }
+}
+
+function connectionStringForRole(connectionString, roleName) {
+  const url = new URL(connectionString);
+  url.username = roleName;
+  return url.toString();
+}
+
+async function restoreProviderControlRole(operatorConnectionString) {
+  const providerPool = new Pool({
+    connectionString: connectionStringForRole(operatorConnectionString, "provider_admin"),
+    max: 1,
+  });
+  try {
+    await providerPool.query("alter role cloud_admin rename to postgres");
+  } finally {
+    await providerPool.end();
+  }
+}
+
+async function assertAcceptedCreatorEdge(pool) {
+  const result = await pool.query(`
+    select
+      granted_role.rolname as granted_role,
+      member_role.rolname as member,
+      grantor_role.rolname as grantor,
+      membership.admin_option,
+      membership.inherit_option,
+      membership.set_option
+    from pg_auth_members membership
+    join pg_roles granted_role on granted_role.oid = membership.roleid
+    join pg_roles member_role on member_role.oid = membership.member
+    join pg_roles grantor_role on grantor_role.oid = membership.grantor
+    where granted_role.rolname = 'platform_runtime'
+       or member_role.rolname = 'platform_runtime'
+       or grantor_role.rolname = 'platform_runtime'
+    order by granted_role.rolname, member_role.rolname, grantor_role.rolname
+  `);
+  assert.deepEqual(result.rows, [
+    {
+      granted_role: "platform_runtime",
+      member: "platform_app",
+      grantor: "cloud_admin",
+      admin_option: true,
+      inherit_option: false,
+      set_option: false,
+    },
+  ]);
+}
 async function grantRole(
   pool,
   grantedRole,
@@ -1195,7 +1304,7 @@ async function assertPostureFails(pool, sessionRole, failedField) {
 
 async function assertPosturePasses(pool, sessionRole) {
   const report = await postureReport(pool, sessionRole);
-  assert.equal(report.runtimePosture, "passed");
+  assert.equal(report.runtimePosture, "passed", JSON.stringify(report));
 }
 
 function safePostureError(error) {

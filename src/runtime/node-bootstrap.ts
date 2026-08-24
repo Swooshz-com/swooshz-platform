@@ -469,7 +469,7 @@ function createDefaultDatabaseClient(
 
 function readExpectedRuntimeRoleSafely(
   env: PlatformNodeBootstrapEnv,
-): string | null {
+): string {
   try {
     return readExpectedRuntimeRole(env);
   } catch {
@@ -479,11 +479,8 @@ function readExpectedRuntimeRoleSafely(
 
 async function assertRuntimeDatabasePostureSafely(
   client: PlatformBootstrapDatabaseClient,
-  expectedRole: string | null,
+  expectedRole: string,
 ): Promise<void> {
-  if (!expectedRole) {
-    return;
-  }
   if (!client.query) {
     throw new PlatformNodeBootstrapError("database_posture_failed");
   }

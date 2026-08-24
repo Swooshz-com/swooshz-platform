@@ -221,9 +221,9 @@ test("bootstrap fails closed before listen when DATABASE_URL is malformed", asyn
   assert.equal(fixture.calls.serverFactory, 0);
 });
 
-test("production bootstrap requires an expected runtime role before DB or listen", async () => {
+test("bootstrap rejects a caller-selected runtime role before DB or listen", async () => {
   const fixture = createBootstrapFixture({
-    env: { DATABASE_EXPECTED_RUNTIME_ROLE: "" },
+    env: { DATABASE_EXPECTED_RUNTIME_ROLE: "platform_app" },
   });
   const bootstrap = createPlatformNodeBootstrap(fixture.input);
 
@@ -989,6 +989,7 @@ function createBootstrapFixture(options = {}) {
               rows: [{
                 expected_role_match: true,
                 role_assumption_state_conclusive: true,
+                runtime_creator_admin_edge_exact: true,
                 role_membership_admin_absent: true,
                 neon_superuser_membership_absent: true,
                 superuser_absent: true,

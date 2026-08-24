@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -29,6 +30,14 @@ const staleUpdates = [
   "provider_identities",
   "users",
   "workspaces",
+];
+const canonicalMainSha =
+  "6743046b78f968ed676d8757d89e8b35d8e8aaab";
+const run165SourceShapePaths = [
+  "src/db/client.ts",
+  "src/db/readiness.ts",
+  "src/db/runtime-posture.ts",
+  "src/runtime/node-bootstrap.ts",
 ];
 
 test("canonical runtime table-grant contract is a deterministic closed 39-record set", () => {
@@ -194,6 +203,62 @@ test("production database access inventory is recursive, explicit, and closed", 
     ["src/runtime/node-bootstrap.ts", "operational_control_plane"],
     ["src/runtime/platform-runtime-dependencies.ts", "runtime_data_adapter"],
   ]);
+});
+
+test("Run-165 source-shape authority admits the accepted tree and rejects drift", async () => {
+  const inventory = await inspectProductionDatabaseAccessInventory();
+  assert.equal(inventory.length, 11);
+
+  for (const sourcePath of run165SourceShapePaths) {
+    const canonicalSource = execFileSync(
+      "git",
+      ["show", `${canonicalMainSha}:${sourcePath}`],
+      { encoding: "utf8" },
+    );
+    await assert.rejects(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([[sourcePath, canonicalSource]]),
+        }),
+      contractError("runtime_grant_inventory_unclassified"),
+      `pre-Run-165 source shape must fail closed: ${sourcePath}`,
+    );
+  }
+
+  const clientSource = await readFile("src/db/client.ts", "utf8");
+  await assert.doesNotReject(() =>
+    inspectProductionDatabaseAccessInventory({
+      sourceOverrides: new Map([
+        ["src/db/client.ts", `// formatting-only probe\n${clientSource}`],
+      ]),
+    }),
+  );
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/db/client.ts",
+            `${clientSource}\nexport const run165UnauthorizedToken = true;\n`,
+          ],
+        ]),
+      }),
+    contractError("runtime_grant_inventory_unclassified"),
+    "token-level source-shape drift must fail closed",
+  );
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/db/unclassified-run165-authority.ts",
+            `export function probe(client) {\n  return client.query(\"select 1\");\n}`,
+          ],
+        ]),
+      }),
+    contractError("runtime_grant_inventory_unclassified"),
+    "unclassified database/runtime source must fail closed",
+  );
 });
 
 const nodeServerPath = "src/http/node-server.ts";

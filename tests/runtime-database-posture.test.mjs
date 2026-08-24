@@ -15,6 +15,7 @@ const passingRow = Object.freeze({
   expected_role_match: true,
   role_assumption_state_conclusive: true,
   role_membership_admin_absent: true,
+  runtime_creator_admin_edge_exact: true,
   neon_superuser_membership_absent: true,
   superuser_absent: true,
   createdb_absent: true,
@@ -52,16 +53,11 @@ const passingRow = Object.freeze({
   runtime_sequence_ownership_absent: true,
 });
 
-test("expected runtime role is required only in production", () => {
-  assert.throws(
-    () => readExpectedRuntimeRole({ NODE_ENV: "production" }),
-    safePostureError,
-  );
-  assert.equal(readExpectedRuntimeRole({ NODE_ENV: "development" }), null);
-  assert.equal(readExpectedRuntimeRole({ NODE_ENV: "test" }), null);
+test("expected runtime role is fixed in code", () => {
+  assert.equal(readExpectedRuntimeRole(), expectedRole);
+  assert.equal(readExpectedRuntimeRole({ NODE_ENV: "development" }), expectedRole);
   assert.equal(
     readExpectedRuntimeRole({
-      NODE_ENV: "production",
       DATABASE_EXPECTED_RUNTIME_ROLE: `  ${expectedRole}  `,
     }),
     expectedRole,
@@ -81,6 +77,18 @@ test("expected runtime role rejects unsafe PostgreSQL identifiers", () => {
       () =>
         readExpectedRuntimeRole({
           NODE_ENV: "production",
+          DATABASE_EXPECTED_RUNTIME_ROLE: role,
+        }),
+      safePostureError,
+    );
+  }
+});
+
+test("caller-selected runtime roles are rejected", () => {
+  for (const role of ["platform_app", "platform_migrator"]) {
+    assert.throws(
+      () =>
+        readExpectedRuntimeRole({
           DATABASE_EXPECTED_RUNTIME_ROLE: role,
         }),
       safePostureError,
@@ -282,7 +290,7 @@ test("runtime posture rejects CREATE on every non-system schema and both members
   assert.match(postureSql, /schema_record\.nspowner/);
   assert.match(
     postureSql,
-    /membership\.member = runtime_role\.oid[\s\S]*?or membership\.roleid = runtime_role\.oid/,
+    /membership\.member = runtime_role\.oid[\s\S]*?or membership\.roleid = runtime_role\.oid[\s\S]*?or membership\.grantor = runtime_role\.oid/,
   );
 });
 
@@ -391,6 +399,7 @@ test("every prohibited runtime posture fails closed", async (context) => {
     ["inconclusive SET-role catalog state", "role_assumption_state_conclusive"],
     ["administrative membership authority", "role_membership_admin_absent"],
     ["direct role membership", "role_membership_absent"],
+    ["missing or drifted provider creator edge", "runtime_creator_admin_edge_exact"],
     ["neon_superuser membership", "neon_superuser_membership_absent"],
     ["superuser", "superuser_absent"],
     ["createdb", "createdb_absent"],

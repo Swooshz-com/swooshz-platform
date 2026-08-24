@@ -84,21 +84,35 @@ test("readDatabaseConfig rejects unsupported SSL modes without leaking the URL",
 
 test("migration confirmation guard requires the documented exact value", () => {
   assert.throws(
-    () => assertMigrationExecutionAllowed({ DATABASE_URL: syntheticDatabaseUrl }),
+    () => assertMigrationExecutionAllowed({ DATABASE_OPERATOR_URL: syntheticDatabaseUrl }),
     /DATABASE_MIGRATIONS_CONFIRM/,
   );
   assert.throws(
     () =>
       assertMigrationExecutionAllowed({
-        DATABASE_URL: syntheticDatabaseUrl,
+        DATABASE_OPERATOR_URL: syntheticDatabaseUrl,
         DATABASE_MIGRATIONS_CONFIRM: "local",
       }),
     /DATABASE_MIGRATIONS_CONFIRM/,
   );
 
+  assert.throws(
+    () =>
+      assertMigrationExecutionAllowed({
+        DATABASE_URL: syntheticDatabaseUrl,
+        DATABASE_MIGRATIONS_CONFIRM: DATABASE_MIGRATIONS_CONFIRM_VALUE,
+      }),
+    (error) => {
+      assert.equal(error instanceof DatabaseConfigError, true);
+      assert.equal(error.code, "missing_database_operator_url");
+      return true;
+    },
+  );
+
   assert.doesNotThrow(() =>
     assertMigrationExecutionAllowed({
-      DATABASE_URL: syntheticDatabaseUrl,
+      DATABASE_OPERATOR_URL:
+        "postgres://operator_user:operator_pass@operator.example.invalid:5432/swooshz_platform",
       DATABASE_MIGRATIONS_CONFIRM: DATABASE_MIGRATIONS_CONFIRM_VALUE,
     }),
   );
@@ -120,7 +134,7 @@ test("production operator connections require DATABASE_OPERATOR_URL", () => {
   );
 });
 
-test("operator connections are separated in production with local fallback", () => {
+test("operator connections always require an explicit operator URL", () => {
   const operatorUrl =
     "postgres://operator_user:operator_pass@operator.example.invalid:5432/swooshz_platform";
   const production = readOperatorDatabaseConfig({
@@ -128,13 +142,28 @@ test("operator connections are separated in production with local fallback", () 
     DATABASE_URL: syntheticDatabaseUrl,
     DATABASE_OPERATOR_URL: operatorUrl,
   });
-  const development = readOperatorDatabaseConfig({
-    NODE_ENV: "development",
-    DATABASE_URL: syntheticDatabaseUrl,
-  });
+  assert.throws(
+    () =>
+      readOperatorDatabaseConfig({
+        NODE_ENV: "development",
+        DATABASE_URL: syntheticDatabaseUrl,
+      }),
+    (error) => {
+      assert.equal(error instanceof DatabaseConfigError, true);
+      assert.equal(error.code, "missing_database_operator_url");
+      return true;
+    },
+  );
 
   assert.equal(production.databaseUrl, operatorUrl);
-  assert.equal(development.databaseUrl, syntheticDatabaseUrl);
+  assert.equal(
+    readOperatorDatabaseConfig({
+      NODE_ENV: "development",
+      DATABASE_URL: syntheticDatabaseUrl,
+      DATABASE_OPERATOR_URL: operatorUrl,
+    }).databaseUrl,
+    operatorUrl,
+  );
 });
 
 test("migration confirmation remains mandatory with operator URL", () => {

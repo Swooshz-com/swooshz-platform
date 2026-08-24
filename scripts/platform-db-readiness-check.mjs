@@ -54,6 +54,7 @@ export async function runPlatformDatabaseReadinessCheck({
         reachability: "not_checked",
         schema: "failed",
         migrations: "failed",
+        migratorPosture: "not_checked",
       },
       requiredTables: [],
       missingTables: [],
@@ -64,6 +65,7 @@ export async function runPlatformDatabaseReadinessCheck({
     writeError("database_config=not_checked");
     writeError("database_reachability=not_checked");
     writeError("schema_state=failed");
+    writeError("migrator_posture=not_checked");
     writeError("migration_state=expected_state_unavailable");
     return report;
   }

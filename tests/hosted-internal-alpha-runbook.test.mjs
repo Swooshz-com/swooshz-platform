@@ -95,7 +95,7 @@ test("hosted runbook binds the 0010 migration and coordinated rollback contract"
   ];
   let previousIndex = -1;
   for (const phrase of orderedContract) {
-    const index = runbook.indexOf(phrase);
+    const index = runbook.indexOf(phrase, previousIndex + 1);
     assert.notEqual(index, -1, phrase);
     assert.ok(index > previousIndex, phrase);
     previousIndex = index;
@@ -133,7 +133,6 @@ test("hosted internal alpha runbook has an env checklist with safe examples and 
     ["PLATFORM_ALLOWED_ORIGINS", "Required", "No"],
     ["PLATFORM_COOKIE_SECURE", "Required", "No"],
     ["DATABASE_URL", "Required", "Yes"],
-    ["DATABASE_EXPECTED_RUNTIME_ROLE", "Required in production", "No"],
     ["DATABASE_OPERATOR_URL", "Required for production operator commands only", "Yes"],
     ["DATABASE_SSL_MODE", "Optional", "No"],
     ["DATABASE_MIGRATIONS_CONFIRM", "Required for migrations only", "No"],
@@ -437,8 +436,17 @@ test("hosted internal alpha runbook avoids private material and unsafe callback 
   assert.doesNotMatch(runbook, /127\.0\.0\.1/);
 });
 
-test("hosted runbook and repository contract align to the dedicated platform_migrator final-owner model", async () => {
+test("hosted runbook and repository contract align to the current direct-role model", async () => {
   const runbook = await readRunbook();
+
+  assert.match(runbook, /Current Run-164 control-plane contract \(authoritative\)/i);
+  assert.match(runbook, /DATABASE_URL.*direct.*platform_runtime/i);
+  assert.match(runbook, /DATABASE_OPERATOR_URL.*direct.*platform_migrator/i);
+  assert.match(runbook, /never falls back to `?DATABASE_URL`?/i);
+  assert.match(runbook, /database owner.*platform_app/i);
+  assert.match(runbook, /public.*schema owner.*pg_database_owner/i);
+  assert.match(runbook, /No\s+`platform_maintenance`\s+role exists/i);
+  assert.match(runbook, /0010_admin_operator_viewer_role_collapse\.sql[\s\S]*unapplied/i);
 
   assert.match(runbook, /Owner\/migration role: `platform_migrator`/i);
   assert.match(runbook, /Current transitional legacy authority: `platform_app`/i);
@@ -2012,27 +2020,32 @@ test("DL-128-REPO-002: no temporary CREATEDB is granted to platform_migrator", a
   assert.match(runbook, /No temporary `CREATEDB` on `platform_migrator`/i);
 });
 
-test("DL-128-REPO-002: database ownership transfer is proven transactional in PostgreSQL 17", async () => {
+test("Run-164: database ownership remains with platform_app during namespace convergence", async () => {
   const postgresTest = await readFile(
     "tests/platform-migrator-alignment-postgres.test.mjs",
     "utf8",
   );
-  assert.match(
-    postgresTest,
-    /begin[\s\S]*alter database [\s\S]*owner to platform_migrator[\s\S]*commit/i,
+  assert.match(postgresTest, /assertCurrentDatabaseOwner\([\s\S]*platform_app/i);
+  const forwardTransferStart = postgresTest.indexOf(
+    "async function forwardTransferInOneTransaction",
+  );
+  assert.ok(forwardTransferStart >= 0);
+  assert.doesNotMatch(
+    postgresTest.slice(forwardTransferStart),
+    /alter database [\s\S]*owner to platform_migrator/i,
   );
 });
 
-test("DL-128-REPO-002: migrator login admission is proven before the ownership transfer", async () => {
+test("Run-164: migrator login admission precedes namespace ownership convergence", async () => {
   const postgresTest = await readFile(
     "tests/platform-migrator-alignment-postgres.test.mjs",
     "utf8",
   );
   assert.match(postgresTest, /validateMigratorLoginAdmission|login admission/i);
-  const transferIndex = postgresTest.search(/alter database \$\{identifier\(databaseName\)\} owner to platform_migrator/);
+  const transferIndex = postgresTest.search(/await forwardTransferInOneTransaction\(primary\)/);
   const loginIndex = postgresTest.search(/validateMigratorLoginAdmission/);
   assert.ok(loginIndex >= 0, "login admission must exist");
-  assert.ok(transferIndex > loginIndex, "login admission must precede the database ownership transfer");
+  assert.ok(transferIndex > loginIndex, "login admission must precede namespace ownership convergence");
 });
 
 test("DL-128-REPO-002: credential/login validation precedes ownership transfer and failure leaves ownership unchanged", async () => {
