@@ -49,6 +49,7 @@ export interface DatabaseReadinessChecks {
   reachability: DatabaseReadinessCheckState;
   schema: DatabaseReadinessCheckState;
   migrations: DatabaseReadinessCheckState;
+  migratorPosture: DatabaseReadinessCheckState;
 }
 
 export interface DatabaseReadinessReport {
@@ -92,6 +93,359 @@ const migrationStateSql = `
 select count(*)::int as applied_count, max(created_at)::bigint as latest_created_at
 from drizzle.__drizzle_migrations
 `;
+const migratorPostureSql = `
+with
+migrator_role as (
+  select oid, rolcanlogin, rolinherit, rolsuper, rolcreatedb, rolcreaterole,
+    rolreplication, rolbypassrls
+  from pg_roles
+  where rolname = 'platform_migrator'
+),
+app_role as (
+  select oid
+  from pg_roles
+  where rolname = 'platform_app'
+),
+runtime_role as (
+  select oid
+  from pg_roles
+  where rolname = 'platform_runtime'
+),
+database_state as (
+  select oid, datdba
+  from pg_database
+  where datname = current_database()
+),
+schema_state as (
+  select oid, nspname, nspowner, nspacl
+  from pg_namespace
+  where nspname in ('public', 'appdata', 'drizzle')
+),
+ledger_state as (
+  select
+    schema_record.oid as schema_oid,
+    migration_record.oid as ledger_oid,
+    migration_record.relowner as ledger_owner
+  from pg_namespace schema_record
+  left join pg_class migration_record
+    on migration_record.relnamespace = schema_record.oid
+    and migration_record.relname = '__drizzle_migrations'
+  where schema_record.nspname = 'drizzle'
+),
+application_relations as (
+  select
+    relation_record.oid,
+    relation_record.relname,
+    relation_record.relkind,
+    relation_record.relowner,
+    relation_record.relnamespace,
+    relation_record.relacl
+  from pg_class relation_record
+  join pg_namespace relation_schema
+    on relation_schema.oid = relation_record.relnamespace
+  where relation_schema.nspname in ('public', 'appdata', 'drizzle')
+    and relation_record.relkind in ('r', 'p', 'v', 'm', 'f', 'S', 'i', 'I')
+),
+application_types as (
+  select type_record.oid, type_record.typowner
+  from pg_type type_record
+  join pg_namespace type_schema
+    on type_schema.oid = type_record.typnamespace
+  where type_schema.nspname in ('public', 'appdata', 'drizzle')
+    and type_record.typisdefined
+),
+application_routines as (
+  select routine_record.oid, routine_record.proowner, routine_record.proacl
+  from pg_proc routine_record
+  join pg_namespace routine_schema
+    on routine_schema.oid = routine_record.pronamespace
+  where routine_schema.nspname in ('public', 'appdata', 'drizzle')
+),
+migrator_memberships as (
+  select
+    membership.roleid,
+    membership.member,
+    membership.grantor,
+    membership.admin_option,
+    membership.inherit_option,
+    membership.set_option,
+    member_role.rolname as member_name,
+    grantor_role.rolname as grantor_name
+  from pg_auth_members membership
+  join migrator_role
+    on membership.roleid = migrator_role.oid
+    or membership.member = migrator_role.oid
+    or membership.grantor = migrator_role.oid
+  left join pg_roles member_role
+    on member_role.oid = membership.member
+  left join pg_roles grantor_role
+    on grantor_role.oid = membership.grantor
+)
+select
+  current_user = 'platform_migrator'
+    and session_user = 'platform_migrator' as migrator_identity_exact,
+  current_setting('server_version_num')::integer between 170000 and 179999
+    as postgres_major_17,
+  coalesce((
+    select rolcanlogin
+      and not rolinherit
+      and not rolsuper
+      and not rolcreatedb
+      and not rolcreaterole
+      and not rolreplication
+      and not rolbypassrls
+    from migrator_role
+  ), false) as migrator_role_attributes_exact,
+  coalesce((
+    select count(*) = 1
+      and bool_and(
+        membership.roleid = migrator_role.oid
+        and membership.member_name = 'platform_app'
+        and membership.grantor_name = 'cloud_admin'
+        and membership.admin_option
+        and not membership.inherit_option
+        and not membership.set_option
+      )
+    from migrator_memberships membership
+    cross join migrator_role
+  ), false) as migrator_creator_admin_edge_exact,
+  coalesce((
+    select has_database_privilege(
+      migrator_role.oid,
+      database_state.oid,
+      'CONNECT'
+    )
+    from migrator_role
+    cross join database_state
+  ), false) as migrator_database_connect_exact,
+  coalesce((
+    select not has_database_privilege(
+      migrator_role.oid,
+      database_state.oid,
+      'CREATE'
+    )
+    from migrator_role
+    cross join database_state
+  ), false) as migrator_database_create_absent,
+  coalesce((
+    select not has_database_privilege(
+      migrator_role.oid,
+      database_state.oid,
+      'TEMPORARY'
+    )
+    from migrator_role
+    cross join database_state
+  ), false) as migrator_database_temporary_absent,
+  coalesce((
+    select database_state.datdba = app_role.oid
+    from database_state
+    cross join app_role
+  ), false) as database_owner_platform_app,
+  coalesce((
+    select schema_state.nspowner = pg_database_owner.oid
+    from schema_state
+    join pg_roles pg_database_owner
+      on pg_database_owner.rolname = 'pg_database_owner'
+    where schema_state.nspname = 'public'
+  ), false) as public_schema_owner_pg_database_owner,
+  coalesce((
+    select has_schema_privilege(migrator_role.oid, schema_state.oid, 'USAGE')
+      and has_schema_privilege(migrator_role.oid, schema_state.oid, 'CREATE')
+    from schema_state
+    cross join migrator_role
+    where schema_state.nspname = 'public'
+  ), false) as migrator_public_schema_authority,
+  coalesce((
+    select schema_state.nspowner = migrator_role.oid
+      and has_schema_privilege(migrator_role.oid, schema_state.oid, 'USAGE')
+      and has_schema_privilege(migrator_role.oid, schema_state.oid, 'CREATE')
+    from schema_state
+    cross join migrator_role
+    where schema_state.nspname = 'drizzle'
+  ), false) as drizzle_schema_migrator_authority,
+  coalesce((
+    select count(*) = 2
+      and bool_and(
+        schema_record.nspowner = migrator_role.oid
+        and has_schema_privilege(migrator_role.oid, schema_record.oid, 'USAGE')
+        and has_schema_privilege(migrator_role.oid, schema_record.oid, 'CREATE')
+      )
+    from schema_state schema_record
+    cross join migrator_role
+    where schema_record.nspname in ('appdata', 'drizzle')
+  ), false) as application_schema_authority_exact,
+  coalesce((
+    select ledger_state.ledger_owner = migrator_role.oid
+    from ledger_state
+    cross join migrator_role
+    where ledger_state.ledger_oid is not null
+  ), false) as migration_ledger_owner_migrator,
+  coalesce((
+    select not exists (
+      select 1
+      from application_relations relation_record
+      where relation_record.relowner <> migrator_role.oid
+    )
+    from migrator_role
+  ), false) as application_namespace_relation_owner_exact,
+  coalesce((
+    select count(*) = cardinality($1::text[])
+    from application_relations relation_record
+    cross join migrator_role
+    where relation_record.relnamespace = (
+      select oid
+      from schema_state
+      where nspname = 'public'
+    )
+      and relation_record.relname = any($1::text[])
+      and relation_record.relkind in ('r', 'p', 'v', 'm', 'f')
+      and relation_record.relowner = migrator_role.oid
+  ), false) as required_application_table_owner_exact,
+  coalesce((
+    select not exists (
+      select 1
+      from application_types type_record
+      where type_record.typowner <> migrator_role.oid
+    )
+    from migrator_role
+  ), false) as application_type_owner_exact,
+  coalesce((
+    select not exists (
+      select 1
+      from application_routines routine_record
+      where routine_record.proowner <> migrator_role.oid
+    )
+    from migrator_role
+  ), false) as application_routine_owner_exact,
+  coalesce((
+    select not exists (
+      select 1
+      from application_relations relation_record
+      where relation_record.relowner <> migrator_role.oid
+    )
+    from migrator_role
+  ), false) as application_relation_owner_exact,
+  coalesce((
+    select not exists (
+      select 1
+      from application_relations relation_record
+      cross join lateral aclexplode(
+        coalesce(
+          relation_record.relacl,
+          acldefault(
+            case when relation_record.relkind = 'S' then 'S'::"char" else 'r'::"char" end,
+            relation_record.relowner
+          )
+        )
+      ) acl_record
+      where relation_record.relkind not in ('i', 'I')
+        and acl_record.grantee = 0
+    )
+  ), false) as public_relation_authority_absent,
+  coalesce((
+    select not exists (
+      select 1
+      from application_routines routine_record
+      cross join lateral aclexplode(
+        coalesce(
+          routine_record.proacl,
+          acldefault('f'::"char", routine_record.proowner)
+        )
+      ) acl_record
+      where acl_record.grantee = 0
+    )
+  ), false) as public_routine_authority_absent,
+  not exists (
+    select 1
+    from pg_default_acl default_acl
+    cross join lateral aclexplode(default_acl.defaclacl) acl_record
+    where default_acl.defaclobjtype in ('r', 'S', 'f')
+      and acl_record.grantee = 0
+  ) as public_default_acl_authority_absent,
+  coalesce((
+    select not exists (
+      select 1
+      from application_relations relation_record
+      cross join lateral aclexplode(
+        coalesce(
+          relation_record.relacl,
+          acldefault('r'::"char", relation_record.relowner)
+        )
+      ) acl_record
+      where relation_record.relkind not in ('i', 'I')
+        and acl_record.grantee = migrator_role.oid
+        and acl_record.is_grantable
+    )
+    and not exists (
+      select 1
+      from application_routines routine_record
+      cross join lateral aclexplode(
+        coalesce(
+          routine_record.proacl,
+          acldefault('f'::"char", routine_record.proowner)
+        )
+      ) acl_record
+      where acl_record.grantee = migrator_role.oid
+        and acl_record.is_grantable
+    )
+    from migrator_role
+  ), false) as migrator_grant_option_absent,
+  coalesce((
+    select not exists (
+      select 1
+      from schema_state
+      cross join lateral aclexplode(
+        coalesce(schema_state.nspacl, acldefault('n'::"char", schema_state.nspowner))
+      ) acl_record
+      where (schema_state.nspname = 'drizzle' and acl_record.grantee = 0)
+        or (
+          schema_state.nspname = 'public'
+          and acl_record.grantee = 0
+          and acl_record.privilege_type = 'CREATE'
+        )
+    )
+  ), false) as public_schema_acl_least_privilege,
+  coalesce((
+    select not exists (
+      select 1
+      from runtime_role
+      cross join ledger_state
+      where ledger_state.ledger_oid is not null
+        and (
+          has_schema_privilege(runtime_role.oid, ledger_state.schema_oid, 'USAGE')
+          or has_table_privilege(runtime_role.oid, ledger_state.ledger_oid, 'SELECT')
+          or has_table_privilege(runtime_role.oid, ledger_state.ledger_oid, 'INSERT')
+          or has_table_privilege(runtime_role.oid, ledger_state.ledger_oid, 'UPDATE')
+          or has_table_privilege(runtime_role.oid, ledger_state.ledger_oid, 'DELETE')
+          or has_table_privilege(runtime_role.oid, ledger_state.ledger_oid, 'TRUNCATE')
+          or has_table_privilege(runtime_role.oid, ledger_state.ledger_oid, 'REFERENCES')
+          or has_table_privilege(runtime_role.oid, ledger_state.ledger_oid, 'TRIGGER')
+        )
+    )
+  ), false) as runtime_migration_ledger_access_absent,
+  coalesce((
+    select not exists (
+      select 1
+      from application_relations relation_record
+      join runtime_role
+        on relation_record.relowner = runtime_role.oid
+    )
+    and not exists (
+      select 1
+      from application_types type_record
+      join runtime_role
+        on type_record.typowner = runtime_role.oid
+    )
+    and not exists (
+      select 1
+      from application_routines routine_record
+      join runtime_role
+        on routine_record.proowner = runtime_role.oid
+    )
+    from runtime_role
+  ), false) as runtime_application_ownership_zero
+
+`;
 
 export async function createDatabaseReadinessReport(
   input: DatabaseReadinessInput,
@@ -101,6 +455,7 @@ export async function createDatabaseReadinessReport(
     config: "not_checked",
     reachability: "not_checked",
     schema: "not_checked",
+    migratorPosture: "not_checked",
     migrations: "not_checked",
   };
   let config: DatabaseConfig;
@@ -150,8 +505,17 @@ export async function createDatabaseReadinessReport(
     );
 
     checks.migrations = migrationReady ? "passed" : "failed";
+    const migratorReady = await readMigratorReadiness(
+      client,
+      requiredTables,
+    );
+    checks.migratorPosture = migratorReady ? "passed" : "failed";
 
-    if (checks.schema !== "passed" || checks.migrations !== "passed") {
+    if (
+      checks.schema !== "passed" ||
+      checks.migrations !== "passed" ||
+      checks.migratorPosture !== "passed"
+    ) {
       return report({
         status: "schema_not_ready",
         checks,
@@ -178,6 +542,13 @@ export async function createDatabaseReadinessReport(
       input.expectedMigrationState && checks.migrations === "not_checked"
         ? "failed"
         : checks.migrations;
+    if (
+      checks.migratorPosture === "not_checked" &&
+      checks.schema === "passed" &&
+      checks.migrations === "passed"
+    ) {
+      checks.migratorPosture = "failed";
+    }
     return report({
       status: "schema_not_ready",
       checks,
@@ -214,6 +585,7 @@ export function formatDatabaseReadinessReport(
     `database_config=${readinessReport.checks.config}`,
     `database_reachability=${readinessReport.checks.reachability}`,
     `schema_state=${readinessReport.checks.schema}`,
+    `migrator_posture=${readinessReport.checks.migratorPosture}`,
   ];
 
   if (shouldReportRequiredTables(readinessReport)) {
@@ -265,6 +637,45 @@ async function readMissingRequiredTables(
   return requiredTables.filter((tableName) => !existingTables.has(tableName));
 }
 
+const MIGRATOR_READINESS_FIELDS = [
+  "migrator_identity_exact",
+  "postgres_major_17",
+  "migrator_role_attributes_exact",
+  "migrator_creator_admin_edge_exact",
+  "migrator_database_connect_exact",
+  "migrator_database_create_absent",
+  "migrator_database_temporary_absent",
+  "database_owner_platform_app",
+  "public_schema_owner_pg_database_owner",
+  "migrator_public_schema_authority",
+  "drizzle_schema_migrator_authority",
+  "application_schema_authority_exact",
+  "migration_ledger_owner_migrator",
+  "application_namespace_relation_owner_exact",
+  "required_application_table_owner_exact",
+  "application_type_owner_exact",
+  "application_routine_owner_exact",
+  "public_relation_authority_absent",
+  "public_routine_authority_absent",
+  "public_default_acl_authority_absent",
+  "migrator_grant_option_absent",
+  "public_schema_acl_least_privilege",
+  "runtime_migration_ledger_access_absent",
+  "runtime_application_ownership_zero",
+] as const;
+
+async function readMigratorReadiness(
+  client: DatabaseReadinessClient,
+  requiredTables: readonly string[],
+): Promise<boolean> {
+  const result = await client.query(migratorPostureSql, [requiredTables]);
+  if (result.rows.length !== 1) {
+    return false;
+  }
+
+  const row = result.rows[0];
+  return MIGRATOR_READINESS_FIELDS.every((field) => row[field] === true);
+}
 async function readMigrationReadiness(
   client: DatabaseReadinessClient,
   expectedMigrationState: ExpectedMigrationState | undefined,

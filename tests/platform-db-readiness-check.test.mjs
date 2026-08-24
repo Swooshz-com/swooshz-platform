@@ -54,7 +54,7 @@ test("DB readiness reports missing config without creating a DB client", async (
 test("DB readiness reports invalid config without leaking the connection string", async () => {
   const report = await createDatabaseReadinessReport({
     env: {
-      DATABASE_URL: [
+      DATABASE_OPERATOR_URL: [
         "https",
         "://private_user:private_pass@private-host.invalid/swooshz_platform",
       ].join(""),
@@ -77,7 +77,7 @@ test("DB readiness distinguishes unreachable databases and closes the client", a
     failReachability: true,
   });
   const report = await createDatabaseReadinessReport({
-    env: { DATABASE_URL: privateDatabaseUrl },
+    env: { DATABASE_OPERATOR_URL: privateDatabaseUrl },
     expectedMigrationState,
     clientFactory() {
       return fixture.client;
@@ -100,7 +100,7 @@ test("DB readiness reports schema not ready when platform tables are missing", a
     existingTables: REQUIRED_PLATFORM_TABLES.filter((table) => table !== "sessions"),
   });
   const report = await createDatabaseReadinessReport({
-    env: { DATABASE_URL: privateDatabaseUrl },
+    env: { DATABASE_OPERATOR_URL: privateDatabaseUrl },
     expectedMigrationState,
     clientFactory() {
       return fixture.client;
@@ -124,7 +124,7 @@ test("DB readiness preserves missing tables when migration metadata is absent", 
     failMigrationState: true,
   });
   const report = await createDatabaseReadinessReport({
-    env: { DATABASE_URL: privateDatabaseUrl },
+    env: { DATABASE_OPERATOR_URL: privateDatabaseUrl },
     expectedMigrationState,
     clientFactory() {
       return fixture.client;
@@ -150,7 +150,7 @@ test("current ledger still fails readiness when access validation grants are abs
     ),
   });
   const report = await createDatabaseReadinessReport({
-    env: { DATABASE_URL: privateDatabaseUrl },
+    env: { DATABASE_OPERATOR_URL: privateDatabaseUrl },
     expectedMigrationState,
     clientFactory() {
       return fixture.client;
@@ -187,7 +187,7 @@ test("DB readiness reports schema not ready when migrations are behind the journ
     migrationCount: 4,
   });
   const report = await createDatabaseReadinessReport({
-    env: { DATABASE_URL: privateDatabaseUrl },
+    env: { DATABASE_OPERATOR_URL: privateDatabaseUrl },
     expectedMigrationState,
     clientFactory() {
       return fixture.client;
@@ -209,7 +209,7 @@ test("DB readiness reports schema not ready when migrations are behind the journ
 test("DB readiness reports ready when reachability tables and migrations match", async () => {
   const fixture = createFakeReadinessClient();
   const report = await createDatabaseReadinessReport({
-    env: { DATABASE_URL: privateDatabaseUrl },
+    env: { DATABASE_OPERATOR_URL: privateDatabaseUrl },
     expectedMigrationState,
     clientFactory() {
       return fixture.client;
@@ -223,10 +223,32 @@ test("DB readiness reports ready when reachability tables and migrations match",
   assert.equal(report.checks.reachability, "passed");
   assert.equal(report.checks.schema, "passed");
   assert.equal(report.checks.migrations, "passed");
+  assert.equal(report.checks.migratorPosture, "passed");
   assert.match(output, /readiness_check=pass/);
   assert.match(output, /status=ready/);
   assertNoPrivateMaterial(output);
 });
+test("DB readiness fails closed when migrator posture drifts", async () => {
+  const fixture = createFakeReadinessClient({
+    migratorPosture: { database_owner_platform_app: false },
+  });
+  const report = await createDatabaseReadinessReport({
+    env: { DATABASE_OPERATOR_URL: privateDatabaseUrl },
+    expectedMigrationState,
+    clientFactory() {
+      return fixture.client;
+    },
+  });
+  const output = formatDatabaseReadinessReport(report).join("\n");
+
+  assert.equal(report.ok, false);
+  assert.equal(report.status, "schema_not_ready");
+  assert.equal(report.checks.schema, "passed");
+  assert.equal(report.checks.migrations, "passed");
+  assert.equal(report.checks.migratorPosture, "failed");
+  assert.match(output, /migrator_posture=failed/);
+});
+
 
 test("DB readiness CLI output is sanitized for failure states", async () => {
   const fixture = createFakeReadinessClient({
@@ -234,7 +256,7 @@ test("DB readiness CLI output is sanitized for failure states", async () => {
   });
   const lines = [];
   const report = await runPlatformDatabaseReadinessCheck({
-    env: { DATABASE_URL: privateDatabaseUrl },
+    env: { DATABASE_OPERATOR_URL: privateDatabaseUrl },
     expectedMigrationState,
     clientFactory() {
       return fixture.client;
@@ -270,10 +292,40 @@ function createFakeReadinessClient(options = {}) {
   const latestMigrationCreatedAt =
     options.latestMigrationCreatedAt ?? expectedMigrationState.latestCreatedAt;
   const migrationCount = options.migrationCount ?? expectedMigrationState.migrationCount;
+  const migratorPosture = {
+    migrator_identity_exact: true,
+    postgres_major_17: true,
+    migrator_role_attributes_exact: true,
+    migrator_creator_admin_edge_exact: true,
+    migrator_database_connect_exact: true,
+    migrator_database_create_absent: true,
+    migrator_database_temporary_absent: true,
+    database_owner_platform_app: true,
+    public_schema_owner_pg_database_owner: true,
+    migrator_public_schema_authority: true,
+    drizzle_schema_migrator_authority: true,
+    application_schema_authority_exact: true,
+    migration_ledger_owner_migrator: true,
+    application_namespace_relation_owner_exact: true,
+    required_application_table_owner_exact: true,
+    application_type_owner_exact: true,
+    application_routine_owner_exact: true,
+    public_relation_authority_absent: true,
+    public_routine_authority_absent: true,
+    public_default_acl_authority_absent: true,
+    migrator_grant_option_absent: true,
+    public_schema_acl_least_privilege: true,
+    runtime_migration_ledger_access_absent: true,
+    runtime_application_ownership_zero: true,
+    ...(options.migratorPosture ?? {}),
+  };
   const client = {
     async query(sql, params) {
       calls.queries.push({ sql, params });
 
+      if (/migrator_identity_exact/i.test(sql)) {
+        return { rows: [{ ...migratorPosture }] };
+      }
       if (/select\s+1/i.test(sql)) {
         if (options.failReachability) {
           throw new Error(privateErrorDetail);

@@ -1,4 +1,9 @@
 import { RUNTIME_TABLE_GRANT_CONTRACT } from "./runtime-grant-contract.js";
+export const PLATFORM_RUNTIME_ROLE = "platform_runtime";
+export const PLATFORM_MIGRATOR_ROLE = "platform_migrator";
+export const PLATFORM_APP_ROLE = "platform_app";
+export const PLATFORM_PROVIDER_CONTROL_ROLE = "cloud_admin";
+
 
 export type RuntimeDatabasePostureCheckState = "passed" | "failed";
 
@@ -399,7 +404,41 @@ select
     join pg_auth_members membership
       on membership.member = runtime_role.oid
       or membership.roleid = runtime_role.oid
+      or membership.grantor = runtime_role.oid
+    left join pg_roles member_role
+      on member_role.oid = membership.member
+    left join pg_roles grantor_role
+      on grantor_role.oid = membership.grantor
+    where not (
+      membership.roleid = runtime_role.oid
+      and member_role.rolname = 'platform_app'
+      and grantor_role.rolname = 'cloud_admin'
+      and membership.admin_option
+      and not membership.inherit_option
+      and not membership.set_option
+    )
   ) as role_membership_absent,
+  (
+    select
+      count(membership.roleid) = 1
+      and bool_and(
+        membership.roleid = runtime_role.oid
+        and member_role.rolname = 'platform_app'
+        and grantor_role.rolname = 'cloud_admin'
+        and membership.admin_option
+        and not membership.inherit_option
+        and not membership.set_option
+      )
+    from login_role_state runtime_role
+    left join pg_auth_members membership
+      on membership.member = runtime_role.oid
+      or membership.roleid = runtime_role.oid
+      or membership.grantor = runtime_role.oid
+    left join pg_roles member_role
+      on member_role.oid = membership.member
+    left join pg_roles grantor_role
+      on grantor_role.oid = membership.grantor
+  ) as runtime_creator_admin_edge_exact,
   not exists (
     select 1
     from set_assumable_roles assumable_role
@@ -692,20 +731,13 @@ select
 `;
 
 export function readExpectedRuntimeRole(
-  env: RuntimeDatabasePostureEnvironment,
-): string | null {
-  const expectedRole = env.DATABASE_EXPECTED_RUNTIME_ROLE?.trim();
-
-  if (!expectedRole) {
-    if (env.NODE_ENV?.trim() === "production") {
-      throw new RuntimeDatabasePostureError();
-    }
-    return null;
-  }
-  if (!safePostgresRoleIdentifier.test(expectedRole)) {
+  env: RuntimeDatabasePostureEnvironment = {},
+): string {
+  const configuredRole = env.DATABASE_EXPECTED_RUNTIME_ROLE?.trim();
+  if (configuredRole && configuredRole !== PLATFORM_RUNTIME_ROLE) {
     throw new RuntimeDatabasePostureError();
   }
-  return expectedRole;
+  return PLATFORM_RUNTIME_ROLE;
 }
 
 export async function inspectRuntimeDatabasePosture(
@@ -715,10 +747,13 @@ export async function inspectRuntimeDatabasePosture(
   const row = await inspectRuntimeDatabasePostureRow(client, expectedRole);
   const expectedRoleMatch = boolean(row, "expected_role_match");
   const checks = postureChecks(row);
+  const runtimeAdministrativeAttributesAbsent =
+    checks.administrativeAttributesAbsent &&
+    boolean(row, "runtime_creator_admin_edge_exact");
   const passed = [
     expectedRoleMatch,
     checks.roleIdentityConclusive,
-    checks.administrativeAttributesAbsent,
+    runtimeAdministrativeAttributesAbsent,
     checks.databaseAndSchemaCreateAbsent,
     checks.migrationLedgerAccessDenied,
     checks.databaseAndSchemaOwnershipAbsent,
@@ -734,7 +769,7 @@ export async function inspectRuntimeDatabasePosture(
     expectedRoleMatch: state(expectedRoleMatch),
     administrativeAttributesAbsent: state(
       checks.roleIdentityConclusive &&
-        checks.administrativeAttributesAbsent,
+        runtimeAdministrativeAttributesAbsent,
     ),
     databaseAndSchemaCreateAbsent: state(
       checks.databaseAndSchemaCreateAbsent,

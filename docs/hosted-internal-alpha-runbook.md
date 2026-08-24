@@ -1,6 +1,52 @@
 # Hosted Internal Alpha Runbook
 
 This runbook prepares Swooshz Platform for a reviewed hosted internal-alpha handoff. It is documentation, guardrails, and readiness tooling only. It does not deploy, provision, expose, sync, restart, or configure hosted infrastructure. This PR is readiness only, not full production readiness.
+## Current Run-164 control-plane contract (authoritative)
+
+The current repository contract is direct-role based and supersedes conflicting
+historical role-transition rehearsal text below. Run-164 does not create or
+alter any live Neon role, credential, membership, ownership, ACL, deployment,
+DNS/TLS, Coolify, Auth0, Resend, or Ledger state.
+
+- `DATABASE_URL` is the direct `platform_runtime` session. The runtime role is
+  fixed in code: `session_user = current_user = platform_runtime`. Do not use
+  `DATABASE_EXPECTED_RUNTIME_ROLE` as a caller-controlled selector; if it is
+  supplied for compatibility, only `platform_runtime` is accepted.
+- `DATABASE_OPERATOR_URL` is the direct `platform_migrator` session for
+  one-off operator work. It is required for operator readiness and migration
+  execution; it never falls back to `DATABASE_URL` and is never placed in the
+  long-running Coolify environment. Reviewed migration execution also requires
+  `DATABASE_MIGRATIONS_CONFIRM=apply-reviewed-migrations`.
+- `platform_runtime` owns no database, schema, table, type, sequence, index,
+  routine, or application object and has no migration/DDL authority.
+- `platform_migrator` is the canonical application-namespace owner after a
+  separately authorised live convergence. It is direct `LOGIN` only during a
+  controlled window, `NOINHERIT`, and has no `SUPERUSER`, `CREATEDB`,
+  `CREATEROLE`, replication, or bypass-RLS authority.
+- `platform_app` remains the initial application database owner and
+  control-plane/rollback identity. It is neither runtime nor migrator. A
+  separately authorised later operation may set it `NOLOGIN` after the first
+  healthy deployment and bounded rollback observation; it must not be dropped
+  while it remains database owner.
+- The intended ownership matrix is database owner `platform_app`, public
+  schema owner `pg_database_owner`, and application namespace/object owner
+  `platform_migrator`. `platform_runtime` owns nothing. No
+  `platform_maintenance` role exists or is required.
+- The accepted creator-admin edge for runtime is exactly
+  `platform_runtime <- platform_app`, granted by `cloud_admin`, with
+  `ADMIN=true`, `INHERIT=false`, and `SET=false`. The future migrator edge is
+  the same tuple with `platform_migrator` as the granted role. Membership
+  checks include granted-role, member, and grantor positions and fail closed
+  on any missing, extra, reversed, or option-drifted edge. `ADMIN=true` is
+  administrative authority and `cloud_admin` remains outside runtime config.
+
+Migration `0010_admin_operator_viewer_role_collapse.sql` remains unchanged and
+unapplied. Its later window requires restore proof, writer quiescence, direct
+migrator proof, trusted journal classification, canonical execution, post-
+migration journal proof, exact product-role/membership invariants, runtime
+ownership verification, and temporary-authority containment. Migration, live
+Neon/provider convergence, DNS/TLS, deployment, and activation remain blocked
+until separately accepted.
 
 SQAG-side PR #122 and Platform PR #79 established the historical `appKey=sqag` baseline only. Before hosted execution, record and jointly review the exact companion Platform and SQAG revisions that implement header-only finalization, host-only SQAG cookies, and live Platform access validation. Hosted Platform-to-SQAG smoke remains pending until an operator runs the smoke deliberately; do not claim production readiness from this documentation alone.
 
@@ -38,7 +84,7 @@ This PR does not add a session-management UI. Security/session management remain
 3. Configure the OIDC client outside the repo with `https://swooshz.com/api/platform/auth/callback`.
 4. Store secrets and runtime env outside the repo in the hosting secret manager or process manager secret store.
 5. Build the platform application with `npm run build`.
-6. Run `npm run platform:readiness-check` as a dry-run env checklist before migration or server start. Hosted readiness requires `NODE_ENV=production`, HTTPS browser/provider-facing URLs, origin-only allowed origins, the reviewed callback path shape, a valid Postgres-shaped `DATABASE_URL`, and a safe `DATABASE_EXPECTED_RUNTIME_ROLE`; it does not connect to the database.
+6. Run `npm run platform:readiness-check` as a dry-run env checklist before migration or server start. Hosted readiness requires `NODE_ENV=production`, HTTPS browser/provider-facing URLs, origin-only allowed origins, the reviewed callback path shape, a valid Postgres-shaped `DATABASE_URL`, and the fixed in-code `platform_runtime` identity; it does not connect to the database.
 7. Optionally run `npm run platform:db-readiness-check` before migrations to verify that the configured database is reachable. A new or unmigrated database should report `schema_not_ready`, not `ready`.
 8. Take and verify a database backup before applying reviewed migrations.
 9. Apply reviewed migrations manually with `npm run db:migrate` only after setting `DATABASE_MIGRATIONS_CONFIRM=apply-reviewed-migrations`.
@@ -95,7 +141,7 @@ Deploy-time env categories:
 
 | Category | Env names | Coolify handling | Notes |
 | --- | --- | --- | --- |
-| Non-secret operator choices | `NODE_ENV`, `PLATFORM_HTTP_HOST`, `PLATFORM_HTTP_PORT`, `PLATFORM_PUBLIC_BASE_URL`, `PLATFORM_ALLOWED_ORIGINS`, `PLATFORM_COOKIE_SECURE`, `DATABASE_SSL_MODE`, `DATABASE_EXPECTED_RUNTIME_ROLE`, `PLATFORM_AUTH_PROVIDER_MODE`, `AUTH_PROVIDER_KEY`, `AUTH_ISSUER_URL`, `AUTH_AUTHORIZATION_URL`, `AUTH_TOKEN_URL`, `AUTH_JWKS_URL`, `AUTH_USERINFO_URL`, `OIDC_CLIENT_ID`, `AUTH_REDIRECT_URI`, `PLATFORM_SQAG_LAUNCH_MODE`, `PLATFORM_SQAG_APP_BASE_URL` | Set as reviewed environment entries. | Hosted runtime uses `NODE_ENV=production`, the exact canonical origins, HTTPS provider URLs, `PLATFORM_COOKIE_SECURE=true`, and `server_handoff` for the implemented separate-origin SQAG flow. |
+| Non-secret operator choices | `NODE_ENV`, `PLATFORM_HTTP_HOST`, `PLATFORM_HTTP_PORT`, `PLATFORM_PUBLIC_BASE_URL`, `PLATFORM_ALLOWED_ORIGINS`, `PLATFORM_COOKIE_SECURE`, `DATABASE_SSL_MODE`, `PLATFORM_AUTH_PROVIDER_MODE`, `AUTH_PROVIDER_KEY`, `AUTH_ISSUER_URL`, `AUTH_AUTHORIZATION_URL`, `AUTH_TOKEN_URL`, `AUTH_JWKS_URL`, `AUTH_USERINFO_URL`, `OIDC_CLIENT_ID`, `AUTH_REDIRECT_URI`, `PLATFORM_SQAG_LAUNCH_MODE`, `PLATFORM_SQAG_APP_BASE_URL` | Set as reviewed environment entries. | Hosted runtime uses `NODE_ENV=production`, the exact canonical origins, HTTPS provider URLs, `PLATFORM_COOKIE_SECURE=true`, and `server_handoff` for the implemented separate-origin SQAG flow. |
 | Secret values | `DATABASE_URL`, `SESSION_SECRET`, `CSRF_TOKEN_HASH_SECRET`, `AUTH_STATE_HASH_SECRET`, `APP_LAUNCH_TOKEN_HASH_SECRET`, `PLATFORM_SQAG_SERVICE_SECRET`, `OIDC_CLIENT_SECRET` | Inject through Coolify secret/env storage only. | Platform and SQAG receive the same service secret through their separate secret stores. Do not commit, print, screenshot, paste, or expose values in build logs, app logs, tickets, shell history, or PRs. |
 | Operator-only database values | `DATABASE_OPERATOR_URL`, `DATABASE_MIGRATIONS_CONFIRM` | Do not keep on the long-running Coolify app service. Set only in a separately controlled operator process for readiness or a reviewed migration. | The migrated Neon database should already return `ready` from `npm run platform:db-readiness-check` before app start. |
 | Bootstrap-only values | `PLATFORM_SEED_CONFIRM`, `PLATFORM_SEED_USER_EMAIL`, `PLATFORM_SEED_WORKSPACE_SLUG`, `PLATFORM_SEED_WORKSPACE_NAME`, `PLATFORM_SEED_MEMBERSHIP_ROLE` | Do not keep on the long-running Coolify app service. Set only for a reviewed one-off bootstrap after real hosted auth creates the user. | These values must not become env-controlled business/admin state, default production data, or a fake login path. |
@@ -167,14 +213,18 @@ Recommended Neon target, for operator setup outside this repo:
 - Database: `swooshz_platform`.
 - Owner/migration role: `platform_migrator` - intended future dedicated operator/migration role; not yet created and no live projection exists.
 - Current transitional legacy authority: `platform_app` - unchanged until a separately authorised live transition passes; its live attributes, ownership, membership and credential are not claimed to have changed.
-- Runtime role: the separately approved restricted non-owning role named by `DATABASE_EXPECTED_RUNTIME_ROLE` under the accepted 39-record contract.
+- Runtime role: the fixed direct restricted non-owning role `platform_runtime` under the accepted 39-record contract; `DATABASE_EXPECTED_RUNTIME_ROLE` is not an identity selector.
 - Runtime connection: pooled restricted-role `DATABASE_URL` from the host secret store.
 - Operator connection: separately controlled `DATABASE_OPERATOR_URL`; never keep it on the long-running Coolify application.
 - Use an unpooled/direct owner connection for `DATABASE_OPERATOR_URL` when required by reviewed migration tooling; keep it outside source control and the long-running application.
 
-The platform runtime app code uses only `DATABASE_URL` as the pooled restricted-role app connection and validates it against `DATABASE_EXPECTED_RUNTIME_ROLE` before listening. Migration and operator readiness commands use `DATABASE_OPERATOR_URL` in production. Do not add multiple database URL aliases for day-to-day runtime behavior. Do not commit `.env` files, connection strings, usernames with passwords, database hostnames with credentials, backup exports, table dumps, or provider console screenshots.
+The platform runtime app code uses only `DATABASE_URL` as the direct restricted-role app connection and validates the fixed `platform_runtime` identity before listening. Migration and operator readiness commands use only `DATABASE_OPERATOR_URL` in production. Do not add multiple database URL aliases or a runtime fallback for day-to-day behavior. Do not commit `.env` files, connection strings, usernames with passwords, database hostnames with credentials, backup exports, table dumps, or provider console screenshots.
 
-### Dedicated Migrator Alignment Contract
+### Historical Dedicated Migrator Alignment Rehearsal
+
+The earlier rehearsal details below are retained as provenance only. The
+authoritative current contract is the Run-164 section at the top of this
+runbook and the current architecture document.
 
 The repository contract for the #128 dedicated migrator alignment (Platform Migrator Alignment) is documented in `docs/architecture/PLATFORM-MIGRATOR-ALIGNMENT.md`. It is repository contract and disposable-rehearsal evidence only; it releases no live database, role, grant, ownership, credential, provider or deployment authority.
 
@@ -605,8 +655,8 @@ A separately authorised second attempt must use this order:
 7. Build the restricted URL with `buildRuntimeDatabaseUrl` and the same target,
    preserving only the reviewed endpoint, port, database, and allowlisted
    transport/security parameters.
-8. Start a runtime-only child with `DATABASE_URL` and
-   `DATABASE_EXPECTED_RUNTIME_ROLE`; explicitly remove
+8. Start a runtime-only child with only `DATABASE_URL`; the expected runtime
+   identity is fixed in code as `platform_runtime`. Explicitly remove
    `DATABASE_OPERATOR_URL`.
 9. Require the same provider-bound target, expected database, exact runtime
    connection, `current_user`, `session_user`, recursive SET-assumable posture,
@@ -754,7 +804,6 @@ Stop and redact the log collection process if a log includes secret values, data
 | `PLATFORM_ALLOWED_ORIGINS` | Allowed browser origin list for CSRF/origin checks. | Required | `https://swooshz.com` | No | Production readiness permits only the exact apex origin. |
 | `PLATFORM_COOKIE_SECURE` | Forces secure browser session cookies. | Required | `true` | No | Production requires `true`; false fails startup/readiness. |
 | `DATABASE_URL` | Pooled restricted-role PostgreSQL connection for the long-running app. | Required | `<runtime-database-url-from-secret-store>` | Yes | Used only by application runtime; production startup checks the connected role and privilege posture before listening. |
-| `DATABASE_EXPECTED_RUNTIME_ROLE` | Expected restricted PostgreSQL runtime role. | Required in production | `platform_runtime` | No | Must be a safe PostgreSQL identifier and exactly match `current_user`; mismatch or unsafe posture fails before listen. |
 | `DATABASE_OPERATOR_URL` | Owner/migration connection for operator readiness and migrations. | Required for production operator commands only | `<operator-database-url-from-secret-store>` | Yes | Never configure on the long-running Coolify app; production operator commands fail closed when absent. |
 | `DATABASE_SSL_MODE` | Optional DB SSL mode override. | Optional | `<require-or-disable-if-needed>` | No | When set, must be `require` or `disable`; invalid value fails readiness/startup. Use only when the hosted connection string or provider settings do not already enforce the intended SSL behavior. |
 | `DATABASE_MIGRATIONS_CONFIRM` | Manual migration confirmation guard. | Required for migrations only | `apply-reviewed-migrations` | No | Required only for `npm run db:migrate`; app startup never requires it. |
@@ -790,7 +839,7 @@ Run the dry-run checker after env injection and before manual migrations or serv
 npm run platform:readiness-check
 ```
 
-The checker reports only env names, categories, missing/invalid status, and safe guidance. It enforces hosted-only production mode, HTTPS browser/provider-facing URLs, origin-only `PLATFORM_ALLOWED_ORIGINS`, callback URL shape, SQAG handoff base URL shape, and valid Postgres-shaped `DATABASE_URL` plus a safe `DATABASE_EXPECTED_RUNTIME_ROLE`. It does not print values, connect to PostgreSQL, run migrations, start the server, call OIDC, call SQAG, read provider endpoints, or seed access.
+The checker reports only env names, categories, missing/invalid status, and safe guidance. It enforces hosted-only production mode, HTTPS browser/provider-facing URLs, origin-only `PLATFORM_ALLOWED_ORIGINS`, callback URL shape, SQAG handoff base URL shape, and valid Postgres-shaped `DATABASE_URL`. The runtime identity is fixed in code as `platform_runtime`; the checker does not select or override it. It does not print values, connect to PostgreSQL, run migrations, start the server, call OIDC, call SQAG, read provider endpoints, or seed access.
 
 Passing readiness does not approve deployment. It only confirms the current shell has the required categories and safe URL shapes present for hosted internal-alpha review.
 
