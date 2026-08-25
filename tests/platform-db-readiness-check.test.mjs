@@ -246,6 +246,55 @@ test("production-shaped canonical readiness does not require synthetic appdata",
   assert.doesNotMatch(postureQuery, /\bappdata\b/u);
 });
 
+test("missing canonical enum presence remains fail closed", async () => {
+  const fixture = createFakeReadinessClient({
+    migratorPosture: {
+      canonical_enum_presence_exact: false,
+    },
+  });
+  const report = await createDatabaseReadinessReport({
+    env: { DATABASE_OPERATOR_URL: privateDatabaseUrl },
+    expectedMigrationState,
+    clientFactory() {
+      return fixture.client;
+    },
+  });
+
+  assert.equal(report.ok, false);
+  assert.equal(report.status, "schema_not_ready");
+  assert.equal(report.checks.migratorPosture, "failed");
+});
+
+test("canonical enum presence and ownership are required readiness inputs", async () => {
+  const missingFixture = createFakeReadinessClient({
+    migratorPosture: {
+      canonical_enum_presence_exact: false,
+    },
+  });
+  const missingReport = await createDatabaseReadinessReport({
+    env: { DATABASE_OPERATOR_URL: privateDatabaseUrl },
+    expectedMigrationState,
+    clientFactory() {
+      return missingFixture.client;
+    },
+  });
+  assert.equal(missingReport.checks.migratorPosture, "failed");
+
+  const wrongOwnerFixture = createFakeReadinessClient({
+    migratorPosture: {
+      canonical_enum_presence_exact: false,
+    },
+  });
+  const wrongOwnerReport = await createDatabaseReadinessReport({
+    env: { DATABASE_OPERATOR_URL: privateDatabaseUrl },
+    expectedMigrationState,
+    clientFactory() {
+      return wrongOwnerFixture.client;
+    },
+  });
+  assert.equal(wrongOwnerReport.checks.migratorPosture, "failed");
+});
+
 test("unknown non-extension relation drift remains fail closed", async () => {
   const fixture = createFakeReadinessClient({
     migratorPosture: {
@@ -382,6 +431,7 @@ function createFakeReadinessClient(options = {}) {
     migration_ledger_owner_migrator: true,
     application_namespace_relation_owner_exact: true,
     required_application_table_owner_exact: true,
+    canonical_enum_presence_exact: true,
     application_type_owner_exact: true,
     application_routine_owner_exact: true,
     unknown_application_relation_drift_absent: true,

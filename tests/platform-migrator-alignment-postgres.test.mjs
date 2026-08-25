@@ -1011,7 +1011,36 @@ test(
       await primary.appPool.query(
         `revoke temporary on database ${identifier(primary.databaseName)} from public`,
       );
+      const canonicalEnumNames = [
+        "app_status",
+        "entitlement_status",
+        "invitation_status",
+        "membership_status",
+        "role",
+        "user_status",
+        "workspace_membership_approval_status",
+        "workspace_status",
+        "csrf_token_purpose",
+      ];
+      const createdCanonicalEnums = [];
       try {
+        for (const enumName of canonicalEnumNames) {
+          const existingEnum = await primary.adminPool.query(
+            "select exists (" +
+              "select 1 from pg_type type_record " +
+              "join pg_namespace schema_record " +
+              "on schema_record.oid = type_record.typnamespace " +
+              "where schema_record.nspname = 'public' " +
+              "and type_record.typname = $1 " +
+              "and type_record.typtype = 'e') as present",
+            [enumName],
+          );
+          if (existingEnum.rows[0].present) continue;
+          await primary.migratorPasswordPool.query(
+            `create type public.${identifier(enumName)} as enum ('fixture')`,
+          );
+          createdCanonicalEnums.push(enumName);
+        }
         await withProviderBootstrapNamed(primary, async () => {
           const readinessInput = {
             env: {
@@ -1029,6 +1058,181 @@ test(
           );
           assert.equal(readinessReport.status, "ready");
           assert.equal(readinessReport.checks.migratorPosture, "passed");
+
+          const extensionClient = await primary.providerPool.connect();
+          let createdHstoreExtension = false;
+          try {
+            const extensionState = await extensionClient.query(
+              "select exists (select 1 from pg_extension where extname = 'hstore') as present",
+            );
+            assert.equal(extensionState.rows[0].present, false);
+            await extensionClient.query(
+              "create extension hstore schema public",
+            );
+            createdHstoreExtension = true;
+            await extensionClient.query(
+              "create table public.__run176_extension_relation (id integer primary key, payload text)",
+            );
+            await extensionClient.query(
+              "alter extension hstore add table public.__run176_extension_relation",
+            );
+            await extensionClient.query(
+              "create index __run176_extension_index on public.__run176_extension_relation (payload)",
+            );
+
+            const extensionCatalog = await extensionClient.query(
+              "select " +
+                "extension_relation.oid as relation_oid, " +
+                "extension_index.oid as index_oid, " +
+                "hstore_type.oid as hstore_type_oid, " +
+                "hstore_array.oid as hstore_array_oid, " +
+                "exists (select 1 from pg_depend dependency_record " +
+                "where dependency_record.classid = 'pg_class'::regclass " +
+                "and dependency_record.objid = extension_relation.oid " +
+                "and dependency_record.refclassid = 'pg_extension'::regclass " +
+                "and dependency_record.deptype = 'e') as relation_direct_member, " +
+                "exists (select 1 from pg_depend dependency_record " +
+                "where dependency_record.classid = 'pg_class'::regclass " +
+                "and dependency_record.objid = extension_index.oid " +
+                "and dependency_record.refclassid = 'pg_extension'::regclass " +
+                "and dependency_record.deptype = 'e') as index_direct_member, " +
+                "exists (select 1 from pg_depend dependency_record " +
+                "where dependency_record.classid = 'pg_type'::regclass " +
+                "and dependency_record.objid = hstore_array.oid " +
+                "and dependency_record.refclassid = 'pg_type'::regclass " +
+                "and dependency_record.refobjid = hstore_type.oid " +
+                "and dependency_record.deptype in ('a', 'i')) as array_internal_dependency " +
+                "from pg_class extension_relation " +
+                "join pg_namespace extension_namespace " +
+                "on extension_namespace.oid = extension_relation.relnamespace " +
+                "and extension_namespace.nspname = 'public' " +
+                "and extension_relation.relname = '__run176_extension_relation' " +
+                "join pg_class extension_index " +
+                "on extension_index.relnamespace = extension_relation.relnamespace " +
+                "and extension_index.relname = '__run176_extension_index' " +
+                "join pg_type hstore_type " +
+                "on hstore_type.typname = 'hstore' " +
+                "and hstore_type.typnamespace = 'public'::regnamespace " +
+                "join pg_type hstore_array " +
+                "on hstore_array.typelem = hstore_type.oid " +
+                "and hstore_array.typnamespace = 'public'::regnamespace",
+            );
+            assert.equal(extensionCatalog.rows.length, 1);
+            assert.equal(extensionCatalog.rows[0].relation_direct_member, true);
+            assert.equal(extensionCatalog.rows[0].index_direct_member, false);
+            assert.equal(extensionCatalog.rows[0].array_internal_dependency, true);
+
+            const extensionReadinessReport = await createDatabaseReadinessReport(
+              readinessInput,
+            );
+            assert.equal(extensionReadinessReport.status, "ready");
+            assert.equal(
+              extensionReadinessReport.checks.migratorPosture,
+              "passed",
+            );
+
+            await extensionClient.query(
+              "create table public.__run176_user_dependency_relation (id integer references public.__run176_extension_relation(id))",
+            );
+            const ordinaryRelationDependencyReport =
+              await createDatabaseReadinessReport(readinessInput);
+            assert.equal(
+              ordinaryRelationDependencyReport.status,
+              "schema_not_ready",
+            );
+            assert.equal(
+              ordinaryRelationDependencyReport.checks.migratorPosture,
+              "failed",
+            );
+
+            await extensionClient.query(
+              "create domain public.__run176_user_dependency as hstore",
+            );
+            const ordinaryDependencyReport = await createDatabaseReadinessReport(
+              readinessInput,
+            );
+            assert.equal(ordinaryDependencyReport.status, "schema_not_ready");
+            assert.equal(
+              ordinaryDependencyReport.checks.migratorPosture,
+              "failed",
+            );
+          } finally {
+            await extensionClient.query(
+              "drop domain if exists public.__run176_user_dependency",
+            ).catch(() => {});
+            await extensionClient.query(
+              "drop table if exists public.__run176_user_dependency_relation",
+            ).catch(() => {});
+            if (createdHstoreExtension) {
+              await extensionClient.query(
+                "alter extension hstore drop table public.__run176_extension_relation",
+              ).catch(() => {});
+              await extensionClient.query(
+                "drop table if exists public.__run176_extension_relation",
+              ).catch(() => {});
+              await extensionClient.query("drop extension if exists hstore").catch(() => {});
+            }
+            extensionClient.release();
+          }
+
+          const readinessClient = await primary.migratorPasswordPool.connect();
+          const transactionalReadinessInput = {
+            ...readinessInput,
+            clientFactory: async () => ({
+              query: (...args) => readinessClient.query(...args),
+              end: async () => {},
+            }),
+          };
+          try {
+            await readinessClient.query("begin");
+            await readinessClient.query("drop type public.role cascade");
+            const missingEnumReport = await createDatabaseReadinessReport(
+              transactionalReadinessInput,
+            );
+            assert.equal(missingEnumReport.status, "schema_not_ready");
+            assert.equal(missingEnumReport.checks.migratorPosture, "failed");
+            await readinessClient.query("rollback");
+
+            await primary.providerPool.query(
+              "alter type public.role owner to platform_app",
+            );
+            try {
+              const wrongOwnerReport = await createDatabaseReadinessReport(
+                readinessInput,
+              );
+              assert.equal(wrongOwnerReport.status, "schema_not_ready");
+              assert.equal(
+                wrongOwnerReport.checks.migratorPosture,
+                "failed",
+              );
+            } finally {
+              await primary.providerPool.query(
+                "alter type public.role owner to platform_migrator",
+              );
+            }
+          } finally {
+            await readinessClient.query("rollback").catch(() => {});
+            readinessClient.release();
+          }
+
+
+          await primary.migratorPasswordPool.query(
+            "create type public.__run176_unrelated_type as enum ('fixture')",
+          );
+          try {
+            const unrelatedTypeReport = await createDatabaseReadinessReport(
+              readinessInput,
+            );
+            assert.equal(unrelatedTypeReport.status, "schema_not_ready");
+            assert.equal(
+              unrelatedTypeReport.checks.migratorPosture,
+              "failed",
+            );
+          } finally {
+            await primary.migratorPasswordPool.query(
+              "drop type public.__run176_unrelated_type",
+            );
+          }
 
           await primary.migratorPasswordPool.query(
             "create table public.__run173_unknown_relation (id integer)",
@@ -1061,6 +1265,11 @@ test(
           }
         });
       } finally {
+        for (const enumName of [...createdCanonicalEnums].reverse()) {
+          await primary.adminPool.query(
+            `drop type if exists public.${identifier(enumName)} cascade`,
+          ).catch(() => {});
+        }
         await primary.appPool.query(
           `grant temporary on database ${identifier(primary.databaseName)} to public`,
         );
