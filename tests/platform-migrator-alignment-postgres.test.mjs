@@ -1013,7 +1013,7 @@ test(
       );
       try {
         await withProviderBootstrapNamed(primary, async () => {
-          const readinessReport = await createDatabaseReadinessReport({
+          const readinessInput = {
             env: {
               DATABASE_OPERATOR_URL:
                 "postgres://platform_migrator@disposable.invalid/swooshz_platform",
@@ -1023,9 +1023,42 @@ test(
               query: (...args) => primary.migratorPasswordPool.query(...args),
               end: async () => {},
             }),
-          });
+          };
+          const readinessReport = await createDatabaseReadinessReport(
+            readinessInput,
+          );
           assert.equal(readinessReport.status, "ready");
           assert.equal(readinessReport.checks.migratorPosture, "passed");
+
+          await primary.migratorPasswordPool.query(
+            "create table public.__run173_unknown_relation (id integer)",
+          );
+          try {
+            const relationDriftReport = await createDatabaseReadinessReport(
+              readinessInput,
+            );
+            assert.equal(relationDriftReport.status, "schema_not_ready");
+            assert.equal(relationDriftReport.checks.migratorPosture, "failed");
+          } finally {
+            await primary.migratorPasswordPool.query(
+              "drop table public.__run173_unknown_relation",
+            );
+          }
+
+          await primary.migratorPasswordPool.query(
+            "create function public.__run173_unknown_routine() returns integer language sql immutable as 'select 1'",
+          );
+          try {
+            const routineDriftReport = await createDatabaseReadinessReport(
+              readinessInput,
+            );
+            assert.equal(routineDriftReport.status, "schema_not_ready");
+            assert.equal(routineDriftReport.checks.migratorPosture, "failed");
+          } finally {
+            await primary.migratorPasswordPool.query(
+              "drop function public.__run173_unknown_routine()",
+            );
+          }
         });
       } finally {
         await primary.appPool.query(

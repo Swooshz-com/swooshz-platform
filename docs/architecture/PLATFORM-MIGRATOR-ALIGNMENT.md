@@ -62,6 +62,9 @@ objects. `platform_migrator` receives only the schema/database privileges
 needed for reviewed migrations; it is not made database owner and does not
 receive `CREATEDB`. `platform_runtime` has effective database `CONNECT=true`,
 `CREATE=false`, and `TEMPORARY=false`.
+Synthetic `appdata` objects used by the disposable migrator-alignment
+fixture are fixture-only and are not a live production namespace or readiness
+requirement.
 
 Every membership read is scoped to rows where a selected role is the granted
 role, member, or grantor. The only accepted creator-admin tuple touching
