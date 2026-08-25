@@ -1011,9 +1011,38 @@ test(
       await primary.appPool.query(
         `revoke temporary on database ${identifier(primary.databaseName)} from public`,
       );
+      const canonicalEnumNames = [
+        "app_status",
+        "entitlement_status",
+        "invitation_status",
+        "membership_status",
+        "role",
+        "user_status",
+        "workspace_membership_approval_status",
+        "workspace_status",
+        "csrf_token_purpose",
+      ];
+      const createdCanonicalEnums = [];
       try {
+        for (const enumName of canonicalEnumNames) {
+          const existingEnum = await primary.adminPool.query(
+            "select exists (" +
+              "select 1 from pg_type type_record " +
+              "join pg_namespace schema_record " +
+              "on schema_record.oid = type_record.typnamespace " +
+              "where schema_record.nspname = 'public' " +
+              "and type_record.typname = $1 " +
+              "and type_record.typtype = 'e') as present",
+            [enumName],
+          );
+          if (existingEnum.rows[0].present) continue;
+          await primary.migratorPasswordPool.query(
+            `create type public.${identifier(enumName)} as enum ('fixture')`,
+          );
+          createdCanonicalEnums.push(enumName);
+        }
         await withProviderBootstrapNamed(primary, async () => {
-          const readinessReport = await createDatabaseReadinessReport({
+          const readinessInput = {
             env: {
               DATABASE_OPERATOR_URL:
                 "postgres://platform_migrator@disposable.invalid/swooshz_platform",
@@ -1023,11 +1052,403 @@ test(
               query: (...args) => primary.migratorPasswordPool.query(...args),
               end: async () => {},
             }),
-          });
+          };
+          const readinessReport = await createDatabaseReadinessReport(
+            readinessInput,
+          );
           assert.equal(readinessReport.status, "ready");
           assert.equal(readinessReport.checks.migratorPosture, "passed");
+
+          const extensionClient = await primary.providerPool.connect();
+          const tddRedFailures = [];
+          const ledgerSequenceName = "__run178_drizzle_migrations_id_seq";
+          let ledgerShapePrepared = false;
+          let createdHstoreExtension = false;
+          let ledgerAttachedToExtension = false;
+          try {
+            await primary.migratorPasswordPool.query(
+              "create sequence drizzle.__run178_drizzle_migrations_id_seq",
+            );
+            ledgerShapePrepared = true;
+            await primary.migratorPasswordPool.query(
+              "alter sequence drizzle.__run178_drizzle_migrations_id_seq owned by drizzle.__drizzle_migrations.id",
+            );
+            await primary.migratorPasswordPool.query(
+              "alter table drizzle.__drizzle_migrations alter column id set default nextval('drizzle.__run178_drizzle_migrations_id_seq'::regclass)",
+            );
+            await primary.migratorPasswordPool.query(
+              "alter table drizzle.__drizzle_migrations add column created_at bigint not null default 0",
+            );
+            const extensionState = await extensionClient.query(
+              "select exists (select 1 from pg_extension where extname = 'hstore') as present",
+            );
+            assert.equal(extensionState.rows[0].present, false);
+            await extensionClient.query(
+              "create extension hstore schema public",
+            );
+            createdHstoreExtension = true;
+            await extensionClient.query(
+              "create table public.__run176_extension_relation (id integer primary key, payload text)",
+            );
+            await extensionClient.query(
+              "alter extension hstore add table public.__run176_extension_relation",
+            );
+            await extensionClient.query(
+              "create index __run176_extension_index on public.__run176_extension_relation (payload)",
+            );
+
+            const extensionCatalog = await extensionClient.query(
+              "select " +
+                "extension_relation.oid as relation_oid, " +
+                "extension_index.oid as index_oid, " +
+                "hstore_type.oid as hstore_type_oid, " +
+                "hstore_array.oid as hstore_array_oid, " +
+                "exists (select 1 from pg_depend dependency_record " +
+                "where dependency_record.classid = 'pg_class'::regclass " +
+                "and dependency_record.objid = extension_relation.oid " +
+                "and dependency_record.refclassid = 'pg_extension'::regclass " +
+                "and dependency_record.deptype = 'e') as relation_direct_member, " +
+                "exists (select 1 from pg_depend dependency_record " +
+                "where dependency_record.classid = 'pg_class'::regclass " +
+                "and dependency_record.objid = extension_index.oid " +
+                "and dependency_record.refclassid = 'pg_extension'::regclass " +
+                "and dependency_record.deptype = 'e') as index_direct_member, " +
+                "exists (select 1 from pg_depend dependency_record " +
+                "where dependency_record.classid = 'pg_type'::regclass " +
+                "and dependency_record.objid = hstore_array.oid " +
+                "and dependency_record.refclassid = 'pg_type'::regclass " +
+                "and dependency_record.refobjid = hstore_type.oid " +
+                "and dependency_record.deptype in ('a', 'i')) as array_internal_dependency " +
+                "from pg_class extension_relation " +
+                "join pg_namespace extension_namespace " +
+                "on extension_namespace.oid = extension_relation.relnamespace " +
+                "and extension_namespace.nspname = 'public' " +
+                "and extension_relation.relname = '__run176_extension_relation' " +
+                "join pg_class extension_index " +
+                "on extension_index.relnamespace = extension_relation.relnamespace " +
+                "and extension_index.relname = '__run176_extension_index' " +
+                "join pg_type hstore_type " +
+                "on hstore_type.typname = 'hstore' " +
+                "and hstore_type.typnamespace = 'public'::regnamespace " +
+                "join pg_type hstore_array " +
+                "on hstore_array.typelem = hstore_type.oid " +
+                "and hstore_array.typnamespace = 'public'::regnamespace",
+            );
+            assert.equal(extensionCatalog.rows.length, 1);
+            assert.equal(extensionCatalog.rows[0].relation_direct_member, true);
+            assert.equal(extensionCatalog.rows[0].index_direct_member, false);
+            const ledgerRowTypeDependencyCatalog = await extensionClient.query(
+              "select array_agg(distinct dependency_record.deptype::text order by dependency_record.deptype::text) as dependency_classes " +
+                "from pg_type row_type " +
+                "join pg_depend dependency_record " +
+                "on dependency_record.classid = 'pg_type'::regclass " +
+                "and dependency_record.objid = row_type.oid " +
+                "and dependency_record.refclassid = 'pg_class'::regclass " +
+                "and dependency_record.refobjid = row_type.typrelid " +
+                "where row_type.typrelid = 'drizzle.__drizzle_migrations'::regclass",
+            );
+            const ledgerIndexDependencyCatalog = await extensionClient.query(
+              "select count(*)::int as index_count, " +
+                "array_agg(distinct dependency_record.deptype::text order by dependency_record.deptype::text) filter (where dependency_record.deptype is not null) as dependency_classes " +
+                "from pg_index index_record " +
+                "left join pg_depend dependency_record " +
+                "on dependency_record.classid = 'pg_class'::regclass " +
+                "and dependency_record.objid = index_record.indexrelid " +
+                "where index_record.indrelid = 'drizzle.__drizzle_migrations'::regclass",
+            );
+            const ledgerSequenceDependencyCatalog = await extensionClient.query(
+              "select array_agg(distinct dependency_record.deptype::text order by dependency_record.deptype::text) as dependency_classes " +
+                "from pg_class sequence_record " +
+                "join pg_depend dependency_record " +
+                "on dependency_record.classid = 'pg_class'::regclass " +
+                "and dependency_record.objid = sequence_record.oid " +
+                "and dependency_record.refclassid = 'pg_class'::regclass " +
+                "and dependency_record.refobjid = 'drizzle.__drizzle_migrations'::regclass " +
+                "where sequence_record.relnamespace = 'drizzle'::regnamespace " +
+                "and sequence_record.relname = '" + ledgerSequenceName + "'",
+            );
+            for (const [surface, dependencyCatalog] of [
+              ["row_type", ledgerRowTypeDependencyCatalog],
+              ["index", ledgerIndexDependencyCatalog],
+              ["serial_sequence", ledgerSequenceDependencyCatalog],
+            ]) {
+              assert.equal(dependencyCatalog.rows.length, 1);
+              const dependencyClasses =
+                dependencyCatalog.rows[0].dependency_classes ?? [];
+              assert.ok(
+                Array.isArray(dependencyClasses),
+                surface +
+                  " dependency classes: " +
+                  JSON.stringify(dependencyClasses),
+              );
+              if (surface === "index") {
+                assert.ok(dependencyCatalog.rows[0].index_count > 0);
+              } else {
+                assert.ok(dependencyClasses.length > 0);
+              }
+            }
+
+            assert.equal(extensionCatalog.rows[0].array_internal_dependency, true);
+
+            await extensionClient.query(
+              "alter extension hstore add table drizzle.__drizzle_migrations",
+            );
+            ledgerAttachedToExtension = true;
+            const ledgerExtensionCatalog = await extensionClient.query(
+              "select ledger.relkind as ledger_relkind, " +
+                "pg_get_userbyid(ledger.relowner) as ledger_owner, " +
+                "exists (select 1 from pg_depend dependency_record " +
+                "where dependency_record.classid = 'pg_class'::regclass " +
+                "and dependency_record.objid = ledger.oid " +
+                "and dependency_record.refclassid = 'pg_extension'::regclass " +
+                "and dependency_record.deptype = 'e') as ledger_direct_member, " +
+                "exists (select 1 from pg_class sequence_record " +
+                "join pg_depend dependency_record " +
+                "on dependency_record.classid = 'pg_class'::regclass " +
+                "and dependency_record.objid = sequence_record.oid " +
+                "and dependency_record.refclassid = 'pg_class'::regclass " +
+                "and dependency_record.refobjid = ledger.oid " +
+                "and dependency_record.deptype in ('a', 'i') " +
+                "where sequence_record.relnamespace = ledger.relnamespace " +
+                "and sequence_record.relname = '" + ledgerSequenceName + "') as serial_sequence_present " +
+                "from pg_class ledger " +
+                "where ledger.relnamespace = 'drizzle'::regnamespace " +
+                "and ledger.relname = '__drizzle_migrations'",
+            );
+            assert.equal(ledgerExtensionCatalog.rows.length, 1);
+            assert.equal(ledgerExtensionCatalog.rows[0].ledger_relkind, "r");
+            assert.equal(ledgerExtensionCatalog.rows[0].ledger_owner, "platform_migrator");
+            assert.equal(ledgerExtensionCatalog.rows[0].ledger_direct_member, true);
+            assert.equal(ledgerExtensionCatalog.rows[0].serial_sequence_present, true);
+
+            const extensionReadinessReport = await createDatabaseReadinessReport(
+              readinessInput,
+            );
+            try {
+              assert.equal(extensionReadinessReport.status, "schema_not_ready");
+              assert.equal(
+                extensionReadinessReport.checks.migratorPosture,
+                "failed",
+              );
+            } catch {
+              tddRedFailures.push("canonical Drizzle ledger direct extension membership remained READY");
+            }
+
+            await extensionClient.query(
+              "alter extension hstore drop table drizzle.__drizzle_migrations",
+            );
+            ledgerAttachedToExtension = false;
+            const restoredLedgerReadinessReport =
+              await createDatabaseReadinessReport(readinessInput);
+            assert.equal(restoredLedgerReadinessReport.status, "ready");
+            assert.equal(
+              restoredLedgerReadinessReport.checks.migratorPosture,
+              "passed",
+            );
+
+            await extensionClient.query(
+              "create table public.__run176_user_dependency_relation (id integer references public.__run176_extension_relation(id))",
+            );
+            const ordinaryRelationDependencyCatalog = await extensionClient.query(
+              "select array_agg(distinct dependency_record.deptype::text order by dependency_record.deptype::text) as dependency_classes " +
+                "from pg_constraint constraint_record " +
+                "join pg_depend dependency_record " +
+                "on dependency_record.classid = 'pg_constraint'::regclass " +
+                "and dependency_record.objid = constraint_record.oid " +
+                "and dependency_record.refclassid = 'pg_class'::regclass " +
+                "and dependency_record.refobjid = 'public.__run176_extension_relation'::regclass " +
+                "where constraint_record.conrelid = 'public.__run176_user_dependency_relation'::regclass",
+            );
+            const ordinaryRelationDependencyClasses =
+              ordinaryRelationDependencyCatalog.rows[0]?.dependency_classes ?? [];
+            assert.ok(ordinaryRelationDependencyClasses.includes("n"));
+            const ordinaryRelationDependencyReport =
+              await createDatabaseReadinessReport(readinessInput);
+            assert.equal(
+              ordinaryRelationDependencyReport.status,
+              "schema_not_ready",
+            );
+            assert.equal(
+              ordinaryRelationDependencyReport.checks.migratorPosture,
+              "failed",
+            );
+            await extensionClient.query(
+              "drop table public.__run176_user_dependency_relation",
+            );
+            const relationRestoredReadinessReport =
+              await createDatabaseReadinessReport(readinessInput);
+            assert.equal(relationRestoredReadinessReport.status, "ready");
+            assert.equal(
+              relationRestoredReadinessReport.checks.migratorPosture,
+              "passed",
+            );
+
+            await extensionClient.query(
+              "create domain public.__run176_user_dependency as hstore",
+            );
+            const domainDependencyCatalog = await extensionClient.query(
+              "select array_agg(distinct dependency_record.deptype::text order by dependency_record.deptype::text) as dependency_classes " +
+                "from pg_depend dependency_record " +
+                "where dependency_record.classid = 'pg_type'::regclass " +
+                "and dependency_record.objid = 'public.__run176_user_dependency'::regtype " +
+                "and dependency_record.refclassid = 'pg_type'::regclass " +
+                "and dependency_record.refobjid = 'public.hstore'::regtype",
+            );
+            const domainDependencyClasses =
+              domainDependencyCatalog.rows[0]?.dependency_classes ?? [];
+            assert.ok(domainDependencyClasses.includes("n"));
+            const isolatedDomainReadinessReport =
+              await createDatabaseReadinessReport(readinessInput);
+            assert.equal(
+              isolatedDomainReadinessReport.status,
+              "schema_not_ready",
+            );
+            assert.equal(
+              isolatedDomainReadinessReport.checks.migratorPosture,
+              "failed",
+            );
+            await extensionClient.query(
+              "drop domain public.__run176_user_dependency",
+            );
+            const domainRestoredReadinessReport =
+              await createDatabaseReadinessReport(readinessInput);
+            assert.equal(domainRestoredReadinessReport.status, "ready");
+            assert.equal(
+              domainRestoredReadinessReport.checks.migratorPosture,
+              "passed",
+            );
+          } finally {
+            await extensionClient.query(
+              "drop domain if exists public.__run176_user_dependency",
+            ).catch(() => {});
+            await extensionClient.query(
+              "drop table if exists public.__run176_user_dependency_relation",
+            ).catch(() => {});
+            if (createdHstoreExtension) {
+              if (ledgerAttachedToExtension) {
+                await extensionClient.query(
+                  "alter extension hstore drop table drizzle.__drizzle_migrations",
+                ).catch(() => {});
+              }
+              await extensionClient.query(
+                "alter extension hstore drop table public.__run176_extension_relation",
+              ).catch(() => {});
+              await extensionClient.query(
+                "drop table if exists public.__run176_extension_relation",
+              ).catch(() => {});
+              await extensionClient.query("drop extension if exists hstore").catch(() => {});
+            }
+            extensionClient.release();
+            if (ledgerShapePrepared) {
+              await primary.migratorPasswordPool.query(
+                "alter table drizzle.__drizzle_migrations alter column id drop default",
+              ).catch(() => {});
+              await primary.migratorPasswordPool.query(
+                "alter table drizzle.__drizzle_migrations drop column created_at",
+              ).catch(() => {});
+              await primary.migratorPasswordPool.query(
+                "drop sequence if exists drizzle.__run178_drizzle_migrations_id_seq",
+              ).catch(() => {});
+            }
+          }
+
+          const readinessClient = await primary.migratorPasswordPool.connect();
+          assert.deepEqual(tddRedFailures, [], tddRedFailures.join("; "));
+
+          const transactionalReadinessInput = {
+            ...readinessInput,
+            clientFactory: async () => ({
+              query: (...args) => readinessClient.query(...args),
+              end: async () => {},
+            }),
+          };
+          try {
+            await readinessClient.query("begin");
+            await readinessClient.query("drop type public.role cascade");
+            const missingEnumReport = await createDatabaseReadinessReport(
+              transactionalReadinessInput,
+            );
+            assert.equal(missingEnumReport.status, "schema_not_ready");
+            assert.equal(missingEnumReport.checks.migratorPosture, "failed");
+            await readinessClient.query("rollback");
+
+            await primary.providerPool.query(
+              "alter type public.role owner to platform_app",
+            );
+            try {
+              const wrongOwnerReport = await createDatabaseReadinessReport(
+                readinessInput,
+              );
+              assert.equal(wrongOwnerReport.status, "schema_not_ready");
+              assert.equal(
+                wrongOwnerReport.checks.migratorPosture,
+                "failed",
+              );
+            } finally {
+              await primary.providerPool.query(
+                "alter type public.role owner to platform_migrator",
+              );
+            }
+          } finally {
+            await readinessClient.query("rollback").catch(() => {});
+            readinessClient.release();
+          }
+
+
+          await primary.migratorPasswordPool.query(
+            "create type public.__run176_unrelated_type as enum ('fixture')",
+          );
+          try {
+            const unrelatedTypeReport = await createDatabaseReadinessReport(
+              readinessInput,
+            );
+            assert.equal(unrelatedTypeReport.status, "schema_not_ready");
+            assert.equal(
+              unrelatedTypeReport.checks.migratorPosture,
+              "failed",
+            );
+          } finally {
+            await primary.migratorPasswordPool.query(
+              "drop type public.__run176_unrelated_type",
+            );
+          }
+
+          await primary.migratorPasswordPool.query(
+            "create table public.__run173_unknown_relation (id integer)",
+          );
+          try {
+            const relationDriftReport = await createDatabaseReadinessReport(
+              readinessInput,
+            );
+            assert.equal(relationDriftReport.status, "schema_not_ready");
+            assert.equal(relationDriftReport.checks.migratorPosture, "failed");
+          } finally {
+            await primary.migratorPasswordPool.query(
+              "drop table public.__run173_unknown_relation",
+            );
+          }
+
+          await primary.migratorPasswordPool.query(
+            "create function public.__run173_unknown_routine() returns integer language sql immutable as 'select 1'",
+          );
+          try {
+            const routineDriftReport = await createDatabaseReadinessReport(
+              readinessInput,
+            );
+            assert.equal(routineDriftReport.status, "schema_not_ready");
+            assert.equal(routineDriftReport.checks.migratorPosture, "failed");
+          } finally {
+            await primary.migratorPasswordPool.query(
+              "drop function public.__run173_unknown_routine()",
+            );
+          }
         });
       } finally {
+        for (const enumName of [...createdCanonicalEnums].reverse()) {
+          await primary.adminPool.query(
+            `drop type if exists public.${identifier(enumName)} cascade`,
+          ).catch(() => {});
+        }
         await primary.appPool.query(
           `grant temporary on database ${identifier(primary.databaseName)} to public`,
         );

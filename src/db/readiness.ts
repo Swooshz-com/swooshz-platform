@@ -22,7 +22,21 @@ export const REQUIRED_PLATFORM_TABLES = [
   "app_entitlements",
   "access_validation_grants",
 ] as const;
+const CANONICAL_PLATFORM_TABLES = REQUIRED_PLATFORM_TABLES;
 
+const CANONICAL_PLATFORM_ENUM_TYPES = [
+  "app_status",
+  "entitlement_status",
+  "invitation_status",
+  "membership_status",
+  "role",
+  "user_status",
+  "workspace_membership_approval_status",
+  "workspace_status",
+  "csrf_token_purpose",
+] as const;
+
+const CANONICAL_PLATFORM_ROUTINES = [] as const;
 export type DatabaseReadinessStatus =
   | "db_config_missing"
   | "db_config_invalid"
@@ -94,7 +108,7 @@ select count(*)::int as applied_count, max(created_at)::bigint as latest_created
 from drizzle.__drizzle_migrations
 `;
 const migratorPostureSql = `
-with
+with recursive
 migrator_role as (
   select oid, rolcanlogin, rolinherit, rolsuper, rolcreatedb, rolcreaterole,
     rolreplication, rolbypassrls
@@ -119,20 +133,40 @@ database_state as (
 schema_state as (
   select oid, nspname, nspowner, nspacl
   from pg_namespace
-  where nspname in ('public', 'appdata', 'drizzle')
+  where nspname in ('public', 'drizzle')
 ),
-ledger_state as (
-  select
-    schema_record.oid as schema_oid,
-    migration_record.oid as ledger_oid,
-    migration_record.relowner as ledger_owner
-  from pg_namespace schema_record
-  left join pg_class migration_record
-    on migration_record.relnamespace = schema_record.oid
-    and migration_record.relname = '__drizzle_migrations'
-  where schema_record.nspname = 'drizzle'
+extension_owned_objects as (
+  select classid, objid
+  from pg_depend
+  where refclassid = 'pg_extension'::regclass
+    and deptype = 'e'
 ),
-application_relations as (
+extension_dependency_objects as (
+  select classid, objid
+  from extension_owned_objects
+
+  union
+
+  select dependency_record.classid, dependency_record.objid
+  from pg_depend dependency_record
+  join extension_dependency_objects extension_record
+    on dependency_record.refclassid = extension_record.classid
+   and dependency_record.refobjid = extension_record.objid
+  where dependency_record.deptype in ('a', 'i', 'P', 'S')
+    and dependency_record.classid in (
+      'pg_class'::regclass,
+      'pg_type'::regclass,
+      'pg_proc'::regclass,
+      'pg_constraint'::regclass
+    )
+    and dependency_record.refclassid in (
+      'pg_class'::regclass,
+      'pg_type'::regclass,
+      'pg_proc'::regclass,
+      'pg_constraint'::regclass
+    )
+),
+extension_dependent_relations as (
   select
     relation_record.oid,
     relation_record.relname,
@@ -143,23 +177,334 @@ application_relations as (
   from pg_class relation_record
   join pg_namespace relation_schema
     on relation_schema.oid = relation_record.relnamespace
-  where relation_schema.nspname in ('public', 'appdata', 'drizzle')
-    and relation_record.relkind in ('r', 'p', 'v', 'm', 'f', 'S', 'i', 'I')
+  where relation_schema.nspname in ('public', 'drizzle')
+    and relation_record.relkind in ('r', 'p', 'S', 'i', 'I')
+    and not exists (
+      select 1
+      from extension_owned_objects extension_record
+      where extension_record.classid = 'pg_class'::regclass
+        and extension_record.objid = relation_record.oid
+    )
+    and exists (
+      select 1
+      from extension_dependency_objects extension_record
+      where extension_record.classid = 'pg_class'::regclass
+        and extension_record.objid = relation_record.oid
+    )
+),
+extension_dependent_types as (
+  select extension_record.objid as oid
+  from extension_dependency_objects extension_record
+  where extension_record.classid = 'pg_type'::regclass
+
+  union
+
+  select type_record.oid
+  from pg_type type_record
+  where type_record.typisdefined
+    and type_record.typelem in (
+      select extension_record.objid
+      from extension_dependency_objects extension_record
+      where extension_record.classid = 'pg_type'::regclass
+    )
+    and exists (
+      select 1
+      from pg_depend dependency_record
+      where dependency_record.classid = 'pg_type'::regclass
+        and dependency_record.objid = type_record.oid
+        and dependency_record.refclassid = 'pg_type'::regclass
+        and dependency_record.refobjid = type_record.typelem
+        and dependency_record.deptype in ('a', 'i', 'P', 'S')
+    )
+),
+ledger_state as (
+  select
+    schema_record.oid as schema_oid,
+    migration_record.oid as ledger_oid,
+    migration_record.relowner as ledger_owner,
+    migration_record.relkind as ledger_relkind,
+    exists (
+      select 1
+      from extension_owned_objects extension_record
+      where extension_record.classid = 'pg_class'::regclass
+        and extension_record.objid = migration_record.oid
+    ) as ledger_direct_extension_member
+  from pg_namespace schema_record
+  left join pg_class migration_record
+    on migration_record.relnamespace = schema_record.oid
+    and migration_record.relname = '__drizzle_migrations'
+  where schema_record.nspname = 'drizzle'
+),
+canonical_table_relations as (
+  select
+    relation_record.oid,
+    relation_record.relname,
+    relation_record.relkind,
+    relation_record.relowner,
+    relation_record.relnamespace,
+    relation_record.relacl
+  from pg_class relation_record
+  join pg_namespace relation_schema
+    on relation_schema.oid = relation_record.relnamespace
+  where relation_schema.nspname = 'public'
+    and relation_record.relname = any($2::text[])
+    and relation_record.relkind in ('r', 'p')
+    and not exists (
+      select 1
+      from extension_owned_objects extension_record
+      where extension_record.classid = 'pg_class'::regclass
+        and extension_record.objid = relation_record.oid
+    )
+),
+canonical_drizzle_relations as (
+  select
+    relation_record.oid,
+    relation_record.relname,
+    relation_record.relkind,
+    relation_record.relowner,
+    relation_record.relnamespace,
+    relation_record.relacl
+  from pg_class relation_record
+  join pg_namespace relation_schema
+    on relation_schema.oid = relation_record.relnamespace
+  where relation_schema.nspname = 'drizzle'
+    and relation_record.relname = '__drizzle_migrations'
+    and relation_record.relkind in ('r', 'p')
+    and not exists (
+      select 1
+      from extension_owned_objects extension_record
+      where extension_record.classid = 'pg_class'::regclass
+        and extension_record.objid = relation_record.oid
+    )
+),
+canonical_base_relations as (
+  select
+    oid,
+    relname,
+    relkind,
+    relowner,
+    relnamespace,
+    relacl
+  from canonical_table_relations
+  union all
+  select
+    oid,
+    relname,
+    relkind,
+    relowner,
+    relnamespace,
+    relacl
+  from canonical_drizzle_relations
+),
+canonical_dependent_relations as (
+  select
+    relation_record.oid,
+    relation_record.relname,
+    relation_record.relkind,
+    relation_record.relowner,
+    relation_record.relnamespace,
+    relation_record.relacl
+  from pg_class relation_record
+  join pg_namespace relation_schema
+    on relation_schema.oid = relation_record.relnamespace
+  where relation_schema.nspname in ('public', 'drizzle')
+    and relation_record.relkind in ('S', 'i', 'I')
+    and (
+      (
+        relation_record.relkind in ('i', 'I')
+        and exists (
+          select 1
+          from pg_index index_record
+          where index_record.indexrelid = relation_record.oid
+            and index_record.indrelid in (
+              select oid
+              from canonical_base_relations
+            )
+        )
+      )
+      or (
+        relation_record.relkind = 'S'
+        and exists (
+          select 1
+          from pg_depend dependency_record
+          where dependency_record.classid = 'pg_class'::regclass
+            and dependency_record.objid = relation_record.oid
+            and dependency_record.refclassid = 'pg_class'::regclass
+            and dependency_record.refobjid in (
+              select oid
+              from canonical_base_relations
+            )
+            and dependency_record.deptype in ('a', 'i')
+        )
+      )
+    )
+),
+application_relations as (
+  select
+    oid,
+    relname,
+    relkind,
+    relowner,
+    relnamespace,
+    relacl
+  from canonical_base_relations
+  union all
+  select
+    oid,
+    relname,
+    relkind,
+    relowner,
+    relnamespace,
+    relacl
+  from canonical_dependent_relations
+),
+canonical_enum_types as (
+  select type_record.oid, type_record.typname, type_record.typowner
+  from pg_type type_record
+  join pg_namespace type_schema
+    on type_schema.oid = type_record.typnamespace
+  where type_schema.nspname = 'public'
+    and type_record.typname = any($3::text[])
+    and type_record.typtype = 'e'
+    and type_record.typisdefined
+    and not exists (
+      select 1
+      from extension_owned_objects extension_record
+      where extension_record.classid = 'pg_type'::regclass
+        and extension_record.objid = type_record.oid
+    )
+),
+canonical_table_row_types as (
+  select type_record.oid
+  from pg_type type_record
+  where type_record.typisdefined
+    and type_record.typrelid in (
+      select oid
+      from canonical_base_relations
+    )
+    and not exists (
+      select 1
+      from extension_owned_objects extension_record
+      where extension_record.classid = 'pg_type'::regclass
+        and extension_record.objid = type_record.oid
+    )
 ),
 application_types as (
   select type_record.oid, type_record.typowner
   from pg_type type_record
   join pg_namespace type_schema
     on type_schema.oid = type_record.typnamespace
-  where type_schema.nspname in ('public', 'appdata', 'drizzle')
+  where type_schema.nspname in ('public', 'drizzle')
     and type_record.typisdefined
+    and not exists (
+      select 1
+      from extension_owned_objects extension_record
+      where extension_record.classid = 'pg_type'::regclass
+        and extension_record.objid = type_record.oid
+    )
+    and (
+      type_record.oid in (
+        select oid
+        from canonical_enum_types
+      )
+      or type_record.oid in (
+        select oid
+        from canonical_table_row_types
+      )
+      or type_record.typelem in (
+        select oid
+        from canonical_enum_types
+        union all
+        select oid
+        from canonical_table_row_types
+      )
+    )
 ),
 application_routines as (
   select routine_record.oid, routine_record.proowner, routine_record.proacl
   from pg_proc routine_record
   join pg_namespace routine_schema
     on routine_schema.oid = routine_record.pronamespace
-  where routine_schema.nspname in ('public', 'appdata', 'drizzle')
+  where routine_schema.nspname in ('public', 'drizzle')
+    and routine_record.proname = any($4::text[])
+    and not exists (
+      select 1
+      from extension_owned_objects extension_record
+      where extension_record.classid = 'pg_proc'::regclass
+        and extension_record.objid = routine_record.oid
+    )
+),
+unknown_application_relations as (
+  select relation_record.oid
+  from pg_class relation_record
+  join pg_namespace relation_schema
+    on relation_schema.oid = relation_record.relnamespace
+  where relation_schema.nspname in ('public', 'drizzle')
+    and relation_record.relkind in ('r', 'p', 'v', 'm', 'f', 'S', 'i', 'I')
+    and not exists (
+      select 1
+      from extension_owned_objects extension_record
+      where extension_record.classid = 'pg_class'::regclass
+        and extension_record.objid = relation_record.oid
+    )
+    and not exists (
+      select 1
+      from extension_dependent_relations extension_record
+      where extension_record.oid = relation_record.oid
+    )
+    and not exists (
+      select 1
+      from application_relations application_record
+      where application_record.oid = relation_record.oid
+    )
+),
+unknown_application_types as (
+  select type_record.oid
+  from pg_type type_record
+  join pg_namespace type_schema
+    on type_schema.oid = type_record.typnamespace
+  where type_schema.nspname in ('public', 'drizzle')
+    and type_record.typisdefined
+    and not exists (
+      select 1
+      from extension_owned_objects extension_record
+      where extension_record.classid = 'pg_type'::regclass
+        and extension_record.objid = type_record.oid
+    )
+    and not exists (
+      select 1
+      from extension_dependent_types extension_record
+      where extension_record.oid = type_record.oid
+    )
+    and not exists (
+      select 1
+      from application_types application_record
+      where application_record.oid = type_record.oid
+    )
+),
+unknown_application_routines as (
+  select routine_record.oid
+  from pg_proc routine_record
+  join pg_namespace routine_schema
+    on routine_schema.oid = routine_record.pronamespace
+  where routine_schema.nspname in ('public', 'drizzle')
+    and not exists (
+      select 1
+      from extension_owned_objects extension_record
+      where extension_record.classid = 'pg_proc'::regclass
+        and extension_record.objid = routine_record.oid
+    )
+    and not exists (
+      select 1
+      from extension_dependency_objects extension_record
+      where extension_record.classid = 'pg_proc'::regclass
+        and extension_record.objid = routine_record.oid
+    )
+    and not exists (
+      select 1
+      from application_routines application_record
+      where application_record.oid = routine_record.oid
+    )
 ),
 migrator_memberships as (
   select
@@ -264,15 +609,15 @@ select
     where schema_state.nspname = 'drizzle'
   ), false) as drizzle_schema_migrator_authority,
   coalesce((
-    select count(*) = 2
-      and bool_and(
+    select count(*) = 1
+      and coalesce(bool_and(
         schema_record.nspowner = migrator_role.oid
         and has_schema_privilege(migrator_role.oid, schema_record.oid, 'USAGE')
         and has_schema_privilege(migrator_role.oid, schema_record.oid, 'CREATE')
-      )
+      ), true)
     from schema_state schema_record
     cross join migrator_role
-    where schema_record.nspname in ('appdata', 'drizzle')
+    where schema_record.nspname = 'drizzle'
   ), false) as application_schema_authority_exact,
   coalesce((
     select ledger_state.ledger_owner = migrator_role.oid
@@ -280,6 +625,24 @@ select
     cross join migrator_role
     where ledger_state.ledger_oid is not null
   ), false) as migration_ledger_owner_migrator,
+  coalesce((
+    select count(*) = 1
+      and coalesce(bool_and(
+        ledger_state.ledger_oid is not null
+        and ledger_state.ledger_relkind in ('r', 'p')
+        and not ledger_state.ledger_direct_extension_member
+      ), false)
+    from ledger_state
+  ), false) as canonical_drizzle_ledger_relation_exact,
+  coalesce((
+    select not exists (
+      select 1
+      from canonical_dependent_relations relation_record
+      join extension_owned_objects extension_record
+        on extension_record.classid = 'pg_class'::regclass
+        and extension_record.objid = relation_record.oid
+    )
+  ), false) as canonical_dependent_relation_extension_membership_absent,
   coalesce((
     select not exists (
       select 1
@@ -290,17 +653,17 @@ select
   ), false) as application_namespace_relation_owner_exact,
   coalesce((
     select count(*) = cardinality($1::text[])
-    from application_relations relation_record
+      and coalesce(bool_and(relation_record.relowner = migrator_role.oid), true)
+    from canonical_table_relations relation_record
     cross join migrator_role
-    where relation_record.relnamespace = (
-      select oid
-      from schema_state
-      where nspname = 'public'
-    )
-      and relation_record.relname = any($1::text[])
-      and relation_record.relkind in ('r', 'p', 'v', 'm', 'f')
-      and relation_record.relowner = migrator_role.oid
+    where relation_record.relname = any($1::text[])
   ), false) as required_application_table_owner_exact,
+  coalesce((
+    select count(*) = cardinality($3::text[])
+      and coalesce(bool_and(type_record.typowner = migrator_role.oid), false)
+    from canonical_enum_types type_record
+    cross join migrator_role
+  ), false) as canonical_enum_presence_exact,
   coalesce((
     select not exists (
       select 1
@@ -317,6 +680,24 @@ select
     )
     from migrator_role
   ), false) as application_routine_owner_exact,
+  coalesce((
+    select not exists (
+      select 1
+      from unknown_application_relations
+    )
+  ), false) as unknown_application_relation_drift_absent,
+  coalesce((
+    select not exists (
+      select 1
+      from unknown_application_types
+    )
+  ), false) as unknown_application_type_drift_absent,
+  coalesce((
+    select not exists (
+      select 1
+      from unknown_application_routines
+    )
+  ), false) as unknown_application_routine_drift_absent,
   coalesce((
     select not exists (
       select 1
@@ -653,8 +1034,14 @@ const MIGRATOR_READINESS_FIELDS = [
   "migration_ledger_owner_migrator",
   "application_namespace_relation_owner_exact",
   "required_application_table_owner_exact",
+  "canonical_enum_presence_exact",
   "application_type_owner_exact",
   "application_routine_owner_exact",
+  "canonical_drizzle_ledger_relation_exact",
+  "canonical_dependent_relation_extension_membership_absent",
+  "unknown_application_relation_drift_absent",
+  "unknown_application_type_drift_absent",
+  "unknown_application_routine_drift_absent",
   "public_relation_authority_absent",
   "public_routine_authority_absent",
   "public_default_acl_authority_absent",
@@ -668,7 +1055,12 @@ async function readMigratorReadiness(
   client: DatabaseReadinessClient,
   requiredTables: readonly string[],
 ): Promise<boolean> {
-  const result = await client.query(migratorPostureSql, [requiredTables]);
+  const result = await client.query(migratorPostureSql, [
+    requiredTables,
+    CANONICAL_PLATFORM_TABLES,
+    CANONICAL_PLATFORM_ENUM_TYPES,
+    CANONICAL_PLATFORM_ROUTINES,
+  ]);
   if (result.rows.length !== 1) {
     return false;
   }

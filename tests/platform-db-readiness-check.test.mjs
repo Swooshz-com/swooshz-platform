@@ -228,6 +228,129 @@ test("DB readiness reports ready when reachability tables and migrations match",
   assert.match(output, /status=ready/);
   assertNoPrivateMaterial(output);
 });
+test("production-shaped canonical readiness does not require synthetic appdata", async () => {
+  const fixture = createFakeReadinessClient({
+    productionSchemas: ["public", "drizzle"],
+  });
+  const report = await createDatabaseReadinessReport({
+    env: { DATABASE_OPERATOR_URL: privateDatabaseUrl },
+    expectedMigrationState,
+    clientFactory() {
+      return fixture.client;
+    },
+  });
+  const postureQuery = getMigratorPostureQuery(fixture);
+
+  assert.equal(report.ok, true);
+  assert.equal(report.status, "ready");
+  assert.doesNotMatch(postureQuery, /\bappdata\b/u);
+});
+
+test("missing canonical enum presence remains fail closed", async () => {
+  const fixture = createFakeReadinessClient({
+    migratorPosture: {
+      canonical_enum_presence_exact: false,
+    },
+  });
+  const report = await createDatabaseReadinessReport({
+    env: { DATABASE_OPERATOR_URL: privateDatabaseUrl },
+    expectedMigrationState,
+    clientFactory() {
+      return fixture.client;
+    },
+  });
+
+  assert.equal(report.ok, false);
+  assert.equal(report.status, "schema_not_ready");
+  assert.equal(report.checks.migratorPosture, "failed");
+});
+
+test("canonical enum presence and ownership are required readiness inputs", async () => {
+  const missingFixture = createFakeReadinessClient({
+    migratorPosture: {
+      canonical_enum_presence_exact: false,
+    },
+  });
+  const missingReport = await createDatabaseReadinessReport({
+    env: { DATABASE_OPERATOR_URL: privateDatabaseUrl },
+    expectedMigrationState,
+    clientFactory() {
+      return missingFixture.client;
+    },
+  });
+  assert.equal(missingReport.checks.migratorPosture, "failed");
+
+  const wrongOwnerFixture = createFakeReadinessClient({
+    migratorPosture: {
+      canonical_enum_presence_exact: false,
+    },
+  });
+  const wrongOwnerReport = await createDatabaseReadinessReport({
+    env: { DATABASE_OPERATOR_URL: privateDatabaseUrl },
+    expectedMigrationState,
+    clientFactory() {
+      return wrongOwnerFixture.client;
+    },
+  });
+  assert.equal(wrongOwnerReport.checks.migratorPosture, "failed");
+});
+
+test("unknown non-extension relation drift remains fail closed", async () => {
+  const fixture = createFakeReadinessClient({
+    migratorPosture: {
+      unknown_application_relation_drift_absent: false,
+    },
+  });
+  const report = await createDatabaseReadinessReport({
+    env: { DATABASE_OPERATOR_URL: privateDatabaseUrl },
+    expectedMigrationState,
+    clientFactory() {
+      return fixture.client;
+    },
+  });
+
+  assert.equal(report.ok, false);
+  assert.equal(report.status, "schema_not_ready");
+  assert.equal(report.checks.migratorPosture, "failed");
+});
+
+test("unknown non-extension routine drift remains fail closed", async () => {
+  const fixture = createFakeReadinessClient({
+    migratorPosture: {
+      unknown_application_routine_drift_absent: false,
+    },
+  });
+  const report = await createDatabaseReadinessReport({
+    env: { DATABASE_OPERATOR_URL: privateDatabaseUrl },
+    expectedMigrationState,
+    clientFactory() {
+      return fixture.client;
+    },
+  });
+
+  assert.equal(report.ok, false);
+  assert.equal(report.status, "schema_not_ready");
+  assert.equal(report.checks.migratorPosture, "failed");
+});
+
+test("readiness classification explicitly separates extension, system, and dependency objects", async () => {
+  const fixture = createFakeReadinessClient();
+  const report = await createDatabaseReadinessReport({
+    env: { DATABASE_OPERATOR_URL: privateDatabaseUrl },
+    expectedMigrationState,
+    clientFactory() {
+      return fixture.client;
+    },
+  });
+  const postureQuery = getMigratorPostureQuery(fixture);
+
+  assert.equal(report.ok, true);
+  assert.match(postureQuery, /pg_extension/u);
+  assert.match(postureQuery, /pg_depend/u);
+  assert.match(postureQuery, /deptype/u);
+  assert.match(postureQuery, /nspname in \('public', 'drizzle'\)/u);
+  assert.doesNotMatch(postureQuery, /nspname in \('public', 'appdata', 'drizzle'\)/u);
+});
 test("DB readiness fails closed when migrator posture drifts", async () => {
   const fixture = createFakeReadinessClient({
     migratorPosture: { database_owner_platform_app: false },
@@ -304,12 +427,18 @@ function createFakeReadinessClient(options = {}) {
     public_schema_owner_pg_database_owner: true,
     migrator_public_schema_authority: true,
     drizzle_schema_migrator_authority: true,
+    canonical_drizzle_ledger_relation_exact: true,
+    canonical_dependent_relation_extension_membership_absent: true,
     application_schema_authority_exact: true,
     migration_ledger_owner_migrator: true,
     application_namespace_relation_owner_exact: true,
     required_application_table_owner_exact: true,
+    canonical_enum_presence_exact: true,
     application_type_owner_exact: true,
     application_routine_owner_exact: true,
+    unknown_application_relation_drift_absent: true,
+    unknown_application_type_drift_absent: true,
+    unknown_application_routine_drift_absent: true,
     public_relation_authority_absent: true,
     public_routine_authority_absent: true,
     public_default_acl_authority_absent: true,
@@ -324,7 +453,15 @@ function createFakeReadinessClient(options = {}) {
       calls.queries.push({ sql, params });
 
       if (/migrator_identity_exact/i.test(sql)) {
-        return { rows: [{ ...migratorPosture }] };
+        const posture = { ...migratorPosture };
+        if (
+          Array.isArray(options.productionSchemas) &&
+          /\bappdata\b/u.test(sql)
+        ) {
+          posture.application_schema_authority_exact =
+            options.productionSchemas.includes("appdata");
+        }
+        return { rows: [posture] };
       }
       if (/select\s+1/i.test(sql)) {
         if (options.failReachability) {
@@ -363,6 +500,13 @@ function createFakeReadinessClient(options = {}) {
   };
 
   return { calls, client };
+}
+function getMigratorPostureQuery(fixture) {
+  const postureQuery = fixture.calls.queries.find(({ sql }) =>
+    /migrator_identity_exact/i.test(sql),
+  )?.sql;
+  assert.equal(typeof postureQuery, "string");
+  return postureQuery;
 }
 
 function assertNoPrivateMaterial(output) {
