@@ -427,6 +427,8 @@ function createFakeReadinessClient(options = {}) {
     public_schema_owner_pg_database_owner: true,
     migrator_public_schema_authority: true,
     drizzle_schema_migrator_authority: true,
+    canonical_drizzle_ledger_relation_exact: true,
+    canonical_dependent_relation_extension_membership_absent: true,
     application_schema_authority_exact: true,
     migration_ledger_owner_migrator: true,
     application_namespace_relation_owner_exact: true,

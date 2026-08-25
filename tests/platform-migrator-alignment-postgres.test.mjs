@@ -1060,8 +1060,25 @@ test(
           assert.equal(readinessReport.checks.migratorPosture, "passed");
 
           const extensionClient = await primary.providerPool.connect();
+          const tddRedFailures = [];
+          const ledgerSequenceName = "__run178_drizzle_migrations_id_seq";
+          let ledgerShapePrepared = false;
           let createdHstoreExtension = false;
+          let ledgerAttachedToExtension = false;
           try {
+            await primary.migratorPasswordPool.query(
+              "create sequence drizzle.__run178_drizzle_migrations_id_seq",
+            );
+            ledgerShapePrepared = true;
+            await primary.migratorPasswordPool.query(
+              "alter sequence drizzle.__run178_drizzle_migrations_id_seq owned by drizzle.__drizzle_migrations.id",
+            );
+            await primary.migratorPasswordPool.query(
+              "alter table drizzle.__drizzle_migrations alter column id set default nextval('drizzle.__run178_drizzle_migrations_id_seq'::regclass)",
+            );
+            await primary.migratorPasswordPool.query(
+              "alter table drizzle.__drizzle_migrations add column created_at bigint not null default 0",
+            );
             const extensionState = await extensionClient.query(
               "select exists (select 1 from pg_extension where extname = 'hstore') as present",
             );
@@ -1120,20 +1137,131 @@ test(
             assert.equal(extensionCatalog.rows.length, 1);
             assert.equal(extensionCatalog.rows[0].relation_direct_member, true);
             assert.equal(extensionCatalog.rows[0].index_direct_member, false);
+            const ledgerRowTypeDependencyCatalog = await extensionClient.query(
+              "select array_agg(distinct dependency_record.deptype::text order by dependency_record.deptype::text) as dependency_classes " +
+                "from pg_type row_type " +
+                "join pg_depend dependency_record " +
+                "on dependency_record.classid = 'pg_type'::regclass " +
+                "and dependency_record.objid = row_type.oid " +
+                "and dependency_record.refclassid = 'pg_class'::regclass " +
+                "and dependency_record.refobjid = row_type.typrelid " +
+                "where row_type.typrelid = 'drizzle.__drizzle_migrations'::regclass",
+            );
+            const ledgerIndexDependencyCatalog = await extensionClient.query(
+              "select count(*)::int as index_count, " +
+                "array_agg(distinct dependency_record.deptype::text order by dependency_record.deptype::text) filter (where dependency_record.deptype is not null) as dependency_classes " +
+                "from pg_index index_record " +
+                "left join pg_depend dependency_record " +
+                "on dependency_record.classid = 'pg_class'::regclass " +
+                "and dependency_record.objid = index_record.indexrelid " +
+                "where index_record.indrelid = 'drizzle.__drizzle_migrations'::regclass",
+            );
+            const ledgerSequenceDependencyCatalog = await extensionClient.query(
+              "select array_agg(distinct dependency_record.deptype::text order by dependency_record.deptype::text) as dependency_classes " +
+                "from pg_class sequence_record " +
+                "join pg_depend dependency_record " +
+                "on dependency_record.classid = 'pg_class'::regclass " +
+                "and dependency_record.objid = sequence_record.oid " +
+                "and dependency_record.refclassid = 'pg_class'::regclass " +
+                "and dependency_record.refobjid = 'drizzle.__drizzle_migrations'::regclass " +
+                "where sequence_record.relnamespace = 'drizzle'::regnamespace " +
+                "and sequence_record.relname = '" + ledgerSequenceName + "'",
+            );
+            for (const [surface, dependencyCatalog] of [
+              ["row_type", ledgerRowTypeDependencyCatalog],
+              ["index", ledgerIndexDependencyCatalog],
+              ["serial_sequence", ledgerSequenceDependencyCatalog],
+            ]) {
+              assert.equal(dependencyCatalog.rows.length, 1);
+              const dependencyClasses =
+                dependencyCatalog.rows[0].dependency_classes ?? [];
+              assert.ok(
+                Array.isArray(dependencyClasses),
+                surface +
+                  " dependency classes: " +
+                  JSON.stringify(dependencyClasses),
+              );
+              if (surface === "index") {
+                assert.ok(dependencyCatalog.rows[0].index_count > 0);
+              } else {
+                assert.ok(dependencyClasses.length > 0);
+              }
+            }
+
             assert.equal(extensionCatalog.rows[0].array_internal_dependency, true);
+
+            await extensionClient.query(
+              "alter extension hstore add table drizzle.__drizzle_migrations",
+            );
+            ledgerAttachedToExtension = true;
+            const ledgerExtensionCatalog = await extensionClient.query(
+              "select ledger.relkind as ledger_relkind, " +
+                "pg_get_userbyid(ledger.relowner) as ledger_owner, " +
+                "exists (select 1 from pg_depend dependency_record " +
+                "where dependency_record.classid = 'pg_class'::regclass " +
+                "and dependency_record.objid = ledger.oid " +
+                "and dependency_record.refclassid = 'pg_extension'::regclass " +
+                "and dependency_record.deptype = 'e') as ledger_direct_member, " +
+                "exists (select 1 from pg_class sequence_record " +
+                "join pg_depend dependency_record " +
+                "on dependency_record.classid = 'pg_class'::regclass " +
+                "and dependency_record.objid = sequence_record.oid " +
+                "and dependency_record.refclassid = 'pg_class'::regclass " +
+                "and dependency_record.refobjid = ledger.oid " +
+                "and dependency_record.deptype in ('a', 'i') " +
+                "where sequence_record.relnamespace = ledger.relnamespace " +
+                "and sequence_record.relname = '" + ledgerSequenceName + "') as serial_sequence_present " +
+                "from pg_class ledger " +
+                "where ledger.relnamespace = 'drizzle'::regnamespace " +
+                "and ledger.relname = '__drizzle_migrations'",
+            );
+            assert.equal(ledgerExtensionCatalog.rows.length, 1);
+            assert.equal(ledgerExtensionCatalog.rows[0].ledger_relkind, "r");
+            assert.equal(ledgerExtensionCatalog.rows[0].ledger_owner, "platform_migrator");
+            assert.equal(ledgerExtensionCatalog.rows[0].ledger_direct_member, true);
+            assert.equal(ledgerExtensionCatalog.rows[0].serial_sequence_present, true);
 
             const extensionReadinessReport = await createDatabaseReadinessReport(
               readinessInput,
             );
-            assert.equal(extensionReadinessReport.status, "ready");
+            try {
+              assert.equal(extensionReadinessReport.status, "schema_not_ready");
+              assert.equal(
+                extensionReadinessReport.checks.migratorPosture,
+                "failed",
+              );
+            } catch {
+              tddRedFailures.push("canonical Drizzle ledger direct extension membership remained READY");
+            }
+
+            await extensionClient.query(
+              "alter extension hstore drop table drizzle.__drizzle_migrations",
+            );
+            ledgerAttachedToExtension = false;
+            const restoredLedgerReadinessReport =
+              await createDatabaseReadinessReport(readinessInput);
+            assert.equal(restoredLedgerReadinessReport.status, "ready");
             assert.equal(
-              extensionReadinessReport.checks.migratorPosture,
+              restoredLedgerReadinessReport.checks.migratorPosture,
               "passed",
             );
 
             await extensionClient.query(
               "create table public.__run176_user_dependency_relation (id integer references public.__run176_extension_relation(id))",
             );
+            const ordinaryRelationDependencyCatalog = await extensionClient.query(
+              "select array_agg(distinct dependency_record.deptype::text order by dependency_record.deptype::text) as dependency_classes " +
+                "from pg_constraint constraint_record " +
+                "join pg_depend dependency_record " +
+                "on dependency_record.classid = 'pg_constraint'::regclass " +
+                "and dependency_record.objid = constraint_record.oid " +
+                "and dependency_record.refclassid = 'pg_class'::regclass " +
+                "and dependency_record.refobjid = 'public.__run176_extension_relation'::regclass " +
+                "where constraint_record.conrelid = 'public.__run176_user_dependency_relation'::regclass",
+            );
+            const ordinaryRelationDependencyClasses =
+              ordinaryRelationDependencyCatalog.rows[0]?.dependency_classes ?? [];
+            assert.ok(ordinaryRelationDependencyClasses.includes("n"));
             const ordinaryRelationDependencyReport =
               await createDatabaseReadinessReport(readinessInput);
             assert.equal(
@@ -1144,17 +1272,50 @@ test(
               ordinaryRelationDependencyReport.checks.migratorPosture,
               "failed",
             );
+            await extensionClient.query(
+              "drop table public.__run176_user_dependency_relation",
+            );
+            const relationRestoredReadinessReport =
+              await createDatabaseReadinessReport(readinessInput);
+            assert.equal(relationRestoredReadinessReport.status, "ready");
+            assert.equal(
+              relationRestoredReadinessReport.checks.migratorPosture,
+              "passed",
+            );
 
             await extensionClient.query(
               "create domain public.__run176_user_dependency as hstore",
             );
-            const ordinaryDependencyReport = await createDatabaseReadinessReport(
-              readinessInput,
+            const domainDependencyCatalog = await extensionClient.query(
+              "select array_agg(distinct dependency_record.deptype::text order by dependency_record.deptype::text) as dependency_classes " +
+                "from pg_depend dependency_record " +
+                "where dependency_record.classid = 'pg_type'::regclass " +
+                "and dependency_record.objid = 'public.__run176_user_dependency'::regtype " +
+                "and dependency_record.refclassid = 'pg_type'::regclass " +
+                "and dependency_record.refobjid = 'public.hstore'::regtype",
             );
-            assert.equal(ordinaryDependencyReport.status, "schema_not_ready");
+            const domainDependencyClasses =
+              domainDependencyCatalog.rows[0]?.dependency_classes ?? [];
+            assert.ok(domainDependencyClasses.includes("n"));
+            const isolatedDomainReadinessReport =
+              await createDatabaseReadinessReport(readinessInput);
             assert.equal(
-              ordinaryDependencyReport.checks.migratorPosture,
+              isolatedDomainReadinessReport.status,
+              "schema_not_ready",
+            );
+            assert.equal(
+              isolatedDomainReadinessReport.checks.migratorPosture,
               "failed",
+            );
+            await extensionClient.query(
+              "drop domain public.__run176_user_dependency",
+            );
+            const domainRestoredReadinessReport =
+              await createDatabaseReadinessReport(readinessInput);
+            assert.equal(domainRestoredReadinessReport.status, "ready");
+            assert.equal(
+              domainRestoredReadinessReport.checks.migratorPosture,
+              "passed",
             );
           } finally {
             await extensionClient.query(
@@ -1164,6 +1325,11 @@ test(
               "drop table if exists public.__run176_user_dependency_relation",
             ).catch(() => {});
             if (createdHstoreExtension) {
+              if (ledgerAttachedToExtension) {
+                await extensionClient.query(
+                  "alter extension hstore drop table drizzle.__drizzle_migrations",
+                ).catch(() => {});
+              }
               await extensionClient.query(
                 "alter extension hstore drop table public.__run176_extension_relation",
               ).catch(() => {});
@@ -1173,9 +1339,22 @@ test(
               await extensionClient.query("drop extension if exists hstore").catch(() => {});
             }
             extensionClient.release();
+            if (ledgerShapePrepared) {
+              await primary.migratorPasswordPool.query(
+                "alter table drizzle.__drizzle_migrations alter column id drop default",
+              ).catch(() => {});
+              await primary.migratorPasswordPool.query(
+                "alter table drizzle.__drizzle_migrations drop column created_at",
+              ).catch(() => {});
+              await primary.migratorPasswordPool.query(
+                "drop sequence if exists drizzle.__run178_drizzle_migrations_id_seq",
+              ).catch(() => {});
+            }
           }
 
           const readinessClient = await primary.migratorPasswordPool.connect();
+          assert.deepEqual(tddRedFailures, [], tddRedFailures.join("; "));
+
           const transactionalReadinessInput = {
             ...readinessInput,
             clientFactory: async () => ({

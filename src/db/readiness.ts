@@ -221,7 +221,14 @@ ledger_state as (
   select
     schema_record.oid as schema_oid,
     migration_record.oid as ledger_oid,
-    migration_record.relowner as ledger_owner
+    migration_record.relowner as ledger_owner,
+    migration_record.relkind as ledger_relkind,
+    exists (
+      select 1
+      from extension_owned_objects extension_record
+      where extension_record.classid = 'pg_class'::regclass
+        and extension_record.objid = migration_record.oid
+    ) as ledger_direct_extension_member
   from pg_namespace schema_record
   left join pg_class migration_record
     on migration_record.relnamespace = schema_record.oid
@@ -302,12 +309,6 @@ canonical_dependent_relations as (
     on relation_schema.oid = relation_record.relnamespace
   where relation_schema.nspname in ('public', 'drizzle')
     and relation_record.relkind in ('S', 'i', 'I')
-    and not exists (
-      select 1
-      from extension_owned_objects extension_record
-      where extension_record.classid = 'pg_class'::regclass
-        and extension_record.objid = relation_record.oid
-    )
     and (
       (
         relation_record.relkind in ('i', 'I')
@@ -624,6 +625,24 @@ select
     cross join migrator_role
     where ledger_state.ledger_oid is not null
   ), false) as migration_ledger_owner_migrator,
+  coalesce((
+    select count(*) = 1
+      and coalesce(bool_and(
+        ledger_state.ledger_oid is not null
+        and ledger_state.ledger_relkind in ('r', 'p')
+        and not ledger_state.ledger_direct_extension_member
+      ), false)
+    from ledger_state
+  ), false) as canonical_drizzle_ledger_relation_exact,
+  coalesce((
+    select not exists (
+      select 1
+      from canonical_dependent_relations relation_record
+      join extension_owned_objects extension_record
+        on extension_record.classid = 'pg_class'::regclass
+        and extension_record.objid = relation_record.oid
+    )
+  ), false) as canonical_dependent_relation_extension_membership_absent,
   coalesce((
     select not exists (
       select 1
@@ -1018,6 +1037,8 @@ const MIGRATOR_READINESS_FIELDS = [
   "canonical_enum_presence_exact",
   "application_type_owner_exact",
   "application_routine_owner_exact",
+  "canonical_drizzle_ledger_relation_exact",
+  "canonical_dependent_relation_extension_membership_absent",
   "unknown_application_relation_drift_absent",
   "unknown_application_type_drift_absent",
   "unknown_application_routine_drift_absent",
