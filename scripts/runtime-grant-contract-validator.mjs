@@ -36,6 +36,7 @@ const databaseAccessInventory = new Map([
   ["src/db/client.ts", "operational_control_plane"],
   ["src/db/readiness.ts", "operational_control_plane"],
   ["src/db/runtime-posture.ts", "operational_control_plane"],
+  ["src/db/durable-operations.ts", "operator_only_database_authority"],
   ["src/db/schema.ts", "runtime_data_adapter"],
   ["src/runtime/node-bootstrap.ts", "operational_control_plane"],
   [
@@ -68,6 +69,9 @@ const productionDependencyLockDigest =
 // SHA-256 over TypeScript tokens (comments and formatting are ignored).
 const databaseSourceShapeAuthority = new Map([
   [
+    "src/db/durable-operations.ts",
+    "e4082d19c5abc4c64cf4bf5e502a17e36ddcfe6b03734a00aa05ac5f4e9dc8fc",
+  ],  [
     "src/db/access-validation-grant-repository.ts",
     "5f9434df56a9f5bc67468ed8c17ea9fbf60c765c0fa6a88d6902a22d7b9a4271",
   ],
@@ -89,7 +93,7 @@ const databaseSourceShapeAuthority = new Map([
   ],
   [
     "src/db/readiness.ts",
-    "6a81f3b78a01d538bf2f9da9531adc445b8e8a7292f06d3b56f893cf3a3e567d",
+    "a75dafdfb8a3991c5c62e304831905a83760f86c9327eafa5b31e68070f5ce75",
   ],
   [
     "src/db/repositories.ts",
@@ -117,6 +121,8 @@ const builtInCapabilityClassifications = new Set([
   "non_network_cryptographic",
   "filesystem",
   "network",
+  "process_execution",
+  "non_network_runtime_support",
 ]);
 
 const builtInImportAuthorityRecords = [
@@ -191,6 +197,47 @@ const builtInImportAuthorityRecords = [
     capability: "non_network_cryptographic",
     bindings: [
       namedBuiltInBinding("randomBytes"),
+    ],
+  }),
+  builtInImportAuthorityRecord({
+    sourcePath: "src/db/durable-operations.ts",
+    moduleName: "node:child_process",
+    capability: "process_execution",
+    bindings: [
+      namedBuiltInBinding("execFile"),
+    ],
+  }),
+  builtInImportAuthorityRecord({
+    sourcePath: "src/db/durable-operations.ts",
+    moduleName: "node:crypto",
+    capability: "non_network_cryptographic",
+    bindings: [
+      namedBuiltInBinding("createHash"),
+    ],
+  }),
+  builtInImportAuthorityRecord({
+    sourcePath: "src/db/durable-operations.ts",
+    moduleName: "node:fs/promises",
+    capability: "filesystem",
+    bindings: [
+      namedBuiltInBinding("readFile"),
+    ],
+  }),
+  builtInImportAuthorityRecord({
+    sourcePath: "src/db/durable-operations.ts",
+    moduleName: "node:path",
+    capability: "non_network_runtime_support",
+    bindings: [
+      namedBuiltInBinding("join"),
+      namedBuiltInBinding("resolve"),
+    ],
+  }),
+  builtInImportAuthorityRecord({
+    sourcePath: "src/db/durable-operations.ts",
+    moduleName: "node:util",
+    capability: "non_network_runtime_support",
+    bindings: [
+      namedBuiltInBinding("promisify"),
     ],
   }),
 ];
@@ -332,6 +379,21 @@ const databaseExternalImportAuthority = new Set([
     ["and", "eq", "gt", "inArray", "isNotNull", "isNull", "lte", "or"],
   ),
   databaseExternalImportKey(
+    "src/db/durable-operations.ts",
+    "drizzle-orm/node-postgres",
+    ["drizzle"],
+  ),
+  databaseExternalImportKey(
+    "src/db/durable-operations.ts",
+    "drizzle-orm/node-postgres/migrator",
+    ["migrate"],
+  ),
+  databaseExternalImportKey(
+    "src/db/durable-operations.ts",
+    "drizzle-orm/migrator",
+    ["readMigrationFiles"],
+  ),
+  databaseExternalImportKey(
     "src/db/repositories.ts",
     "drizzle-orm",
     ["and", "eq", "isNull"],
@@ -365,6 +427,15 @@ const internalDatabaseImportAuthority = new Set(
     [
       "src/db/access-validation-grant-repository.ts",
       ["src/db/mappers.ts", "src/db/schema.ts"],
+    ],
+    [
+      "src/db/durable-operations.ts",
+      [
+        "src/db/readiness.ts",
+        "src/db/runtime-grant-contract.ts",
+        "src/db/runtime-posture.ts",
+        "src/db/schema.ts",
+      ],
     ],
     [
       "src/db/app-launch-token-repository.ts",

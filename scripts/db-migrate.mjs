@@ -3,12 +3,13 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { migrate } from "drizzle-orm/node-postgres/migrator";
 
 import {
   assertMigrationExecutionAllowed,
   createDatabaseClient,
 } from "../dist/db/client.js";
+import { runCanonicalMigrationPrimitive } from "../dist/db/durable-operations.js";
+// The shared primitive preserves the canonical Drizzle migrate(...) behavior.
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const migrationsFolder = path.join(rootDir, "drizzle", "migrations");
@@ -19,7 +20,10 @@ try {
   const config = assertMigrationExecutionAllowed(process.env);
   client = createDatabaseClient(config);
 
-  await migrate(client.db, { migrationsFolder });
+  await runCanonicalMigrationPrimitive({
+    pool: client.pool,
+    migrationsFolder,
+  });
   console.log("Database migrations applied.");
 } catch (error) {
   const message = error instanceof Error ? error.message : "Database migration failed.";

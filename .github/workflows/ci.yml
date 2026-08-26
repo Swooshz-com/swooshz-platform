@@ -62,6 +62,12 @@ jobs:
       - name: PostgreSQL 17 disposable role-collapse migration and concurrency proofs
         run: npm run test:disposable-role-collapse-postgres
 
+      - name: PostgreSQL 17 disposable migrator alignment proofs
+        run: npm run test:disposable-migrator-alignment
+
+      - name: PostgreSQL 17 disposable durable database operations proofs
+        run: npm run test:disposable-durable-db-operations
+
   container:
     name: Container build
     runs-on: ubuntu-latest

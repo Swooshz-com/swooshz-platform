@@ -14,6 +14,7 @@
     "platform:seed-internal-access": "node scripts/platform-seed-internal-access.mjs",
     "test:disposable-runtime-postgres": "npm run build && node scripts/run-disposable-runtime-postgres-tests.mjs",
     "test:disposable-role-collapse-postgres": "npm run build && node scripts/run-disposable-role-collapse-postgres-tests.mjs",
+    "test:disposable-durable-db-operations": "npm run build && node scripts/run-disposable-durable-db-operations-tests.mjs",
     "test:disposable-migrator-alignment": "node scripts/run-disposable-migrator-alignment-tests.mjs",
     "typecheck": "node scripts/generate-public-asset-manifest.mjs --check && tsc --noEmit -p tsconfig.json",
     "test": "npm run build && node --test tests/*.test.mjs",

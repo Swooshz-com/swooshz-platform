@@ -194,6 +194,7 @@ test("production database access inventory is recursive, explicit, and closed", 
     ["src/db/auth-state-repository.ts", "runtime_data_adapter"],
     ["src/db/client.ts", "operational_control_plane"],
     ["src/db/csrf-token-repository.ts", "runtime_data_adapter"],
+    ["src/db/durable-operations.ts", "operator_only_database_authority"],
     ["src/db/readiness.ts", "operational_control_plane"],
     ["src/db/repositories.ts", "runtime_data_adapter"],
     ["src/db/runtime-posture.ts", "operational_control_plane"],
@@ -203,9 +204,148 @@ test("production database access inventory is recursive, explicit, and closed", 
   ]);
 });
 
+test("durable database operations are exact operator-only source authority", async () => {
+  const sourcePath = "src/db/durable-operations.ts";
+  const source = await readFile(sourcePath, "utf8");
+  const expectedSourceShapeDigest =
+    "e4082d19c5abc4c64cf4bf5e502a17e36ddcfe6b03734a00aa05ac5f4e9dc8fc";
+
+  assert.equal(sourceShapeDigest(source), expectedSourceShapeDigest);
+  assert.match(
+    source,
+    /import \{ drizzle \} from "drizzle-orm\/node-postgres";/u,
+  );
+  assert.match(
+    source,
+    /import \{ migrate \} from "drizzle-orm\/node-postgres\/migrator";/u,
+  );
+  assert.match(
+    source,
+    /import \{ readMigrationFiles \} from "drizzle-orm\/migrator";/u,
+  );
+  assert.match(
+    source,
+    /import \{ execFile \} from "node:child_process";/u,
+  );
+  assert.match(source, /import \{ createHash \} from "node:crypto";/u);
+  assert.match(source, /import \{ readFile \} from "node:fs\/promises";/u);
+  assert.match(source, /import \{ join, resolve \} from "node:path";/u);
+  assert.match(source, /import \{ promisify \} from "node:util";/u);
+  assert.match(source, /from "\.\/schema\.js";/u);
+  assert.match(source, /from "\.\/readiness\.js";/u);
+  assert.match(source, /from "\.\/runtime-posture\.js";/u);
+  assert.match(source, /from "\.\/runtime-grant-contract\.js";/u);
+  assert.doesNotMatch(source, /from "pg";/u);
+  assert.doesNotMatch(
+    source,
+    /import \*[^;]*from "(?:drizzle-orm|pg)/u,
+  );
+  assert.doesNotMatch(source, /from "\.\/client\.js";/u);
+
+  const inventory = await inspectProductionDatabaseAccessInventory();
+  assert.deepEqual(
+    inventory.find(([path]) => path === sourcePath),
+    [sourcePath, "operator_only_database_authority"],
+  );
+  assert.equal(inventory.length, 12);
+
+  const operations = await extractProductionAdapterOperations();
+  assert.equal(operations.length, 60);
+  assert.equal(
+    operations.some(({ sourceId }) => sourceId.startsWith(`${sourcePath}#`)),
+    false,
+  );
+  assert.doesNotThrow(() =>
+    assertProductionAdapterGrantEquality(
+      RUNTIME_TABLE_GRANT_CONTRACT,
+      operations,
+    ),
+  );
+
+  await assert.doesNotReject(() =>
+    inspectProductionDatabaseAccessInventory({
+      sourceOverrides: new Map([
+        [sourcePath, source.replace(/\r\n?/gu, "\n")],
+      ]),
+    }),
+  );
+
+  const failClosedCases = [
+    [
+      "durable crypto binding drift",
+      source.replace(
+        'import { createHash } from "node:crypto";',
+        'import { createHmac } from "node:crypto";',
+      ),
+    ],
+    [
+      "durable namespace crypto binding",
+      source.replace(
+        'import { createHash } from "node:crypto";',
+        'import * as crypto from "node:crypto";',
+      ),
+    ],
+    [
+      "durable default crypto binding",
+      source.replace(
+        'import { createHash } from "node:crypto";',
+        'import crypto from "node:crypto";',
+      ),
+    ],
+    [
+      "dynamic crypto loading",
+      source + '\nvoid import("node:crypto");\n',
+    ],
+    [
+      "unauthorised external database binding",
+      `${source}\nimport { Pool } from "pg";\n`,
+    ],
+    [
+      "unauthorised internal database edge",
+      `${source}\nimport { createDatabasePool } from "./client.js";\n`,
+    ],
+    [
+      "unauthorised built-in binding",
+      `${source}\nimport { basename } from "node:path";\n`,
+    ],
+    [
+      "dynamic loading",
+      `${source}\nvoid import("./client.js");\n`,
+    ],
+    [
+      "source-shape drift",
+      `${source}\nexport const unapprovedDurableAuthorityShape = true;\n`,
+    ],
+  ];
+  for (const [name, candidate] of failClosedCases) {
+    await assert.rejects(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([[sourcePath, candidate]]),
+        }),
+      contractError("runtime_grant_inventory_unclassified"),
+      name,
+    );
+  }
+
+  await assert.rejects(
+    () =>
+      inspectProductionDatabaseAccessInventory({
+        sourceOverrides: new Map([
+          [
+            "src/db/unlisted-run185-authority.ts",
+            `import { Pool } from "pg";\nexport function probe() {\n  return new Pool();\n}\n`,
+          ],
+        ]),
+      }),
+    contractError("runtime_grant_inventory_unclassified"),
+    "unlisted direct database-capable source",
+  );
+});
+
 test("Run-165 source-shape authority admits the accepted tree and rejects drift", async () => {
   const inventory = await inspectProductionDatabaseAccessInventory();
-  assert.equal(inventory.length, 11);
+  assert.equal(inventory.length, 12);
 
   for (const [sourcePath, staleDigest] of staleRun164SourceShapeDigests) {
     const currentSource = await readFile(sourcePath, "utf8");
@@ -523,7 +663,7 @@ export function load(path) {
 
 test("exact approved built-in imports preserve semantic formatting controls", async () => {
   const baseline = await inspectProductionDatabaseAccessInventory();
-  assert.equal(baseline.length, 11);
+  assert.equal(baseline.length, 12);
 
   const cryptoPath = "src/auth/platform-identity-crypto.ts";
   const cryptoSource = await readFile(cryptoPath, "utf8");
@@ -555,7 +695,7 @@ test("exact approved built-in imports preserve semantic formatting controls", as
     const inventory = await inspectProductionDatabaseAccessInventory({
       sourceOverrides,
     });
-    assert.equal(inventory.length, 11);
+    assert.equal(inventory.length, 12);
   }
 });
 
@@ -978,7 +1118,7 @@ export function unsupportedNeutralWrapper(databaseClient) {
         ],
       ]),
     });
-  assert.equal(newlineNormalizedInventory.length, 11);
+  assert.equal(newlineNormalizedInventory.length, 12);
 
   await assert.rejects(
     () =>
@@ -1041,7 +1181,7 @@ ${cryptoSource}`,
       ],
     ]),
   });
-  assert.equal(inventory.length, 11);
+  assert.equal(inventory.length, 12);
 
   const operations = await extractProductionAdapterOperations();
   assert.equal(operations.length, 60);
@@ -1702,7 +1842,7 @@ test("no-import authority rejects missing authority after source override remove
 
 test("no-import approved OIDC network path passes exact authority", async () => {
   const inventory = await inspectProductionDatabaseAccessInventory();
-  assert.equal(inventory.length, 11);
+  assert.equal(inventory.length, 12);
 });
 
 test("no-import approved OIDC path passes with comment-only variant", async () => {
@@ -1712,7 +1852,7 @@ test("no-import approved OIDC path passes with comment-only variant", async () =
       [oidcAdapterPath, `// OIDC HTTP transport\n${oidcSource}`],
     ]),
   });
-  assert.equal(inventory.length, 11);
+  assert.equal(inventory.length, 12);
 });
 
 test("no-import approved OIDC path passes with LF line ending", async () => {
@@ -1722,7 +1862,7 @@ test("no-import approved OIDC path passes with LF line ending", async () => {
       [oidcAdapterPath, oidcSource.replace(/\r\n?/gu, "\n")],
     ]),
   });
-  assert.equal(inventory.length, 11);
+  assert.equal(inventory.length, 12);
 });
 
 test("no-import approved OIDC path passes with CRLF line ending", async () => {
@@ -1732,7 +1872,7 @@ test("no-import approved OIDC path passes with CRLF line ending", async () => {
       [oidcAdapterPath, oidcSource.replace(/\r\n?/gu, "\n").replace(/\n/gu, "\r\n")],
     ]),
   });
-  assert.equal(inventory.length, 11);
+  assert.equal(inventory.length, 12);
 });
 
 test("no-import shadowed function parameter is not classified as global Fetch", async () => {
@@ -1778,12 +1918,12 @@ export function execute() {
       ["src/platform/imported-fetch.ts", consumerSource],
     ]),
   });
-  assert.equal(inventory.length, 11);
+  assert.equal(inventory.length, 12);
 });
 
-test("no-import authority preserves existing 11-source inventory", async () => {
+test("no-import authority preserves the current 12-source inventory", async () => {
   const inventory = await inspectProductionDatabaseAccessInventory();
-  assert.equal(inventory.length, 11);
+  assert.equal(inventory.length, 12);
 });
 
 test("no-import authority preserves existing 60 operation-source tuples", async () => {
@@ -1806,7 +1946,7 @@ test("no-import authority preserves existing 39 grant records and digest", async
 
 test("no-import authority preserves existing built-in import authority", async () => {
   const inventory = await inspectProductionDatabaseAccessInventory();
-  assert.equal(inventory.length, 11);
+  assert.equal(inventory.length, 12);
 
   const nodeServer = await readFile("src/http/node-server.ts", "utf8");
   await assert.rejects(
@@ -1940,7 +2080,7 @@ export function connect(url: string) {
       ["src/platform/ws-imported.ts", consumerSource],
     ]),
   });
-  assert.equal(inventory.length, 11);
+  assert.equal(inventory.length, 12);
 });
 
 test("no-import local WebSocket class shadow is not classified as global", async () => {
