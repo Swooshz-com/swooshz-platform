@@ -31,7 +31,6 @@ const execFileAsync = promisify(execFile);
 const migrationsFolder = resolve(rootDir, "drizzle", "migrations");
 const databaseName = "durable_operations_test";
 const expectedGitSha = "9ce40dce85484ef5fd8c849951527572e95afa24";
-const startingHead = "87007af436f04d92722d7857e396e650ce80e2a4";
 const contractDigest = "a".repeat(64);
 
 if (!testDatabaseUrlA || !testDatabaseUrlB) {
@@ -474,9 +473,20 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
       try {
         const sourceDriftRoot = join(sourceDriftTempRoot, "repo");
         await execFileAsync("git", ["clone", "--quiet", rootDir, sourceDriftRoot], { windowsHide: true });
+        const { stdout: sourceDriftHeadRaw } = await execFileAsync(
+          "git",
+          ["-C", sourceDriftRoot, "rev-parse", "--verify", "HEAD^{commit}"],
+          { windowsHide: true, timeout: 10_000, maxBuffer: 1024 },
+        );
+        const sourceDriftHead = sourceDriftHeadRaw.trim();
+        assert.match(
+          sourceDriftHead,
+          /^[0-9a-f]{40}$/,
+          "source drift fixture HEAD must be exactly 40 lowercase hexadecimal characters",
+        );
         const sourceDriftContractDigest = await computeContractDigest(sourceDriftRoot);
         const sourceDriftBaseline = await captureNormalizedPrestate(binding, journal);
-        const sourceDriftPlan = makePlan(binding, sourceDriftBaseline, [toctouOperation], sourceDriftContractDigest, startingHead);
+        const sourceDriftPlan = makePlan(binding, sourceDriftBaseline, [toctouOperation], sourceDriftContractDigest, sourceDriftHead);
         const sourceDriftResult = await executeWithPostLockDrift({
           plan: sourceDriftPlan,
           binding,
