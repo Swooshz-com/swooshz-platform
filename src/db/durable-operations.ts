@@ -43,6 +43,8 @@ export const PLAN_DOMAIN_SEPARATOR =
 export const CONTRACT_DOMAIN_SEPARATOR =
   "Swooshz-platform:platform-db-contract-v1\0" as const;
 const INVERSE_DOMAIN_SEPARATOR = "Swooshz-platform:platform-db-inverse-v1\0";
+export const POST_FORWARD_DOMAIN_SEPARATOR =
+  "Swooshz-platform:platform-db-post-forward-v1\0" as const;
 export const JOURNAL_PREFIX_DOMAIN_SEPARATOR =
   "Swooshz-platform:platform-db-journal-prefix-v1\0";
 
@@ -104,6 +106,14 @@ export const RECEIPT_PHASES = [
 ] as const;
 export type ReceiptPhase = (typeof RECEIPT_PHASES)[number];
 
+export const COMMIT_STATES = [
+  "NOT_STARTED",
+  "NOT_COMMITTED",
+  "COMMITTED",
+  "INDETERMINATE",
+] as const;
+export type CommitState = (typeof COMMIT_STATES)[number];
+
 export const SEMANTIC_CODES = [
   "SUCCESS",
   "ADMISSION_FAILED",
@@ -140,6 +150,53 @@ export const SEMANTIC_CODES = [
   "UNEXPECTED_FAILURE",
 ] as const;
 export type SemanticCode = (typeof SEMANTIC_CODES)[number];
+
+type ReceiptOutcome = "PASS" | "FAIL" | "BLOCKED";
+const RECEIPT_MATRIX: Readonly<Record<
+  ReceiptOutcome,
+  Readonly<Partial<Record<ReceiptPhase, readonly string[]>>>
+>> = Object.freeze({
+  PASS: Object.freeze({
+    FINAL_VERIFY: ["SUCCESS"],
+  }),
+  BLOCKED: Object.freeze({
+    ADMISSION: [
+      "ADMISSION_FAILED", "REVISION_UNAVAILABLE", "REVISION_MISMATCH", "DIRTY_CHECKOUT",
+      "CONTRACT_DIGEST_MISMATCH", "TARGET_MISMATCH",
+    ],
+    OBSERVE: [
+      "TARGET_IDENTITY_UNAVAILABLE", "TARGET_MISMATCH", "POSTGRES_VERSION_UNSUPPORTED",
+      "SESSION_IDENTITY_MISMATCH", "RECOVERY_STATE_UNSUPPORTED", "READ_ONLY_ASSERTION_FAILED",
+      "OBSERVATION_FAILED", "PRESTATE_INVALID", "UNKNOWN_DRIFT", "MIGRATION_IDENTITY_MISMATCH",
+    ],
+    PLAN: [
+      "ADMISSION_FAILED", "REVISION_UNAVAILABLE", "REVISION_MISMATCH", "DIRTY_CHECKOUT",
+      "CONTRACT_DIGEST_MISMATCH", "MIGRATION_IDENTITY_MISMATCH",
+    ],
+    PRESTATE: [
+      "OBSERVATION_FAILED", "PRESTATE_INVALID", "PRESTATE_MISMATCH", "PREWRITE_DRIFT", "MIGRATION_IDENTITY_MISMATCH",
+      "TARGET_MISMATCH", "SESSION_IDENTITY_MISMATCH", "READ_ONLY_ASSERTION_FAILED",
+    ],
+    INVERSE: [
+      "PRESTATE_MISMATCH", "OPERATION_UNSUPPORTED", "INVERSE_INCOMPLETE",
+      "RESTORE_CAPABILITY_REQUIRED", "ARBITRARY_INPUT_REJECTED",
+    ],
+    PREWRITE: [
+      "OBSERVATION_FAILED", "PRESTATE_INVALID", "PRESTATE_MISMATCH", "PREWRITE_DRIFT",
+      "TARGET_MISMATCH", "SESSION_IDENTITY_MISMATCH", "READ_ONLY_ASSERTION_FAILED",
+      "MIGRATION_IDENTITY_MISMATCH",
+    ],
+  }),
+  FAIL: Object.freeze({
+    FORWARD: ["MUTATION_FAILED", "WRITE_INDETERMINATE", "UNEXPECTED_FAILURE"],
+    COMMIT: ["COMMIT_FAILED", "COMMIT_INDETERMINATE", "UNEXPECTED_FAILURE"],
+    ROLLBACK: ["ROLLBACK_FAILED", "UNEXPECTED_FAILURE"],
+    RESTORE: ["RESTORE_CAPABILITY_REQUIRED", "RESTORE_EXECUTION_FAILED", "RESTORATION_FAILED", "UNEXPECTED_FAILURE"],
+    RESTORE_VERIFY: ["RESTORATION_FAILED", "RESTORATION_AMBIGUOUS", "UNEXPECTED_FAILURE"],
+    FINAL_VERIFY: ["FINAL_VERIFICATION_FAILED", "UNEXPECTED_FAILURE"],
+    RECEIPT: ["RECEIPT_REJECTED", "UNEXPECTED_FAILURE"],
+  }),
+});
 
 export class DurableOperationError extends Error {
   readonly semanticCode: SemanticCode;
@@ -305,6 +362,7 @@ export function canonicalDigest(domainSeparator: string, value: unknown): string
       PLAN_DOMAIN_SEPARATOR,
       CONTRACT_DOMAIN_SEPARATOR,
       INVERSE_DOMAIN_SEPARATOR,
+      POST_FORWARD_DOMAIN_SEPARATOR,
       JOURNAL_PREFIX_DOMAIN_SEPARATOR,
     ].includes(domainSeparator as never)
   ) {
@@ -1958,12 +2016,16 @@ function normalizeCanonicalObject(value: unknown): CanonicalObjectReferenceV1 {
 function normalizeOwnershipOperation(value: Record<string, unknown>): OwnershipOperationV1 {
   assertExactKeys(value, ["kind", "action", "object", "previous_owner", "next_owner"]);
   if (value.action !== "set_owner") fail("ARBITRARY_INPUT_REJECTED");
+  const object = normalizeCanonicalObject(value.object);
+  const previousOwner = normalizeReceiptRole(value.previous_owner);
+  const nextOwner = normalizeReceiptRole(value.next_owner);
+  if (["index", "sequence"].includes(object.object_class) && previousOwner !== nextOwner) fail("OPERATION_UNSUPPORTED");
   return {
     kind: "ownership",
     action: "set_owner",
-    object: normalizeCanonicalObject(value.object),
-    previous_owner: normalizeReceiptRole(value.previous_owner),
-    next_owner: normalizeReceiptRole(value.next_owner),
+    object,
+    previous_owner: previousOwner,
+    next_owner: nextOwner,
   };
 }
 
@@ -2103,79 +2165,231 @@ function normalizePrincipal(value: unknown): ApprovedPrincipal {
 export interface InverseStepV1 {
   original_operation_index: number;
   kind: OperationKind;
-  operation: DurableOperationV1;
+  operation: InverseOperationV1;
 }
+
+export interface AclAuthorityEntryV1 {
+  grantor: string;
+  grantee: string;
+  privilege: string;
+  grant_option: boolean;
+}
+
+export interface ObjectAclAuthorityV1 {
+  kind: "privilege";
+  object_class: CanonicalObjectReferenceV1["object_class"];
+  qualified_name: string;
+  object_oid: string;
+  acl_is_null: boolean;
+  entries: readonly AclAuthorityEntryV1[];
+}
+
+export interface DefaultAclAuthorityV1 {
+  kind: "default_acl";
+  default_acl_oid: string;
+  row_present: boolean;
+  acl_is_null: boolean;
+  creator: ApprovedRoleName;
+  schema: "public" | "drizzle";
+  object_type: "table" | "sequence" | "routine";
+  entries: readonly AclAuthorityEntryV1[];
+}
+
+export interface OwnershipAuthorityV1 {
+  kind: "ownership";
+  object_class: CanonicalObjectReferenceV1["object_class"];
+  qualified_name: string;
+  object_oid: string;
+  owner: string;
+}
+
+export type PostForwardAuthorityV1 =
+  | OwnershipAuthorityV1
+  | ObjectAclAuthorityV1
+  | DefaultAclAuthorityV1;
+
+export interface ObjectAclRestoreAuthorityV1 {
+  object_class: CanonicalObjectReferenceV1["object_class"];
+  qualified_name: string;
+  object_oid: string;
+  acl_is_null: boolean;
+  present: boolean;
+  grantor: string;
+  grantee: string;
+  privilege: string;
+  grant_option: boolean;
+}
+
+export interface DefaultAclRestoreAuthorityV1 {
+  default_acl_oid: string;
+  row_present: boolean;
+  acl_is_null: boolean;
+  creator: ApprovedRoleName;
+  schema: "public" | "drizzle";
+  object_type: "table" | "sequence" | "routine";
+  grantee: string;
+  grantor: string;
+  privilege: string;
+  grant_option: boolean;
+}
+
+export type RestoreAuthorityV1 =
+  | ObjectAclRestoreAuthorityV1
+  | DefaultAclRestoreAuthorityV1;
+
+export type InverseOperationV1 = DurableOperationV1 & {
+  restore_authority?: RestoreAuthorityV1;
+  revoke_grant_option_only?: boolean;
+};
 
 export interface DurableInverseV1 {
   version: typeof INVERSE_VERSION;
   source_plan_digest: string;
+  source_prestate_digest: string;
+  post_forward_authority: readonly {
+    operation_index: number;
+    operation: DurableOperationV1;
+    authority: PostForwardAuthorityV1;
+  }[];
+  expected_post_forward_digest: string;
+  external_restore_required: boolean;
   steps: readonly InverseStepV1[];
   inverse_digest: string;
 }
 
-export function createDurableInverse(plan: DurablePlanV1, authoritativePrestate?: NormalizedPrestateV1): DurableInverseV1 {
+export function createDurableInverse(
+  plan: DurablePlanV1,
+  authoritativePrestate?: NormalizedPrestateV1,
+  options: { allowExternalRestore?: boolean } = {},
+): DurableInverseV1 {
   validatePlan(plan);
   if (plan.operations.some((operation) => operation.kind === "migration")) fail("RESTORE_CAPABILITY_REQUIRED");
   if (!authoritativePrestate) fail("PRESTATE_MISMATCH");
   const prestate = normalizePrestate(authoritativePrestate);
   if (canonicalDigest(PRESTATE_DOMAIN_SEPARATOR, prestate) !== plan.prestate_digest) fail("PRESTATE_MISMATCH");
-  const steps = plan.operations.slice().reverse().map((operation, reverseIndex) => {
-    const originalIndex = plan.operations.length - reverseIndex - 1;
-    const inverse = inverseOperation(operation, prestate);
-    return { original_operation_index: originalIndex, kind: inverse.kind, operation: inverse };
-  });
-  const payload = { version: INVERSE_VERSION, source_plan_digest: plan.plan_digest, steps };
+  const model = deriveInverseModel(plan, prestate);
+  if (model.unsupported && options.allowExternalRestore !== true) fail("RESTORE_CAPABILITY_REQUIRED");
+  const postForwardAuthority = model.unsupported ? [] : model.postForwardAuthority;
+  const steps = model.unsupported
+    ? []
+    : model.inverseSteps.slice().reverse().map((step) => ({
+      original_operation_index: step.original_operation_index,
+      kind: step.operation.kind,
+      operation: step.operation,
+    }));
+  const payload = {
+    version: INVERSE_VERSION,
+    source_plan_digest: plan.plan_digest,
+    source_prestate_digest: plan.prestate_digest,
+    post_forward_authority: postForwardAuthority,
+    expected_post_forward_digest: canonicalDigest(POST_FORWARD_DOMAIN_SEPARATOR, postForwardAuthority),
+    external_restore_required: model.unsupported,
+    steps,
+  };
   return deepFreeze({ ...payload, inverse_digest: canonicalDigest(INVERSE_DOMAIN_SEPARATOR, payload) });
 }
 
-function inverseOperation(operation: DurableOperationV1, prestate: NormalizedPrestateV1): DurableOperationV1 {
+function deriveInverseModel(
+  plan: DurablePlanV1,
+  prestate: NormalizedPrestateV1,
+): {
+  unsupported: boolean;
+  postForwardAuthority: Array<{
+    operation_index: number;
+    operation: DurableOperationV1;
+    authority: PostForwardAuthorityV1;
+  }>;
+  inverseSteps: Array<{ original_operation_index: number; operation: InverseOperationV1 }>;
+} {
+  const current = new Map<string, PostForwardAuthorityV1>();
+  const inverseSteps: Array<{ original_operation_index: number; operation: InverseOperationV1 }> = [];
+  let unsupported = false;
+  for (const [operationIndex, operation] of plan.operations.entries()) {
+    const key = authorityKey(operation);
+    const before = current.get(key) ?? authorityForOperation(prestate, operation);
+    const transition = transitionAuthority(operation, before, prestate);
+    current.set(key, transition.after);
+    unsupported ||= !transition.supported;
+    inverseSteps.push({ original_operation_index: operationIndex, operation: transition.inverse });
+  }
+  const postForwardAuthority = plan.operations.map((operation, operationIndex) => ({
+    operation_index: operationIndex,
+    operation,
+    authority: current.get(authorityKey(operation)) as PostForwardAuthorityV1,
+  }));
+  return { unsupported, postForwardAuthority, inverseSteps };
+}
+
+function authorityKey(operation: DurableOperationV1): string {
   switch (operation.kind) {
-    case "ownership": {
-      const previousOwner = observedOwnershipOwner(prestate, operation.object);
-      if (operation.previous_owner !== previousOwner) fail("PRESTATE_MISMATCH");
-      return {
-        ...operation,
-        previous_owner: operation.next_owner,
-        next_owner: previousOwner,
-      };
-    }
-    case "privilege": {
-      const previous = observedPrivilege(prestate, operation);
-      if (operation.previous_grant_option !== previous.grant_option) fail("PRESTATE_MISMATCH");
-      return {
-        ...operation,
-        action: previous.present ? "grant" : "revoke",
-        grant_option: previous.grant_option,
-        previous_grant_option: operation.grant_option,
-      };
-    }
+    case "ownership":
+      return "ownership\0" + operation.object.object_class + "\0" + operation.object.qualified_name;
+    case "privilege":
+      return "privilege\0" + operation.object.object_class + "\0" + operation.object.qualified_name;
+    case "default_acl":
+      return "default_acl\0" + operation.creator + "\0" + operation.schema + "\0" + operation.object_type;
     case "membership":
-      fail("OPERATION_UNSUPPORTED");
-    case "default_acl": {
-      const previous = observedDefaultAcl(prestate, operation);
-      if (operation.previous_grant_option !== previous.grant_option) fail("PRESTATE_MISMATCH");
-      return {
-        ...operation,
-        action: previous.present ? "grant" : "revoke",
-        grant_option: previous.grant_option,
-        previous_grant_option: operation.grant_option,
-      };
-    }
     case "role_posture":
-      fail("OPERATION_UNSUPPORTED");
     case "migration":
-      fail("INVERSE_INCOMPLETE");
+      fail("OPERATION_UNSUPPORTED");
   }
 }
 
-function observedOwnershipOwner(
+function authorityForOperation(
+  prestate: NormalizedPrestateV1,
+  operation: DurableOperationV1,
+): PostForwardAuthorityV1 {
+  switch (operation.kind) {
+    case "ownership": {
+      const record = ownershipRecord(prestate, operation.object);
+      return {
+        kind: "ownership",
+        object_class: operation.object.object_class,
+        qualified_name: operation.object.qualified_name,
+        object_oid: record.object_oid,
+        owner: record.owner,
+      };
+    }
+    case "privilege":
+      return privilegeAuthority(prestate, operation);
+    case "default_acl":
+      return defaultAclAuthority(prestate, operation);
+    case "membership":
+    case "role_posture":
+    case "migration":
+      fail("OPERATION_UNSUPPORTED");
+  }
+}
+
+function ownershipRecord(
   prestate: NormalizedPrestateV1,
   object: CanonicalObjectReferenceV1,
-): string {
-  if (object.object_class === "database") return prestate.ownership.database_owner;
+): OwnershipRecordV1 {
+  if (object.object_class === "database") {
+    return {
+      object_class: "database",
+      qualified_name: prestate.target.logical_database_name,
+      object_oid: prestate.ownership.database_oid,
+      owner: prestate.ownership.database_owner,
+    };
+  }
   if (object.object_class === "schema") {
-    if (object.qualified_name === "public") return prestate.ownership.public_schema_owner;
-    if (object.qualified_name === "drizzle") return prestate.ownership.drizzle_schema_owner;
+    if (object.qualified_name === "public") {
+      return {
+        object_class: "schema",
+        qualified_name: "public",
+        object_oid: prestate.ownership.public_schema_oid,
+        owner: prestate.ownership.public_schema_owner,
+      };
+    }
+    if (object.qualified_name === "drizzle") {
+      return {
+        object_class: "schema",
+        qualified_name: "drizzle",
+        object_oid: prestate.ownership.drizzle_schema_oid,
+        owner: prestate.ownership.drizzle_schema_owner,
+      };
+    }
   }
   const records = object.object_class === "relation"
     ? prestate.ownership.canonical_relations
@@ -2186,7 +2400,305 @@ function observedOwnershipOwner(
         : prestate.ownership.canonical_types;
   const matches = records.filter((record) => record.qualified_name === object.qualified_name);
   if (matches.length !== 1) fail("PRESTATE_MISMATCH");
-  return matches[0].owner;
+  return matches[0];
+}
+
+function privilegeRowsForObject(
+  prestate: NormalizedPrestateV1,
+  object: CanonicalObjectReferenceV1,
+): PrivilegeRecordV1[] {
+  const rows = [...prestate.privileges.direct, ...prestate.privileges.public]
+    .filter((row) =>
+      row.object_class === object.object_class &&
+      (object.object_class === "database"
+        ? row.qualified_name === prestate.target.logical_database_name
+        : row.qualified_name === object.qualified_name));
+  if (rows.length === 0) fail("PRESTATE_MISMATCH");
+  return rows;
+}
+
+function privilegeAuthority(
+  prestate: NormalizedPrestateV1,
+  operation: PrivilegeOperationV1,
+): ObjectAclAuthorityV1 {
+  const rows = privilegeRowsForObject(prestate, operation.object);
+  const objectOids = new Set(rows.map((row) => row.object_oid));
+  const aclStates = new Set(rows.map((row) => row.acl_is_null));
+  if (objectOids.size !== 1 || aclStates.size !== 1) fail("PRESTATE_MISMATCH");
+  const entries = rows
+    .filter((row) => row.privilege !== "")
+    .map((row) => ({
+      grantor: row.grantor,
+      grantee: row.grantee,
+      privilege: row.privilege.toLowerCase(),
+      grant_option: row.grant_option,
+    }))
+    .sort((a, b) => compareTuple(Object.values(a), Object.values(b)));
+  const emptyRows = rows.filter((row) => row.privilege === "");
+  if (emptyRows.length > 1 || (emptyRows.length > 0 && entries.length > 0)) fail("PRESTATE_MISMATCH");
+  return {
+    kind: "privilege",
+    object_class: operation.object.object_class,
+    qualified_name: rows[0].qualified_name,
+    object_oid: [...objectOids][0],
+    acl_is_null: [...aclStates][0],
+    entries,
+  };
+}
+
+function targetAclEntry(
+  authority: ObjectAclAuthorityV1,
+  principal: ApprovedPrincipal,
+  privilege: string,
+): AclAuthorityEntryV1 | undefined {
+  const matches = authority.entries.filter((entry) =>
+    entry.grantee === principal && entry.privilege.toUpperCase() === privilege);
+  if (matches.length > 1) fail("PRESTATE_MISMATCH");
+  return matches[0];
+}
+
+function sortedAuthorityEntries(entries: readonly AclAuthorityEntryV1[]): AclAuthorityEntryV1[] {
+  return [...entries].sort((a, b) => compareTuple(Object.values(a), Object.values(b)));
+}
+
+function objectRestoreAuthority(
+  authority: ObjectAclAuthorityV1,
+  operation: PrivilegeOperationV1,
+): ObjectAclRestoreAuthorityV1 {
+  const previous = targetAclEntry(authority, operation.principal, operation.privilege);
+  return {
+    object_class: authority.object_class,
+    qualified_name: authority.qualified_name,
+    object_oid: authority.object_oid,
+    acl_is_null: authority.acl_is_null,
+    present: previous !== undefined,
+    grantor: previous?.grantor ?? "",
+    grantee: previous?.grantee ?? operation.principal,
+    privilege: previous?.privilege ?? operation.privilege.toLowerCase(),
+    grant_option: previous?.grant_option ?? false,
+  };
+}
+
+function privilegeTransition(
+  operation: PrivilegeOperationV1,
+  before: ObjectAclAuthorityV1,
+  prestate: NormalizedPrestateV1,
+): { after: ObjectAclAuthorityV1; inverse: InverseOperationV1; supported: boolean } {
+  const previous = targetAclEntry(before, operation.principal, operation.privilege);
+  if (operation.previous_grant_option !== (previous?.grant_option ?? false)) fail("PRESTATE_MISMATCH");
+  const entries = [...before.entries];
+  if (operation.action === "grant") {
+    if (previous) {
+      const index = entries.indexOf(previous);
+      entries[index] = {
+        ...previous,
+        grant_option: previous.grant_option || operation.grant_option,
+      };
+    } else {
+      entries.push({
+        grantor: prestate.target.current_user,
+        grantee: operation.principal,
+        privilege: operation.privilege.toLowerCase(),
+        grant_option: operation.grant_option,
+      });
+    }
+  } else {
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      if (entries[index].grantee === operation.principal && entries[index].privilege.toUpperCase() === operation.privilege) entries.splice(index, 1);
+    }
+  }
+  const after: ObjectAclAuthorityV1 = { ...before, entries: sortedAuthorityEntries(entries) };
+  const inverse: InverseOperationV1 = {
+    ...operation,
+    action: previous ? "grant" : "revoke",
+    grant_option: previous?.grant_option ?? false,
+    previous_grant_option: operation.grant_option,
+    restore_authority: objectRestoreAuthority(before, operation),
+  };
+  let supported = true;
+  const changed = canonicalSerialize(before) !== canonicalSerialize(after);
+  if (changed && (before.acl_is_null || (before.entries.length === 0 && !before.acl_is_null))) supported = false;
+  if (changed && after.entries.length === 0) supported = false;
+  if (previous && previous.grantor !== prestate.target.current_user) supported = false;
+  if (previous && operation.action === "grant" && !previous.grant_option && operation.grant_option) {
+    inverse.action = "revoke";
+    inverse.grant_option = false;
+    inverse.revoke_grant_option_only = true;
+  }
+  return { after, inverse, supported };
+}
+
+function defaultAclAuthority(
+  prestate: NormalizedPrestateV1,
+  operation: DefaultAclOperationV1,
+): DefaultAclAuthorityV1 {
+  const rows = prestate.default_acls.creator.map((creator, index) => ({
+    default_acl_oid: prestate.default_acls.default_acl_oid[index],
+    row_present: prestate.default_acls.row_present[index],
+    acl_is_null: prestate.default_acls.acl_is_null[index],
+    creator,
+    schema: prestate.default_acls.schema[index] as "public" | "drizzle",
+    object_type: prestate.default_acls.object_type[index] as "table" | "sequence" | "routine",
+    grantee: prestate.default_acls.grantee[index],
+    grantor: prestate.default_acls.grantor[index],
+    privilege: prestate.default_acls.privilege[index],
+    grant_option: prestate.default_acls.grant_option[index],
+  })).filter((row) =>
+    row.creator === operation.creator &&
+    row.schema === operation.schema &&
+    row.object_type === operation.object_type);
+  if (rows.length === 0) {
+    return {
+      kind: "default_acl",
+      default_acl_oid: "",
+      row_present: false,
+      acl_is_null: false,
+      creator: operation.creator,
+      schema: operation.schema,
+      object_type: operation.object_type,
+      entries: [],
+    };
+  }
+  const oids = new Set(rows.map((row) => row.default_acl_oid));
+  const rowPresence = new Set(rows.map((row) => row.row_present));
+  const aclStates = new Set(rows.map((row) => row.acl_is_null));
+  if (oids.size !== 1 || rowPresence.size !== 1 || aclStates.size !== 1) fail("PRESTATE_MISMATCH");
+  const entries = rows
+    .filter((row) => row.privilege !== "")
+    .map((row) => ({
+      grantor: row.grantor,
+      grantee: row.grantee,
+      privilege: row.privilege.toLowerCase(),
+      grant_option: row.grant_option,
+    }))
+    .sort((a, b) => compareTuple(Object.values(a), Object.values(b)));
+  const emptyRows = rows.filter((row) => row.privilege === "");
+  if (emptyRows.length > 1 || (emptyRows.length > 0 && entries.length > 0)) fail("PRESTATE_MISMATCH");
+  return {
+    kind: "default_acl",
+    default_acl_oid: [...oids][0],
+    row_present: [...rowPresence][0],
+    acl_is_null: [...aclStates][0],
+    creator: operation.creator,
+    schema: operation.schema,
+    object_type: operation.object_type,
+    entries,
+  };
+}
+
+function targetDefaultAclEntry(
+  authority: DefaultAclAuthorityV1,
+  principal: ApprovedPrincipal,
+  privilege: string,
+): AclAuthorityEntryV1 | undefined {
+  const matches = authority.entries.filter((entry) =>
+    entry.grantee === principal && entry.privilege.toUpperCase() === privilege);
+  if (matches.length > 1) fail("PRESTATE_MISMATCH");
+  return matches[0];
+}
+
+function defaultRestoreAuthority(
+  authority: DefaultAclAuthorityV1,
+  operation: DefaultAclOperationV1,
+): DefaultAclRestoreAuthorityV1 {
+  const previous = targetDefaultAclEntry(authority, operation.principal, operation.privilege);
+  return {
+    default_acl_oid: authority.default_acl_oid,
+    row_present: authority.row_present,
+    acl_is_null: authority.acl_is_null,
+    creator: authority.creator,
+    schema: authority.schema,
+    object_type: authority.object_type,
+    grantee: previous?.grantee ?? operation.principal,
+    grantor: previous?.grantor ?? "",
+    privilege: previous?.privilege ?? operation.privilege.toLowerCase(),
+    grant_option: previous?.grant_option ?? false,
+  };
+}
+
+function defaultAclTransition(
+  operation: DefaultAclOperationV1,
+  before: DefaultAclAuthorityV1,
+  prestate: NormalizedPrestateV1,
+): { after: DefaultAclAuthorityV1; inverse: InverseOperationV1; supported: boolean } {
+  const previous = targetDefaultAclEntry(before, operation.principal, operation.privilege);
+  if (operation.previous_grant_option !== (previous?.grant_option ?? false)) fail("PRESTATE_MISMATCH");
+  const entries = [...before.entries];
+  if (operation.action === "grant") {
+    if (previous) {
+      const index = entries.indexOf(previous);
+      entries[index] = {
+        ...previous,
+        grant_option: previous.grant_option || operation.grant_option,
+      };
+    } else {
+      entries.push({
+        grantor: prestate.target.current_user,
+        grantee: operation.principal,
+        privilege: operation.privilege.toLowerCase(),
+        grant_option: operation.grant_option,
+      });
+    }
+  } else {
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      if (entries[index].grantee === operation.principal && entries[index].privilege.toUpperCase() === operation.privilege) entries.splice(index, 1);
+    }
+  }
+  const after: DefaultAclAuthorityV1 = {
+    ...before,
+    row_present: before.row_present || entries.length > 0,
+    default_acl_oid: before.row_present ? before.default_acl_oid : "",
+    entries: sortedAuthorityEntries(entries),
+  };
+  const inverse: InverseOperationV1 = {
+    ...operation,
+    action: previous ? "grant" : "revoke",
+    grant_option: previous?.grant_option ?? false,
+    previous_grant_option: operation.grant_option,
+    restore_authority: defaultRestoreAuthority(before, operation),
+  };
+  let supported = true;
+  const changed = canonicalSerialize(before) !== canonicalSerialize(after);
+  if (changed && (!before.row_present || before.acl_is_null)) supported = false;
+  if (changed && operation.action === "revoke" && previous && before.entries.length === 1) supported = false;
+  if (previous && previous.grantor !== operation.creator) supported = false;
+  if (previous && operation.action === "grant" && !previous.grant_option && operation.grant_option) {
+    inverse.action = "revoke";
+    inverse.grant_option = false;
+    inverse.revoke_grant_option_only = true;
+  }
+  return { after, inverse, supported };
+}
+
+function transitionAuthority(
+  operation: DurableOperationV1,
+  before: PostForwardAuthorityV1,
+  prestate: NormalizedPrestateV1,
+): { after: PostForwardAuthorityV1; inverse: InverseOperationV1; supported: boolean } {
+  switch (operation.kind) {
+    case "ownership": {
+      if (before.kind !== "ownership" || operation.previous_owner !== before.owner) fail("PRESTATE_MISMATCH");
+      return {
+        after: { ...before, owner: operation.next_owner },
+        inverse: {
+          ...operation,
+          previous_owner: operation.next_owner,
+          next_owner: before.owner,
+        },
+        supported: true,
+      };
+    }
+    case "privilege":
+      if (before.kind !== "privilege") fail("PRESTATE_MISMATCH");
+      return privilegeTransition(operation, before, prestate);
+    case "default_acl":
+      if (before.kind !== "default_acl") fail("PRESTATE_MISMATCH");
+      return defaultAclTransition(operation, before, prestate);
+    case "membership":
+    case "role_posture":
+    case "migration":
+      fail("OPERATION_UNSUPPORTED");
+  }
 }
 
 function observedPrivilege(
@@ -2300,7 +2812,10 @@ export interface MutationSession {
 class MutationSessionImpl implements MutationSession {
   private started = false;
 
-  constructor(private readonly connection: DurableConnection) {}
+  constructor(
+    private readonly connection: DurableConnection,
+    private readonly logicalDatabaseName?: string,
+  ) {}
 
   get mutationStarted(): boolean {
     return this.started;
@@ -2325,31 +2840,41 @@ class MutationSessionImpl implements MutationSession {
     const lockKeys = new Set<string>();
     for (const operation of operations) {
       if (operation.kind === "ownership" || operation.kind === "privilege") {
-        lockKeys.add(`${operation.object.object_class}\0${operation.object.qualified_name}`);
+        lockKeys.add(operation.object.object_class + "\0" + operation.object.qualified_name);
       } else if (operation.kind === "default_acl") {
-        lockKeys.add(`default_acl\0${operation.creator}\0${operation.schema}\0${operation.object_type}`);
+        lockKeys.add("default_acl\0" + operation.creator + "\0" + operation.schema + "\0" + operation.object_type);
       } else if (operation.kind === "migration") {
         lockKeys.add("migration\0ledger");
       }
     }
     for (const lockKey of [...lockKeys].sort()) {
-      const [objectClass, qualifiedName, objectType] = lockKey.split("\0");
-      if (objectClass === "default_acl") {
-        continue;
-      } else if (objectClass === "migration") {
+      const [objectClass, qualifiedName] = lockKey.split("\0");
+      if (objectClass === "migration") {
         await this.connection.query("lock table \"drizzle\".\"__drizzle_migrations\" in access exclusive mode /* platform durable:object_lock */");
-      } else if (["relation", "index", "sequence"].includes(objectClass)) {
+      } else if (objectClass === "relation") {
         const [schemaName, relationName] = qualifiedName.split(".", 2);
         await this.connection.query(
           `lock table ${quoteIdentifier(schemaName)}.${quoteIdentifier(relationName)} in access exclusive mode /* platform durable:object_lock */`,
+        );
+      } else {
+        const lockDigest = createHash("sha256")
+          .update(Buffer.from("swooshz-platform:durable-object-lock-v1\0" + lockKey, "utf8"))
+          .digest();
+        await this.connection.query(
+          "select pg_catalog.pg_advisory_xact_lock($1::integer, $2::integer) /* platform durable:object_lock */",
+          [lockDigest.readInt32BE(0), lockDigest.readInt32BE(4)],
         );
       }
     }
   }
 
   async applyOperation(operation: DurableOperationV1): Promise<void> {
-    if (operation.kind === "membership" || operation.kind === "role_posture") fail("OPERATION_UNSUPPORTED");
-    const statement = operationSql(operation);
+    if (operation.kind === "membership" || operation.kind === "role_posture" ||
+      (operation.kind === "ownership" && ["index", "sequence"].includes(operation.object.object_class) &&
+        operation.previous_owner !== operation.next_owner)) {
+      fail("OPERATION_UNSUPPORTED");
+    }
+    const statement = operationSql(operation, this.logicalDatabaseName);
     this.started = true;
     try {
       await this.connection.query(statement.sql, statement.values);
@@ -2367,8 +2892,8 @@ class MutationSessionImpl implements MutationSession {
   }
 }
 
-export function createMutationSession(connection: DurableConnection): MutationSession {
-  return new MutationSessionImpl(connection);
+export function createMutationSession(connection: DurableConnection, logicalDatabaseName?: string): MutationSession {
+  return new MutationSessionImpl(connection, logicalDatabaseName);
 }
 
 function quoteIdentifier(value: string): string {
@@ -2384,8 +2909,11 @@ function principalIdentifier(principal: ApprovedPrincipal): string {
   return principal === "PUBLIC" ? "PUBLIC" : roleIdentifier(principal);
 }
 
-function objectSql(reference: CanonicalObjectReferenceV1): string {
-  if (reference.object_class === "database") return "current_database()";
+function objectSql(reference: CanonicalObjectReferenceV1, logicalDatabaseName?: string): string {
+  if (reference.object_class === "database") {
+    if (!logicalDatabaseName) fail("TARGET_MISMATCH");
+    return quoteIdentifier(safeIdentifier(logicalDatabaseName, "TARGET_MISMATCH"));
+  }
   if (reference.object_class === "schema") return quoteIdentifier(reference.qualified_name);
   const [namespace, name] = reference.qualified_name.split(".", 2);
   if (!namespace || !name) fail("ARBITRARY_INPUT_REJECTED");
@@ -2393,24 +2921,28 @@ function objectSql(reference: CanonicalObjectReferenceV1): string {
   return `${quoteIdentifier(namespace)}.${quoteIdentifier(name)}`;
 }
 
-function operationSql(operation: DurableOperationV1): { sql: string; values?: readonly unknown[] } {
+function operationSql(operation: DurableOperationV1, logicalDatabaseName?: string): { sql: string; values?: readonly unknown[] } {
   switch (operation.kind) {
     case "ownership":
       return {
         sql: operation.object.object_class === "database"
-          ? `ALTER DATABASE ${objectSql(operation.object)} OWNER TO ${roleIdentifier(operation.next_owner)}`
-          : `ALTER ${operation.object.object_class === "schema" ? "SCHEMA" : operation.object.object_class === "relation" ? "TABLE" : operation.object.object_class === "enum" || operation.object.object_class === "type" ? "TYPE" : operation.object.object_class.toUpperCase()} ${objectSql(operation.object)} OWNER TO ${roleIdentifier(operation.next_owner)}`,
+          ? `ALTER DATABASE ${objectSql(operation.object, logicalDatabaseName)} OWNER TO ${roleIdentifier(operation.next_owner)}`
+          : `ALTER ${operation.object.object_class === "schema" ? "SCHEMA" : operation.object.object_class === "relation" ? "TABLE" : operation.object.object_class === "enum" || operation.object.object_class === "type" ? "TYPE" : operation.object.object_class.toUpperCase()} ${objectSql(operation.object, logicalDatabaseName)} OWNER TO ${roleIdentifier(operation.next_owner)}`,
       };
     case "privilege": {
-      const verb = operation.action === "grant" ? "GRANT" : "REVOKE";
+      const revokeGrantOptionOnly = operation.action === "revoke" &&
+        (operation as InverseOperationV1).revoke_grant_option_only === true;
+      const verb = operation.action === "grant"
+        ? "GRANT"
+        : revokeGrantOptionOnly ? "REVOKE GRANT OPTION FOR" : "REVOKE";
       const option = operation.action === "grant" && operation.grant_option ? " WITH GRANT OPTION" : "";
       const objectType = operation.object.object_class === "relation" ? "TABLE" : operation.object.object_class.toUpperCase();
-      return { sql: `${verb} ${operation.privilege} ON ${objectType} ${objectSql(operation.object)} ${operation.action === "grant" ? "TO" : "FROM"} ${principalIdentifier(operation.principal)}${option}` };
+      return { sql: `${verb} ${operation.privilege} ON ${objectType} ${objectSql(operation.object, logicalDatabaseName)} ${operation.action === "grant" ? "TO" : "FROM"} ${principalIdentifier(operation.principal)}${option}` };
     }
     case "membership":
       return { sql: `${operation.action === "grant" ? "GRANT" : "REVOKE"} ${roleIdentifier(operation.granted_role)} ${operation.action === "grant" ? "TO" : "FROM"} ${roleIdentifier(operation.member)}${operation.action === "grant" && operation.admin_option ? " WITH ADMIN OPTION" : ""}` };
     case "default_acl":
-      return { sql: `ALTER DEFAULT PRIVILEGES FOR ROLE ${roleIdentifier(operation.creator)} IN SCHEMA ${quoteIdentifier(operation.schema)} ${operation.action === "grant" ? "GRANT" : "REVOKE"} ${operation.privilege} ON ${operation.object_type === "routine" ? "FUNCTIONS" : `${operation.object_type.toUpperCase()}S`} ${operation.action === "grant" ? "TO" : "FROM"} ${principalIdentifier(operation.principal)}${operation.action === "grant" && operation.grant_option ? " WITH GRANT OPTION" : ""}` };
+      return { sql: `ALTER DEFAULT PRIVILEGES FOR ROLE ${roleIdentifier(operation.creator)} IN SCHEMA ${quoteIdentifier(operation.schema)} ${operation.action === "grant" ? "GRANT" : (operation as InverseOperationV1).revoke_grant_option_only === true ? "REVOKE GRANT OPTION FOR" : "REVOKE"} ${operation.privilege} ON ${operation.object_type === "routine" ? "FUNCTIONS" : `${operation.object_type.toUpperCase()}S`} ${operation.action === "grant" ? "TO" : "FROM"} ${principalIdentifier(operation.principal)}${operation.action === "grant" && operation.grant_option ? " WITH GRANT OPTION" : ""}` };
     case "role_posture":
       return { sql: `ALTER ROLE ${roleIdentifier(operation.role)} ${roleAttributeSql(operation.attributes)}` };
     case "migration":
@@ -2456,8 +2988,13 @@ export interface DurableReceiptV1 {
   role_names: readonly ApprovedReceiptRoleName[];
   counts: DurableCounts;
   mutation_started: boolean;
+  commit_state: CommitState;
   rollback_attempted: boolean;
   rollback_verified: boolean;
+  repository_inverse_attempted: boolean;
+  repository_inverse_verified: boolean;
+  external_restore_attempted: boolean;
+  external_restore_verified: boolean;
   restoration_state: "NOT_REQUIRED" | "NOT_STARTED" | "VERIFIED" | "FAILED" | "AMBIGUOUS";
   final_readiness_state: "NOT_RUN" | "PASS" | "FAIL";
   migration_tag?: string;
@@ -2465,6 +3002,15 @@ export interface DurableReceiptV1 {
 
 export function projectReceipt(value: Record<string, unknown>): DurableReceiptV1 {
   assertRecord(value, "RECEIPT_REJECTED");
+  const mutationStarted = value.mutation_started === true;
+  const rollbackAttempted = value.rollback_attempted === true;
+  const inferredCommitState = COMMIT_STATES.includes(value.commit_state as CommitState)
+    ? value.commit_state as CommitState
+    : value.outcome === "PASS" || value.phase === "FINAL_VERIFY"
+      ? "COMMITTED"
+      : mutationStarted
+        ? rollbackAttempted ? "NOT_COMMITTED" : "INDETERMINATE"
+        : "NOT_STARTED";
   const result: DurableReceiptV1 = {
     receipt_version: 1,
     phase: value.phase as ReceiptPhase,
@@ -2475,9 +3021,14 @@ export function projectReceipt(value: Record<string, unknown>): DurableReceiptV1
     contract_digest: String(value.contract_digest),
     role_names: Array.isArray(value.role_names) ? [...value.role_names] as ApprovedReceiptRoleName[] : [],
     counts: value.counts as DurableCounts,
-    mutation_started: value.mutation_started === true,
-    rollback_attempted: value.rollback_attempted === true,
+    mutation_started: mutationStarted,
+    commit_state: inferredCommitState,
+    rollback_attempted: rollbackAttempted,
     rollback_verified: value.rollback_verified === true,
+    repository_inverse_attempted: value.repository_inverse_attempted === true,
+    repository_inverse_verified: value.repository_inverse_verified === true,
+    external_restore_attempted: value.external_restore_attempted === true,
+    external_restore_verified: value.external_restore_verified === true,
     restoration_state: value.restoration_state as DurableReceiptV1["restoration_state"],
     final_readiness_state: value.final_readiness_state as DurableReceiptV1["final_readiness_state"],
     ...(value.migration_tag === undefined ? {} : { migration_tag: String(value.migration_tag) }),
@@ -2488,54 +3039,92 @@ export function projectReceipt(value: Record<string, unknown>): DurableReceiptV1
 
 export function validateReceipt(value: unknown): asserts value is DurableReceiptV1 {
   assertRecord(value, "RECEIPT_REJECTED");
-  const keys = ["receipt_version", "phase", "outcome", "semantic_code", "operation_kind", "git_sha", "contract_digest", "role_names", "counts", "mutation_started", "rollback_attempted", "rollback_verified", "restoration_state", "final_readiness_state"];
+  const keys = [
+    "receipt_version", "phase", "outcome", "semantic_code", "operation_kind",
+    "git_sha", "contract_digest", "role_names", "counts", "mutation_started",
+    "commit_state", "rollback_attempted", "rollback_verified",
+    "repository_inverse_attempted", "repository_inverse_verified",
+    "external_restore_attempted", "external_restore_verified",
+    "restoration_state", "final_readiness_state",
+  ];
   if ("migration_tag" in value) keys.push("migration_tag");
   assertExactKeys(value, keys, "RECEIPT_REJECTED");
   if (value.receipt_version !== 1 || !RECEIPT_PHASES.includes(value.phase as ReceiptPhase) || !["PASS", "FAIL", "BLOCKED"].includes(value.outcome as string) || !SEMANTIC_CODES.includes(value.semantic_code as SemanticCode) || !OPERATION_KINDS.includes(value.operation_kind as OperationKind)) fail("RECEIPT_REJECTED");
   hex(value.git_sha, 40, "RECEIPT_REJECTED");
   hex(value.contract_digest, 64, "RECEIPT_REJECTED");
+  if (!COMMIT_STATES.includes(value.commit_state as CommitState)) fail("RECEIPT_REJECTED");
   if (!Array.isArray(value.role_names) || value.role_names.some((role) => !APPROVED_RECEIPT_ROLE_NAMES.includes(role as ApprovedReceiptRoleName))) fail("RECEIPT_REJECTED");
   assertRecord(value.counts, "RECEIPT_REJECTED");
   const countKeys = ["canonical_objects", "direct_privileges", "public_privileges", "default_acls", "memberships", "migration_entries", "operations", "inverse_steps"];
   assertExactKeys(value.counts, countKeys, "RECEIPT_REJECTED");
   for (const key of countKeys) nonnegativeInteger(value.counts[key], "RECEIPT_REJECTED");
-  for (const key of ["mutation_started", "rollback_attempted", "rollback_verified"]) booleanValue(value[key], "RECEIPT_REJECTED");
+  for (const key of [
+    "mutation_started", "rollback_attempted", "rollback_verified",
+    "repository_inverse_attempted", "repository_inverse_verified",
+    "external_restore_attempted", "external_restore_verified",
+  ]) booleanValue(value[key], "RECEIPT_REJECTED");
   if (!["NOT_REQUIRED", "NOT_STARTED", "VERIFIED", "FAILED", "AMBIGUOUS"].includes(value.restoration_state as string) || !["NOT_RUN", "PASS", "FAIL"].includes(value.final_readiness_state as string)) fail("RECEIPT_REJECTED");
+  const anyRecoveryAttempted = value.rollback_attempted || value.repository_inverse_attempted || value.external_restore_attempted;
+  const anyRecoveryVerified = value.rollback_verified || value.repository_inverse_verified || value.external_restore_verified;
   if (value.rollback_verified === true && (!value.rollback_attempted || value.restoration_state !== "VERIFIED")) fail("RECEIPT_REJECTED");
-  if (!value.mutation_started && (value.rollback_attempted || value.rollback_verified)) fail("RECEIPT_REJECTED");
+  if (value.repository_inverse_verified === true && (!value.repository_inverse_attempted || value.restoration_state !== "VERIFIED")) fail("RECEIPT_REJECTED");
+  if (value.external_restore_verified === true && (!value.external_restore_attempted || value.restoration_state !== "VERIFIED")) fail("RECEIPT_REJECTED");
+  if (!value.mutation_started && (
+    value.rollback_attempted || value.rollback_verified ||
+    value.repository_inverse_attempted || value.repository_inverse_verified ||
+    value.external_restore_attempted || value.external_restore_verified
+  )) fail("RECEIPT_REJECTED");
+  if (value.mutation_started && value.commit_state === "NOT_STARTED") fail("RECEIPT_REJECTED");
+  if (value.rollback_attempted && value.commit_state === "COMMITTED") fail("RECEIPT_REJECTED");
+  if (value.restoration_state === "NOT_REQUIRED" && (anyRecoveryAttempted || anyRecoveryVerified)) fail("RECEIPT_REJECTED");
+  if (value.restoration_state === "NOT_STARTED" && anyRecoveryAttempted) fail("RECEIPT_REJECTED");
+  if (value.restoration_state === "VERIFIED" && (!value.mutation_started || !anyRecoveryAttempted)) fail("RECEIPT_REJECTED");
+  if (value.restoration_state !== "VERIFIED" && anyRecoveryVerified) fail("RECEIPT_REJECTED");
+  if (value.mutation_started && value.restoration_state === "NOT_STARTED") fail("RECEIPT_REJECTED");
   if (value.outcome === "PASS") {
-    if (value.phase !== "FINAL_VERIFY" || value.semantic_code !== "SUCCESS" || value.final_readiness_state !== "PASS" || value.rollback_attempted || value.rollback_verified || value.restoration_state !== "NOT_REQUIRED") {
+    const allowedCodes = RECEIPT_MATRIX.PASS[value.phase as ReceiptPhase];
+    if (!allowedCodes?.includes(value.semantic_code as SemanticCode) ||
+      value.final_readiness_state !== "PASS" ||
+      value.commit_state !== "COMMITTED" ||
+      anyRecoveryAttempted || anyRecoveryVerified ||
+      value.restoration_state !== "NOT_REQUIRED") {
       fail("RECEIPT_REJECTED");
     }
   } else if (value.outcome === "BLOCKED") {
-    if (!["ADMISSION", "OBSERVE", "PLAN", "PRESTATE", "INVERSE", "PREWRITE"].includes(value.phase as ReceiptPhase) || value.mutation_started || value.rollback_attempted || value.rollback_verified || value.restoration_state !== "NOT_REQUIRED" || value.final_readiness_state !== "NOT_RUN" || value.semantic_code === "SUCCESS") {
+    const allowedCodes = RECEIPT_MATRIX.BLOCKED[value.phase as ReceiptPhase];
+    if (!allowedCodes?.includes(value.semantic_code as SemanticCode) ||
+      value.mutation_started || value.commit_state !== "NOT_STARTED" || anyRecoveryAttempted || anyRecoveryVerified ||
+      value.restoration_state !== "NOT_REQUIRED" || value.final_readiness_state !== "NOT_RUN") {
       fail("RECEIPT_REJECTED");
     }
   } else {
-    if (value.semantic_code === "SUCCESS") fail("RECEIPT_REJECTED");
+    const allowedCodes = RECEIPT_MATRIX.FAIL[value.phase as ReceiptPhase];
+    if (!allowedCodes?.includes(value.semantic_code as SemanticCode)) fail("RECEIPT_REJECTED");
     if (!value.mutation_started) {
-      if (value.phase !== "FORWARD" || value.rollback_attempted || value.rollback_verified || value.restoration_state !== "NOT_REQUIRED" || value.final_readiness_state !== "NOT_RUN" || !["MUTATION_FAILED", "UNEXPECTED_FAILURE"].includes(value.semantic_code as SemanticCode)) {
+      if (value.phase !== "RECEIPT" && (value.phase !== "FORWARD" || value.commit_state !== "NOT_STARTED" || value.restoration_state !== "NOT_REQUIRED" || value.final_readiness_state !== "NOT_RUN" || !["MUTATION_FAILED", "UNEXPECTED_FAILURE"].includes(value.semantic_code as SemanticCode))) {
         fail("RECEIPT_REJECTED");
       }
+      if (value.phase === "RECEIPT" && (value.commit_state !== "NOT_STARTED" || value.restoration_state !== "NOT_REQUIRED" || value.final_readiness_state !== "NOT_RUN")) fail("RECEIPT_REJECTED");
     } else {
-      if (![
-        "FORWARD", "COMMIT", "ROLLBACK", "RESTORE", "RESTORE_VERIFY", "FINAL_VERIFY", "RECEIPT",
-      ].includes(value.phase as ReceiptPhase) || value.restoration_state === "NOT_REQUIRED" || value.restoration_state === "NOT_STARTED") {
-        fail("RECEIPT_REJECTED");
-      }
-      if (value.phase === "ROLLBACK" && (!value.rollback_attempted || value.semantic_code !== "ROLLBACK_FAILED")) fail("RECEIPT_REJECTED");
+      if (value.phase === "FORWARD" && !["NOT_STARTED", "NOT_COMMITTED", "INDETERMINATE"].includes(value.commit_state as CommitState)) fail("RECEIPT_REJECTED");
+      if (value.phase === "COMMIT" && value.commit_state === "NOT_STARTED") fail("RECEIPT_REJECTED");
+      if (value.phase === "ROLLBACK" && (!value.rollback_attempted || value.semantic_code !== "ROLLBACK_FAILED" || value.rollback_verified || value.commit_state === "COMMITTED")) fail("RECEIPT_REJECTED");
+      if (value.phase === "FORWARD" && (!value.rollback_attempted || value.commit_state !== "NOT_COMMITTED")) fail("RECEIPT_REJECTED");
+      if (value.phase === "COMMIT" && !value.rollback_attempted) fail("RECEIPT_REJECTED");
+      if (value.phase === "FINAL_VERIFY" && (
+        value.commit_state !== "COMMITTED" ||
+        value.restoration_state !== "VERIFIED" ||
+        !anyRecoveryAttempted
+      )) fail("RECEIPT_REJECTED");
+      if (value.phase === "RESTORE" && (
+        !value.external_restore_attempted ||
+        value.external_restore_verified ||
+        value.restoration_state !== "AMBIGUOUS"
+      )) fail("RECEIPT_REJECTED");
+      if (value.phase === "RESTORE_VERIFY" && !anyRecoveryAttempted) fail("RECEIPT_REJECTED");
+      if (value.restoration_state === "NOT_REQUIRED") fail("RECEIPT_REJECTED");
+      if (value.phase === "RESTORE_VERIFY" && value.restoration_state === "VERIFIED") fail("RECEIPT_REJECTED");
     }
-    const phaseCodes: Partial<Record<ReceiptPhase, readonly SemanticCode[]>> = {
-      FORWARD: ["MUTATION_FAILED", "WRITE_INDETERMINATE", "UNEXPECTED_FAILURE"],
-      COMMIT: ["COMMIT_FAILED", "COMMIT_INDETERMINATE", "UNEXPECTED_FAILURE"],
-      ROLLBACK: ["ROLLBACK_FAILED", "UNEXPECTED_FAILURE"],
-      RESTORE: ["RESTORE_CAPABILITY_REQUIRED", "RESTORE_EXECUTION_FAILED", "RESTORATION_FAILED", "UNEXPECTED_FAILURE"],
-      RESTORE_VERIFY: ["RESTORATION_FAILED", "RESTORATION_AMBIGUOUS", "UNEXPECTED_FAILURE"],
-      FINAL_VERIFY: ["FINAL_VERIFICATION_FAILED", "UNEXPECTED_FAILURE"],
-      RECEIPT: ["RECEIPT_REJECTED", "UNEXPECTED_FAILURE"],
-    };
-    const allowedCodes = phaseCodes[value.phase as ReceiptPhase];
-    if (allowedCodes && !allowedCodes.includes(value.semantic_code as SemanticCode)) fail("RECEIPT_REJECTED");
   }
   if ("migration_tag" in value && (typeof value.migration_tag !== "string" || !CANONICAL_MIGRATION_TAGS.has(value.migration_tag))) fail("RECEIPT_REJECTED");
 }
@@ -2553,8 +3142,13 @@ export function serializeReceipt(value: DurableReceiptV1): string {
     role_names: [...value.role_names],
     counts: { ...value.counts },
     mutation_started: value.mutation_started,
+    commit_state: value.commit_state,
     rollback_attempted: value.rollback_attempted,
     rollback_verified: value.rollback_verified,
+    repository_inverse_attempted: value.repository_inverse_attempted,
+    repository_inverse_verified: value.repository_inverse_verified,
+    external_restore_attempted: value.external_restore_attempted,
+    external_restore_verified: value.external_restore_verified,
     restoration_state: value.restoration_state,
     final_readiness_state: value.final_readiness_state,
     ...(value.migration_tag ? { migration_tag: value.migration_tag } : {}),
@@ -2873,33 +3467,51 @@ async function executeFrozenInverse(input: {
   journal: CanonicalMigrationJournalV1;
   inverse: DurableInverseV1;
 }): Promise<void> {
+  if (input.inverse.external_restore_required) fail("RESTORE_CAPABILITY_REQUIRED");
+  if (input.inverse.source_prestate_digest !== input.expectedPrestateDigest ||
+    canonicalDigest(POST_FORWARD_DOMAIN_SEPARATOR, input.inverse.post_forward_authority) !== input.inverse.expected_post_forward_digest) {
+    fail("INVERSE_INCOMPLETE");
+  }
   const connection = await input.binding.connect();
-  const session = createMutationSession(connection);
+  const session = createMutationSession(connection, input.binding.logicalDatabaseName);
   let begun = false;
+  let inverseCommitted = false;
   try {
     await session.begin();
     begun = true;
     await session.acquireTargetLock(input.targetBindingDigest);
     await session.acquireMutationLocks(input.inverse.steps.map((step) => step.operation));
     const revalidated = await captureMutationPrestate(input.binding, connection, input.journal);
-    if (revalidated.prestate_digest !== input.expectedPrestateDigest) fail("PREWRITE_DRIFT");
+    for (const expected of input.inverse.post_forward_authority) {
+      const observed = authorityForOperation(revalidated.prestate, expected.operation);
+      if (canonicalSerialize(observed) !== canonicalSerialize(expected.authority)) fail("PREWRITE_DRIFT");
+    }
     for (const step of input.inverse.steps) {
       if (step.kind !== step.operation.kind) fail("INVERSE_INCOMPLETE");
       await session.applyOperation(step.operation);
     }
     await session.commit();
-  } catch {
-    if (begun) {
+    inverseCommitted = true;
+  } catch (error) {
+    if (begun && !inverseCommitted) {
       try {
         await session.rollback();
       } catch {
-        // The restoration state below remains failed closed.
+        // The caller records the failed restoration state.
       }
     }
+    if (error instanceof DurableOperationError) throw error;
     fail("RESTORATION_FAILED");
   } finally {
     await closeConnection(connection);
   }
+  const restoration = await verifyRestoration({
+    binding: input.binding,
+    expectedPrestateDigest: input.expectedPrestateDigest,
+    journal: input.journal,
+  });
+  if (restoration.state === "AMBIGUOUS") fail("RESTORATION_AMBIGUOUS");
+  if (restoration.state !== "VERIFIED") fail("RESTORATION_FAILED");
 }
 
 async function executeRestoreCapability(
@@ -2956,6 +3568,54 @@ function assertFinalRolePosture(
   }
 }
 
+function freezeDurablePlan(plan: DurablePlanV1): DurablePlanV1 {
+  validatePlan(plan);
+  const frozen = createDurablePlan({
+    expected_git_sha: plan.expected_git_sha,
+    contract_digest: plan.contract_digest,
+    target_binding_digest: plan.target_binding_digest,
+    prestate_digest: plan.prestate_digest,
+    operation_kind: plan.operation_kind,
+    operations: plan.operations,
+  });
+  if (frozen.plan_digest !== plan.plan_digest) fail("PREWRITE_DRIFT");
+  return frozen;
+}
+
+function freezeTargetBinding(binding: DurableTargetBinding): DurableTargetBinding {
+  assertObservationBinding(binding);
+  return deepFreeze({
+    version: binding.version,
+    logicalDatabaseName: binding.logicalDatabaseName,
+    expectedClusterSystemIdentifier: binding.expectedClusterSystemIdentifier,
+    expectedDatabaseOid: binding.expectedDatabaseOid,
+    expectedCurrentUser: binding.expectedCurrentUser,
+    expectedSessionUser: binding.expectedSessionUser,
+    expectedPostgresMajor: binding.expectedPostgresMajor,
+    connect: binding.connect,
+  });
+}
+
+function freezeJournal(journal: CanonicalMigrationJournalV1 | undefined): CanonicalMigrationJournalV1 {
+  if (!journal) fail("MIGRATION_IDENTITY_MISMATCH");
+  return deepFreeze({
+    version: journal.version,
+    dialect: journal.dialect,
+    entries: journal.entries.map((entry) => ({ ...entry })),
+  });
+}
+
+function freezeRestoreCapability(capability: RestoreCapabilityV1 | undefined): RestoreCapabilityV1 | undefined {
+  if (!capability) return undefined;
+  return deepFreeze({
+    version: capability.version,
+    target_binding_digest: capability.target_binding_digest,
+    prestate_digest: capability.prestate_digest,
+    plan_digest: capability.plan_digest,
+    execute: capability.execute,
+  });
+}
+
 export async function executeDurablePlan(input: {
   plan: DurablePlanV1;
   binding: DurableTargetBinding;
@@ -2967,17 +3627,23 @@ export async function executeDurablePlan(input: {
   migrationsFolder?: string;
   journal?: CanonicalMigrationJournalV1;
 }): Promise<DurableReceiptV1> {
-  validatePlan(input.plan);
+  const frozenPlan = freezeDurablePlan(input.plan);
+  const frozenBinding = freezeTargetBinding(input.binding);
   const expectedPrestate = normalizePrestate(input.expectedPrestate);
   assertFixedRolePosture(expectedPrestate);
   const expectedPrestateDigest = canonicalDigest(PRESTATE_DOMAIN_SEPARATOR, expectedPrestate);
-  const isMigration = input.plan.operation_kind === "migration";
-  const requiresRestoreCapability = input.plan.operations.some((operation) => operation.kind === "migration");
-  if (!input.journal) fail("MIGRATION_IDENTITY_MISMATCH");
+  const expectedContractDigest = hex(input.expectedContractDigest, 64, "CONTRACT_DIGEST_MISMATCH");
+  const frozenJournal = freezeJournal(input.journal);
+  const frozenRestoreCapability = freezeRestoreCapability(input.restoreCapability);
+  const frozenRootDir = input.rootDir;
+  const frozenMigrationsFolder = input.migrationsFolder;
+  const frozenMutationConnection = input.mutationConnection;
+  const isMigration = frozenPlan.operation_kind === "migration";
+  const requiresRestoreCapability = frozenPlan.operations.some((operation) => operation.kind === "migration");
   let phase: ReceiptPhase = "ADMISSION";
-  let observedContractDigest = input.expectedContractDigest;
+  let observedContractDigest = expectedContractDigest;
   let observedTargetBindingDigest = "";
-  let restoreCapability: RestoreCapabilityV1 | undefined;
+  let restoreCapability: RestoreCapabilityV1 | undefined = frozenRestoreCapability;
   let inverse: DurableInverseV1 | undefined;
   let mutationConnection: DurableConnection | undefined;
   let session: MutationSession | undefined;
@@ -2986,70 +3652,106 @@ export async function executeDurablePlan(input: {
   let connectionClosed = false;
   let rollbackAttempted = false;
   let rollbackVerified = false;
+  let repositoryInverseAttempted = false;
+  let repositoryInverseVerified = false;
+  let externalRestoreAttempted = false;
+  let externalRestoreVerified = false;
+  let commitState: CommitState = "NOT_STARTED";
   let finalReadinessState: DurableReceiptV1["final_readiness_state"] = "NOT_RUN";
   try {
     phase = "PLAN";
-    if (input.rootDir) {
+    if (frozenRootDir) {
       phase = "ADMISSION";
       await assertRevisionBinding({
-        rootDir: input.rootDir,
-        expectedGitSha: input.plan.expected_git_sha,
+        rootDir: frozenRootDir,
+        expectedGitSha: frozenPlan.expected_git_sha,
       });
-      observedContractDigest = await computeContractDigest(input.rootDir);
+      observedContractDigest = await computeContractDigest(frozenRootDir);
     }
     if (
-      expectedPrestateDigest !== input.plan.prestate_digest ||
-      input.expectedContractDigest !== input.plan.contract_digest ||
-      observedContractDigest !== input.expectedContractDigest
+      expectedPrestateDigest !== frozenPlan.prestate_digest ||
+      expectedContractDigest !== frozenPlan.contract_digest ||
+      observedContractDigest !== expectedContractDigest
     ) fail("CONTRACT_DIGEST_MISMATCH");
-    observedTargetBindingDigest = computeTargetBindingDigest(input.binding);
-    if (observedTargetBindingDigest !== input.plan.target_binding_digest) fail("TARGET_MISMATCH");
-    if (input.restoreCapability) {
+    observedTargetBindingDigest = computeTargetBindingDigest(frozenBinding);
+    if (observedTargetBindingDigest !== frozenPlan.target_binding_digest) fail("TARGET_MISMATCH");
+    if (restoreCapability) {
       restoreCapability = requireRestoreCapability(
-        input.restoreCapability,
-        input.plan,
+        restoreCapability,
+        frozenPlan,
         observedTargetBindingDigest,
       );
     }
     if (requiresRestoreCapability) {
       restoreCapability = requireRestoreCapability(
-        input.restoreCapability,
-        input.plan,
+        restoreCapability,
+        frozenPlan,
         observedTargetBindingDigest,
       );
     }
     phase = "OBSERVE";
-    const observed = await captureNormalizedPrestate(input.binding, input.journal);
+    const observed = await captureNormalizedPrestate(frozenBinding, frozenJournal);
     phase = "PRESTATE";
     assertPrewriteBinding({
       expectedPrestateDigest,
       observedPrestateDigest: observed.prestate_digest,
-      expectedContractDigest: input.expectedContractDigest,
+      expectedContractDigest,
       observedContractDigest,
-      expectedPlanDigest: input.plan.plan_digest,
-      observedPlanDigest: input.plan.plan_digest,
+      expectedPlanDigest: frozenPlan.plan_digest,
+      observedPlanDigest: frozenPlan.plan_digest,
       expectedTargetBindingDigest: observedTargetBindingDigest,
-      observedTargetBindingDigest: computeTargetBindingDigest(input.binding),
+      observedTargetBindingDigest: computeTargetBindingDigest(frozenBinding),
     });
     phase = "INVERSE";
-    inverse = isMigration ? undefined : createDurableInverse(input.plan, expectedPrestate);
-    if (isMigration && !input.migrationsFolder) fail("OPERATION_UNSUPPORTED");
+    inverse = isMigration ? undefined : createDurableInverse(
+      frozenPlan,
+      expectedPrestate,
+      { allowExternalRestore: restoreCapability !== undefined },
+    );
+    if (isMigration && !frozenMigrationsFolder) fail("OPERATION_UNSUPPORTED");
     phase = "PREWRITE";
-    mutationConnection = input.mutationConnection ?? await input.binding.connect();
-    session = createMutationSession(mutationConnection);
+    mutationConnection = frozenMutationConnection ?? await frozenBinding.connect();
+    session = createMutationSession(mutationConnection, frozenBinding.logicalDatabaseName);
     await session.begin();
     await session.acquireTargetLock(observedTargetBindingDigest);
-    await session.acquireMutationLocks(input.plan.operations);
-    const revalidated = await captureMutationPrestate(input.binding, mutationConnection, input.journal);
+    await session.acquireMutationLocks(frozenPlan.operations);
+    if (frozenRootDir) {
+      observedContractDigest = await computeContractDigest(frozenRootDir);
+    }
+    const recomputedPlan = createDurablePlan({
+      expected_git_sha: frozenPlan.expected_git_sha,
+      contract_digest: frozenPlan.contract_digest,
+      target_binding_digest: frozenPlan.target_binding_digest,
+      prestate_digest: frozenPlan.prestate_digest,
+      operation_kind: frozenPlan.operation_kind,
+      operations: frozenPlan.operations,
+    });
+    if (recomputedPlan.plan_digest !== frozenPlan.plan_digest ||
+      observedContractDigest !== expectedContractDigest ||
+      computeTargetBindingDigest(frozenBinding) !== frozenPlan.target_binding_digest) {
+      fail("PREWRITE_DRIFT");
+    }
+    const revalidated = await captureMutationPrestate(frozenBinding, mutationConnection, frozenJournal);
     assertPrewriteBinding({
       expectedPrestateDigest,
       observedPrestateDigest: revalidated.prestate_digest,
-      expectedContractDigest: input.expectedContractDigest,
+      expectedContractDigest,
       observedContractDigest,
-      expectedPlanDigest: input.plan.plan_digest,
-      observedPlanDigest: input.plan.plan_digest,
+      expectedPlanDigest: frozenPlan.plan_digest,
+      observedPlanDigest: recomputedPlan.plan_digest,
       expectedTargetBindingDigest: observedTargetBindingDigest,
-      observedTargetBindingDigest: computeTargetBindingDigest(input.binding),
+      observedTargetBindingDigest: computeTargetBindingDigest(frozenBinding),
+    });
+    const postLockObserved = await captureNormalizedPrestate(frozenBinding, frozenJournal);
+    assertPrewriteBinding({
+      expectedPrestateDigest,
+      observedPrestateDigest: postLockObserved.prestate_digest,
+      expectedContractDigest,
+      observedContractDigest,
+      expectedPlanDigest: frozenPlan.plan_digest,
+      observedPlanDigest: recomputedPlan.plan_digest,
+      expectedTargetBindingDigest: observedTargetBindingDigest,
+      observedTargetBindingDigest: computeTargetBindingDigest(frozenBinding),
     });
     phase = "FORWARD";
     if (isMigration) {
@@ -3061,36 +3763,50 @@ export async function executeDurablePlan(input: {
           }),
           query: (text, values) => mutationConnection!.query(text, values),
         },
-        migrationsFolder: input.migrationsFolder as string,
-        expectedOperations: input.plan.operations as readonly MigrationOperationV1[],
+        migrationsFolder: frozenMigrationsFolder as string,
+        expectedOperations: frozenPlan.operations as readonly MigrationOperationV1[],
         existingTransaction: true,
       });
       mutationStarted = migrationResult.mutation_started;
     } else {
-      for (const operation of input.plan.operations) await session.applyOperation(operation);
+      for (const operation of frozenPlan.operations) await session.applyOperation(operation);
       mutationStarted = session.mutationStarted;
     }
     phase = "COMMIT";
     try {
       await session.commit();
       committed = true;
+      commitState = "COMMITTED";
     } catch (error) {
+      commitState = error instanceof DurableOperationError && error.semanticCode === "COMMIT_INDETERMINATE"
+        ? "INDETERMINATE"
+        : commitFailureCode(error) === "COMMIT_INDETERMINATE" ? "INDETERMINATE" : "NOT_COMMITTED";
       if (error instanceof DurableOperationError) throw error;
       fail(commitFailureCode(error));
     }
     phase = "FINAL_VERIFY";
-    const final = await captureNormalizedPrestate(input.binding, input.journal);
+    let final: Awaited<ReturnType<typeof captureNormalizedPrestate>>;
+    try {
+      final = await captureNormalizedPrestate(frozenBinding, frozenJournal);
+    } catch {
+      fail("FINAL_VERIFICATION_FAILED");
+    }
     assertFinalRolePosture(expectedPrestate, final.prestate);
     finalReadinessState = canonicalReadinessPass(final.prestate) ? "PASS" : "FAIL";
     if (finalReadinessState !== "PASS") fail("FINAL_VERIFICATION_FAILED");
     return makeReceipt({
-      plan: input.plan,
+      plan: frozenPlan,
       phase: "FINAL_VERIFY",
       outcome: "PASS",
       semanticCode: "SUCCESS",
       mutationStarted,
+      commitState,
       rollbackAttempted,
       rollbackVerified,
+      repositoryInverseAttempted,
+      repositoryInverseVerified,
+      externalRestoreAttempted,
+      externalRestoreVerified,
       restorationState: "NOT_REQUIRED",
       finalReadinessState,
       inverseSteps: inverse?.steps.length ?? 0,
@@ -3107,13 +3823,18 @@ export async function executeDurablePlan(input: {
     if (!mutationStarted) {
       if (session) await session.rollback().catch(() => {});
       return makeReceipt({
-        plan: input.plan,
+        plan: frozenPlan,
         phase: originalPhase,
         outcome: originalPhase === "FORWARD" ? "FAIL" : "BLOCKED",
         semanticCode: originalCode,
         mutationStarted: false,
+        commitState: "NOT_STARTED",
         rollbackAttempted: false,
         rollbackVerified: false,
+        repositoryInverseAttempted: false,
+        repositoryInverseVerified: false,
+        externalRestoreAttempted: false,
+        externalRestoreVerified: false,
         restorationState: "NOT_REQUIRED",
         finalReadinessState,
         inverseSteps: inverse?.steps.length ?? 0,
@@ -3124,8 +3845,10 @@ export async function executeDurablePlan(input: {
       rollbackAttempted = true;
       try {
         await session.rollback();
+        if (commitState === "NOT_STARTED") commitState = "NOT_COMMITTED";
       } catch {
         rollbackFailure = true;
+        if (commitState === "NOT_STARTED") commitState = "NOT_COMMITTED";
       }
     }
     if (mutationConnection && !connectionClosed) {
@@ -3133,24 +3856,28 @@ export async function executeDurablePlan(input: {
       connectionClosed = true;
     }
     let restoration = await verifyRestoration({
-      binding: input.binding,
+      binding: frozenBinding,
       expectedPrestateDigest,
-      journal: input.journal,
+      journal: frozenJournal,
     });
-    if (restoration.state === "FAILED" && inverse) {
-      rollbackAttempted = true;
+    if (rollbackAttempted && !rollbackFailure && restoration.state === "VERIFIED") {
+      rollbackVerified = true;
+    }
+    if (restoration.state === "FAILED" && inverse && !inverse.external_restore_required) {
+      repositoryInverseAttempted = true;
       try {
         await executeFrozenInverse({
-          binding: input.binding,
-          targetBindingDigest: observedTargetBindingDigest || computeTargetBindingDigest(input.binding),
+          binding: frozenBinding,
+          targetBindingDigest: observedTargetBindingDigest || computeTargetBindingDigest(frozenBinding),
           expectedPrestateDigest,
-          journal: input.journal as CanonicalMigrationJournalV1,
+          journal: frozenJournal,
           inverse,
         });
+        repositoryInverseVerified = true;
         restoration = await verifyRestoration({
-          binding: input.binding,
+          binding: frozenBinding,
           expectedPrestateDigest,
-          journal: input.journal,
+          journal: frozenJournal,
         });
       } catch {
         restoration = { state: "FAILED" };
@@ -3165,19 +3892,20 @@ export async function executeDurablePlan(input: {
           : originalCode === "MUTATION_FAILED" || originalCode === "WRITE_INDETERMINATE"
             ? "indeterminate_send"
             : "forward_failure";
-        await executeRestoreCapability(restoreCapability, input.plan, reason);
+        externalRestoreAttempted = true;
+        await executeRestoreCapability(restoreCapability, frozenPlan, reason);
         restoration = await verifyRestoration({
-          binding: input.binding,
+          binding: frozenBinding,
           expectedPrestateDigest,
-          journal: input.journal,
+          journal: frozenJournal,
         });
+        externalRestoreVerified = restoration.state === "VERIFIED";
       } catch (restoreError) {
         recoveryCode = mapFailureCode(restoreError);
         recoveryPhase = "RESTORE";
         restoration = { state: "AMBIGUOUS" };
       }
     }
-    rollbackVerified = restoration.state === "VERIFIED";
     const semanticCode = recoveryCode ??
       (rollbackFailure
         ? "ROLLBACK_FAILED"
@@ -3193,13 +3921,18 @@ export async function executeDurablePlan(input: {
           ? originalPhase
           : "RESTORE_VERIFY");
     return makeReceipt({
-      plan: input.plan,
+      plan: frozenPlan,
       phase: receiptPhase,
       outcome: "FAIL",
       semanticCode,
       mutationStarted: true,
+      commitState,
       rollbackAttempted,
       rollbackVerified,
+      repositoryInverseAttempted,
+      repositoryInverseVerified,
+      externalRestoreAttempted,
+      externalRestoreVerified,
       restorationState: restoration.state,
       finalReadinessState,
       inverseSteps: inverse?.steps.length ?? 0,
@@ -3215,8 +3948,13 @@ function makeReceipt(input: {
   outcome: DurableReceiptV1["outcome"];
   semanticCode: SemanticCode;
   mutationStarted: boolean;
+  commitState: CommitState;
   rollbackAttempted: boolean;
   rollbackVerified: boolean;
+  repositoryInverseAttempted: boolean;
+  repositoryInverseVerified: boolean;
+  externalRestoreAttempted: boolean;
+  externalRestoreVerified: boolean;
   restorationState: DurableReceiptV1["restoration_state"];
   finalReadinessState: DurableReceiptV1["final_readiness_state"];
   inverseSteps: number;
@@ -3242,7 +3980,7 @@ function makeReceipt(input: {
     operations: input.plan.operations.length,
     inverse_steps: input.inverseSteps,
   };
-  return projectReceipt({
+  const projected = {
     receipt_version: 1,
     phase: input.phase,
     outcome: input.outcome,
@@ -3253,10 +3991,36 @@ function makeReceipt(input: {
     role_names: [...roles].sort(),
     counts,
     mutation_started: input.mutationStarted,
+    commit_state: input.commitState,
     rollback_attempted: input.rollbackAttempted,
     rollback_verified: input.rollbackVerified,
+    repository_inverse_attempted: input.repositoryInverseAttempted,
+    repository_inverse_verified: input.repositoryInverseVerified,
+    external_restore_attempted: input.externalRestoreAttempted,
+    external_restore_verified: input.externalRestoreVerified,
     restoration_state: input.restorationState,
     final_readiness_state: input.finalReadinessState,
     ...(input.plan.operations.find((operation): operation is MigrationOperationV1 => operation.kind === "migration")?.tag ? { migration_tag: input.plan.operations.find((operation): operation is MigrationOperationV1 => operation.kind === "migration")?.tag } : {}),
-  });
+  };
+  try {
+    return projectReceipt(projected);
+  } catch {
+    const fallbackRestorationState = input.mutationStarted
+      ? input.restorationState === "VERIFIED" ? "VERIFIED" : "AMBIGUOUS"
+      : "NOT_REQUIRED";
+    const fallbackVerified = fallbackRestorationState === "VERIFIED";
+    return projectReceipt({
+      ...projected,
+      phase: "RECEIPT",
+      outcome: "FAIL",
+      semantic_code: "RECEIPT_REJECTED",
+      mutation_started: input.mutationStarted,
+      commit_state: input.mutationStarted && input.commitState === "NOT_STARTED" ? "INDETERMINATE" : input.commitState,
+      restoration_state: fallbackRestorationState,
+      final_readiness_state: input.mutationStarted ? input.finalReadinessState : "NOT_RUN",
+      rollback_verified: fallbackVerified && input.rollbackAttempted && input.rollbackVerified,
+      repository_inverse_verified: fallbackVerified && input.repositoryInverseAttempted && input.repositoryInverseVerified,
+      external_restore_verified: fallbackVerified && input.externalRestoreAttempted && input.externalRestoreVerified,
+    });
+  }
 }

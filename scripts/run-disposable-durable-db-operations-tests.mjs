@@ -14,11 +14,174 @@ const containerNames = [
 ];
 const databaseName = "durable_operations_test";
 const maxOutputBytes = 64 * 1024;
+const maxDiagnosticChars = 2_000;
+const SAFE_TEST_TITLE = "Run-190 durable database operations on two disposable PostgreSQL 17 clusters";
+const SAFE_FAILURE_CODES = new Set([
+  "ERR_ASSERTION",
+  "ERR_MODULE_NOT_FOUND",
+  "ERR_TEST_FAILURE",
+  "ERR_TEST_TIMEOUT",
+  "ADMISSION_FAILED",
+  "CONTRACT_DIGEST_MISMATCH",
+  "FINAL_VERIFICATION_FAILED",
+  "MUTATION_FAILED",
+  "PREWRITE_DRIFT",
+  "RESTORATION_FAILED",
+  "RESTORE_CAPABILITY_REQUIRED",
+  "TARGET_MISMATCH",
+  "UNEXPECTED_FAILURE",
+]);
+const SAFE_POSTGRES_CODES = new Set(["25006", "23505", "42501", "42703", "42P01", "55006", "57P01", "57P02", "57P03"]);
+const SAFE_FAILURE_TYPES = new Set(["testCodeFailure", "uncaughtException", "unhandledRejection", "testTimeout"]);
+const SAFE_ASSERT_OPERATORS = new Set(["deepEqual", "deepStrictEqual", "doesNotMatch", "doesNotReject", "doesNotThrow", "equal", "match", "notDeepEqual", "notEqual", "ok", "rejects", "strictEqual", "throws"]);
+const SAFE_ASSERT_MESSAGES = new Set([
+  "index direct forward owner",
+  "index direct mutation",
+  "index inverse mutation",
+  "index durable execution",
+  "index drift execution",
+  "index drift restore",
+  "index after capture",
+  "index restored capture",
+  "index race baseline capture",
+  "sequence direct forward owner",
+  "sequence direct mutation",
+  "sequence inverse mutation",
+  "sequence durable execution",
+  "sequence drift execution",
+  "sequence drift restore",
+  "sequence after capture",
+  "sequence restored capture",
+  "sequence race baseline capture",
+  "database direct forward privilege",
+  "database plan creation",
+  "database inverse creation",
+  "database direct mutation",
+  "database inverse mutation",
+  "database drift execution",
+  "database drift restore",
+  "database after capture",
+  "database restored capture",
+  "database restored digest",
+  "database race baseline capture",
+  "source drift assertion failed: injected",
+  "source drift assertion failed: outcome",
+  "source drift assertion failed: phase",
+  "source drift assertion failed: code",
+  "source drift assertion failed: mutation",
+]);
+const SAFE_ASSERT_SCALARS = new Set([
+  "PASS",
+  "FAIL",
+  "BLOCKED",
+  "SUCCESS",
+  "PREWRITE",
+  "PREWRITE_DRIFT",
+  "FINAL_VERIFY",
+  "COMMITTED",
+  "NOT_STARTED",
+  "NOT_COMMITTED",
+  "MUTATION_FAILED",
+  "platform_migrator",
+  "platform_app",
+  "cloud_admin",
+  "public.users_pkey",
+  "drizzle.__drizzle_migrations_id_seq",
+  "durable_operations_test",
+  "true",
+  "false",
+]);
+
+function unquoteDiagnosticScalar(value) {
+  const trimmed = value.trim();
+  if (trimmed.length >= 2 &&
+    ((trimmed.startsWith("'") && trimmed.endsWith("'")) ||
+      (trimmed.startsWith("\"") && trimmed.endsWith("\"")))) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function projectDiagnosticLine(line) {
+  const compact = line.trim();
+  if (/^TAP version \d+$/u.test(compact)) return compact;
+  const testLine = compact.match(/^not ok (\d+) - (.+)$/u);
+  if (testLine && testLine[2] === SAFE_TEST_TITLE) return "not ok " + testLine[1] + " - " + SAFE_TEST_TITLE;
+  if (/^(?:#|\u2139)\s+(?:tests|suites|pass|fail|cancelled|skipped|todo|duration|duration_ms)\b[ A-Za-z0-9_.,:=()/+-]{0,240}$/u.test(compact)) return compact;
+  const sourceLocation = compact.match(/durable-database-operations-postgres\.test\.mjs:(\d+):(\d+)/u);
+  if (sourceLocation) return "source: durable-database-operations-postgres.test.mjs:" + sourceLocation[1] + ":" + sourceLocation[2];
+  const safeMessage = [...SAFE_ASSERT_MESSAGES]
+    .sort((left, right) => right.length - left.length)
+    .find((message) => compact.includes(message));
+  if (safeMessage) return "message: " + safeMessage;
+  const errorType = compact.match(/^(?:Error|AssertionError|DurableOperationError)(?:\s|\[|:)/u)?.[0].replace(/[\s[:\[]+$/u, "");
+  if (errorType) return "error_type: " + errorType;
+  const postgresCode = compact.match(/\b(?:25006|23505|42501|42703|42P01|55006|57P01|57P02|57P03)\b/u)?.[0];
+  if (postgresCode && SAFE_POSTGRES_CODES.has(postgresCode)) return "postgres_code: " + postgresCode;
+  if (/^(?:[+-]|actual|expected|error|name):/u.test(compact)) {
+    const observed = [...SAFE_ASSERT_SCALARS]
+      .sort((left, right) => right.length - left.length)
+      .find((scalar) => compact.includes("'" + scalar + "'") || compact.includes("\"" + scalar + "\"") || compact.endsWith(": " + scalar));
+    if (observed) return "assertion_value: " + observed;
+    const numeric = compact.match(/(?:^|[:\s])(-?\d+(?:\.\d+)?)(?:['"])?$/u)?.[1];
+    if (numeric) return "assertion_value: " + numeric;
+  }
+  const detail = compact.match(/^(?:#\s*)?(reason|status|code|failureType|operator|expected|actual|location|at|message|name):\s*(.*)$/u);
+  if (!detail) {
+    const errorCode = compact.match(/\b(ERR_[A-Z0-9_]+)\b/u)?.[1];
+    if (errorCode && SAFE_FAILURE_CODES.has(errorCode)) return "error_code: " + errorCode;
+    return null;
+  }
+  const key = detail[1];
+  const value = unquoteDiagnosticScalar(detail[2]);
+  if (key === "location" || key === "at") {
+    const location = value.match(/(?:^|[/\\\\])durable-database-operations-postgres\.test\.mjs:(\d+):(\d+)$/u);
+    return location ? "source: durable-database-operations-postgres.test.mjs:" + location[1] + ":" + location[2] : null;
+  }
+  if (key === "code") return SAFE_FAILURE_CODES.has(value) ? "code: " + value : null;
+  if (key === "failureType") return SAFE_FAILURE_TYPES.has(value) ? "failureType: " + value : null;
+  if (key === "operator") return SAFE_ASSERT_OPERATORS.has(value) ? "operator: " + value : null;
+  if (key === "message") return SAFE_ASSERT_MESSAGES.has(value) ? "message: " + value : null;
+  if (key === "name") return ["AssertionError", "DurableOperationError", "Error"].includes(value) ? "name: " + value : null;
+  if (key === "expected" || key === "actual") {
+    if (/^(?:true|false|null|undefined|-?\d+(?:\.\d+)?)$/u.test(value) || SAFE_ASSERT_SCALARS.has(value)) return key + ": " + value;
+    if (value.length === 0) return key + ": <empty>";
+    return key + ": <" + (value.startsWith("[") ? "array" : value.startsWith("{") ? "object" : "value") + ">";
+  }
+  if (key === "reason" || key === "status") {
+    return /^expected status [01]$/u.test(value) ? key + ": " + value : null;
+  }
+  return null;
+}
+
+export function sanitizeDisposableDiagnostics({
+  stdout = "",
+  stderr = "",
+  outputOverflow = false,
+} = {}) {
+  const source = [String(stdout), String(stderr)].join("\n")
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "")
+    .replace(/\b(?:postgres(?:ql)?|mysql|mssql):\/\/[^\s"'<>]+/giu, "[REDACTED]")
+    .replace(/\b(?:DATABASE_URL|DATABASE_OPERATOR_URL|DURABLE_OPERATIONS_TEST_DATABASE_URL_[A-Z])\s*=\s*[^\s]+/giu, "[REDACTED]")
+    .replace(/\b(?:DSN|PASSWORD|PASSWD|TOKEN|SECRET|API[_-]?KEY|PROVIDER[_-]?ID|PROJECT[_-]?ID|WORKSPACE[_-]?ID)\s*[:=]\s*[^\s]+/giu, "[REDACTED]");
+  const lines = [];
+  for (const line of source.split(/\r?\n/u)) {
+    const projected = projectDiagnosticLine(line);
+    if (projected) lines.push(projected);
+  }
+  const suffix = outputOverflow ? "\n[diagnostic_output_truncated]" : "";
+  const bounded = lines.join("\n");
+  if (bounded.length + suffix.length <= maxDiagnosticChars) return bounded + suffix;
+  return bounded.slice(0, Math.max(0, maxDiagnosticChars - "\n[diagnostic_output_truncated]".length)) + "\n[diagnostic_output_truncated]";
+}
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   run().catch((error) => {
     const phase = typeof error?.phase === "string" ? error.phase : "unknown";
-    process.stderr.write(`Disposable PostgreSQL 17 durable-operation runner failed (${phase}).\n`);
+    const diagnostics = typeof error?.diagnostics === "string"
+      ? error.diagnostics
+      : sanitizeDisposableDiagnostics({ stdout: error?.stdout, stderr: error?.stderr, outputOverflow: error?.outputOverflow });
+    process.stderr.write("Disposable PostgreSQL 17 durable-operation runner failed (" + phase + ")." + (diagnostics ? "\n" + diagnostics + "\n" : "\n"));
     process.exitCode = 1;
   });
 }
@@ -53,7 +216,12 @@ export async function run({ spawnImpl = spawn } = {}) {
     phase = "focused-tests";
     await runFocusedTests(spawnImpl, ports);
   } catch (error) {
-    primaryError = Object.assign(new Error(), { phase });
+    primaryError = Object.assign(new Error(), {
+      phase,
+      diagnostics: typeof error?.diagnostics === "string"
+        ? error.diagnostics
+        : sanitizeDisposableDiagnostics(),
+    });
   }
 
   let cleanupError = null;
@@ -81,9 +249,25 @@ async function runFocusedTests(spawnImpl, ports) {
     timeoutMs: 180_000,
   });
   if (result.code !== 0 || result.timedOut || result.stdout.includes("fail 1")) {
-    throw new Error();
+    throw Object.assign(new Error(), {
+      phase: "focused-tests",
+      diagnostics: sanitizeDisposableDiagnostics({
+        stdout: result.stdout,
+        stderr: result.stderr,
+        outputOverflow: result.outputOverflow,
+      }),
+    });
   }
-  if (!/(?:#|ℹ)\s+fail 0\b/u.test(result.stdout)) throw new Error();
+  if (!/(?:#|ℹ)\s+fail 0\b/u.test(result.stdout)) {
+    throw Object.assign(new Error(), {
+      phase: "focused-tests",
+      diagnostics: sanitizeDisposableDiagnostics({
+        stdout: result.stdout,
+        stderr: result.stderr,
+        outputOverflow: result.outputOverflow,
+      }),
+    });
+  }
 }
 
 async function createDatabase(port) {

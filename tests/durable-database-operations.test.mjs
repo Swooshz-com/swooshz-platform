@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -24,6 +25,7 @@ import {
   parseCanonicalJson,
   projectReceipt,
   requireRestoreCapability,
+  serializeReceipt,
   validateReceipt,
   verifyRestoration,
 } from "../dist/db/durable-operations.js";
@@ -263,6 +265,51 @@ function planForOperation(operation, prestate = completePrestateFixture()) {
   });
 }
 
+function receiptFixture(overrides = {}) {
+  return {
+    receipt_version: 1,
+    phase: "FINAL_VERIFY",
+    outcome: "PASS",
+    semantic_code: "SUCCESS",
+    operation_kind: "ownership",
+    git_sha: HEX40,
+    contract_digest: HEX64,
+    role_names: ["platform_app"],
+    counts: {
+      canonical_objects: 1,
+      direct_privileges: 0,
+      public_privileges: 0,
+      default_acls: 0,
+      memberships: 0,
+      migration_entries: 0,
+      operations: 1,
+      inverse_steps: 1,
+    },
+    mutation_started: true,
+    commit_state: "COMMITTED",
+    rollback_attempted: false,
+    rollback_verified: false,
+    repository_inverse_attempted: false,
+    repository_inverse_verified: false,
+    external_restore_attempted: false,
+    external_restore_verified: false,
+    restoration_state: "NOT_REQUIRED",
+    final_readiness_state: "PASS",
+    ...overrides,
+  };
+}
+
+function assertReceiptAccepted(overrides) {
+  assert.doesNotThrow(() => validateReceipt(receiptFixture(overrides)));
+}
+
+function assertReceiptRejected(overrides) {
+  assert.throws(
+    () => validateReceipt(receiptFixture(overrides)),
+    (error) => error?.semanticCode === "RECEIPT_REJECTED",
+  );
+}
+
 test("locked domain separators and query ids are exact", () => {
   assert.equal(PRESTATE_DOMAIN_SEPARATOR, "swooshz-platform:platform-db-prestate-v1\0");
   assert.equal(PLAN_DOMAIN_SEPARATOR, "Swooshz-platform:platform-db-plan-v1\0");
@@ -478,6 +525,7 @@ test("Run-190 RED B4: PASS has a dedicated success code and final-verification p
     outcome: "FAIL",
     semantic_code: "MUTATION_FAILED",
     mutation_started: false,
+    commit_state: "NOT_STARTED",
     final_readiness_state: "NOT_RUN",
   };
   assert.doesNotThrow(() => validateReceipt(forwardFailure));
@@ -489,6 +537,235 @@ test("Run-190 RED B4: PASS has a dedicated success code and final-verification p
     () => validateReceipt({ ...receipt, outcome: "BLOCKED", phase: "FORWARD", semantic_code: "MUTATION_FAILED" }),
     (error) => error.semanticCode === "RECEIPT_REJECTED",
   );
+  assert.throws(
+    () => validateReceipt({ ...receipt, outcome: "BLOCKED", phase: "ADMISSION", semantic_code: "COMMIT_FAILED", final_readiness_state: "NOT_RUN" }),
+    (error) => error.semanticCode === "RECEIPT_REJECTED",
+  );
+});
+
+test("Run-192 RED B2-A: inverse must bind exact post-forward authority", () => {
+  const prestate = completePrestateFixture();
+  const privilegeOperation = {
+    kind: "privilege",
+    action: "grant",
+    object: { object_class: "relation", qualified_name: "public.users" },
+    principal: "platform_app",
+    privilege: "SELECT",
+    grant_option: false,
+    previous_grant_option: true,
+  };
+  const privilegePlan = planForOperation(privilegeOperation, prestate);
+  const privilegeInverse = createDurableInverse(privilegePlan, prestate);
+  assert.match(privilegeInverse.expected_post_forward_digest, /^[0-9a-f]{64}$/u);
+  assert.deepEqual(privilegeInverse.steps[0].operation.restore_authority, {
+    object_class: "relation",
+    qualified_name: "public.users",
+    object_oid: "3000",
+    acl_is_null: false,
+    present: true,
+    grantor: "cloud_admin",
+    grantee: "platform_app",
+    privilege: "select",
+    grant_option: true,
+  });
+
+});
+
+test("Run-192 RED B2-B: inverse must preserve complete ACL and default-ACL state", () => {
+  const prestate = completePrestateFixture();
+  const privilegePlan = planForOperation({
+    kind: "privilege",
+    action: "grant",
+    object: { object_class: "relation", qualified_name: "public.users" },
+    principal: "platform_app",
+    privilege: "SELECT",
+    grant_option: false,
+    previous_grant_option: true,
+  }, prestate);
+  const privilegeInverse = createDurableInverse(privilegePlan, prestate);
+  assert.deepEqual(privilegeInverse.steps[0].operation.restore_authority, {
+    object_class: "relation",
+    qualified_name: "public.users",
+    object_oid: "3000",
+    acl_is_null: false,
+    present: true,
+    grantor: "cloud_admin",
+    grantee: "platform_app",
+    privilege: "select",
+    grant_option: true,
+  });
+  const defaultAclOperation = {
+    kind: "default_acl",
+    action: "grant",
+    creator: "platform_migrator",
+    schema: "public",
+    object_type: "table",
+    principal: "platform_app",
+    privilege: "SELECT",
+    grant_option: false,
+    previous_grant_option: true,
+  };
+  const defaultAclPlan = planForOperation(defaultAclOperation, prestate);
+  const defaultAclInverse = createDurableInverse(defaultAclPlan, prestate);
+  assert.deepEqual(defaultAclInverse.steps[0].operation.restore_authority, {
+    default_acl_oid: "5000",
+    row_present: true,
+    acl_is_null: false,
+    creator: "platform_migrator",
+    schema: "public",
+    object_type: "table",
+    grantee: "platform_app",
+    grantor: "platform_migrator",
+    privilege: "select",
+    grant_option: true,
+  });
+});
+
+test("Run-192 RED B2-C: execution must not retain caller-owned plan operations across the write boundary", async () => {
+  const source = await readFile("src/db/durable-operations.ts", "utf8");
+  const start = source.indexOf("export async function executeDurablePlan");
+  const end = source.indexOf("function makeReceipt", start);
+  assert.ok(start >= 0 && end > start);
+  assert.doesNotMatch(source.slice(start, end), /input\.plan\.operations/u);
+});
+
+test("Run-192 RED B2-D: database naming and object-class locks must use PostgreSQL-valid forms", async () => {
+  const calls = [];
+  const session = createMutationSession({
+    async query(text, values) {
+      calls.push({ text, values });
+      return { rows: [] };
+    },
+  }, "fixture");
+  await session.acquireMutationLocks([
+    {
+      kind: "ownership",
+      action: "set_owner",
+      object: { object_class: "index", qualified_name: "public.users_pkey" },
+      previous_owner: "platform_migrator",
+      next_owner: "platform_app",
+    },
+    {
+      kind: "ownership",
+      action: "set_owner",
+      object: { object_class: "sequence", qualified_name: "drizzle.__drizzle_migrations_id_seq" },
+      previous_owner: "platform_migrator",
+      next_owner: "platform_app",
+    },
+  ]);
+  assert.equal(calls.some(({ text }) => /lock table/iu.test(text)), false);
+  await session.applyOperation({
+    kind: "ownership",
+    action: "set_owner",
+    object: { object_class: "database", qualified_name: "__current_database__" },
+    previous_owner: "platform_app",
+    next_owner: "platform_migrator",
+  });
+  assert.match(calls.at(-1).text, /ALTER DATABASE "fixture"/u);
+});
+
+test("Run-192 RED B4-B: external restoration must not be projected as rollback verification", () => {
+  const receipt = projectReceipt({
+    receipt_version: 1,
+    phase: "FINAL_VERIFY",
+    outcome: "FAIL",
+    semantic_code: "FINAL_VERIFICATION_FAILED",
+    operation_kind: "ownership",
+    git_sha: HEX40,
+    contract_digest: HEX64,
+    role_names: ["platform_app"],
+    counts: {
+      canonical_objects: 1,
+      direct_privileges: 0,
+      public_privileges: 0,
+      default_acls: 0,
+      memberships: 0,
+      migration_entries: 0,
+      operations: 1,
+      inverse_steps: 1,
+    },
+    mutation_started: true,
+    rollback_attempted: false,
+    rollback_verified: false,
+    external_restore_attempted: true,
+    external_restore_verified: true,
+    restoration_state: "VERIFIED",
+    final_readiness_state: "FAIL",
+  });
+  assert.equal(receipt.external_restore_attempted, true);
+  assert.equal(receipt.external_restore_verified, true);
+  assert.equal(receipt.rollback_verified, false);
+  assert.doesNotThrow(() => validateReceipt(receipt));
+});
+
+test("Run-192 RED evidence: disposable runner must retain bounded sanitized diagnostics", async () => {
+  const runner = await import("../scripts/run-disposable-durable-db-operations-tests.mjs");
+  assert.equal(typeof runner.sanitizeDisposableDiagnostics, "function");
+  const diagnostics = runner.sanitizeDisposableDiagnostics({
+    stdout: "TAP version 13\nnot ok 1 - Run-190 durable database operations on two disposable PostgreSQL 17 clusters\n# reason: expected status 1\n# reason: internal customer@example.invalid detail\npostgres://secret@example.invalid/db",
+    stderr: "Error: private driver detail\nDATABASE_URL=postgres://secret@example.invalid/db",
+    outputOverflow: false,
+  });
+  assert.match(diagnostics, /Run-190 durable database operations/u);
+  assert.match(diagnostics, /expected status 1/u);
+  assert.doesNotMatch(diagnostics, /postgres:\/\/|DATABASE_URL|private driver detail/u);
+  assert.doesNotMatch(diagnostics, /internal customer|example\.invalid/u);
+  assert.ok(diagnostics.length <= 2000);
+});
+
+test("Run-192 receipt state machine accepts only the closed outcome/phase/recovery matrix", () => {
+  const accepted = [
+    {},
+    { outcome: "BLOCKED", phase: "ADMISSION", semantic_code: "CONTRACT_DIGEST_MISMATCH", mutation_started: false, commit_state: "NOT_STARTED", final_readiness_state: "NOT_RUN", restoration_state: "NOT_REQUIRED" },
+    { outcome: "BLOCKED", phase: "OBSERVE", semantic_code: "TARGET_MISMATCH", mutation_started: false, commit_state: "NOT_STARTED", final_readiness_state: "NOT_RUN", restoration_state: "NOT_REQUIRED" },
+    { outcome: "BLOCKED", phase: "PLAN", semantic_code: "REVISION_MISMATCH", mutation_started: false, commit_state: "NOT_STARTED", final_readiness_state: "NOT_RUN", restoration_state: "NOT_REQUIRED" },
+    { outcome: "BLOCKED", phase: "PRESTATE", semantic_code: "PRESTATE_MISMATCH", mutation_started: false, commit_state: "NOT_STARTED", final_readiness_state: "NOT_RUN", restoration_state: "NOT_REQUIRED" },
+    { outcome: "BLOCKED", phase: "INVERSE", semantic_code: "RESTORE_CAPABILITY_REQUIRED", mutation_started: false, commit_state: "NOT_STARTED", final_readiness_state: "NOT_RUN", restoration_state: "NOT_REQUIRED" },
+    { outcome: "BLOCKED", phase: "PREWRITE", semantic_code: "PREWRITE_DRIFT", mutation_started: false, commit_state: "NOT_STARTED", final_readiness_state: "NOT_RUN", restoration_state: "NOT_REQUIRED" },
+    { outcome: "FAIL", phase: "FORWARD", semantic_code: "MUTATION_FAILED", mutation_started: false, commit_state: "NOT_STARTED", final_readiness_state: "NOT_RUN", restoration_state: "NOT_REQUIRED" },
+    { outcome: "FAIL", phase: "FORWARD", semantic_code: "MUTATION_FAILED", mutation_started: true, commit_state: "NOT_COMMITTED", rollback_attempted: true, rollback_verified: true, restoration_state: "VERIFIED", final_readiness_state: "NOT_RUN" },
+    { outcome: "FAIL", phase: "COMMIT", semantic_code: "COMMIT_FAILED", mutation_started: true, commit_state: "NOT_COMMITTED", rollback_attempted: true, rollback_verified: true, restoration_state: "VERIFIED", final_readiness_state: "NOT_RUN" },
+    { outcome: "FAIL", phase: "ROLLBACK", semantic_code: "ROLLBACK_FAILED", mutation_started: true, commit_state: "NOT_COMMITTED", rollback_attempted: true, restoration_state: "FAILED", final_readiness_state: "NOT_RUN" },
+    { outcome: "FAIL", phase: "FINAL_VERIFY", semantic_code: "FINAL_VERIFICATION_FAILED", mutation_started: true, commit_state: "COMMITTED", repository_inverse_attempted: true, repository_inverse_verified: true, restoration_state: "VERIFIED", final_readiness_state: "NOT_RUN" },
+    { outcome: "FAIL", phase: "FINAL_VERIFY", semantic_code: "FINAL_VERIFICATION_FAILED", mutation_started: true, commit_state: "COMMITTED", external_restore_attempted: true, external_restore_verified: true, restoration_state: "VERIFIED", final_readiness_state: "FAIL" },
+    { outcome: "FAIL", phase: "FINAL_VERIFY", semantic_code: "FINAL_VERIFICATION_FAILED", mutation_started: true, commit_state: "COMMITTED", repository_inverse_attempted: true, external_restore_attempted: true, external_restore_verified: true, restoration_state: "VERIFIED", final_readiness_state: "NOT_RUN" },
+    { outcome: "FAIL", phase: "RESTORE", semantic_code: "RESTORE_EXECUTION_FAILED", mutation_started: true, commit_state: "COMMITTED", external_restore_attempted: true, restoration_state: "AMBIGUOUS", final_readiness_state: "NOT_RUN" },
+    { outcome: "FAIL", phase: "RESTORE_VERIFY", semantic_code: "RESTORATION_FAILED", mutation_started: true, commit_state: "COMMITTED", repository_inverse_attempted: true, restoration_state: "FAILED", final_readiness_state: "NOT_RUN" },
+    { outcome: "FAIL", phase: "RESTORE_VERIFY", semantic_code: "RESTORATION_AMBIGUOUS", mutation_started: true, commit_state: "COMMITTED", external_restore_attempted: true, restoration_state: "AMBIGUOUS", final_readiness_state: "NOT_RUN" },
+    { outcome: "FAIL", phase: "RECEIPT", semantic_code: "RECEIPT_REJECTED", mutation_started: false, commit_state: "NOT_STARTED", restoration_state: "NOT_REQUIRED", final_readiness_state: "NOT_RUN" },
+    { outcome: "FAIL", phase: "RECEIPT", semantic_code: "UNEXPECTED_FAILURE", mutation_started: true, commit_state: "COMMITTED", restoration_state: "AMBIGUOUS", final_readiness_state: "FAIL" },
+  ];
+  for (const row of accepted) assertReceiptAccepted(row);
+
+  const serialized = serializeReceipt(receiptFixture(accepted[12]));
+  assert.deepEqual(projectReceipt(JSON.parse(serialized)), receiptFixture(accepted[12]));
+
+  const rejected = [
+    { outcome: "PASS", phase: "FINAL_VERIFY", semantic_code: "FINAL_VERIFICATION_FAILED" },
+    { outcome: "PASS", phase: "FORWARD", semantic_code: "SUCCESS" },
+    { outcome: "PASS", phase: "FINAL_VERIFY", semantic_code: "SUCCESS", commit_state: "NOT_COMMITTED" },
+    { outcome: "PASS", phase: "FINAL_VERIFY", semantic_code: "SUCCESS", final_readiness_state: "FAIL" },
+    { outcome: "PASS", phase: "FINAL_VERIFY", semantic_code: "SUCCESS", external_restore_attempted: true, restoration_state: "VERIFIED" },
+    { outcome: "BLOCKED", phase: "ADMISSION", semantic_code: "COMMIT_FAILED", commit_state: "NOT_COMMITTED" },
+    { outcome: "BLOCKED", phase: "PREWRITE", semantic_code: "PREWRITE_DRIFT", mutation_started: true, commit_state: "NOT_COMMITTED" },
+    { outcome: "BLOCKED", phase: "INVERSE", semantic_code: "RESTORE_CAPABILITY_REQUIRED", rollback_attempted: true, commit_state: "NOT_STARTED" },
+    { outcome: "FAIL", phase: "FORWARD", semantic_code: "SUCCESS", mutation_started: false, commit_state: "NOT_STARTED", restoration_state: "NOT_REQUIRED", final_readiness_state: "NOT_RUN" },
+    { outcome: "FAIL", phase: "FORWARD", semantic_code: "MUTATION_FAILED", mutation_started: true, commit_state: "NOT_STARTED", restoration_state: "FAILED" },
+    { outcome: "FAIL", phase: "FORWARD", semantic_code: "MUTATION_FAILED", mutation_started: true, commit_state: "NOT_COMMITTED", restoration_state: "NOT_STARTED" },
+    { outcome: "FAIL", phase: "FORWARD", semantic_code: "MUTATION_FAILED", mutation_started: true, commit_state: "COMMITTED", rollback_attempted: true, restoration_state: "VERIFIED" },
+    { outcome: "FAIL", phase: "COMMIT", semantic_code: "COMMIT_FAILED", mutation_started: true, commit_state: "NOT_COMMITTED", restoration_state: "FAILED" },
+    { outcome: "FAIL", phase: "ROLLBACK", semantic_code: "ROLLBACK_FAILED", mutation_started: true, commit_state: "COMMITTED", rollback_attempted: true, restoration_state: "FAILED" },
+    { outcome: "FAIL", phase: "ROLLBACK", semantic_code: "ROLLBACK_FAILED", mutation_started: true, commit_state: "NOT_COMMITTED", rollback_verified: true, restoration_state: "VERIFIED" },
+    { outcome: "FAIL", phase: "RESTORE", semantic_code: "RESTORE_EXECUTION_FAILED", mutation_started: true, commit_state: "COMMITTED", restoration_state: "AMBIGUOUS" },
+    { outcome: "FAIL", phase: "RESTORE", semantic_code: "RESTORE_EXECUTION_FAILED", mutation_started: true, commit_state: "COMMITTED", external_restore_attempted: true, external_restore_verified: true, restoration_state: "VERIFIED" },
+    { outcome: "FAIL", phase: "RESTORE_VERIFY", semantic_code: "RESTORATION_FAILED", mutation_started: true, commit_state: "COMMITTED", restoration_state: "FAILED" },
+    { outcome: "FAIL", phase: "FINAL_VERIFY", semantic_code: "FINAL_VERIFICATION_FAILED", mutation_started: true, commit_state: "COMMITTED", restoration_state: "FAILED" },
+    { outcome: "FAIL", phase: "FINAL_VERIFY", semantic_code: "FINAL_VERIFICATION_FAILED", mutation_started: true, commit_state: "NOT_COMMITTED", repository_inverse_attempted: true, restoration_state: "VERIFIED" },
+    { outcome: "FAIL", phase: "RECEIPT", semantic_code: "RECEIPT_REJECTED", mutation_started: false, commit_state: "NOT_STARTED", restoration_state: "FAILED" },
+    { outcome: "FAIL", phase: "RECEIPT", semantic_code: "SUCCESS", mutation_started: false, commit_state: "NOT_STARTED", restoration_state: "NOT_REQUIRED", final_readiness_state: "NOT_RUN" },
+    { outcome: "FAIL", phase: "FINAL_VERIFY", semantic_code: "FINAL_VERIFICATION_FAILED", mutation_started: true, commit_state: "COMMITTED", external_restore_verified: true, restoration_state: "FAILED" },
+  ];
+  for (const row of rejected) assertReceiptRejected(row);
 });
 
 test("malformed prestates and unknown drift are rejected", () => {
