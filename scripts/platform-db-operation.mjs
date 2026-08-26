@@ -26,18 +26,32 @@ const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const migrationsFolder = path.join(rootDir, "drizzle", "migrations");
 
 function parseArguments(argv) {
-  const result = { expectedGitSha: null, operation: "migration" };
+  const result = {
+    expectedGitSha: null,
+    expectedClusterSystemIdentifier: null,
+    expectedDatabaseOid: null,
+    operation: "migration",
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--expected-git-sha") {
       result.expectedGitSha = argv[++index] ?? null;
+    } else if (argument === "--expected-cluster-system-identifier") {
+      result.expectedClusterSystemIdentifier = argv[++index] ?? null;
+    } else if (argument === "--expected-database-oid") {
+      result.expectedDatabaseOid = argv[++index] ?? null;
     } else if (argument === "--operation") {
       result.operation = argv[++index] ?? null;
     } else {
       throw new Error("unsupported arguments");
     }
   }
-  if (!result.expectedGitSha || result.operation !== "migration") {
+  if (
+    !result.expectedGitSha ||
+    !/^[1-9]\d{0,19}$/u.test(result.expectedClusterSystemIdentifier ?? "") ||
+    !/^[1-9]\d{0,10}$/u.test(result.expectedDatabaseOid ?? "") ||
+    result.operation !== "migration"
+  ) {
     throw new Error("required arguments missing");
   }
   return result;
@@ -53,10 +67,12 @@ function databaseNameFromConfig(config) {
   }
 }
 
-function targetBinding(client, config) {
+function targetBinding(client, config, args) {
   return {
     version: "target-binding-v1",
     logicalDatabaseName: databaseNameFromConfig(config),
+    expectedClusterSystemIdentifier: args.expectedClusterSystemIdentifier,
+    expectedDatabaseOid: args.expectedDatabaseOid,
     expectedCurrentUser: "platform_migrator",
     expectedSessionUser: "platform_migrator",
     expectedPostgresMajor: 17,
@@ -89,7 +105,7 @@ async function run() {
   const config = assertMigrationExecutionAllowed(process.env);
   const client = createDatabaseClient(config);
   try {
-    const binding = targetBinding(client, config);
+    const binding = targetBinding(client, config, args);
     const journal = await loadCanonicalMigrationJournal(rootDir);
     const contractDigest = await computeContractDigest(rootDir);
     const captured = await captureNormalizedPrestate(binding, journal);

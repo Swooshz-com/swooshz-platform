@@ -95,19 +95,23 @@ export const RECEIPT_PHASES = [
   "INVERSE",
   "PREWRITE",
   "FORWARD",
-  "FINAL_VERIFY",
+  "COMMIT",
   "ROLLBACK",
+  "RESTORE",
   "RESTORE_VERIFY",
+  "FINAL_VERIFY",
   "RECEIPT",
 ] as const;
 export type ReceiptPhase = (typeof RECEIPT_PHASES)[number];
 
 export const SEMANTIC_CODES = [
+  "SUCCESS",
   "ADMISSION_FAILED",
   "REVISION_UNAVAILABLE",
   "REVISION_MISMATCH",
   "DIRTY_CHECKOUT",
   "CONTRACT_DIGEST_MISMATCH",
+  "TARGET_IDENTITY_UNAVAILABLE",
   "TARGET_MISMATCH",
   "POSTGRES_VERSION_UNSUPPORTED",
   "SESSION_IDENTITY_MISMATCH",
@@ -125,6 +129,9 @@ export const SEMANTIC_CODES = [
   "RESTORE_EXECUTION_FAILED",
   "PREWRITE_DRIFT",
   "MUTATION_FAILED",
+  "WRITE_INDETERMINATE",
+  "COMMIT_FAILED",
+  "COMMIT_INDETERMINATE",
   "ROLLBACK_FAILED",
   "RESTORATION_FAILED",
   "RESTORATION_AMBIGUOUS",
@@ -227,6 +234,16 @@ function hex(value: unknown, length: 40 | 64, code: SemanticCode = "ARBITRARY_IN
 function nonnegativeInteger(value: unknown, code: SemanticCode): number {
   if (!Number.isSafeInteger(value) || (value as number) < 0) fail(code);
   return value as number;
+}
+
+function targetNumericIdentifier(value: unknown, code: SemanticCode): string {
+  const text = typeof value === "bigint"
+    ? value.toString(10)
+    : typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+      ? String(value)
+      : value;
+  if (typeof text !== "string" || !/^[1-9]\d{0,19}$/u.test(text)) fail(code);
+  return text;
 }
 
 function deepFreeze<T>(value: T): T {
@@ -443,6 +460,8 @@ export interface DurablePool {
 export interface DurableTargetBinding {
   readonly version: "target-binding-v1";
   readonly logicalDatabaseName: string;
+  readonly expectedClusterSystemIdentifier: string;
+  readonly expectedDatabaseOid: string;
   readonly expectedCurrentUser: ApprovedRoleName;
   readonly expectedSessionUser: ApprovedRoleName;
   readonly expectedPostgresMajor: 17;
@@ -451,17 +470,23 @@ export interface DurableTargetBinding {
 
 const TARGET_IDENTITY_SQL = `
 /* platform durable:target_identity */
-select current_database() as logical_database_name,
+select control_state.system_identifier::text as cluster_system_identifier,
+       database_record.oid::text as database_oid,
+       current_database() as logical_database_name,
        current_user as current_user,
        session_user as session_user,
        (current_setting('server_version_num')::int / 10000)::int as postgres_major,
        pg_is_in_recovery() as in_recovery,
-       current_setting('transaction_read_only') as transaction_read_only
+       (current_setting('transaction_read_only') = 'on') as transaction_read_only
+from pg_catalog.pg_control_system() as control_state
+cross join pg_catalog.pg_database as database_record
+where database_record.datname = current_database()
 `;
 const ROLE_STATE_SQL = `
 /* platform durable:role_state */
-select rolname, rolcanlogin, rolinherit, rolsuper, rolcreatedb, rolcreaterole,
-       rolreplication, rolbypassrls
+select rolname, oid::text as role_oid, rolcanlogin, rolinherit, rolsuper,
+       rolcreatedb, rolcreaterole, rolreplication, rolbypassrls,
+       rolconnlimit
 from pg_roles
 where rolname = any($1::text[])
 order by rolname
@@ -498,6 +523,7 @@ extension_members as (
 )
 select 'database' as object_class,
        current_database() as qualified_name,
+       database_record.oid::text as object_oid,
        owner_role.rolname as owner,
        false as is_extension_member,
        '' as object_kind
@@ -505,7 +531,7 @@ from pg_database database_record
 join pg_roles owner_role on owner_role.oid = database_record.datdba
 where database_record.datname = current_database()
 union all
-select 'schema', namespace_record.nspname, owner_role.rolname, false, ''
+select 'schema', namespace_record.nspname, namespace_record.oid::text, owner_role.rolname, false, ''
 from namespace_state namespace_record
 join pg_namespace namespace_owner on namespace_owner.oid = namespace_record.oid
 join pg_roles owner_role on owner_role.oid = namespace_owner.nspowner
@@ -514,6 +540,7 @@ select case when relation_record.relkind in ('i', 'I') then 'index'
             when relation_record.relkind = 'S' then 'sequence'
             else 'relation' end,
        namespace_record.nspname || '.' || relation_record.relname,
+       relation_record.oid::text,
        owner_role.rolname,
        exists (
          select 1 from extension_members extension_record
@@ -527,6 +554,7 @@ join pg_roles owner_role on owner_role.oid = relation_record.relowner
 where relation_record.relkind in ('r', 'p', 'S', 'i', 'I')
 union all
 select 'type', namespace_record.nspname || '.' || type_record.typname,
+       type_record.oid::text,
        owner_role.rolname,
        exists (
          select 1 from extension_members extension_record
@@ -541,6 +569,7 @@ where type_record.typtype = 'e' and type_record.typisdefined
 union all
 select 'routine', namespace_record.nspname || '.' || routine_record.proname || '('
        || pg_get_function_identity_arguments(routine_record.oid) || ')',
+       routine_record.oid::text,
        owner_role.rolname,
        exists (
          select 1 from extension_members extension_record
@@ -556,54 +585,97 @@ order by object_class, qualified_name, owner
 `;
 const PRIVILEGE_STATE_SQL = `
 /* platform durable:privilege_state */
-with relation_state as (
-  select relation_record.oid, namespace_record.nspname, relation_record.relname,
-         relation_record.relkind, relation_record.relacl
-  from pg_class relation_record
-  join pg_namespace namespace_record on namespace_record.oid = relation_record.relnamespace
+with object_state as (
+  select 'database' as object_class,
+         database_record.datname as qualified_name,
+         database_record.oid::text as object_oid,
+         database_record.datacl as acl
+  from pg_catalog.pg_database database_record
+  where database_record.datname = current_database()
+  union all
+  select 'schema',
+         namespace_record.nspname,
+         namespace_record.oid::text,
+         namespace_record.nspacl
+  from pg_catalog.pg_namespace namespace_record
   where namespace_record.nspname in ('public', 'drizzle')
-    and relation_record.relkind in ('r', 'p', 'S', 'i', 'I')
-),
-expanded as (
+  union all
   select case when relation_record.relkind in ('i', 'I') then 'index'
               when relation_record.relkind = 'S' then 'sequence'
-              else 'relation' end as object_class,
-         relation_record.nspname || '.' || relation_record.relname as qualified_name,
+              else 'relation' end,
+         namespace_record.nspname || '.' || relation_record.relname,
+         relation_record.oid::text,
+         relation_record.relacl
+  from pg_catalog.pg_class relation_record
+  join pg_catalog.pg_namespace namespace_record on namespace_record.oid = relation_record.relnamespace
+  where namespace_record.nspname in ('public', 'drizzle')
+    and relation_record.relkind in ('r', 'p', 'S', 'i', 'I')
+  union all
+  select 'type',
+         namespace_record.nspname || '.' || type_record.typname,
+         type_record.oid::text,
+         type_record.typacl
+  from pg_catalog.pg_type type_record
+  join pg_catalog.pg_namespace namespace_record on namespace_record.oid = type_record.typnamespace
+  where namespace_record.nspname = 'public'
+    and type_record.typtype = 'e'
+    and type_record.typisdefined
+),
+expanded as (
+  select object_state.object_class,
+         object_state.qualified_name,
+         object_state.object_oid,
+         object_state.acl is null as acl_is_null,
          grantor_role.rolname as grantor,
          coalesce(grantee_role.rolname, 'PUBLIC') as grantee,
          grant_record.privilege_type as privilege,
          grant_record.is_grantable as grant_option
-  from relation_state relation_record
-  cross join lateral aclexplode(relation_record.relacl) grant_record
+  from object_state
+  left join lateral aclexplode(object_state.acl) grant_record on true
   left join pg_roles grantor_role on grantor_role.oid = grant_record.grantor
   left join pg_roles grantee_role on grantee_role.oid = grant_record.grantee
 )
 select * from expanded
-order by object_class, qualified_name, grantor, grantee, privilege, grant_option
+order by object_class, qualified_name, object_oid, acl_is_null, grantor, grantee, privilege, grant_option
 `;
 const DEFAULT_ACL_STATE_SQL = `
 /* platform durable:default_acl_state */
-select creator_role.rolname as creator,
-       coalesce(namespace_record.nspname, '') as schema,
-       case default_record.defaclobjtype
-         when 'r' then 'table'
-         when 'S' then 'sequence'
-         when 'f' then 'routine'
-         when 'T' then 'type'
-         when 'n' then 'schema'
-         else default_record.defaclobjtype::text
-       end as object_type,
-       coalesce(grantee_role.rolname, 'PUBLIC') as grantee,
-       grantor_role.rolname as grantor,
-       grant_record.privilege_type as privilege,
-       grant_record.is_grantable as grant_option
-from pg_default_acl default_record
-join pg_roles creator_role on creator_role.oid = default_record.defaclrole
-left join pg_namespace namespace_record on namespace_record.oid = default_record.defaclnamespace
-cross join lateral aclexplode(default_record.defaclacl) grant_record
-left join pg_roles grantee_role on grantee_role.oid = grant_record.grantee
-left join pg_roles grantor_role on grantor_role.oid = grant_record.grantor
-where creator_role.rolname = any($1::text[])
+with default_state as (
+  select default_record.oid::text as default_acl_oid,
+         creator_role.rolname as creator,
+         coalesce(namespace_record.nspname, '') as schema,
+         case default_record.defaclobjtype
+           when 'r' then 'table'
+           when 'S' then 'sequence'
+           when 'f' then 'routine'
+           when 'T' then 'type'
+           when 'n' then 'schema'
+           else default_record.defaclobjtype::text
+         end as object_type,
+         default_record.defaclacl as acl
+  from pg_catalog.pg_default_acl default_record
+  join pg_catalog.pg_roles creator_role on creator_role.oid = default_record.defaclrole
+  left join pg_catalog.pg_namespace namespace_record on namespace_record.oid = default_record.defaclnamespace
+  where creator_role.rolname = any($1::text[])
+),
+expanded as (
+  select default_state.default_acl_oid,
+         true as row_present,
+         default_state.creator,
+         default_state.schema,
+         default_state.object_type,
+         default_state.acl is null as acl_is_null,
+         coalesce(grantee_role.rolname, 'PUBLIC') as grantee,
+         grantor_role.rolname as grantor,
+         grant_record.privilege_type as privilege,
+         grant_record.is_grantable as grant_option
+  from default_state
+  left join lateral aclexplode(default_state.acl) grant_record on true
+  left join pg_catalog.pg_roles grantee_role on grantee_role.oid = grant_record.grantee
+  left join pg_catalog.pg_roles grantor_role on grantor_role.oid = grant_record.grantor
+)
+select *
+from expanded
 order by creator, schema, object_type, grantee, grantor, privilege, grant_option
 `;
 const RUNTIME_GRANT_STATE_SQL = `
@@ -665,6 +737,8 @@ function assertObservationBinding(binding: DurableTargetBinding): void {
   assertExactKeys(binding, [
     "version",
     "logicalDatabaseName",
+    "expectedClusterSystemIdentifier",
+    "expectedDatabaseOid",
     "expectedCurrentUser",
     "expectedSessionUser",
     "expectedPostgresMajor",
@@ -672,6 +746,8 @@ function assertObservationBinding(binding: DurableTargetBinding): void {
   ]);
   if (binding.version !== "target-binding-v1") fail("TARGET_MISMATCH");
   safeIdentifier(binding.logicalDatabaseName, "TARGET_MISMATCH");
+  targetNumericIdentifier(binding.expectedClusterSystemIdentifier, "TARGET_MISMATCH");
+  targetNumericIdentifier(binding.expectedDatabaseOid, "TARGET_MISMATCH");
   if (!APPROVED_ROLE_NAMES.includes(binding.expectedCurrentUser)) fail("TARGET_MISMATCH");
   if (!APPROVED_ROLE_NAMES.includes(binding.expectedSessionUser)) fail("TARGET_MISMATCH");
   if (binding.expectedPostgresMajor !== 17 || typeof binding.connect !== "function") {
@@ -683,10 +759,16 @@ export function computeTargetBindingDigest(binding: DurableTargetBinding): strin
   assertObservationBinding(binding);
   return canonicalDigest(CONTRACT_DOMAIN_SEPARATOR, {
     version: binding.version,
-    logicalDatabaseName: binding.logicalDatabaseName,
-    expectedCurrentUser: binding.expectedCurrentUser,
-    expectedSessionUser: binding.expectedSessionUser,
-    expectedPostgresMajor: binding.expectedPostgresMajor,
+    expected_target: {
+      cluster_system_identifier: binding.expectedClusterSystemIdentifier,
+      database_oid: binding.expectedDatabaseOid,
+      logical_database_name: binding.logicalDatabaseName,
+      current_user: binding.expectedCurrentUser,
+      session_user: binding.expectedSessionUser,
+      postgres_major: binding.expectedPostgresMajor,
+      in_recovery: false,
+      transaction_read_only: true,
+    },
   });
 }
 
@@ -705,13 +787,21 @@ export async function beginReadOnlyObservation(
   let connection: DurableConnection;
   try {
     connection = await binding.connect();
-    await connection.query("BEGIN");
-    await connection.query("SET TRANSACTION READ ONLY");
-    const result = await connection.query(TARGET_IDENTITY_SQL);
+    await connection.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    let result: DurableQueryResult;
+    try {
+      result = await connection.query(TARGET_IDENTITY_SQL);
+    } catch {
+      fail("TARGET_IDENTITY_UNAVAILABLE");
+    }
     const row = result.rows[0];
-    if (!row) fail("OBSERVATION_FAILED");
+    if (!row || result.rows.length !== 1) fail("TARGET_IDENTITY_UNAVAILABLE");
     const identity = normalizeTargetIdentity(row);
-    if (identity.logical_database_name !== binding.logicalDatabaseName) fail("TARGET_MISMATCH");
+    if (
+      identity.cluster_system_identifier !== binding.expectedClusterSystemIdentifier ||
+      identity.database_oid !== binding.expectedDatabaseOid ||
+      identity.logical_database_name !== binding.logicalDatabaseName
+    ) fail("TARGET_MISMATCH");
     if (
       identity.current_user !== binding.expectedCurrentUser ||
       identity.session_user !== binding.expectedSessionUser
@@ -720,7 +810,7 @@ export async function beginReadOnlyObservation(
     }
     if (identity.postgres_major !== 17) fail("POSTGRES_VERSION_UNSUPPORTED");
     if (identity.in_recovery) fail("RECOVERY_STATE_UNSUPPORTED");
-    if (identity.transaction_read_only !== "on") fail("READ_ONLY_ASSERTION_FAILED");
+    if (!identity.transaction_read_only) fail("READ_ONLY_ASSERTION_FAILED");
 
     let closed = false;
     const close = async (): Promise<void> => {
@@ -753,7 +843,7 @@ export async function beginReadOnlyObservation(
               return await connection.query(RUNTIME_GRANT_STATE_SQL);
             case "migration_journal_state": {
               const exists = await connection.query(MIGRATION_LEDGER_EXISTS_SQL);
-              if (exists.rows[0]?.ledger_present !== true) return { rows: [] };
+              if (exists.rows[0]?.ledger_present !== true) fail("MIGRATION_IDENTITY_MISMATCH");
               return await connection.query(MIGRATION_LEDGER_ROWS_SQL);
             }
             case "readiness_state":
@@ -785,14 +875,97 @@ export async function beginReadOnlyObservation(
   }
 }
 
+async function readObservationQuery(
+  connection: DurableConnection,
+  identity: ReturnType<typeof normalizeTargetIdentity>,
+  queryId: ObservationQueryId,
+): Promise<{ rows: Array<Record<string, unknown>> }> {
+  if (!OBSERVATION_QUERY_IDS.includes(queryId)) fail("ARBITRARY_INPUT_REJECTED");
+  try {
+    if (queryId === "target_identity") return { rows: [identity] };
+    switch (queryId) {
+      case "role_state":
+        return await connection.query(ROLE_STATE_SQL, [APPROVED_ROLE_NAMES]);
+      case "membership_state":
+        return await connection.query(MEMBERSHIP_STATE_SQL, [APPROVED_ROLE_NAMES]);
+      case "ownership_state":
+        return await connection.query(OWNERSHIP_STATE_SQL);
+      case "privilege_state":
+        return await connection.query(PRIVILEGE_STATE_SQL);
+      case "default_acl_state":
+        return await connection.query(DEFAULT_ACL_STATE_SQL, [APPROVED_ROLE_NAMES]);
+      case "runtime_grant_state":
+        return await connection.query(RUNTIME_GRANT_STATE_SQL);
+      case "migration_journal_state": {
+        const exists = await connection.query(MIGRATION_LEDGER_EXISTS_SQL);
+        if (exists.rows[0]?.ledger_present !== true) fail("MIGRATION_IDENTITY_MISMATCH");
+        return await connection.query(MIGRATION_LEDGER_ROWS_SQL);
+      }
+      case "readiness_state":
+        return { rows: [await readCanonicalVerification(connection) as unknown as Record<string, unknown>] };
+      case "runtime_posture_state":
+        return { rows: [await readRuntimePosture(connection, identity.current_user) as unknown as Record<string, unknown>] };
+      case "unknown_drift_state":
+        return { rows: [classifyUnknownDrift((await connection.query(OWNERSHIP_STATE_SQL)).rows)] };
+    }
+  } catch (error) {
+    if (error instanceof DurableOperationError) throw error;
+    fail("OBSERVATION_FAILED");
+  }
+}
+
+async function observeTargetIdentity(
+  connection: DurableConnection,
+  binding: DurableTargetBinding,
+  requireReadOnly: boolean,
+): Promise<ReturnType<typeof normalizeTargetIdentity>> {
+  let result: DurableQueryResult;
+  try {
+    result = await connection.query(TARGET_IDENTITY_SQL);
+  } catch {
+    fail("TARGET_IDENTITY_UNAVAILABLE");
+  }
+  if (result.rows.length !== 1) fail("TARGET_IDENTITY_UNAVAILABLE");
+  const identity = normalizeTargetIdentity(result.rows[0]);
+  if (
+    identity.cluster_system_identifier !== binding.expectedClusterSystemIdentifier ||
+    identity.database_oid !== binding.expectedDatabaseOid ||
+    identity.logical_database_name !== binding.logicalDatabaseName
+  ) fail("TARGET_MISMATCH");
+  if (identity.current_user !== binding.expectedCurrentUser || identity.session_user !== binding.expectedSessionUser) {
+    fail("SESSION_IDENTITY_MISMATCH");
+  }
+  if (identity.postgres_major !== binding.expectedPostgresMajor) fail("POSTGRES_VERSION_UNSUPPORTED");
+  if (identity.in_recovery) fail("RECOVERY_STATE_UNSUPPORTED");
+  if (requireReadOnly && !identity.transaction_read_only) fail("READ_ONLY_ASSERTION_FAILED");
+  return identity;
+}
+
+async function captureMutationPrestate(
+  binding: DurableTargetBinding,
+  connection: DurableConnection,
+  journal: CanonicalMigrationJournalV1,
+): Promise<{ prestate: NormalizedPrestateV1; prestate_digest: string }> {
+  const identity = await observeTargetIdentity(connection, binding, false);
+  if (identity.transaction_read_only) fail("READ_ONLY_ASSERTION_FAILED");
+  return normalizeObservedPrestate(
+    (queryId) => readObservationQuery(connection, identity, queryId),
+    journal,
+  );
+}
+
 function normalizeTargetIdentity(row: Record<string, unknown>): {
+  cluster_system_identifier: string;
+  database_oid: string;
   logical_database_name: string;
   current_user: string;
   session_user: string;
   postgres_major: number;
   in_recovery: boolean;
-  transaction_read_only: string;
+  transaction_read_only: boolean;
 } {
+  const clusterSystemIdentifier = targetNumericIdentifier(row.cluster_system_identifier, "TARGET_IDENTITY_UNAVAILABLE");
+  const databaseOid = targetNumericIdentifier(row.database_oid, "TARGET_IDENTITY_UNAVAILABLE");
   const logicalDatabaseName = safeIdentifier(row.logical_database_name, "TARGET_MISMATCH");
   const currentUser = safeIdentifier(row.current_user, "SESSION_IDENTITY_MISMATCH") as ApprovedRoleName;
   const sessionUser = safeIdentifier(row.session_user, "SESSION_IDENTITY_MISMATCH") as ApprovedRoleName;
@@ -801,8 +974,13 @@ function normalizeTargetIdentity(row: Record<string, unknown>): {
   }
   if (!Number.isInteger(row.postgres_major)) fail("POSTGRES_VERSION_UNSUPPORTED");
   if (typeof row.in_recovery !== "boolean") fail("RECOVERY_STATE_UNSUPPORTED");
-  const transactionReadOnly = stringValue(row.transaction_read_only, "READ_ONLY_ASSERTION_FAILED");
+  const transactionReadOnly = row.transaction_read_only === true || row.transaction_read_only === "on";
+  if (row.transaction_read_only !== true && row.transaction_read_only !== false && row.transaction_read_only !== "on" && row.transaction_read_only !== "off") {
+    fail("READ_ONLY_ASSERTION_FAILED");
+  }
   return {
+    cluster_system_identifier: clusterSystemIdentifier,
+    database_oid: databaseOid,
     logical_database_name: logicalDatabaseName,
     current_user: currentUser,
     session_user: sessionUser,
@@ -916,6 +1094,8 @@ function isCanonicalObjectClassName(objectClass: string, qualifiedName: string):
 export interface NormalizedPrestateV1 {
   version: typeof PRESTATE_VERSION;
   target: {
+    cluster_system_identifier: string;
+    database_oid: string;
     logical_database_name: string;
     current_user: ApprovedRoleName;
     session_user: ApprovedRoleName;
@@ -937,8 +1117,11 @@ export interface NormalizedPrestateV1 {
   };
   ownership: {
     database_owner: string;
+    database_oid: string;
     public_schema_owner: string;
+    public_schema_oid: string;
     drizzle_schema_owner: string;
+    drizzle_schema_oid: string;
     canonical_relations: OwnershipRecordV1[];
     canonical_indexes: OwnershipRecordV1[];
     canonical_sequences: OwnershipRecordV1[];
@@ -952,6 +1135,9 @@ export interface NormalizedPrestateV1 {
     grant_options: PrivilegeRecordV1[];
   };
   default_acls: {
+    default_acl_oid: string[];
+    row_present: boolean[];
+    acl_is_null: boolean[];
     creator: string[];
     schema: string[];
     object_type: string[];
@@ -970,6 +1156,7 @@ export interface NormalizedPrestateV1 {
     source_entries: MigrationSourceEntryV1[];
     applied_rows: MigrationAppliedRowV1[];
     applied_prefix_digest: string;
+    complete_journal_digest: string;
   };
   canonical_checks: {
     readiness_checks: Record<string, string>;
@@ -987,6 +1174,7 @@ export interface NormalizedPrestateV1 {
 
 export interface RoleStateV1 {
   rolname: ApprovedRoleName;
+  role_oid: string;
   rolcanlogin: boolean;
   rolinherit: boolean;
   rolsuper: boolean;
@@ -994,16 +1182,21 @@ export interface RoleStateV1 {
   rolcreaterole: boolean;
   rolreplication: boolean;
   rolbypassrls: boolean;
+  rolconnlimit: number;
 }
 
 export interface OwnershipRecordV1 {
+  object_class: string;
   qualified_name: string;
+  object_oid: string;
   owner: string;
 }
 
 export interface PrivilegeRecordV1 {
   object_class: string;
   qualified_name: string;
+  object_oid: string;
+  acl_is_null: boolean;
   grantor: string;
   grantee: string;
   privilege: string;
@@ -1024,62 +1217,81 @@ export interface MigrationAppliedRowV1 {
   sql_sha256: string;
 }
 
+type ObservationReader = (
+  queryId: ObservationQueryId,
+) => Promise<{ rows: Array<Record<string, unknown>> }>;
+
+async function normalizeObservedPrestate(
+  read: ObservationReader,
+  journal: CanonicalMigrationJournalV1,
+): Promise<{ prestate: NormalizedPrestateV1; prestate_digest: string }> {
+  const target = (await read("target_identity")).rows[0];
+  const roleState = (await read("role_state")).rows;
+  const memberships = (await read("membership_state")).rows;
+  const ownership = (await read("ownership_state")).rows;
+  const privileges = (await read("privilege_state")).rows;
+  const defaultAcls = (await read("default_acl_state")).rows;
+  const runtimeGrants = (await read("runtime_grant_state")).rows;
+  const migrationRows = (await read("migration_journal_state")).rows;
+  const readiness = (await read("readiness_state")).rows[0] as unknown as CanonicalDatabaseVerification;
+  const runtimePosture = (await read("runtime_posture_state")).rows[0] as unknown as RuntimeDatabaseRoleAuthorityPostureReport;
+  const unknownDrift = (await read("unknown_drift_state")).rows[0];
+  const appliedRows = migrationRows.map((row) => ({
+    when: decimalStringValue(row.when, "MIGRATION_IDENTITY_MISMATCH"),
+    sql_sha256: hex(row.sql_sha256, 64, "MIGRATION_IDENTITY_MISMATCH"),
+  }));
+  assertAppliedPrefix(appliedRows, journal.entries);
+  const prestate = normalizePrestate({
+    version: PRESTATE_VERSION,
+    target: {
+      ...(target ?? {}),
+      transaction_read_only: true,
+    },
+    roles: { accepted_role_states: roleState, unknown_role_references: [] },
+    memberships: membershipColumns(memberships),
+    ownership: ownershipSnapshot(ownership),
+    privileges: privilegeSnapshot(privileges),
+    default_acls: defaultAclColumns(defaultAcls),
+    runtime_grant_contract: {
+      contract_digest: RUNTIME_TABLE_GRANT_DIGEST,
+      observed_direct_grants: runtimeGrants.map((row) => ({
+        objectClass: stringValue(row.object_class, "OBSERVATION_FAILED"),
+        schema: stringValue(row.schema, "OBSERVATION_FAILED"),
+        objectName: stringValue(row.object_name, "OBSERVATION_FAILED"),
+        privilege: stringValue(row.privilege, "OBSERVATION_FAILED"),
+        authoritySource: stringValue(row.authority_source, "OBSERVATION_FAILED"),
+        grantOption: booleanValue(row.grant_option, "OBSERVATION_FAILED"),
+      })),
+    },
+    migration_journal: {
+      journal_version: journal.version,
+      dialect: journal.dialect,
+      source_entries: journal.entries,
+      applied_rows: appliedRows,
+      applied_prefix_digest: canonicalDigest(JOURNAL_PREFIX_DOMAIN_SEPARATOR, appliedRows),
+      complete_journal_digest: canonicalDigest(JOURNAL_PREFIX_DOMAIN_SEPARATOR, journal.entries),
+    },
+    canonical_checks: {
+      readiness_checks: readiness.readiness_report.checks,
+      migrator_readiness_fields: [...MIGRATOR_READINESS_FIELDS],
+      runtime_posture_fields: runtimePostureRecord(runtimePosture),
+    },
+    unknown_non_extension_drift: unknownDrift ?? {
+      relations: [], indexes: [], sequences: [], types: [], routines: [],
+    },
+  });
+  assertFixedRolePosture(prestate, "OBSERVATION_FAILED");
+  return { prestate, prestate_digest: canonicalDigest(PRESTATE_DOMAIN_SEPARATOR, prestate) };
+}
+
 export async function captureNormalizedPrestate(
   binding: DurableTargetBinding,
   journal?: CanonicalMigrationJournalV1,
 ): Promise<{ prestate: NormalizedPrestateV1; prestate_digest: string }> {
+  if (!journal) fail("MIGRATION_IDENTITY_MISMATCH");
   const observation = await beginReadOnlyObservation(binding);
   try {
-    const target = (await observation.read("target_identity")).rows[0];
-    const roleState = (await observation.read("role_state")).rows;
-    const memberships = (await observation.read("membership_state")).rows;
-    const ownership = (await observation.read("ownership_state")).rows;
-    const privileges = (await observation.read("privilege_state")).rows;
-    const defaultAcls = (await observation.read("default_acl_state")).rows;
-    const runtimeGrants = (await observation.read("runtime_grant_state")).rows;
-    const migrationRows = (await observation.read("migration_journal_state")).rows;
-    const readiness = (await observation.read("readiness_state")).rows[0] as unknown as CanonicalDatabaseVerification;
-    const runtimePosture = (await observation.read("runtime_posture_state")).rows[0] as unknown as RuntimeDatabaseRoleAuthorityPostureReport;
-    const unknownDrift = (await observation.read("unknown_drift_state")).rows[0];
-    const prestate = normalizePrestate({
-      version: PRESTATE_VERSION,
-      target: {
-        ...(target ?? {}),
-        transaction_read_only: true,
-      },
-      roles: { accepted_role_states: roleState, unknown_role_references: [] },
-      memberships: membershipColumns(memberships),
-      ownership: ownershipSnapshot(ownership),
-      privileges: privilegeSnapshot(privileges),
-      default_acls: defaultAclColumns(defaultAcls),
-      runtime_grant_contract: {
-        contract_digest: RUNTIME_TABLE_GRANT_DIGEST,
-        observed_direct_grants: runtimeGrants.map((row) => ({
-          objectClass: stringValue(row.object_class, "OBSERVATION_FAILED"),
-          schema: stringValue(row.schema, "OBSERVATION_FAILED"),
-          objectName: stringValue(row.object_name, "OBSERVATION_FAILED"),
-          privilege: stringValue(row.privilege, "OBSERVATION_FAILED"),
-          authoritySource: stringValue(row.authority_source, "OBSERVATION_FAILED"),
-          grantOption: booleanValue(row.grant_option, "OBSERVATION_FAILED"),
-        })),
-      },
-      migration_journal: {
-        journal_version: journal?.version ?? "7",
-        dialect: journal?.dialect ?? "postgresql",
-        source_entries: journal?.entries ?? [],
-        applied_rows: migrationRows,
-        applied_prefix_digest: canonicalDigest(JOURNAL_PREFIX_DOMAIN_SEPARATOR, migrationRows),
-      },
-      canonical_checks: {
-        readiness_checks: readiness.readiness_report.checks,
-        migrator_readiness_fields: [...MIGRATOR_READINESS_FIELDS],
-        runtime_posture_fields: runtimePostureRecord(runtimePosture),
-      },
-      unknown_non_extension_drift: unknownDrift ?? {
-        relations: [], indexes: [], sequences: [], types: [], routines: [],
-      },
-    });
-    return { prestate, prestate_digest: canonicalDigest(PRESTATE_DOMAIN_SEPARATOR, prestate) };
+    return await normalizeObservedPrestate((queryId) => observation.read(queryId), journal);
   } finally {
     await observation.close();
   }
@@ -1109,19 +1321,26 @@ function ownershipSnapshot(rows: readonly Record<string, unknown>[]) {
   const records = rows.map((row) => ({
     object_class: stringValue(row.object_class, "OBSERVATION_FAILED"),
     qualified_name: stringValue(row.qualified_name, "OBSERVATION_FAILED"),
+    object_oid: targetNumericIdentifier(row.object_oid, "OBSERVATION_FAILED"),
     owner: stringValue(row.owner, "OBSERVATION_FAILED"),
     is_extension_member: row.is_extension_member === true,
   }));
-  const findOwner = (className: string, name: string) =>
-    records.find((row) => row.object_class === className && row.qualified_name === name)?.owner ?? "";
+  const findRecord = (className: string, name: string) =>
+    records.find((row) => row.object_class === className && row.qualified_name === name);
   const collect = (className: string) => records
     .filter((row) => row.object_class === className && row.is_extension_member === false && isCanonicalObjectClassName(className, row.qualified_name))
-    .map(({ qualified_name, owner }) => ({ qualified_name, owner }))
+    .map(({ object_class, qualified_name, object_oid, owner }) => ({ object_class, qualified_name, object_oid, owner }))
     .sort((a, b) => compareTuple([a.qualified_name, a.owner], [b.qualified_name, b.owner]));
+  const database = records.find((row) => row.object_class === "database");
+  const publicSchema = findRecord("schema", "public");
+  const drizzleSchema = findRecord("schema", "drizzle");
   return {
-    database_owner: findOwner("database", records.find((row) => row.object_class === "database")?.qualified_name ?? ""),
-    public_schema_owner: findOwner("schema", "public"),
-    drizzle_schema_owner: findOwner("schema", "drizzle"),
+    database_owner: database?.owner ?? "",
+    database_oid: database?.object_oid ?? "",
+    public_schema_owner: publicSchema?.owner ?? "",
+    public_schema_oid: publicSchema?.object_oid ?? "",
+    drizzle_schema_owner: drizzleSchema?.owner ?? "",
+    drizzle_schema_oid: drizzleSchema?.object_oid ?? "",
     canonical_relations: collect("relation"),
     canonical_indexes: collect("index"),
     canonical_sequences: collect("sequence"),
@@ -1135,10 +1354,12 @@ function privilegeSnapshot(rows: readonly Record<string, unknown>[]) {
   const values = rows.map((row) => ({
     object_class: stringValue(row.object_class, "OBSERVATION_FAILED"),
     qualified_name: stringValue(row.qualified_name, "OBSERVATION_FAILED"),
-    grantor: stringValue(row.grantor, "OBSERVATION_FAILED"),
-    grantee: stringValue(row.grantee, "OBSERVATION_FAILED"),
-    privilege: stringValue(row.privilege, "OBSERVATION_FAILED"),
-    grant_option: booleanValue(row.grant_option, "OBSERVATION_FAILED"),
+    object_oid: targetNumericIdentifier(row.object_oid, "OBSERVATION_FAILED"),
+    acl_is_null: booleanValue(row.acl_is_null, "OBSERVATION_FAILED"),
+    grantor: row.privilege === null ? null : stringAllowEmpty(row.grantor, "OBSERVATION_FAILED"),
+    grantee: row.privilege === null ? null : stringValue(row.grantee, "OBSERVATION_FAILED"),
+    privilege: row.privilege === null ? null : stringValue(row.privilege, "OBSERVATION_FAILED"),
+    grant_option: row.privilege === null ? null : booleanValue(row.grant_option, "OBSERVATION_FAILED"),
   }));
   values.sort((a, b) => compareTuple(Object.values(a), Object.values(b)));
   return {
@@ -1150,16 +1371,22 @@ function privilegeSnapshot(rows: readonly Record<string, unknown>[]) {
 
 function defaultAclColumns(rows: readonly Record<string, unknown>[]) {
   const values = rows.map((row) => ({
+    default_acl_oid: targetNumericIdentifier(row.default_acl_oid, "OBSERVATION_FAILED"),
+    row_present: booleanValue(row.row_present, "OBSERVATION_FAILED"),
+    acl_is_null: booleanValue(row.acl_is_null, "OBSERVATION_FAILED"),
     creator: stringValue(row.creator, "OBSERVATION_FAILED"),
     schema: stringAllowEmpty(row.schema, "OBSERVATION_FAILED"),
     object_type: stringValue(row.object_type, "OBSERVATION_FAILED"),
-    grantee: stringValue(row.grantee, "OBSERVATION_FAILED"),
-    grantor: stringValue(row.grantor, "OBSERVATION_FAILED"),
-    privilege: stringValue(row.privilege, "OBSERVATION_FAILED"),
-    grant_option: booleanValue(row.grant_option, "OBSERVATION_FAILED"),
+    grantee: row.privilege === null ? "" : stringValue(row.grantee, "OBSERVATION_FAILED"),
+    grantor: row.privilege === null || row.grantor === null ? "" : stringValue(row.grantor, "OBSERVATION_FAILED"),
+    privilege: row.privilege === null ? "" : stringValue(row.privilege, "OBSERVATION_FAILED"),
+    grant_option: row.grant_option === null ? false : booleanValue(row.grant_option, "OBSERVATION_FAILED"),
   }));
-  values.sort((a, b) => compareTuple(Object.values(a), Object.values(b)));
+  values.sort((a, b) => compareTuple([a.creator, a.schema, a.object_type, a.default_acl_oid, a.grantee, a.grantor, a.privilege, a.grant_option], [b.creator, b.schema, b.object_type, b.default_acl_oid, b.grantee, b.grantor, b.privilege, b.grant_option]));
   return {
+    default_acl_oid: values.map((value) => value.default_acl_oid),
+    row_present: values.map((value) => value.row_present),
+    acl_is_null: values.map((value) => value.acl_is_null),
     creator: values.map((value) => value.creator),
     schema: values.map((value) => value.schema),
     object_type: values.map((value) => value.object_type),
@@ -1213,12 +1440,16 @@ export function normalizePrestate(value: unknown): NormalizedPrestateV1 {
 
 function normalizePrestateTarget(value: unknown): NormalizedPrestateV1["target"] {
   assertRecord(value, "PRESTATE_INVALID");
-  assertExactKeys(value, ["logical_database_name", "current_user", "session_user", "postgres_major", "in_recovery", "transaction_read_only"], "PRESTATE_INVALID");
+  assertExactKeys(value, ["cluster_system_identifier", "database_oid", "logical_database_name", "current_user", "session_user", "postgres_major", "in_recovery", "transaction_read_only"], "PRESTATE_INVALID");
+  const clusterSystemIdentifier = targetNumericIdentifier(value.cluster_system_identifier, "PRESTATE_INVALID");
+  const databaseOid = targetNumericIdentifier(value.database_oid, "PRESTATE_INVALID");
   const currentUser = stringValue(value.current_user, "PRESTATE_INVALID") as ApprovedRoleName;
   const sessionUser = stringValue(value.session_user, "PRESTATE_INVALID") as ApprovedRoleName;
   if (!APPROVED_ROLE_NAMES.includes(currentUser) || !APPROVED_ROLE_NAMES.includes(sessionUser)) fail("PRESTATE_INVALID");
   if (value.postgres_major !== 17 || value.in_recovery !== false || value.transaction_read_only !== true) fail("PRESTATE_INVALID");
   return {
+    cluster_system_identifier: clusterSystemIdentifier,
+    database_oid: databaseOid,
     logical_database_name: safeIdentifier(value.logical_database_name, "PRESTATE_INVALID"),
     current_user: currentUser,
     session_user: sessionUser,
@@ -1234,11 +1465,14 @@ function normalizeRoles(value: unknown): NormalizedPrestateV1["roles"] {
   if (!Array.isArray(value.accepted_role_states) || !Array.isArray(value.unknown_role_references)) fail("PRESTATE_INVALID");
   const accepted = value.accepted_role_states.map((raw) => {
     assertRecord(raw, "PRESTATE_INVALID");
-    assertExactKeys(raw, ["rolname", "rolcanlogin", "rolinherit", "rolsuper", "rolcreatedb", "rolcreaterole", "rolreplication", "rolbypassrls"], "PRESTATE_INVALID");
+    assertExactKeys(raw, ["rolname", "role_oid", "rolcanlogin", "rolinherit", "rolsuper", "rolcreatedb", "rolcreaterole", "rolreplication", "rolbypassrls", "rolconnlimit"], "PRESTATE_INVALID");
     const rolname = stringValue(raw.rolname, "PRESTATE_INVALID") as ApprovedRoleName;
     if (!APPROVED_ROLE_NAMES.includes(rolname)) fail("PRESTATE_INVALID");
+    const roleOid = targetNumericIdentifier(raw.role_oid, "PRESTATE_INVALID");
+    if (!Number.isSafeInteger(raw.rolconnlimit) || (raw.rolconnlimit as number) < -1) fail("PRESTATE_INVALID");
     return {
       rolname,
+      role_oid: roleOid,
       rolcanlogin: booleanValue(raw.rolcanlogin, "PRESTATE_INVALID"),
       rolinherit: booleanValue(raw.rolinherit, "PRESTATE_INVALID"),
       rolsuper: booleanValue(raw.rolsuper, "PRESTATE_INVALID"),
@@ -1246,12 +1480,38 @@ function normalizeRoles(value: unknown): NormalizedPrestateV1["roles"] {
       rolcreaterole: booleanValue(raw.rolcreaterole, "PRESTATE_INVALID"),
       rolreplication: booleanValue(raw.rolreplication, "PRESTATE_INVALID"),
       rolbypassrls: booleanValue(raw.rolbypassrls, "PRESTATE_INVALID"),
+      rolconnlimit: raw.rolconnlimit as number,
     } satisfies RoleStateV1;
   }).sort((a, b) => compareTuple([a.rolname], [b.rolname]));
   const unknown = value.unknown_role_references.map((raw) => safeIdentifier(raw, "PRESTATE_INVALID"));
   if (unknown.some((name) => APPROVED_ROLE_NAMES.includes(name as ApprovedRoleName))) fail("PRESTATE_INVALID");
   unknown.sort();
   return { accepted_role_states: accepted, unknown_role_references: unknown };
+}
+
+const FIXED_ROLE_POSTURES: Readonly<Record<string, Readonly<Record<string, boolean>>>> = Object.freeze({
+  platform_runtime: Object.freeze({ rolcanlogin: false, rolinherit: false, rolsuper: false, rolcreatedb: false, rolcreaterole: false, rolreplication: false, rolbypassrls: false }),
+  platform_app: Object.freeze({ rolcanlogin: true, rolinherit: false, rolsuper: false, rolcreatedb: false, rolcreaterole: false, rolreplication: false, rolbypassrls: false }),
+  platform_migrator: Object.freeze({ rolcanlogin: true, rolinherit: false, rolsuper: false, rolcreatedb: false, rolcreaterole: false, rolreplication: false, rolbypassrls: false }),
+});
+
+function assertFixedRolePosture(prestate: NormalizedPrestateV1, code: SemanticCode = "PRESTATE_INVALID"): void {
+  for (const [roleName, expected] of Object.entries(FIXED_ROLE_POSTURES)) {
+    const matches = prestate.roles.accepted_role_states.filter((role) => role.rolname === roleName);
+    if (matches.length !== 1) fail(code);
+    const role = matches[0];
+    for (const [field, expectedValue] of Object.entries(expected)) {
+      if (role[field as keyof RoleStateV1] !== expectedValue) fail(code);
+    }
+  }
+  const runtime = prestate.ownership.canonical_relations.concat(
+    prestate.ownership.canonical_indexes,
+    prestate.ownership.canonical_sequences,
+    prestate.ownership.canonical_types,
+  );
+  if (runtime.some((record) => record.owner === "platform_runtime")) fail(code);
+  if (prestate.memberships.granted_role.some((role, index) =>
+    role === "platform_runtime" || prestate.memberships.member[index] === "platform_runtime" || prestate.memberships.grantor[index] === "platform_runtime")) fail(code);
 }
 
 function normalizeMemberships(value: unknown): NormalizedPrestateV1["memberships"] {
@@ -1288,21 +1548,26 @@ function normalizeMemberships(value: unknown): NormalizedPrestateV1["memberships
 
 function normalizeOwnership(value: unknown): NormalizedPrestateV1["ownership"] {
   assertRecord(value, "PRESTATE_INVALID");
-  const fields = ["database_owner", "public_schema_owner", "drizzle_schema_owner", "canonical_relations", "canonical_indexes", "canonical_sequences", "canonical_types", "canonical_enums", "canonical_routines"] as const;
+  const fields = ["database_owner", "database_oid", "public_schema_owner", "public_schema_oid", "drizzle_schema_owner", "drizzle_schema_oid", "canonical_relations", "canonical_indexes", "canonical_sequences", "canonical_types", "canonical_enums", "canonical_routines"] as const;
   assertExactKeys(value, fields, "PRESTATE_INVALID");
-  for (const field of fields.slice(3)) if (!Array.isArray(value[field])) fail("PRESTATE_INVALID");
+  for (const field of fields.slice(6)) if (!Array.isArray(value[field])) fail("PRESTATE_INVALID");
   const records = (field: string) => (value[field] as unknown[]).map((raw) => {
     assertRecord(raw, "PRESTATE_INVALID");
-    assertExactKeys(raw, ["qualified_name", "owner"], "PRESTATE_INVALID");
+    assertExactKeys(raw, ["object_class", "qualified_name", "object_oid", "owner"], "PRESTATE_INVALID");
+    const objectClass = safeIdentifier(raw.object_class, "PRESTATE_INVALID");
     const qualifiedName = stringValue(raw.qualified_name, "PRESTATE_INVALID");
+    const objectOid = targetNumericIdentifier(raw.object_oid, "PRESTATE_INVALID");
     const owner = safeIdentifier(raw.owner, "PRESTATE_INVALID");
     if (!/^[a-z_][a-z0-9_$]{0,62}\.[a-z_][a-z0-9_$()$-]{0,126}$/u.test(qualifiedName)) fail("PRESTATE_INVALID");
-    return { qualified_name: qualifiedName, owner };
+    return { object_class: objectClass, qualified_name: qualifiedName, object_oid: objectOid, owner };
   }).sort((a, b) => compareTuple([a.qualified_name, a.owner], [b.qualified_name, b.owner]));
   return {
     database_owner: safeIdentifier(value.database_owner, "PRESTATE_INVALID"),
+    database_oid: targetNumericIdentifier(value.database_oid, "PRESTATE_INVALID"),
     public_schema_owner: safeIdentifier(value.public_schema_owner, "PRESTATE_INVALID"),
+    public_schema_oid: targetNumericIdentifier(value.public_schema_oid, "PRESTATE_INVALID"),
     drizzle_schema_owner: safeIdentifier(value.drizzle_schema_owner, "PRESTATE_INVALID"),
+    drizzle_schema_oid: targetNumericIdentifier(value.drizzle_schema_oid, "PRESTATE_INVALID"),
     canonical_relations: records("canonical_relations"),
     canonical_indexes: records("canonical_indexes"),
     canonical_sequences: records("canonical_sequences"),
@@ -1319,16 +1584,30 @@ function normalizePrivileges(value: unknown): NormalizedPrestateV1["privileges"]
     if (!Array.isArray(rawRows)) fail("PRESTATE_INVALID");
     return rawRows.map((raw) => {
       assertRecord(raw, "PRESTATE_INVALID");
-      assertExactKeys(raw, ["object_class", "qualified_name", "grantor", "grantee", "privilege", "grant_option"], "PRESTATE_INVALID");
+      assertExactKeys(raw, ["object_class", "qualified_name", "object_oid", "acl_is_null", "grantor", "grantee", "privilege", "grant_option"], "PRESTATE_INVALID");
+      const aclIsNull = booleanValue(raw.acl_is_null, "PRESTATE_INVALID");
+      const emptyAcl = raw.privilege === null || raw.privilege === undefined || (
+        raw.privilege === "" &&
+        (raw.grantor === "" || raw.grantor === null) &&
+        (raw.grantee === "" || raw.grantee === null) &&
+        (raw.grant_option === false || raw.grant_option === null)
+      );
+      if (emptyAcl && ![null, false].includes(raw.grant_option as null | boolean)) fail("PRESTATE_INVALID");
+      if (!emptyAcl && raw.grant_option !== true && raw.grant_option !== false) fail("PRESTATE_INVALID");
+      const grantor = emptyAcl ? "" : safeIdentifier(raw.grantor, "PRESTATE_INVALID");
+      const grantee = emptyAcl ? "" : stringValue(raw.grantee, "PRESTATE_INVALID");
+      const privilege = emptyAcl ? "" : safeIdentifier(String(raw.privilege).toLowerCase(), "PRESTATE_INVALID");
       const result = {
-        object_class: stringValue(raw.object_class, "PRESTATE_INVALID"),
+        object_class: safeIdentifier(raw.object_class, "PRESTATE_INVALID"),
         qualified_name: stringValue(raw.qualified_name, "PRESTATE_INVALID"),
-        grantor: safeIdentifier(raw.grantor, "PRESTATE_INVALID"),
-        grantee: stringValue(raw.grantee, "PRESTATE_INVALID"),
-        privilege: safeIdentifier(String(raw.privilege).toLowerCase(), "PRESTATE_INVALID"),
-        grant_option: booleanValue(raw.grant_option, "PRESTATE_INVALID"),
+        object_oid: targetNumericIdentifier(raw.object_oid, "PRESTATE_INVALID"),
+        acl_is_null: aclIsNull,
+        grantor,
+        grantee,
+        privilege,
+        grant_option: emptyAcl ? false : raw.grant_option as boolean,
       };
-      if (![...APPROVED_ROLE_NAMES, "PUBLIC", "pg_database_owner"].includes(result.grantee as ApprovedPrincipal)) fail("PRESTATE_INVALID");
+      if (result.grantee !== "" && !/^[a-z_][a-z0-9_$]{0,62}$/u.test(result.grantee) && result.grantee !== "PUBLIC") fail("PRESTATE_INVALID");
       return result;
     }).sort((a, b) => compareTuple(Object.values(a), Object.values(b)));
   };
@@ -1341,22 +1620,28 @@ function normalizePrivileges(value: unknown): NormalizedPrestateV1["privileges"]
 
 function normalizeDefaultAcls(value: unknown): NormalizedPrestateV1["default_acls"] {
   assertRecord(value, "PRESTATE_INVALID");
-  const fields = ["creator", "schema", "object_type", "grantee", "grantor", "privilege", "grant_option"] as const;
+  const fields = ["default_acl_oid", "row_present", "acl_is_null", "creator", "schema", "object_type", "grantee", "grantor", "privilege", "grant_option"] as const;
   assertExactKeys(value, fields, "PRESTATE_INVALID");
   const arrays = Object.fromEntries(fields.map((field) => [field, value[field] as unknown[]])) as Record<(typeof fields)[number], unknown[]>;
   if (fields.some((field) => !Array.isArray(arrays[field]))) fail("PRESTATE_INVALID");
   const length = arrays.creator.length;
   if (fields.some((field) => arrays[field].length !== length)) fail("PRESTATE_INVALID");
   const rows = Array.from({ length }, (_, index) => ({
+    default_acl_oid: targetNumericIdentifier(arrays.default_acl_oid[index], "PRESTATE_INVALID"),
+    row_present: booleanValue(arrays.row_present[index], "PRESTATE_INVALID"),
+    acl_is_null: booleanValue(arrays.acl_is_null[index], "PRESTATE_INVALID"),
     creator: safeIdentifier(arrays.creator[index], "PRESTATE_INVALID"),
     schema: stringAllowEmpty(arrays.schema[index], "PRESTATE_INVALID"),
     object_type: stringValue(arrays.object_type[index], "PRESTATE_INVALID"),
-    grantee: stringValue(arrays.grantee[index], "PRESTATE_INVALID"),
-    grantor: safeIdentifier(arrays.grantor[index], "PRESTATE_INVALID"),
-    privilege: safeIdentifier(String(arrays.privilege[index]).toLowerCase(), "PRESTATE_INVALID"),
+    grantee: stringAllowEmpty(arrays.grantee[index], "PRESTATE_INVALID"),
+    grantor: stringAllowEmpty(arrays.grantor[index], "PRESTATE_INVALID"),
+    privilege: stringAllowEmpty(arrays.privilege[index], "PRESTATE_INVALID"),
     grant_option: booleanValue(arrays.grant_option[index], "PRESTATE_INVALID"),
   })).sort((a, b) => compareTuple(Object.values(a), Object.values(b)));
   return {
+    default_acl_oid: rows.map((row) => row.default_acl_oid),
+    row_present: rows.map((row) => row.row_present),
+    acl_is_null: rows.map((row) => row.acl_is_null),
     creator: rows.map((row) => row.creator),
     schema: rows.map((row) => row.schema),
     object_type: rows.map((row) => row.object_type),
@@ -1394,7 +1679,7 @@ function normalizeRuntimeGrantContract(value: unknown): NormalizedPrestateV1["ru
 
 function normalizeMigrationJournal(value: unknown): NormalizedPrestateV1["migration_journal"] {
   assertRecord(value, "PRESTATE_INVALID");
-  assertExactKeys(value, ["journal_version", "dialect", "source_entries", "applied_rows", "applied_prefix_digest"], "PRESTATE_INVALID");
+  assertExactKeys(value, ["journal_version", "dialect", "source_entries", "applied_rows", "applied_prefix_digest", "complete_journal_digest"], "PRESTATE_INVALID");
   if (!Array.isArray(value.source_entries) || !Array.isArray(value.applied_rows)) fail("PRESTATE_INVALID");
   const sourceEntries = value.source_entries.map((raw) => {
     assertRecord(raw, "PRESTATE_INVALID");
@@ -1407,29 +1692,35 @@ function normalizeMigrationJournal(value: unknown): NormalizedPrestateV1["migrat
       breakpoints: booleanValue(raw.breakpoints, "PRESTATE_INVALID"),
       sql_sha256: hex(raw.sql_sha256, 64, "PRESTATE_INVALID"),
     };
-  }).sort((a, b) => a.idx - b.idx);
+  });
+  sourceEntries.forEach((entry, index) => {
+    if (entry.idx !== index) fail("PRESTATE_INVALID");
+  });
   const appliedRows = value.applied_rows.map((raw) => {
     assertRecord(raw, "PRESTATE_INVALID");
     assertExactKeys(raw, ["when", "sql_sha256"], "PRESTATE_INVALID");
     return { when: decimalStringValue(raw.when), sql_sha256: hex(raw.sql_sha256, 64, "PRESTATE_INVALID") };
-  }).sort((a, b) => compareTuple([a.when, a.sql_sha256], [b.when, b.sql_sha256]));
+  });
   const digest = hex(value.applied_prefix_digest, 64, "PRESTATE_INVALID");
   const computed = canonicalDigest(JOURNAL_PREFIX_DOMAIN_SEPARATOR, appliedRows);
   if (digest !== computed) fail("PRESTATE_INVALID");
+  const completeJournalDigest = hex(value.complete_journal_digest, 64, "PRESTATE_INVALID");
+  if (completeJournalDigest !== canonicalDigest(JOURNAL_PREFIX_DOMAIN_SEPARATOR, sourceEntries)) fail("PRESTATE_INVALID");
   return {
     journal_version: stringValue(value.journal_version, "PRESTATE_INVALID"),
     dialect: stringValue(value.dialect, "PRESTATE_INVALID"),
     source_entries: sourceEntries,
     applied_rows: appliedRows,
     applied_prefix_digest: digest,
+    complete_journal_digest: completeJournalDigest,
   };
 }
 
-function decimalStringValue(value: unknown): string {
+function decimalStringValue(value: unknown, code: SemanticCode = "PRESTATE_INVALID"): string {
   if (typeof value === "bigint") return value.toString(10);
   if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return String(value);
   if (typeof value === "string" && /^\d+$/u.test(value)) return value;
-  fail("PRESTATE_INVALID");
+  fail(code);
 }
 
 function normalizeCanonicalChecks(value: unknown): NormalizedPrestateV1["canonical_checks"] {
@@ -1606,6 +1897,7 @@ export function createDurablePlan(input: {
   if (kinds.size > 1) fail("OPERATION_UNSUPPORTED");
   const operationKind = input.operation_kind ?? operations[0]?.kind ?? "migration";
   if (!OPERATION_KINDS.includes(operationKind) || (operations.length > 0 && operations.some((operation) => operation.kind !== operationKind))) fail("ARBITRARY_INPUT_REJECTED");
+  if (operationKind === "membership" || operationKind === "role_posture") fail("OPERATION_UNSUPPORTED");
   if (operationKind === "migration" && operations.some((operation) => operation.kind !== "migration")) fail("OPERATION_UNSUPPORTED");
   if (operationKind !== "migration" && operations.some((operation) => operation.kind === "migration")) fail("OPERATION_UNSUPPORTED");
   const ranks = operations.map((operation) => operationRank(operation.kind));
@@ -1643,11 +1935,11 @@ function normalizeOperation(operation: DurableOperationV1): DurableOperationV1 {
     case "privilege":
       return normalizePrivilegeOperation(operation);
     case "membership":
-      return normalizeMembershipOperation(operation);
+      fail("OPERATION_UNSUPPORTED");
     case "default_acl":
       return normalizeDefaultAclOperation(operation);
     case "role_posture":
-      return normalizeRolePostureOperation(operation);
+      fail("OPERATION_UNSUPPORTED");
     case "migration":
       return normalizeMigrationOperation(operation);
   }
@@ -1658,8 +1950,8 @@ function normalizeCanonicalObject(value: unknown): CanonicalObjectReferenceV1 {
   assertExactKeys(value, ["object_class", "qualified_name"]);
   const objectClass = stringValue(value.object_class);
   const qualifiedName = stringValue(value.qualified_name);
-  if (!["database", "schema", "relation", "index", "sequence", "type", "enum", "routine"].includes(objectClass)) fail("ARBITRARY_INPUT_REJECTED");
-  if (!isCanonicalObjectClassName(objectClass === "enum" ? "type" : objectClass, qualifiedName) && !(objectClass === "schema" && ["public", "drizzle"].includes(qualifiedName)) && !(objectClass === "database" && qualifiedName === "__current_database__")) fail("ARBITRARY_INPUT_REJECTED");
+  if (!["database", "schema", "relation", "index", "sequence", "type"].includes(objectClass)) fail("OPERATION_UNSUPPORTED");
+  if (!isCanonicalObjectClassName(objectClass, qualifiedName) && !(objectClass === "schema" && ["public", "drizzle"].includes(qualifiedName)) && !(objectClass === "database" && qualifiedName === "__current_database__")) fail("ARBITRARY_INPUT_REJECTED");
   return { object_class: objectClass as CanonicalObjectReferenceV1["object_class"], qualified_name: qualifiedName };
 }
 
@@ -1680,11 +1972,20 @@ function normalizePrivilegeOperation(value: Record<string, unknown>): PrivilegeO
   if (value.action !== "grant" && value.action !== "revoke") fail("ARBITRARY_INPUT_REJECTED");
   const principal = normalizePrincipal(value.principal);
   const privilege = stringValue(value.privilege).toUpperCase();
-  if (!["DELETE", "INSERT", "REFERENCES", "SELECT", "TRIGGER", "TRUNCATE", "UPDATE", "USAGE", "CREATE", "CONNECT", "TEMPORARY"].includes(privilege)) fail("ARBITRARY_INPUT_REJECTED");
+  const object = normalizeCanonicalObject(value.object);
+  if (object.object_class === "index") fail("OPERATION_UNSUPPORTED");
+  const privilegesByObjectClass: Record<string, readonly string[]> = {
+    database: ["CONNECT", "CREATE", "TEMPORARY"],
+    schema: ["CREATE", "USAGE"],
+    relation: ["DELETE", "INSERT", "REFERENCES", "SELECT", "TRIGGER", "TRUNCATE", "UPDATE"],
+    sequence: ["SELECT", "UPDATE", "USAGE"],
+    type: ["USAGE"],
+  };
+  if (!privilegesByObjectClass[object.object_class]?.includes(privilege)) fail("OPERATION_UNSUPPORTED");
   return {
     kind: "privilege",
     action: value.action,
-    object: normalizeCanonicalObject(value.object),
+    object,
     principal,
     privilege,
     grant_option: booleanValue(value.grant_option),
@@ -1727,9 +2028,13 @@ function normalizeDefaultAclOperation(value: Record<string, unknown>): DefaultAc
   const schemaName = stringValue(value.schema);
   if (schemaName !== "public" && schemaName !== "drizzle") fail("ARBITRARY_INPUT_REJECTED");
   const objectType = stringValue(value.object_type);
-  if (!["table", "sequence", "routine"].includes(objectType)) fail("ARBITRARY_INPUT_REJECTED");
+  if (!["table", "sequence"].includes(objectType)) fail("OPERATION_UNSUPPORTED");
   const privilege = stringValue(value.privilege).toUpperCase();
-  if (!["DELETE", "INSERT", "REFERENCES", "SELECT", "TRIGGER", "TRUNCATE", "UPDATE", "EXECUTE", "USAGE"].includes(privilege)) fail("ARBITRARY_INPUT_REJECTED");
+  const privilegesByObjectType: Record<string, readonly string[]> = {
+    table: ["DELETE", "INSERT", "REFERENCES", "SELECT", "TRIGGER", "TRUNCATE", "UPDATE"],
+    sequence: ["SELECT", "UPDATE", "USAGE"],
+  };
+  if (!privilegesByObjectType[objectType]?.includes(privilege)) fail("OPERATION_UNSUPPORTED");
   return {
     kind: "default_acl",
     action: value.action,
@@ -1808,63 +2113,116 @@ export interface DurableInverseV1 {
   inverse_digest: string;
 }
 
-export function createDurableInverse(plan: DurablePlanV1): DurableInverseV1 {
+export function createDurableInverse(plan: DurablePlanV1, authoritativePrestate?: NormalizedPrestateV1): DurableInverseV1 {
   validatePlan(plan);
   if (plan.operations.some((operation) => operation.kind === "migration")) fail("RESTORE_CAPABILITY_REQUIRED");
+  if (!authoritativePrestate) fail("PRESTATE_MISMATCH");
+  const prestate = normalizePrestate(authoritativePrestate);
+  if (canonicalDigest(PRESTATE_DOMAIN_SEPARATOR, prestate) !== plan.prestate_digest) fail("PRESTATE_MISMATCH");
   const steps = plan.operations.slice().reverse().map((operation, reverseIndex) => {
     const originalIndex = plan.operations.length - reverseIndex - 1;
-    const inverse = inverseOperation(operation);
+    const inverse = inverseOperation(operation, prestate);
     return { original_operation_index: originalIndex, kind: inverse.kind, operation: inverse };
   });
   const payload = { version: INVERSE_VERSION, source_plan_digest: plan.plan_digest, steps };
   return deepFreeze({ ...payload, inverse_digest: canonicalDigest(INVERSE_DOMAIN_SEPARATOR, payload) });
 }
 
-function inverseOperation(operation: DurableOperationV1): DurableOperationV1 {
+function inverseOperation(operation: DurableOperationV1, prestate: NormalizedPrestateV1): DurableOperationV1 {
   switch (operation.kind) {
-    case "ownership":
+    case "ownership": {
+      const previousOwner = observedOwnershipOwner(prestate, operation.object);
+      if (operation.previous_owner !== previousOwner) fail("PRESTATE_MISMATCH");
       return {
         ...operation,
         previous_owner: operation.next_owner,
-        next_owner: operation.previous_owner,
+        next_owner: previousOwner,
       };
-    case "privilege":
+    }
+    case "privilege": {
+      const previous = observedPrivilege(prestate, operation);
+      if (operation.previous_grant_option !== previous.grant_option) fail("PRESTATE_MISMATCH");
       return {
         ...operation,
-        action: operation.action === "grant" ? "revoke" : "grant",
-        grant_option: operation.previous_grant_option,
+        action: previous.present ? "grant" : "revoke",
+        grant_option: previous.grant_option,
         previous_grant_option: operation.grant_option,
       };
+    }
     case "membership":
+      fail("OPERATION_UNSUPPORTED");
+    case "default_acl": {
+      const previous = observedDefaultAcl(prestate, operation);
+      if (operation.previous_grant_option !== previous.grant_option) fail("PRESTATE_MISMATCH");
       return {
         ...operation,
-        action: operation.previous.present ? "grant" : "revoke",
-        admin_option: operation.previous.admin_option,
-        inherit_option: operation.previous.inherit_option,
-        set_option: operation.previous.set_option,
-        previous: {
-          present: operation.action === "grant",
-          admin_option: operation.admin_option,
-          inherit_option: operation.inherit_option,
-          set_option: operation.set_option,
-        },
-      };
-    case "default_acl":
-      return {
-        ...operation,
-        action: operation.action === "grant" ? "revoke" : "grant",
-        grant_option: operation.previous_grant_option,
+        action: previous.present ? "grant" : "revoke",
+        grant_option: previous.grant_option,
         previous_grant_option: operation.grant_option,
       };
+    }
     case "role_posture":
-      return {
-        ...operation,
-        attributes: operation.previous_attributes,
-        previous_attributes: operation.attributes,
-      };
+      fail("OPERATION_UNSUPPORTED");
     case "migration":
       fail("INVERSE_INCOMPLETE");
   }
+}
+
+function observedOwnershipOwner(
+  prestate: NormalizedPrestateV1,
+  object: CanonicalObjectReferenceV1,
+): string {
+  if (object.object_class === "database") return prestate.ownership.database_owner;
+  if (object.object_class === "schema") {
+    if (object.qualified_name === "public") return prestate.ownership.public_schema_owner;
+    if (object.qualified_name === "drizzle") return prestate.ownership.drizzle_schema_owner;
+  }
+  const records = object.object_class === "relation"
+    ? prestate.ownership.canonical_relations
+    : object.object_class === "index"
+      ? prestate.ownership.canonical_indexes
+      : object.object_class === "sequence"
+        ? prestate.ownership.canonical_sequences
+        : prestate.ownership.canonical_types;
+  const matches = records.filter((record) => record.qualified_name === object.qualified_name);
+  if (matches.length !== 1) fail("PRESTATE_MISMATCH");
+  return matches[0].owner;
+}
+
+function observedPrivilege(
+  prestate: NormalizedPrestateV1,
+  operation: PrivilegeOperationV1,
+): { present: boolean; grant_option: boolean } {
+  const rows = [...prestate.privileges.direct, ...prestate.privileges.public].filter((row) =>
+    row.object_class === operation.object.object_class &&
+    row.qualified_name === operation.object.qualified_name &&
+    row.grantee === operation.principal &&
+    row.privilege.toUpperCase() === operation.privilege,
+  );
+  if (rows.length > 1) fail("PRESTATE_MISMATCH");
+  return { present: rows.length === 1, grant_option: rows[0]?.grant_option ?? false };
+}
+
+function observedDefaultAcl(
+  prestate: NormalizedPrestateV1,
+  operation: DefaultAclOperationV1,
+): { present: boolean; grant_option: boolean } {
+  const rows = prestate.default_acls.creator.map((creator, index) => ({
+    creator,
+    schema: prestate.default_acls.schema[index],
+    object_type: prestate.default_acls.object_type[index],
+    grantee: prestate.default_acls.grantee[index],
+    privilege: prestate.default_acls.privilege[index],
+    grant_option: prestate.default_acls.grant_option[index],
+  })).filter((row) =>
+    row.creator === operation.creator &&
+    row.schema === operation.schema &&
+    row.object_type === operation.object_type &&
+    row.grantee === operation.principal &&
+    row.privilege.toUpperCase() === operation.privilege,
+  );
+  if (rows.length > 1) fail("PRESTATE_MISMATCH");
+  return { present: rows.length === 1, grant_option: rows[0]?.grant_option ?? false };
 }
 export interface RestoreRequestV1 {
   target_binding_digest: string;
@@ -1918,17 +2276,22 @@ export function assertPrewriteBinding(input: {
   observedContractDigest: string;
   expectedPlanDigest: string;
   observedPlanDigest: string;
+  expectedTargetBindingDigest?: string;
+  observedTargetBindingDigest?: string;
 }): void {
   if (
     input.expectedPrestateDigest !== input.observedPrestateDigest ||
     input.expectedContractDigest !== input.observedContractDigest ||
-    input.expectedPlanDigest !== input.observedPlanDigest
+    input.expectedPlanDigest !== input.observedPlanDigest ||
+    (input.expectedTargetBindingDigest !== undefined && input.expectedTargetBindingDigest !== input.observedTargetBindingDigest)
   ) fail("PREWRITE_DRIFT");
 }
 
 export interface MutationSession {
   readonly mutationStarted: boolean;
   begin(): Promise<void>;
+  acquireTargetLock(targetBindingDigest: string): Promise<void>;
+  acquireMutationLocks(operations: readonly DurableOperationV1[]): Promise<void>;
   applyOperation(operation: DurableOperationV1): Promise<void>;
   commit(): Promise<void>;
   rollback(): Promise<void>;
@@ -1944,16 +2307,54 @@ class MutationSessionImpl implements MutationSession {
   }
 
   async begin(): Promise<void> {
-    await this.connection.query("BEGIN");
+    await this.connection.query("BEGIN ISOLATION LEVEL SERIALIZABLE READ WRITE");
+  }
+
+  async acquireTargetLock(targetBindingDigest: string): Promise<void> {
+    const digest = hex(targetBindingDigest, 64, "TARGET_MISMATCH");
+    const lockDigest = createHash("sha256")
+      .update(Buffer.from(`swooshz-platform:durable-target-lock-v1\\0${digest}`, "utf8"))
+      .digest();
+    await this.connection.query(
+      "select pg_catalog.pg_advisory_xact_lock($1::integer, $2::integer) /* platform durable:target_lock */",
+      [lockDigest.readInt32BE(0), lockDigest.readInt32BE(4)],
+    );
+  }
+
+  async acquireMutationLocks(operations: readonly DurableOperationV1[]): Promise<void> {
+    const lockKeys = new Set<string>();
+    for (const operation of operations) {
+      if (operation.kind === "ownership" || operation.kind === "privilege") {
+        lockKeys.add(`${operation.object.object_class}\0${operation.object.qualified_name}`);
+      } else if (operation.kind === "default_acl") {
+        lockKeys.add(`default_acl\0${operation.creator}\0${operation.schema}\0${operation.object_type}`);
+      } else if (operation.kind === "migration") {
+        lockKeys.add("migration\0ledger");
+      }
+    }
+    for (const lockKey of [...lockKeys].sort()) {
+      const [objectClass, qualifiedName, objectType] = lockKey.split("\0");
+      if (objectClass === "default_acl") {
+        continue;
+      } else if (objectClass === "migration") {
+        await this.connection.query("lock table \"drizzle\".\"__drizzle_migrations\" in access exclusive mode /* platform durable:object_lock */");
+      } else if (["relation", "index", "sequence"].includes(objectClass)) {
+        const [schemaName, relationName] = qualifiedName.split(".", 2);
+        await this.connection.query(
+          `lock table ${quoteIdentifier(schemaName)}.${quoteIdentifier(relationName)} in access exclusive mode /* platform durable:object_lock */`,
+        );
+      }
+    }
   }
 
   async applyOperation(operation: DurableOperationV1): Promise<void> {
+    if (operation.kind === "membership" || operation.kind === "role_posture") fail("OPERATION_UNSUPPORTED");
     const statement = operationSql(operation);
     this.started = true;
     try {
       await this.connection.query(statement.sql, statement.values);
-    } catch {
-      fail("MUTATION_FAILED");
+    } catch (error) {
+      fail(mutationFailureCode(error));
     }
   }
 
@@ -2100,11 +2501,42 @@ export function validateReceipt(value: unknown): asserts value is DurableReceipt
   for (const key of countKeys) nonnegativeInteger(value.counts[key], "RECEIPT_REJECTED");
   for (const key of ["mutation_started", "rollback_attempted", "rollback_verified"]) booleanValue(value[key], "RECEIPT_REJECTED");
   if (!["NOT_REQUIRED", "NOT_STARTED", "VERIFIED", "FAILED", "AMBIGUOUS"].includes(value.restoration_state as string) || !["NOT_RUN", "PASS", "FAIL"].includes(value.final_readiness_state as string)) fail("RECEIPT_REJECTED");
-  if (value.rollback_verified === true && value.restoration_state !== "VERIFIED") fail("RECEIPT_REJECTED");
-  if (
-    value.outcome === "PASS" &&
-    (value.restoration_state === "FAILED" || value.restoration_state === "AMBIGUOUS" || value.final_readiness_state !== "PASS")
-  ) fail("RECEIPT_REJECTED");
+  if (value.rollback_verified === true && (!value.rollback_attempted || value.restoration_state !== "VERIFIED")) fail("RECEIPT_REJECTED");
+  if (!value.mutation_started && (value.rollback_attempted || value.rollback_verified)) fail("RECEIPT_REJECTED");
+  if (value.outcome === "PASS") {
+    if (value.phase !== "FINAL_VERIFY" || value.semantic_code !== "SUCCESS" || value.final_readiness_state !== "PASS" || value.rollback_attempted || value.rollback_verified || value.restoration_state !== "NOT_REQUIRED") {
+      fail("RECEIPT_REJECTED");
+    }
+  } else if (value.outcome === "BLOCKED") {
+    if (!["ADMISSION", "OBSERVE", "PLAN", "PRESTATE", "INVERSE", "PREWRITE"].includes(value.phase as ReceiptPhase) || value.mutation_started || value.rollback_attempted || value.rollback_verified || value.restoration_state !== "NOT_REQUIRED" || value.final_readiness_state !== "NOT_RUN" || value.semantic_code === "SUCCESS") {
+      fail("RECEIPT_REJECTED");
+    }
+  } else {
+    if (value.semantic_code === "SUCCESS") fail("RECEIPT_REJECTED");
+    if (!value.mutation_started) {
+      if (value.phase !== "FORWARD" || value.rollback_attempted || value.rollback_verified || value.restoration_state !== "NOT_REQUIRED" || value.final_readiness_state !== "NOT_RUN" || !["MUTATION_FAILED", "UNEXPECTED_FAILURE"].includes(value.semantic_code as SemanticCode)) {
+        fail("RECEIPT_REJECTED");
+      }
+    } else {
+      if (![
+        "FORWARD", "COMMIT", "ROLLBACK", "RESTORE", "RESTORE_VERIFY", "FINAL_VERIFY", "RECEIPT",
+      ].includes(value.phase as ReceiptPhase) || value.restoration_state === "NOT_REQUIRED" || value.restoration_state === "NOT_STARTED") {
+        fail("RECEIPT_REJECTED");
+      }
+      if (value.phase === "ROLLBACK" && (!value.rollback_attempted || value.semantic_code !== "ROLLBACK_FAILED")) fail("RECEIPT_REJECTED");
+    }
+    const phaseCodes: Partial<Record<ReceiptPhase, readonly SemanticCode[]>> = {
+      FORWARD: ["MUTATION_FAILED", "WRITE_INDETERMINATE", "UNEXPECTED_FAILURE"],
+      COMMIT: ["COMMIT_FAILED", "COMMIT_INDETERMINATE", "UNEXPECTED_FAILURE"],
+      ROLLBACK: ["ROLLBACK_FAILED", "UNEXPECTED_FAILURE"],
+      RESTORE: ["RESTORE_CAPABILITY_REQUIRED", "RESTORE_EXECUTION_FAILED", "RESTORATION_FAILED", "UNEXPECTED_FAILURE"],
+      RESTORE_VERIFY: ["RESTORATION_FAILED", "RESTORATION_AMBIGUOUS", "UNEXPECTED_FAILURE"],
+      FINAL_VERIFY: ["FINAL_VERIFICATION_FAILED", "UNEXPECTED_FAILURE"],
+      RECEIPT: ["RECEIPT_REJECTED", "UNEXPECTED_FAILURE"],
+    };
+    const allowedCodes = phaseCodes[value.phase as ReceiptPhase];
+    if (allowedCodes && !allowedCodes.includes(value.semantic_code as SemanticCode)) fail("RECEIPT_REJECTED");
+  }
   if ("migration_tag" in value && (typeof value.migration_tag !== "string" || !CANONICAL_MIGRATION_TAGS.has(value.migration_tag))) fail("RECEIPT_REJECTED");
 }
 
@@ -2272,6 +2704,7 @@ export async function runCanonicalMigrationPrimitive(input: {
   pool: DurablePool;
   migrationsFolder: string;
   expectedOperations?: readonly MigrationOperationV1[];
+  existingTransaction?: boolean;
 }): Promise<CanonicalMigrationResult> {
   const rootDir = resolve(input.migrationsFolder, "..", "..");
   const journal = await loadCanonicalMigrationJournal(rootDir);
@@ -2297,7 +2730,26 @@ export async function runCanonicalMigrationPrimitive(input: {
   const awarePool = new MutationAwarePool(input.pool, boundary);
   try {
     const database = drizzle(awarePool as never, { schema });
-    await migrate(database as never, { migrationsFolder: resolve(input.migrationsFolder) });
+    if (input.existingTransaction) {
+      const internals = database as unknown as {
+        dialect: { migrate(migrations: unknown, session: unknown, config: unknown): Promise<void> };
+        session: { transaction(callback: (session: unknown) => Promise<unknown>): Promise<unknown> };
+      };
+      const session = internals.session;
+      const originalTransaction = session.transaction;
+      session.transaction = async (callback) => callback(session);
+      try {
+        await internals.dialect.migrate(
+          readMigrationFiles({ migrationsFolder: resolve(input.migrationsFolder) }),
+          session,
+          { migrationsFolder: resolve(input.migrationsFolder) },
+        );
+      } finally {
+        session.transaction = originalTransaction;
+      }
+    } else {
+      await migrate(database as never, { migrationsFolder: resolve(input.migrationsFolder) });
+    }
   } catch {
     if (!boundary.value) fail("MIGRATION_IDENTITY_MISMATCH");
     const failure = new DurableOperationError("MUTATION_FAILED");
@@ -2342,11 +2794,18 @@ async function readAppliedMigrationRows(pool: DurablePool): Promise<MigrationApp
 
 function assertAppliedPrefix(rows: readonly MigrationAppliedRowV1[], entries: readonly MigrationSourceEntryV1[]): void {
   if (rows.length > entries.length) fail("MIGRATION_IDENTITY_MISMATCH");
+  const entrySeen = new Set<string>();
+  entries.forEach((entry, index) => {
+    const identity = `${entry.idx}|${entry.when}|${entry.sql_sha256}`;
+    if (entry.idx !== index || entrySeen.has(identity)) fail("MIGRATION_IDENTITY_MISMATCH");
+    entrySeen.add(identity);
+  });
   const seen = new Set<string>();
   rows.forEach((row, index) => {
     const entry = entries[index];
-    if (!entry || row.when !== entry.when || row.sql_sha256 !== entry.sql_sha256 || seen.has(row.sql_sha256)) fail("MIGRATION_IDENTITY_MISMATCH");
-    seen.add(row.sql_sha256);
+    const identity = `${row.when}|${row.sql_sha256}`;
+    if (!entry || row.when !== entry.when || row.sql_sha256 !== entry.sql_sha256 || seen.has(identity)) fail("MIGRATION_IDENTITY_MISMATCH");
+    seen.add(identity);
   });
 }
 
@@ -2383,6 +2842,11 @@ export async function verifyRestoration(input: {
 }
 
 function canonicalReadinessPass(prestate: NormalizedPrestateV1): boolean {
+  try {
+    assertFixedRolePosture(prestate, "FINAL_VERIFICATION_FAILED");
+  } catch {
+    return false;
+  }
   const readiness = prestate.canonical_checks.readiness_checks;
   const readinessKeys = Object.keys(readiness).sort();
   const expectedReadinessKeys = ["config", "migrations", "migratorPosture", "reachability", "schema"];
@@ -2404,6 +2868,9 @@ function canonicalReadinessPass(prestate: NormalizedPrestateV1): boolean {
 
 async function executeFrozenInverse(input: {
   binding: DurableTargetBinding;
+  targetBindingDigest: string;
+  expectedPrestateDigest: string;
+  journal: CanonicalMigrationJournalV1;
   inverse: DurableInverseV1;
 }): Promise<void> {
   const connection = await input.binding.connect();
@@ -2412,6 +2879,10 @@ async function executeFrozenInverse(input: {
   try {
     await session.begin();
     begun = true;
+    await session.acquireTargetLock(input.targetBindingDigest);
+    await session.acquireMutationLocks(input.inverse.steps.map((step) => step.operation));
+    const revalidated = await captureMutationPrestate(input.binding, connection, input.journal);
+    if (revalidated.prestate_digest !== input.expectedPrestateDigest) fail("PREWRITE_DRIFT");
     for (const step of input.inverse.steps) {
       if (step.kind !== step.operation.kind) fail("INVERSE_INCOMPLETE");
       await session.applyOperation(step.operation);
@@ -2447,6 +2918,44 @@ async function executeRestoreCapability(
     fail("RESTORE_EXECUTION_FAILED");
   }
 }
+
+function mutationFailureCode(error: unknown): SemanticCode {
+  if (error instanceof DurableOperationError) return error.semanticCode;
+  const driverCode = isRecord(error) && typeof error.code === "string" ? error.code : "";
+  return /^(?:ECONN|ETIMEDOUT|EPIPE|EAI_|ENET|EHOST|57P01|57P02|57P03)/u.test(driverCode)
+    ? "WRITE_INDETERMINATE"
+    : "MUTATION_FAILED";
+}
+
+function commitFailureCode(error: unknown): SemanticCode {
+  if (error instanceof DurableOperationError) return error.semanticCode;
+  const driverCode = isRecord(error) && typeof error.code === "string" ? error.code : "";
+  return /^(?:ECONN|ETIMEDOUT|EPIPE|EAI_|ENET|EHOST|57P01|57P02|57P03)/u.test(driverCode)
+    ? "COMMIT_INDETERMINATE"
+    : "COMMIT_FAILED";
+}
+
+function assertFinalRolePosture(
+  expected: NormalizedPrestateV1,
+  observed: NormalizedPrestateV1,
+): void {
+  try {
+    assertFixedRolePosture(observed, "FINAL_VERIFICATION_FAILED");
+  } catch {
+    fail("FINAL_VERIFICATION_FAILED");
+  }
+  for (const roleName of ["platform_runtime", "platform_app", "platform_migrator"] as const) {
+    const expectedRole = expected.roles.accepted_role_states.find((role) => role.rolname === roleName);
+    const observedRole = observed.roles.accepted_role_states.find((role) => role.rolname === roleName);
+    if (!expectedRole || !observedRole || canonicalSerialize(expectedRole) !== canonicalSerialize(observedRole)) {
+      fail("FINAL_VERIFICATION_FAILED");
+    }
+  }
+  if (canonicalSerialize(expected.memberships) !== canonicalSerialize(observed.memberships)) {
+    fail("FINAL_VERIFICATION_FAILED");
+  }
+}
+
 export async function executeDurablePlan(input: {
   plan: DurablePlanV1;
   binding: DurableTargetBinding;
@@ -2460,50 +2969,16 @@ export async function executeDurablePlan(input: {
 }): Promise<DurableReceiptV1> {
   validatePlan(input.plan);
   const expectedPrestate = normalizePrestate(input.expectedPrestate);
+  assertFixedRolePosture(expectedPrestate);
   const expectedPrestateDigest = canonicalDigest(PRESTATE_DOMAIN_SEPARATOR, expectedPrestate);
   const isMigration = input.plan.operation_kind === "migration";
-  const hasOneWayMigration = input.plan.operations.some(
-    (operation) => operation.kind === "migration" && operation.tag === "0010_admin_operator_viewer_role_collapse",
-  );
-  if (input.rootDir) await assertRevisionBinding({
-    rootDir: input.rootDir,
-    expectedGitSha: input.plan.expected_git_sha,
-  });
-  const observedContractDigest = input.rootDir
-    ? await computeContractDigest(input.rootDir)
-    : input.expectedContractDigest;
-  if (
-    expectedPrestateDigest !== input.plan.prestate_digest ||
-    input.expectedContractDigest !== input.plan.contract_digest ||
-    observedContractDigest !== input.expectedContractDigest
-  ) fail("CONTRACT_DIGEST_MISMATCH");
-  const observedTargetBindingDigest = computeTargetBindingDigest(input.binding);
-  if (observedTargetBindingDigest !== input.plan.target_binding_digest) fail("TARGET_MISMATCH");
+  const requiresRestoreCapability = input.plan.operations.some((operation) => operation.kind === "migration");
+  if (!input.journal) fail("MIGRATION_IDENTITY_MISMATCH");
+  let phase: ReceiptPhase = "ADMISSION";
+  let observedContractDigest = input.expectedContractDigest;
+  let observedTargetBindingDigest = "";
   let restoreCapability: RestoreCapabilityV1 | undefined;
-  if (input.restoreCapability) {
-    restoreCapability = requireRestoreCapability(
-      input.restoreCapability,
-      input.plan,
-      observedTargetBindingDigest,
-    );
-  }
-  if (hasOneWayMigration) {
-    restoreCapability = requireRestoreCapability(
-      input.restoreCapability,
-      input.plan,
-      observedTargetBindingDigest,
-    );
-  }
-  const observed = await captureNormalizedPrestate(input.binding, input.journal);
-  assertPrewriteBinding({
-    expectedPrestateDigest,
-    observedPrestateDigest: observed.prestate_digest,
-    expectedContractDigest: input.expectedContractDigest,
-    observedContractDigest,
-    expectedPlanDigest: input.plan.plan_digest,
-    observedPlanDigest: input.plan.plan_digest,
-  });
-  const inverse = isMigration ? undefined : createDurableInverse(input.plan);
+  let inverse: DurableInverseV1 | undefined;
   let mutationConnection: DurableConnection | undefined;
   let session: MutationSession | undefined;
   let mutationStarted = false;
@@ -2513,31 +2988,106 @@ export async function executeDurablePlan(input: {
   let rollbackVerified = false;
   let finalReadinessState: DurableReceiptV1["final_readiness_state"] = "NOT_RUN";
   try {
+    phase = "PLAN";
+    if (input.rootDir) {
+      phase = "ADMISSION";
+      await assertRevisionBinding({
+        rootDir: input.rootDir,
+        expectedGitSha: input.plan.expected_git_sha,
+      });
+      observedContractDigest = await computeContractDigest(input.rootDir);
+    }
+    if (
+      expectedPrestateDigest !== input.plan.prestate_digest ||
+      input.expectedContractDigest !== input.plan.contract_digest ||
+      observedContractDigest !== input.expectedContractDigest
+    ) fail("CONTRACT_DIGEST_MISMATCH");
+    observedTargetBindingDigest = computeTargetBindingDigest(input.binding);
+    if (observedTargetBindingDigest !== input.plan.target_binding_digest) fail("TARGET_MISMATCH");
+    if (input.restoreCapability) {
+      restoreCapability = requireRestoreCapability(
+        input.restoreCapability,
+        input.plan,
+        observedTargetBindingDigest,
+      );
+    }
+    if (requiresRestoreCapability) {
+      restoreCapability = requireRestoreCapability(
+        input.restoreCapability,
+        input.plan,
+        observedTargetBindingDigest,
+      );
+    }
+    phase = "OBSERVE";
+    const observed = await captureNormalizedPrestate(input.binding, input.journal);
+    phase = "PRESTATE";
+    assertPrewriteBinding({
+      expectedPrestateDigest,
+      observedPrestateDigest: observed.prestate_digest,
+      expectedContractDigest: input.expectedContractDigest,
+      observedContractDigest,
+      expectedPlanDigest: input.plan.plan_digest,
+      observedPlanDigest: input.plan.plan_digest,
+      expectedTargetBindingDigest: observedTargetBindingDigest,
+      observedTargetBindingDigest: computeTargetBindingDigest(input.binding),
+    });
+    phase = "INVERSE";
+    inverse = isMigration ? undefined : createDurableInverse(input.plan, expectedPrestate);
+    if (isMigration && !input.migrationsFolder) fail("OPERATION_UNSUPPORTED");
+    phase = "PREWRITE";
+    mutationConnection = input.mutationConnection ?? await input.binding.connect();
+    session = createMutationSession(mutationConnection);
+    await session.begin();
+    await session.acquireTargetLock(observedTargetBindingDigest);
+    await session.acquireMutationLocks(input.plan.operations);
+    const revalidated = await captureMutationPrestate(input.binding, mutationConnection, input.journal);
+    assertPrewriteBinding({
+      expectedPrestateDigest,
+      observedPrestateDigest: revalidated.prestate_digest,
+      expectedContractDigest: input.expectedContractDigest,
+      observedContractDigest,
+      expectedPlanDigest: input.plan.plan_digest,
+      observedPlanDigest: input.plan.plan_digest,
+      expectedTargetBindingDigest: observedTargetBindingDigest,
+      observedTargetBindingDigest: computeTargetBindingDigest(input.binding),
+    });
+    phase = "FORWARD";
     if (isMigration) {
-      if (!input.migrationsFolder) fail("OPERATION_UNSUPPORTED");
       const migrationResult = await runCanonicalMigrationPrimitive({
-        pool: { connect: () => input.binding.connect() },
-        migrationsFolder: input.migrationsFolder,
+        pool: {
+          connect: async () => ({
+            query: (text: DurableQueryInput, values?: readonly unknown[]) => mutationConnection!.query(text, values),
+            release() {},
+          }),
+          query: (text, values) => mutationConnection!.query(text, values),
+        },
+        migrationsFolder: input.migrationsFolder as string,
         expectedOperations: input.plan.operations as readonly MigrationOperationV1[],
+        existingTransaction: true,
       });
       mutationStarted = migrationResult.mutation_started;
     } else {
-      mutationConnection = input.mutationConnection ?? await input.binding.connect();
-      session = createMutationSession(mutationConnection);
-      await session.begin();
       for (const operation of input.plan.operations) await session.applyOperation(operation);
       mutationStarted = session.mutationStarted;
+    }
+    phase = "COMMIT";
+    try {
       await session.commit();
       committed = true;
+    } catch (error) {
+      if (error instanceof DurableOperationError) throw error;
+      fail(commitFailureCode(error));
     }
+    phase = "FINAL_VERIFY";
     const final = await captureNormalizedPrestate(input.binding, input.journal);
+    assertFinalRolePosture(expectedPrestate, final.prestate);
     finalReadinessState = canonicalReadinessPass(final.prestate) ? "PASS" : "FAIL";
     if (finalReadinessState !== "PASS") fail("FINAL_VERIFICATION_FAILED");
     return makeReceipt({
       plan: input.plan,
-      phase: "RECEIPT",
+      phase: "FINAL_VERIFY",
       outcome: "PASS",
-      semanticCode: "UNEXPECTED_FAILURE",
+      semanticCode: "SUCCESS",
       mutationStarted,
       rollbackAttempted,
       rollbackVerified,
@@ -2548,13 +3098,19 @@ export async function executeDurablePlan(input: {
   } catch (error) {
     mutationStarted ||= session?.mutationStarted === true ||
       (error instanceof DurableOperationError && error.mutationStarted);
-    const forwardCode = mapFailureCode(error);
+    const originalPhase = phase;
+    const originalCode = originalPhase === "FORWARD"
+      ? mutationFailureCode(error)
+      : originalPhase === "COMMIT"
+        ? commitFailureCode(error)
+        : mapFailureCode(error);
     if (!mutationStarted) {
+      if (session) await session.rollback().catch(() => {});
       return makeReceipt({
         plan: input.plan,
-        phase: "RECEIPT",
-        outcome: "FAIL",
-        semanticCode: forwardCode,
+        phase: originalPhase,
+        outcome: originalPhase === "FORWARD" ? "FAIL" : "BLOCKED",
+        semanticCode: originalCode,
         mutationStarted: false,
         rollbackAttempted: false,
         rollbackVerified: false,
@@ -2584,7 +3140,13 @@ export async function executeDurablePlan(input: {
     if (restoration.state === "FAILED" && inverse) {
       rollbackAttempted = true;
       try {
-        await executeFrozenInverse({ binding: input.binding, inverse });
+        await executeFrozenInverse({
+          binding: input.binding,
+          targetBindingDigest: observedTargetBindingDigest || computeTargetBindingDigest(input.binding),
+          expectedPrestateDigest,
+          journal: input.journal as CanonicalMigrationJournalV1,
+          inverse,
+        });
         restoration = await verifyRestoration({
           binding: input.binding,
           expectedPrestateDigest,
@@ -2595,11 +3157,12 @@ export async function executeDurablePlan(input: {
       }
     }
     let recoveryCode: SemanticCode | undefined;
+    let recoveryPhase: ReceiptPhase | undefined;
     if (restoration.state !== "VERIFIED" && restoreCapability) {
       try {
         const reason: RestoreRequestV1["reason"] = committed
           ? "post_commit_failure"
-          : forwardCode === "MUTATION_FAILED"
+          : originalCode === "MUTATION_FAILED" || originalCode === "WRITE_INDETERMINATE"
             ? "indeterminate_send"
             : "forward_failure";
         await executeRestoreCapability(restoreCapability, input.plan, reason);
@@ -2610,19 +3173,28 @@ export async function executeDurablePlan(input: {
         });
       } catch (restoreError) {
         recoveryCode = mapFailureCode(restoreError);
+        recoveryPhase = "RESTORE";
         restoration = { state: "AMBIGUOUS" };
       }
     }
     rollbackVerified = restoration.state === "VERIFIED";
     const semanticCode = recoveryCode ??
-      (restoration.state === "VERIFIED"
-        ? rollbackFailure ? "ROLLBACK_FAILED" : forwardCode
-        : restoration.state === "FAILED"
-          ? "RESTORATION_FAILED"
-          : "RESTORATION_AMBIGUOUS");
+      (rollbackFailure
+        ? "ROLLBACK_FAILED"
+        : restoration.state === "VERIFIED"
+          ? originalCode
+          : restoration.state === "FAILED"
+            ? "RESTORATION_FAILED"
+            : "RESTORATION_AMBIGUOUS");
+    const receiptPhase = recoveryPhase ??
+      (rollbackFailure
+        ? "ROLLBACK"
+        : restoration.state === "VERIFIED"
+          ? originalPhase
+          : "RESTORE_VERIFY");
     return makeReceipt({
       plan: input.plan,
-      phase: "RESTORE_VERIFY",
+      phase: receiptPhase,
       outcome: "FAIL",
       semanticCode,
       mutationStarted: true,

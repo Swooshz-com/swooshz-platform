@@ -8,7 +8,10 @@ import { resolve } from "node:path";
 import { Pool } from "pg";
 
 const rootDir = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const containerName = "codex-platform185-durable-db-operations-pg17";
+const containerNames = [
+  "codex-platform190-durable-db-operations-pg17-a",
+  "codex-platform190-durable-db-operations-pg17-b",
+];
 const databaseName = "durable_operations_test";
 const maxOutputBytes = 64 * 1024;
 
@@ -22,64 +25,65 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
 
 export async function run({ spawnImpl = spawn } = {}) {
   assertNoCallerSuppliedFixture(process.env);
-  let port = null;
-  let started = false;
+  const ports = [null, null];
+  const started = [false, false];
   let primaryError = null;
   let phase = "container-preflight";
   try {
-    await assertExactContainerAbsent(spawnImpl);
+    await Promise.all(containerNames.map((containerName) => assertExactContainerAbsent(spawnImpl, containerName)));
     phase = "container-start";
-    const startedResult = await runCommand(spawnImpl, "docker", [
-      "run", "--detach", "--name", containerName,
-      "--publish", "127.0.0.1::5432",
-      "--env", "POSTGRES_DB=postgres",
-      "--env", "POSTGRES_USER=cloud_admin",
-      "--env", "POSTGRES_HOST_AUTH_METHOD=trust",
-      "postgres:17",
-    ]);
-    if (startedResult.code !== 0 || !startedResult.stdout.trim()) throw new Error();
-    started = true;
+    for (const [index, containerName] of containerNames.entries()) {
+      const startedResult = await runCommand(spawnImpl, "docker", [
+        "run", "--detach", "--name", containerName,
+        "--publish", "127.0.0.1::5432",
+        "--env", "POSTGRES_DB=postgres",
+        "--env", "POSTGRES_USER=cloud_admin",
+        "--env", "POSTGRES_HOST_AUTH_METHOD=trust",
+        "postgres:17",
+      ]);
+      if (startedResult.code !== 0 || !startedResult.stdout.trim()) throw new Error();
+      started[index] = true;
+    }
     phase = "port-discovery";
-    port = await readPublishedPort(spawnImpl);
+    for (const [index, containerName] of containerNames.entries()) ports[index] = await readPublishedPort(spawnImpl, containerName);
     phase = "postgres-readiness";
-    await waitForPostgres(port);
+    await Promise.all(ports.map((port) => waitForPostgres(port)));
     phase = "database-creation";
-    await createDatabase(port);
+    await Promise.all(ports.map((port) => createDatabase(port)));
     phase = "focused-tests";
-    await runFocusedTests(spawnImpl, port);
+    await runFocusedTests(spawnImpl, ports);
   } catch (error) {
     primaryError = Object.assign(new Error(), { phase });
-    if (error?.stdout) process.stderr.write(String(error.stdout).slice(-8_000));
   }
 
   let cleanupError = null;
   try {
-    await cleanup(spawnImpl, port, started);
+    await cleanup(spawnImpl, ports, started);
   } catch {
     cleanupError = Object.assign(new Error(), { phase: "cleanup" });
   }
   if (primaryError) throw primaryError;
   if (cleanupError) throw cleanupError;
   process.stdout.write("Disposable PostgreSQL 17 durable-operation proofs: passed.\n");
-  return { container: containerName, database: databaseName, postgresMajor: 17 };
+  return { containers: containerNames, database: databaseName, postgresMajor: 17 };
 }
 
-async function runFocusedTests(spawnImpl, port) {
+async function runFocusedTests(spawnImpl, ports) {
   const childEnv = { ...process.env };
   for (const key of Object.keys(childEnv)) {
     if (/DATABASE_URL|DATABASE_OPERATOR_URL|DURABLE_OPERATIONS_TEST/u.test(key)) delete childEnv[key];
   }
-  childEnv.DURABLE_OPERATIONS_TEST_DATABASE_URL = `postgres://cloud_admin@127.0.0.1:${port}/${databaseName}`;
+  childEnv.DURABLE_OPERATIONS_TEST_DATABASE_URL_A = `postgres://cloud_admin@127.0.0.1:${ports[0]}/${databaseName}`;
+  childEnv.DURABLE_OPERATIONS_TEST_DATABASE_URL_B = `postgres://cloud_admin@127.0.0.1:${ports[1]}/${databaseName}`;
   const result = await runCommand(spawnImpl, process.execPath, ["--test", "tests/durable-database-operations-postgres.test.mjs"], {
     cwd: rootDir,
     env: childEnv,
     timeoutMs: 180_000,
   });
   if (result.code !== 0 || result.timedOut || result.stdout.includes("fail 1")) {
-    throw Object.assign(new Error(), { stdout: result.stdout, stderr: result.stderr });
+    throw new Error();
   }
   if (!/(?:#|ℹ)\s+fail 0\b/u.test(result.stdout)) throw new Error();
-  process.stdout.write(result.stdout.slice(-8_000));
 }
 
 async function createDatabase(port) {
@@ -109,7 +113,7 @@ async function waitForPostgres(port) {
   throw new Error();
 }
 
-async function readPublishedPort(spawnImpl) {
+async function readPublishedPort(spawnImpl, containerName) {
   const result = await runCommand(spawnImpl, "docker", ["port", containerName, "5432/tcp"]);
   if (result.code !== 0) throw new Error();
   const match = result.stdout.match(/^127\.0\.0\.1:(\d+)$/mu);
@@ -118,24 +122,26 @@ async function readPublishedPort(spawnImpl) {
   return port;
 }
 
-async function cleanup(spawnImpl, port, started) {
-  if (started && Number.isInteger(port)) {
-    const pool = new Pool({ connectionString: `postgres://cloud_admin@127.0.0.1:${port}/postgres`, max: 1 });
-    try {
-      await pool.query(`drop database if exists "${databaseName}" with (force)`);
-    } finally {
-      await pool.end().catch(() => {});
+async function cleanup(spawnImpl, ports, started) {
+  for (const [index, port] of ports.entries()) {
+    if (started[index] && Number.isInteger(port)) {
+      const pool = new Pool({ connectionString: `postgres://cloud_admin@127.0.0.1:${port}/postgres`, max: 1 });
+      try {
+        await pool.query(`drop database if exists "${databaseName}" with (force)`);
+      } finally {
+        await pool.end().catch(() => {});
+      }
+    }
+    if (started[index]) {
+      const result = await runCommand(spawnImpl, "docker", ["rm", "--force", containerNames[index]]);
+      if (result.code !== 0) throw new Error();
     }
   }
-  if (started) {
-    const result = await runCommand(spawnImpl, "docker", ["rm", "--force", containerName]);
-    if (result.code !== 0) throw new Error();
-  }
-  await assertExactContainerAbsent(spawnImpl);
-  if (Number.isInteger(port)) await assertPortAbsent(port);
+  await Promise.all(containerNames.map((containerName) => assertExactContainerAbsent(spawnImpl, containerName)));
+  for (const port of ports) if (Number.isInteger(port)) await assertPortAbsent(port);
 }
 
-async function assertExactContainerAbsent(spawnImpl) {
+async function assertExactContainerAbsent(spawnImpl, containerName) {
   const result = await runCommand(spawnImpl, "docker", ["ps", "--all", "--filter", `name=^/${containerName}$`, "--format", "{{.Names}}"]);
   if (result.code !== 0 || result.stdout.trim() !== "") throw new Error();
 }

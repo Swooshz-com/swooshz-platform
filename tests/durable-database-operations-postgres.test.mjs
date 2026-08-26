@@ -18,41 +18,90 @@ import {
 } from "../dist/db/durable-operations.js";
 import { RUNTIME_TABLE_GRANT_CONTRACT } from "../dist/db/runtime-grant-contract.js";
 
-const testDatabaseUrl = process.env.DURABLE_OPERATIONS_TEST_DATABASE_URL;
+const testDatabaseUrlA = process.env.DURABLE_OPERATIONS_TEST_DATABASE_URL_A;
+const testDatabaseUrlB = process.env.DURABLE_OPERATIONS_TEST_DATABASE_URL_B;
 const rootDir = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const migrationsFolder = resolve(rootDir, "drizzle", "migrations");
 const databaseName = "durable_operations_test";
 const expectedGitSha = "9ce40dce85484ef5fd8c849951527572e95afa24";
 const contractDigest = "a".repeat(64);
 
-if (!testDatabaseUrl) {
+if (!testDatabaseUrlA || !testDatabaseUrlB) {
   test("durable PostgreSQL 17 proofs require the disposable runner", { skip: "runner-owned local fixture not supplied" }, () => {});
 } else {
-  test("Run-185 durable database operations on disposable PostgreSQL 17", async () => {
-    const connection = readConnectionTarget(testDatabaseUrl);
-    const adminPool = new Pool({ ...connection, user: "cloud_admin" });
-    const cloudAdminPool = new Pool({ ...connection, user: "cloud_admin" });
-    const migratorPool = new Pool({ ...connection, user: "platform_migrator" });
-    const runtimePool = new Pool({ ...connection, user: "platform_runtime" });
-    const appPool = new Pool({ ...connection, user: "platform_app" });
+  test("Run-190 durable database operations on two disposable PostgreSQL 17 clusters", async () => {
+    const connectionA = readConnectionTarget(testDatabaseUrlA);
+    const connectionB = readConnectionTarget(testDatabaseUrlB);
+    assert.notEqual(connectionA.port, connectionB.port);
+    const adminPool = new Pool({ ...connectionA, user: "cloud_admin" });
+    const cloudAdminPool = new Pool({ ...connectionA, user: "cloud_admin" });
+    const migratorPool = new Pool({ ...connectionA, user: "platform_migrator" });
+    const appPool = new Pool({ ...connectionA, user: "platform_app" });
+    const secondAdminPool = new Pool({ ...connectionB, user: "cloud_admin" });
+    const secondMigratorPool = new Pool({ ...connectionB, user: "platform_migrator" });
 
     try {
       await createRoles(adminPool);
+      await createRoles(secondAdminPool);
       await cloudAdminPool.query("select 1");
       const migration = await provisionCanonicalFixture(cloudAdminPool);
+      const secondMigration = await provisionCanonicalFixture(secondAdminPool);
       assert.equal(migration.after.length, 10);
       assert.equal(migration.applied_entries.length, 10);
       assert.equal(migration.applied_entries.at(-1).tag, "0010_admin_operator_viewer_role_collapse");
+      assert.equal(secondMigration.after.length, 10);
+      const targetA = await readTargetIdentity(adminPool);
+      const targetB = await readTargetIdentity(secondAdminPool);
+      assert.notDeepEqual(targetA, targetB);
 
       const binding = {
         version: "target-binding-v1",
         logicalDatabaseName: databaseName,
+        expectedClusterSystemIdentifier: targetA.cluster_system_identifier,
+        expectedDatabaseOid: targetA.database_oid,
         expectedCurrentUser: "platform_migrator",
         expectedSessionUser: "platform_migrator",
         expectedPostgresMajor: 17,
         connect: () => migratorPool.connect(),
       };
+      const wrongTargetBinding = {
+        ...binding,
+        connect: () => secondMigratorPool.connect(),
+      };
       const journal = await loadCanonicalMigrationJournal(rootDir);
+      const secondBinding = {
+        ...binding,
+        expectedClusterSystemIdentifier: targetB.cluster_system_identifier,
+        expectedDatabaseOid: targetB.database_oid,
+        connect: () => secondMigratorPool.connect(),
+      };
+      const secondBaseline = await captureNormalizedPrestate(secondBinding, journal);
+      assert.notEqual(binding.expectedClusterSystemIdentifier, secondBinding.expectedClusterSystemIdentifier);
+      await assert.rejects(
+        () => captureNormalizedPrestate(wrongTargetBinding, journal),
+        (error) => error?.semanticCode === "TARGET_MISMATCH",
+      );
+      const wrongTargetPlan = makePlan(wrongTargetBinding, secondBaseline, [{
+        kind: "privilege",
+        action: "grant",
+        object: { object_class: "relation", qualified_name: "public.users" },
+        principal: "platform_app",
+        privilege: "SELECT",
+        grant_option: false,
+        previous_grant_option: false,
+      }]);
+      const wrongTargetReceipt = await executeDurablePlan({
+        plan: wrongTargetPlan,
+        binding: wrongTargetBinding,
+        expectedPrestate: secondBaseline.prestate,
+        expectedContractDigest: contractDigest,
+        journal,
+      });
+      assert.equal(wrongTargetReceipt.outcome, "BLOCKED");
+      assert.equal(wrongTargetReceipt.phase, "OBSERVE");
+      assert.equal(wrongTargetReceipt.semantic_code, "TARGET_MISMATCH");
+      assert.equal(wrongTargetReceipt.mutation_started, false);
+      assert.equal((await secondAdminPool.query("select has_table_privilege('platform_app', 'public.users', 'select') as present")).rows[0].present, false);
       const baseline = await captureNormalizedPrestate(binding, journal);
       assert.equal(baseline.prestate.target.current_user, "platform_migrator");
       assert.equal(baseline.prestate.target.session_user, "platform_migrator");
@@ -63,8 +112,81 @@ if (!testDatabaseUrl) {
       );
       assertCanonicalReadiness(baseline.prestate);
 
+      const nonMigrationPlan = makePlan(binding, baseline, [{
+        kind: "privilege",
+        action: "grant",
+        object: { object_class: "relation", qualified_name: "public.users" },
+        principal: "platform_app",
+        privilege: "SELECT",
+        grant_option: false,
+        previous_grant_option: false,
+      }]);
+      const firstLedgerRow = (await cloudAdminPool.query(`
+        select created_at::text as when, hash as sql_sha256
+        from drizzle.__drizzle_migrations
+        order by created_at, hash
+        limit 1
+      `)).rows[0];
+      assert.ok(firstLedgerRow);
+      await cloudAdminPool.query(
+        `update drizzle.__drizzle_migrations set hash = $1 where created_at = $2`,
+        ["0".repeat(64), firstLedgerRow.when],
+      );
+      try {
+        const nonPrefixReceipt = await executeDurablePlan({
+          plan: nonMigrationPlan,
+          binding,
+          expectedPrestate: baseline.prestate,
+          expectedContractDigest: contractDigest,
+          journal,
+        });
+        assert.equal(nonPrefixReceipt.outcome, "BLOCKED");
+        assert.equal(nonPrefixReceipt.phase, "OBSERVE");
+        assert.equal(nonPrefixReceipt.semantic_code, "MIGRATION_IDENTITY_MISMATCH");
+        assert.equal(nonPrefixReceipt.mutation_started, false);
+      } finally {
+        await cloudAdminPool.query(
+          `update drizzle.__drizzle_migrations set hash = $1 where created_at = $2`,
+          [firstLedgerRow.sql_sha256, firstLedgerRow.when],
+        );
+      }
+
+      const raceClient = await migratorPool.connect();
+      let raceInjected = false;
+      let executionReturned = false;
+      let raceMutationCompletedBeforeReturn = false;
+      let raceMutationPromise = Promise.resolve();
+      const raceConnection = {
+        async query(text, values) {
+          const result = await raceClient.query(text, values);
+          if (!raceInjected && typeof text === "string" && text.includes("platform durable:target_lock")) {
+            raceInjected = true;
+            raceMutationPromise = cloudAdminPool.query(`alter table "public"."users" owner to "platform_app"`).then(() => {
+              if (!executionReturned) raceMutationCompletedBeforeReturn = true;
+            });
+          }
+          return result;
+        },
+        release() {
+          raceClient.release();
+        },
+      };
+      const raceReceipt = await executeDurablePlan({
+        plan: nonMigrationPlan,
+        binding,
+        expectedPrestate: baseline.prestate,
+        expectedContractDigest: contractDigest,
+        mutationConnection: raceConnection,
+        journal,
+      });
+      assert.equal(raceInjected, true);
+      executionReturned = true;
+      await raceMutationPromise;
+      assert.equal(raceReceipt.outcome === "PASS" && raceMutationCompletedBeforeReturn, false);
+      await cloudAdminPool.query(`alter table "public"."users" owner to "platform_migrator"`);
+
       await assertReadOnlyWriteRejected(migratorPool);
-      await assertRuntimeAndAppSeparation(runtimePool, appPool);
+      await assertRuntimeAndAppSeparation(cloudAdminPool, appPool);
 
       await cloudAdminPool.query(`grant select on table "public"."users" to "platform_app"`);
       const aclDrift = await captureNormalizedPrestate(binding, journal);
@@ -85,24 +207,26 @@ if (!testDatabaseUrl) {
 
       const prewriteBaseline = await captureNormalizedPrestate(binding, journal);
       await cloudAdminPool.query(`grant select on table "public"."users" to "platform_app"`);
-      const appRole = prewriteBaseline.prestate.roles.accepted_role_states.find((role) => role.rolname === "platform_app");
       const prewriteOperation = {
-        kind: "role_posture",
-        role: "platform_app",
-        attributes: roleAttributes(appRole),
-        previous_attributes: roleAttributes(appRole),
+        kind: "privilege",
+        action: "grant",
+        object: { object_class: "relation", qualified_name: "public.users" },
+        principal: "platform_app",
+        privilege: "SELECT",
+        grant_option: false,
+        previous_grant_option: false,
       };
       const prewritePlan = makePlan(binding, prewriteBaseline, [prewriteOperation]);
-      await assert.rejects(
-        () => executeDurablePlan({
+      const prewriteReceipt = await executeDurablePlan({
           plan: prewritePlan,
           binding,
           expectedPrestate: prewriteBaseline.prestate,
           expectedContractDigest: contractDigest,
           journal,
-        }),
-        (error) => error?.semanticCode === "PREWRITE_DRIFT",
-      );
+        });
+      assert.equal(prewriteReceipt.outcome, "BLOCKED");
+      assert.equal(prewriteReceipt.phase, "PRESTATE");
+      assert.equal(prewriteReceipt.semantic_code, "PREWRITE_DRIFT");
       await cloudAdminPool.query(`revoke select on table "public"."users" from "platform_app"`);
       await assert.rejects(
         () => executeDurablePlan({
@@ -134,12 +258,14 @@ if (!testDatabaseUrl) {
         journal,
       });
       assert.equal(successReceipt.outcome, "PASS");
+      assert.equal(successReceipt.phase, "FINAL_VERIFY");
+      assert.equal(successReceipt.semantic_code, "SUCCESS");
       assert.equal(successReceipt.mutation_started, true);
       assert.equal(successReceipt.final_readiness_state, "PASS");
       assert.equal(successReceipt.counts.inverse_steps, 1);
 
       const afterSuccess = await captureNormalizedPrestate(binding, journal);
-      const inverse = createDurableInverse(successPlan);
+      const inverse = createDurableInverse(successPlan, successBaseline.prestate);
       assert.equal(inverse.steps[0].operation.action, "revoke");
       const inversePlan = makePlan(binding, afterSuccess, [inverse.steps[0].operation]);
       const inverseReceipt = await executeDurablePlan({
@@ -196,10 +322,11 @@ if (!testDatabaseUrl) {
     } finally {
       await Promise.all([
         appPool.end(),
-        runtimePool.end(),
         migratorPool.end(),
         cloudAdminPool.end(),
         adminPool.end(),
+        secondMigratorPool.end(),
+        secondAdminPool.end(),
       ]);
     }
   });
@@ -218,11 +345,32 @@ function quoteIdentifier(value) {
   return `"${value}"`;
 }
 
+async function readTargetIdentity(pool) {
+  const result = await pool.query(`
+    select control_state.system_identifier::text as cluster_system_identifier,
+           database_record.oid::text as database_oid,
+           current_database() as logical_database_name,
+           current_user as current_user,
+           session_user as session_user,
+           (current_setting('server_version_num')::int / 10000)::int as postgres_major,
+           pg_is_in_recovery() as in_recovery,
+           (current_setting('transaction_read_only') = 'on') as transaction_read_only
+    from pg_catalog.pg_control_system() as control_state
+    cross join pg_catalog.pg_database as database_record
+    where database_record.datname = current_database()
+  `);
+  assert.equal(result.rows.length, 1);
+  return {
+    cluster_system_identifier: String(result.rows[0].cluster_system_identifier),
+    database_oid: String(result.rows[0].database_oid),
+  };
+}
+
 async function createRoles(adminPool) {
   await adminPool.query(`revoke "pg_read_all_settings", "pg_read_all_stats", "pg_stat_scan_tables" from "pg_monitor"`);
   await adminPool.query(`create role "platform_migrator" login noinherit nosuperuser nocreatedb nocreaterole noreplication nobypassrls`);
-  await adminPool.query(`create role "platform_runtime" login inherit nosuperuser nocreatedb nocreaterole noreplication nobypassrls`);
-  await adminPool.query(`create role "platform_app" login inherit nosuperuser nocreatedb nocreaterole noreplication nobypassrls`);
+  await adminPool.query(`create role "platform_runtime" nologin noinherit nosuperuser nocreatedb nocreaterole noreplication nobypassrls`);
+  await adminPool.query(`create role "platform_app" login noinherit nosuperuser nocreatedb nocreaterole noreplication nobypassrls`);
 }
 
 async function provisionCanonicalFixture(cloudAdminPool) {
@@ -332,11 +480,19 @@ async function assertReadOnlyWriteRejected(migratorPool) {
   }
 }
 
-async function assertRuntimeAndAppSeparation(runtimePool, appPool) {
-  await assert.rejects(
-    () => runtimePool.query(`create table "public"."run185_runtime_forbidden" ("id" integer)`),
-    /permission denied/i,
-  );
+async function assertRuntimeAndAppSeparation(cloudAdminPool, appPool) {
+  const runtimeClient = await cloudAdminPool.connect();
+  try {
+    await runtimeClient.query("begin");
+    await runtimeClient.query(`set local role "platform_runtime"`);
+    await assert.rejects(
+      () => runtimeClient.query(`create table "public"."run190_runtime_forbidden" ("id" integer)`),
+      /permission denied/i,
+    );
+  } finally {
+    await runtimeClient.query("rollback").catch(() => {});
+    runtimeClient.release();
+  }
   await assert.rejects(
     () => appPool.query(`select count(*) from "public"."users"`),
     /permission denied/i,
