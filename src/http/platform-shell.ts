@@ -130,7 +130,14 @@ export function renderAppShellPage(): string {
             const workspace = state.context?.workspaces?.find((candidate) =>
               candidate.workspaceId === workspaceSelect.value
             );
-            if (workspace) renderWorkspace(workspace);
+            if (!workspace) return;
+            const workspacePath = workspacePathFor(workspace, window.location.href);
+            if (!workspacePath) return;
+            window.history.pushState({}, "", workspacePath);
+            renderWorkspace(workspace);
+          });
+          window.addEventListener("popstate", () => {
+            if (state.context) renderWorkspaceFromLocation();
           });
           launchButton.addEventListener("click", () => { void launchProduct(); });
           retryLaunchButton.addEventListener("click", () => { void launchProduct(); });
@@ -194,11 +201,55 @@ export function renderAppShellPage(): string {
               adminLink.hidden = true;
               return;
             }
-            renderWorkspace(workspaces[0]);
+            renderWorkspaceFromLocation();
+          }
+
+          function selectWorkspaceFromLocation(workspaces, locationHref) {
+            const availableWorkspaces = Array.isArray(workspaces) ? workspaces : [];
+            const url = new URL(locationHref);
+            if (!url.searchParams.has("workspace")) return availableWorkspaces[0] || null;
+            const requestedWorkspaceSlug = url.searchParams.get("workspace");
+            return availableWorkspaces.find((candidate) =>
+              candidate.workspaceSlug === requestedWorkspaceSlug
+            ) || null;
+          }
+
+          function workspacePathFor(workspace, locationHref) {
+            if (!workspace || typeof workspace.workspaceSlug !== "string" || !workspace.workspaceSlug) return null;
+            const url = new URL(locationHref);
+            url.searchParams.set("workspace", workspace.workspaceSlug);
+            return url.pathname + url.search + url.hash;
+          }
+
+          function renderWorkspaceFromLocation() {
+            const workspaces = Array.isArray(state.context?.workspaces) ? state.context.workspaces : [];
+            const workspace = selectWorkspaceFromLocation(workspaces, window.location.href);
+            if (!workspace) {
+              renderWorkspaceUnavailable();
+              return;
+            }
+            renderWorkspace(workspace);
+          }
+
+          function renderWorkspaceUnavailable() {
+            state.workspace = null;
+            state.app = null;
+            workspaceName.textContent = "";
+            workspaceRole.textContent = "";
+            singleWorkspaceContext.hidden = true;
+            status.hidden = true;
+            launchUnit.hidden = true;
+            noWorkspace.hidden = false;
+            adminLink.hidden = true;
+            const copy = noWorkspace.querySelector("p");
+            if (copy) copy.textContent = "The selected workspace is not available.";
           }
 
           function renderWorkspace(workspace) {
             state.workspace = workspace;
+            const availableWorkspaces = Array.isArray(state.context?.workspaces) ? state.context.workspaces : [];
+            workspaceControl.hidden = availableWorkspaces.length < 2;
+            singleWorkspaceContext.hidden = availableWorkspaces.length > 1;
             workspaceSelect.value = workspace.workspaceId;
             workspaceName.textContent = workspace.workspaceName || workspace.workspaceId;
             workspaceRole.textContent = displayWorkspaceRole(workspace.membershipRole);
@@ -211,11 +262,29 @@ export function renderAppShellPage(): string {
             const apps = Array.isArray(workspace.apps) ? workspace.apps : [];
             state.app = apps.find((app) => String(app.appKey || "").toLowerCase() === "sqag") || null;
             launchUnit.hidden = false;
-            renderLaunchState(state.app?.access?.allowed === true ? "ready" : "unavailable");
+            renderLaunchState(
+              state.app?.access?.allowed === true ? "ready" : "unavailable",
+              getAppUnavailableMessage(state.app)
+            );
             status.hidden = true;
           }
 
-          function renderLaunchState(nextState) {
+          function getAppUnavailableMessage(app) {
+            if (app?.access?.allowed === true) return null;
+            const result = String(app?.access?.result || "");
+            switch (result) {
+              case "role_not_permitted":
+                return "Your workspace role cannot launch this product.";
+              case "app_not_enabled_for_workspace":
+                return "This product is not enabled for this workspace.";
+              case "app_not_available":
+                return "This product is not currently available.";
+              default:
+                return "Your workspace does not currently have access to this product.";
+            }
+          }
+
+          function renderLaunchState(nextState, unavailableMessage) {
             launchReadiness.classList.remove("is-loading", "is-unavailable");
             launchFeedback.hidden = true;
             launchButton.disabled = false;
@@ -242,7 +311,7 @@ export function renderAppShellPage(): string {
               const heading = document.createElement("strong");
               heading.textContent = "Product access unavailable";
               const copy = document.createElement("span");
-              copy.textContent = "Your workspace does not currently have access to this product.";
+              copy.textContent = unavailableMessage || "Your workspace does not currently have access to this product.";
               launchFeedback.append(heading, copy);
               launchFeedback.hidden = false;
               return;

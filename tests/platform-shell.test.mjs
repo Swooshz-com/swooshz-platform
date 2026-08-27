@@ -33,6 +33,25 @@ function withoutSharedStyle(html) {
   return html.replace(/<style>[\s\S]*?<\/style>/g, "");
 }
 
+function extractBrowserFunction(html, name) {
+  const start = html.indexOf(`function ${name}(`);
+  assert.notEqual(start, -1, `Expected browser function ${name} in app shell.`);
+  const openBrace = html.indexOf("{", start);
+  assert.notEqual(openBrace, -1, `Expected browser function body for ${name}.`);
+  let depth = 0;
+  for (let index = openBrace; index < html.length; index += 1) {
+    if (html[index] === "{") depth += 1;
+    if (html[index] === "}") depth -= 1;
+    if (depth === 0) return html.slice(start, index + 1);
+  }
+  assert.fail(`Could not close browser function ${name}.`);
+}
+
+function loadBrowserFunction(html, name) {
+  const source = extractBrowserFunction(html, name);
+  return Function(`return (${source});`)();
+}
+
 test("landing page renders the public Stitch parity homepage with canonical product copy", () => {
   const html = renderLandingPage();
 
@@ -244,6 +263,78 @@ test("app shell renders the approved compact launcher and fail-closed product st
   assert.doesNotMatch(html, /<aside[^>]*sidebar|upgrade your plan|billing|payment/i);
   assert.match(html, /@media \(max-width: 350px\)[\s\S]*\.auth-account-context \{ width: calc\(100% \+ 23px\);[\s\S]*64px 52px 55px/);
   assert.match(html, /\.auth-header-link, \.auth-header-button \{ min-width: 0; \}/);
+});
+
+test("app shell resolves workspace selection from the URL without changing the no-query default", () => {
+  const html = renderAppShellPage();
+  const selectWorkspaceFromLocation = loadBrowserFunction(html, "selectWorkspaceFromLocation");
+  const workspaces = [
+    { workspaceId: "workspace-a", workspaceSlug: "alpha" },
+    { workspaceId: "workspace-b", workspaceSlug: "beta" },
+  ];
+
+  assert.equal(
+    selectWorkspaceFromLocation(workspaces, "https://swooshz.com/app").workspaceId,
+    "workspace-a"
+  );
+  assert.equal(
+    selectWorkspaceFromLocation(workspaces, "https://swooshz.com/app?workspace=beta").workspaceId,
+    "workspace-b"
+  );
+  assert.equal(selectWorkspaceFromLocation(workspaces, "https://swooshz.com/app?workspace=missing"), null);
+  assert.equal(selectWorkspaceFromLocation(workspaces, "https://swooshz.com/app?workspace="), null);
+  assert.match(html, /if \(!workspace\) \{\s*renderWorkspaceUnavailable\(\);\s*return;\s*\}/);
+  assert.match(
+    html,
+    /function renderWorkspaceUnavailable\(\) \{[\s\S]*state\.workspace = null;[\s\S]*state\.app = null;[\s\S]*launchUnit\.hidden = true;/
+  );
+});
+
+test("app shell updates workspace URLs with slugs and restores selection through browser history", () => {
+  const html = renderAppShellPage();
+  const workspacePathFor = loadBrowserFunction(html, "workspacePathFor");
+
+  assert.equal(
+    workspacePathFor(
+      { workspaceSlug: "beta" },
+      "https://swooshz.com/app?view=products#launch"
+    ),
+    "/app?view=products&workspace=beta#launch"
+  );
+  assert.doesNotMatch(workspacePathFor({ workspaceSlug: "beta" }, "https://swooshz.com/app"), /workspaceId/);
+  assert.match(html, /history\.pushState\(\{\}, "", workspacePath\)/);
+  assert.match(html, /window\.addEventListener\("popstate", \(\) => \{[\s\S]*renderWorkspaceFromLocation\(\)/);
+});
+
+test("app shell uses an explicit safe SQAG access presenter with a generic unknown fallback", () => {
+  const html = renderAppShellPage();
+  const getAppUnavailableMessage = loadBrowserFunction(html, "getAppUnavailableMessage");
+  const genericMessage = "Your workspace does not currently have access to this product.";
+
+  assert.equal(getAppUnavailableMessage({ access: { allowed: true, result: "allowed" } }), null);
+  assert.equal(
+    getAppUnavailableMessage({ access: { allowed: false, result: "role_not_permitted" } }),
+    "Your workspace role cannot launch this product."
+  );
+  assert.equal(
+    getAppUnavailableMessage({ access: { allowed: false, result: "app_not_enabled_for_workspace" } }),
+    "This product is not enabled for this workspace."
+  );
+  assert.equal(
+    getAppUnavailableMessage({ access: { allowed: false, result: "app_not_available" } }),
+    "This product is not currently available."
+  );
+  assert.equal(
+    getAppUnavailableMessage({ access: { allowed: false, result: "billing_blocked" } }),
+    genericMessage
+  );
+  assert.equal(
+    getAppUnavailableMessage({ access: { allowed: false, result: "future_result" } }),
+    genericMessage
+  );
+  assert.match(html, /launchButton\.disabled = true/);
+  assert.match(html, /state\.workspace\.workspaceId/);
+  assert.doesNotMatch(html, /searchParams\.set\("workspaceId"/);
 });
 
 test("launcher and admin shells format workspace roles without unsupported role copy", () => {
