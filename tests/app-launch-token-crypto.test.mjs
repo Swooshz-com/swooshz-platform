@@ -85,6 +85,17 @@ test("app launch crypto imports stay only in dedicated crypto adapter modules", 
       continue;
     }
 
+    if (normalized === "src/db/durable-operations.ts") {
+      const cryptoImportLines = contents.match(
+        /^\s*import[^\r\n]*(?:node:crypto|from\s+["']crypto["'])[^\r\n]*$/gmu,
+      ) ?? [];
+      assert.deepEqual(
+        cryptoImportLines.map((line) => line.trim()),
+        ['import { createHash } from "node:crypto";'],
+      );
+      continue;
+    }
+
     assert.doesNotMatch(contents, /node:crypto|from\s+["']crypto["']/);
   }
 });

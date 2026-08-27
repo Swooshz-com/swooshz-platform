@@ -22,9 +22,9 @@ export const REQUIRED_PLATFORM_TABLES = [
   "app_entitlements",
   "access_validation_grants",
 ] as const;
-const CANONICAL_PLATFORM_TABLES = REQUIRED_PLATFORM_TABLES;
+export const CANONICAL_PLATFORM_TABLES = REQUIRED_PLATFORM_TABLES;
 
-const CANONICAL_PLATFORM_ENUM_TYPES = [
+export const CANONICAL_PLATFORM_ENUM_TYPES = [
   "app_status",
   "entitlement_status",
   "invitation_status",
@@ -36,7 +36,7 @@ const CANONICAL_PLATFORM_ENUM_TYPES = [
   "csrf_token_purpose",
 ] as const;
 
-const CANONICAL_PLATFORM_ROUTINES = [] as const;
+export const CANONICAL_PLATFORM_ROUTINES = [] as const;
 export type DatabaseReadinessStatus =
   | "db_config_missing"
   | "db_config_invalid"
@@ -107,7 +107,7 @@ const migrationStateSql = `
 select count(*)::int as applied_count, max(created_at)::bigint as latest_created_at
 from drizzle.__drizzle_migrations
 `;
-const migratorPostureSql = `
+export const migratorPostureSql = `
 with recursive
 migrator_role as (
   select oid, rolcanlogin, rolinherit, rolsuper, rolcreatedb, rolcreaterole,
@@ -1018,7 +1018,7 @@ async function readMissingRequiredTables(
   return requiredTables.filter((tableName) => !existingTables.has(tableName));
 }
 
-const MIGRATOR_READINESS_FIELDS = [
+export const MIGRATOR_READINESS_FIELDS = [
   "migrator_identity_exact",
   "postgres_major_17",
   "migrator_role_attributes_exact",
@@ -1067,6 +1067,79 @@ async function readMigratorReadiness(
 
   const row = result.rows[0];
   return MIGRATOR_READINESS_FIELDS.every((field) => row[field] === true);
+}
+export interface CanonicalDatabaseVerification {
+  readiness_report: DatabaseReadinessReport;
+  exact_migration_identity: {
+    applied_count: string;
+    latest_created_at: string;
+  };
+  canonical_posture_fields: Readonly<Record<string, boolean>>;
+}
+
+export async function verifyCanonicalPlatformDatabase(input: {
+  client: DatabaseReadinessClient;
+  expectedMigrationState?: ExpectedMigrationState;
+  requiredTables?: readonly string[];
+}): Promise<CanonicalDatabaseVerification> {
+  const requiredTables = input.requiredTables ?? REQUIRED_PLATFORM_TABLES;
+  const missingTables = await readMissingRequiredTables(input.client, requiredTables);
+  const migrationIdentity = await input.client.query(migrationStateSql);
+  const migrationRow = migrationIdentity.rows[0] ?? {};
+  const appliedCount = decimalString(migrationRow.applied_count);
+  const latestCreatedAt = decimalString(migrationRow.latest_created_at);
+  const migrationReady = input.expectedMigrationState
+    ? Number(appliedCount) >= input.expectedMigrationState.migrationCount &&
+      Number(latestCreatedAt) >= input.expectedMigrationState.latestCreatedAt
+    : true;
+  const postureResult = await input.client.query(migratorPostureSql, [
+    requiredTables,
+    CANONICAL_PLATFORM_TABLES,
+    CANONICAL_PLATFORM_ENUM_TYPES,
+    CANONICAL_PLATFORM_ROUTINES,
+  ]);
+  const postureRow = postureResult.rows.length === 1 ? postureResult.rows[0] : {};
+  const canonicalPostureFields = Object.freeze(
+    Object.fromEntries(
+      MIGRATOR_READINESS_FIELDS.map((field) => [field, postureRow[field] === true]),
+    ),
+  );
+  const migratorReady =
+    postureResult.rows.length === 1 &&
+    MIGRATOR_READINESS_FIELDS.every((field) => postureRow[field] === true);
+  const checks: DatabaseReadinessChecks = {
+    config: "present",
+    reachability: "passed",
+    schema: missingTables.length === 0 ? "passed" : "failed",
+    migrations: migrationReady ? "passed" : "failed",
+    migratorPosture: migratorReady ? "passed" : "failed",
+  };
+  const ready =
+    checks.schema === "passed" &&
+    checks.migrations === "passed" &&
+    checks.migratorPosture === "passed";
+  return {
+    readiness_report: report({
+      status: ready ? "ready" : "schema_not_ready",
+      checks,
+      requiredTables,
+      missingTables,
+      expectedMigrationState: input.expectedMigrationState,
+    }),
+    exact_migration_identity: {
+      applied_count: appliedCount,
+      latest_created_at: latestCreatedAt,
+    },
+    canonical_posture_fields: canonicalPostureFields,
+  };
+}
+
+function decimalString(value: unknown): string {
+  if (value === null || typeof value === "undefined") return "0";
+  if (typeof value === "bigint") return value.toString(10);
+  if (typeof value === "number" && Number.isSafeInteger(value)) return String(value);
+  if (typeof value === "string" && /^\d+$/u.test(value)) return value;
+  return "0";
 }
 async function readMigrationReadiness(
   client: DatabaseReadinessClient,
