@@ -52,6 +52,13 @@ function loadBrowserFunction(html, name) {
   return Function(`return (${source});`)();
 }
 
+function loadBrowserFunctionWithDependencies(html, name, dependencies) {
+  const source = extractBrowserFunction(html, name);
+  const dependencyNames = Object.keys(dependencies);
+  const dependencyValues = dependencyNames.map((dependencyName) => loadBrowserFunction(html, dependencyName));
+  return Function(...dependencyNames, `return (${source});`)(...dependencyValues);
+}
+
 test("landing page renders the public Stitch parity homepage with canonical product copy", () => {
   const html = renderLandingPage();
 
@@ -259,7 +266,7 @@ test("app shell renders the approved compact launcher and fail-closed product st
   assert.match(html, /Your workspace does not currently have access to this product\./);
   assert.match(html, /We could not open the product\. Try again\./);
   assert.match(html, /Retry/);
-  assert.match(html, /state\.app\?\.access\?\.allowed === true/);
+  assert.match(html, /isAppLaunchable\(state\.app\)/);
   assert.doesNotMatch(html, /<aside[^>]*sidebar|upgrade your plan|billing|payment/i);
   assert.match(html, /@media \(max-width: 350px\)[\s\S]*\.auth-account-context \{ width: calc\(100% \+ 23px\);[\s\S]*64px 52px 55px/);
   assert.match(html, /\.auth-header-link, \.auth-header-button \{ min-width: 0; \}/);
@@ -308,10 +315,11 @@ test("app shell updates workspace URLs with slugs and restores selection through
 
 test("app shell uses an explicit safe SQAG access presenter with a generic unknown fallback", () => {
   const html = renderAppShellPage();
-  const getAppUnavailableMessage = loadBrowserFunction(html, "getAppUnavailableMessage");
+  const getAppUnavailableMessage = loadBrowserFunctionWithDependencies(html, "getAppUnavailableMessage", { isAppLaunchable: "isAppLaunchable" });
+  const isAppLaunchable = loadBrowserFunction(html, "isAppLaunchable");
   const genericMessage = "Your workspace does not currently have access to this product.";
 
-  assert.equal(getAppUnavailableMessage({ access: { allowed: true, result: "allowed" } }), null);
+  assert.equal(isAppLaunchable({ access: { allowed: true, result: "allowed" } }), true);
   assert.equal(
     getAppUnavailableMessage({ access: { allowed: false, result: "role_not_permitted" } }),
     "Your workspace role cannot launch this product."
@@ -333,8 +341,111 @@ test("app shell uses an explicit safe SQAG access presenter with a generic unkno
     genericMessage
   );
   assert.match(html, /launchButton\.disabled = true/);
-  assert.match(html, /state\.workspace\.workspaceId/);
+  assert.match(html, /attempt\.inputs\.workspaceId/);
   assert.doesNotMatch(html, /searchParams\.set\("workspaceId"/);
+});
+
+test("app shell requires the exact allowed/result pair for SQAG readiness and launch admission", () => {
+  const html = renderAppShellPage();
+  const isAppLaunchable = loadBrowserFunction(html, "isAppLaunchable");
+
+  assert.equal(isAppLaunchable({ access: { allowed: true, result: "allowed" } }), true);
+  for (const access of [
+    { allowed: true, result: "future_result" },
+    { allowed: true, result: "billing_blocked" },
+    { allowed: true },
+    { allowed: false, result: "allowed" },
+    { allowed: true, result: null },
+    null,
+  ]) assert.equal(isAppLaunchable({ access }), false);
+  assert.equal((html.match(/isAppLaunchable\(state\.app\)/g) ?? []).length, 2);
+  assert.doesNotMatch(html, /state\.app\?\.access\?\.allowed === true \? "ready"/);
+});
+
+test("app shell binds launch attempts to immutable inputs and a current generation", () => {
+  const html = renderAppShellPage();
+  const createLaunchAttempt = loadBrowserFunction(html, "createLaunchAttempt");
+  const isCurrentLaunchAttempt = loadBrowserFunction(html, "isCurrentLaunchAttempt");
+  const attempt = createLaunchAttempt(
+    { workspaceId: "workspace-a", workspaceSlug: "alpha" },
+    { appKey: "sqag" },
+    7,
+  );
+
+  assert.equal(attempt.generation, 7);
+  assert.deepEqual(attempt.inputs, { workspaceId: "workspace-a", appKey: "sqag" });
+  assert.equal(Object.isFrozen(attempt), true);
+  assert.equal(Object.isFrozen(attempt.inputs), true);
+  assert.equal(isCurrentLaunchAttempt(attempt, attempt, 7), true);
+  assert.equal(isCurrentLaunchAttempt(attempt, attempt, 8), false);
+  attempt.controller.abort();
+  assert.equal(isCurrentLaunchAttempt(attempt, attempt, 7), false);
+  assert.match(html, /function invalidateLaunchAttempt\(\)/);
+  assert.match(html, /attempt\.controller\.abort\(\)/);
+  assert.match(html, /signal: attempt\.controller\.signal/);
+  assert.match(html, /window\.addEventListener\("popstate", \(\) => \{[\s\S]*invalidateLaunchAttempt\(\)/);
+});
+
+test("app shell keeps workspace selector values and visible labels on safe slug/name fallbacks", () => {
+  const html = renderAppShellPage();
+  const getWorkspaceDisplayName = loadBrowserFunction(html, "getWorkspaceDisplayName");
+
+  assert.equal(getWorkspaceDisplayName({ workspaceName: "Beta workspace", workspaceSlug: "beta", workspaceId: "internal-b" }), "Beta workspace");
+  assert.equal(getWorkspaceDisplayName({ workspaceName: "", workspaceSlug: "beta", workspaceId: "internal-b" }), "beta");
+  assert.equal(getWorkspaceDisplayName({ workspaceName: null, workspaceSlug: "", workspaceId: "internal-b" }), "Workspace");
+  assert.match(html, /option\.value = workspace\.workspaceSlug/);
+  assert.match(html, /workspaceSelect\.value = workspace\.workspaceSlug/);
+  assert.doesNotMatch(html, /option\.value = workspace\.workspaceId/);
+  assert.doesNotMatch(html, /workspace\.workspaceName \|\| workspace\.workspaceId/);
+});
+
+test("app shell gives an invalid workspace URL a coherent placeholder reset", () => {
+  const html = renderAppShellPage();
+  const selectWorkspaceFromLocation = loadBrowserFunction(html, "selectWorkspaceFromLocation");
+  const workspaces = [
+    { workspaceId: "workspace-a", workspaceSlug: "alpha" },
+    { workspaceId: "workspace-b", workspaceSlug: "beta" },
+  ];
+
+  assert.equal(selectWorkspaceFromLocation(workspaces, "https://swooshz.com/app?workspace=missing"), null);
+  assert.equal(selectWorkspaceFromLocation(workspaces, "https://swooshz.com/app?workspace="), null);
+  assert.match(html, /const placeholder = document\.createElement\("option"\)/);
+  assert.match(html, /placeholder\.value = ""/);
+  assert.match(html, /workspaceSelect\.value = ""/);
+  assert.match(html, /workspaceControl\.hidden = availableWorkspaces\.length < 2/);
+  assert.match(extractBrowserFunction(html, "renderWorkspaceUnavailable"), /singleWorkspaceContext\.hidden = true/);
+});
+
+test("app shell preserves the permanently bound Retry control across launch states", () => {
+  const html = renderAppShellPage();
+  const renderLaunchState = extractBrowserFunction(html, "renderLaunchState");
+
+  assert.match(html, /id="launchFeedbackHeading"/);
+  assert.match(html, /id="launchFeedbackCopy"/);
+  assert.doesNotMatch(renderLaunchState, /launchFeedback\.replaceChildren\(\)/);
+  assert.match(renderLaunchState, /retryLaunchButton\.hidden = true/);
+  assert.match(renderLaunchState, /retryLaunchButton\.hidden = false/);
+  assert.match(renderLaunchState, /launchFeedbackHeading\.textContent/);
+  assert.match(renderLaunchState, /launchFeedbackCopy\.textContent/);
+});
+
+test("Run-208 authenticated evidence requires every new G4 Chromium interaction", async () => {
+  const contract = await readFile("scripts/authenticated-platform-evidence-contract.mjs", "utf8");
+  const captureScript = await readFile("scripts/capture-authenticated-platform-evidence.mjs", "utf8");
+  const interactionIds = [
+    "workspace-query-and-slug-selector",
+    "workspace-history-back-forward",
+    "invalid-workspace-query-fails-closed",
+    "workspace-dom-hides-internal-ids",
+    "contradictory-access-remains-disabled",
+    "stale-launch-is-invalidated-on-workspace-transition",
+    "retry-survives-access-transition-to-failure",
+  ];
+
+  for (const id of interactionIds) {
+    assert.match(contract, new RegExp(`"${id}"`));
+    assert.match(captureScript, new RegExp(`recordInteraction\\(\\s*"${id}"`));
+  }
 });
 
 test("launcher and admin shells format workspace roles without unsupported role copy", () => {
@@ -354,7 +465,7 @@ test("app shell presents the approved product name while preserving the internal
 
   assert.match(html, /Swooshz Quote Auto Generator/);
   assert.match(html, /String\(app\.appKey \|\| ""\)\.toLowerCase\(\) === "sqag"/);
-  assert.match(html, /"&appKey=" \+ encodeURIComponent\(state\.app\.appKey\)/);
+  assert.match(html, /"&appKey=" \+ encodeURIComponent\(attempt\.inputs\.appKey\)/);
   assert.match(html, /endpoints\.launch \+/);
   assert.doesNotMatch(html, /Split-Pane Auto Generator|Structured Query/i);
 });

@@ -279,6 +279,249 @@ async function runInteractionChecks() {
 
   const launcherVisibility = captures.filter((capture) => ["launcher-mobile-390-available.png", "launcher-mobile-320-available.png"].includes(capture.name)).every((capture) => capture.primaryContentVisible === true);
   recordInteraction("launcher-primary-content-visible-at-390-and-320", launcherVisibility, JSON.stringify(captures.filter((capture) => capture.primaryContentVisible !== undefined)));
+
+  await withPage({ viewport: { width: 1440, height: 900 }, scenario: "multiple" }, async (page) => {
+    await loadAuthenticated(page, "/app?workspace=example-secondary");
+    const selector = page.locator("#workspaceSelect");
+    const initial = {
+      urlWorkspace: new URL(page.url()).searchParams.get("workspace"),
+      selectedValue: await selector.inputValue(),
+      workspaceName: await page.locator("#workspaceName").textContent(),
+    };
+    await selector.selectOption("example-primary");
+    const selected = {
+      urlWorkspace: new URL(page.url()).searchParams.get("workspace"),
+      selectedValue: await selector.inputValue(),
+      workspaceName: await page.locator("#workspaceName").textContent(),
+    };
+    recordInteraction(
+      "workspace-query-and-slug-selector",
+      initial.urlWorkspace === "example-secondary" &&
+        initial.selectedValue === "example-secondary" &&
+        initial.workspaceName === "Example Secondary" &&
+        selected.urlWorkspace === "example-primary" &&
+        selected.selectedValue === "example-primary" &&
+        selected.workspaceName === "Example Primary",
+      JSON.stringify({ initial, selected }),
+    );
+  });
+
+  await withPage({ viewport: { width: 1440, height: 900 }, scenario: "multiple" }, async (page) => {
+    await loadAuthenticated(page, "/app?workspace=example-primary");
+    const selector = page.locator("#workspaceSelect");
+    await selector.selectOption("example-secondary");
+    await page.goBack();
+    await page.waitForFunction(() => document.getElementById("workspaceSelect")?.value === "example-primary");
+    const back = {
+      urlWorkspace: new URL(page.url()).searchParams.get("workspace"),
+      selectedValue: await selector.inputValue(),
+      workspaceName: await page.locator("#workspaceName").textContent(),
+      role: await page.locator("#workspaceRole").textContent(),
+      adminVisible: await page.locator("#adminLink").isVisible(),
+    };
+    await page.goForward();
+    await page.waitForFunction(() => document.getElementById("workspaceSelect")?.value === "example-secondary");
+    const forward = {
+      urlWorkspace: new URL(page.url()).searchParams.get("workspace"),
+      selectedValue: await selector.inputValue(),
+      workspaceName: await page.locator("#workspaceName").textContent(),
+      role: await page.locator("#workspaceRole").textContent(),
+      adminVisible: await page.locator("#adminLink").isVisible(),
+    };
+    recordInteraction(
+      "workspace-history-back-forward",
+      back.urlWorkspace === "example-primary" &&
+        back.selectedValue === "example-primary" &&
+        back.workspaceName === "Example Primary" &&
+        back.role === "Admin" &&
+        back.adminVisible &&
+        forward.urlWorkspace === "example-secondary" &&
+        forward.selectedValue === "example-secondary" &&
+        forward.workspaceName === "Example Secondary" &&
+        forward.role === "Admin" &&
+        forward.adminVisible,
+      JSON.stringify({ back, forward }),
+    );
+  });
+
+  await withPage({ viewport: { width: 1440, height: 900 }, scenario: "multiple" }, async (page) => {
+    await loadAuthenticated(page, "/app?workspace=missing");
+    let launchRequests = 0;
+    page.on("request", (request) => {
+      const requestUrl = new URL(request.url());
+      if (request.method() === "POST" && requestUrl.pathname === "/api/platform/apps/launch/open") launchRequests += 1;
+    });
+    const selector = page.locator("#workspaceSelect");
+    const invalid = {
+      selectedValue: await selector.inputValue(),
+      selectedText: await selector.locator("option:checked").textContent(),
+      noWorkspaceVisible: await page.locator("#noWorkspace").isVisible(),
+      launchUnitHidden: await page.locator("#launchUnit").isHidden(),
+      workspaceName: await page.locator("#workspaceName").textContent(),
+      workspaceRole: await page.locator("#workspaceRole").textContent(),
+      adminHidden: await page.locator("#adminLink").isHidden(),
+    };
+    await page.evaluate(() => document.getElementById("launchButton")?.click());
+    await page.waitForTimeout(80);
+    await selector.selectOption("example-secondary");
+    const restored = {
+      urlWorkspace: new URL(page.url()).searchParams.get("workspace"),
+      selectedValue: await selector.inputValue(),
+      workspaceName: await page.locator("#workspaceName").textContent(),
+      launchUnitVisible: await page.locator("#launchUnit").isVisible(),
+    };
+    recordInteraction(
+      "invalid-workspace-query-fails-closed",
+      invalid.selectedValue === "" &&
+        invalid.selectedText === "Select a workspace" &&
+        invalid.noWorkspaceVisible &&
+        invalid.launchUnitHidden &&
+        invalid.workspaceName === "" &&
+        invalid.workspaceRole === "" &&
+        invalid.adminHidden &&
+        launchRequests === 0 &&
+        restored.urlWorkspace === "example-secondary" &&
+        restored.selectedValue === "example-secondary" &&
+        restored.workspaceName === "Example Secondary" &&
+        restored.launchUnitVisible,
+      JSON.stringify({ invalid, restored, launchRequests }),
+    );
+  });
+
+  await withPage({ viewport: { width: 1440, height: 900 }, scenario: "dom-privacy" }, async (page) => {
+    await loadAuthenticated(page, "/app");
+    const details = await page.evaluate(() => ({
+      optionValues: [...document.querySelectorAll("#workspaceSelect option")].map((option) => option.value),
+      optionText: [...document.querySelectorAll("#workspaceSelect option")].map((option) => option.textContent),
+      selectorHtml: document.getElementById("workspaceSelect")?.outerHTML ?? "",
+      bodyText: document.body.innerText,
+      workspaceName: document.getElementById("workspaceName")?.textContent ?? "",
+    }));
+    const internalIds = ["workspace-example-primary", "workspace-example-secondary"];
+    const hasInternalId = internalIds.some((value) =>
+      details.selectorHtml.includes(value) || details.bodyText.includes(value) || details.workspaceName.includes(value)
+    );
+    recordInteraction(
+      "workspace-dom-hides-internal-ids",
+      details.optionValues.includes("example-primary") &&
+        details.optionValues.includes("example-secondary") &&
+        details.optionText.includes("example-primary") &&
+        !hasInternalId,
+      JSON.stringify({ ...details, hasInternalId }),
+    );
+  });
+
+  await withPage({ viewport: { width: 1440, height: 900 }, scenario: "contradictory" }, async (page) => {
+    await loadAuthenticated(page, "/app");
+    let launchRequests = 0;
+    page.on("request", (request) => {
+      const requestUrl = new URL(request.url());
+      if (request.method() === "POST" && requestUrl.pathname === "/api/platform/apps/launch/open") launchRequests += 1;
+    });
+    const button = page.locator("#launchButton");
+    const before = {
+      disabled: await button.isDisabled(),
+      status: await page.locator("#launchStatus").textContent(),
+      bodyText: await page.locator("body").innerText(),
+    };
+    await button.click({ force: true });
+    await page.waitForTimeout(80);
+    recordInteraction(
+      "contradictory-access-remains-disabled",
+      before.disabled &&
+        before.status === "Product access unavailable" &&
+        !before.bodyText.includes("future_result") &&
+        launchRequests === 0,
+      JSON.stringify({ before, launchRequests }),
+    );
+  });
+
+  await withPage({ viewport: { width: 1440, height: 900 }, scenario: "stale-race" }, async (page) => {
+    await loadAuthenticated(page, "/app?workspace=example-primary");
+    let launchRequests = 0;
+    let finalizationRequests = 0;
+    const navigatedUrls = [];
+    page.on("request", (request) => {
+      const requestUrl = new URL(request.url());
+      if (request.method() === "POST" && requestUrl.pathname === "/api/platform/apps/launch/open") launchRequests += 1;
+      if (request.method() === "POST" && requestUrl.pathname === "/api/finalize") finalizationRequests += 1;
+    });
+    page.on("framenavigated", (frame) => {
+      if (frame === page.mainFrame()) navigatedUrls.push(frame.url());
+    });
+    await page.getByRole("button", { name: "Open product" }).click();
+    await page.waitForTimeout(100);
+    const loadingBeforeTransition = await page.locator("#launchStatus").textContent();
+    await page.locator("#workspaceSelect").selectOption("example-secondary");
+    await page.waitForTimeout(1000);
+    const finalState = {
+      urlWorkspace: new URL(page.url()).searchParams.get("workspace"),
+      selectedValue: await page.locator("#workspaceSelect").inputValue(),
+      workspaceName: await page.locator("#workspaceName").textContent(),
+      status: await page.locator("#launchStatus").textContent(),
+      feedbackHidden: await page.locator("#launchFeedback").isHidden(),
+      buttonDisabled: await page.locator("#launchButton").isDisabled(),
+    };
+    recordInteraction(
+      "stale-launch-is-invalidated-on-workspace-transition",
+      launchRequests === 1 &&
+        finalizationRequests === 0 &&
+        navigatedUrls.every((url) => url.includes("workspace=example-primary") === false) &&
+        loadingBeforeTransition === "Opening product" &&
+        finalState.urlWorkspace === "example-secondary" &&
+        finalState.selectedValue === "example-secondary" &&
+        finalState.workspaceName === "Example Secondary" &&
+        finalState.status === "Ready to launch" &&
+        finalState.feedbackHidden &&
+        !finalState.buttonDisabled,
+      JSON.stringify({ launchRequests, finalizationRequests, navigatedUrls, loadingBeforeTransition, finalState }),
+    );
+  });
+
+  await withPage({ viewport: { width: 1440, height: 900 }, scenario: "retry-transition" }, async (page) => {
+    await loadAuthenticated(page, "/app?workspace=retry-denied");
+    const initialUnavailable = {
+      heading: await page.locator("#launchFeedbackHeading").textContent(),
+      retryHidden: await page.locator("#retryLaunchButton").isHidden(),
+      buttonDisabled: await page.locator("#launchButton").isDisabled(),
+    };
+    await page.locator("#workspaceSelect").selectOption("retry-allowed");
+    const allowed = {
+      status: await page.locator("#launchStatus").textContent(),
+      feedbackHidden: await page.locator("#launchFeedback").isHidden(),
+      buttonDisabled: await page.locator("#launchButton").isDisabled(),
+    };
+    let launchRequests = 0;
+    page.on("request", (request) => {
+      const requestUrl = new URL(request.url());
+      if (request.method() === "POST" && requestUrl.pathname === "/api/platform/apps/launch/open") launchRequests += 1;
+    });
+    await page.getByRole("button", { name: "Open product" }).click();
+    await page.getByRole("button", { name: "Retry" }).waitFor({ state: "visible" });
+    const failed = {
+      heading: await page.locator("#launchFeedbackHeading").textContent(),
+      status: await page.locator("#launchStatus").textContent(),
+      retryVisible: await page.locator("#retryLaunchButton").isVisible(),
+      retryEnabled: await page.locator("#retryLaunchButton").isEnabled(),
+    };
+    await page.getByRole("button", { name: "Retry" }).click();
+    await page.getByRole("button", { name: "Retry" }).waitFor({ state: "visible" });
+    recordInteraction(
+      "retry-survives-access-transition-to-failure",
+      initialUnavailable.heading === "Product access unavailable" &&
+        initialUnavailable.retryHidden &&
+        initialUnavailable.buttonDisabled &&
+        allowed.status === "Ready to launch" &&
+        allowed.feedbackHidden &&
+        !allowed.buttonDisabled &&
+        failed.heading === "We could not open the product. Try again." &&
+        failed.status === "Could not open" &&
+        failed.retryVisible &&
+        failed.retryEnabled &&
+        launchRequests === 2,
+      JSON.stringify({ initialUnavailable, allowed, failed, launchRequests }),
+    );
+  });
 }
 
 async function capture({ name, route, viewport, scenario, mobile = false, after, afterScreenshot }) {
@@ -325,7 +568,12 @@ async function withPage(options, action) {
       return;
     }
     if (synthetic.delay) await new Promise((resolveDelay) => setTimeout(resolveDelay, synthetic.delay));
-    await route.fulfill({ status: synthetic.status, headers: { "cache-control": "no-store" }, contentType: "application/json", body: JSON.stringify(synthetic.body) });
+    await route.fulfill({
+      status: synthetic.status,
+      headers: { "cache-control": "no-store", ...(synthetic.headers ?? {}) },
+      contentType: "application/json",
+      body: JSON.stringify(synthetic.body),
+    });
   });
   const page = await context.newPage();
   page.on("console", (message) => { if (message.type() === "error") consoleErrors.push(`${options.scenario}: ${message.text()}`); });
@@ -340,7 +588,21 @@ function syntheticApiResponse(method, url, scenario) {
   if (method === "GET" && /\/workspaces\/[^/]+\/member-approvals$/.test(url.pathname)) return { status: 200, body: approvalsPayload };
   if (method === "GET" && /\/workspaces\/[^/]+\/app-entitlements$/.test(url.pathname)) return { status: 200, body: entitlementsPayload };
   if (method === "GET" && /\/workspaces\/[^/]+\/audit-events$/.test(url.pathname)) return { status: 200, body: auditPayload };
-  if (method === "POST" && url.pathname === "/api/platform/apps/launch/open") return { status: 200, body: { outcome: "error", message: "Controlled evidence launch failure." } };
+  if (method === "POST" && url.pathname === "/api/platform/apps/launch/open") {
+    if (scenario === "stale-race") {
+      return {
+        status: 200,
+        delay: 700,
+        headers: { "x-sqag-finalization-handle": "synthetic-finalization-only" },
+        body: {
+          outcome: "launch_opened",
+          launchUrl: "https://sqag.example.invalid/quotes",
+          finalizationUrl: "https://sqag.example.invalid/api/finalize",
+        },
+      };
+    }
+    return { status: 200, body: { outcome: "error", message: "Controlled evidence launch failure." } };
+  }
   if (method === "POST" && /\/workspaces\/[^/]+\/members\/add$/.test(url.pathname)) return { status: 201, delay: 900, body: { outcome: "pending_approval_created", approval: approvalsPayload.approvals[0] } };
   if (method === "POST" && /\/workspaces\/[^/]+\/(?:members|member-approvals|app-entitlements)\//.test(url.pathname)) return { status: 200, delay: 500, body: { outcome: "updated" } };
   if (method === "POST" && url.pathname === "/api/platform/logout") return { status: 200, body: { outcome: "logged_out" } };
@@ -348,9 +610,20 @@ function syntheticApiResponse(method, url, scenario) {
 }
 
 function contextPayload(scenario) {
-  const accessAllowed = scenario !== "unavailable";
-  const workspaces = [workspace("workspace-example-primary", "example-primary", "Example Primary", accessAllowed)];
-  if (scenario === "multiple") workspaces.push(workspace("workspace-example-secondary", "example-secondary", "Example Secondary", true, "admin"));
+  const accessAllowed = scenario !== "unavailable" && scenario !== "retry-transition";
+  let workspaces = [workspace("workspace-example-primary", "example-primary", scenario === "dom-privacy" ? "" : "Example Primary", accessAllowed)];
+  if (scenario === "multiple" || scenario === "stale-race" || scenario === "dom-privacy") {
+    workspaces.push(workspace("workspace-example-secondary", "example-secondary", "Example Secondary", true, "admin"));
+  }
+  if (scenario === "retry-transition") {
+    workspaces = [
+      workspace("workspace-retry-denied", "retry-denied", "Denied workspace", false, "viewer"),
+      workspace("workspace-retry-allowed", "retry-allowed", "Allowed workspace", true, "admin"),
+    ];
+  }
+  if (scenario === "contradictory") {
+    workspaces = [workspace("workspace-contradictory", "contradictory", "Contradictory access", true, "admin", "future_result")];
+  }
   return {
     outcome: "authenticated",
     user: { userId: "user-owner-example", email: "alex@example.invalid", displayName: "Alex Example", status: "active" },
@@ -359,7 +632,7 @@ function contextPayload(scenario) {
   };
 }
 
-function workspace(workspaceId, workspaceSlug, workspaceName, allowed, membershipRole = "admin") {
+function workspace(workspaceId, workspaceSlug, workspaceName, allowed, membershipRole = "admin", accessResult = null) {
   return {
     workspaceId,
     workspaceSlug,
@@ -367,7 +640,7 @@ function workspace(workspaceId, workspaceSlug, workspaceName, allowed, membershi
     workspaceStatus: "active",
     membershipRole,
     membershipStatus: "active",
-    apps: [{ appId: "app-example-sqag", appKey: "sqag", appName: "Swooshz Quote Auto Generator", appStatus: "private_preview", access: { result: allowed ? "allowed" : "denied", allowed, message: allowed ? "Access allowed." : "Access denied." } }],
+    apps: [{ appId: "app-example-sqag", appKey: "sqag", appName: "Swooshz Quote Auto Generator", appStatus: "private_preview", access: { result: accessResult ?? (allowed ? "allowed" : "denied"), allowed, message: allowed ? "Access allowed." : "Access denied." } }],
   };
 }
 
@@ -394,7 +667,13 @@ function assertFixtureContracts() {
 async function loadAuthenticated(page, route) {
   const response = await page.goto(`${origin}${route}`, { waitUntil: "networkidle" });
   if (!response?.ok()) throw new Error(`Renderer route failed: ${route} (${response?.status() ?? "no response"})`);
-  if (route === "/app") await page.locator("#launchUnit").waitFor({ state: "visible" });
+  if (new URL(`${origin}${route}`).pathname === "/app") {
+    await page.waitForFunction(() => {
+      const launchUnit = document.getElementById("launchUnit");
+      const noWorkspace = document.getElementById("noWorkspace");
+      return Boolean((launchUnit && !launchUnit.hidden) || (noWorkspace && !noWorkspace.hidden));
+    });
+  }
   else await page.locator('[data-admin-section="members"]').waitFor({ state: "visible" });
   await page.evaluate(() => document.fonts.ready);
 }

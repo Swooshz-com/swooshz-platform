@@ -42,6 +42,13 @@ export const requiredAuthenticatedInteractions = Object.freeze([
   "unique-disclosure-ids",
   "opening-another-disclosure-closes-previous",
   "outside-click-closes-disclosure-safely",
+  "workspace-query-and-slug-selector",
+  "workspace-history-back-forward",
+  "invalid-workspace-query-fails-closed",
+  "workspace-dom-hides-internal-ids",
+  "contradictory-access-remains-disabled",
+  "stale-launch-is-invalidated-on-workspace-transition",
+  "retry-survives-access-transition-to-failure",
 ]);
 
 export function validateEvidenceHeadSha(value) {
