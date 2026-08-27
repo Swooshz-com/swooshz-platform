@@ -77,7 +77,8 @@ export function renderAppShellPage(): string {
                 </div>
                 <button id="launchButton" class="auth-primary-button launch-button" type="button">Open product</button>
                 <div id="launchFeedback" class="launch-feedback" role="alert" hidden>
-                  <strong>We could not open the product. Try again.</strong>
+                  <strong id="launchFeedbackHeading">We could not open the product. Try again.</strong>
+                  <span id="launchFeedbackCopy" hidden></span>
                   <button id="retryLaunchButton" type="button">Retry</button>
                 </div>
               </div>
@@ -103,7 +104,9 @@ export function renderAppShellPage(): string {
             csrfToken: null,
             workspace: null,
             app: null,
-            launchBusy: false
+            launchBusy: false,
+            launchAttempt: null,
+            launchGeneration: 0
           };
 
           const status = document.getElementById("status");
@@ -115,6 +118,8 @@ export function renderAppShellPage(): string {
           const launchButton = document.getElementById("launchButton");
           const retryLaunchButton = document.getElementById("retryLaunchButton");
           const launchFeedback = document.getElementById("launchFeedback");
+          const launchFeedbackHeading = document.getElementById("launchFeedbackHeading");
+          const launchFeedbackCopy = document.getElementById("launchFeedbackCopy");
           const accountContext = document.getElementById("accountContext");
           const accountName = document.getElementById("accountName");
           const accountEmail = document.getElementById("accountEmail");
@@ -128,9 +133,24 @@ export function renderAppShellPage(): string {
 
           workspaceSelect.addEventListener("change", () => {
             const workspace = state.context?.workspaces?.find((candidate) =>
-              candidate.workspaceId === workspaceSelect.value
+              candidate?.workspaceSlug === workspaceSelect.value
             );
-            if (workspace) renderWorkspace(workspace);
+            if (!workspace) {
+              transitionToWorkspace(null);
+              return;
+            }
+            const workspacePath = workspacePathFor(workspace, window.location.href);
+            if (!workspacePath) {
+              transitionToWorkspace(null);
+              return;
+            }
+            window.history.pushState({}, "", workspacePath);
+            transitionToWorkspace(workspace);
+          });
+          window.addEventListener("popstate", () => {
+            if (!state.context) return;
+            invalidateLaunchAttempt();
+            renderWorkspaceFromLocation();
           });
           launchButton.addEventListener("click", () => { void launchProduct(); });
           retryLaunchButton.addEventListener("click", () => { void launchProduct(); });
@@ -177,13 +197,20 @@ export function renderAppShellPage(): string {
             accountEmail.textContent = context.user.email || "";
             const workspaces = Array.isArray(context.workspaces) ? context.workspaces : [];
             workspaceSelect.replaceChildren();
+            const placeholder = document.createElement("option");
+            placeholder.value = "";
+            placeholder.textContent = "Select a workspace";
+            placeholder.disabled = workspaces.length > 0;
+            workspaceSelect.append(placeholder);
             for (const workspace of workspaces) {
+              if (!workspace || typeof workspace.workspaceSlug !== "string" || !workspace.workspaceSlug) continue;
               const option = document.createElement("option");
-              option.value = workspace.workspaceId;
-              option.textContent = workspace.workspaceName || workspace.workspaceId;
+              option.value = workspace.workspaceSlug;
+              option.textContent = getWorkspaceDisplayName(workspace);
               workspaceSelect.append(option);
             }
             workspaceControl.hidden = workspaces.length < 2;
+            workspaceSelect.disabled = workspaces.length === 0;
             singleWorkspaceContext.hidden = workspaces.length > 1;
             if (workspaces.length === 0) {
               state.workspace = null;
@@ -194,13 +221,77 @@ export function renderAppShellPage(): string {
               adminLink.hidden = true;
               return;
             }
-            renderWorkspace(workspaces[0]);
+            renderWorkspaceFromLocation();
+          }
+
+          function selectWorkspaceFromLocation(workspaces, locationHref) {
+            const availableWorkspaces = Array.isArray(workspaces) ? workspaces : [];
+            const url = new URL(locationHref);
+            if (!url.searchParams.has("workspace")) {
+              return availableWorkspaces.find((candidate) =>
+                typeof candidate?.workspaceSlug === "string" && candidate.workspaceSlug.length > 0
+              ) || null;
+            }
+            const requestedWorkspaceSlug = url.searchParams.get("workspace");
+            return availableWorkspaces.find((candidate) =>
+              typeof candidate?.workspaceSlug === "string" &&
+              candidate.workspaceSlug.length > 0 &&
+              candidate.workspaceSlug === requestedWorkspaceSlug
+            ) || null;
+          }
+
+          function workspacePathFor(workspace, locationHref) {
+            if (!workspace || typeof workspace.workspaceSlug !== "string" || !workspace.workspaceSlug) return null;
+            const url = new URL(locationHref);
+            url.searchParams.set("workspace", workspace.workspaceSlug);
+            return url.pathname + url.search + url.hash;
+          }
+
+          function transitionToWorkspace(workspace) {
+            invalidateLaunchAttempt();
+            if (!workspace) {
+              renderWorkspaceUnavailable();
+              return;
+            }
+            renderWorkspace(workspace);
+          }
+
+          function renderWorkspaceFromLocation() {
+            const workspaces = Array.isArray(state.context?.workspaces) ? state.context.workspaces : [];
+            const workspace = selectWorkspaceFromLocation(workspaces, window.location.href);
+            if (!workspace) {
+              renderWorkspaceUnavailable();
+              return;
+            }
+            renderWorkspace(workspace);
+          }
+
+          function renderWorkspaceUnavailable() {
+            state.workspace = null;
+            state.app = null;
+            const availableWorkspaces = Array.isArray(state.context?.workspaces) ? state.context.workspaces : [];
+            workspaceControl.hidden = availableWorkspaces.length < 2;
+            workspaceSelect.disabled = availableWorkspaces.length === 0;
+            workspaceSelect.value = "";
+            workspaceName.textContent = "";
+            workspaceRole.textContent = "";
+            singleWorkspaceContext.hidden = true;
+            status.hidden = true;
+            launchUnit.hidden = true;
+            noWorkspace.hidden = false;
+            adminLink.hidden = true;
+            const copy = noWorkspace.querySelector("p");
+            if (copy) copy.textContent = "The selected workspace is not available.";
           }
 
           function renderWorkspace(workspace) {
             state.workspace = workspace;
-            workspaceSelect.value = workspace.workspaceId;
-            workspaceName.textContent = workspace.workspaceName || workspace.workspaceId;
+            const availableWorkspaces = Array.isArray(state.context?.workspaces) ? state.context.workspaces : [];
+            workspaceControl.hidden = availableWorkspaces.length < 2;
+            singleWorkspaceContext.hidden = availableWorkspaces.length > 1;
+            workspaceSelect.disabled = availableWorkspaces.length === 0;
+            workspaceSelect.value = workspace.workspaceSlug;
+            workspaceName.textContent = getWorkspaceDisplayName(workspace);
             workspaceRole.textContent = displayWorkspaceRole(workspace.membershipRole);
             noWorkspace.hidden = true;
             const canAdmin = workspace.membershipRole === "admin";
@@ -211,13 +302,44 @@ export function renderAppShellPage(): string {
             const apps = Array.isArray(workspace.apps) ? workspace.apps : [];
             state.app = apps.find((app) => String(app.appKey || "").toLowerCase() === "sqag") || null;
             launchUnit.hidden = false;
-            renderLaunchState(state.app?.access?.allowed === true ? "ready" : "unavailable");
+            renderLaunchState(
+              isAppLaunchable(state.app) ? "ready" : "unavailable",
+              getAppUnavailableMessage(state.app)
+            );
             status.hidden = true;
           }
 
-          function renderLaunchState(nextState) {
+          function getAppUnavailableMessage(app) {
+            if (isAppLaunchable(app)) return null;
+            const result = String(app?.access?.result || "");
+            switch (result) {
+              case "role_not_permitted":
+                return "Your workspace role cannot launch this product.";
+              case "app_not_enabled_for_workspace":
+                return "This product is not enabled for this workspace.";
+              case "app_not_available":
+                return "This product is not currently available.";
+              default:
+                return "Your workspace does not currently have access to this product.";
+            }
+          }
+
+          function isAppLaunchable(app) {
+            return app?.access?.allowed === true && app?.access?.result === "allowed";
+          }
+
+          function getWorkspaceDisplayName(workspace) {
+            const name = typeof workspace?.workspaceName === "string" ? workspace.workspaceName.trim() : "";
+            if (name) return name;
+            const slug = typeof workspace?.workspaceSlug === "string" ? workspace.workspaceSlug.trim() : "";
+            return slug || "Workspace";
+          }
+
+          function renderLaunchState(nextState, unavailableMessage) {
             launchReadiness.classList.remove("is-loading", "is-unavailable");
             launchFeedback.hidden = true;
+            launchFeedbackCopy.hidden = true;
+            retryLaunchButton.hidden = true;
             launchButton.disabled = false;
             launchButton.textContent = "Open product";
             launchStatusDot.classList.remove("is-disabled");
@@ -230,6 +352,9 @@ export function renderAppShellPage(): string {
             }
             if (nextState === "failure") {
               launchStatus.textContent = "Could not open";
+              launchFeedbackHeading.textContent = "We could not open the product. Try again.";
+              launchFeedbackCopy.textContent = "";
+              retryLaunchButton.hidden = false;
               launchFeedback.hidden = false;
               return;
             }
@@ -238,12 +363,9 @@ export function renderAppShellPage(): string {
               launchStatusDot.classList.add("is-disabled");
               launchStatus.textContent = "Product access unavailable";
               launchButton.disabled = true;
-              launchFeedback.replaceChildren();
-              const heading = document.createElement("strong");
-              heading.textContent = "Product access unavailable";
-              const copy = document.createElement("span");
-              copy.textContent = "Your workspace does not currently have access to this product.";
-              launchFeedback.append(heading, copy);
+              launchFeedbackHeading.textContent = "Product access unavailable";
+              launchFeedbackCopy.textContent = unavailableMessage || "Your workspace does not currently have access to this product.";
+              launchFeedbackCopy.hidden = false;
               launchFeedback.hidden = false;
               return;
             }
@@ -251,23 +373,31 @@ export function renderAppShellPage(): string {
           }
 
           async function launchProduct() {
-            if (state.launchBusy || !state.workspace || !state.app || state.app.access?.allowed !== true) return;
+            if (state.launchBusy || !state.workspace || !state.app || !isAppLaunchable(state.app)) return;
+            const workspace = state.workspace;
+            const app = state.app;
+            const attempt = createLaunchAttempt(workspace, app, state.launchGeneration + 1);
+            state.launchGeneration = attempt.generation;
+            state.launchAttempt = attempt;
             state.launchBusy = true;
             renderLaunchState("loading");
             try {
-              const csrfToken = await getCsrfToken();
+              const csrfToken = await getCsrfToken(attempt);
+              if (!isCurrentLaunchAttempt(attempt) || !csrfToken) return;
               const response = await fetch(
                 endpoints.launch +
-                  "?workspaceId=" + encodeURIComponent(state.workspace.workspaceId) +
-                  "&appKey=" + encodeURIComponent(state.app.appKey),
+                  "?workspaceId=" + encodeURIComponent(attempt.inputs.workspaceId) +
+                  "&appKey=" + encodeURIComponent(attempt.inputs.appKey),
                 {
                   method: "POST",
                   credentials: "same-origin",
                   cache: "no-store",
-                  headers: { "x-csrf-token": csrfToken }
+                  headers: { "x-csrf-token": csrfToken },
+                  signal: attempt.controller.signal
                 }
               );
               const payload = await readJson(response);
+              if (!isCurrentLaunchAttempt(attempt)) return;
               let finalizationHandle = response.headers.get("x-sqag-finalization-handle");
               if (!response.ok || payload.outcome !== "launch_opened" || !payload.launchUrl || !payload.finalizationUrl || !finalizationHandle) {
                 renderLaunchState("failure");
@@ -280,32 +410,67 @@ export function renderAppShellPage(): string {
                 renderLaunchState("failure");
                 return;
               }
+              if (!isCurrentLaunchAttempt(attempt)) return;
               const finalizeResponse = await fetch(finalizationUrl.toString(), {
                 method: "POST",
                 credentials: "include",
                 cache: "no-store",
-                headers: { "x-sqag-finalization-handle": finalizationHandle }
+                headers: { "x-sqag-finalization-handle": finalizationHandle },
+                signal: attempt.controller.signal
               });
               finalizationHandle = null;
+              if (!isCurrentLaunchAttempt(attempt)) return;
               if (!finalizeResponse.ok) {
                 renderLaunchState("failure");
                 return;
               }
+              if (!isCurrentLaunchAttempt(attempt)) return;
               window.location.assign(launchUrl.toString());
             } catch {
-              renderLaunchState("failure");
+              if (isCurrentLaunchAttempt(attempt)) renderLaunchState("failure");
             } finally {
-              state.launchBusy = false;
+              if (isCurrentLaunchAttempt(attempt)) {
+                state.launchBusy = false;
+                state.launchAttempt = null;
+              }
             }
           }
 
-          async function getCsrfToken() {
+          function createLaunchAttempt(workspace, app, generation) {
+            return Object.freeze({
+              generation,
+              inputs: Object.freeze({ workspaceId: workspace.workspaceId, appKey: app.appKey }),
+              controller: new AbortController()
+            });
+          }
+
+          function isCurrentLaunchAttempt(attempt, currentAttempt = state.launchAttempt, currentGeneration = state.launchGeneration) {
+            return Boolean(
+              attempt &&
+              currentAttempt === attempt &&
+              currentGeneration === attempt.generation &&
+              !attempt.controller.signal.aborted
+            );
+          }
+
+          function invalidateLaunchAttempt() {
+            state.launchGeneration += 1;
+            const attempt = state.launchAttempt;
+            state.launchAttempt = null;
+            state.launchBusy = false;
+            if (attempt) attempt.controller.abort();
+          }
+
+          async function getCsrfToken(attempt) {
             if (state.csrfToken) return state.csrfToken;
-            const response = await fetch(endpoints.csrf, {
+            const requestOptions = {
               credentials: "same-origin",
               cache: "no-store"
-            });
+            };
+            if (attempt) requestOptions.signal = attempt.controller.signal;
+            const response = await fetch(endpoints.csrf, requestOptions);
             const payload = await readJson(response);
+            if (attempt && !isCurrentLaunchAttempt(attempt)) return null;
             if (!response.ok || payload.outcome !== "issued" || !payload.csrfToken) {
               throw new Error("CSRF token unavailable.");
             }
