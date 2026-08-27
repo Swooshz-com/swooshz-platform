@@ -1,26 +1,9 @@
 #!/usr/bin/env node
 
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-import {
-  JOURNAL_PREFIX_DOMAIN_SEPARATOR,
-  PRESTATE_DOMAIN_SEPARATOR,
-  assertRevisionBinding,
-  canonicalDigest,
-  captureNormalizedPrestate,
-  createDurablePlan,
-  computeContractDigest,
-  computeTargetBindingDigest,
-  executeDurablePlan,
-  loadCanonicalMigrationJournal,
-  projectReceipt,
-  serializeReceipt,
-} from "../dist/db/durable-operations.js";
-import {
-  assertMigrationExecutionAllowed,
-  createDatabaseClient,
-} from "../dist/db/client.js";
+import { verifyPlatformDbOperationBuild } from "./platform-db-operation-build.mjs";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const migrationsFolder = path.join(rootDir, "drizzle", "migrations");
@@ -101,24 +84,30 @@ function migrationOperations(journal, appliedRows) {
 
 async function run() {
   const args = parseArguments(process.argv.slice(2));
-  const gitSha = await assertRevisionBinding({ rootDir, expectedGitSha: args.expectedGitSha });
-  const config = assertMigrationExecutionAllowed(process.env);
-  const client = createDatabaseClient(config);
+  const verifiedBuild = await verifyPlatformDbOperationBuild({
+    rootDir,
+    expectedGitSha: args.expectedGitSha,
+  });
+  const durableOperations = await import(pathToFileURL(verifiedBuild.entrypoints.durableOperations).href);
+  const databaseClient = await import(pathToFileURL(verifiedBuild.entrypoints.databaseClient).href);
+  const gitSha = await durableOperations.assertRevisionBinding({ rootDir, expectedGitSha: args.expectedGitSha });
+  const config = databaseClient.assertMigrationExecutionAllowed(process.env);
+  const client = databaseClient.createDatabaseClient(config);
   try {
     const binding = targetBinding(client, config, args);
-    const journal = await loadCanonicalMigrationJournal(rootDir);
-    const contractDigest = await computeContractDigest(rootDir);
-    const captured = await captureNormalizedPrestate(binding, journal);
+    const journal = await durableOperations.loadCanonicalMigrationJournal(rootDir);
+    const contractDigest = await durableOperations.computeContractDigest(rootDir);
+    const captured = await durableOperations.captureNormalizedPrestate(binding, journal);
     const operations = migrationOperations(journal, captured.prestate.migration_journal.applied_rows);
-    const plan = createDurablePlan({
+    const plan = durableOperations.createDurablePlan({
       expected_git_sha: gitSha,
       contract_digest: contractDigest,
-      target_binding_digest: computeTargetBindingDigest(binding),
-      prestate_digest: canonicalDigest(PRESTATE_DOMAIN_SEPARATOR, captured.prestate),
+      target_binding_digest: durableOperations.computeTargetBindingDigest(binding),
+      prestate_digest: durableOperations.canonicalDigest(durableOperations.PRESTATE_DOMAIN_SEPARATOR, captured.prestate),
       operation_kind: "migration",
       operations,
     });
-    const receipt = await executeDurablePlan({
+    const receipt = await durableOperations.executeDurablePlan({
       plan,
       binding,
       expectedPrestate: captured.prestate,
@@ -127,7 +116,7 @@ async function run() {
       journal,
       rootDir,
     });
-    process.stdout.write(`${serializeReceipt(projectReceipt(receipt))}\n`);
+    process.stdout.write(String(durableOperations.serializeReceipt(durableOperations.projectReceipt(receipt))) + "\n");
     if (receipt.outcome !== "PASS") process.exitCode = 1;
   } finally {
     await client.pool.end();

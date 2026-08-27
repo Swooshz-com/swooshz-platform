@@ -4,9 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node scripts/generate-public-asset-manifest.mjs && tsc -p tsconfig.json && node scripts/copy-public-assets.mjs",
+    "build": "node scripts/generate-public-asset-manifest.mjs && tsc -p tsconfig.json && node scripts/copy-public-assets.mjs && node scripts/platform-db-operation-build.mjs --write-manifest",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "npm run build && node scripts/db-migrate.mjs",
+    "platform:db-operation": "npm run build && node scripts/platform-db-operation.mjs",
     "platform:db-readiness-check": "npm run build && node scripts/platform-db-readiness-check.mjs",
     "platform:readiness-check": "node scripts/platform-readiness-check.mjs",
     "platform:start": "node scripts/platform-start.mjs",

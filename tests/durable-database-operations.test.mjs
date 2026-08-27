@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { access, copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import test from "node:test";
 
+import { verifyPlatformDbOperationBuild } from "../scripts/platform-db-operation-build.mjs";
 import {
   APPROVED_ROLE_NAMES,
   DurableOperationError,
@@ -33,6 +39,25 @@ import { RUNTIME_TABLE_GRANT_CONTRACT } from "../dist/db/runtime-grant-contract.
 
 const HEX64 = "a".repeat(64);
 const HEX40 = "9ce40dce85484ef5fd8c849951527572e95afa24";
+const execFileAsync = promisify(execFile);
+const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
+
+async function currentRepositoryRevision() {
+  const result = await execFileAsync("git", ["rev-parse", "--verify", "HEAD"], {
+    cwd: repositoryRoot,
+    windowsHide: true,
+  });
+  return result.stdout.trim();
+}
+
+async function fileExists(filePath) {
+  try {
+    await access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function targetBinding({ transactionReadOnly = "on" } = {}) {
   const calls = [];
@@ -964,6 +989,83 @@ test("inverse vectors cover every admitted reversible operation kind", () => {
       assert.equal(inverseOperation.grant_option, true);
       assert.equal(inverseOperation.previous_grant_option, false);
     }
+  }
+});
+
+test("Run-196 exact build binds the executable closure before operator import", async () => {
+  const expectedGitSha = await currentRepositoryRevision();
+  const verifiedBuild = await verifyPlatformDbOperationBuild({
+    rootDir: repositoryRoot,
+    expectedGitSha,
+  });
+  const manifest = JSON.parse(await readFile(verifiedBuild.manifestPath, "utf8"));
+  assert.equal(verifiedBuild.sourceGitSha, expectedGitSha);
+  assert.equal(manifest.source_git_sha, expectedGitSha);
+  assert.equal(manifest.entrypoints.durableOperations, "db/durable-operations.js");
+  assert.equal(manifest.entrypoints.databaseClient, "db/client.js");
+  assert.ok(manifest.modules.some((record) => record.path === "db/durable-operations.js"));
+  assert.ok(manifest.modules.some((record) => record.path === "db/client.js"));
+  const launcherSource = await readFile(
+    fileURLToPath(new URL("../scripts/platform-db-operation.mjs", import.meta.url)),
+    "utf8",
+  );
+  assert.doesNotMatch(launcherSource, /from ["']\.\.\/dist/u);
+  const selectedExecutable = await import(pathToFileURL(verifiedBuild.entrypoints.durableOperations).href);
+  assert.equal(typeof selectedExecutable.assertRevisionBinding, "function");
+});
+
+test("Run-196 stale compiled output fails before database connection or mutation", async () => {
+  const expectedGitSha = await currentRepositoryRevision();
+  const target = fileURLToPath(new URL("../dist/db/durable-operations.js", import.meta.url));
+  const scratch = await mkdtemp(join(tmpdir(), "platform-run-196-launcher-"));
+  const backup = join(scratch, "durable-operations.js");
+  const marker = join(scratch, "compiled-module-imported");
+  await copyFile(target, backup);
+  try {
+    const poisonedModule = [
+      'import { writeFileSync } from "node:fs";',
+      "writeFileSync(" + JSON.stringify(marker) + ', "imported");',
+      'export const JOURNAL_PREFIX_DOMAIN_SEPARATOR = "";',
+      'export const PRESTATE_DOMAIN_SEPARATOR = "";',
+      'export const assertRevisionBinding = async () => "' + expectedGitSha + '";',
+      'export const canonicalDigest = () => "";',
+      'export const captureNormalizedPrestate = async () => ({});',
+      'export const createDurablePlan = () => ({});',
+      'export const computeContractDigest = async () => "";',
+      'export const computeTargetBindingDigest = () => "";',
+      'export const executeDurablePlan = async () => ({});',
+      'export const loadCanonicalMigrationJournal = async () => ({ entries: [] });',
+      'export const projectReceipt = (value) => value;',
+      'export const serializeReceipt = () => "";',
+    ].join("\n");
+    await writeFile(target, poisonedModule, "utf8");
+    let childError = null;
+    try {
+      await execFileAsync(process.execPath, [
+        "scripts/platform-db-operation.mjs",
+        "--expected-git-sha", expectedGitSha,
+        "--expected-cluster-system-identifier", "1",
+        "--expected-database-oid", "1",
+        "--operation", "migration",
+      ], {
+        cwd: repositoryRoot,
+        env: {
+          ...process.env,
+          DATABASE_OPERATOR_URL: "postgres://127.0.0.1:1/durable_operations_test",
+          DATABASE_MIGRATIONS_CONFIRM: "apply-reviewed-migrations",
+        },
+        timeout: 10_000,
+        windowsHide: true,
+      });
+    } catch (error) {
+      childError = error;
+    }
+    assert.ok(childError);
+    assert.notEqual(childError.code, 0);
+    assert.equal(await fileExists(marker), false);
+  } finally {
+    await copyFile(backup, target);
+    await rm(scratch, { recursive: true, force: true });
   }
 });
 
