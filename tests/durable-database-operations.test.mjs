@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, copyFile, cp, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +7,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import test from "node:test";
 
-import { verifyPlatformDbOperationBuild } from "../scripts/platform-db-operation-build.mjs";
+import {
+  verifyPlatformDbOperationBuild,
+  writePlatformDbOperationBuildManifest,
+} from "../scripts/platform-db-operation-build.mjs";
 import {
   APPROVED_ROLE_NAMES,
   DurableOperationError,
@@ -41,6 +44,7 @@ const HEX64 = "a".repeat(64);
 const HEX40 = "9ce40dce85484ef5fd8c849951527572e95afa24";
 const execFileAsync = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
+const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 
 async function currentRepositoryRevision() {
   const result = await execFileAsync("git", ["rev-parse", "--verify", "HEAD"], {
@@ -57,6 +61,48 @@ async function fileExists(filePath) {
   } catch {
     return false;
   }
+}
+
+async function copyGitlessBuildContext(destinationRoot) {
+  const worktreeNodeModules = join(repositoryRoot, "node_modules");
+  const sharedNodeModules = join(repositoryRoot, "..", "node_modules");
+  const dependencyRoot = (await fileExists(worktreeNodeModules))
+    ? worktreeNodeModules
+    : sharedNodeModules;
+  await Promise.all([
+    cp(join(repositoryRoot, "package.json"), join(destinationRoot, "package.json")),
+    cp(join(repositoryRoot, "package-lock.json"), join(destinationRoot, "package-lock.json")),
+    cp(join(repositoryRoot, "tsconfig.json"), join(destinationRoot, "tsconfig.json")),
+    cp(join(repositoryRoot, "src"), join(destinationRoot, "src"), { recursive: true }),
+    cp(join(repositoryRoot, "scripts"), join(destinationRoot, "scripts"), { recursive: true }),
+  ]);
+  await symlink(
+    dependencyRoot,
+    join(destinationRoot, "node_modules"),
+    process.platform === "win32" ? "junction" : "dir",
+  );
+}
+
+function buildEnvironmentWithoutGitOverrides() {
+  const environment = { ...process.env };
+  for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"]) delete environment[key];
+  return environment;
+}
+
+function operatorEnvironmentWithoutDatabase() {
+  const environment = buildEnvironmentWithoutGitOverrides();
+  for (const key of [
+    "DATABASE_URL",
+    "DATABASE_OPERATOR_URL",
+    "DATABASE_MIGRATIONS_CONFIRM",
+    "PGHOST",
+    "PGPORT",
+    "PGDATABASE",
+    "PGUSER",
+    "PGPASSWORD",
+    "PGPASSFILE",
+  ]) delete environment[key];
+  return environment;
 }
 
 function targetBinding({ transactionReadOnly = "on" } = {}) {
@@ -992,8 +1038,31 @@ test("inverse vectors cover every admitted reversible operation kind", () => {
   }
 });
 
+test("Run-197 generic npm build is Git-independent and emits no operator manifest", async () => {
+  const fixtureRoot = await mkdtemp(join(tmpdir(), "platform-run-197-gitless-build-"));
+  try {
+    await copyGitlessBuildContext(fixtureRoot);
+    assert.equal(await fileExists(join(fixtureRoot, ".git")), false);
+    await execFileAsync(npmCommand, ["run", "build"], {
+      cwd: fixtureRoot,
+      env: buildEnvironmentWithoutGitOverrides(),
+      shell: process.platform === "win32",
+      timeout: 120_000,
+      windowsHide: true,
+    });
+    assert.equal(await fileExists(join(fixtureRoot, "dist/db/durable-operations.js")), true);
+    assert.equal(
+      await fileExists(join(fixtureRoot, "dist/db/platform-db-operation-build.json")),
+      false,
+    );
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
 test("Run-196 exact build binds the executable closure before operator import", async () => {
   const expectedGitSha = await currentRepositoryRevision();
+  await writePlatformDbOperationBuildManifest({ rootDir: repositoryRoot });
   const verifiedBuild = await verifyPlatformDbOperationBuild({
     rootDir: repositoryRoot,
     expectedGitSha,
@@ -1012,6 +1081,56 @@ test("Run-196 exact build binds the executable closure before operator import", 
   assert.doesNotMatch(launcherSource, /from ["']\.\.\/dist/u);
   const selectedExecutable = await import(pathToFileURL(verifiedBuild.entrypoints.durableOperations).href);
   assert.equal(typeof selectedExecutable.assertRevisionBinding, "function");
+});
+
+test("Run-197 supported operator command builds and binds before the frozen launcher", async () => {
+  const expectedGitSha = await currentRepositoryRevision();
+  const manifestPath = join(repositoryRoot, "dist/db/platform-db-operation-build.json");
+  const scratch = await mkdtemp(join(tmpdir(), "platform-run-197-operator-command-"));
+  const backupPath = join(scratch, "platform-db-operation-build.json");
+  const hadManifest = await fileExists(manifestPath);
+  if (hadManifest) await copyFile(manifestPath, backupPath);
+  try {
+    await rm(manifestPath, { force: true });
+    let childError = null;
+    try {
+      await execFileAsync(npmCommand, [
+        "run",
+        "platform:db-operation",
+        "--",
+        "--expected-git-sha",
+        expectedGitSha,
+        "--expected-cluster-system-identifier",
+        "1",
+        "--expected-database-oid",
+        "1",
+        "--operation",
+        "migration",
+      ], {
+        cwd: repositoryRoot,
+        env: operatorEnvironmentWithoutDatabase(),
+        shell: process.platform === "win32",
+        timeout: 120_000,
+        windowsHide: true,
+      });
+    } catch (error) {
+      childError = error;
+    }
+    assert.ok(childError);
+    assert.notEqual(childError.code, 0);
+    assert.equal(await fileExists(manifestPath), true);
+    const verifiedBuild = await verifyPlatformDbOperationBuild({
+      rootDir: repositoryRoot,
+      expectedGitSha,
+    });
+    assert.equal(verifiedBuild.sourceGitSha, expectedGitSha);
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    assert.equal(manifest.source_git_sha, expectedGitSha);
+  } finally {
+    if (hadManifest) await copyFile(backupPath, manifestPath);
+    else await rm(manifestPath, { force: true });
+    await rm(scratch, { recursive: true, force: true });
+  }
 });
 
 test("Run-196 stale compiled output fails before database connection or mutation", async () => {
