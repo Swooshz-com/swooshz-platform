@@ -590,6 +590,7 @@ def execute_operation(
     *,
     process_factory: Callable[[], Any] = open_docker_process,
     clock: Callable[[], float] = time.monotonic,
+    event_queue_factory: Callable[[], queue.Queue[tuple[str, Any]]] | None = None,
 ) -> OperationSuccess | OperationFailure:
     schedule_id = validate_schedule_id(schedule_id)
     counts = OperationCounts()
@@ -610,7 +611,11 @@ def execute_operation(
         except Exception:
             return OperationFailure(False, counts)
 
-        events: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=EVENT_QUEUE_MAX)
+        events = (
+            event_queue_factory()
+            if event_queue_factory is not None
+            else queue.Queue(maxsize=EVENT_QUEUE_MAX)
+        )
         threading.Thread(target=_reader_worker, args=("stdout", process.stdout, events), daemon=True).start()
         threading.Thread(target=_reader_worker, args=("stderr", process.stderr, events), daemon=True).start()
         counts.phase1_writes = 1
@@ -691,7 +696,9 @@ def execute_operation(
         while clock() < terminal_deadline:
             returncode, poll_failed = _poll_process(process)
             post_failure = post_failure or poll_failed
-            if stdout_eof and stderr_eof and returncode is not None and not post_failure:
+            if returncode is not None and (type(returncode) is not int or returncode != 0):
+                post_failure = True
+            if stdout_eof and stderr_eof and type(returncode) is int and returncode == 0 and not post_failure:
                 break
             try:
                 event, value = events.get(timeout=min(0.05, max(0.0, terminal_deadline - clock())))
@@ -711,12 +718,12 @@ def execute_operation(
                 post_failure = True
             returncode, poll_failed = _poll_process(process)
             post_failure = post_failure or poll_failed
-            if returncode is not None and returncode not in {0, None}:
+            if returncode is not None and (type(returncode) is not int or returncode != 0):
                 post_failure = True
         if clock() >= terminal_deadline:
             post_failure = True
         returncode, poll_failed = _poll_process(process)
-        if poll_failed or returncode is None:
+        if poll_failed or type(returncode) is not int or returncode != 0:
             post_failure = True
         if post_failure:
             return OperationFailure(query_started, counts)
@@ -734,7 +741,12 @@ def execute_operation(
             _cleanup_process(process, stdin)
 
 
-def handle_protocol(input_stream: BinaryIO, output_stream: BinaryIO) -> None:
+def handle_protocol(
+    input_stream: BinaryIO,
+    output_stream: BinaryIO,
+    *,
+    operation: Callable[[Any], OperationSuccess | OperationFailure] = execute_operation,
+) -> None:
     """Serve exactly one public request and emit STARTED plus one terminal frame."""
 
     try:
@@ -743,11 +755,15 @@ def handle_protocol(input_stream: BinaryIO, output_stream: BinaryIO) -> None:
         write_public_frame(output_stream, failed_frame(QUERY_NOT_EXECUTED))
         return
     write_public_frame(output_stream, started_frame())
-    outcome = execute_operation(request["schedule_id"])
+    outcome = operation(request["schedule_id"])
     if isinstance(outcome, OperationSuccess):
-        write_public_frame(output_stream, result_frame(outcome.classification, outcome.filename))
+        try:
+            terminal_frame = result_frame(outcome.classification, outcome.filename)
+        except (AdapterError, OSError, TypeError, ValueError):
+            terminal_frame = failed_frame(QUERY_FAILED)
     else:
-        write_public_frame(output_stream, failed_frame(outcome.classification))
+        terminal_frame = failed_frame(outcome.classification)
+    write_public_frame(output_stream, terminal_frame)
 
 
 def main() -> None:

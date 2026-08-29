@@ -2,14 +2,22 @@ import ast
 import base64
 import hashlib
 import importlib.util
+import io
 import json
 import pathlib
+import queue
+import socket
 import sys
+import threading
 import unittest
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE_PATH = ROOT / "scripts" / "platform-persisted-locator-adapter.py"
+EXPECTED_ADAPTER_UTF8_BYTES = 27168
+EXPECTED_ADAPTER_BASE64URL_LENGTH = 36224
+EXPECTED_ADAPTER_SHA256 = "4a20b1d29cc661c192b77f16d8c8a121c19dd428db8c9079c73be21622598e3b"
+EXPECTED_ADAPTER_LINES = 774
 SPEC = importlib.util.spec_from_file_location("platform_persisted_locator_adapter", SOURCE_PATH)
 ADAPTER = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -38,7 +46,329 @@ class FakeStream:
             raise self.error
 
 
+class FastClock:
+    def __init__(self, step=0.05):
+        self.step = step
+        self.value = 0.0
+        self.calls = 0
+
+    def __call__(self):
+        current = self.value
+        self.value += self.step
+        self.calls += 1
+        return current
+
+
+class ProcessEventQueue:
+    def __init__(self, process):
+        self.process = process
+        self._queue = queue.Queue(maxsize=ADAPTER.EVENT_QUEUE_MAX)
+
+    def put(self, item):
+        self.process.put_events.append(item)
+        event, value = item
+        if event == "stdout" and value == ADAPTER.READY_MARKER:
+            self.process.marker_enqueued.set()
+        elif event == "phase1":
+            self.process.writer_enqueued.set()
+        self._queue.put(item)
+
+    def get(self, block=True, timeout=None):
+        if not block:
+            item = self._queue.get_nowait()
+        else:
+            wait = 0.001 if timeout is None else min(max(timeout, 0.0), 0.001)
+            if wait == 0:
+                item = self._queue.get_nowait()
+            else:
+                item = self._queue.get(timeout=wait)
+        self.process.get_events.append(item)
+        event, _ = item
+        if event == "stderr:eof":
+            self.process.stderr_eof_observed.set()
+        elif event == "stdout:eof":
+            self.process.stdout_eof_observed.set()
+        if self.process.stderr_eof_observed.is_set() and self.process.stdout_eof_observed.is_set():
+            self.process.both_eof_observed.set()
+        return item
+
+
+class ScriptedInput:
+    def __init__(
+        self,
+        process,
+        *,
+        phase1_status=ADAPTER.WRITER_OK,
+        phase2_status=ADAPTER.WRITER_OK,
+        phase1_release=None,
+        phase1_flush_error=False,
+        phase2_flush_error=False,
+    ):
+        self.process = process
+        self.phase1_status = phase1_status
+        self.phase2_status = phase2_status
+        self.phase1_release = phase1_release
+        self.phase1_flush_error = phase1_flush_error
+        self.phase2_flush_error = phase2_flush_error
+        self.writes = []
+        self.flushes = 0
+        self.last_kind = None
+        self.closed = False
+        self.phase1_started = threading.Event()
+
+    def write(self, payload):
+        self.writes.append(payload)
+        if payload == ADAPTER.READINESS_COMMAND:
+            self.last_kind = "phase1"
+            self.phase1_started.set()
+            if self.phase1_release is not None:
+                self.phase1_release.wait()
+            if self.phase1_status == ADAPTER.WRITER_ERROR:
+                raise OSError("phase-1 write failure")
+            if self.phase1_status == ADAPTER.WRITER_SHORT:
+                return 1
+            return len(payload)
+
+        self.last_kind = "phase2"
+        self.process.phase2_written.set()
+        self.process.phase2_precondition = (
+            self.process.marker_enqueued.is_set() and self.process.writer_enqueued.is_set()
+        )
+        self.process.phase2_payloads.append(payload)
+        if self.phase2_status == ADAPTER.WRITER_ERROR:
+            raise OSError("phase-2 write failure")
+        if self.phase2_status == ADAPTER.WRITER_SHORT:
+            return 1
+        return len(payload)
+
+    def flush(self):
+        self.flushes += 1
+        if self.last_kind == "phase1" and self.phase1_flush_error:
+            raise OSError("phase-1 flush failure")
+        if self.last_kind == "phase2" and self.phase2_flush_error:
+            raise OSError("phase-2 flush failure")
+
+    def close(self):
+        self.closed = True
+
+
+class ScriptedReadStream:
+    def __init__(self, process, channel):
+        self.process = process
+        self.channel = channel
+        self.read_count = 0
+        self.closed = False
+
+    def read(self, _length):
+        if self.channel == "stderr":
+            return b""
+        if self.read_count == 0:
+            self.read_count += 1
+            if self.process.marker_after_writer:
+                if not self.process.writer_enqueued.wait(2):
+                    raise OSError("writer acknowledgement did not arrive")
+            return ADAPTER.READY_MARKER
+        if self.read_count == 1:
+            self.read_count += 1
+            while not self.process.phase2_written.is_set() and not self.process.close_event.is_set():
+                self.process.phase2_written.wait(0.01)
+            if self.process.close_event.is_set() and not self.process.phase2_written.is_set():
+                return b""
+            return self.process.selector_output or b""
+        if self.process.hold_after_output:
+            self.process.close_event.wait()
+        return b""
+
+    def close(self):
+        self.closed = True
+        self.process.close_event.set()
+
+
+class ScriptedProcess:
+    def __init__(
+        self,
+        *,
+        marker_after_writer=False,
+        phase1_status=ADAPTER.WRITER_OK,
+        phase2_status=ADAPTER.WRITER_OK,
+        phase1_release=None,
+        phase1_flush_error=False,
+        phase2_flush_error=False,
+        selector_output=b'{"row_count":1,"filename":"backup.tar"}\n',
+        hold_after_output=False,
+        post_poll_error=False,
+        nonzero_after_eof=False,
+    ):
+        self.marker_after_writer = marker_after_writer
+        self.selector_output = selector_output
+        self.hold_after_output = hold_after_output
+        self.post_poll_error = post_poll_error
+        self.nonzero_after_eof = nonzero_after_eof
+        self.marker_enqueued = threading.Event()
+        self.writer_enqueued = threading.Event()
+        self.phase2_written = threading.Event()
+        self.close_event = threading.Event()
+        self.stderr_eof_observed = threading.Event()
+        self.stdout_eof_observed = threading.Event()
+        self.both_eof_observed = threading.Event()
+        self.put_events = []
+        self.get_events = []
+        self.phase2_payloads = []
+        self.phase2_precondition = False
+        self.poll_count = 0
+        self.post_eof_none_returned = False
+        self.post_eof_observations = []
+        self.factory_calls = 0
+        self.terminated = False
+        self.killed = False
+        self.stdin = ScriptedInput(
+            self,
+            phase1_status=phase1_status,
+            phase2_status=phase2_status,
+            phase1_release=phase1_release,
+            phase1_flush_error=phase1_flush_error,
+            phase2_flush_error=phase2_flush_error,
+        )
+        self.stdout = ScriptedReadStream(self, "stdout")
+        self.stderr = ScriptedReadStream(self, "stderr")
+
+    def event_queue(self):
+        return ProcessEventQueue(self)
+
+    def poll(self):
+        self.poll_count += 1
+        if not self.phase2_written.is_set():
+            return None
+        if self.post_poll_error:
+            raise OSError("poll failure")
+        if not self.both_eof_observed.is_set():
+            return None
+        if self.nonzero_after_eof:
+            if not self.post_eof_none_returned:
+                self.post_eof_none_returned = True
+                self.post_eof_observations.append(None)
+                return None
+            self.post_eof_observations.append(23)
+            return 23
+        if self.hold_after_output:
+            return None
+        return 0
+
+    def terminate(self):
+        self.terminated = True
+        self.close_event.set()
+
+    def kill(self):
+        self.killed = True
+        self.close_event.set()
+
+    def wait(self, timeout=None):
+        return 0
+
+
 class AdapterContractTests(unittest.TestCase):
+    def _run_execute(self, process, clock=None):
+        clock = clock or FastClock()
+        result = []
+        errors = []
+
+        def process_factory():
+            process.factory_calls += 1
+            return process
+
+        def target():
+            try:
+                result.append(
+                    ADAPTER.execute_operation(
+                        7,
+                        process_factory=process_factory,
+                        clock=clock,
+                        event_queue_factory=process.event_queue,
+                    )
+                )
+            except BaseException as error:
+                errors.append(error)
+
+        thread = threading.Thread(target=target, daemon=True)
+        thread.start()
+        thread.join(3)
+        if thread.is_alive():
+            process.close_event.set()
+            if process.stdin.phase1_release is not None:
+                process.stdin.phase1_release.set()
+            thread.join(1)
+        self.assertFalse(thread.is_alive(), "production operation did not reach a bounded outcome")
+        if errors:
+            self.fail(f"production operation raised unexpectedly: {errors[0]!r}")
+        self.assertEqual(len(result), 1)
+        return result[0], clock
+
+    @staticmethod
+    def _request_frame(schedule_id=7):
+        payload = json.dumps(
+            {"type": "REQUEST", "version": 1, "schedule_id": schedule_id},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return ADAPTER.Header.pack(ADAPTER.Magic, 1, ADAPTER.REQUEST, 0, len(payload)) + payload
+
+    @staticmethod
+    def _decode_public_frames(data):
+        frames = []
+        offset = 0
+        while offset < len(data):
+            if len(data) - offset < ADAPTER.Header.size:
+                raise AssertionError("public frame header is incomplete")
+            magic, version, message_type, flags, payload_length = ADAPTER.Header.unpack(
+                data[offset : offset + ADAPTER.Header.size]
+            )
+            if magic != ADAPTER.Magic or version != ADAPTER.Version or flags != 0:
+                raise AssertionError("public frame header is invalid")
+            payload_start = offset + ADAPTER.Header.size
+            payload_end = payload_start + payload_length
+            if payload_end > len(data):
+                raise AssertionError("public frame payload is incomplete")
+            frames.append((message_type, json.loads(data[payload_start:payload_end])))
+            offset = payload_end
+        return frames
+
+    def _handle_protocol(self, operation):
+        client, adapter_socket = socket.socketpair()
+        input_stream = None
+        output_stream = io.BytesIO()
+        try:
+            client.sendall(self._request_frame())
+            client.shutdown(socket.SHUT_WR)
+            input_stream = adapter_socket.makefile("rb")
+            ADAPTER.handle_protocol(input_stream, output_stream, operation=operation)
+            raw = output_stream.getvalue()
+            return self._decode_public_frames(raw), raw
+        finally:
+            if input_stream is not None:
+                input_stream.close()
+            adapter_socket.close()
+            client.close()
+
+    def _assert_single_operation_counts(self, process, outcome):
+        self.assertIsInstance(outcome, ADAPTER.OperationSuccess)
+        counts = outcome.counts
+        self.assertEqual(
+            (
+                counts.docker_execs,
+                counts.shell_wrappers,
+                counts.psql_sessions,
+                counts.logical_selects,
+                counts.phase1_writes,
+                counts.phase2_writes,
+                counts.retries,
+                counts.fallbacks,
+            ),
+            (1, 1, 1, 1, 1, 1, 0, 0),
+        )
+        self.assertEqual(process.factory_calls, 1)
+        self.assertEqual(len(process.stdin.writes), 2)
+        self.assertEqual(len(process.phase2_payloads), 1)
+        self.assertTrue(process.phase2_precondition)
+
     def test_python_ast_and_compile_without_main_call(self):
         source = SOURCE_PATH.read_text(encoding="utf-8")
         tree = ast.parse(source, filename=str(SOURCE_PATH))
@@ -271,6 +601,156 @@ class AdapterContractTests(unittest.TestCase):
         state = ADAPTER.AdmissionState()
         self.assertEqual(state.step(ADAPTER.READY_MARKER, ADAPTER.WRITER_OK, 4.0, 5.0, route_failed=True), ADAPTER.ADMISSION_FAIL)
 
+    def test_execute_operation_marker_before_writer_ack_is_production_path(self):
+        process = ScriptedProcess()
+        outcome, _ = self._run_execute(process)
+        self._assert_single_operation_counts(process, outcome)
+        self.assertEqual(outcome.classification, ADAPTER.EXACTLY_ONE)
+        self.assertEqual(outcome.filename, "backup.tar")
+        marker_index = next(i for i, item in enumerate(process.put_events) if item == ("stdout", ADAPTER.READY_MARKER))
+        writer_index = next(i for i, item in enumerate(process.put_events) if item[0] == "phase1")
+        self.assertLess(marker_index, writer_index)
+
+    def test_execute_operation_writer_ack_before_marker_is_production_path(self):
+        process = ScriptedProcess(marker_after_writer=True)
+        outcome, _ = self._run_execute(process)
+        self._assert_single_operation_counts(process, outcome)
+        writer_index = next(i for i, item in enumerate(process.put_events) if item[0] == "phase1")
+        marker_index = next(i for i, item in enumerate(process.put_events) if item == ("stdout", ADAPTER.READY_MARKER))
+        self.assertLess(writer_index, marker_index)
+
+    def test_execute_operation_exact_conjunction_has_one_private_phase2_write(self):
+        process = ScriptedProcess()
+        outcome, _ = self._run_execute(process)
+        self._assert_single_operation_counts(process, outcome)
+        self.assertEqual(process.stdin.writes[0], ADAPTER.READINESS_COMMAND)
+        self.assertEqual(process.stdin.writes[1], process.phase2_payloads[0])
+        self.assertTrue(process.marker_enqueued.is_set())
+        self.assertTrue(process.writer_enqueued.is_set())
+
+    def test_execute_operation_readiness_deadline_closes_permanently(self):
+        release = threading.Event()
+        process = ScriptedProcess(phase1_release=release)
+        outcome, clock = self._run_execute(process)
+        self.assertIsInstance(outcome, ADAPTER.OperationFailure)
+        self.assertFalse(outcome.query_started)
+        self.assertEqual(process.phase2_payloads, [])
+        self.assertGreaterEqual(clock.value, ADAPTER.R)
+        release.set()
+        self.assertTrue(process.writer_enqueued.wait(1))
+        self.assertEqual(process.phase2_payloads, [])
+
+    def test_execute_operation_phase1_short_and_write_flush_errors_fail_closed(self):
+        cases = [
+            {"phase1_status": ADAPTER.WRITER_SHORT},
+            {"phase1_flush_error": True},
+            {"phase1_status": ADAPTER.WRITER_ERROR},
+        ]
+        for options in cases:
+            with self.subTest(options=options):
+                process = ScriptedProcess(**options)
+                outcome, _ = self._run_execute(process)
+                self.assertIsInstance(outcome, ADAPTER.OperationFailure)
+                self.assertFalse(outcome.query_started)
+                self.assertEqual(len(process.phase2_payloads), 0)
+                self.assertEqual(process.factory_calls, 1)
+
+    def test_execute_operation_phase2_short_and_flush_errors_wait_to_database_bound(self):
+        cases = [
+            {"phase2_status": ADAPTER.WRITER_SHORT},
+            {"phase2_flush_error": True},
+            {"phase2_status": ADAPTER.WRITER_ERROR},
+        ]
+        for options in cases:
+            with self.subTest(options=options):
+                process = ScriptedProcess(**options)
+                outcome, clock = self._run_execute(process)
+                self.assertIsInstance(outcome, ADAPTER.OperationFailure)
+                self.assertTrue(outcome.query_started)
+                self.assertGreaterEqual(clock.value, ADAPTER.T_HOST)
+                self.assertEqual(len(process.phase2_payloads), 1)
+
+    def test_execute_operation_ambiguous_post_admission_state_waits_to_database_bound(self):
+        process = ScriptedProcess(hold_after_output=True)
+        outcome, clock = self._run_execute(process)
+        self.assertIsInstance(outcome, ADAPTER.OperationFailure)
+        self.assertTrue(outcome.query_started)
+        self.assertGreaterEqual(clock.value, ADAPTER.T_HOST)
+
+    def test_execute_operation_poll_failure_waits_to_database_bound(self):
+        process = ScriptedProcess(post_poll_error=True)
+        outcome, clock = self._run_execute(process)
+        self.assertIsInstance(outcome, ADAPTER.OperationFailure)
+        self.assertTrue(outcome.query_started)
+        self.assertGreaterEqual(clock.value, ADAPTER.T_HOST)
+
+    def test_execute_operation_f1_eof_none_then_nonzero_race_fails_closed(self):
+        process = ScriptedProcess(nonzero_after_eof=True)
+        outcome, clock = self._run_execute(process)
+        self.assertIsInstance(outcome, ADAPTER.OperationFailure)
+        self.assertEqual(outcome.classification, ADAPTER.QUERY_FAILED)
+        self.assertTrue(process.both_eof_observed.is_set())
+        self.assertEqual(process.post_eof_observations[:2], [None, 23])
+        self.assertGreaterEqual(clock.value, ADAPTER.T_HOST)
+
+    def test_execute_operation_clean_zero_return_is_success(self):
+        process = ScriptedProcess()
+        outcome, _ = self._run_execute(process)
+        self._assert_single_operation_counts(process, outcome)
+        self.assertEqual(outcome.classification, ADAPTER.EXACTLY_ONE)
+        self.assertEqual(outcome.filename, "backup.tar")
+
+    def test_execute_operation_selector_parse_failure_after_admission_waits_to_bound(self):
+        process = ScriptedProcess(selector_output=b"not-json\n")
+        outcome, clock = self._run_execute(process)
+        self.assertIsInstance(outcome, ADAPTER.OperationFailure)
+        self.assertEqual(outcome.classification, ADAPTER.QUERY_FAILED)
+        self.assertTrue(outcome.query_started)
+        self.assertGreaterEqual(clock.value, ADAPTER.T_HOST)
+
+    def test_handle_protocol_emits_started_and_one_terminal_frame_for_each_outcome(self):
+        outcomes = [
+            ADAPTER.OperationSuccess(ADAPTER.EXACTLY_ONE, "backup.tar", ADAPTER.OperationCounts()),
+            ADAPTER.OperationFailure(False, ADAPTER.OperationCounts()),
+            ADAPTER.OperationFailure(True, ADAPTER.OperationCounts()),
+        ]
+        for expected in outcomes:
+            with self.subTest(expected=expected):
+                seen_schedule_ids = []
+
+                def operation(schedule_id, expected=expected):
+                    seen_schedule_ids.append(schedule_id)
+                    return expected
+
+                frames, _ = self._handle_protocol(operation)
+                self.assertEqual(seen_schedule_ids, [7])
+                self.assertEqual(len(frames), 2)
+                self.assertEqual(frames[0], (ADAPTER.STARTED, {"type": "STARTED", "version": 1}))
+                expected_terminal_type = ADAPTER.RESULT if isinstance(expected, ADAPTER.OperationSuccess) else ADAPTER.FAILED
+                self.assertEqual(frames[1][0], expected_terminal_type)
+                self.assertEqual(frames[1][1]["classification"], expected.classification)
+
+    def test_handle_protocol_result_serialization_overflow_falls_back_to_bounded_query_failed(self):
+        filename = '"' * ADAPTER.NMAX
+        self.assertEqual(len(filename.encode("utf-8")), ADAPTER.NMAX)
+        with self.assertRaises(ADAPTER.ProtocolError):
+            ADAPTER.result_frame(ADAPTER.EXACTLY_ONE, filename)
+
+        outcome = ADAPTER.OperationSuccess(ADAPTER.EXACTLY_ONE, filename, ADAPTER.OperationCounts())
+        frames, raw = self._handle_protocol(lambda _schedule_id: outcome)
+        self.assertEqual([message_type for message_type, _ in frames], [ADAPTER.STARTED, ADAPTER.FAILED])
+        self.assertEqual(frames[1][1], {"type": "FAILED", "version": 1, "classification": ADAPTER.QUERY_FAILED})
+        _, _, _, _, started_length = ADAPTER.Header.unpack(raw[: ADAPTER.Header.size])
+        terminal_header_offset = ADAPTER.Header.size + started_length
+        _, _, _, _, terminal_length = ADAPTER.Header.unpack(
+            raw[terminal_header_offset : terminal_header_offset + ADAPTER.Header.size]
+        )
+        terminal_payload_start = terminal_header_offset + ADAPTER.Header.size
+        terminal_payload = raw[terminal_payload_start : terminal_payload_start + terminal_length]
+        self.assertLessEqual(len(terminal_payload), ADAPTER.PAYMAX)
+        self.assertNotIn(b"filename", terminal_payload)
+        self.assertNotIn(filename.encode("utf-8"), raw)
+
     def test_shell_environment_and_passwordless_route(self):
         wrapper = ADAPTER.SHELL_WRAPPER
         self.assertIn('if [ "${POSTGRES_DB:-}" != "coolify" ]', wrapper)
@@ -319,9 +799,12 @@ class AdapterContractTests(unittest.TestCase):
         contents = SOURCE_PATH.read_bytes()
         digest = hashlib.sha256(contents).hexdigest()
         encoded = base64.urlsafe_b64encode(contents).rstrip(b"=")
+        source_text = SOURCE_PATH.read_text(encoding="utf-8")
+        self.assertEqual(len(contents), EXPECTED_ADAPTER_UTF8_BYTES)
+        self.assertEqual(len(encoded), EXPECTED_ADAPTER_BASE64URL_LENGTH)
+        self.assertEqual(digest, EXPECTED_ADAPTER_SHA256)
+        self.assertEqual(len(source_text.splitlines()), EXPECTED_ADAPTER_LINES)
         self.assertEqual(len(contents), len(SOURCE_PATH.read_text(encoding="utf-8").encode("utf-8")))
-        self.assertEqual(len(digest), 64)
-        self.assertGreater(len(encoded), len(contents))
 
 
 if __name__ == "__main__":
