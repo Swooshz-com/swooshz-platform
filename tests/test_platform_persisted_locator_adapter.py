@@ -14,10 +14,10 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE_PATH = ROOT / "scripts" / "platform-persisted-locator-adapter.py"
-EXPECTED_ADAPTER_UTF8_BYTES = 28570
-EXPECTED_ADAPTER_BASE64URL_LENGTH = 38094
-EXPECTED_ADAPTER_SHA256 = "07e6982894d59d3884e2417622c4ba9b8e71226c2b59bf2b2d8dd7d34ceb55b5"
-EXPECTED_ADAPTER_LINES = 816
+EXPECTED_ADAPTER_UTF8_BYTES = 30375
+EXPECTED_ADAPTER_BASE64URL_LENGTH = 40500
+EXPECTED_ADAPTER_SHA256 = "ab70664f291302f92fb064c6192a9d43a71238c292f6ad444a8255687b353229"
+EXPECTED_ADAPTER_LINES = 868
 SPEC = importlib.util.spec_from_file_location("platform_persisted_locator_adapter", SOURCE_PATH)
 ADAPTER = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -262,7 +262,7 @@ class ScriptedProcess:
         phase1_release=None,
         phase1_flush_error=False,
         phase2_flush_error=False,
-        selector_output=b'{"row_count":1,"filename":"backup.tar"}\n',
+        selector_output=b'{"schedule_count":1,"execution_count":1,"filename":"backup.tar"}\n',
         hold_after_output=False,
         post_poll_error=False,
         nonzero_after_eof=False,
@@ -348,7 +348,6 @@ class AdapterContractTests(unittest.TestCase):
             try:
                 result.append(
                     ADAPTER.execute_operation(
-                        7,
                         process_factory=process_factory,
                         clock=clock,
                         event_queue_factory=process.event_queue,
@@ -372,11 +371,9 @@ class AdapterContractTests(unittest.TestCase):
         return result[0], clock
 
     @staticmethod
-    def _request_frame(schedule_id=7):
-        payload = json.dumps(
-            {"type": "REQUEST", "version": 1, "schedule_id": schedule_id},
-            separators=(",", ":"),
-        ).encode("utf-8")
+    def _request_frame(payload=None):
+        if payload is None:
+            payload = b'{"type":"REQUEST","version":2}'
         return ADAPTER.Header.pack(ADAPTER.Magic, 1, ADAPTER.REQUEST, 0, len(payload)) + payload
 
     @staticmethod
@@ -472,6 +469,8 @@ class AdapterContractTests(unittest.TestCase):
         self.assertEqual(top_level_main_calls, [])
 
     def test_constants_and_timer_equation(self):
+        self.assertEqual(ADAPTER.Version, 1)
+        self.assertEqual(ADAPTER.REQUEST_SCHEMA_VERSION, 2)
         self.assertEqual((ADAPTER.R, ADAPTER.I, ADAPTER.S, ADAPTER.MARGIN), (5, 2, 7, 1))
         self.assertEqual(ADAPTER.PGCONNECT_TIMEOUT, 2)
         self.assertEqual(ADAPTER.T_HOST, ADAPTER.R + 2 * ADAPTER.I + ADAPTER.S + ADAPTER.MARGIN)
@@ -479,9 +478,9 @@ class AdapterContractTests(unittest.TestCase):
         self.assertEqual(ADAPTER.PGOPTIONS_VALUE, "-c statement_timeout=7000 -c idle_session_timeout=2000")
 
     def test_splq_frame_and_exact_request(self):
-        payload = b'{"type":"REQUEST","version":1,"schedule_id":7}'
+        payload = b'{"type":"REQUEST","version":2}'
         frame = ADAPTER.Header.pack(ADAPTER.Magic, 1, ADAPTER.REQUEST, 0, len(payload)) + payload
-        self.assertEqual(ADAPTER.decode_request_frame(frame), {"type": "REQUEST", "version": 1, "schedule_id": 7})
+        self.assertEqual(ADAPTER.decode_request_frame(frame), {"type": "REQUEST", "version": 2})
         with self.assertRaises(ADAPTER.ProtocolError):
             ADAPTER.decode_request_frame(frame + b"x")
         with self.assertRaises(ADAPTER.ProtocolError):
@@ -493,34 +492,34 @@ class AdapterContractTests(unittest.TestCase):
             ADAPTER.decode_request_frame(oversized + b"x" * (ADAPTER.REQMAX + 1))
 
     def test_open_duplex_valid_request_runs_operation_once(self):
-        seen_schedule_ids = []
+        operation_calls = []
 
-        def operation(schedule_id):
-            seen_schedule_ids.append(schedule_id)
+        def operation():
+            operation_calls.append(True)
             return ADAPTER.OperationSuccess(ADAPTER.ZERO_ROW_MATCH, None, ADAPTER.OperationCounts())
 
         frames, _ = self._handle_protocol(operation)
-        self.assertEqual(seen_schedule_ids, [7])
+        self.assertEqual(operation_calls, [True])
         self.assertEqual([message_type for message_type, _ in frames], [ADAPTER.STARTED, ADAPTER.RESULT])
         self.assertEqual(sum(message_type in {ADAPTER.RESULT, ADAPTER.FAILED} for message_type, _ in frames), 1)
 
     def test_open_duplex_trailing_byte_is_rejected_before_operation(self):
-        seen_schedule_ids = []
+        operation_calls = []
 
-        frames, _ = self._handle_protocol(lambda schedule_id: seen_schedule_ids.append(schedule_id), suffix=b"x")
-        self.assertEqual(seen_schedule_ids, [])
+        frames, _ = self._handle_protocol(lambda: operation_calls.append(True), suffix=b"x")
+        self.assertEqual(operation_calls, [])
         self.assertEqual(len(frames), 1)
         self.assertEqual(frames[0], (ADAPTER.FAILED, {"type": "FAILED", "version": 1, "classification": ADAPTER.QUERY_NOT_EXECUTED}))
 
     def test_half_closed_trailing_byte_is_rejected_before_operation(self):
-        seen_schedule_ids = []
+        operation_calls = []
 
         frames, _ = self._handle_protocol(
-            lambda schedule_id: seen_schedule_ids.append(schedule_id),
+            lambda: operation_calls.append(True),
             suffix=b"x",
             half_close=True,
         )
-        self.assertEqual(seen_schedule_ids, [])
+        self.assertEqual(operation_calls, [])
         self.assertEqual(len(frames), 1)
         self.assertEqual(frames[0], (ADAPTER.FAILED, {"type": "FAILED", "version": 1, "classification": ADAPTER.QUERY_NOT_EXECUTED}))
 
@@ -533,7 +532,7 @@ class AdapterContractTests(unittest.TestCase):
         header_read = threading.Event()
         payload_read = threading.Event()
         allow_probe = threading.Event()
-        seen_schedule_ids = []
+        operation_calls = []
         frame = self._request_frame()
         try:
             input_stream = PayloadGateStream(adapter_socket.makefile("rb"), header_read, payload_read, allow_probe)
@@ -543,7 +542,7 @@ class AdapterContractTests(unittest.TestCase):
                     ADAPTER.handle_protocol(
                         input_stream,
                         output_stream,
-                        operation=lambda schedule_id: seen_schedule_ids.append(schedule_id),
+                        operation=lambda: operation_calls.append(True),
                     )
                 except BaseException as error:
                     errors.append(error)
@@ -561,7 +560,7 @@ class AdapterContractTests(unittest.TestCase):
                 self.fail("immediate-trailing production protocol handler did not complete promptly")
             if errors:
                 self.fail(f"immediate-trailing production protocol handler raised unexpectedly: {errors[0]!r}")
-            self.assertEqual(seen_schedule_ids, [])
+            self.assertEqual(operation_calls, [])
             frames = self._decode_public_frames(output_stream.getvalue())
             self.assertEqual(
                 frames,
@@ -581,15 +580,15 @@ class AdapterContractTests(unittest.TestCase):
             client.close()
 
     def test_malformed_request_is_rejected_before_operation(self):
-        payload = b'{"type":"REQUEST","version":1,"schedule_id":7}'
+        payload = b'{"type":"REQUEST","version":2}'
         invalid_frame = ADAPTER.Header.pack(b"BAD!", 1, ADAPTER.REQUEST, 0, len(payload)) + payload
-        seen_schedule_ids = []
+        operation_calls = []
 
         frames, _ = self._handle_protocol(
-            lambda schedule_id: seen_schedule_ids.append(schedule_id),
+            lambda: operation_calls.append(True),
             frame=invalid_frame,
         )
-        self.assertEqual(seen_schedule_ids, [])
+        self.assertEqual(operation_calls, [])
         self.assertEqual(len(frames), 1)
         self.assertEqual(frames[0], (ADAPTER.FAILED, {"type": "FAILED", "version": 1, "classification": ADAPTER.QUERY_NOT_EXECUTED}))
 
@@ -600,7 +599,7 @@ class AdapterContractTests(unittest.TestCase):
         errors = []
         output_stream = io.BytesIO()
         first_read = threading.Event()
-        seen_schedule_ids = []
+        operation_calls = []
         frame = self._request_frame()
         try:
             input_stream = ReadSignalStream(adapter_socket.makefile("rb"), first_read)
@@ -610,8 +609,8 @@ class AdapterContractTests(unittest.TestCase):
                     ADAPTER.handle_protocol(
                         input_stream,
                         output_stream,
-                        operation=lambda schedule_id: (
-                            seen_schedule_ids.append(schedule_id)
+                        operation=lambda: (
+                            operation_calls.append(True)
                             or ADAPTER.OperationSuccess(ADAPTER.ZERO_ROW_MATCH, None, ADAPTER.OperationCounts())
                         ),
                     )
@@ -628,7 +627,7 @@ class AdapterContractTests(unittest.TestCase):
                 self.fail("split-delivery production protocol handler did not complete promptly")
             if errors:
                 self.fail(f"split-delivery production protocol handler raised unexpectedly: {errors[0]!r}")
-            self.assertEqual(seen_schedule_ids, [7])
+            self.assertEqual(operation_calls, [True])
             frames = self._decode_public_frames(output_stream.getvalue())
             self.assertEqual([message_type for message_type, _ in frames], [ADAPTER.STARTED, ADAPTER.RESULT])
         finally:
@@ -649,7 +648,7 @@ class AdapterContractTests(unittest.TestCase):
         try:
             self.assertEqual(
                 ADAPTER.read_request_frame(stream, timeout=1),
-                {"type": "REQUEST", "version": 1, "schedule_id": 7},
+                {"type": "REQUEST", "version": 2},
             )
             self.assertEqual(stream.read_count, 1)
         finally:
@@ -669,21 +668,40 @@ class AdapterContractTests(unittest.TestCase):
 
     def test_request_json_adversaries(self):
         cases = [
-            b'{"type":"REQUEST","version":1,"schedule_id":true}',
-            b'{"type":"REQUEST","version":1,"schedule_id":1.0}',
-            b'{"type":"REQUEST","version":1,"schedule_id":0}',
-            b'{"type":"REQUEST","version":1,"schedule_id":-1}',
-            b'{"type":"REQUEST","version":1,"schedule_id":9223372036854775808}',
-            b'{"type":"REQUEST","version":1,"schedule_id":1,"extra":0}',
-            b'{"type":"REQUEST","version":1,"schedule_id":1,"schedule_id":2}',
-            b'{"type":"REQUEST","version":1,"schedule_id":NaN}',
-            b'{"type":"REQUEST","version":1,"schedule_id":Infinity}',
-            b'{"type":"REQUEST","version":1,"schedule_id":1} trailing',
-            b' {"type":"REQUEST","version":1,"schedule_id":1}',
+            b'{"type":"REQUEST","version":1,"schedule_id":7}',
+            b'{"type":"REQUEST","version":2,"schedule_id":7}',
+            b'{"type":"REQUEST","version":2,"extra":0}',
+            b'{"type":"REQUEST"}',
+            b'{"version":2}',
+            b'{"type":1,"version":2}',
+            b'{"type":"REQUEST","version":"2"}',
+            b'{"type":"REQUEST","version":1}',
+            b'{"type":"REQUEST","version":3}',
+            b'{"type":"REQUEST","version":2,"version":2}',
+            b'{"type":"REQUEST","type":"REQUEST","version":2}',
+            b'{"type":"REQUEST","version":NaN}',
+            b'{"type":"REQUEST","version":Infinity}',
+            b'{"type":"REQUEST","version":2} trailing',
+            b' {"type":"REQUEST","version":2}',
+            b'{"type":"REQUEST","version":2',
+            b'{"type":"REQUEST","version":\xff}',
         ]
         for payload in cases:
             with self.subTest(payload=payload), self.assertRaises(ADAPTER.ProtocolError):
                 ADAPTER.parse_request_payload(payload)
+
+    def test_old_selector_request_is_rejected_before_operation(self):
+        operation_calls = []
+        old_request = b'{"type":"REQUEST","version":1,"schedule_id":7}'
+        frames, _ = self._handle_protocol(
+            lambda: operation_calls.append(True),
+            frame=self._request_frame(old_request),
+        )
+        self.assertEqual(operation_calls, [])
+        self.assertEqual(
+            frames,
+            [(ADAPTER.FAILED, {"type": "FAILED", "version": 1, "classification": ADAPTER.QUERY_NOT_EXECUTED})],
+        )
 
     def test_readiness_command_and_marker_are_distinct(self):
         self.assertEqual(ADAPTER.READINESS_COMMAND, b"\\echo SPLQ_PUBLIC_READY_V1\n")
@@ -766,13 +784,21 @@ class AdapterContractTests(unittest.TestCase):
         self.assertEqual(error.writes, [b"abcd"])
 
     def test_private_selector_query_is_exact_and_bounded(self):
-        query = ADAPTER.build_locator_query(8301)
+        query = ADAPTER.build_locator_query()
         self.assertLessEqual(len(query.encode("utf-8")), ADAPTER.QMAX)
         self.assertEqual(query.count("SELECT json_build_object("), 1)
+        self.assertEqual(query.count("FROM scheduled_database_backups AS s"), 1)
+        self.assertEqual(query.count("FROM scheduled_database_backup_executions AS e"), 1)
+        self.assertEqual(query.count("JOIN schedule_candidates AS s"), 1)
         for fragment in [
-            "s.id = 8301",
+            "s.id > 0",
+            "s.enabled IS TRUE",
             "s.database_id = 0",
             "s.database_type = 'App\\Models\\StandalonePostgresql'",
+            "s.frequency = '0 18 * * *'",
+            "s.save_s3 IS TRUE",
+            "s.disable_local_backup IS FALSE",
+            "ON e.scheduled_database_backup_id = s.id",
             "e.database_name = 'coolify'",
             "e.status = 'success'",
             "e.created_at >= TIMESTAMPTZ '2026-08-27T18:00:03Z'",
@@ -782,36 +808,75 @@ class AdapterContractTests(unittest.TestCase):
             "e.s3_uploaded IS TRUE",
             "e.filename IS NOT NULL",
             "e.local_storage_deleted IS FALSE",
+            "'schedule_count', schedule_count",
+            "'execution_count', execution_count",
+            "CASE WHEN count(*) > 1 THEN 2 ELSE count(*) END AS schedule_count",
+            "CASE WHEN count(*) > 1 THEN 2 ELSE count(*) END AS execution_count",
         ]:
             self.assertIn(fragment, query)
-        with self.assertRaises(ADAPTER.ProtocolError):
-            ADAPTER.build_locator_query(True)
-        with self.assertRaises(ADAPTER.ProtocolError):
-            ADAPTER.build_locator_query(0)
+        self.assertNotIn("schedule_id", query)
+        self.assertNotIn("row_count", query)
+        self.assertNotIn("ORDER BY", query.upper())
+        self.assertNotIn("LIMIT", query.upper())
         self.assertEqual(ADAPTER.phase2_payload(query), query.encode() + b"\n\\q\n")
 
     def test_selector_cardinality_privacy_and_bounds(self):
-        self.assertEqual(ADAPTER.classify_selector_object({"row_count": 0, "filename": None}), (ADAPTER.ZERO_ROW_MATCH, None))
-        self.assertEqual(ADAPTER.classify_selector_object({"row_count": 2, "filename": None}), (ADAPTER.MULTIPLE_ROW_MATCH, None))
-        self.assertEqual(ADAPTER.classify_selector_object({"row_count": 1, "filename": None}), (ADAPTER.PRIVATE_LOCATOR_MISSING, None))
-        self.assertEqual(ADAPTER.classify_selector_object({"row_count": 1, "filename": "backup.tar"}), (ADAPTER.EXACTLY_ONE, "backup.tar"))
+        matrix = {
+            (0, 0): (ADAPTER.ZERO_ROW_MATCH, ADAPTER.SCHEDULE_ZERO),
+            (0, 1): (ADAPTER.ZERO_ROW_MATCH, ADAPTER.SCHEDULE_ZERO),
+            (0, 2): (ADAPTER.ZERO_ROW_MATCH, ADAPTER.SCHEDULE_ZERO),
+            (1, 0): (ADAPTER.ZERO_ROW_MATCH, ADAPTER.EXECUTION_ZERO),
+            (1, 1): (ADAPTER.EXACTLY_ONE, ADAPTER.EXACTLY_ONE),
+            (1, 2): (ADAPTER.MULTIPLE_ROW_MATCH, ADAPTER.EXECUTION_MULTIPLE),
+            (2, 0): (ADAPTER.MULTIPLE_ROW_MATCH, ADAPTER.SCHEDULE_MULTIPLE),
+            (2, 1): (ADAPTER.MULTIPLE_ROW_MATCH, ADAPTER.SCHEDULE_MULTIPLE),
+            (2, 2): (ADAPTER.MULTIPLE_ROW_MATCH, ADAPTER.SCHEDULE_MULTIPLE),
+        }
+        for (schedule_count, execution_count), (classification, cause) in matrix.items():
+            with self.subTest(schedule_count=schedule_count, execution_count=execution_count):
+                filename = "backup.tar" if (schedule_count, execution_count) == (1, 1) else None
+                value = {
+                    "schedule_count": schedule_count,
+                    "execution_count": execution_count,
+                    "filename": filename,
+                }
+                details = ADAPTER.classify_selector_details(value)
+                self.assertEqual((details.classification, details.filename, details.cause), (classification, filename, cause))
+                self.assertEqual(ADAPTER.classify_selector_object(value), (classification, filename))
+
+        self.assertEqual(
+            ADAPTER.classify_selector_object({"schedule_count": 1, "execution_count": 1, "filename": None}),
+            (ADAPTER.PRIVATE_LOCATOR_MISSING, None),
+        )
+        self.assertEqual(
+            ADAPTER.classify_selector_object({"schedule_count": 1, "execution_count": 1, "filename": ""}),
+            (ADAPTER.PRIVATE_LOCATOR_MISSING, None),
+        )
         for value in [
-            {"row_count": 0, "filename": "leak"},
-            {"row_count": 2, "filename": "leak"},
-            {"row_count": True, "filename": None},
-            {"row_count": 3, "filename": None},
-            {"row_count": 1, "filename": 7},
-            {"row_count": 1, "filename": "x" * (ADAPTER.NMAX + 1)},
-            {"row_count": 1, "filename": "ok", "extra": 1},
+            {"schedule_count": 0, "execution_count": 0, "filename": "leak"},
+            {"schedule_count": 2, "execution_count": 1, "filename": "leak"},
+            {"schedule_count": True, "execution_count": 1, "filename": None},
+            {"schedule_count": 1, "execution_count": True, "filename": None},
+            {"schedule_count": 3, "execution_count": 1, "filename": None},
+            {"schedule_count": 1, "execution_count": 3, "filename": None},
+            {"schedule_count": 1, "execution_count": 1, "filename": 7},
+            {"schedule_count": 1, "execution_count": 1, "filename": "x" * (ADAPTER.NMAX + 1)},
+            {"schedule_count": 1, "execution_count": 1, "filename": "\ud800"},
+            {"schedule_count": 1, "execution_count": 1, "filename": b"bytes"},
+            {"schedule_count": 1, "execution_count": 1, "filename": "ok", "extra": 1},
         ]:
             with self.subTest(value=value), self.assertRaises(ADAPTER.SelectorOutputError):
                 ADAPTER.classify_selector_object(value)
         self.assertEqual(
-            ADAPTER.parse_selector_output(b'{"row_count":1,"filename":"backup.tar"}\n'),
+            ADAPTER.parse_selector_output(b'{"schedule_count":1,"execution_count":1,"filename":"backup.tar"}\n'),
             (ADAPTER.EXACTLY_ONE, "backup.tar"),
         )
         with self.assertRaises(ADAPTER.SelectorOutputError):
-            ADAPTER.parse_selector_output(b'{"row_count":0,"filename":null}\n\n')
+            ADAPTER.parse_selector_output(b'{"schedule_count":0,"execution_count":0,"filename":null}\n\n')
+        with self.assertRaises(ADAPTER.SelectorOutputError):
+            ADAPTER.parse_selector_output(b'{"schedule_count":1,"execution_count":1,"filename":"ok","filename":"dup"}\n')
+        with self.assertRaises(ADAPTER.SelectorOutputError):
+            ADAPTER.parse_selector_output(b'{"schedule_count":NaN,"execution_count":1,"filename":null}\n')
 
     def test_route_and_topology_static_contract(self):
         source = SOURCE_PATH.read_text(encoding="utf-8")
@@ -968,14 +1033,14 @@ class AdapterContractTests(unittest.TestCase):
         ]
         for expected in outcomes:
             with self.subTest(expected=expected):
-                seen_schedule_ids = []
+                operation_calls = []
 
-                def operation(schedule_id, expected=expected):
-                    seen_schedule_ids.append(schedule_id)
+                def operation(expected=expected):
+                    operation_calls.append(True)
                     return expected
 
                 frames, _ = self._handle_protocol(operation)
-                self.assertEqual(seen_schedule_ids, [7])
+                self.assertEqual(operation_calls, [True])
                 self.assertEqual(len(frames), 2)
                 self.assertEqual(frames[0], (ADAPTER.STARTED, {"type": "STARTED", "version": 1}))
                 expected_terminal_type = ADAPTER.RESULT if isinstance(expected, ADAPTER.OperationSuccess) else ADAPTER.FAILED
@@ -989,7 +1054,7 @@ class AdapterContractTests(unittest.TestCase):
             ADAPTER.result_frame(ADAPTER.EXACTLY_ONE, filename)
 
         outcome = ADAPTER.OperationSuccess(ADAPTER.EXACTLY_ONE, filename, ADAPTER.OperationCounts())
-        frames, raw = self._handle_protocol(lambda _schedule_id: outcome)
+        frames, raw = self._handle_protocol(lambda: outcome)
         self.assertEqual([message_type for message_type, _ in frames], [ADAPTER.STARTED, ADAPTER.FAILED])
         self.assertEqual(frames[1][1], {"type": "FAILED", "version": 1, "classification": ADAPTER.QUERY_FAILED})
         _, _, _, _, started_length = ADAPTER.Header.unpack(raw[: ADAPTER.Header.size])
@@ -1014,13 +1079,14 @@ class AdapterContractTests(unittest.TestCase):
         for variable in ["PGHOST", "PGHOSTADDR", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD", "PGSERVICE", "PGSERVICEFILE", "PGSSLMODE", "PGSSLKEY", "PGSSLROOTCERT"]:
             self.assertIn(variable, wrapper)
 
-    def test_public_frames_never_include_private_sql_or_row_count(self):
-        query = ADAPTER.build_locator_query(1)
+    def test_public_frames_never_include_private_sql_or_cardinality_fields(self):
+        query = ADAPTER.build_locator_query()
         exact = ADAPTER.result_frame(ADAPTER.EXACTLY_ONE, "file.tar")
         zero = ADAPTER.result_frame(ADAPTER.ZERO_ROW_MATCH)
         self.assertNotIn(query.encode(), exact)
         self.assertNotIn(query.encode(), zero)
-        self.assertNotIn(b"row_count", exact)
+        self.assertNotIn(b"schedule_count", exact)
+        self.assertNotIn(b"execution_count", exact)
         self.assertNotIn(b"filename", zero)
         self.assertEqual(json.loads(exact[ADAPTER.Header.size:])["filename"], "file.tar")
 

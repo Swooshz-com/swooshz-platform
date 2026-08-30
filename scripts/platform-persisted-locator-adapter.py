@@ -23,6 +23,7 @@ from typing import Any, BinaryIO, Callable
 Header = struct.Struct("!4sBBHI")
 Magic = b"SPLQ"
 Version = 1
+REQUEST_SCHEMA_VERSION = 2
 
 REQUEST = 1
 STARTED = 2
@@ -154,22 +155,19 @@ def parse_strict_json(payload: bytes) -> Any:
     return value
 
 
-def validate_schedule_id(value: Any) -> int:
-    if type(value) is not int or not 0 < value < 9223372036854775808:
-        raise ProtocolError("invalid schedule id")
-    return value
-
-
 def parse_request_payload(payload: bytes) -> dict[str, Any]:
     if len(payload) > REQMAX or len(payload) > PAYMAX:
         raise ProtocolError("request payload is oversized")
     value = parse_strict_json(payload)
-    if not isinstance(value, dict) or set(value) != {"type", "version", "schedule_id"}:
+    if not isinstance(value, dict) or set(value) != {"type", "version"}:
         raise ProtocolError("request object shape is invalid")
-    if value["type"] != "REQUEST" or type(value["version"]) is not int or value["version"] != Version:
+    if (
+        value["type"] != "REQUEST"
+        or type(value["version"]) is not int
+        or value["version"] != REQUEST_SCHEMA_VERSION
+    ):
         raise ProtocolError("request version or type is invalid")
-    schedule_id = validate_schedule_id(value["schedule_id"])
-    return {"type": "REQUEST", "version": Version, "schedule_id": schedule_id}
+    return {"type": "REQUEST", "version": REQUEST_SCHEMA_VERSION}
 
 
 def decode_request_frame(frame: bytes) -> dict[str, Any]:
@@ -434,32 +432,53 @@ def extract_after_ready_marker(captured_stdout: bytes) -> bytes:
     return captured_stdout[len(READY_MARKER):]
 
 
-def build_locator_query(schedule_id: Any) -> str:
-    schedule_id = validate_schedule_id(schedule_id)
-    query = fr"""SELECT json_build_object(
-  'row_count',
-  CASE WHEN count(*) > 1 THEN 2 ELSE count(*) END,
-  'filename',
-  CASE WHEN count(*) = 1 THEN max(e.filename) ELSE NULL END
-)::text
-FROM scheduled_database_backup_executions AS e
-JOIN scheduled_database_backups AS s
-  ON s.id = e.scheduled_database_backup_id
-WHERE s.id = {schedule_id}
-  AND s.database_id = 0
-  AND s.database_type = 'App\Models\StandalonePostgresql'
-  AND e.database_name = 'coolify'
-  AND e.status = 'success'
-  AND e.created_at >= TIMESTAMPTZ '2026-08-27T18:00:03Z'
-  AND e.created_at < TIMESTAMPTZ '2026-08-27T18:00:04Z'
-  AND CASE
-        WHEN e.size ~ '^[0-9]+$'
-        THEN e.size::numeric = 830082
-        ELSE false
-      END
-  AND e.s3_uploaded IS TRUE
-  AND e.filename IS NOT NULL
-  AND e.local_storage_deleted IS FALSE;"""
+def build_locator_query() -> str:
+    query = r"""WITH schedule_candidates AS (
+  SELECT s.id
+  FROM scheduled_database_backups AS s
+  WHERE s.id > 0
+    AND s.enabled IS TRUE
+    AND s.database_id = 0
+    AND s.database_type = 'App\Models\StandalonePostgresql'
+    AND s.frequency = '0 18 * * *'
+    AND s.save_s3 IS TRUE
+    AND s.disable_local_backup IS FALSE
+), schedule_cardinality AS (
+  SELECT CASE WHEN count(*) > 1 THEN 2 ELSE count(*) END AS schedule_count
+  FROM schedule_candidates
+), execution_candidates AS (
+  SELECT e.filename
+  FROM scheduled_database_backup_executions AS e
+  JOIN schedule_candidates AS s
+    ON e.scheduled_database_backup_id = s.id
+  WHERE e.database_name = 'coolify'
+    AND e.status = 'success'
+    AND e.created_at >= TIMESTAMPTZ '2026-08-27T18:00:03Z'
+    AND e.created_at < TIMESTAMPTZ '2026-08-27T18:00:04Z'
+    AND CASE
+          WHEN e.size ~ '^[0-9]+$'
+          THEN e.size::numeric = 830082
+          ELSE false
+        END
+    AND e.s3_uploaded IS TRUE
+    AND e.filename IS NOT NULL
+    AND e.local_storage_deleted IS FALSE
+), execution_cardinality AS (
+  SELECT
+    CASE WHEN count(*) > 1 THEN 2 ELSE count(*) END AS execution_count,
+    CASE WHEN count(*) = 1 THEN max(filename) ELSE NULL END AS filename
+  FROM execution_candidates
+)
+SELECT json_build_object(
+  'schedule_count', schedule_count,
+  'execution_count', execution_count,
+  'filename', CASE
+                WHEN schedule_count = 1 AND execution_count = 1 THEN filename
+                ELSE NULL
+              END
+      )::text
+FROM schedule_cardinality
+CROSS JOIN execution_cardinality;"""
     encoded_length = len(query.encode("utf-8"))
     if encoded_length > QMAX:
         raise QueryConstructionError("locator query is oversized")
@@ -476,19 +495,49 @@ def phase2_payload(query: str) -> bytes:
     return encoded_query + b"\n\\q\n"
 
 
-def classify_selector_object(value: Any) -> tuple[str, str | None]:
-    if not isinstance(value, dict) or set(value) != {"row_count", "filename"}:
+@dataclass(frozen=True)
+class SelectorDetails:
+    classification: str
+    filename: str | None
+    cause: str
+
+
+SCHEDULE_ZERO = "SCHEDULE_ZERO"
+SCHEDULE_MULTIPLE = "SCHEDULE_MULTIPLE"
+EXECUTION_ZERO = "EXECUTION_ZERO"
+EXECUTION_MULTIPLE = "EXECUTION_MULTIPLE"
+
+
+def _selector_cardinality(value: Any, field: str) -> int:
+    if type(value) is not int or value not in {0, 1, 2}:
+        raise SelectorOutputError(f"selector {field} is invalid")
+    return value
+
+
+def classify_selector_details(value: Any) -> SelectorDetails:
+    if not isinstance(value, dict) or set(value) != {"schedule_count", "execution_count", "filename"}:
         raise SelectorOutputError("selector output shape is invalid")
-    row_count = value["row_count"]
-    if type(row_count) is not int or row_count not in {0, 1, 2}:
-        raise SelectorOutputError("selector row count is invalid")
+    schedule_count = _selector_cardinality(value["schedule_count"], "schedule count")
+    execution_count = _selector_cardinality(value["execution_count"], "execution count")
     filename = value["filename"]
-    if row_count != 1:
+    if schedule_count == 0:
         if filename is not None:
             raise SelectorOutputError("non-single selector output has a filename")
-        return (ZERO_ROW_MATCH if row_count == 0 else MULTIPLE_ROW_MATCH, None)
+        return SelectorDetails(ZERO_ROW_MATCH, None, SCHEDULE_ZERO)
+    if schedule_count == 2:
+        if filename is not None:
+            raise SelectorOutputError("non-single selector output has a filename")
+        return SelectorDetails(MULTIPLE_ROW_MATCH, None, SCHEDULE_MULTIPLE)
+    if execution_count == 0:
+        if filename is not None:
+            raise SelectorOutputError("non-single selector output has a filename")
+        return SelectorDetails(ZERO_ROW_MATCH, None, EXECUTION_ZERO)
+    if execution_count == 2:
+        if filename is not None:
+            raise SelectorOutputError("non-single selector output has a filename")
+        return SelectorDetails(MULTIPLE_ROW_MATCH, None, EXECUTION_MULTIPLE)
     if filename is None or filename == "":
-        return PRIVATE_LOCATOR_MISSING, None
+        return SelectorDetails(PRIVATE_LOCATOR_MISSING, None, PRIVATE_LOCATOR_MISSING)
     if not isinstance(filename, str):
         raise SelectorOutputError("selector filename is not a string")
     try:
@@ -496,10 +545,15 @@ def classify_selector_object(value: Any) -> tuple[str, str | None]:
     except UnicodeEncodeError as error:
         raise SelectorOutputError("selector filename is not valid UTF-8") from error
     if filename_size == 0:
-        return PRIVATE_LOCATOR_MISSING, None
+        return SelectorDetails(PRIVATE_LOCATOR_MISSING, None, PRIVATE_LOCATOR_MISSING)
     if filename_size > NMAX:
         raise SelectorOutputError("selector filename is oversized")
-    return EXACTLY_ONE, filename
+    return SelectorDetails(EXACTLY_ONE, filename, EXACTLY_ONE)
+
+
+def classify_selector_object(value: Any) -> tuple[str, str | None]:
+    details = classify_selector_details(value)
+    return details.classification, details.filename
 
 
 def parse_selector_output(output: bytes) -> tuple[str, str | None]:
@@ -628,13 +682,11 @@ def _wait_through_database_bound(clock: Callable[[], float], deadline: float, ev
 
 
 def execute_operation(
-    schedule_id: Any,
     *,
     process_factory: Callable[[], Any] = open_docker_process,
     clock: Callable[[], float] = time.monotonic,
     event_queue_factory: Callable[[], queue.Queue[tuple[str, Any]]] | None = None,
 ) -> OperationSuccess | OperationFailure:
-    schedule_id = validate_schedule_id(schedule_id)
     counts = OperationCounts()
     t0 = clock()
     readiness_deadline = t0 + R
@@ -727,7 +779,7 @@ def execute_operation(
             elif decision in {ADMISSION_FAIL, ADMISSION_CLOSED}:
                 return OperationFailure(False, counts)
 
-        query = build_locator_query(schedule_id)
+        query = build_locator_query()
         payload = phase2_payload(query)
         query_started = True
         counts.logical_selects = 1
@@ -797,7 +849,7 @@ def handle_protocol(
         write_public_frame(output_stream, failed_frame(QUERY_NOT_EXECUTED))
         return
     write_public_frame(output_stream, started_frame())
-    outcome = operation(request["schedule_id"])
+    outcome = operation()
     if isinstance(outcome, OperationSuccess):
         try:
             terminal_frame = result_frame(outcome.classification, outcome.filename)
