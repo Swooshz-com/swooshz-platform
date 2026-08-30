@@ -54,6 +54,9 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Persisted locator adapter tests
+        run: python3 -m unittest tests/test_platform_persisted_locator_adapter.py
+
       - name: PostgreSQL 17 disposable runtime posture tests
         # The runner owns the exact codex-platform127-pg17 postgres:17 fixture and listener.
         # Its disposable container uses POSTGRES_HOST_AUTH_METHOD=trust only locally.
