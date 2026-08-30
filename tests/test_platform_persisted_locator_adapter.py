@@ -14,10 +14,10 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE_PATH = ROOT / "scripts" / "platform-persisted-locator-adapter.py"
-EXPECTED_ADAPTER_UTF8_BYTES = 27168
-EXPECTED_ADAPTER_BASE64URL_LENGTH = 36224
-EXPECTED_ADAPTER_SHA256 = "4a20b1d29cc661c192b77f16d8c8a121c19dd428db8c9079c73be21622598e3b"
-EXPECTED_ADAPTER_LINES = 774
+EXPECTED_ADAPTER_UTF8_BYTES = 28570
+EXPECTED_ADAPTER_BASE64URL_LENGTH = 38094
+EXPECTED_ADAPTER_SHA256 = "07e6982894d59d3884e2417622c4ba9b8e71226c2b59bf2b2d8dd7d34ceb55b5"
+EXPECTED_ADAPTER_LINES = 816
 SPEC = importlib.util.spec_from_file_location("platform_persisted_locator_adapter", SOURCE_PATH)
 ADAPTER = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -44,6 +44,74 @@ class FakeStream:
         self.flushes += 1
         if self.error is not None:
             raise self.error
+
+
+class ReadSignalStream:
+    def __init__(self, stream, first_read):
+        self.stream = stream
+        self.first_read = first_read
+        self.read_count = 0
+
+    def fileno(self):
+        return self.stream.fileno()
+
+    def read1(self, length):
+        chunk = self.stream.read1(length)
+        self.read_count += 1
+        if self.read_count == 1:
+            self.first_read.set()
+        return chunk
+
+    def close(self):
+        self.stream.close()
+
+
+class PayloadGateStream:
+    def __init__(self, stream, header_read, payload_read, allow_probe):
+        self.stream = stream
+        self.header_read = header_read
+        self.payload_read = payload_read
+        self.allow_probe = allow_probe
+        self.read_count = 0
+
+    def fileno(self):
+        return self.stream.fileno()
+
+    def read1(self, length):
+        chunk = self.stream.read1(length)
+        self.read_count += 1
+        if self.read_count == 1:
+            self.header_read.set()
+        if self.read_count == 2:
+            self.payload_read.set()
+            if not self.allow_probe.wait(1):
+                raise OSError("trailing-input probe was not released")
+        return chunk
+
+    def close(self):
+        self.stream.close()
+
+
+class PrefetchedFrameStream:
+    def __init__(self, frame):
+        self.frame = frame
+        self.read_socket, self.write_socket = socket.socketpair()
+        self.write_socket.sendall(b"r")
+        self.read_count = 0
+
+    def fileno(self):
+        return self.read_socket.fileno()
+
+    def read1(self, _length):
+        self.read_count += 1
+        if self.read_count != 1:
+            raise AssertionError("production reader attempted a descriptor read for buffered payload")
+        self.read_socket.recv(1)
+        return self.frame
+
+    def close(self):
+        self.read_socket.close()
+        self.write_socket.close()
 
 
 class FastClock:
@@ -331,15 +399,36 @@ class AdapterContractTests(unittest.TestCase):
             offset = payload_end
         return frames
 
-    def _handle_protocol(self, operation):
+    def _handle_protocol(self, operation, *, frame=None, suffix=b"", half_close=False):
         client, adapter_socket = socket.socketpair()
         input_stream = None
         output_stream = io.BytesIO()
+        thread = None
         try:
-            client.sendall(self._request_frame())
-            client.shutdown(socket.SHUT_WR)
             input_stream = adapter_socket.makefile("rb")
-            ADAPTER.handle_protocol(input_stream, output_stream, operation=operation)
+            errors = []
+
+            def target():
+                try:
+                    ADAPTER.handle_protocol(input_stream, output_stream, operation=operation)
+                except BaseException as error:
+                    errors.append(error)
+
+            thread = threading.Thread(target=target, daemon=True)
+            thread.start()
+            client.sendall((self._request_frame() if frame is None else frame) + suffix)
+            if half_close:
+                client.shutdown(socket.SHUT_WR)
+            thread.join(1)
+            if thread.is_alive():
+                try:
+                    adapter_socket.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                thread.join(1)
+                self.fail("production protocol handler did not complete promptly")
+            if errors:
+                self.fail(f"production protocol handler raised unexpectedly: {errors[0]!r}")
             raw = output_stream.getvalue()
             return self._decode_public_frames(raw), raw
         finally:
@@ -402,6 +491,169 @@ class AdapterContractTests(unittest.TestCase):
         oversized = ADAPTER.Header.pack(ADAPTER.Magic, 1, 1, 0, ADAPTER.REQMAX + 1)
         with self.assertRaises(ADAPTER.ProtocolError):
             ADAPTER.decode_request_frame(oversized + b"x" * (ADAPTER.REQMAX + 1))
+
+    def test_open_duplex_valid_request_runs_operation_once(self):
+        seen_schedule_ids = []
+
+        def operation(schedule_id):
+            seen_schedule_ids.append(schedule_id)
+            return ADAPTER.OperationSuccess(ADAPTER.ZERO_ROW_MATCH, None, ADAPTER.OperationCounts())
+
+        frames, _ = self._handle_protocol(operation)
+        self.assertEqual(seen_schedule_ids, [7])
+        self.assertEqual([message_type for message_type, _ in frames], [ADAPTER.STARTED, ADAPTER.RESULT])
+        self.assertEqual(sum(message_type in {ADAPTER.RESULT, ADAPTER.FAILED} for message_type, _ in frames), 1)
+
+    def test_open_duplex_trailing_byte_is_rejected_before_operation(self):
+        seen_schedule_ids = []
+
+        frames, _ = self._handle_protocol(lambda schedule_id: seen_schedule_ids.append(schedule_id), suffix=b"x")
+        self.assertEqual(seen_schedule_ids, [])
+        self.assertEqual(len(frames), 1)
+        self.assertEqual(frames[0], (ADAPTER.FAILED, {"type": "FAILED", "version": 1, "classification": ADAPTER.QUERY_NOT_EXECUTED}))
+
+    def test_half_closed_trailing_byte_is_rejected_before_operation(self):
+        seen_schedule_ids = []
+
+        frames, _ = self._handle_protocol(
+            lambda schedule_id: seen_schedule_ids.append(schedule_id),
+            suffix=b"x",
+            half_close=True,
+        )
+        self.assertEqual(seen_schedule_ids, [])
+        self.assertEqual(len(frames), 1)
+        self.assertEqual(frames[0], (ADAPTER.FAILED, {"type": "FAILED", "version": 1, "classification": ADAPTER.QUERY_NOT_EXECUTED}))
+
+    def test_immediately_readable_trailing_byte_is_rejected_before_operation(self):
+        client, adapter_socket = socket.socketpair()
+        input_stream = None
+        thread = None
+        errors = []
+        output_stream = io.BytesIO()
+        header_read = threading.Event()
+        payload_read = threading.Event()
+        allow_probe = threading.Event()
+        seen_schedule_ids = []
+        frame = self._request_frame()
+        try:
+            input_stream = PayloadGateStream(adapter_socket.makefile("rb"), header_read, payload_read, allow_probe)
+
+            def target():
+                try:
+                    ADAPTER.handle_protocol(
+                        input_stream,
+                        output_stream,
+                        operation=lambda schedule_id: seen_schedule_ids.append(schedule_id),
+                    )
+                except BaseException as error:
+                    errors.append(error)
+
+            thread = threading.Thread(target=target, daemon=True)
+            thread.start()
+            client.sendall(frame[: ADAPTER.Header.size])
+            self.assertTrue(header_read.wait(1), "production reader did not consume the split header")
+            client.sendall(frame[ADAPTER.Header.size :])
+            self.assertTrue(payload_read.wait(1), "production reader did not finish the payload read")
+            client.sendall(b"x")
+            allow_probe.set()
+            thread.join(1)
+            if thread.is_alive():
+                self.fail("immediate-trailing production protocol handler did not complete promptly")
+            if errors:
+                self.fail(f"immediate-trailing production protocol handler raised unexpectedly: {errors[0]!r}")
+            self.assertEqual(seen_schedule_ids, [])
+            frames = self._decode_public_frames(output_stream.getvalue())
+            self.assertEqual(
+                frames,
+                [(ADAPTER.FAILED, {"type": "FAILED", "version": 1, "classification": ADAPTER.QUERY_NOT_EXECUTED})],
+            )
+        finally:
+            allow_probe.set()
+            if thread is not None and thread.is_alive():
+                try:
+                    adapter_socket.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                thread.join(1)
+            if input_stream is not None:
+                input_stream.close()
+            adapter_socket.close()
+            client.close()
+
+    def test_malformed_request_is_rejected_before_operation(self):
+        payload = b'{"type":"REQUEST","version":1,"schedule_id":7}'
+        invalid_frame = ADAPTER.Header.pack(b"BAD!", 1, ADAPTER.REQUEST, 0, len(payload)) + payload
+        seen_schedule_ids = []
+
+        frames, _ = self._handle_protocol(
+            lambda schedule_id: seen_schedule_ids.append(schedule_id),
+            frame=invalid_frame,
+        )
+        self.assertEqual(seen_schedule_ids, [])
+        self.assertEqual(len(frames), 1)
+        self.assertEqual(frames[0], (ADAPTER.FAILED, {"type": "FAILED", "version": 1, "classification": ADAPTER.QUERY_NOT_EXECUTED}))
+
+    def test_split_delivery_accepts_header_and_payload_without_eof(self):
+        client, adapter_socket = socket.socketpair()
+        input_stream = None
+        thread = None
+        errors = []
+        output_stream = io.BytesIO()
+        first_read = threading.Event()
+        seen_schedule_ids = []
+        frame = self._request_frame()
+        try:
+            input_stream = ReadSignalStream(adapter_socket.makefile("rb"), first_read)
+
+            def target():
+                try:
+                    ADAPTER.handle_protocol(
+                        input_stream,
+                        output_stream,
+                        operation=lambda schedule_id: (
+                            seen_schedule_ids.append(schedule_id)
+                            or ADAPTER.OperationSuccess(ADAPTER.ZERO_ROW_MATCH, None, ADAPTER.OperationCounts())
+                        ),
+                    )
+                except BaseException as error:
+                    errors.append(error)
+
+            thread = threading.Thread(target=target, daemon=True)
+            thread.start()
+            client.sendall(frame[: ADAPTER.Header.size])
+            self.assertTrue(first_read.wait(1), "production reader did not consume the split header")
+            client.sendall(frame[ADAPTER.Header.size :])
+            thread.join(1)
+            if thread.is_alive():
+                self.fail("split-delivery production protocol handler did not complete promptly")
+            if errors:
+                self.fail(f"split-delivery production protocol handler raised unexpectedly: {errors[0]!r}")
+            self.assertEqual(seen_schedule_ids, [7])
+            frames = self._decode_public_frames(output_stream.getvalue())
+            self.assertEqual([message_type for message_type, _ in frames], [ADAPTER.STARTED, ADAPTER.RESULT])
+        finally:
+            if thread is not None and thread.is_alive():
+                try:
+                    adapter_socket.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                thread.join(1)
+            if input_stream is not None:
+                input_stream.close()
+            adapter_socket.close()
+            client.close()
+
+    def test_buffered_prefetch_is_consumed_without_descriptor_readiness_wait(self):
+        frame = self._request_frame()
+        stream = PrefetchedFrameStream(frame)
+        try:
+            self.assertEqual(
+                ADAPTER.read_request_frame(stream, timeout=1),
+                {"type": "REQUEST", "version": 1, "schedule_id": 7},
+            )
+            self.assertEqual(stream.read_count, 1)
+        finally:
+            stream.close()
 
     def test_terminal_protocol_frames(self):
         header = ADAPTER.Header.size

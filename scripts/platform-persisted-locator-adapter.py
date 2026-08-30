@@ -186,37 +186,79 @@ def decode_request_frame(frame: bytes) -> dict[str, Any]:
     return parse_request_payload(frame[Header.size:])
 
 
-def _read_exact(stream: BinaryIO, length: int, deadline: float) -> bytes:
+def _read_some(stream: BinaryIO, length: int) -> bytes:
+    read1 = getattr(stream, "read1", None)
+    if callable(read1):
+        return read1(length)
+    return stream.read(length)
+
+
+def _read_exact(
+    stream: BinaryIO,
+    length: int,
+    deadline: float,
+    buffered: bytearray | None = None,
+) -> bytes:
     result = bytearray()
-    selector = selectors.DefaultSelector()
+    pending = buffered if buffered is not None else bytearray()
+    selector = None
     try:
-        selector.register(stream, selectors.EVENT_READ)
         while len(result) < length:
+            if pending:
+                take = min(length - len(result), len(pending))
+                result.extend(pending[:take])
+                del pending[:take]
+                continue
+            if selector is None:
+                selector = selectors.DefaultSelector()
+                selector.register(stream, selectors.EVENT_READ)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise ProtocolError("request read timed out")
             if not selector.select(remaining):
                 raise ProtocolError("request read timed out")
-            chunk = stream.read(length - len(result))
+            chunk = _read_some(stream, Header.size + REQMAX + 1)
             if not chunk:
                 raise ProtocolError("request frame ended early")
-            result.extend(chunk)
+            take = min(length - len(result), len(chunk))
+            result.extend(chunk[:take])
+            pending.extend(chunk[take:])
+    except (ValueError, OSError) as error:
+        raise ProtocolError("request frame could not be read") from error
+    finally:
+        if selector is not None:
+            selector.close()
+    return bytes(result)
+
+
+def _reject_immediate_trailing_input(stream: BinaryIO) -> None:
+    selector = selectors.DefaultSelector()
+    try:
+        selector.register(stream, selectors.EVENT_READ)
+        if not selector.select(0):
+            return
+        chunk = _read_some(stream, 1)
+        if chunk:
+            raise ProtocolError("request frame has trailing input")
     except (ValueError, OSError) as error:
         raise ProtocolError("request frame could not be read") from error
     finally:
         selector.close()
-    return bytes(result)
 
 
 def read_request_frame(stream: BinaryIO, timeout: int = R) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
-    header = _read_exact(stream, Header.size, deadline)
+    buffered = bytearray()
+    header = _read_exact(stream, Header.size, deadline, buffered)
     magic, version, message_type, flags, payload_length = Header.unpack(header)
     if magic != Magic or version != Version or message_type != REQUEST or flags != 0:
         raise ProtocolError("request frame header is invalid")
     if payload_length > REQMAX or payload_length > PAYMAX:
         raise ProtocolError("request frame payload is oversized")
-    payload = _read_exact(stream, payload_length, deadline)
+    payload = _read_exact(stream, payload_length, deadline, buffered)
+    if buffered:
+        raise ProtocolError("request frame has trailing input")
+    _reject_immediate_trailing_input(stream)
     return parse_request_payload(payload)
 
 
