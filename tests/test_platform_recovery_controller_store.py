@@ -555,7 +555,7 @@ class ControllerStoreTests(unittest.TestCase):
         for filename in (STORE.RECORD_FILENAME, STORE.MANIFEST_FILENAME, STORE.PRIVATE_IDENTITIES_FILENAME, STORE.LEDGER_FILENAME, STORE.SPOOL_META_FILENAME):
             mode = stat.S_IMODE(os.lstat(store._file_path(epoch, filename)).st_mode)
             self.assertEqual(mode, 0o600)
-        for directory in (store.root, store.root / "epochs", store._file_path(epoch, "spool"), store._file_path(epoch, "frame-000000000001.json").parent):
+        for directory in (store.root, store.root / "epochs", store._spool_path(epoch), store._frames_path(epoch)):
             self.assertEqual(stat.S_IMODE(os.lstat(directory).st_mode), 0o700)
 
     def test_canonical_parser_rejects_noncanonical_whitespace(self):
