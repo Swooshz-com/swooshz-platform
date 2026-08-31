@@ -14,9 +14,9 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE_PATH = ROOT / "scripts" / "platform-persisted-locator-adapter.py"
-EXPECTED_ADAPTER_UTF8_BYTES = 35957
-EXPECTED_ADAPTER_BASE64URL_LENGTH = 47943
-EXPECTED_ADAPTER_SHA256 = "89b003772c7b5293f25aaacbbaa0d0002e36fd60eb8c8adc3a3781510fcad36e"
+EXPECTED_ADAPTER_UTF8_BYTES = 35994
+EXPECTED_ADAPTER_BASE64URL_LENGTH = 47992
+EXPECTED_ADAPTER_SHA256 = "17925f1364565edbb39fa0f776e25d6f0410d8408d9bdce214143edf1d6f34d5"
 EXPECTED_ADAPTER_LINES = 1019
 SPEC = importlib.util.spec_from_file_location("platform_persisted_locator_adapter", SOURCE_PATH)
 ADAPTER = importlib.util.module_from_spec(SPEC)
@@ -496,7 +496,34 @@ class AdapterContractTests(unittest.TestCase):
         self.assertEqual(ADAPTER.PGCONNECT_TIMEOUT, 2)
         self.assertEqual(ADAPTER.T_HOST, ADAPTER.R + 2 * ADAPTER.I + ADAPTER.S + ADAPTER.MARGIN)
         self.assertEqual(ADAPTER.T_HOST, 17)
-        self.assertEqual(ADAPTER.PGOPTIONS_VALUE, "-c statement_timeout=7000 -c idle_session_timeout=2000")
+        self.assertEqual(
+            ADAPTER.PGOPTIONS_VALUE,
+            "-c statement_timeout=7000 -c idle_session_timeout=2000 -c TimeZone=UTC",
+        )
+
+    def test_postgres_session_timezone_is_pinned_and_pgtz_is_unset(self):
+        expected_options = "-c statement_timeout=7000 -c idle_session_timeout=2000 -c TimeZone=UTC"
+        wrapper = ADAPTER.SHELL_WRAPPER
+        psql_index = wrapper.index("exec /usr/local/bin/psql")
+        pgtz_index = wrapper.index("PGTZ")
+        export = f"export PGOPTIONS='{expected_options}'"
+        self.assertEqual(ADAPTER.PGOPTIONS_VALUE, expected_options)
+        self.assertEqual(wrapper.count(export), 1)
+        self.assertLess(wrapper.index(export), psql_index)
+        self.assertLess(pgtz_index, psql_index)
+        self.assertEqual(wrapper.count("PGTZ"), 1)
+        self.assertNotIn("PGTZ=", wrapper)
+        self.assertNotIn("export PGTZ", wrapper)
+
+        query = ADAPTER.build_locator_query(BARRIER_UTC)
+        self.assertEqual(query.count("e.created_at > TIMESTAMPTZ"), 1)
+        self.assertEqual(
+            query.count("to_char(e.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')"),
+            1,
+        )
+        self.assertNotIn("SET TIME ZONE", query.upper())
+        self.assertNotIn("SET TIMEZONE", query.upper())
+        self.assertEqual(query.count("SELECT json_build_object("), 1)
 
     def test_splq_frame_and_exact_request(self):
         payload = b'{"type":"REQUEST","version":3,"barrier_utc":"2026-08-31T00:00:00.000000Z"}'
@@ -1259,8 +1286,8 @@ class AdapterContractTests(unittest.TestCase):
         self.assertIn("HOME=/nonexistent", wrapper)
         self.assertIn("PGPASSFILE=/dev/null", wrapper)
         self.assertIn("PGCONNECT_TIMEOUT=2", wrapper)
-        self.assertIn("PGOPTIONS='-c statement_timeout=7000 -c idle_session_timeout=2000'", wrapper)
-        for variable in ["PGHOST", "PGHOSTADDR", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD", "PGSERVICE", "PGSERVICEFILE", "PGSSLMODE", "PGSSLKEY", "PGSSLROOTCERT"]:
+        self.assertIn("PGOPTIONS='-c statement_timeout=7000 -c idle_session_timeout=2000 -c TimeZone=UTC'", wrapper)
+        for variable in ["PGHOST", "PGHOSTADDR", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD", "PGSERVICE", "PGSERVICEFILE", "PGSSLMODE", "PGSSLKEY", "PGSSLROOTCERT", "PGTZ"]:
             self.assertIn(variable, wrapper)
 
     def test_public_frames_never_include_private_sql_or_cardinality_fields(self):
