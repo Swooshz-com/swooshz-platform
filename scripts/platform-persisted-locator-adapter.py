@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import queue
+import re
 import selectors
 import struct
 import subprocess
@@ -17,13 +18,19 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, BinaryIO, Callable
 
 
 Header = struct.Struct("!4sBBHI")
 Magic = b"SPLQ"
 Version = 1
-REQUEST_SCHEMA_VERSION = 2
+REQUEST_SCHEMA_VERSION = 3
+
+CANONICAL_UTC_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
+CANONICAL_UTC_PATTERN = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z"
+)
 
 REQUEST = 1
 STARTED = 2
@@ -71,7 +78,7 @@ EXACTLY_ONE = "EXACTLY_ONE"
 QUERY_NOT_EXECUTED = "QUERY_NOT_EXECUTED"
 QUERY_FAILED = "QUERY_FAILED"
 
-PGOPTIONS_VALUE = "-c statement_timeout=7000 -c idle_session_timeout=2000"
+PGOPTIONS_VALUE = "-c statement_timeout=7000 -c idle_session_timeout=2000 -c TimeZone=UTC"
 
 
 SHELL_WRAPPER = r'''set -eu
@@ -81,12 +88,12 @@ postgres_user=$POSTGRES_USER
 unset PGHOST PGHOSTADDR PGPORT PGDATABASE PGUSER PGPASSWORD PGPASSFILE
 unset PGSERVICE PGSERVICEFILE PGOPTIONS PGSSLMODE PGSSLNEGOTIATION
 unset PGSSLCERT PGSSLKEY PGSSLROOTCERT PGSSLCRL PGSSLCRLDIR
-unset PGREQUIRESSL PGTARGETSESSIONATTRS PGCHANNELBINDING PGAPPNAME
+unset PGREQUIRESSL PGTZ PGTARGETSESSIONATTRS PGCHANNELBINDING PGAPPNAME
 unset PGGSSENCMODE PGKRBSRVNAME PGREALM PGREQUIREAUTH POSTGRES_DB POSTGRES_USER
 export HOME=/nonexistent
 export PGPASSFILE=/dev/null
 export PGCONNECT_TIMEOUT=2
-export PGOPTIONS='-c statement_timeout=7000 -c idle_session_timeout=2000'
+export PGOPTIONS='-c statement_timeout=7000 -c idle_session_timeout=2000 -c TimeZone=UTC'
 exec /usr/local/bin/psql \
   -X \
   -w \
@@ -118,6 +125,63 @@ class QueryConstructionError(AdapterError):
 
 class SelectorOutputError(AdapterError):
     pass
+
+
+def _validate_canonical_utc(
+    value: Any,
+    error_type: type[AdapterError],
+    label: str,
+) -> str:
+    if not isinstance(value, str) or CANONICAL_UTC_PATTERN.fullmatch(value) is None:
+        raise error_type(f"{label} is not canonical UTC")
+    try:
+        parsed = datetime.strptime(value, CANONICAL_UTC_FORMAT)
+    except ValueError as error:
+        raise error_type(f"{label} is not a real date/time") from error
+    canonical = (
+        f"{parsed.year:04d}-{parsed.month:02d}-{parsed.day:02d}"
+        f"T{parsed.hour:02d}:{parsed.minute:02d}:{parsed.second:02d}"
+        f".{parsed.microsecond:06d}Z"
+    )
+    if canonical != value:
+        raise error_type(f"{label} is not canonically serialised")
+    return canonical
+
+
+def validate_barrier_utc(value: Any) -> str:
+    return _validate_canonical_utc(value, ProtocolError, "barrier UTC")
+
+
+def _validate_positive_id(value: Any, error_type: type[AdapterError], label: str) -> int:
+    if type(value) is not int or not 0 < value < 9223372036854775808:
+        raise error_type(f"{label} is invalid")
+    return value
+
+
+def validate_schedule_id(value: Any) -> int:
+    return _validate_positive_id(value, ProtocolError, "schedule id")
+
+
+def _validate_selector_id(value: Any, label: str) -> int:
+    return _validate_positive_id(value, SelectorOutputError, label)
+
+
+def _validate_filename(value: Any) -> str:
+    if not isinstance(value, str):
+        raise SelectorOutputError("selector filename is not a string")
+    try:
+        filename_size = len(value.encode("utf-8"))
+    except UnicodeEncodeError as error:
+        raise SelectorOutputError("selector filename is not valid UTF-8") from error
+    if filename_size == 0:
+        raise SelectorOutputError("selector filename is empty")
+    if filename_size > NMAX:
+        raise SelectorOutputError("selector filename is oversized")
+    return value
+
+
+def _validate_execution_created_at(value: Any) -> str:
+    return _validate_canonical_utc(value, SelectorOutputError, "execution timestamp")
 
 
 def _reject_constant(value: str) -> None:
@@ -156,10 +220,12 @@ def parse_strict_json(payload: bytes) -> Any:
 
 
 def parse_request_payload(payload: bytes) -> dict[str, Any]:
+    if not isinstance(payload, bytes):
+        raise ProtocolError("request payload must be bytes")
     if len(payload) > REQMAX or len(payload) > PAYMAX:
         raise ProtocolError("request payload is oversized")
     value = parse_strict_json(payload)
-    if not isinstance(value, dict) or set(value) != {"type", "version"}:
+    if not isinstance(value, dict) or set(value) != {"type", "version", "barrier_utc"}:
         raise ProtocolError("request object shape is invalid")
     if (
         value["type"] != "REQUEST"
@@ -167,7 +233,8 @@ def parse_request_payload(payload: bytes) -> dict[str, Any]:
         or value["version"] != REQUEST_SCHEMA_VERSION
     ):
         raise ProtocolError("request version or type is invalid")
-    return {"type": "REQUEST", "version": REQUEST_SCHEMA_VERSION}
+    barrier_utc = validate_barrier_utc(value["barrier_utc"])
+    return {"type": "REQUEST", "version": REQUEST_SCHEMA_VERSION, "barrier_utc": barrier_utc}
 
 
 def decode_request_frame(frame: bytes) -> dict[str, Any]:
@@ -279,20 +346,34 @@ def started_frame() -> bytes:
     return build_frame(STARTED, {"type": "STARTED", "version": Version})
 
 
-def result_frame(classification: str, filename: str | None = None) -> bytes:
+def result_frame(
+    classification: str,
+    filename: str | None = None,
+    schedule_id: int | None = None,
+    execution_id: int | None = None,
+    execution_created_at: str | None = None,
+) -> bytes:
     if classification not in {ZERO_ROW_MATCH, MULTIPLE_ROW_MATCH, PRIVATE_LOCATOR_MISSING, EXACTLY_ONE}:
         raise ProtocolError("invalid result classification")
     value: dict[str, Any] = {"type": "RESULT", "version": Version, "classification": classification}
-    if classification == EXACTLY_ONE:
-        try:
-            filename_size = len(filename.encode("utf-8")) if isinstance(filename, str) else -1
-        except UnicodeEncodeError as error:
-            raise ProtocolError("exact result needs a filename") from error
-        if not isinstance(filename, str) or not filename or filename_size > NMAX or filename_size < 0:
-            raise ProtocolError("exact result needs a filename")
-        value["filename"] = filename
-    elif filename is not None:
-        raise ProtocolError("non-single result cannot include a filename")
+    private_tuple = (schedule_id, execution_id, execution_created_at, filename)
+    if classification != EXACTLY_ONE:
+        if any(item is not None for item in private_tuple):
+            raise ProtocolError("non-single result cannot include private identity")
+        return build_frame(RESULT, value)
+    if any(item is None for item in private_tuple):
+        raise ProtocolError("exact result needs a complete private tuple")
+    try:
+        value["schedule_id"] = _validate_positive_id(schedule_id, SelectorOutputError, "schedule id")
+        value["execution_id"] = _validate_positive_id(execution_id, SelectorOutputError, "execution id")
+        value["execution_created_at"] = _validate_canonical_utc(
+            execution_created_at,
+            SelectorOutputError,
+            "execution timestamp",
+        )
+        value["filename"] = _validate_filename(filename)
+    except SelectorOutputError as error:
+        raise ProtocolError("exact result private tuple is invalid") from error
     return build_frame(RESULT, value)
 
 
@@ -432,8 +513,12 @@ def extract_after_ready_marker(captured_stdout: bytes) -> bytes:
     return captured_stdout[len(READY_MARKER):]
 
 
-def build_locator_query() -> str:
-    query = r"""WITH schedule_candidates AS (
+def build_locator_query(barrier_utc: str) -> str:
+    try:
+        barrier_utc = validate_barrier_utc(barrier_utc)
+    except ProtocolError as error:
+        raise QueryConstructionError("locator barrier is invalid") from error
+    query = rf"""WITH schedule_candidates AS (
   SELECT s.id
   FROM scheduled_database_backups AS s
   WHERE s.id > 0
@@ -444,17 +529,21 @@ def build_locator_query() -> str:
     AND s.save_s3 IS TRUE
     AND s.disable_local_backup IS FALSE
 ), schedule_cardinality AS (
-  SELECT CASE WHEN count(*) > 1 THEN 2 ELSE count(*) END AS schedule_count
+  SELECT
+    CASE WHEN count(*) > 1 THEN 2 ELSE count(*) END AS schedule_count,
+    CASE WHEN count(*) = 1 THEN max(id) ELSE NULL END AS schedule_id
   FROM schedule_candidates
 ), execution_candidates AS (
-  SELECT e.filename
+  SELECT
+    e.id AS execution_id,
+    to_char(e.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS execution_created_at,
+    e.filename
   FROM scheduled_database_backup_executions AS e
   JOIN schedule_candidates AS s
     ON e.scheduled_database_backup_id = s.id
   WHERE e.database_name = 'coolify'
     AND e.status = 'success'
-    AND e.created_at >= TIMESTAMPTZ '2026-08-27T18:00:03Z'
-    AND e.created_at < TIMESTAMPTZ '2026-08-27T18:00:04Z'
+    AND e.created_at > TIMESTAMPTZ '{barrier_utc}'
     AND CASE
           WHEN e.size ~ '^[0-9]+$'
           THEN e.size::numeric = 830082
@@ -466,12 +555,26 @@ def build_locator_query() -> str:
 ), execution_cardinality AS (
   SELECT
     CASE WHEN count(*) > 1 THEN 2 ELSE count(*) END AS execution_count,
+    CASE WHEN count(*) = 1 THEN max(execution_id) ELSE NULL END AS execution_id,
+    CASE WHEN count(*) = 1 THEN max(execution_created_at) ELSE NULL END AS execution_created_at,
     CASE WHEN count(*) = 1 THEN max(filename) ELSE NULL END AS filename
   FROM execution_candidates
 )
 SELECT json_build_object(
   'schedule_count', schedule_count,
+  'schedule_id', CASE
+                   WHEN schedule_count = 1 AND execution_count = 1 THEN schedule_id
+                   ELSE NULL
+                 END,
   'execution_count', execution_count,
+  'execution_id', CASE
+                   WHEN schedule_count = 1 AND execution_count = 1 THEN execution_id
+                   ELSE NULL
+                 END,
+  'execution_created_at', CASE
+                            WHEN schedule_count = 1 AND execution_count = 1 THEN execution_created_at
+                            ELSE NULL
+                          END,
   'filename', CASE
                 WHEN schedule_count = 1 AND execution_count = 1 THEN filename
                 ELSE NULL
@@ -500,6 +603,9 @@ class SelectorDetails:
     classification: str
     filename: str | None
     cause: str
+    schedule_id: int | None = None
+    execution_id: int | None = None
+    execution_created_at: str | None = None
 
 
 SCHEDULE_ZERO = "SCHEDULE_ZERO"
@@ -515,40 +621,64 @@ def _selector_cardinality(value: Any, field: str) -> int:
 
 
 def classify_selector_details(value: Any) -> SelectorDetails:
-    if not isinstance(value, dict) or set(value) != {"schedule_count", "execution_count", "filename"}:
+    if not isinstance(value, dict) or set(value) != {
+        "schedule_count",
+        "schedule_id",
+        "execution_count",
+        "execution_id",
+        "execution_created_at",
+        "filename",
+    }:
         raise SelectorOutputError("selector output shape is invalid")
     schedule_count = _selector_cardinality(value["schedule_count"], "schedule count")
     execution_count = _selector_cardinality(value["execution_count"], "execution count")
+    schedule_id = value["schedule_id"]
+    execution_id = value["execution_id"]
+    execution_created_at = value["execution_created_at"]
     filename = value["filename"]
+    private_tuple = (schedule_id, execution_id, execution_created_at, filename)
     if schedule_count == 0:
-        if filename is not None:
-            raise SelectorOutputError("non-single selector output has a filename")
+        if any(item is not None for item in private_tuple):
+            raise SelectorOutputError("non-single selector output has private identity")
         return SelectorDetails(ZERO_ROW_MATCH, None, SCHEDULE_ZERO)
     if schedule_count == 2:
-        if filename is not None:
-            raise SelectorOutputError("non-single selector output has a filename")
+        if any(item is not None for item in private_tuple):
+            raise SelectorOutputError("non-single selector output has private identity")
         return SelectorDetails(MULTIPLE_ROW_MATCH, None, SCHEDULE_MULTIPLE)
     if execution_count == 0:
-        if filename is not None:
-            raise SelectorOutputError("non-single selector output has a filename")
+        if any(item is not None for item in private_tuple):
+            raise SelectorOutputError("non-single selector output has private identity")
         return SelectorDetails(ZERO_ROW_MATCH, None, EXECUTION_ZERO)
     if execution_count == 2:
-        if filename is not None:
-            raise SelectorOutputError("non-single selector output has a filename")
+        if any(item is not None for item in private_tuple):
+            raise SelectorOutputError("non-single selector output has private identity")
         return SelectorDetails(MULTIPLE_ROW_MATCH, None, EXECUTION_MULTIPLE)
-    if filename is None or filename == "":
+    if any(item is None for item in private_tuple) or filename == "":
+        for item, label in [
+            (schedule_id, "schedule id"),
+            (execution_id, "execution id"),
+            (execution_created_at, "execution timestamp"),
+        ]:
+            if item is not None:
+                if label in {"schedule id", "execution id"}:
+                    _validate_selector_id(item, label)
+                else:
+                    _validate_execution_created_at(item)
+        if filename not in {None, ""}:
+            _validate_filename(filename)
         return SelectorDetails(PRIVATE_LOCATOR_MISSING, None, PRIVATE_LOCATOR_MISSING)
-    if not isinstance(filename, str):
-        raise SelectorOutputError("selector filename is not a string")
-    try:
-        filename_size = len(filename.encode("utf-8"))
-    except UnicodeEncodeError as error:
-        raise SelectorOutputError("selector filename is not valid UTF-8") from error
-    if filename_size == 0:
-        return SelectorDetails(PRIVATE_LOCATOR_MISSING, None, PRIVATE_LOCATOR_MISSING)
-    if filename_size > NMAX:
-        raise SelectorOutputError("selector filename is oversized")
-    return SelectorDetails(EXACTLY_ONE, filename, EXACTLY_ONE)
+    schedule_id = _validate_selector_id(schedule_id, "schedule id")
+    execution_id = _validate_selector_id(execution_id, "execution id")
+    execution_created_at = _validate_execution_created_at(execution_created_at)
+    filename = _validate_filename(filename)
+    return SelectorDetails(
+        EXACTLY_ONE,
+        filename,
+        EXACTLY_ONE,
+        schedule_id,
+        execution_id,
+        execution_created_at,
+    )
 
 
 def classify_selector_object(value: Any) -> tuple[str, str | None]:
@@ -556,14 +686,14 @@ def classify_selector_object(value: Any) -> tuple[str, str | None]:
     return details.classification, details.filename
 
 
-def parse_selector_output(output: bytes) -> tuple[str, str | None]:
+def parse_selector_output(output: bytes) -> SelectorDetails:
     if not isinstance(output, bytes) or len(output) > OMAX or not output.endswith(b"\n"):
         raise SelectorOutputError("selector output framing is invalid")
     try:
         value = parse_strict_json(output[:-1])
     except ProtocolError as error:
         raise SelectorOutputError("selector output JSON is invalid") from error
-    return classify_selector_object(value)
+    return classify_selector_details(value)
 
 
 def failure_classification(query_started: bool) -> str:
@@ -587,6 +717,9 @@ class OperationSuccess:
     classification: str
     filename: str | None
     counts: OperationCounts
+    schedule_id: int | None = None
+    execution_id: int | None = None
+    execution_created_at: str | None = None
 
 
 @dataclass
@@ -682,12 +815,17 @@ def _wait_through_database_bound(clock: Callable[[], float], deadline: float, ev
 
 
 def execute_operation(
+    barrier_utc: str,
     *,
     process_factory: Callable[[], Any] = open_docker_process,
     clock: Callable[[], float] = time.monotonic,
     event_queue_factory: Callable[[], queue.Queue[tuple[str, Any]]] | None = None,
 ) -> OperationSuccess | OperationFailure:
     counts = OperationCounts()
+    try:
+        barrier_utc = validate_barrier_utc(barrier_utc)
+    except AdapterError:
+        return OperationFailure(False, counts)
     t0 = clock()
     readiness_deadline = t0 + R
     process: Any | None = None
@@ -779,7 +917,7 @@ def execute_operation(
             elif decision in {ADMISSION_FAIL, ADMISSION_CLOSED}:
                 return OperationFailure(False, counts)
 
-        query = build_locator_query()
+        query = build_locator_query(barrier_utc)
         payload = phase2_payload(query)
         query_started = True
         counts.logical_selects = 1
@@ -823,11 +961,18 @@ def execute_operation(
             return OperationFailure(query_started, counts)
         remainder = extract_after_ready_marker(captures.stdout.snapshot())
         try:
-            classification, filename = parse_selector_output(remainder)
+            details = parse_selector_output(remainder)
         except (AdapterError, OSError, ValueError, TypeError):
             _wait_through_database_bound(clock, terminal_deadline, events)
             return OperationFailure(query_started, counts)
-        return OperationSuccess(classification, filename, counts)
+        return OperationSuccess(
+            details.classification,
+            details.filename,
+            counts,
+            details.schedule_id,
+            details.execution_id,
+            details.execution_created_at,
+        )
     except (AdapterError, OSError, ValueError, TypeError):
         return OperationFailure(query_started, counts)
     finally:
@@ -839,7 +984,7 @@ def handle_protocol(
     input_stream: BinaryIO,
     output_stream: BinaryIO,
     *,
-    operation: Callable[[Any], OperationSuccess | OperationFailure] = execute_operation,
+    operation: Callable[[str], OperationSuccess | OperationFailure] = execute_operation,
 ) -> None:
     """Serve exactly one public request and emit STARTED plus one terminal frame."""
 
@@ -849,10 +994,16 @@ def handle_protocol(
         write_public_frame(output_stream, failed_frame(QUERY_NOT_EXECUTED))
         return
     write_public_frame(output_stream, started_frame())
-    outcome = operation()
+    outcome = operation(request["barrier_utc"])
     if isinstance(outcome, OperationSuccess):
         try:
-            terminal_frame = result_frame(outcome.classification, outcome.filename)
+            terminal_frame = result_frame(
+                outcome.classification,
+                outcome.filename,
+                outcome.schedule_id,
+                outcome.execution_id,
+                outcome.execution_created_at,
+            )
         except (AdapterError, OSError, TypeError, ValueError):
             terminal_frame = failed_frame(QUERY_FAILED)
     else:
