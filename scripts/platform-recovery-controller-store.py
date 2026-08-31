@@ -82,6 +82,12 @@ FRAME_STAGE_TRANSITIONS = {
     "ABANDON": (),
 }
 
+
+def _is_legal_abandon_transition(previous_stage: str, ledger_state: str) -> bool:
+    return (
+        ledger_state == "UNCONSUMED" and previous_stage in ("EPOCH_READY", "RUNNER_STARTED")
+    ) or (ledger_state == "CONSUMED" and previous_stage == "RESTORE_BEGIN")
+
 RECORD_FIELDS = (
     "schema",
     "epoch_ref",
@@ -1927,8 +1933,10 @@ class ControllerStore:
                 _fail(IntegrityError, "RESTORE_BEGIN_BEFORE_LEDGER_CONSUMED", safety_state="CONSUMED")
             if frame["stage"] == "COMMIT" and ledger["state"] != "CONSUMED":
                 _fail(IntegrityError, "COMMIT_BEFORE_LEDGER_CONSUMED", safety_state="CONSUMED")
-            if frame["stage"] == "ABANDON" and ledger["state"] != "UNCONSUMED":
-                _fail(IntegrityError, "ABANDON_AFTER_LEDGER_CONSUMED", safety_state="CONSUMED")
+            if frame["stage"] == "ABANDON" and not _is_legal_abandon_transition(last_stage, ledger["state"]):
+                if ledger["state"] == "CONSUMED":
+                    _fail(IntegrityError, "ABANDON_AFTER_LEDGER_CONSUMED", safety_state="CONSUMED")
+                _fail(IntegrityError, "FRAME_STAGE_CONTRADICTION", safety_state=safety_state)
             expected_sequence += 1
             previous_hash = frame["frame_hash"]
             total_bytes += len(payload)
@@ -2000,7 +2008,9 @@ class ControllerStore:
             if record["state"] != "CONSUMED" or ledger["state"] != "CONSUMED":
                 _fail(IntegrityError, "SPOOL_CROSS_FILE_CONTRADICTION", safety_state="CONSUMED")
         elif spool["state"] == "ABANDONED":
-            if record["state"] != "ABANDONED" or ledger["state"] != "UNCONSUMED":
+            # The frame-history pass proves whether a consumed ledger is
+            # paired with the exact RESTORE_BEGIN -> ABANDON transition.
+            if record["state"] != "ABANDONED" or ledger["state"] not in LEDGER_STATES:
                 _fail(IntegrityError, "SPOOL_CROSS_FILE_CONTRADICTION", safety_state="CONSUMED" if ledger["state"] == "CONSUMED" else None)
         else:
             if record["state"] in ("ABANDONED", "CONSUMED"):
@@ -2016,7 +2026,7 @@ class ControllerStore:
             _fail(IntegrityError, "SPOOL_CROSS_FILE_CONTRADICTION", safety_state="CONSUMED")
         if stage_state == "COMMIT" and (record["state"] != "CONSUMED" or ledger["state"] != "CONSUMED"):
             _fail(IntegrityError, "SPOOL_CROSS_FILE_CONTRADICTION", safety_state="CONSUMED")
-        if stage_state == "ABANDON" and (record["state"] != "ABANDONED" or ledger["state"] != "UNCONSUMED"):
+        if stage_state == "ABANDON" and (record["state"] != "ABANDONED" or ledger["state"] not in LEDGER_STATES):
             _fail(IntegrityError, "SPOOL_CROSS_FILE_CONTRADICTION", safety_state="CONSUMED" if ledger["state"] == "CONSUMED" else None)
         if frame_summary is not None:
             for field in ("state", "next_sequence", "last_frame_hash", "highest_contiguous_commit", "frame_count", "total_spool_bytes", "last_stage"):
@@ -2342,6 +2352,8 @@ class ControllerStore:
             snapshot = self._load_epoch_unlocked(epoch_ref)
             ledger = snapshot.ledger
             if ledger["state"] == "CONSUMED":
+                if snapshot.record["state"] == "ABANDONED":
+                    _fail(LedgerError, "EPOCH_TERMINAL", safety_state="CONSUMED")
                 if ledger["transition_id"] != transition_id or ledger["transition_target"] != "RESTORE_STARTED" or ledger["transition_data_commitment"] != data_commitment:
                     _fail(LedgerError, "LEDGER_CONTRADICTION", safety_state="CONSUMED")
                 return RestorePermit(epoch_ref, transition_id, "CONSUMED", True)
@@ -2421,9 +2433,9 @@ class ControllerStore:
             if snapshot.ledger["state"] != "CONSUMED":
                 _fail(SpoolError, "COMMIT_BEFORE_LEDGER_CONSUMED", safety_state="CONSUMED")
         elif stage == "ABANDON":
-            if snapshot.ledger["state"] != "UNCONSUMED":
-                _fail(SpoolError, "ABANDON_AFTER_LEDGER_CONSUMED", safety_state="CONSUMED")
-            if previous not in ("EPOCH_READY", "RUNNER_STARTED"):
+            if not _is_legal_abandon_transition(previous, snapshot.ledger["state"]):
+                if snapshot.ledger["state"] == "CONSUMED":
+                    _fail(SpoolError, "ABANDON_AFTER_LEDGER_CONSUMED", safety_state="CONSUMED")
                 _fail(SpoolError, "FRAME_STAGE_CONTRADICTION")
 
     def _prepare_runner_frame_unlocked(self, snapshot: EpochSnapshot, stage: str, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -2499,7 +2511,7 @@ class ControllerStore:
             else:
                 self._load_epoch_unlocked(epoch_ref)
         except ControllerStoreError as error:
-            if candidate["stage"] == "COMMIT" and error.safety_state is None:
+            if candidate["stage"] in ("COMMIT", "ABANDON") and snapshot.ledger["state"] == "CONSUMED" and error.safety_state is None:
                 error.safety_state = "CONSUMED"
             raise
         return FrameReceipt(epoch_ref, candidate["sequence"], new_highest, new_spool["frame_count"])

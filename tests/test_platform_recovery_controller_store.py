@@ -587,11 +587,124 @@ class ControllerStoreTests(unittest.TestCase):
         self.ingest_stage(store, epoch, "EPOCH_READY", {"ref": "epoch-ready-abandon-001"})
         snapshot = store.abandon(epoch)
         self.assertEqual(snapshot.record["state"], "ABANDONED")
+        self.assertEqual(snapshot.manifest["state"], "ABANDONED")
         self.assertEqual(snapshot.spool["state"], "ABANDONED")
         self.assertEqual(snapshot.spool["last_stage"], "ABANDON")
         self.assertEqual(snapshot.ledger["state"], "UNCONSUMED")
+        self.assertEqual(snapshot.record["restore_ledger_state"], "UNCONSUMED")
+        self.assertEqual(snapshot.manifest["restore_ledger_state"], "UNCONSUMED")
         with self.assertRaisesRegex(STORE.EpochStateError, "EPOCH_TERMINAL"):
             store.prepare_runner_frame(epoch, "RUNNER_STARTED", {"ref": "after-abandon-001"})
+
+    def test_post_consumption_abandon_terminalizes_and_preserves_consumed_ledger(self):
+        store = self.new_store()
+        epoch = self.create_active_epoch(store, "epoch-post-consumption-abandon-001")
+        self.prepare_runner_sequence(store, epoch)
+        transition_id = "transition-post-abandon-001"
+        data = {"classification": "synthetic-post-abandon"}
+        store.consume_restore(
+            epoch,
+            transition_id,
+            expected_digest=store.ledger_digest(epoch),
+            data=data,
+        )
+        self.ingest_stage(store, epoch, "RESTORE_BEGIN", {"ref": "restore-begin-post-abandon-001"})
+
+        terminal = store.abandon(epoch)
+        self.assertEqual(terminal.record["state"], "ABANDONED")
+        self.assertEqual(terminal.manifest["state"], "ABANDONED")
+        self.assertEqual(terminal.record["restore_ledger_state"], "CONSUMED")
+        self.assertEqual(terminal.manifest["restore_ledger_state"], "CONSUMED")
+        self.assertEqual(terminal.ledger["state"], "CONSUMED")
+        self.assertEqual(terminal.spool["state"], "ABANDONED")
+        self.assertEqual(terminal.spool["last_stage"], "ABANDON")
+        self.assertEqual(terminal.spool["highest_contiguous_commit"], 0)
+        self.assertEqual(terminal.spool["frame_count"], 4)
+
+        reloaded = store.load_epoch(epoch)
+        self.assertEqual(reloaded.record["state"], "ABANDONED")
+        self.assertEqual(reloaded.spool["state"], "ABANDONED")
+        self.assertEqual(reloaded.spool["last_stage"], "ABANDON")
+        self.assertEqual(reloaded.ledger["state"], "CONSUMED")
+        self.assertEqual(reloaded.record["restore_ledger_state"], "CONSUMED")
+        self.assertEqual(reloaded.manifest["restore_ledger_state"], "CONSUMED")
+        projection = store.public_projection(epoch)
+        self.assertEqual(projection["state"], "ABANDONED")
+        self.assertEqual(projection["restore_ledger_state"], "CONSUMED")
+
+        with self.assertRaisesRegex(STORE.EpochStateError, "EPOCH_TERMINAL"):
+            store.prepare_runner_frame(epoch, "RUNNER_STARTED", {"ref": "after-post-abandon-001"})
+        with self.assertRaisesRegex(STORE.SpoolError, "EPOCH_TERMINAL"):
+            store.ingest_frame(epoch, {})
+        for attempted_id, attempted_data in ((transition_id, data), ("transition-post-abandon-002", data)):
+            with self.subTest(attempted_id=attempted_id):
+                with self.assertRaisesRegex(STORE.LedgerError, "EPOCH_TERMINAL"):
+                    store.consume_restore(
+                        epoch,
+                        attempted_id,
+                        expected_digest=store.ledger_digest(epoch),
+                        data=attempted_data,
+                    )
+
+    def test_consumed_ledger_abandon_before_restore_begin_is_rejected(self):
+        store = self.new_store()
+        epoch = self.create_active_epoch(store, "epoch-consumed-abandon-before-restore-001")
+        self.prepare_runner_sequence(store, epoch)
+        store.consume_restore(
+            epoch,
+            "transition-consumed-abandon-before-restore-001",
+            expected_digest=store.ledger_digest(epoch),
+        )
+        with self.assertRaisesRegex(STORE.SpoolError, "ABANDON_AFTER_LEDGER_CONSUMED"):
+            store.prepare_runner_frame(epoch, "ABANDON", {"state": "ABANDONED"})
+        with self.assertRaisesRegex(STORE.SpoolError, "ABANDON_AFTER_LEDGER_CONSUMED"):
+            store.abandon(epoch)
+        snapshot = store.load_epoch(epoch)
+        self.assertEqual(snapshot.record["state"], "ACTIVE")
+        self.assertEqual(snapshot.spool["last_stage"], "RUNNER_STARTED")
+        self.assertEqual(snapshot.ledger["state"], "CONSUMED")
+
+    def test_reload_rejects_consumed_abandon_without_restore_begin(self):
+        store = self.new_store()
+        epoch = self.create_active_epoch(store, "epoch-tampered-consumed-abandon-001")
+        self.ingest_stage(store, epoch, "EPOCH_READY", {"ref": "epoch-ready-tampered-abandon-001"})
+        abandoned = store.abandon(epoch)
+
+        ledger = dict(abandoned.ledger)
+        ledger.update(
+            {
+                "state": "CONSUMED",
+                "transition_id": "transition-tampered-abandon-001",
+                "transition_target": "RESTORE_STARTED",
+                "transition_data_commitment": STORE._private_data_commitment({"classification": "tampered"}),
+            }
+        )
+        store._write_document(
+            store._file_path(epoch, STORE.LEDGER_FILENAME),
+            ledger,
+            max_bytes=STORE.MAX_RESTORE_LEDGER_BYTES,
+            replace=True,
+        )
+        manifest = dict(abandoned.manifest)
+        manifest["restore_ledger_state"] = "CONSUMED"
+        manifest_bytes = store._write_document(
+            store._file_path(epoch, STORE.MANIFEST_FILENAME),
+            manifest,
+            max_bytes=STORE.MAX_MANIFEST_BYTES,
+            replace=True,
+        )
+        record = dict(abandoned.record)
+        record["restore_ledger_state"] = "CONSUMED"
+        record["manifest_digest"] = STORE.bytes_commitment(STORE.DOMAIN_MANIFEST, manifest_bytes)
+        store._write_document(
+            store._file_path(epoch, STORE.RECORD_FILENAME),
+            record,
+            max_bytes=STORE.MAX_EPOCH_RECORD_BYTES,
+            replace=True,
+        )
+
+        with self.assertRaisesRegex(STORE.IntegrityError, "ABANDON_AFTER_LEDGER_CONSUMED"):
+            store.load_epoch(epoch)
 
     def test_commit_requires_restore_begin_and_terminalizes_record(self):
         store = self.new_store()
