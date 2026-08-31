@@ -673,7 +673,12 @@ class ControllerStoreTests(unittest.TestCase):
                     "frame_hash": store._frame_hash(epoch, sequence, stage, payload, snapshot.spool["last_frame_hash"], auth),
                 }
                 frame_bytes = STORE.canonical_json_bytes(frame, max_bytes=STORE.MAX_FRAME_BYTES)
-                (store._frames_path(epoch) / f"frame-{sequence:012d}.json").write_bytes(frame_bytes)
+                store._write_document(
+                    store._frames_path(epoch) / f"frame-{sequence:012d}.json",
+                    frame,
+                    max_bytes=STORE.MAX_FRAME_BYTES,
+                    replace=False,
+                )
 
                 def append_frame(value):
                     value["next_sequence"] = sequence + 1
