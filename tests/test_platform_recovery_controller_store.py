@@ -5,9 +5,13 @@ import json
 import os
 import pathlib
 import stat
+import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
+from contextlib import contextmanager
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -73,14 +77,22 @@ class FaultAdapter(STORE.DurabilityAdapter):
         self.fail_after_temp_readback = False
         self.mismatch_readback = False
 
-    def prove_root(self, root):
-        return self.delegate.prove_root(root)
+    def prove_root(self, root, *, test_mode=False):
+        return self.delegate.prove_root(root, test_mode=test_mode)
 
     def validate_component(self, path, *, expect_directory=None):
         return self.delegate.validate_component(path, expect_directory=expect_directory)
 
     def mkdir_exclusive(self, path):
         return self.delegate.mkdir_exclusive(path)
+
+    def create_transaction_lock(self, path):
+        return self.delegate.create_transaction_lock(path)
+
+    @contextmanager
+    def epoch_transaction_lock(self, path):
+        with self.delegate.epoch_transaction_lock(path):
+            yield
 
     def read_authority(self, path, *, max_bytes):
         return self.delegate.read_authority(path, max_bytes=max_bytes)
@@ -139,6 +151,23 @@ class ControllerStoreTests(unittest.TestCase):
         store.activate(epoch_ref)
         return epoch_ref
 
+    def ingest_stage(self, store, epoch_ref, stage, payload=None):
+        return store.ingest_frame(
+            epoch_ref,
+            store.prepare_runner_frame(epoch_ref, stage, payload or {"ref": f"{stage.lower()}-ref"}),
+        )
+
+    def prepare_runner_sequence(self, store, epoch_ref):
+        self.ingest_stage(store, epoch_ref, "EPOCH_READY", {"ref": "epoch-ready-ref"})
+        self.ingest_stage(store, epoch_ref, "RUNNER_STARTED", {"ref": "runner-started-ref"})
+
+    def commit_epoch(self, store, epoch_ref, transition_id="transition-commit-helper"):
+        self.prepare_runner_sequence(store, epoch_ref)
+        store.consume_restore(epoch_ref, transition_id, expected_digest=store.ledger_digest(epoch_ref), data={"classification": "synthetic"})
+        self.ingest_stage(store, epoch_ref, "RESTORE_BEGIN", {"ref": "restore-begin-ref"})
+        self.ingest_stage(store, epoch_ref, "COMMIT", {"ref": "commit-ref"})
+        return store.load_epoch(epoch_ref)
+
     def mutate_json_file(self, store, epoch_ref, filename, mutator):
         path = store._file_path(epoch_ref, filename)
         payload = store.adapter.read_authority(path, max_bytes=STORE._document_limit(filename))
@@ -187,6 +216,7 @@ class ControllerStoreTests(unittest.TestCase):
         self.assertTrue(spool_meta.is_file())
         self.assertFalse((store._epoch_path(epoch) / STORE.SPOOL_META_FILENAME).exists())
         self.assertTrue(store._frames_path(epoch).is_dir())
+        self.assertTrue(store._transaction_lock_path(epoch).is_file())
 
     def test_corrupt_json_is_rejected(self):
         store = self.new_store()
@@ -232,16 +262,21 @@ class ControllerStoreTests(unittest.TestCase):
     def test_legal_ledger_consume(self):
         store = self.new_store()
         epoch = self.create_active_epoch(store)
+        self.prepare_runner_sequence(store, epoch)
         digest = store.ledger_digest(epoch)
         permit = store.consume_restore(epoch, "transition-synthetic-001", expected_digest=digest, data={"classification": "synthetic"})
         self.assertFalse(permit.idempotent)
         self.assertEqual(permit.state, "CONSUMED")
         self.assertEqual(store.read_restore_ledger(epoch)["state"], "CONSUMED")
-        self.assertEqual(store.load_epoch(epoch).record["state"], "CONSUMED")
+        snapshot = store.load_epoch(epoch)
+        self.assertEqual(snapshot.record["state"], "ACTIVE")
+        self.assertEqual(snapshot.spool["state"], "OPEN")
+        self.assertEqual(snapshot.spool["last_stage"], "RUNNER_STARTED")
 
     def test_exact_duplicate_consume_is_idempotent_only_for_identical_data(self):
         store = self.new_store()
         epoch = self.create_active_epoch(store)
+        self.prepare_runner_sequence(store, epoch)
         data = {"classification": "synthetic"}
         store.consume_restore(epoch, "transition-synthetic-002", expected_digest=store.ledger_digest(epoch), data=data)
         duplicate = store.consume_restore(epoch, "transition-synthetic-002", expected_digest=store.ledger_digest(epoch), data=data)
@@ -252,6 +287,7 @@ class ControllerStoreTests(unittest.TestCase):
     def test_ledger_reset_is_rejected(self):
         store = self.new_store()
         epoch = self.create_active_epoch(store)
+        self.prepare_runner_sequence(store, epoch)
         store.consume_restore(epoch, "transition-synthetic-003", expected_digest=store.ledger_digest(epoch))
         bad = {
             "schema": STORE.SCHEMA_RESTORE_LEDGER,
@@ -269,13 +305,15 @@ class ControllerStoreTests(unittest.TestCase):
     def test_consumed_epoch_cannot_resume(self):
         store = self.new_store()
         epoch = self.create_active_epoch(store)
+        self.prepare_runner_sequence(store, epoch)
         store.consume_restore(epoch, "transition-synthetic-005", expected_digest=store.ledger_digest(epoch))
         with self.assertRaisesRegex(STORE.EpochStateError, "EPOCH_TERMINAL"):
             store.resume_epoch(epoch)
 
     def test_abandoned_epoch_cannot_resume(self):
         store = self.new_store()
-        epoch = self.create_epoch(store, "epoch-abandoned-001")
+        epoch = self.create_active_epoch(store, "epoch-abandoned-001")
+        self.ingest_stage(store, epoch, "EPOCH_READY", {"ref": "abandon-ready-ref"})
         store.abandon(epoch)
         with self.assertRaisesRegex(STORE.EpochStateError, "EPOCH_TERMINAL"):
             store.mark_ready(epoch)
@@ -285,6 +323,7 @@ class ControllerStoreTests(unittest.TestCase):
         fault = FaultAdapter(base)
         store = self.new_store(fault)
         epoch = self.create_active_epoch(store, "epoch-pre-failure-001")
+        self.prepare_runner_sequence(store, epoch)
         fault.fail_before_transition_name = STORE.LEDGER_FILENAME
         with self.assertRaisesRegex(STORE.DurabilityError, "INJECTED_PRE_TRANSITION_FAILURE"):
             store.consume_restore(epoch, "transition-synthetic-006", expected_digest=store.ledger_digest(epoch))
@@ -297,6 +336,7 @@ class ControllerStoreTests(unittest.TestCase):
         fault = FaultAdapter(base)
         store = self.new_store(fault)
         epoch = self.create_active_epoch(store, "epoch-post-failure-001")
+        self.prepare_runner_sequence(store, epoch)
         fault.fail_before_transition_name = STORE.RECORD_FILENAME
         with self.assertRaisesRegex(STORE.DurabilityError, "INJECTED_PRE_TRANSITION_FAILURE"):
             store.consume_restore(epoch, "transition-synthetic-007", expected_digest=store.ledger_digest(epoch))
@@ -308,7 +348,9 @@ class ControllerStoreTests(unittest.TestCase):
         base = STORE.make_durability_adapter()
         fault = FaultAdapter(base)
         store = self.new_store(fault)
-        epoch = self.create_active_epoch(store, "epoch-authority-001")
+        epoch = self.create_epoch(store, "epoch-authority-001")
+        store.mark_ready(epoch)
+        self.ingest_stage(store, epoch, "EPOCH_READY", {"ref": "authority-ready-ref"})
         before = store.read_authoritative_bytes(epoch, STORE.MANIFEST_FILENAME)
         fault.fail_before_transition_name = STORE.MANIFEST_FILENAME
         with self.assertRaisesRegex(STORE.DurabilityError, "INJECTED_PRE_TRANSITION_FAILURE"):
@@ -344,6 +386,7 @@ class ControllerStoreTests(unittest.TestCase):
     def test_persisted_frame_auth_and_hash_are_reverified_on_reload(self):
         store = self.new_store()
         epoch = self.create_active_epoch(store, "epoch-persisted-frame-integrity-001")
+        self.ingest_stage(store, epoch, "EPOCH_READY", {"ref": "epoch-ready-persisted-001"})
         frame = store.prepare_runner_frame(epoch, "RUNNER_STARTED", {"ref": "runner-ref-persisted-001"})
         store.ingest_frame(epoch, frame)
         frame_path = store._frames_path(epoch) / "frame-000000000001.json"
@@ -367,7 +410,7 @@ class ControllerStoreTests(unittest.TestCase):
         value = json.loads(store.adapter.read_authority(path, max_bytes=STORE.MAX_PRIVATE_IDENTITIES_BYTES).decode("utf-8"))
         value["container_identity"] = "synthetic-container-tampered"
         path.write_bytes(STORE.canonical_json_bytes(value, max_bytes=STORE.MAX_PRIVATE_IDENTITIES_BYTES))
-        with self.assertRaisesRegex(STORE.IntegrityError, "PRIVATE_IDENTITY_COMMITMENT_MISMATCH"):
+        with self.assertRaisesRegex(STORE.IntegrityError, "PRIVATE_IDENTITIES_DIGEST_MISMATCH|PRIVATE_IDENTITY_COMMITMENT_MISMATCH"):
             store.load_epoch(epoch)
 
     def test_cross_file_contradiction_fails_closed(self):
@@ -468,7 +511,7 @@ class ControllerStoreTests(unittest.TestCase):
     def test_runner_hmac_hash_and_sequence_rules(self):
         store = self.new_store()
         epoch = self.create_active_epoch(store, "epoch-spool-001")
-        first = store.prepare_runner_frame(epoch, "RUNNER_STARTED", {"ref": "runner-ref-001"})
+        first = store.prepare_runner_frame(epoch, "EPOCH_READY", {"ref": "epoch-ready-ref-001"})
         receipt = store.ingest_frame(epoch, first)
         self.assertEqual(receipt.sequence, 1)
         with self.assertRaisesRegex(STORE.SpoolError, "FRAME_DUPLICATE"):
@@ -477,11 +520,12 @@ class ControllerStoreTests(unittest.TestCase):
         gap["sequence"] = 3
         with self.assertRaisesRegex(STORE.SpoolError, "FRAME_GAP_OR_REORDER"):
             store.ingest_frame(epoch, gap)
-        bad_auth = store.prepare_runner_frame(epoch, "COMMIT", {"ref": "commit-ref-001"})
+        runner_started = store.prepare_runner_frame(epoch, "RUNNER_STARTED", {"ref": "runner-ref-001"})
+        bad_auth = dict(runner_started)
         bad_auth["auth"] = "hmac:v1:" + ("f" * 64)
         with self.assertRaisesRegex(STORE.SpoolError, "FRAME_AUTH_INVALID"):
             store.ingest_frame(epoch, bad_auth)
-        bad_hash = store.prepare_runner_frame(epoch, "COMMIT", {"ref": "commit-ref-001"})
+        bad_hash = dict(runner_started)
         bad_hash["frame_hash"] = STORE.recovery_commitment("tampered", "frame")
         with self.assertRaisesRegex(STORE.SpoolError, "FRAME_HASH_INVALID"):
             store.ingest_frame(epoch, bad_hash)
@@ -489,28 +533,347 @@ class ControllerStoreTests(unittest.TestCase):
     def test_runner_reorder_and_stage_contradiction_are_rejected(self):
         store = self.new_store()
         epoch = self.create_active_epoch(store, "epoch-stage-001")
-        first = store.prepare_runner_frame(epoch, "RUNNER_STARTED", {"ref": "runner-ref-002"})
-        store.ingest_frame(epoch, first)
-        lower = store.prepare_runner_frame(epoch, "EPOCH_READY", {"ref": "lower-stage-001"})
+        self.ingest_stage(store, epoch, "EPOCH_READY", {"ref": "epoch-ready-stage-002"})
         with self.assertRaisesRegex(STORE.SpoolError, "FRAME_STAGE_CONTRADICTION"):
-            store.ingest_frame(epoch, lower)
+            store.prepare_runner_frame(epoch, "EPOCH_READY", {"ref": "lower-stage-001"})
 
     def test_restore_begin_without_consumed_ledger_is_contradictory(self):
         store = self.new_store()
         epoch = self.create_active_epoch(store, "epoch-restore-begin-001")
-        frame = store.prepare_runner_frame(epoch, "RESTORE_BEGIN", {"ref": "restore-ref-001"})
+        self.prepare_runner_sequence(store, epoch)
         with self.assertRaisesRegex(STORE.SpoolError, "RESTORE_BEGIN_BEFORE_LEDGER_CONSUMED"):
-            store.ingest_frame(epoch, frame)
+            store.prepare_runner_frame(epoch, "RESTORE_BEGIN", {"ref": "restore-ref-001"})
 
     def test_highest_contiguous_commit_is_persisted(self):
         store = self.new_store()
         epoch = self.create_active_epoch(store, "epoch-commit-001")
-        store.ingest_frame(epoch, store.prepare_runner_frame(epoch, "RUNNER_STARTED", {"ref": "runner-ref-003"}))
-        receipt = store.ingest_frame(epoch, store.prepare_runner_frame(epoch, "COMMIT", {"ref": "commit-ref-002"}))
-        self.assertEqual(receipt.highest_contiguous_commit, 2)
+        self.prepare_runner_sequence(store, epoch)
+        store.consume_restore(epoch, "transition-commit-001", expected_digest=store.ledger_digest(epoch))
+        self.ingest_stage(store, epoch, "RESTORE_BEGIN", {"ref": "restore-ref-002"})
+        receipt = self.ingest_stage(store, epoch, "COMMIT", {"ref": "commit-ref-002"})
+        self.assertEqual(receipt.highest_contiguous_commit, 4)
         reloaded = store.load_epoch(epoch)
-        self.assertEqual(reloaded.spool["highest_contiguous_commit"], 2)
-        self.assertEqual(store.public_projection(epoch)["highest_contiguous_commit"], 2)
+        self.assertEqual(reloaded.spool["highest_contiguous_commit"], 4)
+        self.assertEqual(reloaded.record["state"], "CONSUMED")
+        self.assertEqual(reloaded.ledger["state"], "CONSUMED")
+        self.assertEqual(reloaded.spool["state"], "COMMITTED")
+        self.assertEqual(store.public_projection(epoch)["highest_contiguous_commit"], 4)
+
+    def test_exact_stage_sequence_and_consume_preconditions(self):
+        store = self.new_store()
+        epoch = self.create_active_epoch(store, "epoch-exact-stage-001")
+        with self.assertRaisesRegex(STORE.SpoolError, "FRAME_STAGE_CONTRADICTION"):
+            store.prepare_runner_frame(epoch, "RUNNER_STARTED", {"ref": "runner-before-ready"})
+        self.ingest_stage(store, epoch, "EPOCH_READY", {"ref": "epoch-ready-exact-001"})
+        with self.assertRaisesRegex(STORE.SpoolError, "FRAME_STAGE_CONTRADICTION"):
+            store.prepare_runner_frame(epoch, "EPOCH_READY", {"ref": "duplicate-ready-001"})
+        self.ingest_stage(store, epoch, "RUNNER_STARTED", {"ref": "runner-started-exact-001"})
+        with self.assertRaisesRegex(STORE.SpoolError, "FRAME_STAGE_CONTRADICTION"):
+            store.prepare_runner_frame(epoch, "COMMIT", {"ref": "commit-before-restore-001"})
+        precondition_store = self.new_store()
+        precondition_epoch = self.create_active_epoch(precondition_store, "epoch-consume-precondition-001")
+        with self.assertRaisesRegex(STORE.LedgerError, "RESTORE_PRECONDITION_FAILED"):
+            precondition_store.consume_restore(
+                precondition_epoch,
+                "transition-before-runner-001",
+                expected_digest=precondition_store.ledger_digest(precondition_epoch),
+            )
+
+    def test_abandon_requires_prior_nonterminal_frame_and_preserves_unconsumed_ledger(self):
+        store = self.new_store()
+        epoch = self.create_active_epoch(store, "epoch-abandon-contract-001")
+        with self.assertRaisesRegex(STORE.SpoolError, "FRAME_STAGE_CONTRADICTION"):
+            store.abandon(epoch)
+        self.ingest_stage(store, epoch, "EPOCH_READY", {"ref": "epoch-ready-abandon-001"})
+        snapshot = store.abandon(epoch)
+        self.assertEqual(snapshot.record["state"], "ABANDONED")
+        self.assertEqual(snapshot.spool["state"], "ABANDONED")
+        self.assertEqual(snapshot.spool["last_stage"], "ABANDON")
+        self.assertEqual(snapshot.ledger["state"], "UNCONSUMED")
+        with self.assertRaisesRegex(STORE.EpochStateError, "EPOCH_TERMINAL"):
+            store.prepare_runner_frame(epoch, "RUNNER_STARTED", {"ref": "after-abandon-001"})
+
+    def test_commit_requires_restore_begin_and_terminalizes_record(self):
+        store = self.new_store()
+        epoch = self.create_active_epoch(store, "epoch-commit-contract-001")
+        self.prepare_runner_sequence(store, epoch)
+        store.consume_restore(epoch, "transition-contract-001", expected_digest=store.ledger_digest(epoch))
+        with self.assertRaisesRegex(STORE.SpoolError, "FRAME_STAGE_CONTRADICTION"):
+            store.prepare_runner_frame(epoch, "COMMIT", {"ref": "commit-before-restore-002"})
+        self.ingest_stage(store, epoch, "RESTORE_BEGIN", {"ref": "restore-begin-contract-001"})
+        snapshot = self.ingest_stage(store, epoch, "COMMIT", {"ref": "commit-contract-001"})
+        self.assertEqual(snapshot.sequence, 4)
+        reloaded = store.load_epoch(epoch)
+        self.assertEqual(reloaded.record["state"], "CONSUMED")
+        self.assertEqual(reloaded.ledger["state"], "CONSUMED")
+        self.assertEqual(reloaded.spool["state"], "COMMITTED")
+        with self.assertRaisesRegex(STORE.EpochStateError, "EPOCH_TERMINAL"):
+            store.prepare_runner_frame(epoch, "EPOCH_READY", {"ref": "after-commit-001"})
+
+    def test_spool_metadata_is_derived_and_metadata_only_reopen_fails(self):
+        store = self.new_store()
+        epoch = self.create_active_epoch(store, "epoch-spool-derived-001")
+        self.ingest_stage(store, epoch, "EPOCH_READY", {"ref": "epoch-ready-derived-001"})
+        frame_path = store._frames_path(epoch) / "frame-000000000001.json"
+        frame_path.unlink()
+        with self.assertRaisesRegex(STORE.IntegrityError, "SPOOL_FRAME_COUNT_CONTRADICTION"):
+            store.load_epoch(epoch)
+
+    def test_committed_and_abandoned_spool_metadata_tamper_fails_closed(self):
+        committed_mutations = (
+            ("state", "OPEN"),
+            ("last_stage", "EPOCH_READY"),
+            ("highest_contiguous_commit", 0),
+            ("last_frame_hash", STORE.ZERO_FRAME_HASH),
+            ("total_spool_bytes", 1),
+        )
+        for field, replacement in committed_mutations:
+            with self.subTest(state="COMMITTED", field=field):
+                store = self.new_store()
+                epoch = self.create_active_epoch(store, f"epoch-committed-tamper-{field.lower()}")
+                self.commit_epoch(store, epoch)
+                self.mutate_json_file(store, epoch, STORE.SPOOL_META_FILENAME, lambda value, field=field, replacement=replacement: {**value, field: replacement})
+                with self.assertRaises(STORE.IntegrityError):
+                    store.load_epoch(epoch)
+
+        abandoned_mutations = (("state", "OPEN"), ("last_stage", "EPOCH_READY"))
+        for field, replacement in abandoned_mutations:
+            with self.subTest(state="ABANDONED", field=field):
+                store = self.new_store()
+                epoch = self.create_active_epoch(store, f"epoch-abandoned-tamper-{field.lower()}")
+                self.ingest_stage(store, epoch, "EPOCH_READY", {"ref": "epoch-ready-tamper-001"})
+                store.abandon(epoch)
+                self.mutate_json_file(store, epoch, STORE.SPOOL_META_FILENAME, lambda value, field=field, replacement=replacement: {**value, field: replacement})
+                with self.assertRaises(STORE.IntegrityError):
+                    store.load_epoch(epoch)
+
+    def test_terminal_frame_followed_by_frame_is_rejected_on_reload(self):
+        for terminal_stage in ("COMMIT", "ABANDON"):
+            with self.subTest(terminal_stage=terminal_stage):
+                store = self.new_store()
+                epoch = self.create_active_epoch(store, f"epoch-terminal-followed-{terminal_stage.lower()}")
+                if terminal_stage == "COMMIT":
+                    snapshot = self.commit_epoch(store, epoch)
+                else:
+                    self.ingest_stage(store, epoch, "EPOCH_READY", {"ref": "epoch-ready-terminal-001"})
+                    store.abandon(epoch)
+                    snapshot = store.load_epoch(epoch)
+                sequence = snapshot.spool["next_sequence"]
+                payload = {"ref": "after-terminal-frame"}
+                stage = "RUNNER_STARTED"
+                auth = store._frame_auth(snapshot.private_identities, epoch, sequence, stage, payload, snapshot.spool["last_frame_hash"])
+                frame = {
+                    "schema": STORE.SCHEMA_RUNNER_FRAME,
+                    "epoch_ref": epoch,
+                    "sequence": sequence,
+                    "stage": stage,
+                    "payload": payload,
+                    "previous_hash": snapshot.spool["last_frame_hash"],
+                    "auth": auth,
+                    "frame_hash": store._frame_hash(epoch, sequence, stage, payload, snapshot.spool["last_frame_hash"], auth),
+                }
+                frame_bytes = STORE.canonical_json_bytes(frame, max_bytes=STORE.MAX_FRAME_BYTES)
+                (store._frames_path(epoch) / f"frame-{sequence:012d}.json").write_bytes(frame_bytes)
+
+                def append_frame(value):
+                    value["next_sequence"] = sequence + 1
+                    value["last_frame_hash"] = frame["frame_hash"]
+                    value["frame_count"] = snapshot.spool["frame_count"] + 1
+                    value["total_spool_bytes"] = snapshot.spool["total_spool_bytes"] + len(frame_bytes)
+                    value["highest_contiguous_commit"] = sequence if terminal_stage == "COMMIT" else 0
+                    value["last_stage"] = terminal_stage
+                    return value
+
+                self.mutate_json_file(store, epoch, STORE.SPOOL_META_FILENAME, append_frame)
+                with self.assertRaisesRegex(STORE.IntegrityError, "SPOOL_STAGE_CONTRADICTION"):
+                    store.load_epoch(epoch)
+
+    def test_private_salt_and_hmac_key_digest_is_checked_before_and_after_frames(self):
+        for field in ("salt", "spool_hmac_key"):
+            with self.subTest(field=field, point="before-frames"):
+                store = self.new_store()
+                epoch = self.create_epoch(store, f"epoch-private-before-{field}")
+                self.mutate_json_file(
+                    store,
+                    epoch,
+                    STORE.PRIVATE_IDENTITIES_FILENAME,
+                    lambda value, field=field: {**value, field: value[field] + "-tampered"},
+                )
+                with self.assertRaisesRegex(STORE.IntegrityError, "PRIVATE_IDENTITIES_DIGEST_MISMATCH"):
+                    store.load_epoch(epoch)
+            with self.subTest(field=field, point="after-frames"):
+                store = self.new_store()
+                epoch = self.create_active_epoch(store, f"epoch-private-after-{field}")
+                self.ingest_stage(store, epoch, "EPOCH_READY", {"ref": "epoch-ready-private-001"})
+                self.mutate_json_file(
+                    store,
+                    epoch,
+                    STORE.PRIVATE_IDENTITIES_FILENAME,
+                    lambda value, field=field: {**value, field: value[field] + "-tampered"},
+                )
+                with self.assertRaisesRegex(STORE.IntegrityError, "PRIVATE_IDENTITIES_DIGEST_MISMATCH"):
+                    store.load_epoch(epoch)
+
+    def test_two_independent_store_instances_serialize_same_digest_consume(self):
+        temporary = tempfile.TemporaryDirectory(prefix="run293-controller-race-")
+        self.addCleanup(temporary.cleanup)
+        root = pathlib.Path(temporary.name)
+        harden_windows_test_root(root)
+        first = STORE.ControllerStore.for_disposable_test_root(root)
+        epoch = self.create_active_epoch(first, "epoch-instance-race-001")
+        self.prepare_runner_sequence(first, epoch)
+        second = STORE.ControllerStore.for_disposable_test_root(root)
+        expected_digest = first.ledger_digest(epoch)
+        barrier = threading.Barrier(2)
+        results = []
+
+        def consume(store):
+            barrier.wait()
+            try:
+                permit = store.consume_restore(
+                    epoch,
+                    "transition-instance-race-001",
+                    expected_digest=expected_digest,
+                    data={"classification": "instance-race"},
+                )
+                results.append(("permit", permit.idempotent))
+            except STORE.ControllerStoreError as error:
+                results.append(("error", error.code))
+
+        threads = [threading.Thread(target=consume, args=(first,)), threading.Thread(target=consume, args=(second,))]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        self.assertEqual(sorted(results), [("permit", False), ("permit", True)])
+        snapshot = first.load_epoch(epoch)
+        self.assertEqual(snapshot.record["state"], "ACTIVE")
+        self.assertEqual(snapshot.ledger["state"], "CONSUMED")
+
+    def test_competing_processes_serialize_same_digest_consume_on_current_os(self):
+        temporary = tempfile.TemporaryDirectory(prefix="run293-controller-process-race-")
+        self.addCleanup(temporary.cleanup)
+        root = pathlib.Path(temporary.name)
+        harden_windows_test_root(root)
+        store = STORE.ControllerStore.for_disposable_test_root(root)
+        epoch = self.create_active_epoch(store, "epoch-process-race-001")
+        self.prepare_runner_sequence(store, epoch)
+        expected_digest = store.ledger_digest(epoch)
+        coordination = tempfile.TemporaryDirectory(prefix="run293-process-coordination-")
+        self.addCleanup(coordination.cleanup)
+        coordination_path = pathlib.Path(coordination.name)
+        ready_paths = [coordination_path / "ready-1", coordination_path / "ready-2"]
+        go_path = coordination_path / "go"
+        worker = r"""
+import importlib.util
+import json
+import pathlib
+import sys
+import time
+
+source_path, root_path, epoch_ref, expected_digest, ready_path, go_path = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("run293_store_child", source_path)
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+pathlib.Path(ready_path).write_text("ready", encoding="ascii")
+deadline = time.monotonic() + 20
+while not pathlib.Path(go_path).exists():
+    if time.monotonic() >= deadline:
+        raise RuntimeError("coordination-timeout")
+    time.sleep(0.01)
+try:
+    store = module.ControllerStore.for_disposable_test_root(root_path)
+    permit = store.consume_restore(
+        epoch_ref,
+        "transition-process-race-001",
+        expected_digest=expected_digest,
+        data={"classification": "process-race"},
+    )
+    print(json.dumps({"ok": True, "idempotent": permit.idempotent}, sort_keys=True), flush=True)
+except Exception as error:
+    print(json.dumps({"ok": False, "type": type(error).__name__, "code": getattr(error, "code", None)}, sort_keys=True), flush=True)
+    raise
+"""
+        processes = []
+        try:
+            for index, ready_path in enumerate(ready_paths, start=1):
+                processes.append(
+                    subprocess.Popen(
+                        [
+                            sys.executable,
+                            "-c",
+                            worker,
+                            str(SOURCE_PATH),
+                            str(root),
+                            epoch,
+                            expected_digest,
+                            str(ready_path),
+                            str(go_path),
+                        ],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+                )
+            deadline = time.monotonic() + 20
+            while not all(path.exists() for path in ready_paths):
+                if time.monotonic() >= deadline:
+                    self.fail("process race workers did not rendezvous")
+                time.sleep(0.01)
+            go_path.write_text("go", encoding="ascii")
+            outputs = []
+            for process in processes:
+                stdout, stderr = process.communicate(timeout=30)
+                self.assertEqual(process.returncode, 0, stdout + stderr)
+                outputs.append(json.loads(stdout.strip().splitlines()[-1]))
+        finally:
+            for process in processes:
+                if process.poll() is None:
+                    process.terminate()
+            for process in processes:
+                if process.poll() is None:
+                    process.kill()
+        self.assertEqual(sorted((result["ok"], result["idempotent"]) for result in outputs), [(True, False), (True, True)])
+        self.assertEqual(store.load_epoch(epoch).ledger["state"], "CONSUMED")
+
+    def test_ephemeral_mountinfo_is_rejected_without_positive_test_proof(self):
+        root = pathlib.Path(tempfile.gettempdir()) / "run293-synthetic-mounted-root"
+        mountinfo = pathlib.Path(tempfile.gettempdir()) / f"run293-mountinfo-{os.getpid()}.txt"
+        self.addCleanup(lambda: mountinfo.exists() and mountinfo.unlink())
+        for filesystem in ("tmpfs", "ramfs", "overlay", "aufs", "squashfs"):
+            mountinfo.write_text(
+                f"36 25 0:32 / {root.as_posix()} rw,relatime - {filesystem} {filesystem} rw\n",
+                encoding="ascii",
+            )
+            with self.subTest(filesystem=filesystem):
+                with self.assertRaisesRegex(STORE.FilesystemSafetyError, "LOCAL_VOLUME_PROOF_FAILED"):
+                    STORE._prove_posix_local_volume(root, mountinfo_path=mountinfo, test_mode=False)
+                if filesystem in ("tmpfs", "ramfs", "overlay", "aufs"):
+                    STORE._prove_posix_local_volume(root, mountinfo_path=mountinfo, test_mode=True)
+                else:
+                    with self.assertRaisesRegex(STORE.FilesystemSafetyError, "LOCAL_VOLUME_PROOF_FAILED"):
+                        STORE._prove_posix_local_volume(root, mountinfo_path=mountinfo, test_mode=True)
+
+    def test_windows_handle_bound_proof_uses_reparse_safe_identity_acl_and_lock_apis(self):
+        if os.name != "nt":
+            self.skipTest("current-OS Windows proof is only exercised on Windows")
+        store = self.new_store()
+        epoch = self.create_epoch(store, "epoch-windows-proof-001")
+        store.load_epoch(epoch)
+        primitives = set(store.adapter.used_primitives)
+        self.assertIsInstance(store.adapter, STORE.WindowsDurabilityAdapter)
+        self.assertTrue(any("OPEN_REPARSE_POINT" in value for value in primitives))
+        self.assertTrue(any("FileAttributeTagInfo" in value for value in primitives))
+        self.assertTrue(any("FileIdInfo" in value for value in primitives))
+        self.assertTrue(any("GetSecurityInfo:opened-handle" in value for value in primitives))
+        self.assertIn("LockFileEx:LOCKFILE_EXCLUSIVE_LOCK", primitives)
+        self.assertIn("UnlockFileEx", primitives)
+        source_text = SOURCE_PATH.read_text(encoding="utf-8")
+        self.assertNotIn("GetFileAttributesW", source_text)
+        self.assertNotIn("GetNamedSecurityInfoW", source_text)
 
     def test_run276_unknown_state_cannot_import(self):
         unknown = {

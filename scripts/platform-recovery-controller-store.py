@@ -30,6 +30,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - available only on POSIX
+    fcntl = None
+
 
 # Run-290 bounded contract.
 MAX_EPOCH_RECORD_BYTES = 16 * 1024
@@ -68,7 +73,14 @@ FRAME_STAGES = (
     "COMMIT",
     "ABANDON",
 )
-FRAME_STAGE_RANK = {stage: index for index, stage in enumerate(FRAME_STAGES, start=1)}
+FRAME_STAGE_TRANSITIONS = {
+    "NONE": ("EPOCH_READY",),
+    "EPOCH_READY": ("RUNNER_STARTED", "ABANDON"),
+    "RUNNER_STARTED": ("RESTORE_BEGIN", "ABANDON"),
+    "RESTORE_BEGIN": ("COMMIT", "ABANDON"),
+    "COMMIT": (),
+    "ABANDON": (),
+}
 
 RECORD_FIELDS = (
     "schema",
@@ -82,6 +94,7 @@ RECORD_FIELDS = (
     "volume_commitment",
     "runner_commitment",
     "spool_commitment",
+    "private_identities_digest",
     "manifest_digest",
     "restore_ledger_ref",
     "restore_ledger_state",
@@ -99,6 +112,7 @@ MANIFEST_FIELDS = (
     "volume_commitment",
     "runner_commitment",
     "spool_commitment",
+    "private_identities_digest",
     "restore_ledger_ref",
     "restore_ledger_state",
     "durability",
@@ -171,6 +185,7 @@ MANIFEST_FILENAME = "recovery-epoch-manifest.v1.json"
 PRIVATE_IDENTITIES_FILENAME = "recovery-private-identities.v1.json"
 LEDGER_FILENAME = "recovery-restore-ledger.v1.json"
 SPOOL_META_FILENAME = "recovery-spool-meta.v1.json"
+TRANSACTION_LOCK_FILENAME = "recovery-transaction-lock.v1"
 SPOOL_DIRNAME = "spool"
 FRAMES_DIRNAME = "frames"
 ZERO_FRAME_HASH = "sha256:v1:" + ("0" * 64)
@@ -378,6 +393,7 @@ def _validate_record_shape(value: Any) -> dict[str, Any]:
     _strict_commitment(value["artifact_commitment"], "artifact_commitment", nullable=True)
     for field in ("container_commitment", "volume_commitment", "runner_commitment", "spool_commitment"):
         _strict_commitment(value[field], field)
+    _strict_commitment(value["private_identities_digest"], "private_identities_digest")
     _strict_commitment(value["manifest_digest"], "manifest_digest")
     _strict_ref(value["restore_ledger_ref"], "restore_ledger_ref")
     if value["restore_ledger_state"] not in LEDGER_STATES:
@@ -406,6 +422,7 @@ def _validate_manifest_shape(value: Any) -> dict[str, Any]:
     _strict_commitment(value["artifact_commitment"], "artifact_commitment", nullable=True)
     for field in ("container_commitment", "volume_commitment", "runner_commitment", "spool_commitment"):
         _strict_commitment(value[field], field)
+    _strict_commitment(value["private_identities_digest"], "private_identities_digest")
     _strict_ref(value["restore_ledger_ref"], "restore_ledger_ref")
     if value["restore_ledger_state"] not in LEDGER_STATES:
         _fail(SchemaError, "INVALID_LEDGER_STATE")
@@ -475,6 +492,20 @@ def _validate_spool_shape(value: Any) -> dict[str, Any]:
         _fail(SpoolError, "INVALID_FRAME_STAGE")
     _strict_commitment(value["last_frame_hash"], "last_frame_hash")
     _strict_commitment(value["spool_commitment"], "spool_commitment")
+    if value["state"] == "OPEN" and value["last_stage"] in ("COMMIT", "ABANDON"):
+        _fail(SpoolError, "SPOOL_TERMINAL_STATE_CONTRADICTION")
+    if value["state"] == "COMMITTED" and (
+        value["last_stage"] != "COMMIT"
+        or value["highest_contiguous_commit"] == 0
+        or value["frame_count"] == 0
+    ):
+        _fail(SpoolError, "SPOOL_COMMITTED_STATE_CONTRADICTION")
+    if value["state"] == "ABANDONED" and (
+        value["last_stage"] != "ABANDON"
+        or value["highest_contiguous_commit"] != 0
+        or value["frame_count"] == 0
+    ):
+        _fail(SpoolError, "SPOOL_ABANDONED_STATE_CONTRADICTION")
     return value
 
 
@@ -559,7 +590,8 @@ def _private_data_commitment(data: Any) -> str:
 
 def private_identities_commitment(value: Mapping[str, Any]) -> str:
     private = validate_private_identities(dict(value))
-    return recovery_commitment(DOMAIN_PRIVATE_IDENTITIES, *(private[field] for field in PRIVATE_IDENTITY_FIELDS[2:]))
+    private_bytes = canonical_json_bytes(private, max_bytes=MAX_PRIVATE_IDENTITIES_BYTES)
+    return bytes_commitment(DOMAIN_PRIVATE_IDENTITIES, private_bytes)
 
 
 def _make_durability(proof: Mapping[str, Any]) -> dict[str, bool]:
@@ -645,7 +677,7 @@ class DurabilityAdapter:
     def _used(self, primitive: str) -> None:
         self.used_primitives.append(primitive)
 
-    def prove_root(self, root: pathlib.Path) -> Mapping[str, Any]:
+    def prove_root(self, root: pathlib.Path, *, test_mode: bool = False) -> Mapping[str, Any]:
         _fail(FilesystemSafetyError, "DURABILITY_UNSUPPORTED")
 
     def validate_component(self, path: pathlib.Path, *, expect_directory: bool | None = None) -> None:
@@ -653,6 +685,14 @@ class DurabilityAdapter:
 
     def mkdir_exclusive(self, path: pathlib.Path) -> None:
         _fail(FilesystemSafetyError, "DURABILITY_UNSUPPORTED")
+
+    def create_transaction_lock(self, path: pathlib.Path) -> None:
+        _fail(FilesystemSafetyError, "DURABILITY_UNSUPPORTED")
+
+    @contextmanager
+    def epoch_transaction_lock(self, path: pathlib.Path):
+        _fail(DurabilityError, "OS_LOCK_UNSUPPORTED", safety_state="CONSUMED")
+        yield
 
     def before_authority_transition(self, path: pathlib.Path) -> None:
         return None
@@ -706,12 +746,19 @@ def _validate_posix_owner_mode(info: os.stat_result, *, directory: bool) -> None
         _fail(FilesystemSafetyError, "PERMISSIONS_NOT_CANONICAL")
 
 
-def _prove_posix_local_volume(root: pathlib.Path) -> None:
+def _prove_posix_local_volume(
+    root: pathlib.Path,
+    *,
+    test_mode: bool = False,
+    mountinfo_path: pathlib.Path | None = None,
+) -> None:
     local_filesystems = {
-        "ext2", "ext3", "ext4", "xfs", "btrfs", "zfs", "f2fs", "tmpfs", "ramfs", "overlay", "aufs",
+        "ext2", "ext3", "ext4", "xfs", "btrfs", "zfs", "f2fs",
         "apfs", "hfs", "hfsplus", "ufs",
     }
-    mountinfo = pathlib.Path("/proc/self/mountinfo")
+    if test_mode:
+        local_filesystems.update({"tmpfs", "ramfs", "overlay", "aufs"})
+    mountinfo = pathlib.Path("/proc/self/mountinfo") if mountinfo_path is None else mountinfo_path
     try:
         lines = mountinfo.read_bytes().splitlines()
     except OSError:
@@ -767,7 +814,7 @@ class PosixDurabilityAdapter(DurabilityAdapter):
             _validate_posix_owner_mode(final_info, directory=stat.S_ISDIR(final_info.st_mode))
         return final_info
 
-    def prove_root(self, root: pathlib.Path) -> Mapping[str, Any]:
+    def prove_root(self, root: pathlib.Path, *, test_mode: bool = False) -> Mapping[str, Any]:
         if os.name != "posix":
             _fail(FilesystemSafetyError, "DURABILITY_UNSUPPORTED")
         if not all(hasattr(os, attribute) for attribute in ("O_NOFOLLOW", "O_DIRECTORY", "O_CLOEXEC")):
@@ -779,7 +826,7 @@ class PosixDurabilityAdapter(DurabilityAdapter):
             os.statvfs(root)
         except OSError:
             _fail(FilesystemSafetyError, "LOCAL_VOLUME_PROOF_FAILED")
-        _prove_posix_local_volume(root)
+        _prove_posix_local_volume(root, test_mode=test_mode)
         self._used("procfs:mountinfo:local-filesystem-proof")
         self._used("os.open:O_NOFOLLOW|O_EXCL")
         self._used("os.fsync:file")
@@ -805,6 +852,63 @@ class PosixDurabilityAdapter(DurabilityAdapter):
             _fail(FilesystemSafetyError, "DIRECTORY_CREATE_FAILED")
         self.validate_component(path, expect_directory=True)
         self.flush_directory(path.parent)
+
+    def create_transaction_lock(self, path: pathlib.Path) -> None:
+        self.validate_component(path.parent, expect_directory=True)
+        flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+        try:
+            fd = os.open(path, flags, 0o600)
+        except FileExistsError:
+            _fail(FilesystemSafetyError, "NAMESPACE_COLLISION")
+        except OSError:
+            _fail(FilesystemSafetyError, "LOCK_CREATE_FAILED")
+        try:
+            os.fsync(fd)
+            _validate_posix_owner_mode(os.fstat(fd), directory=False)
+        except ControllerStoreError:
+            raise
+        except OSError:
+            _fail(DurabilityError, "FILE_FLUSH_FAILED")
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        self.validate_component(path, expect_directory=False)
+        self.flush_directory(path.parent)
+
+    @contextmanager
+    def epoch_transaction_lock(self, path: pathlib.Path):
+        if fcntl is None:
+            _fail(DurabilityError, "OS_LOCK_UNSUPPORTED", safety_state="CONSUMED")
+        self.validate_component(path, expect_directory=False)
+        flags = os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC
+        try:
+            fd = os.open(path, flags)
+        except OSError:
+            _fail(DurabilityError, "OS_LOCK_OPEN_FAILED", safety_state="CONSUMED")
+        try:
+            path_info = os.lstat(path)
+            fd_info = os.fstat(fd)
+            _validate_posix_owner_mode(fd_info, directory=False)
+            if (path_info.st_dev, path_info.st_ino) != (fd_info.st_dev, fd_info.st_ino):
+                _fail(DurabilityError, "OS_LOCK_IDENTITY_CHANGED", safety_state="CONSUMED")
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            except OSError:
+                _fail(DurabilityError, "OS_LOCK_ACQUIRE_FAILED", safety_state="CONSUMED")
+            self._used("fcntl.flock:LOCK_EX")
+            yield
+        finally:
+            try:
+                if fcntl is not None:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
     def _open_exclusive(self, path: pathlib.Path) -> int:
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -953,6 +1057,30 @@ class PosixDurabilityAdapter(DurabilityAdapter):
                 pass
 
 
+class _WinFileAttributeTagInfo(ctypes.Structure):
+    _fields_ = [
+        ("FileAttributes", ctypes.c_ulong),
+        ("ReparseTag", ctypes.c_ulong),
+    ]
+
+
+class _WinFileIdInfo(ctypes.Structure):
+    _fields_ = [
+        ("VolumeSerialNumber", ctypes.c_ulonglong),
+        ("FileId", ctypes.c_ubyte * 16),
+    ]
+
+
+class _WinOverlapped(ctypes.Structure):
+    _fields_ = [
+        ("Internal", ctypes.c_void_p),
+        ("InternalHigh", ctypes.c_void_p),
+        ("Offset", ctypes.c_ulong),
+        ("OffsetHigh", ctypes.c_ulong),
+        ("hEvent", ctypes.c_void_p),
+    ]
+
+
 class WindowsDurabilityAdapter(DurabilityAdapter):
     """Direct Win32 implementation; no os.replace/rename fallback exists."""
 
@@ -977,6 +1105,10 @@ class WindowsDurabilityAdapter(DurabilityAdapter):
     FILE_TYPE_DISK = 0x0001
     MOVEFILE_REPLACE_EXISTING = 0x00000001
     MOVEFILE_WRITE_THROUGH = 0x00000008
+    FILE_BEGIN = 0
+    FILE_ATTRIBUTE_TAG_INFO = 9
+    FILE_ID_INFO = 18
+    LOCKFILE_EXCLUSIVE_LOCK = 0x00000002
     DRIVE_FIXED = 3
     TOKEN_QUERY = 0x0008
     TOKEN_USER = 1
@@ -1036,8 +1168,12 @@ class WindowsDurabilityAdapter(DurabilityAdapter):
         k.CreateFileW.restype = ctypes.c_void_p
         k.CloseHandle.argtypes = [ctypes.c_void_p]
         k.CloseHandle.restype = ctypes.c_int
-        k.GetFileAttributesW.argtypes = [ctypes.c_wchar_p]
-        k.GetFileAttributesW.restype = ctypes.c_ulong
+        k.CreateDirectoryW.argtypes = [ctypes.c_wchar_p, ctypes.c_void_p]
+        k.CreateDirectoryW.restype = ctypes.c_int
+        k.GetFileInformationByHandleEx.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong]
+        k.GetFileInformationByHandleEx.restype = ctypes.c_int
+        k.SetFilePointerEx.argtypes = [ctypes.c_void_p, ctypes.c_longlong, ctypes.POINTER(ctypes.c_longlong), ctypes.c_ulong]
+        k.SetFilePointerEx.restype = ctypes.c_int
         k.GetVolumePathNameW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_ulong]
         k.GetVolumePathNameW.restype = ctypes.c_int
         k.GetDriveTypeW.argtypes = [ctypes.c_wchar_p]
@@ -1056,13 +1192,17 @@ class WindowsDurabilityAdapter(DurabilityAdapter):
         k.FlushFileBuffers.restype = ctypes.c_int
         k.MoveFileExW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint]
         k.MoveFileExW.restype = ctypes.c_int
+        k.LockFileEx.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.POINTER(_WinOverlapped)]
+        k.LockFileEx.restype = ctypes.c_int
+        k.UnlockFileEx.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.POINTER(_WinOverlapped)]
+        k.UnlockFileEx.restype = ctypes.c_int
         k.GetCurrentProcess.restype = ctypes.c_void_p
         a.OpenProcessToken.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_void_p)]
         a.OpenProcessToken.restype = ctypes.c_int
         a.GetTokenInformation.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong)]
         a.GetTokenInformation.restype = ctypes.c_int
-        a.GetNamedSecurityInfoW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint, ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p)]
-        a.GetNamedSecurityInfoW.restype = ctypes.c_ulong
+        a.GetSecurityInfo.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p)]
+        a.GetSecurityInfo.restype = ctypes.c_ulong
         a.GetSecurityDescriptorDacl.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_int)]
         a.GetSecurityDescriptorDacl.restype = ctypes.c_int
         a.GetAce.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_void_p)]
@@ -1079,43 +1219,46 @@ class WindowsDurabilityAdapter(DurabilityAdapter):
             _fail(FilesystemSafetyError, "DURABILITY_UNSUPPORTED")
         return self._kernel32, self._advapi32
 
-    def _validate_path_components(self, path: pathlib.Path, *, expect_directory: bool | None) -> int:
-        if self._root is None:
-            _fail(FilesystemSafetyError, "DURABILITY_UNSUPPORTED")
-        try:
-            relative = path.relative_to(self._root)
-        except ValueError:
-            _fail(FilesystemSafetyError, "PATH_OUTSIDE_STORE")
-        current = self._root
-        final_attributes = self._attributes(current)
-        self._prove_dacl(current)
-        parts = relative.parts
-        for index, part in enumerate(parts):
-            current = current / part
-            final_attributes = self._attributes(current)
-            is_directory = bool(final_attributes & self.FILE_ATTRIBUTE_DIRECTORY)
-            if index < len(parts) - 1 and not is_directory:
-                _fail(FilesystemSafetyError, "DIRECTORY_REQUIRED")
-            if index == len(parts) - 1:
-                if expect_directory is True and not is_directory:
-                    _fail(FilesystemSafetyError, "DIRECTORY_REQUIRED")
-                if expect_directory is False and is_directory:
-                    _fail(FilesystemSafetyError, "REGULAR_FILE_REQUIRED")
-            self._prove_dacl(current)
-        return final_attributes
-
-    def _attributes(self, path: pathlib.Path) -> int:
+    def _query_handle_attributes(self, handle: Any) -> int:
         k, _ = self._require_api()
-        attributes = k.GetFileAttributesW(str(path))
-        if attributes == 0xFFFFFFFF:
-            _fail(FilesystemSafetyError, "PATH_UNAVAILABLE")
-        if attributes & (self.FILE_ATTRIBUTE_REPARSE_POINT | self.FILE_ATTRIBUTE_DEVICE):
+        if k.GetFileType(handle) != self.FILE_TYPE_DISK:
+            _fail(FilesystemSafetyError, "SPECIAL_FILE_REJECTED")
+        info = _WinFileAttributeTagInfo()
+        if not k.GetFileInformationByHandleEx(
+            handle,
+            self.FILE_ATTRIBUTE_TAG_INFO,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        ):
+            _fail(FilesystemSafetyError, "HANDLE_ATTRIBUTE_PROOF_FAILED")
+        if (
+            info.FileAttributes & (self.FILE_ATTRIBUTE_REPARSE_POINT | self.FILE_ATTRIBUTE_DEVICE)
+            or info.ReparseTag != 0
+        ):
             _fail(FilesystemSafetyError, "REPARSE_OR_SPECIAL_REJECTED")
-        return attributes
+        return info.FileAttributes
 
-    def _open_existing(self, path: pathlib.Path, *, directory: bool = False, access: int | None = None) -> Any:
+    def _handle_identity(self, handle: Any) -> tuple[int, bytes]:
         k, _ = self._require_api()
-        self._attributes(path)
+        info = _WinFileIdInfo()
+        if not k.GetFileInformationByHandleEx(
+            handle,
+            self.FILE_ID_INFO,
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        ):
+            _fail(FilesystemSafetyError, "HANDLE_IDENTITY_PROOF_FAILED")
+        return int(info.VolumeSerialNumber), bytes(info.FileId)
+
+    def _open_proven(
+        self,
+        path: pathlib.Path,
+        *,
+        directory: bool = False,
+        access: int | None = None,
+        expect_directory: bool | None = None,
+    ) -> tuple[Any, int, tuple[int, bytes]]:
+        k, _ = self._require_api()
         flags = self.FILE_FLAG_OPEN_REPARSE_POINT
         if directory:
             flags |= self.FILE_FLAG_BACKUP_SEMANTICS
@@ -1130,10 +1273,58 @@ class WindowsDurabilityAdapter(DurabilityAdapter):
         )
         if self._invalid_handle(handle):
             _fail(FilesystemSafetyError, "PATH_OPEN_FAILED")
-        if k.GetFileType(handle) != self.FILE_TYPE_DISK:
+        try:
+            attributes = self._query_handle_attributes(handle)
+            is_directory = bool(attributes & self.FILE_ATTRIBUTE_DIRECTORY)
+            if expect_directory is True and not is_directory:
+                _fail(FilesystemSafetyError, "DIRECTORY_REQUIRED")
+            if expect_directory is False and is_directory:
+                _fail(FilesystemSafetyError, "REGULAR_FILE_REQUIRED")
+            self._prove_dacl_handle(handle)
+            identity = self._handle_identity(handle)
+            self._used("GetFileInformationByHandleEx:FileAttributeTagInfo")
+            self._used("GetFileInformationByHandleEx:FileIdInfo")
+            self._used("GetSecurityInfo:opened-handle")
+            return handle, attributes, identity
+        except ControllerStoreError:
             k.CloseHandle(handle)
-            _fail(FilesystemSafetyError, "SPECIAL_FILE_REJECTED")
-        return handle
+            raise
+
+    def _validate_path_components(self, path: pathlib.Path, *, expect_directory: bool | None) -> int:
+        if self._root is None:
+            _fail(FilesystemSafetyError, "DURABILITY_UNSUPPORTED")
+        try:
+            relative = path.relative_to(self._root)
+        except ValueError:
+            _fail(FilesystemSafetyError, "PATH_OUTSIDE_STORE")
+        components = [self._root]
+        current = self._root
+        for part in relative.parts:
+            current = current / part
+            components.append(current)
+        final_attributes = 0
+        for index, component in enumerate(components):
+            component_expectation = True if index < len(components) - 1 else expect_directory
+            handle, attributes, _ = self._open_proven(
+                component,
+                directory=component_expectation is not False,
+                expect_directory=component_expectation,
+            )
+            try:
+                final_attributes = attributes
+            finally:
+                self._require_api()[0].CloseHandle(handle)
+        return final_attributes
+
+    def _attributes(self, path: pathlib.Path) -> int:
+        handle, attributes, _ = self._open_proven(path, directory=True)
+        try:
+            return attributes
+        finally:
+            self._require_api()[0].CloseHandle(handle)
+
+    def _open_existing(self, path: pathlib.Path, *, directory: bool = False, access: int | None = None) -> Any:
+        return self._open_proven(path, directory=directory, access=access)[0]
 
     def _current_sid(self) -> tuple[ctypes.c_void_p, Any]:
         k, a = self._require_api()
@@ -1162,15 +1353,15 @@ class WindowsDurabilityAdapter(DurabilityAdapter):
             _fail(FilesystemSafetyError, "SECURITY_PROOF_FAILED")
         return sid
 
-    def _prove_dacl(self, path: pathlib.Path) -> None:
+    def _prove_dacl_handle(self, handle: Any) -> None:
         k, a = self._require_api()
         descriptor = ctypes.c_void_p()
         owner = ctypes.c_void_p()
         group = ctypes.c_void_p()
         dacl = ctypes.c_void_p()
         sacl = ctypes.c_void_p()
-        result = a.GetNamedSecurityInfoW(
-            str(path),
+        result = a.GetSecurityInfo(
+            handle,
             self.SE_FILE_OBJECT,
             self.OWNER_SECURITY_INFORMATION | self.DACL_SECURITY_INFORMATION,
             ctypes.byref(owner),
@@ -1221,11 +1412,8 @@ class WindowsDurabilityAdapter(DurabilityAdapter):
         finally:
             k.LocalFree(descriptor)
 
-    def prove_root(self, root: pathlib.Path) -> Mapping[str, Any]:
+    def prove_root(self, root: pathlib.Path, *, test_mode: bool = False) -> Mapping[str, Any]:
         k, _ = self._require_api()
-        attributes = self._attributes(root)
-        if not attributes & self.FILE_ATTRIBUTE_DIRECTORY:
-            _fail(FilesystemSafetyError, "DIRECTORY_REQUIRED")
         volume = ctypes.create_unicode_buffer(32768)
         if not k.GetVolumePathNameW(str(root), volume, len(volume)):
             _fail(FilesystemSafetyError, "LOCAL_VOLUME_PROOF_FAILED")
@@ -1238,29 +1426,15 @@ class WindowsDurabilityAdapter(DurabilityAdapter):
         filesystem = ctypes.create_unicode_buffer(32768)
         if not k.GetVolumeInformationW(volume.value, volume_name, len(volume_name), ctypes.byref(serial), ctypes.byref(maximum_component), ctypes.byref(flags), filesystem, len(filesystem)):
             _fail(FilesystemSafetyError, "LOCAL_VOLUME_PROOF_FAILED")
-        self._root = root
         self._volume_root = pathlib.Path(volume.value)
-        current = root
-        while True:
-            self._attributes(current)
-            if current == self._volume_root:
-                break
-            parent = current.parent
-            if parent == current:
-                _fail(FilesystemSafetyError, "LOCAL_VOLUME_PROOF_FAILED")
-            current = parent
+        self._root = root
         self._validate_path_components(root, expect_directory=True)
-        handle = self._open_existing(root, directory=True)
-        try:
-            self._prove_dacl(root)
-        finally:
-            k.CloseHandle(handle)
         self._used("CreateFileW:OPEN_REPARSE_POINT|FILE_FLAG_BACKUP_SEMANTICS")
         self._used("CreateFileW:CREATE_NEW|FILE_FLAG_WRITE_THROUGH")
         self._used("FlushFileBuffers")
         self._used("MoveFileExW:WRITE_THROUGH")
         self._used("GetVolumePathNameW/GetDriveTypeW")
-        self._used("GetNamedSecurityInfoW/GetSecurityDescriptorDacl")
+        self._used("GetSecurityInfo/GetSecurityDescriptorDacl")
         return {
             "file_flush_verified": True,
             "readback_verified": True,
@@ -1269,18 +1443,7 @@ class WindowsDurabilityAdapter(DurabilityAdapter):
         }
 
     def validate_component(self, path: pathlib.Path, *, expect_directory: bool | None = None) -> None:
-        attributes = self._validate_path_components(path, expect_directory=expect_directory)
-        is_directory = bool(attributes & self.FILE_ATTRIBUTE_DIRECTORY)
-        if expect_directory is True and not is_directory:
-            _fail(FilesystemSafetyError, "DIRECTORY_REQUIRED")
-        if expect_directory is False and is_directory:
-            _fail(FilesystemSafetyError, "REGULAR_FILE_REQUIRED")
-        handle = self._open_existing(path, directory=is_directory)
-        try:
-            self._prove_dacl(path)
-        finally:
-            k, _ = self._require_api()
-            k.CloseHandle(handle)
+        self._validate_path_components(path, expect_directory=expect_directory)
 
     def mkdir_exclusive(self, path: pathlib.Path) -> None:
         self.validate_component(path.parent, expect_directory=True)
@@ -1296,8 +1459,8 @@ class WindowsDurabilityAdapter(DurabilityAdapter):
         k, _ = self._require_api()
         handle = k.CreateFileW(
             str(path),
-            self.GENERIC_WRITE | self.READ_CONTROL,
-            0,
+            self.GENERIC_READ | self.GENERIC_WRITE | self.READ_CONTROL,
+            self.FILE_SHARE_READ | self.FILE_SHARE_WRITE | self.FILE_SHARE_DELETE,
             None,
             self.CREATE_NEW,
             self.FILE_ATTRIBUTE_NORMAL | self.FILE_FLAG_WRITE_THROUGH | self.FILE_FLAG_OPEN_REPARSE_POINT,
@@ -1305,7 +1468,69 @@ class WindowsDurabilityAdapter(DurabilityAdapter):
         )
         if self._invalid_handle(handle):
             _fail(DurabilityError, "TEMP_CREATE_FAILED")
-        return handle
+        try:
+            attributes = self._query_handle_attributes(handle)
+            if attributes & self.FILE_ATTRIBUTE_DIRECTORY:
+                _fail(FilesystemSafetyError, "REGULAR_FILE_REQUIRED")
+            self._prove_dacl_handle(handle)
+            self._handle_identity(handle)
+            self._used("GetFileInformationByHandleEx:FileAttributeTagInfo")
+            self._used("GetFileInformationByHandleEx:FileIdInfo")
+            self._used("GetSecurityInfo:opened-handle")
+            return handle
+        except ControllerStoreError:
+            k.CloseHandle(handle)
+            raise
+
+    def create_transaction_lock(self, path: pathlib.Path) -> None:
+        self.validate_component(path.parent, expect_directory=True)
+        handle = self._create_temp(path)
+        try:
+            k, _ = self._require_api()
+            if not k.FlushFileBuffers(handle):
+                _fail(DurabilityError, "FILE_FLUSH_FAILED")
+            self._used("FlushFileBuffers:transaction-lock")
+        finally:
+            k, _ = self._require_api()
+            k.CloseHandle(handle)
+        self.validate_component(path, expect_directory=False)
+
+    @contextmanager
+    def epoch_transaction_lock(self, path: pathlib.Path):
+        handle = self._open_existing(
+            path,
+            directory=False,
+            access=self.GENERIC_READ | self.GENERIC_WRITE | self.READ_CONTROL,
+        )
+        k, _ = self._require_api()
+        overlapped = _WinOverlapped()
+        acquired = False
+        try:
+            identity = self._handle_identity(handle)
+            if not k.LockFileEx(
+                handle,
+                self.LOCKFILE_EXCLUSIVE_LOCK,
+                0,
+                1,
+                0,
+                ctypes.byref(overlapped),
+            ):
+                _fail(DurabilityError, "OS_LOCK_ACQUIRE_FAILED", safety_state="CONSUMED")
+            acquired = True
+            if self._handle_identity(handle) != identity:
+                _fail(DurabilityError, "OS_LOCK_IDENTITY_CHANGED", safety_state="CONSUMED")
+            self._used("LockFileEx:LOCKFILE_EXCLUSIVE_LOCK")
+            yield
+        finally:
+            release_failed = False
+            if acquired:
+                if not k.UnlockFileEx(handle, 0, 1, 0, ctypes.byref(overlapped)):
+                    release_failed = True
+                else:
+                    self._used("UnlockFileEx")
+            k.CloseHandle(handle)
+            if release_failed:
+                _fail(DurabilityError, "OS_LOCK_RELEASE_FAILED", safety_state="CONSUMED")
 
     def _write_handle(self, handle: Any, payload: bytes) -> None:
         k, _ = self._require_api()
@@ -1319,6 +1544,11 @@ class WindowsDurabilityAdapter(DurabilityAdapter):
             written_total += written.value
         if written_total != len(payload) or not k.FlushFileBuffers(handle):
             _fail(DurabilityError, "FILE_FLUSH_FAILED")
+
+    def _rewind_handle(self, handle: Any) -> None:
+        k, _ = self._require_api()
+        if not k.SetFilePointerEx(handle, ctypes.c_longlong(0), None, self.FILE_BEGIN):
+            _fail(DurabilityError, "FILE_SEEK_FAILED")
 
     def _read_handle(self, handle: Any, *, max_bytes: int) -> bytes:
         k, _ = self._require_api()
@@ -1337,6 +1567,14 @@ class WindowsDurabilityAdapter(DurabilityAdapter):
             read_total += count.value
         return buffer.raw[:size.value]
 
+    def _assert_path_identity(self, path: pathlib.Path, expected: tuple[int, bytes], *, directory: bool) -> None:
+        handle = self._open_existing(path, directory=directory)
+        try:
+            if self._handle_identity(handle) != expected:
+                _fail(DurabilityError, "AUTHORITY_IDENTITY_CHANGED", safety_state="CONSUMED")
+        finally:
+            self._require_api()[0].CloseHandle(handle)
+
     def write_authority(
         self,
         path: pathlib.Path,
@@ -1348,48 +1586,79 @@ class WindowsDurabilityAdapter(DurabilityAdapter):
         if len(payload) > max_bytes:
             _fail(DurabilityError, "AUTHORITY_OVERSIZED")
         parent = path.parent
-        self.validate_component(parent, expect_directory=True)
-        if os.path.lexists(path):
-            self.validate_component(path, expect_directory=False)
-        temporary = parent / f".recovery-tmp-{uuid.uuid4().hex}"
+        parent_handle, _, parent_identity = self._open_proven(parent, directory=True, expect_directory=True)
         k, _ = self._require_api()
-        handle = self._create_temp(temporary)
+        target_handle = None
+        target_identity = None
         try:
-            self._write_handle(handle, payload)
+            if os.path.lexists(path):
+                target_handle, _, target_identity = self._open_proven(path, directory=False, expect_directory=False)
+            temporary = parent / f".recovery-tmp-{uuid.uuid4().hex}"
+            temp_handle = self._create_temp(temporary)
+            try:
+                temp_identity = self._handle_identity(temp_handle)
+                self._write_handle(temp_handle, payload)
+                if self._handle_identity(temp_handle) != temp_identity:
+                    _fail(DurabilityError, "AUTHORITY_IDENTITY_CHANGED", safety_state="CONSUMED")
+                self._rewind_handle(temp_handle)
+                readback = self._read_handle(temp_handle, max_bytes=max_bytes)
+                if self._handle_identity(temp_handle) != temp_identity:
+                    _fail(DurabilityError, "AUTHORITY_IDENTITY_CHANGED", safety_state="CONSUMED")
+            finally:
+                k, _ = self._require_api()
+                k.CloseHandle(temp_handle)
+            self.after_temp_readback(temporary, payload, readback)
+            if readback != payload:
+                _fail(DurabilityError, "READBACK_MISMATCH")
+            self._assert_path_identity(temporary, temp_identity, directory=False)
+            self._assert_path_identity(parent, parent_identity, directory=True)
+            if target_identity is not None:
+                self._assert_path_identity(path, target_identity, directory=False)
+                k.CloseHandle(target_handle)
+                target_handle = None
+            self.before_authority_transition(path)
+            self._assert_path_identity(temporary, temp_identity, directory=False)
+            self._assert_path_identity(parent, parent_identity, directory=True)
+            if target_identity is not None:
+                self._assert_path_identity(path, target_identity, directory=False)
+            k, _ = self._require_api()
+            flags = self.MOVEFILE_WRITE_THROUGH
+            if replace:
+                flags |= self.MOVEFILE_REPLACE_EXISTING
+            if not k.MoveFileExW(str(temporary), str(path), flags):
+                _fail(DurabilityError, "AUTHORITY_COLLISION" if not replace else "ATOMIC_TRANSITION_FAILED")
+            self._assert_path_identity(parent, parent_identity, directory=True)
+            final_handle = self._open_existing(path, directory=False)
+            try:
+                final_identity = self._handle_identity(final_handle)
+                if final_identity != temp_identity:
+                    _fail(DurabilityError, "AUTHORITY_IDENTITY_CHANGED", safety_state="CONSUMED")
+                final_readback = self._read_handle(final_handle, max_bytes=max_bytes)
+            finally:
+                k.CloseHandle(final_handle)
+            if final_readback != payload:
+                _fail(DurabilityError, "FINAL_READBACK_MISMATCH")
+            self._used("MoveFileExW:WRITE_THROUGH:directory-entry")
+            return {
+                "file_flush_verified": True,
+                "readback_verified": True,
+                "atomic_authority_transition": True,
+                "directory_flush_verified": True,
+            }
         finally:
-            k.CloseHandle(handle)
-        self.validate_component(temporary, expect_directory=False)
-        read_handle = self._open_existing(temporary, access=self.GENERIC_READ | self.READ_CONTROL)
-        try:
-            readback = self._read_handle(read_handle, max_bytes=max_bytes)
-        finally:
-            k.CloseHandle(read_handle)
-        self.after_temp_readback(temporary, payload, readback)
-        if readback != payload:
-            _fail(DurabilityError, "READBACK_MISMATCH")
-        self.before_authority_transition(path)
-        flags = self.MOVEFILE_WRITE_THROUGH
-        if replace:
-            flags |= self.MOVEFILE_REPLACE_EXISTING
-        if not k.MoveFileExW(str(temporary), str(path), flags):
-            _fail(DurabilityError, "AUTHORITY_COLLISION" if not replace else "ATOMIC_TRANSITION_FAILED")
-        self.validate_component(path, expect_directory=False)
-        self._used("MoveFileExW:WRITE_THROUGH:directory-entry")
-        if self.read_authority(path, max_bytes=max_bytes) != payload:
-            _fail(DurabilityError, "FINAL_READBACK_MISMATCH")
-        return {
-            "file_flush_verified": True,
-            "readback_verified": True,
-            "atomic_authority_transition": True,
-            "directory_flush_verified": True,
-        }
+            if target_handle is not None:
+                k.CloseHandle(target_handle)
+            k.CloseHandle(parent_handle)
 
     def read_authority(self, path: pathlib.Path, *, max_bytes: int) -> bytes:
-        self.validate_component(path, expect_directory=False)
         k, _ = self._require_api()
         handle = self._open_existing(path, access=self.GENERIC_READ | self.READ_CONTROL)
         try:
-            return self._read_handle(handle, max_bytes=max_bytes)
+            identity = self._handle_identity(handle)
+            payload = self._read_handle(handle, max_bytes=max_bytes)
+            if self._handle_identity(handle) != identity:
+                _fail(DurabilityError, "AUTHORITY_IDENTITY_CHANGED", safety_state="CONSUMED")
+            return payload
         finally:
             k.CloseHandle(handle)
 
@@ -1484,7 +1753,7 @@ class ControllerStore:
         self.root = root_path
         self.test_mode = test_mode
         self.adapter = adapter or make_durability_adapter()
-        self._durability = _make_durability(self.adapter.prove_root(root_path))
+        self._durability = _make_durability(self.adapter.prove_root(root_path, test_mode=test_mode))
         self._locks_guard = threading.Lock()
         self._epoch_locks: dict[str, threading.RLock] = {}
         self._ensure_root_layout()
@@ -1530,6 +1799,9 @@ class ControllerStore:
 
     def _frames_path(self, epoch_ref: str) -> pathlib.Path:
         return self._spool_path(epoch_ref) / FRAMES_DIRNAME
+
+    def _transaction_lock_path(self, epoch_ref: str) -> pathlib.Path:
+        return self._epoch_path(epoch_ref) / TRANSACTION_LOCK_FILENAME
 
     def _file_path(self, epoch_ref: str, filename: str) -> pathlib.Path:
         path = self._epoch_path(epoch_ref)
@@ -1585,9 +1857,13 @@ class ControllerStore:
             MANIFEST_FILENAME,
             PRIVATE_IDENTITIES_FILENAME,
             LEDGER_FILENAME,
+            TRANSACTION_LOCK_FILENAME,
             SPOOL_DIRNAME,
         }
         for entry in self.adapter.list_entries(epoch):
+            if entry.name == TRANSACTION_LOCK_FILENAME:
+                self.adapter.validate_component(entry, expect_directory=False)
+                continue
             if entry.name in allowed:
                 continue
             if TEMP_NAME_RE.fullmatch(entry.name):
@@ -1613,12 +1889,21 @@ class ControllerStore:
             else:
                 _fail(FilesystemSafetyError, "UNKNOWN_FRAME_ENTRY")
 
-    def _read_frame_files(self, epoch_ref: str, spool: Mapping[str, Any], private: Mapping[str, Any]) -> None:
+    def _read_frame_files(
+        self,
+        epoch_ref: str,
+        spool: Mapping[str, Any],
+        private: Mapping[str, Any],
+        *,
+        record: Mapping[str, Any],
+        ledger: Mapping[str, Any],
+    ) -> dict[str, Any]:
         frames_dir = self._frames_path(epoch_ref)
         entries = [entry for entry in self.adapter.list_entries(frames_dir) if FRAME_NAME_RE.fullmatch(entry.name)]
         entries.sort(key=lambda path: path.name)
+        safety_state = "CONSUMED" if ledger["state"] == "CONSUMED" or spool["state"] == "COMMITTED" else None
         if len(entries) != spool["frame_count"]:
-            _fail(IntegrityError, "SPOOL_FRAME_COUNT_CONTRADICTION", safety_state="CONSUMED" if spool["state"] == "COMMITTED" else None)
+            _fail(IntegrityError, "SPOOL_FRAME_COUNT_CONTRADICTION", safety_state=safety_state)
         expected_sequence = 1
         previous_hash = ZERO_FRAME_HASH
         total_bytes = 0
@@ -1636,18 +1921,37 @@ class ControllerStore:
             expected_hash = self._frame_hash(epoch_ref, frame["sequence"], frame["stage"], frame["payload"], frame["previous_hash"], frame["auth"])
             if frame["frame_hash"] != expected_hash:
                 _fail(IntegrityError, "SPOOL_FRAME_HASH_CONTRADICTION", safety_state="CONSUMED")
+            if frame["stage"] not in FRAME_STAGE_TRANSITIONS[last_stage]:
+                _fail(IntegrityError, "SPOOL_STAGE_CONTRADICTION", safety_state=safety_state)
+            if frame["stage"] == "RESTORE_BEGIN" and ledger["state"] != "CONSUMED":
+                _fail(IntegrityError, "RESTORE_BEGIN_BEFORE_LEDGER_CONSUMED", safety_state="CONSUMED")
+            if frame["stage"] == "COMMIT" and ledger["state"] != "CONSUMED":
+                _fail(IntegrityError, "COMMIT_BEFORE_LEDGER_CONSUMED", safety_state="CONSUMED")
+            if frame["stage"] == "ABANDON" and ledger["state"] != "UNCONSUMED":
+                _fail(IntegrityError, "ABANDON_AFTER_LEDGER_CONSUMED", safety_state="CONSUMED")
             expected_sequence += 1
             previous_hash = frame["frame_hash"]
             total_bytes += len(payload)
             if frame["stage"] == "COMMIT":
                 highest_commit = frame["sequence"]
-            if last_stage != "NONE" and FRAME_STAGE_RANK[frame["stage"]] < FRAME_STAGE_RANK[last_stage]:
-                _fail(IntegrityError, "SPOOL_STAGE_CONTRADICTION", safety_state="CONSUMED")
             last_stage = frame["stage"]
-        if spool["frame_count"] == 0:
-            previous_hash = ZERO_FRAME_HASH
-        if spool["last_frame_hash"] != previous_hash or spool["total_spool_bytes"] != total_bytes or spool["highest_contiguous_commit"] != highest_commit or spool["last_stage"] != last_stage:
-            _fail(IntegrityError, "SPOOL_META_CONTRADICTION", safety_state="CONSUMED")
+        derived_state = {
+            "COMMIT": "COMMITTED",
+            "ABANDON": "ABANDONED",
+        }.get(last_stage, "OPEN")
+        summary = {
+            "state": derived_state,
+            "next_sequence": expected_sequence,
+            "last_frame_hash": previous_hash,
+            "highest_contiguous_commit": highest_commit,
+            "frame_count": len(entries),
+            "total_spool_bytes": total_bytes,
+            "last_stage": last_stage,
+        }
+        for field, expected in summary.items():
+            if spool[field] != expected:
+                _fail(IntegrityError, "SPOOL_META_CONTRADICTION", safety_state=safety_state)
+        return summary
 
     def _cross_validate(
         self,
@@ -1657,9 +1961,15 @@ class ControllerStore:
         ledger: Mapping[str, Any],
         spool: Mapping[str, Any],
         manifest_bytes: bytes,
+        *,
+        private_bytes: bytes,
+        frame_summary: Mapping[str, Any] | None = None,
     ) -> None:
         if record["epoch_ref"] != manifest["epoch_ref"] or record["epoch_ref"] != private["epoch_ref"] or record["epoch_ref"] != ledger["epoch_ref"] or record["epoch_ref"] != spool["epoch_ref"]:
             _fail(IntegrityError, "CROSS_FILE_CONTRADICTION", safety_state="CONSUMED" if ledger["state"] == "CONSUMED" else None)
+        expected_private_digest = bytes_commitment(DOMAIN_PRIVATE_IDENTITIES, private_bytes)
+        if record["private_identities_digest"] != expected_private_digest or manifest["private_identities_digest"] != expected_private_digest:
+            _fail(IntegrityError, "PRIVATE_IDENTITIES_DIGEST_MISMATCH", safety_state="CONSUMED" if ledger["state"] == "CONSUMED" else None)
         if record["container_commitment"] != recovery_commitment(DOMAIN_CONTAINER_IDENTITY, private["container_identity"]):
             _fail(IntegrityError, "PRIVATE_IDENTITY_COMMITMENT_MISMATCH", safety_state="CONSUMED")
         if record["volume_commitment"] != recovery_commitment(DOMAIN_VOLUME_IDENTITY, private["volume_identity"]):
@@ -1677,7 +1987,7 @@ class ControllerStore:
             expected_artifact = recovery_commitment(DOMAIN_ARTIFACT_ROW, private["artifact_row_id"], private["artifact_filename"])
         if record["artifact_commitment"] != expected_artifact:
             _fail(IntegrityError, "ARTIFACT_CROSS_FILE_CONTRADICTION", safety_state="CONSUMED")
-        for field in ("authority_ref", "state", "artifact_binding_state", "artifact_commitment", "supersession_barrier_commitment", "container_commitment", "volume_commitment", "runner_commitment", "spool_commitment", "restore_ledger_ref", "restore_ledger_state", "durability"):
+        for field in ("authority_ref", "state", "artifact_binding_state", "artifact_commitment", "supersession_barrier_commitment", "container_commitment", "volume_commitment", "runner_commitment", "spool_commitment", "private_identities_digest", "restore_ledger_ref", "restore_ledger_state", "durability"):
             if record[field] != manifest[field]:
                 _fail(IntegrityError, "CROSS_FILE_CONTRADICTION", safety_state="CONSUMED" if ledger["state"] == "CONSUMED" else None)
         if record["manifest_digest"] != bytes_commitment(DOMAIN_MANIFEST, manifest_bytes):
@@ -1686,20 +1996,49 @@ class ControllerStore:
             _fail(IntegrityError, "LEDGER_CROSS_FILE_CONTRADICTION", safety_state="CONSUMED")
         if record["spool_commitment"] != spool["spool_commitment"]:
             _fail(IntegrityError, "SPOOL_CROSS_FILE_CONTRADICTION", safety_state="CONSUMED")
+        if spool["state"] == "COMMITTED":
+            if record["state"] != "CONSUMED" or ledger["state"] != "CONSUMED":
+                _fail(IntegrityError, "SPOOL_CROSS_FILE_CONTRADICTION", safety_state="CONSUMED")
+        elif spool["state"] == "ABANDONED":
+            if record["state"] != "ABANDONED" or ledger["state"] != "UNCONSUMED":
+                _fail(IntegrityError, "SPOOL_CROSS_FILE_CONTRADICTION", safety_state="CONSUMED" if ledger["state"] == "CONSUMED" else None)
+        else:
+            if record["state"] in ("ABANDONED", "CONSUMED"):
+                _fail(IntegrityError, "SPOOL_CROSS_FILE_CONTRADICTION", safety_state="CONSUMED" if record["state"] == "CONSUMED" else None)
+            if ledger["state"] == "CONSUMED" and record["state"] != "ACTIVE":
+                _fail(IntegrityError, "LEDGER_CROSS_FILE_CONTRADICTION", safety_state="CONSUMED")
+        stage_state = spool["last_stage"]
+        if stage_state == "EPOCH_READY" and record["state"] not in ("READY", "ACTIVE", "SUPERSEDED"):
+            _fail(IntegrityError, "SPOOL_CROSS_FILE_CONTRADICTION", safety_state="CONSUMED" if ledger["state"] == "CONSUMED" else None)
+        if stage_state == "RUNNER_STARTED" and record["state"] != "ACTIVE":
+            _fail(IntegrityError, "SPOOL_CROSS_FILE_CONTRADICTION", safety_state="CONSUMED" if ledger["state"] == "CONSUMED" else None)
+        if stage_state == "RESTORE_BEGIN" and (record["state"] != "ACTIVE" or ledger["state"] != "CONSUMED"):
+            _fail(IntegrityError, "SPOOL_CROSS_FILE_CONTRADICTION", safety_state="CONSUMED")
+        if stage_state == "COMMIT" and (record["state"] != "CONSUMED" or ledger["state"] != "CONSUMED"):
+            _fail(IntegrityError, "SPOOL_CROSS_FILE_CONTRADICTION", safety_state="CONSUMED")
+        if stage_state == "ABANDON" and (record["state"] != "ABANDONED" or ledger["state"] != "UNCONSUMED"):
+            _fail(IntegrityError, "SPOOL_CROSS_FILE_CONTRADICTION", safety_state="CONSUMED" if ledger["state"] == "CONSUMED" else None)
+        if frame_summary is not None:
+            for field in ("state", "next_sequence", "last_frame_hash", "highest_contiguous_commit", "frame_count", "total_spool_bytes", "last_stage"):
+                if spool[field] != frame_summary[field]:
+                    _fail(IntegrityError, "SPOOL_META_CONTRADICTION", safety_state="CONSUMED" if ledger["state"] == "CONSUMED" else None)
 
     def _load_epoch_unlocked(self, epoch_ref: str) -> EpochSnapshot:
         self._validate_epoch_entries(epoch_ref)
         record, _ = self._read_document(self._file_path(epoch_ref, RECORD_FILENAME), max_bytes=MAX_EPOCH_RECORD_BYTES, validator=validate_epoch_record)
         manifest, manifest_bytes = self._read_document(self._file_path(epoch_ref, MANIFEST_FILENAME), max_bytes=MAX_MANIFEST_BYTES, validator=validate_manifest)
-        private, _ = self._read_document(self._file_path(epoch_ref, PRIVATE_IDENTITIES_FILENAME), max_bytes=MAX_PRIVATE_IDENTITIES_BYTES, validator=validate_private_identities)
+        private, private_bytes = self._read_document(self._file_path(epoch_ref, PRIVATE_IDENTITIES_FILENAME), max_bytes=MAX_PRIVATE_IDENTITIES_BYTES, validator=validate_private_identities)
         try:
             ledger, _ = self._read_document(self._file_path(epoch_ref, LEDGER_FILENAME), max_bytes=MAX_RESTORE_LEDGER_BYTES, validator=validate_restore_ledger)
         except LedgerError:
             raise
         spool, _ = self._read_document(self._file_path(epoch_ref, SPOOL_META_FILENAME), max_bytes=MAX_SPOOL_META_BYTES, validator=validate_spool_meta)
         try:
-            self._read_frame_files(epoch_ref, spool, private)
-            self._cross_validate(record, manifest, private, ledger, spool, manifest_bytes)
+            # Validate the complete private byte commitment before any frame
+            # authentication is attempted.
+            self._cross_validate(record, manifest, private, ledger, spool, manifest_bytes, private_bytes=private_bytes)
+            frame_summary = self._read_frame_files(epoch_ref, spool, private, record=record, ledger=ledger)
+            self._cross_validate(record, manifest, private, ledger, spool, manifest_bytes, private_bytes=private_bytes, frame_summary=frame_summary)
         except ControllerStoreError as error:
             if error.safety_state is None:
                 error.safety_state = "CONSUMED" if ledger.get("state") == "CONSUMED" else None
@@ -1707,11 +2046,17 @@ class ControllerStore:
         return EpochSnapshot(record, manifest, private, ledger, spool)
 
     @contextmanager
-    def _epoch_lock(self, epoch_ref: str):
+    def _in_process_epoch_lock(self, epoch_ref: str):
         with self._locks_guard:
             lock = self._epoch_locks.setdefault(epoch_ref, threading.RLock())
         with lock:
             yield
+
+    @contextmanager
+    def _epoch_lock(self, epoch_ref: str):
+        with self._in_process_epoch_lock(epoch_ref):
+            with self.adapter.epoch_transaction_lock(self._transaction_lock_path(epoch_ref)):
+                yield
 
     def load_epoch(self, epoch_ref: str) -> EpochSnapshot:
         with self._epoch_lock(epoch_ref):
@@ -1743,13 +2088,14 @@ class ControllerStore:
         private_input = _validate_private_input(private_identities)
         if supersedes_epoch_ref is not None:
             _strict_ref(supersedes_epoch_ref, "supersedes_epoch_ref")
-        with self._epoch_lock(epoch_ref):
+        with self._in_process_epoch_lock(epoch_ref):
             epochs = self.root / "epochs"
             self.adapter.validate_component(epochs, expect_directory=True)
             epoch = epochs / epoch_ref
             if os.path.lexists(epoch):
                 _fail(EpochStateError, "EPOCH_COLLISION")
             self.adapter.mkdir_exclusive(epoch)
+            self.adapter.create_transaction_lock(self._transaction_lock_path(epoch_ref))
             spool = epoch / SPOOL_DIRNAME
             frames = spool / FRAMES_DIRNAME
             self.adapter.mkdir_exclusive(spool)
@@ -1769,6 +2115,8 @@ class ControllerStore:
                 "transition_data_commitment": None,
             }
             validate_restore_ledger(ledger)
+            private_bytes = canonical_json_bytes(private, max_bytes=MAX_PRIVATE_IDENTITIES_BYTES)
+            private_identities_digest = bytes_commitment(DOMAIN_PRIVATE_IDENTITIES, private_bytes)
             barrier_source = "NONE" if supersedes_epoch_ref is None else supersedes_epoch_ref
             barrier = recovery_commitment(DOMAIN_SUPERSESSION_BARRIER, barrier_source, epoch_ref, authority_ref)
             container_commitment = recovery_commitment(DOMAIN_CONTAINER_IDENTITY, private_input["container_identity"])
@@ -1801,6 +2149,7 @@ class ControllerStore:
                 "volume_commitment": volume_commitment,
                 "runner_commitment": runner_commitment,
                 "spool_commitment": spool_commitment,
+                "private_identities_digest": private_identities_digest,
                 "restore_ledger_ref": f"ledger-{epoch_ref}",
                 "restore_ledger_state": "UNCONSUMED",
                 "durability": durability,
@@ -1818,6 +2167,7 @@ class ControllerStore:
                 "volume_commitment": volume_commitment,
                 "runner_commitment": runner_commitment,
                 "spool_commitment": spool_commitment,
+                "private_identities_digest": private_identities_digest,
                 "manifest_digest": "",
                 "restore_ledger_ref": f"ledger-{epoch_ref}",
                 "restore_ledger_state": "UNCONSUMED",
@@ -1826,7 +2176,13 @@ class ControllerStore:
             manifest_bytes = self._write_document(self._file_path(epoch_ref, MANIFEST_FILENAME), manifest, max_bytes=MAX_MANIFEST_BYTES, replace=False)
             record["manifest_digest"] = bytes_commitment(DOMAIN_MANIFEST, manifest_bytes)
             validate_epoch_record(record)
-            self._write_document(self._file_path(epoch_ref, PRIVATE_IDENTITIES_FILENAME), private, max_bytes=MAX_PRIVATE_IDENTITIES_BYTES, replace=False)
+            if self._write_document(
+                self._file_path(epoch_ref, PRIVATE_IDENTITIES_FILENAME),
+                private,
+                max_bytes=MAX_PRIVATE_IDENTITIES_BYTES,
+                replace=False,
+            ) != private_bytes:
+                _fail(DurabilityError, "PRIVATE_IDENTITIES_READBACK_MISMATCH")
             self._write_document(self._file_path(epoch_ref, LEDGER_FILENAME), ledger, max_bytes=MAX_RESTORE_LEDGER_BYTES, replace=False)
             self._write_document(self._file_path(epoch_ref, SPOOL_META_FILENAME), spool_meta, max_bytes=MAX_SPOOL_META_BYTES, replace=False)
             self._write_document(self._file_path(epoch_ref, RECORD_FILENAME), record, max_bytes=MAX_EPOCH_RECORD_BYTES, replace=False)
@@ -1891,7 +2247,13 @@ class ControllerStore:
         return self._transition_epoch(epoch_ref, "ACTIVE", allowed=("READY",))
 
     def abandon(self, epoch_ref: str) -> EpochSnapshot:
-        return self._transition_epoch(epoch_ref, "ABANDONED", allowed=("INITIALISED", "READY", "ACTIVE"))
+        with self._epoch_lock(epoch_ref):
+            snapshot = self._load_epoch_unlocked(epoch_ref)
+            if snapshot.record["state"] in TERMINAL_EPOCH_STATES:
+                _fail(EpochStateError, "EPOCH_TERMINAL")
+            frame = self._prepare_runner_frame_unlocked(snapshot, "ABANDON", {"state": "ABANDONED"})
+            self._ingest_frame_unlocked(snapshot, frame)
+            return self._load_epoch_unlocked(epoch_ref)
 
     def _transition_epoch(self, epoch_ref: str, target: str, *, allowed: Sequence[str]) -> EpochSnapshot:
         with self._epoch_lock(epoch_ref):
@@ -1939,15 +2301,24 @@ class ControllerStore:
                 _fail(IntegrityError, "RECORD_NOT_CANONICAL", safety_state="CONSUMED")
             return bytes_commitment(DOMAIN_EPOCH_RECORD, payload)
 
-    def ledger_digest(self, epoch_ref: str) -> str:
-        with self._epoch_lock(epoch_ref):
-            path = self._file_path(epoch_ref, LEDGER_FILENAME)
+    def _ledger_digest_unlocked(self, epoch_ref: str) -> str:
+        self._validate_epoch_entries(epoch_ref)
+        path = self._file_path(epoch_ref, LEDGER_FILENAME)
+        try:
             payload = self.adapter.read_authority(path, max_bytes=MAX_RESTORE_LEDGER_BYTES)
             ledger = parse_canonical_json(payload, max_bytes=MAX_RESTORE_LEDGER_BYTES)
             validate_restore_ledger(ledger)
-            if canonical_json_bytes(ledger, max_bytes=MAX_RESTORE_LEDGER_BYTES) != payload:
-                _fail(LedgerError, "LEDGER_NOT_CANONICAL", safety_state="CONSUMED")
-            return bytes_commitment(DOMAIN_RESTORE_LEDGER, payload)
+        except LedgerError:
+            raise
+        except ControllerStoreError:
+            _fail(LedgerError, "LEDGER_UNAVAILABLE", safety_state="CONSUMED")
+        if canonical_json_bytes(ledger, max_bytes=MAX_RESTORE_LEDGER_BYTES) != payload:
+            _fail(LedgerError, "LEDGER_NOT_CANONICAL", safety_state="CONSUMED")
+        return bytes_commitment(DOMAIN_RESTORE_LEDGER, payload)
+
+    def ledger_digest(self, epoch_ref: str) -> str:
+        with self._epoch_lock(epoch_ref):
+            return self._ledger_digest_unlocked(epoch_ref)
 
     def ledger_safety_classification(self, epoch_ref: str) -> str:
         try:
@@ -1971,14 +2342,16 @@ class ControllerStore:
             snapshot = self._load_epoch_unlocked(epoch_ref)
             ledger = snapshot.ledger
             if ledger["state"] == "CONSUMED":
-                if snapshot.record["state"] != "CONSUMED" or ledger["transition_id"] != transition_id or ledger["transition_target"] != "RESTORE_STARTED" or ledger["transition_data_commitment"] != data_commitment:
+                if ledger["transition_id"] != transition_id or ledger["transition_target"] != "RESTORE_STARTED" or ledger["transition_data_commitment"] != data_commitment:
                     _fail(LedgerError, "LEDGER_CONTRADICTION", safety_state="CONSUMED")
                 return RestorePermit(epoch_ref, transition_id, "CONSUMED", True)
             if snapshot.record["state"] in TERMINAL_EPOCH_STATES:
                 _fail(LedgerError, "EPOCH_TERMINAL", safety_state="CONSUMED")
             if snapshot.record["state"] != "ACTIVE":
                 _fail(LedgerError, "EPOCH_NOT_ACTIVE", safety_state="UNCONSUMED")
-            actual_digest = self.ledger_digest(epoch_ref)
+            if snapshot.spool["state"] != "OPEN" or snapshot.spool["last_stage"] != "RUNNER_STARTED":
+                _fail(LedgerError, "RESTORE_PRECONDITION_FAILED", safety_state="UNCONSUMED")
+            actual_digest = self._ledger_digest_unlocked(epoch_ref)
             if actual_digest != expected_digest:
                 _fail(LedgerError, "CAS_MISMATCH", safety_state="UNCONSUMED")
             consumed = {
@@ -1992,8 +2365,15 @@ class ControllerStore:
             validate_restore_ledger(consumed)
             # This is the one-way authority transition.  No restore bytes are
             # accepted or emitted by this API.
-            self._write_document(self._file_path(epoch_ref, LEDGER_FILENAME), consumed, max_bytes=MAX_RESTORE_LEDGER_BYTES, replace=True)
-            self._state_update_unlocked(snapshot, state="CONSUMED", ledger_state="CONSUMED")
+            ledger_write_complete = False
+            try:
+                self._write_document(self._file_path(epoch_ref, LEDGER_FILENAME), consumed, max_bytes=MAX_RESTORE_LEDGER_BYTES, replace=True)
+                ledger_write_complete = True
+                self._state_update_unlocked(snapshot, ledger_state="CONSUMED")
+            except ControllerStoreError as error:
+                if ledger_write_complete and error.safety_state is None:
+                    error.safety_state = "CONSUMED"
+                raise
             return RestorePermit(epoch_ref, transition_id, "CONSUMED", False)
 
     def _frame_payload_bytes(self, payload: Mapping[str, Any]) -> bytes:
@@ -2015,28 +2395,121 @@ class ControllerStore:
         message = _length_prefixed(("runner-frame-hash.v1", epoch_ref, str(sequence), stage, payload_commitment, previous_hash, auth))
         return COMMITMENT_PREFIX + hashlib.sha256(message).hexdigest()
 
-    def prepare_runner_frame(self, epoch_ref: str, stage: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def _validate_stage_transition(self, snapshot: EpochSnapshot, stage: str) -> None:
         if stage not in FRAME_STAGES:
             _fail(SpoolError, "INVALID_FRAME_STAGE")
+        if snapshot.spool["state"] != "OPEN":
+            _fail(SpoolError, "SPOOL_TERMINAL")
+        previous = snapshot.spool["last_stage"]
+        if stage not in FRAME_STAGE_TRANSITIONS[previous]:
+            _fail(SpoolError, "FRAME_STAGE_CONTRADICTION")
+        state = snapshot.record["state"]
+        if stage == "EPOCH_READY":
+            if state not in ("READY", "ACTIVE"):
+                _fail(SpoolError, "EPOCH_NOT_READY")
+        elif stage == "RUNNER_STARTED":
+            if state != "ACTIVE":
+                _fail(SpoolError, "EPOCH_NOT_ACTIVE")
+        elif stage == "RESTORE_BEGIN":
+            if state != "ACTIVE":
+                _fail(SpoolError, "EPOCH_NOT_ACTIVE", safety_state="CONSUMED")
+            if snapshot.ledger["state"] != "CONSUMED":
+                _fail(SpoolError, "RESTORE_BEGIN_BEFORE_LEDGER_CONSUMED", safety_state="CONSUMED")
+        elif stage == "COMMIT":
+            if state != "ACTIVE":
+                _fail(SpoolError, "EPOCH_NOT_ACTIVE", safety_state="CONSUMED")
+            if snapshot.ledger["state"] != "CONSUMED":
+                _fail(SpoolError, "COMMIT_BEFORE_LEDGER_CONSUMED", safety_state="CONSUMED")
+        elif stage == "ABANDON":
+            if snapshot.ledger["state"] != "UNCONSUMED":
+                _fail(SpoolError, "ABANDON_AFTER_LEDGER_CONSUMED", safety_state="CONSUMED")
+            if previous not in ("EPOCH_READY", "RUNNER_STARTED"):
+                _fail(SpoolError, "FRAME_STAGE_CONTRADICTION")
+
+    def _prepare_runner_frame_unlocked(self, snapshot: EpochSnapshot, stage: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        self._validate_stage_transition(snapshot, stage)
+        if not isinstance(payload, Mapping):
+            _fail(SpoolError, "INVALID_FRAME_PAYLOAD")
+        payload_dict = dict(payload)
+        _validate_frame_payload(payload_dict)
+        epoch_ref = snapshot.record["epoch_ref"]
+        sequence = snapshot.spool["next_sequence"]
+        previous_hash = snapshot.spool["last_frame_hash"]
+        auth = self._frame_auth(snapshot.private_identities, epoch_ref, sequence, stage, payload_dict, previous_hash)
+        frame = {
+            "schema": SCHEMA_RUNNER_FRAME,
+            "epoch_ref": epoch_ref,
+            "sequence": sequence,
+            "stage": stage,
+            "payload": payload_dict,
+            "previous_hash": previous_hash,
+            "auth": auth,
+            "frame_hash": self._frame_hash(epoch_ref, sequence, stage, payload_dict, previous_hash, auth),
+        }
+        validate_runner_frame(frame)
+        return frame
+
+    def _ingest_frame_unlocked(self, snapshot: EpochSnapshot, frame: Mapping[str, Any]) -> FrameReceipt:
+        epoch_ref = snapshot.record["epoch_ref"]
+        candidate = dict(frame)
+        validate_runner_frame(candidate)
+        if candidate["epoch_ref"] != epoch_ref:
+            _fail(SpoolError, "FRAME_EPOCH_MISMATCH")
+        expected_sequence = snapshot.spool["next_sequence"]
+        if candidate["sequence"] < expected_sequence:
+            _fail(SpoolError, "FRAME_DUPLICATE")
+        if candidate["sequence"] > expected_sequence:
+            _fail(SpoolError, "FRAME_GAP_OR_REORDER")
+        if expected_sequence > MAX_FRAMES:
+            _fail(SpoolError, "FRAME_LIMIT_EXCEEDED")
+        if candidate["previous_hash"] != snapshot.spool["last_frame_hash"]:
+            _fail(SpoolError, "FRAME_HASH_CHAIN_INVALID")
+        expected_auth = self._frame_auth(snapshot.private_identities, epoch_ref, candidate["sequence"], candidate["stage"], candidate["payload"], candidate["previous_hash"])
+        if not hmac.compare_digest(candidate["auth"], expected_auth):
+            _fail(SpoolError, "FRAME_AUTH_INVALID")
+        expected_hash = self._frame_hash(epoch_ref, candidate["sequence"], candidate["stage"], candidate["payload"], candidate["previous_hash"], candidate["auth"])
+        if candidate["frame_hash"] != expected_hash:
+            _fail(SpoolError, "FRAME_HASH_INVALID")
+        self._validate_stage_transition(snapshot, candidate["stage"])
+        frame_path = self._frames_path(epoch_ref) / f"frame-{candidate['sequence']:012d}.json"
+        frame_bytes = self._write_document(frame_path, candidate, max_bytes=MAX_FRAME_BYTES, replace=False)
+        new_highest = candidate["sequence"] if candidate["stage"] == "COMMIT" else snapshot.spool["highest_contiguous_commit"]
+        new_spool_state = "COMMITTED" if candidate["stage"] == "COMMIT" else "ABANDONED" if candidate["stage"] == "ABANDON" else "OPEN"
+        new_spool = dict(snapshot.spool)
+        new_spool.update(
+            {
+                "state": new_spool_state,
+                "next_sequence": expected_sequence + 1,
+                "last_frame_hash": candidate["frame_hash"],
+                "highest_contiguous_commit": new_highest,
+                "frame_count": snapshot.spool["frame_count"] + 1,
+                "total_spool_bytes": snapshot.spool["total_spool_bytes"] + len(frame_bytes),
+                "last_stage": candidate["stage"],
+            }
+        )
+        validate_spool_meta(new_spool)
+        if new_spool["total_spool_bytes"] > MAX_TOTAL_SPOOL_BYTES:
+            _fail(SpoolError, "SPOOL_LIMIT_EXCEEDED")
+        try:
+            self._write_document(self._file_path(epoch_ref, SPOOL_META_FILENAME), new_spool, max_bytes=MAX_SPOOL_META_BYTES, replace=True)
+            if candidate["stage"] == "COMMIT":
+                self._state_update_unlocked(snapshot, state="CONSUMED")
+            elif candidate["stage"] == "ABANDON":
+                self._state_update_unlocked(snapshot, state="ABANDONED")
+            else:
+                self._load_epoch_unlocked(epoch_ref)
+        except ControllerStoreError as error:
+            if candidate["stage"] == "COMMIT" and error.safety_state is None:
+                error.safety_state = "CONSUMED"
+            raise
+        return FrameReceipt(epoch_ref, candidate["sequence"], new_highest, new_spool["frame_count"])
+
+    def prepare_runner_frame(self, epoch_ref: str, stage: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         with self._epoch_lock(epoch_ref):
             snapshot = self._load_epoch_unlocked(epoch_ref)
             if snapshot.record["state"] in TERMINAL_EPOCH_STATES:
                 _fail(EpochStateError, "EPOCH_TERMINAL")
-            sequence = snapshot.spool["next_sequence"]
-            previous_hash = snapshot.spool["last_frame_hash"]
-            auth = self._frame_auth(snapshot.private_identities, epoch_ref, sequence, stage, payload, previous_hash)
-            frame = {
-                "schema": SCHEMA_RUNNER_FRAME,
-                "epoch_ref": epoch_ref,
-                "sequence": sequence,
-                "stage": stage,
-                "payload": dict(payload),
-                "previous_hash": previous_hash,
-                "auth": auth,
-                "frame_hash": self._frame_hash(epoch_ref, sequence, stage, payload, previous_hash, auth),
-            }
-            validate_runner_frame(frame)
-            return frame
+            return self._prepare_runner_frame_unlocked(snapshot, stage, payload)
 
     def ingest_frame(self, epoch_ref: str, frame: Mapping[str, Any]) -> FrameReceipt:
         if not isinstance(frame, Mapping):
@@ -2045,53 +2518,7 @@ class ControllerStore:
             snapshot = self._load_epoch_unlocked(epoch_ref)
             if snapshot.record["state"] in TERMINAL_EPOCH_STATES:
                 _fail(SpoolError, "EPOCH_TERMINAL")
-            candidate = dict(frame)
-            validate_runner_frame(candidate)
-            if candidate["epoch_ref"] != epoch_ref:
-                _fail(SpoolError, "FRAME_EPOCH_MISMATCH")
-            expected_sequence = snapshot.spool["next_sequence"]
-            if candidate["sequence"] < expected_sequence:
-                _fail(SpoolError, "FRAME_DUPLICATE")
-            if candidate["sequence"] > expected_sequence:
-                _fail(SpoolError, "FRAME_GAP_OR_REORDER")
-            if expected_sequence > MAX_FRAMES:
-                _fail(SpoolError, "FRAME_LIMIT_EXCEEDED")
-            if candidate["previous_hash"] != snapshot.spool["last_frame_hash"]:
-                _fail(SpoolError, "FRAME_HASH_CHAIN_INVALID")
-            expected_auth = self._frame_auth(snapshot.private_identities, epoch_ref, candidate["sequence"], candidate["stage"], candidate["payload"], candidate["previous_hash"])
-            if not hmac.compare_digest(candidate["auth"], expected_auth):
-                _fail(SpoolError, "FRAME_AUTH_INVALID")
-            expected_hash = self._frame_hash(epoch_ref, candidate["sequence"], candidate["stage"], candidate["payload"], candidate["previous_hash"], candidate["auth"])
-            if candidate["frame_hash"] != expected_hash:
-                _fail(SpoolError, "FRAME_HASH_INVALID")
-            if snapshot.spool["last_stage"] != "NONE" and FRAME_STAGE_RANK[candidate["stage"]] < FRAME_STAGE_RANK[snapshot.spool["last_stage"]]:
-                _fail(SpoolError, "FRAME_STAGE_CONTRADICTION")
-            if candidate["stage"] == "RESTORE_BEGIN":
-                if snapshot.ledger["state"] != "CONSUMED" or snapshot.record["state"] != "CONSUMED":
-                    _fail(SpoolError, "RESTORE_BEGIN_BEFORE_LEDGER_CONSUMED", safety_state="CONSUMED")
-            if snapshot.spool["state"] in ("ABANDONED", "COMMITTED"):
-                _fail(SpoolError, "SPOOL_TERMINAL")
-            frame_path = self._frames_path(epoch_ref) / f"frame-{candidate['sequence']:012d}.json"
-            frame_bytes = self._write_document(frame_path, candidate, max_bytes=MAX_FRAME_BYTES, replace=False)
-            new_highest = candidate["sequence"] if candidate["stage"] == "COMMIT" else snapshot.spool["highest_contiguous_commit"]
-            new_spool_state = "COMMITTED" if candidate["stage"] == "COMMIT" else "ABANDONED" if candidate["stage"] == "ABANDON" else "OPEN"
-            new_spool = dict(snapshot.spool)
-            new_spool.update(
-                {
-                    "state": new_spool_state,
-                    "next_sequence": expected_sequence + 1,
-                    "last_frame_hash": candidate["frame_hash"],
-                    "highest_contiguous_commit": new_highest,
-                    "frame_count": snapshot.spool["frame_count"] + 1,
-                    "total_spool_bytes": snapshot.spool["total_spool_bytes"] + len(frame_bytes),
-                    "last_stage": candidate["stage"],
-                }
-            )
-            validate_spool_meta(new_spool)
-            if new_spool["total_spool_bytes"] > MAX_TOTAL_SPOOL_BYTES:
-                _fail(SpoolError, "SPOOL_LIMIT_EXCEEDED")
-            self._write_document(self._file_path(epoch_ref, SPOOL_META_FILENAME), new_spool, max_bytes=MAX_SPOOL_META_BYTES, replace=True)
-            return FrameReceipt(epoch_ref, candidate["sequence"], new_highest, new_spool["frame_count"])
+            return self._ingest_frame_unlocked(snapshot, frame)
 
     def public_projection(self, epoch_ref: str) -> dict[str, Any]:
         with self._epoch_lock(epoch_ref):
