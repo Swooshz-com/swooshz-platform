@@ -74,6 +74,7 @@ class FaultAdapter(STORE.DurabilityAdapter):
         self.platform_name = delegate.platform_name
         self.used_primitives = delegate.used_primitives
         self.fail_before_transition_name = None
+        self.fail_after_transition_name = None
         self.fail_after_temp_readback = False
         self.mismatch_readback = False
 
@@ -120,7 +121,10 @@ class FaultAdapter(STORE.DurabilityAdapter):
         self.delegate.before_authority_transition = before
         self.delegate.after_temp_readback = after
         try:
-            return self.delegate.write_authority(path, payload, replace=replace, max_bytes=max_bytes)
+            proof = self.delegate.write_authority(path, payload, replace=replace, max_bytes=max_bytes)
+            if self.fail_after_transition_name == path.name:
+                raise STORE.DurabilityError("INJECTED_POST_TRANSITION_FAILURE")
+            return proof
         finally:
             self.delegate.before_authority_transition = old_before
             self.delegate.after_temp_readback = old_after
@@ -342,6 +346,84 @@ class ControllerStoreTests(unittest.TestCase):
             store.consume_restore(epoch, "transition-synthetic-007", expected_digest=store.ledger_digest(epoch))
         fault.fail_before_transition_name = None
         self.assertEqual(store.read_restore_ledger(epoch)["state"], "CONSUMED")
+        self.assertEqual(store.ledger_safety_classification(epoch), "CONSUMED")
+
+    def test_ledger_transition_failure_before_store_return_is_consumed(self):
+        base = STORE.make_durability_adapter()
+        fault = FaultAdapter(base)
+        store = self.new_store(fault)
+        epoch = self.create_active_epoch(store, "epoch-ledger-transition-failure-001")
+        self.prepare_runner_sequence(store, epoch)
+        fault.fail_after_transition_name = STORE.LEDGER_FILENAME
+        with self.assertRaisesRegex(STORE.DurabilityError, "INJECTED_POST_TRANSITION_FAILURE") as raised:
+            store.consume_restore(
+                epoch,
+                "transition-post-authority-001",
+                expected_digest=store.ledger_digest(epoch),
+            )
+        self.assertEqual(raised.exception.safety_state, "CONSUMED")
+        fault.fail_after_transition_name = None
+        self.assertEqual(store.read_restore_ledger(epoch)["state"], "CONSUMED")
+        self.assertEqual(store.ledger_safety_classification(epoch), "CONSUMED")
+
+    def test_consumed_ledger_frame_transition_failures_are_consumed_and_non_retryable(self):
+        for stage in ("RESTORE_BEGIN", "COMMIT", "ABANDON"):
+            with self.subTest(stage=stage):
+                base = STORE.make_durability_adapter()
+                fault = FaultAdapter(base)
+                store = self.new_store(fault)
+                epoch = self.create_active_epoch(store, f"epoch-frame-transition-failure-{stage.lower()}")
+                self.prepare_runner_sequence(store, epoch)
+                store.consume_restore(
+                    epoch,
+                    f"transition-frame-failure-{stage.lower()}",
+                    expected_digest=store.ledger_digest(epoch),
+                )
+                if stage in ("COMMIT", "ABANDON"):
+                    self.ingest_stage(store, epoch, "RESTORE_BEGIN", {"ref": f"restore-before-{stage.lower()}"})
+                frame = store.prepare_runner_frame(epoch, stage, {"ref": f"failure-{stage.lower()}"})
+                frame_name = f"frame-{frame['sequence']:012d}.json"
+                fault.fail_after_transition_name = frame_name
+                with self.assertRaisesRegex(STORE.DurabilityError, "INJECTED_POST_TRANSITION_FAILURE") as raised:
+                    store.ingest_frame(epoch, frame)
+                self.assertEqual(raised.exception.safety_state, "CONSUMED")
+                fault.fail_after_transition_name = None
+                self.assertTrue((store._frames_path(epoch) / frame_name).is_file())
+                with self.assertRaises(STORE.ControllerStoreError) as retry:
+                    store.ingest_frame(epoch, frame)
+                self.assertEqual(retry.exception.safety_state, "CONSUMED")
+                self.assertEqual(store.ledger_safety_classification(epoch), "CONSUMED")
+
+    def test_ledger_classifier_requires_a_fully_valid_epoch(self):
+        store = self.new_store()
+        epoch = self.create_active_epoch(store, "epoch-classifier-validity-001")
+        self.prepare_runner_sequence(store, epoch)
+        self.assertEqual(store.ledger_safety_classification(epoch), "UNCONSUMED")
+        store.consume_restore(
+            epoch,
+            "transition-classifier-validity-001",
+            expected_digest=store.ledger_digest(epoch),
+        )
+        self.assertEqual(store.ledger_safety_classification(epoch), "CONSUMED")
+
+    def test_canonical_unconsumed_ledger_with_terminal_history_classifies_consumed(self):
+        store = self.new_store()
+        epoch = self.create_active_epoch(store, "epoch-classifier-contradiction-001")
+        self.commit_epoch(store, epoch, "transition-classifier-contradiction-001")
+
+        def make_unconsumed(value):
+            value.update(
+                {
+                    "state": "UNCONSUMED",
+                    "transition_id": None,
+                    "transition_target": None,
+                    "transition_data_commitment": None,
+                }
+            )
+            return value
+
+        self.mutate_json_file(store, epoch, STORE.LEDGER_FILENAME, make_unconsumed)
+        self.assertEqual(store.read_restore_ledger(epoch)["state"], "UNCONSUMED")
         self.assertEqual(store.ledger_safety_classification(epoch), "CONSUMED")
 
     def test_pre_replace_failure_preserves_prior_authority(self):

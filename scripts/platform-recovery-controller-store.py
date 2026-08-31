@@ -2332,7 +2332,9 @@ class ControllerStore:
 
     def ledger_safety_classification(self, epoch_ref: str) -> str:
         try:
-            return "CONSUMED" if self.read_restore_ledger(epoch_ref)["state"] == "CONSUMED" else "UNCONSUMED"
+            with self._epoch_lock(epoch_ref):
+                snapshot = self._load_epoch_unlocked(epoch_ref)
+            return "UNCONSUMED" if snapshot.ledger["state"] == "UNCONSUMED" else "CONSUMED"
         except ControllerStoreError:
             return "CONSUMED"
 
@@ -2377,14 +2379,11 @@ class ControllerStore:
             validate_restore_ledger(consumed)
             # This is the one-way authority transition.  No restore bytes are
             # accepted or emitted by this API.
-            ledger_write_complete = False
             try:
                 self._write_document(self._file_path(epoch_ref, LEDGER_FILENAME), consumed, max_bytes=MAX_RESTORE_LEDGER_BYTES, replace=True)
-                ledger_write_complete = True
                 self._state_update_unlocked(snapshot, ledger_state="CONSUMED")
             except ControllerStoreError as error:
-                if ledger_write_complete and error.safety_state is None:
-                    error.safety_state = "CONSUMED"
+                error.safety_state = "CONSUMED"
                 raise
             return RestorePermit(epoch_ref, transition_id, "CONSUMED", False)
 
@@ -2483,26 +2482,26 @@ class ControllerStore:
         if candidate["frame_hash"] != expected_hash:
             _fail(SpoolError, "FRAME_HASH_INVALID")
         self._validate_stage_transition(snapshot, candidate["stage"])
-        frame_path = self._frames_path(epoch_ref) / f"frame-{candidate['sequence']:012d}.json"
-        frame_bytes = self._write_document(frame_path, candidate, max_bytes=MAX_FRAME_BYTES, replace=False)
-        new_highest = candidate["sequence"] if candidate["stage"] == "COMMIT" else snapshot.spool["highest_contiguous_commit"]
-        new_spool_state = "COMMITTED" if candidate["stage"] == "COMMIT" else "ABANDONED" if candidate["stage"] == "ABANDON" else "OPEN"
-        new_spool = dict(snapshot.spool)
-        new_spool.update(
-            {
-                "state": new_spool_state,
-                "next_sequence": expected_sequence + 1,
-                "last_frame_hash": candidate["frame_hash"],
-                "highest_contiguous_commit": new_highest,
-                "frame_count": snapshot.spool["frame_count"] + 1,
-                "total_spool_bytes": snapshot.spool["total_spool_bytes"] + len(frame_bytes),
-                "last_stage": candidate["stage"],
-            }
-        )
-        validate_spool_meta(new_spool)
-        if new_spool["total_spool_bytes"] > MAX_TOTAL_SPOOL_BYTES:
-            _fail(SpoolError, "SPOOL_LIMIT_EXCEEDED")
         try:
+            frame_path = self._frames_path(epoch_ref) / f"frame-{candidate['sequence']:012d}.json"
+            frame_bytes = self._write_document(frame_path, candidate, max_bytes=MAX_FRAME_BYTES, replace=False)
+            new_highest = candidate["sequence"] if candidate["stage"] == "COMMIT" else snapshot.spool["highest_contiguous_commit"]
+            new_spool_state = "COMMITTED" if candidate["stage"] == "COMMIT" else "ABANDONED" if candidate["stage"] == "ABANDON" else "OPEN"
+            new_spool = dict(snapshot.spool)
+            new_spool.update(
+                {
+                    "state": new_spool_state,
+                    "next_sequence": expected_sequence + 1,
+                    "last_frame_hash": candidate["frame_hash"],
+                    "highest_contiguous_commit": new_highest,
+                    "frame_count": snapshot.spool["frame_count"] + 1,
+                    "total_spool_bytes": snapshot.spool["total_spool_bytes"] + len(frame_bytes),
+                    "last_stage": candidate["stage"],
+                }
+            )
+            validate_spool_meta(new_spool)
+            if new_spool["total_spool_bytes"] > MAX_TOTAL_SPOOL_BYTES:
+                _fail(SpoolError, "SPOOL_LIMIT_EXCEEDED")
             self._write_document(self._file_path(epoch_ref, SPOOL_META_FILENAME), new_spool, max_bytes=MAX_SPOOL_META_BYTES, replace=True)
             if candidate["stage"] == "COMMIT":
                 self._state_update_unlocked(snapshot, state="CONSUMED")
@@ -2511,7 +2510,7 @@ class ControllerStore:
             else:
                 self._load_epoch_unlocked(epoch_ref)
         except ControllerStoreError as error:
-            if candidate["stage"] in ("COMMIT", "ABANDON") and snapshot.ledger["state"] == "CONSUMED" and error.safety_state is None:
+            if candidate["stage"] in ("RESTORE_BEGIN", "COMMIT", "ABANDON") and snapshot.ledger["state"] == "CONSUMED":
                 error.safety_state = "CONSUMED"
             raise
         return FrameReceipt(epoch_ref, candidate["sequence"], new_highest, new_spool["frame_count"])
