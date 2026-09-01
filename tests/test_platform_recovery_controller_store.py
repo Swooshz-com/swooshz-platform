@@ -1226,22 +1226,19 @@ except Exception as error:
         epoch = self.create_v2_epoch(store, "epoch-v2-schema-001", "authority-v2-schema-001")
         snapshot = store.load_epoch(epoch)
         self.assertIsInstance(snapshot, STORE.V2EpochSnapshot)
-        self.assertIsInstance(snapshot.binding, STORE.V2ArtifactBindingSnapshot)
+        self.assertIsInstance(snapshot.artifact_binding, STORE.V2ArtifactBindingSnapshot)
         self.assertEqual(snapshot.version, "v2")
         self.assertEqual(STORE.MAX_ARTIFACT_BINDING_BYTES, 16 * 1024)
         self.assertEqual(snapshot.record["schema"], STORE.SCHEMA_EPOCH_RECORD_V2)
         self.assertEqual(snapshot.manifest["schema"], STORE.SCHEMA_MANIFEST_V2)
         self.assertEqual(snapshot.private_identities["schema"], STORE.SCHEMA_PRIVATE_IDENTITIES_V2)
-        self.assertEqual(snapshot.binding["schema"], STORE.SCHEMA_ARTIFACT_BINDING)
-        self.assertEqual(snapshot.binding["authority_ref"], "authority-v2-schema-001")
-        self.assertEqual(snapshot.binding["artifact_binding_state"], "PENDING")
-        self.assertEqual(snapshot.binding["private_identities_digest"], snapshot.record["private_identities_digest"])
-        self.assertEqual(snapshot.binding["durability"], snapshot.record["durability"])
+        self.assertEqual(snapshot.artifact_binding.artifact_binding_state, "PENDING")
+        self.assertEqual(snapshot.artifact_binding.artifact_binding_digest, snapshot.record["artifact_binding_digest"])
         self.assertEqual(snapshot.record["artifact_binding_state"], "PENDING")
         self.assertIsNone(snapshot.record["artifact_commitment"])
-        self.assertIsNone(snapshot.binding["execution_row_id"])
-        self.assertIsNone(snapshot.binding["artifact_filename"])
-        self.assertIsNone(snapshot.binding["artifact_commitment"])
+        self.assertIsNone(snapshot.artifact_binding.execution_row_id)
+        self.assertIsNone(snapshot.artifact_binding.artifact_filename)
+        self.assertIsNone(snapshot.artifact_binding.artifact_commitment)
         self.assertEqual(
             tuple(json.loads(store.read_authoritative_bytes(epoch, STORE.RECORD_V2_FILENAME).decode("utf-8")).keys()),
             STORE.V2_RECORD_FIELDS,
@@ -1257,6 +1254,11 @@ except Exception as error:
         binding_bytes = store.read_authoritative_bytes(epoch, STORE.ARTIFACT_BINDING_FILENAME)
         self.assertEqual(tuple(json.loads(binding_bytes.decode("utf-8")).keys()), STORE.ARTIFACT_BINDING_FIELDS)
         self.assertLessEqual(len(binding_bytes), STORE.MAX_ARTIFACT_BINDING_BYTES)
+        binding_document = json.loads(binding_bytes.decode("utf-8"))
+        self.assertEqual(binding_document["schema"], STORE.SCHEMA_ARTIFACT_BINDING)
+        self.assertEqual(binding_document["authority_ref"], "authority-v2-schema-001")
+        self.assertEqual(binding_document["private_identities_digest"], snapshot.record["private_identities_digest"])
+        self.assertEqual(binding_document["durability"], snapshot.record["durability"])
         self.assertEqual(
             snapshot.record["artifact_binding_digest"],
             STORE.bytes_commitment(STORE.DOMAIN_ARTIFACT_BINDING, binding_bytes),
@@ -1287,6 +1289,25 @@ except Exception as error:
         self.assertFalse(hasattr(snapshot, "version"))
         self.assertFalse(hasattr(snapshot, "is_v2"))
 
+    def test_snapshot_dataclass_field_shapes_are_exact(self):
+        self.assertTrue(STORE.EpochSnapshot.__dataclass_params__.frozen)
+        self.assertTrue(STORE.V2ArtifactBindingSnapshot.__dataclass_params__.frozen)
+        self.assertTrue(STORE.V2EpochSnapshot.__dataclass_params__.frozen)
+        self.assertEqual(
+            tuple(field.name for field in dataclasses.fields(STORE.EpochSnapshot)),
+            ("record", "manifest", "private_identities", "ledger", "spool"),
+        )
+        self.assertEqual(
+            tuple(field.name for field in dataclasses.fields(STORE.V2ArtifactBindingSnapshot)),
+            ("artifact_binding_state", "execution_row_id", "artifact_filename", "artifact_commitment", "artifact_binding_digest"),
+        )
+        self.assertNotIn("document", STORE.V2ArtifactBindingSnapshot.__dataclass_fields__)
+        self.assertEqual(
+            tuple(field.name for field in dataclasses.fields(STORE.V2EpochSnapshot)),
+            ("record", "manifest", "private_identities", "artifact_binding", "ledger", "spool"),
+        )
+        self.assertNotIn("binding", STORE.V2EpochSnapshot.__dataclass_fields__)
+
     def test_v2_creation_uses_exact_prebackup_identities_keyword(self):
         parameters = inspect.signature(STORE.ControllerStore.create_epoch_v2).parameters
         self.assertIn("prebackup_identities", parameters)
@@ -1310,9 +1331,15 @@ except Exception as error:
         )
         self.assertEqual(commitment, expected)
         bound = store.load_epoch(epoch)
-        self.assertEqual(bound.binding["artifact_binding_state"], "BOUND")
-        self.assertEqual(bound.binding["execution_row_id"], "9223372036854775807")
-        self.assertEqual(bound.binding["artifact_filename"], "fresh-artifact.tar")
+        self.assertEqual(bound.artifact_binding.artifact_binding_state, "BOUND")
+        self.assertEqual(bound.artifact_binding.execution_row_id, "9223372036854775807")
+        self.assertEqual(bound.artifact_binding.artifact_filename, "fresh-artifact.tar")
+        bound_binding_bytes = store.read_authoritative_bytes(epoch, STORE.ARTIFACT_BINDING_FILENAME)
+        self.assertEqual(
+            bound.artifact_binding.artifact_binding_digest,
+            STORE.bytes_commitment(STORE.DOMAIN_ARTIFACT_BINDING, bound_binding_bytes),
+        )
+        self.assertEqual(bound.artifact_binding.artifact_binding_digest, bound.record["artifact_binding_digest"])
         before = {
             filename: store.read_authoritative_bytes(epoch, filename)
             for filename in (
@@ -1344,7 +1371,7 @@ except Exception as error:
             with self.subTest(artifact_filename=value):
                 with self.assertRaisesRegex(STORE.SchemaError, "INVALID_ARTIFACT_FILENAME"):
                     store.bind_artifact_v2(epoch, 23, value)
-        self.assertEqual(store.load_epoch(epoch).binding["artifact_binding_state"], "PENDING")
+        self.assertEqual(store.load_epoch(epoch).artifact_binding.artifact_binding_state, "PENDING")
 
     def test_v2_legacy_api_mismatch_and_pending_gates(self):
         store = self.new_store()
@@ -1394,7 +1421,7 @@ except Exception as error:
         self.assertEqual(receipt.sequence, 1)
         snapshot = store.load_epoch(epoch)
         self.assertEqual(snapshot.record["state"], "ABANDONED")
-        self.assertEqual(snapshot.binding["artifact_binding_state"], "PENDING")
+        self.assertEqual(snapshot.artifact_binding.artifact_binding_state, "PENDING")
         self.assertEqual(snapshot.ledger["state"], "UNCONSUMED")
         self.assertEqual(snapshot.spool["last_stage"], "ABANDON")
         self.assertEqual(snapshot.spool["frame_count"], 1)
@@ -1516,11 +1543,11 @@ except Exception as error:
                     with self.assertRaises(STORE.IntegrityError):
                         store.load_epoch(epoch)
                 else:
-                    self.assertEqual(store.load_epoch(epoch).binding["artifact_binding_state"], "PENDING" if label == "before" else "BOUND")
+                    self.assertEqual(store.load_epoch(epoch).artifact_binding.artifact_binding_state, "PENDING" if label == "before" else "BOUND")
                 if label == "before":
-                    self.assertEqual(store.bind_artifact_v2(epoch, 23, "crash-artifact.tar"), store.load_epoch(epoch).binding["artifact_commitment"])
+                    self.assertEqual(store.bind_artifact_v2(epoch, 23, "crash-artifact.tar"), store.load_epoch(epoch).artifact_binding.artifact_commitment)
                 elif label == "after-record":
-                    self.assertEqual(store.bind_artifact_v2(epoch, 23, "crash-artifact.tar"), store.load_epoch(epoch).binding["artifact_commitment"])
+                    self.assertEqual(store.bind_artifact_v2(epoch, 23, "crash-artifact.tar"), store.load_epoch(epoch).artifact_binding.artifact_commitment)
 
         complete = self.new_store()
         complete_epoch = self.create_v2_epoch(complete, "epoch-v2-crash-complete-001", "authority-v2-crash-complete-001")
@@ -1538,7 +1565,7 @@ except Exception as error:
             complete.bind_artifact_v2(complete_epoch, 23, "complete-artifact.tar")
         complete._load_epoch_unlocked = original_load
         self.assertEqual(raised.exception.safety_state, "UNCONSUMED")
-        commitment = complete.load_epoch(complete_epoch).binding["artifact_commitment"]
+        commitment = complete.load_epoch(complete_epoch).artifact_binding.artifact_commitment
         self.assertEqual(complete.bind_artifact_v2(complete_epoch, 23, "complete-artifact.tar"), commitment)
 
     def test_v2_restore_revalidates_bound_before_ledger_cas(self):
@@ -1555,18 +1582,20 @@ except Exception as error:
                 record = dict(snapshot.record)
                 record["artifact_binding_state"] = "PENDING"
                 record["artifact_commitment"] = None
-                binding = dict(snapshot.binding)
-                binding["artifact_binding_state"] = "PENDING"
-                binding["execution_row_id"] = None
-                binding["artifact_filename"] = None
-                binding["artifact_commitment"] = None
+                binding = dataclasses.replace(
+                    snapshot.artifact_binding,
+                    artifact_binding_state="PENDING",
+                    execution_row_id=None,
+                    artifact_filename=None,
+                    artifact_commitment=None,
+                )
                 return STORE.V2EpochSnapshot(
-                    record,
-                    snapshot.manifest,
-                    snapshot.private_identities,
-                    snapshot.ledger,
-                    snapshot.spool,
-                    STORE.V2ArtifactBindingSnapshot(binding),
+                    record=record,
+                    manifest=snapshot.manifest,
+                    private_identities=snapshot.private_identities,
+                    artifact_binding=binding,
+                    ledger=snapshot.ledger,
+                    spool=snapshot.spool,
                 )
             return snapshot
 
@@ -1605,7 +1634,7 @@ except Exception as error:
         self.assertTrue(all(not thread.is_alive() for thread in threads))
         self.assertEqual(len(results), 2)
         self.assertTrue(all(result[0] == "ok" for result in results))
-        self.assertEqual(first.load_epoch(epoch).binding["execution_row_id"], "23")
+        self.assertEqual(first.load_epoch(epoch).artifact_binding.execution_row_id, "23")
 
     def test_v2_public_projection_excludes_raw_binding_identity(self):
         store = self.new_store()

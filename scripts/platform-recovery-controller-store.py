@@ -1971,17 +1971,12 @@ class EpochSnapshot:
 
 
 @dataclass(frozen=True)
-class V2ArtifactBindingSnapshot(Mapping[str, Any]):
-    document: dict[str, Any]
-
-    def __getitem__(self, key: str) -> Any:
-        return self.document[key]
-
-    def __iter__(self):
-        return iter(self.document)
-
-    def __len__(self) -> int:
-        return len(self.document)
+class V2ArtifactBindingSnapshot:
+    artifact_binding_state: str
+    execution_row_id: str | None
+    artifact_filename: str | None
+    artifact_commitment: str | None
+    artifact_binding_digest: str
 
 
 @dataclass(frozen=True)
@@ -1989,9 +1984,9 @@ class V2EpochSnapshot:
     record: dict[str, Any]
     manifest: dict[str, Any]
     private_identities: dict[str, Any]
+    artifact_binding: V2ArtifactBindingSnapshot
     ledger: dict[str, Any]
     spool: dict[str, Any]
-    binding: V2ArtifactBindingSnapshot
 
     @property
     def is_v2(self) -> bool:
@@ -2000,10 +1995,6 @@ class V2EpochSnapshot:
     @property
     def version(self) -> str:
         return "v2"
-
-    @property
-    def artifact_binding(self) -> dict[str, Any]:
-        return self.binding.document
 
 
 @dataclass(frozen=True)
@@ -2212,7 +2203,7 @@ class ControllerStore:
         return (
             snapshot.record["state"] == "INITIALISED"
             and snapshot.record["artifact_binding_state"] == "PENDING"
-            and snapshot.binding["artifact_binding_state"] == "PENDING"
+            and snapshot.artifact_binding.artifact_binding_state == "PENDING"
             and snapshot.ledger["state"] == "UNCONSUMED"
             and snapshot.spool["state"] == "OPEN"
             and snapshot.spool["last_stage"] == "NONE"
@@ -2227,7 +2218,7 @@ class ControllerStore:
     def _require_v2_bound(snapshot: EpochSnapshot | V2EpochSnapshot, error_type: type[ControllerStoreError]) -> None:
         if isinstance(snapshot, V2EpochSnapshot) and (
             snapshot.record["artifact_binding_state"] != "BOUND"
-            or snapshot.binding["artifact_binding_state"] != "BOUND"
+            or snapshot.artifact_binding.artifact_binding_state != "BOUND"
             or snapshot.record["artifact_commitment"] is None
         ):
             _fail(error_type, "ARTIFACT_BINDING_REQUIRED", safety_state="UNCONSUMED")
@@ -2601,13 +2592,20 @@ class ControllerStore:
             raise
         if layout == "v1":
             return EpochSnapshot(record, manifest, private, ledger, spool)
+        artifact_binding = V2ArtifactBindingSnapshot(
+            artifact_binding_state=binding["artifact_binding_state"],
+            execution_row_id=binding["execution_row_id"],
+            artifact_filename=binding["artifact_filename"],
+            artifact_commitment=binding["artifact_commitment"],
+            artifact_binding_digest=record["artifact_binding_digest"],
+        )
         return V2EpochSnapshot(
-            record,
-            manifest,
-            private,
-            ledger,
-            spool,
-            V2ArtifactBindingSnapshot(binding),
+            record=record,
+            manifest=manifest,
+            private_identities=private,
+            artifact_binding=artifact_binding,
+            ledger=ledger,
+            spool=spool,
         )
 
     @contextmanager
@@ -3028,17 +3026,17 @@ class ControllerStore:
                 _fail(EpochStateError, "API_VERSION_MISMATCH")
             if snapshot.record["state"] in TERMINAL_EPOCH_STATES:
                 _fail(EpochStateError, "EPOCH_TERMINAL")
-            binding = snapshot.binding
-            if binding["artifact_binding_state"] == "BOUND":
+            binding = snapshot.artifact_binding
+            if binding.artifact_binding_state == "BOUND":
                 if (
-                    binding["execution_row_id"] == str(execution_row_id)
-                    and binding["artifact_filename"] == artifact_filename
-                    and binding["artifact_commitment"] == expected_commitment
+                    binding.execution_row_id == str(execution_row_id)
+                    and binding.artifact_filename == artifact_filename
+                    and binding.artifact_commitment == expected_commitment
                     and snapshot.record["artifact_commitment"] == expected_commitment
                 ):
                     return expected_commitment
                 _fail(IntegrityError, "ARTIFACT_REBIND_FORBIDDEN", safety_state="CONSUMED")
-            if binding["artifact_binding_state"] != "PENDING" or snapshot.record["artifact_binding_state"] != "PENDING":
+            if binding.artifact_binding_state != "PENDING" or snapshot.record["artifact_binding_state"] != "PENDING":
                 _fail(IntegrityError, "ARTIFACT_BINDING_CONTRADICTION", safety_state="CONSUMED")
             candidate = {
                 "schema": SCHEMA_ARTIFACT_BINDING,
@@ -3080,17 +3078,17 @@ class ControllerStore:
                         and current.record["state"] == "INITIALISED"
                         and current.record["artifact_binding_state"] == "PENDING"
                         and current.record["artifact_commitment"] is None
-                        and current.binding["artifact_binding_state"] == "PENDING"
+                        and current.artifact_binding.artifact_binding_state == "PENDING"
                     )
                     bound = (
                         isinstance(current, V2EpochSnapshot)
                         and current.ledger["state"] == "UNCONSUMED"
                         and current.record["state"] == "INITIALISED"
                         and current.record["artifact_binding_state"] == "BOUND"
-                        and current.binding["artifact_binding_state"] == "BOUND"
-                        and current.binding["execution_row_id"] == str(execution_row_id)
-                        and current.binding["artifact_filename"] == artifact_filename
-                        and current.binding["artifact_commitment"] == expected_commitment
+                        and current.artifact_binding.artifact_binding_state == "BOUND"
+                        and current.artifact_binding.execution_row_id == str(execution_row_id)
+                        and current.artifact_binding.artifact_filename == artifact_filename
+                        and current.artifact_binding.artifact_commitment == expected_commitment
                         and current.record["artifact_commitment"] == expected_commitment
                     )
                     error.safety_state = "UNCONSUMED" if pending or bound else "CONSUMED"
