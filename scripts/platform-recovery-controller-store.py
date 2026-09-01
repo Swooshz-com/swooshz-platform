@@ -148,8 +148,8 @@ V2_RECORD_FIELDS = (
     "state",
     "supersession_barrier_commitment",
     "artifact_binding_state",
+    "artifact_binding_digest",
     "artifact_commitment",
-    "binding_document_digest",
     "container_commitment",
     "volume_commitment",
     "runner_commitment",
@@ -167,8 +167,8 @@ V2_MANIFEST_FIELDS = (
     "state",
     "supersession_barrier_commitment",
     "artifact_binding_state",
+    "artifact_binding_digest",
     "artifact_commitment",
-    "binding_document_digest",
     "container_commitment",
     "volume_commitment",
     "runner_commitment",
@@ -190,10 +190,13 @@ V2_PRIVATE_IDENTITY_FIELDS = (
 ARTIFACT_BINDING_FIELDS = (
     "schema",
     "epoch_ref",
-    "state",
+    "authority_ref",
+    "artifact_binding_state",
     "execution_row_id",
     "artifact_filename",
     "artifact_commitment",
+    "private_identities_digest",
+    "durability",
 )
 LEDGER_FIELDS = (
     "schema",
@@ -538,14 +541,33 @@ def _strict_execution_row_id(value: Any) -> int:
     return value
 
 
+def _strict_persisted_execution_row_id(value: Any) -> str:
+    if type(value) is not str or re.fullmatch(r"[1-9][0-9]*\Z", value, re.ASCII) is None or len(value) > 19:
+        _fail(SchemaError, "INVALID_EXECUTION_ROW_ID")
+    try:
+        numeric_value = int(value)
+    except ValueError:
+        _fail(SchemaError, "INVALID_EXECUTION_ROW_ID")
+    if numeric_value > 0x7FFFFFFFFFFFFFFF or str(numeric_value) != value:
+        _fail(SchemaError, "INVALID_EXECUTION_ROW_ID")
+    return value
+
+
 def _strict_artifact_filename(value: Any) -> str:
-    if not isinstance(value, str):
+    if type(value) is not str:
         _fail(SchemaError, "INVALID_ARTIFACT_FILENAME")
     try:
         encoded = value.encode("utf-8", "strict")
     except UnicodeEncodeError:
         _fail(SchemaError, "INVALID_ARTIFACT_FILENAME")
-    if not encoded or len(encoded) > MAX_ARTIFACT_FILENAME_BYTES:
+    if (
+        not encoded
+        or len(encoded) > MAX_ARTIFACT_FILENAME_BYTES
+        or value in (".", "..")
+        or "/" in value
+        or "\\" in value
+        or any(ord(char) <= 0x1F or ord(char) == 0x7F for char in value)
+    ):
         _fail(SchemaError, "INVALID_ARTIFACT_FILENAME")
     return value
 
@@ -562,7 +584,7 @@ def _validate_v2_record_shape(value: Any) -> dict[str, Any]:
         _fail(SchemaError, "INVALID_ARTIFACT_STATE")
     _strict_commitment(value["supersession_barrier_commitment"], "supersession_barrier")
     _strict_commitment(value["artifact_commitment"], "artifact_commitment", nullable=True)
-    _strict_commitment(value["binding_document_digest"], "binding_document_digest")
+    _strict_commitment(value["artifact_binding_digest"], "artifact_binding_digest")
     for field in ("container_commitment", "volume_commitment", "runner_commitment", "spool_commitment"):
         _strict_commitment(value[field], field)
     _strict_commitment(value["private_identities_digest"], "private_identities_digest")
@@ -596,7 +618,7 @@ def _validate_v2_manifest_shape(value: Any) -> dict[str, Any]:
         _fail(SchemaError, "INVALID_ARTIFACT_STATE")
     _strict_commitment(value["supersession_barrier_commitment"], "supersession_barrier")
     _strict_commitment(value["artifact_commitment"], "artifact_commitment", nullable=True)
-    _strict_commitment(value["binding_document_digest"], "binding_document_digest")
+    _strict_commitment(value["artifact_binding_digest"], "artifact_binding_digest")
     for field in ("container_commitment", "volume_commitment", "runner_commitment", "spool_commitment"):
         _strict_commitment(value[field], field)
     _strict_commitment(value["private_identities_digest"], "private_identities_digest")
@@ -636,13 +658,16 @@ def _validate_artifact_binding_shape(value: Any) -> dict[str, Any]:
     if value["schema"] != SCHEMA_ARTIFACT_BINDING:
         _fail(SchemaError, "INVALID_ARTIFACT_BINDING")
     _strict_ref(value["epoch_ref"], "epoch_ref")
-    if value["state"] not in V2_ARTIFACT_STATES:
+    _strict_ref(value["authority_ref"], "authority_ref")
+    if value["artifact_binding_state"] not in V2_ARTIFACT_STATES:
         _fail(SchemaError, "INVALID_ARTIFACT_STATE")
-    if value["state"] == "PENDING":
+    _strict_commitment(value["private_identities_digest"], "private_identities_digest")
+    _validate_durability(value["durability"])
+    if value["artifact_binding_state"] == "PENDING":
         if any(value[field] is not None for field in ("execution_row_id", "artifact_filename", "artifact_commitment")):
             _fail(SchemaError, "V2_PENDING_BINDING_NOT_NULL")
     else:
-        execution_row_id = _strict_execution_row_id(value["execution_row_id"])
+        execution_row_id = _strict_persisted_execution_row_id(value["execution_row_id"])
         artifact_filename = _strict_artifact_filename(value["artifact_filename"])
         expected = recovery_commitment(DOMAIN_ARTIFACT_ROW, str(execution_row_id), artifact_filename)
         if value["artifact_commitment"] != expected:
@@ -1943,16 +1968,42 @@ class EpochSnapshot:
     private_identities: dict[str, Any]
     ledger: dict[str, Any]
     spool: dict[str, Any]
-    binding: dict[str, Any] | None = None
-    version: str = "v1"
+
+
+@dataclass(frozen=True)
+class V2ArtifactBindingSnapshot(Mapping[str, Any]):
+    document: dict[str, Any]
+
+    def __getitem__(self, key: str) -> Any:
+        return self.document[key]
+
+    def __iter__(self):
+        return iter(self.document)
+
+    def __len__(self) -> int:
+        return len(self.document)
+
+
+@dataclass(frozen=True)
+class V2EpochSnapshot:
+    record: dict[str, Any]
+    manifest: dict[str, Any]
+    private_identities: dict[str, Any]
+    ledger: dict[str, Any]
+    spool: dict[str, Any]
+    binding: V2ArtifactBindingSnapshot
 
     @property
     def is_v2(self) -> bool:
-        return self.version == "v2"
+        return True
 
     @property
-    def artifact_binding(self) -> dict[str, Any] | None:
-        return self.binding
+    def version(self) -> str:
+        return "v2"
+
+    @property
+    def artifact_binding(self) -> dict[str, Any]:
+        return self.binding.document
 
 
 @dataclass(frozen=True)
@@ -2155,13 +2206,13 @@ class ControllerStore:
         _fail(IntegrityError, "MISSING_AUTHORITATIVE_LAYOUT", safety_state="CONSUMED")
 
     @staticmethod
-    def _v2_direct_pending_abandon_allowed(snapshot: EpochSnapshot) -> bool:
-        if not snapshot.is_v2 or snapshot.binding is None:
+    def _v2_direct_pending_abandon_allowed(snapshot: V2EpochSnapshot) -> bool:
+        if not isinstance(snapshot, V2EpochSnapshot):
             return False
         return (
             snapshot.record["state"] == "INITIALISED"
             and snapshot.record["artifact_binding_state"] == "PENDING"
-            and snapshot.binding["state"] == "PENDING"
+            and snapshot.binding["artifact_binding_state"] == "PENDING"
             and snapshot.ledger["state"] == "UNCONSUMED"
             and snapshot.spool["state"] == "OPEN"
             and snapshot.spool["last_stage"] == "NONE"
@@ -2173,14 +2224,23 @@ class ControllerStore:
         )
 
     @staticmethod
-    def _require_v2_bound(snapshot: EpochSnapshot, error_type: type[ControllerStoreError]) -> None:
-        if snapshot.is_v2 and (
-            snapshot.binding is None
-            or snapshot.record["artifact_binding_state"] != "BOUND"
-            or snapshot.binding["state"] != "BOUND"
+    def _require_v2_bound(snapshot: EpochSnapshot | V2EpochSnapshot, error_type: type[ControllerStoreError]) -> None:
+        if isinstance(snapshot, V2EpochSnapshot) and (
+            snapshot.record["artifact_binding_state"] != "BOUND"
+            or snapshot.binding["artifact_binding_state"] != "BOUND"
             or snapshot.record["artifact_commitment"] is None
         ):
             _fail(error_type, "ARTIFACT_BINDING_REQUIRED", safety_state="UNCONSUMED")
+
+    @staticmethod
+    def _validate_v2_pending_abandon_payload(
+        snapshot: EpochSnapshot | V2EpochSnapshot,
+        stage: str,
+        payload: Mapping[str, Any],
+    ) -> None:
+        if stage == "ABANDON" and isinstance(snapshot, V2EpochSnapshot) and ControllerStore._v2_direct_pending_abandon_allowed(snapshot):
+            if payload != {"state": "ABANDONED"}:
+                _fail(SpoolError, "INVALID_PENDING_ABANDON_PAYLOAD")
 
     def _read_frame_files(
         self,
@@ -2223,6 +2283,8 @@ class ControllerStore:
                 and last_stage == "NONE"
                 and expected_sequence == 1
             )
+            if direct_pending_abandon and frame["payload"] != {"state": "ABANDONED"}:
+                _fail(IntegrityError, "INVALID_PENDING_ABANDON_PAYLOAD", safety_state=safety_state)
             if frame["stage"] not in FRAME_STAGE_TRANSITIONS[last_stage] and not direct_pending_abandon:
                 _fail(IntegrityError, "SPOOL_STAGE_CONTRADICTION", safety_state=safety_state)
             if frame["stage"] == "RESTORE_BEGIN" and ledger["state"] != "CONSUMED":
@@ -2278,11 +2340,23 @@ class ControllerStore:
             or record["epoch_ref"] != binding["epoch_ref"]
             or record["epoch_ref"] != ledger["epoch_ref"]
             or record["epoch_ref"] != spool["epoch_ref"]
+            or record["authority_ref"] != manifest["authority_ref"]
+            or record["authority_ref"] != binding["authority_ref"]
         ):
             _fail(IntegrityError, "CROSS_FILE_CONTRADICTION", safety_state=safety_state)
         expected_private_digest = bytes_commitment(DOMAIN_PRIVATE_IDENTITIES, private_bytes)
-        if record["private_identities_digest"] != expected_private_digest or manifest["private_identities_digest"] != expected_private_digest:
+        if (
+            record["private_identities_digest"] != expected_private_digest
+            or manifest["private_identities_digest"] != expected_private_digest
+            or binding["private_identities_digest"] != expected_private_digest
+        ):
             _fail(IntegrityError, "PRIVATE_IDENTITIES_DIGEST_MISMATCH", safety_state=safety_state)
+        if (
+            record["durability"] != self._durability
+            or manifest["durability"] != self._durability
+            or binding["durability"] != self._durability
+        ):
+            _fail(IntegrityError, "DURABILITY_CROSS_FILE_CONTRADICTION", safety_state=safety_state)
         if record["container_commitment"] != recovery_commitment(DOMAIN_CONTAINER_IDENTITY, private["container_identity"]):
             _fail(IntegrityError, "PRIVATE_IDENTITY_COMMITMENT_MISMATCH", safety_state="CONSUMED")
         if record["volume_commitment"] != recovery_commitment(DOMAIN_VOLUME_IDENTITY, private["volume_identity"]):
@@ -2293,31 +2367,31 @@ class ControllerStore:
             _fail(IntegrityError, "SPOOL_CROSS_FILE_CONTRADICTION", safety_state="CONSUMED")
         if record["restore_ledger_ref"] != f"ledger-{record['epoch_ref']}":
             _fail(IntegrityError, "LEDGER_CROSS_FILE_CONTRADICTION", safety_state="CONSUMED")
-        if record["binding_document_digest"] != bytes_commitment(DOMAIN_ARTIFACT_BINDING, binding_bytes):
+        if record["artifact_binding_digest"] != bytes_commitment(DOMAIN_ARTIFACT_BINDING, binding_bytes):
             _fail(IntegrityError, "ARTIFACT_BINDING_DIGEST_MISMATCH", safety_state=safety_state)
         expected_artifact = binding["artifact_commitment"]
-        if binding["state"] == "BOUND":
+        if binding["artifact_binding_state"] == "BOUND":
             expected_artifact = recovery_commitment(
                 DOMAIN_ARTIFACT_ROW,
-                str(binding["execution_row_id"]),
+                binding["execution_row_id"],
                 binding["artifact_filename"],
             )
         elif expected_artifact is not None:
             _fail(IntegrityError, "ARTIFACT_CROSS_FILE_CONTRADICTION", safety_state=safety_state)
         if binding["artifact_commitment"] != expected_artifact:
             _fail(IntegrityError, "ARTIFACT_CROSS_FILE_CONTRADICTION", safety_state=safety_state)
-        if record["artifact_binding_state"] != binding["state"] or record["artifact_commitment"] != expected_artifact:
+        if record["artifact_binding_state"] != binding["artifact_binding_state"] or record["artifact_commitment"] != expected_artifact:
             _fail(IntegrityError, "ARTIFACT_CROSS_FILE_CONTRADICTION", safety_state=safety_state)
-        if binding["state"] == "PENDING" and record["state"] not in ("INITIALISED", "ABANDONED", "SUPERSEDED"):
+        if binding["artifact_binding_state"] == "PENDING" and record["state"] not in ("INITIALISED", "ABANDONED", "SUPERSEDED"):
             _fail(IntegrityError, "V2_PENDING_STATE_CONTRADICTION", safety_state=safety_state)
-        if record["binding_document_digest"] != manifest["binding_document_digest"]:
+        if record["artifact_binding_digest"] != manifest["artifact_binding_digest"]:
             _fail(IntegrityError, "CROSS_FILE_CONTRADICTION", safety_state=safety_state)
         for field in (
             "authority_ref",
             "state",
             "artifact_binding_state",
+            "artifact_binding_digest",
             "artifact_commitment",
-            "binding_document_digest",
             "supersession_barrier_commitment",
             "container_commitment",
             "volume_commitment",
@@ -2461,7 +2535,7 @@ class ControllerStore:
                 if spool[field] != frame_summary[field]:
                     _fail(IntegrityError, "SPOOL_META_CONTRADICTION", safety_state="CONSUMED" if ledger["state"] == "CONSUMED" else None)
 
-    def _load_epoch_unlocked(self, epoch_ref: str) -> EpochSnapshot:
+    def _load_epoch_unlocked(self, epoch_ref: str) -> EpochSnapshot | V2EpochSnapshot:
         self._validate_epoch_entries(epoch_ref)
         layout = self._detect_epoch_layout(epoch_ref)
         if layout == "v1":
@@ -2525,7 +2599,16 @@ class ControllerStore:
             if error.safety_state is None:
                 error.safety_state = "CONSUMED" if ledger.get("state") == "CONSUMED" else None
             raise
-        return EpochSnapshot(record, manifest, private, ledger, spool, binding, layout)
+        if layout == "v1":
+            return EpochSnapshot(record, manifest, private, ledger, spool)
+        return V2EpochSnapshot(
+            record,
+            manifest,
+            private,
+            ledger,
+            spool,
+            V2ArtifactBindingSnapshot(binding),
+        )
 
     @contextmanager
     def _in_process_epoch_lock(self, epoch_ref: str):
@@ -2540,13 +2623,13 @@ class ControllerStore:
             with self.adapter.epoch_transaction_lock(self._transaction_lock_path(epoch_ref)):
                 yield
 
-    def load_epoch(self, epoch_ref: str) -> EpochSnapshot:
+    def load_epoch(self, epoch_ref: str) -> EpochSnapshot | V2EpochSnapshot:
         with self._epoch_lock(epoch_ref):
             return self._load_epoch_unlocked(epoch_ref)
 
     open_epoch = load_epoch
 
-    def resume_epoch(self, epoch_ref: str) -> EpochSnapshot:
+    def resume_epoch(self, epoch_ref: str) -> EpochSnapshot | V2EpochSnapshot:
         with self._epoch_lock(epoch_ref):
             snapshot = self._load_epoch_unlocked(epoch_ref)
             if snapshot.record["state"] in TERMINAL_EPOCH_STATES or snapshot.ledger["state"] == "CONSUMED" or snapshot.spool["state"] in ("ABANDONED", "COMMITTED"):
@@ -2555,8 +2638,8 @@ class ControllerStore:
 
     def read_authoritative_bytes(self, epoch_ref: str, filename: str) -> bytes:
         with self._epoch_lock(epoch_ref):
-            self._validate_epoch_entries(epoch_ref)
-            layout = self._detect_epoch_layout(epoch_ref)
+            snapshot = self._load_epoch_unlocked(epoch_ref)
+            layout = "v2" if isinstance(snapshot, V2EpochSnapshot) else "v1"
             if filename in V1_EPOCH_AUTHORITY_FILENAMES and layout == "v2":
                 _fail(FilesystemSafetyError, "API_VERSION_MISMATCH")
             if filename in V2_EPOCH_AUTHORITY_FILENAMES and layout == "v1":
@@ -2681,12 +2764,12 @@ class ControllerStore:
         epoch_ref: str,
         authority_ref: str,
         *,
-        private_identities: Mapping[str, str],
+        prebackup_identities: Mapping[str, str],
         supersedes_epoch_ref: str | None = None,
-    ) -> EpochSnapshot:
+    ) -> V2EpochSnapshot:
         _strict_ref(epoch_ref, "epoch_ref")
         _strict_ref(authority_ref, "authority_ref")
-        private_input = _validate_v2_private_input(private_identities)
+        private_input = _validate_v2_private_input(prebackup_identities)
         if supersedes_epoch_ref is not None:
             _strict_ref(supersedes_epoch_ref, "supersedes_epoch_ref")
         with self._in_process_epoch_lock(epoch_ref):
@@ -2716,26 +2799,29 @@ class ControllerStore:
                 "transition_data_commitment": None,
             }
             validate_restore_ledger(ledger)
+            private_bytes = canonical_json_bytes(private, max_bytes=MAX_PRIVATE_IDENTITIES_BYTES)
+            private_identities_digest = bytes_commitment(DOMAIN_PRIVATE_IDENTITIES, private_bytes)
+            durability = dict(self._durability)
             binding = {
                 "schema": SCHEMA_ARTIFACT_BINDING,
                 "epoch_ref": epoch_ref,
-                "state": "PENDING",
+                "authority_ref": authority_ref,
+                "artifact_binding_state": "PENDING",
                 "execution_row_id": None,
                 "artifact_filename": None,
                 "artifact_commitment": None,
+                "private_identities_digest": private_identities_digest,
+                "durability": durability,
             }
             validate_artifact_binding(binding)
-            private_bytes = canonical_json_bytes(private, max_bytes=MAX_PRIVATE_IDENTITIES_BYTES)
             binding_bytes = canonical_json_bytes(binding, max_bytes=MAX_ARTIFACT_BINDING_BYTES)
-            private_identities_digest = bytes_commitment(DOMAIN_PRIVATE_IDENTITIES, private_bytes)
-            binding_document_digest = bytes_commitment(DOMAIN_ARTIFACT_BINDING, binding_bytes)
+            artifact_binding_digest = bytes_commitment(DOMAIN_ARTIFACT_BINDING, binding_bytes)
             barrier_source = "NONE" if supersedes_epoch_ref is None else supersedes_epoch_ref
             barrier = recovery_commitment(DOMAIN_SUPERSESSION_BARRIER, barrier_source, epoch_ref, authority_ref)
             container_commitment = recovery_commitment(DOMAIN_CONTAINER_IDENTITY, private_input["container_identity"])
             volume_commitment = recovery_commitment(DOMAIN_VOLUME_IDENTITY, private_input["volume_identity"])
             runner_commitment = recovery_commitment(DOMAIN_RUNNER_IDENTITY, private_input["runner_identity"])
             spool_commitment = recovery_commitment(DOMAIN_SPOOL, epoch_ref, authority_ref)
-            durability = dict(self._durability)
             spool_meta = {
                 "schema": SCHEMA_SPOOL_META,
                 "epoch_ref": epoch_ref,
@@ -2756,8 +2842,8 @@ class ControllerStore:
                 "state": "INITIALISED",
                 "supersession_barrier_commitment": barrier,
                 "artifact_binding_state": "PENDING",
+                "artifact_binding_digest": artifact_binding_digest,
                 "artifact_commitment": None,
-                "binding_document_digest": binding_document_digest,
                 "container_commitment": container_commitment,
                 "volume_commitment": volume_commitment,
                 "runner_commitment": runner_commitment,
@@ -2775,8 +2861,8 @@ class ControllerStore:
                 "state": "INITIALISED",
                 "supersession_barrier_commitment": barrier,
                 "artifact_binding_state": "PENDING",
+                "artifact_binding_digest": artifact_binding_digest,
                 "artifact_commitment": None,
-                "binding_document_digest": binding_document_digest,
                 "container_commitment": container_commitment,
                 "volume_commitment": volume_commitment,
                 "runner_commitment": runner_commitment,
@@ -2821,14 +2907,14 @@ class ControllerStore:
 
     def _state_update_v2_unlocked(
         self,
-        snapshot: EpochSnapshot,
+        snapshot: V2EpochSnapshot,
         *,
         state: str | None = None,
         artifact_state: str | None = None,
         artifact_commitment: str | None | object = ...,
-        binding_document_digest: str | object = ...,
+        artifact_binding_digest: str | object = ...,
         ledger_state: str | None = None,
-    ) -> EpochSnapshot:
+    ) -> V2EpochSnapshot:
         record = dict(snapshot.record)
         manifest = dict(snapshot.manifest)
         if state is not None:
@@ -2840,9 +2926,9 @@ class ControllerStore:
         if artifact_commitment is not ...:
             record["artifact_commitment"] = artifact_commitment
             manifest["artifact_commitment"] = artifact_commitment
-        if binding_document_digest is not ...:
-            record["binding_document_digest"] = binding_document_digest
-            manifest["binding_document_digest"] = binding_document_digest
+        if artifact_binding_digest is not ...:
+            record["artifact_binding_digest"] = artifact_binding_digest
+            manifest["artifact_binding_digest"] = artifact_binding_digest
         if ledger_state is not None:
             record["restore_ledger_state"] = ledger_state
             manifest["restore_ledger_state"] = ledger_state
@@ -2863,15 +2949,15 @@ class ControllerStore:
         )
         return self._load_epoch_unlocked(snapshot.record["epoch_ref"])
 
-    def _state_update_unlocked(self, snapshot: EpochSnapshot, *, state: str | None = None, artifact_state: str | None = None, artifact_commitment: str | None | object = ...,
-                               binding_document_digest: str | object = ..., ledger_state: str | None = None) -> EpochSnapshot:
-        if snapshot.is_v2:
+    def _state_update_unlocked(self, snapshot: EpochSnapshot | V2EpochSnapshot, *, state: str | None = None, artifact_state: str | None = None, artifact_commitment: str | None | object = ...,
+                               artifact_binding_digest: str | object = ..., ledger_state: str | None = None) -> EpochSnapshot | V2EpochSnapshot:
+        if isinstance(snapshot, V2EpochSnapshot):
             return self._state_update_v2_unlocked(
                 snapshot,
                 state=state,
                 artifact_state=artifact_state,
                 artifact_commitment=artifact_commitment,
-                binding_document_digest=binding_document_digest,
+                artifact_binding_digest=artifact_binding_digest,
                 ledger_state=ledger_state,
             )
         record = dict(snapshot.record)
@@ -2899,7 +2985,7 @@ class ControllerStore:
         _strict_utf8_text(row_id, "artifact_row_id", max_bytes=8192)
         with self._epoch_lock(epoch_ref):
             snapshot = self._load_epoch_unlocked(epoch_ref)
-            if snapshot.is_v2:
+            if isinstance(snapshot, V2EpochSnapshot):
                 _fail(EpochStateError, "API_VERSION_MISMATCH")
             if snapshot.record["state"] in TERMINAL_EPOCH_STATES:
                 _fail(EpochStateError, "EPOCH_TERMINAL")
@@ -2916,7 +3002,7 @@ class ControllerStore:
         _strict_utf8_text(artifact_ref, "artifact_ref", max_bytes=8192)
         with self._epoch_lock(epoch_ref):
             snapshot = self._load_epoch_unlocked(epoch_ref)
-            if snapshot.is_v2:
+            if isinstance(snapshot, V2EpochSnapshot):
                 _fail(EpochStateError, "API_VERSION_MISMATCH")
             if snapshot.record["state"] in TERMINAL_EPOCH_STATES:
                 _fail(EpochStateError, "EPOCH_TERMINAL")
@@ -2938,31 +3024,32 @@ class ControllerStore:
         )
         with self._epoch_lock(epoch_ref):
             snapshot = self._load_epoch_unlocked(epoch_ref)
-            if not snapshot.is_v2:
+            if not isinstance(snapshot, V2EpochSnapshot):
                 _fail(EpochStateError, "API_VERSION_MISMATCH")
             if snapshot.record["state"] in TERMINAL_EPOCH_STATES:
                 _fail(EpochStateError, "EPOCH_TERMINAL")
             binding = snapshot.binding
-            if binding is None:
-                _fail(IntegrityError, "MISSING_ARTIFACT_BINDING", safety_state="CONSUMED")
-            if binding["state"] == "BOUND":
+            if binding["artifact_binding_state"] == "BOUND":
                 if (
-                    binding["execution_row_id"] == execution_row_id
+                    binding["execution_row_id"] == str(execution_row_id)
                     and binding["artifact_filename"] == artifact_filename
                     and binding["artifact_commitment"] == expected_commitment
                     and snapshot.record["artifact_commitment"] == expected_commitment
                 ):
                     return expected_commitment
                 _fail(IntegrityError, "ARTIFACT_REBIND_FORBIDDEN", safety_state="CONSUMED")
-            if binding["state"] != "PENDING" or snapshot.record["artifact_binding_state"] != "PENDING":
+            if binding["artifact_binding_state"] != "PENDING" or snapshot.record["artifact_binding_state"] != "PENDING":
                 _fail(IntegrityError, "ARTIFACT_BINDING_CONTRADICTION", safety_state="CONSUMED")
             candidate = {
                 "schema": SCHEMA_ARTIFACT_BINDING,
                 "epoch_ref": epoch_ref,
-                "state": "BOUND",
-                "execution_row_id": execution_row_id,
+                "authority_ref": snapshot.record["authority_ref"],
+                "artifact_binding_state": "BOUND",
+                "execution_row_id": str(execution_row_id),
                 "artifact_filename": artifact_filename,
                 "artifact_commitment": expected_commitment,
+                "private_identities_digest": snapshot.record["private_identities_digest"],
+                "durability": dict(snapshot.record["durability"]),
             }
             validate_artifact_binding(candidate)
             candidate_bytes = canonical_json_bytes(candidate, max_bytes=MAX_ARTIFACT_BINDING_BYTES)
@@ -2979,30 +3066,44 @@ class ControllerStore:
                     snapshot,
                     artifact_state="BOUND",
                     artifact_commitment=expected_commitment,
-                    binding_document_digest=candidate_digest,
+                    artifact_binding_digest=candidate_digest,
                 )
             except ControllerStoreError as error:
                 try:
-                    binding_bytes = self.adapter.read_authority(
-                        self._file_path(epoch_ref, ARTIFACT_BINDING_FILENAME),
-                        max_bytes=MAX_ARTIFACT_BINDING_BYTES,
-                    )
-                    current = parse_canonical_json(binding_bytes, max_bytes=MAX_ARTIFACT_BINDING_BYTES)
-                    validate_artifact_binding(current)
+                    current = self._load_epoch_unlocked(epoch_ref)
                 except (ControllerStoreError, ValueError, RecursionError):
                     error.safety_state = "CONSUMED"
                 else:
-                    error.safety_state = "UNCONSUMED" if current["state"] == "PENDING" else "CONSUMED"
+                    pending = (
+                        isinstance(current, V2EpochSnapshot)
+                        and current.ledger["state"] == "UNCONSUMED"
+                        and current.record["state"] == "INITIALISED"
+                        and current.record["artifact_binding_state"] == "PENDING"
+                        and current.record["artifact_commitment"] is None
+                        and current.binding["artifact_binding_state"] == "PENDING"
+                    )
+                    bound = (
+                        isinstance(current, V2EpochSnapshot)
+                        and current.ledger["state"] == "UNCONSUMED"
+                        and current.record["state"] == "INITIALISED"
+                        and current.record["artifact_binding_state"] == "BOUND"
+                        and current.binding["artifact_binding_state"] == "BOUND"
+                        and current.binding["execution_row_id"] == str(execution_row_id)
+                        and current.binding["artifact_filename"] == artifact_filename
+                        and current.binding["artifact_commitment"] == expected_commitment
+                        and current.record["artifact_commitment"] == expected_commitment
+                    )
+                    error.safety_state = "UNCONSUMED" if pending or bound else "CONSUMED"
                 raise
             return expected_commitment
 
-    def mark_ready(self, epoch_ref: str) -> EpochSnapshot:
+    def mark_ready(self, epoch_ref: str) -> EpochSnapshot | V2EpochSnapshot:
         return self._transition_epoch(epoch_ref, "READY", allowed=("INITIALISED",))
 
-    def activate(self, epoch_ref: str) -> EpochSnapshot:
+    def activate(self, epoch_ref: str) -> EpochSnapshot | V2EpochSnapshot:
         return self._transition_epoch(epoch_ref, "ACTIVE", allowed=("READY",))
 
-    def abandon(self, epoch_ref: str) -> EpochSnapshot:
+    def abandon(self, epoch_ref: str) -> EpochSnapshot | V2EpochSnapshot:
         with self._epoch_lock(epoch_ref):
             snapshot = self._load_epoch_unlocked(epoch_ref)
             if snapshot.record["state"] in TERMINAL_EPOCH_STATES:
@@ -3011,16 +3112,16 @@ class ControllerStore:
             self._ingest_frame_unlocked(snapshot, frame)
             return self._load_epoch_unlocked(epoch_ref)
 
-    def _transition_epoch(self, epoch_ref: str, target: str, *, allowed: Sequence[str]) -> EpochSnapshot:
+    def _transition_epoch(self, epoch_ref: str, target: str, *, allowed: Sequence[str]) -> EpochSnapshot | V2EpochSnapshot:
         with self._epoch_lock(epoch_ref):
             snapshot = self._load_epoch_unlocked(epoch_ref)
-            if snapshot.is_v2 and target in ("READY", "ACTIVE"):
+            if isinstance(snapshot, V2EpochSnapshot) and target in ("READY", "ACTIVE"):
                 self._require_v2_bound(snapshot, EpochStateError)
             if snapshot.record["state"] not in allowed:
                 _fail(EpochStateError, "EPOCH_TRANSITION_INVALID" if snapshot.record["state"] not in TERMINAL_EPOCH_STATES else "EPOCH_TERMINAL")
             return self._state_update_unlocked(snapshot, state=target)
 
-    def supersede(self, old_epoch_ref: str, new_epoch_ref: str) -> EpochSnapshot:
+    def supersede(self, old_epoch_ref: str, new_epoch_ref: str) -> EpochSnapshot | V2EpochSnapshot:
         _strict_ref(old_epoch_ref, "old_epoch_ref")
         _strict_ref(new_epoch_ref, "new_epoch_ref")
         if old_epoch_ref == new_epoch_ref:
@@ -3045,19 +3146,13 @@ class ControllerStore:
 
     def read_restore_ledger(self, epoch_ref: str) -> dict[str, Any]:
         with self._epoch_lock(epoch_ref):
-            self._validate_epoch_entries(epoch_ref)
-            self._detect_epoch_layout(epoch_ref)
-            ledger, _ = self._read_document(
-                self._file_path(epoch_ref, LEDGER_FILENAME),
-                max_bytes=MAX_RESTORE_LEDGER_BYTES,
-                validator=validate_restore_ledger,
-            )
-            return ledger
+            snapshot = self._load_epoch_unlocked(epoch_ref)
+            return snapshot.ledger
 
     def record_digest(self, epoch_ref: str) -> str:
         with self._epoch_lock(epoch_ref):
-            self._validate_epoch_entries(epoch_ref)
-            layout = self._detect_epoch_layout(epoch_ref)
+            snapshot = self._load_epoch_unlocked(epoch_ref)
+            layout = "v2" if isinstance(snapshot, V2EpochSnapshot) else "v1"
             filename = RECORD_V2_FILENAME if layout == "v2" else RECORD_FILENAME
             path = self._file_path(epoch_ref, filename)
             payload = self.adapter.read_authority(path, max_bytes=MAX_EPOCH_RECORD_BYTES)
@@ -3084,8 +3179,7 @@ class ControllerStore:
 
     def ledger_digest(self, epoch_ref: str) -> str:
         with self._epoch_lock(epoch_ref):
-            self._validate_epoch_entries(epoch_ref)
-            self._detect_epoch_layout(epoch_ref)
+            self._load_epoch_unlocked(epoch_ref)
             return self._ledger_digest_unlocked(epoch_ref)
 
     def ledger_safety_classification(self, epoch_ref: str) -> str:
@@ -3133,7 +3227,7 @@ class ControllerStore:
             actual_digest = self._ledger_digest_unlocked(epoch_ref)
             if actual_digest != expected_digest:
                 _fail(LedgerError, "CAS_MISMATCH", safety_state="UNCONSUMED")
-            if snapshot.is_v2:
+            if isinstance(snapshot, V2EpochSnapshot):
                 snapshot = self._load_epoch_unlocked(epoch_ref)
                 self._require_v2_bound(snapshot, LedgerError)
                 if snapshot.ledger["state"] != "UNCONSUMED":
@@ -3179,7 +3273,7 @@ class ControllerStore:
         message = _length_prefixed(("runner-frame-hash.v1", epoch_ref, str(sequence), stage, payload_commitment, previous_hash, auth))
         return COMMITMENT_PREFIX + hashlib.sha256(message).hexdigest()
 
-    def _validate_stage_transition(self, snapshot: EpochSnapshot, stage: str) -> None:
+    def _validate_stage_transition(self, snapshot: EpochSnapshot | V2EpochSnapshot, stage: str) -> None:
         if stage not in FRAME_STAGES:
             _fail(SpoolError, "INVALID_FRAME_STAGE")
         if stage in ("EPOCH_READY", "RUNNER_STARTED", "RESTORE_BEGIN", "COMMIT"):
@@ -3214,12 +3308,13 @@ class ControllerStore:
                     _fail(SpoolError, "ABANDON_AFTER_LEDGER_CONSUMED", safety_state="CONSUMED")
                 _fail(SpoolError, "FRAME_STAGE_CONTRADICTION")
 
-    def _prepare_runner_frame_unlocked(self, snapshot: EpochSnapshot, stage: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def _prepare_runner_frame_unlocked(self, snapshot: EpochSnapshot | V2EpochSnapshot, stage: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         self._validate_stage_transition(snapshot, stage)
         if not isinstance(payload, Mapping):
             _fail(SpoolError, "INVALID_FRAME_PAYLOAD")
         payload_dict = dict(payload)
         _validate_frame_payload(payload_dict)
+        self._validate_v2_pending_abandon_payload(snapshot, stage, payload_dict)
         epoch_ref = snapshot.record["epoch_ref"]
         sequence = snapshot.spool["next_sequence"]
         previous_hash = snapshot.spool["last_frame_hash"]
@@ -3237,12 +3332,13 @@ class ControllerStore:
         validate_runner_frame(frame)
         return frame
 
-    def _ingest_frame_unlocked(self, snapshot: EpochSnapshot, frame: Mapping[str, Any]) -> FrameReceipt:
+    def _ingest_frame_unlocked(self, snapshot: EpochSnapshot | V2EpochSnapshot, frame: Mapping[str, Any]) -> FrameReceipt:
         epoch_ref = snapshot.record["epoch_ref"]
         candidate = dict(frame)
         validate_runner_frame(candidate)
         if candidate["epoch_ref"] != epoch_ref:
             _fail(SpoolError, "FRAME_EPOCH_MISMATCH")
+        self._validate_v2_pending_abandon_payload(snapshot, candidate["stage"], candidate["payload"])
         expected_sequence = snapshot.spool["next_sequence"]
         if candidate["sequence"] < expected_sequence:
             _fail(SpoolError, "FRAME_DUPLICATE")
@@ -3422,6 +3518,8 @@ __all__ = [
     "SchemaError",
     "SpoolError",
     "V2_ARTIFACT_STATES",
+    "V2ArtifactBindingSnapshot",
+    "V2EpochSnapshot",
     "V2_MANIFEST_FIELDS",
     "V2_PRIVATE_IDENTITY_FIELDS",
     "V2_RECORD_FIELDS",

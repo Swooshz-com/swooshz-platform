@@ -1,6 +1,8 @@
 import base64
 import ctypes
+import dataclasses
 import importlib.util
+import inspect
 import json
 import os
 import pathlib
@@ -163,7 +165,7 @@ class ControllerStoreTests(unittest.TestCase):
         store.create_epoch_v2(
             epoch_ref,
             authority_ref,
-            private_identities=PRIVATE_V2,
+            prebackup_identities=PRIVATE_V2,
             supersedes_epoch_ref=supersedes,
         )
         return epoch_ref
@@ -410,7 +412,8 @@ class ControllerStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(STORE.DurabilityError, "INJECTED_PRE_TRANSITION_FAILURE"):
             store.consume_restore(epoch, "transition-synthetic-007", expected_digest=store.ledger_digest(epoch))
         fault.fail_before_transition_name = None
-        self.assertEqual(store.read_restore_ledger(epoch)["state"], "CONSUMED")
+        ledger_bytes = store.adapter.read_authority(store._file_path(epoch, STORE.LEDGER_FILENAME), max_bytes=STORE.MAX_RESTORE_LEDGER_BYTES)
+        self.assertEqual(json.loads(ledger_bytes.decode("utf-8"))["state"], "CONSUMED")
         self.assertEqual(store.ledger_safety_classification(epoch), "CONSUMED")
 
     def test_ledger_transition_failure_before_store_return_is_consumed(self):
@@ -428,7 +431,8 @@ class ControllerStoreTests(unittest.TestCase):
             )
         self.assertEqual(raised.exception.safety_state, "CONSUMED")
         fault.fail_after_transition_name = None
-        self.assertEqual(store.read_restore_ledger(epoch)["state"], "CONSUMED")
+        ledger_bytes = store.adapter.read_authority(store._file_path(epoch, STORE.LEDGER_FILENAME), max_bytes=STORE.MAX_RESTORE_LEDGER_BYTES)
+        self.assertEqual(json.loads(ledger_bytes.decode("utf-8"))["state"], "CONSUMED")
         self.assertEqual(store.ledger_safety_classification(epoch), "CONSUMED")
 
     def test_consumed_ledger_frame_transition_failures_are_consumed_and_non_retryable(self):
@@ -505,7 +509,8 @@ class ControllerStoreTests(unittest.TestCase):
             return value
 
         self.mutate_json_file(store, epoch, STORE.LEDGER_FILENAME, make_unconsumed)
-        self.assertEqual(store.read_restore_ledger(epoch)["state"], "UNCONSUMED")
+        ledger_bytes = store.adapter.read_authority(store._file_path(epoch, STORE.LEDGER_FILENAME), max_bytes=STORE.MAX_RESTORE_LEDGER_BYTES)
+        self.assertEqual(json.loads(ledger_bytes.decode("utf-8"))["state"], "UNCONSUMED")
         self.assertEqual(store.ledger_safety_classification(epoch), "CONSUMED")
 
     def test_pre_replace_failure_preserves_prior_authority(self):
@@ -520,7 +525,8 @@ class ControllerStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(STORE.DurabilityError, "INJECTED_PRE_TRANSITION_FAILURE"):
             store.abandon(epoch)
         fault.fail_before_transition_name = None
-        self.assertEqual(store.read_authoritative_bytes(epoch, STORE.MANIFEST_FILENAME), before)
+        after = store.adapter.read_authority(store._file_path(epoch, STORE.MANIFEST_FILENAME), max_bytes=STORE.MAX_MANIFEST_BYTES)
+        self.assertEqual(after, before)
 
     def test_partial_temp_is_never_authoritative(self):
         base = STORE.make_durability_adapter()
@@ -1219,12 +1225,18 @@ except Exception as error:
         store = self.new_store()
         epoch = self.create_v2_epoch(store, "epoch-v2-schema-001", "authority-v2-schema-001")
         snapshot = store.load_epoch(epoch)
+        self.assertIsInstance(snapshot, STORE.V2EpochSnapshot)
+        self.assertIsInstance(snapshot.binding, STORE.V2ArtifactBindingSnapshot)
         self.assertEqual(snapshot.version, "v2")
         self.assertEqual(STORE.MAX_ARTIFACT_BINDING_BYTES, 16 * 1024)
         self.assertEqual(snapshot.record["schema"], STORE.SCHEMA_EPOCH_RECORD_V2)
         self.assertEqual(snapshot.manifest["schema"], STORE.SCHEMA_MANIFEST_V2)
         self.assertEqual(snapshot.private_identities["schema"], STORE.SCHEMA_PRIVATE_IDENTITIES_V2)
         self.assertEqual(snapshot.binding["schema"], STORE.SCHEMA_ARTIFACT_BINDING)
+        self.assertEqual(snapshot.binding["authority_ref"], "authority-v2-schema-001")
+        self.assertEqual(snapshot.binding["artifact_binding_state"], "PENDING")
+        self.assertEqual(snapshot.binding["private_identities_digest"], snapshot.record["private_identities_digest"])
+        self.assertEqual(snapshot.binding["durability"], snapshot.record["durability"])
         self.assertEqual(snapshot.record["artifact_binding_state"], "PENDING")
         self.assertIsNone(snapshot.record["artifact_commitment"])
         self.assertIsNone(snapshot.binding["execution_row_id"])
@@ -1246,10 +1258,12 @@ except Exception as error:
         self.assertEqual(tuple(json.loads(binding_bytes.decode("utf-8")).keys()), STORE.ARTIFACT_BINDING_FIELDS)
         self.assertLessEqual(len(binding_bytes), STORE.MAX_ARTIFACT_BINDING_BYTES)
         self.assertEqual(
-            snapshot.record["binding_document_digest"],
+            snapshot.record["artifact_binding_digest"],
             STORE.bytes_commitment(STORE.DOMAIN_ARTIFACT_BINDING, binding_bytes),
         )
-        self.assertEqual(snapshot.record["binding_document_digest"], snapshot.manifest["binding_document_digest"])
+        self.assertEqual(snapshot.record["artifact_binding_digest"], snapshot.manifest["artifact_binding_digest"])
+        self.assertNotIn(b"binding_document_digest", store.read_authoritative_bytes(epoch, STORE.RECORD_V2_FILENAME))
+        self.assertNotIn(b"binding_document_digest", store.read_authoritative_bytes(epoch, STORE.MANIFEST_V2_FILENAME))
         self.assertEqual(
             snapshot.record["private_identities_digest"],
             STORE.bytes_commitment(STORE.DOMAIN_PRIVATE_IDENTITIES, private_bytes),
@@ -1259,6 +1273,31 @@ except Exception as error:
             snapshot.record["manifest_digest"],
             STORE.bytes_commitment(STORE.DOMAIN_MANIFEST, manifest_bytes),
         )
+
+    def test_v1_snapshot_shape_remains_separate_and_unchanged(self):
+        store = self.new_store()
+        epoch = self.create_epoch(store, "epoch-v1-snapshot-001", "authority-v1-snapshot-001")
+        snapshot = store.load_epoch(epoch)
+        self.assertIs(type(snapshot), STORE.EpochSnapshot)
+        self.assertEqual(
+            tuple(field.name for field in dataclasses.fields(STORE.EpochSnapshot)),
+            ("record", "manifest", "private_identities", "ledger", "spool"),
+        )
+        self.assertFalse(hasattr(snapshot, "binding"))
+        self.assertFalse(hasattr(snapshot, "version"))
+        self.assertFalse(hasattr(snapshot, "is_v2"))
+
+    def test_v2_creation_uses_exact_prebackup_identities_keyword(self):
+        parameters = inspect.signature(STORE.ControllerStore.create_epoch_v2).parameters
+        self.assertIn("prebackup_identities", parameters)
+        self.assertNotIn("private_identities", parameters)
+        store = self.new_store()
+        with self.assertRaises(TypeError):
+            store.create_epoch_v2(
+                "epoch-v2-keyword-001",
+                "authority-v2-keyword-001",
+                private_identities=PRIVATE_V2,
+            )
 
     def test_v2_bind_reload_and_exact_duplicate_are_read_only(self):
         store = self.new_store()
@@ -1271,8 +1310,8 @@ except Exception as error:
         )
         self.assertEqual(commitment, expected)
         bound = store.load_epoch(epoch)
-        self.assertEqual(bound.binding["state"], "BOUND")
-        self.assertEqual(bound.binding["execution_row_id"], 9223372036854775807)
+        self.assertEqual(bound.binding["artifact_binding_state"], "BOUND")
+        self.assertEqual(bound.binding["execution_row_id"], "9223372036854775807")
         self.assertEqual(bound.binding["artifact_filename"], "fresh-artifact.tar")
         before = {
             filename: store.read_authoritative_bytes(epoch, filename)
@@ -1301,11 +1340,11 @@ except Exception as error:
             with self.subTest(execution_row_id=value):
                 with self.assertRaisesRegex(STORE.SchemaError, "INVALID_EXECUTION_ROW_ID"):
                     store.bind_artifact_v2(epoch, value, "opaque.tar")
-        for value in (None, "", "x" * (STORE.MAX_ARTIFACT_FILENAME_BYTES + 1), "\ud800", 7):
+        for value in (None, "", ".", "..", "a/b", "a\\b", "\x00", "\x01", "\x1f", "\x7f", "x" * (STORE.MAX_ARTIFACT_FILENAME_BYTES + 1), "\ud800", 7):
             with self.subTest(artifact_filename=value):
                 with self.assertRaisesRegex(STORE.SchemaError, "INVALID_ARTIFACT_FILENAME"):
                     store.bind_artifact_v2(epoch, 23, value)
-        self.assertEqual(store.load_epoch(epoch).binding["state"], "PENDING")
+        self.assertEqual(store.load_epoch(epoch).binding["artifact_binding_state"], "PENDING")
 
     def test_v2_legacy_api_mismatch_and_pending_gates(self):
         store = self.new_store()
@@ -1327,12 +1366,35 @@ except Exception as error:
     def test_v2_initial_pending_direct_abandon_is_authenticated_and_terminal(self):
         store = self.new_store()
         epoch = self.create_v2_epoch(store, "epoch-v2-abandon-001", "authority-v2-abandon-001")
-        frame = store.prepare_runner_frame(epoch, "ABANDON", {"ref": "pending-abandon"})
+        with self.assertRaisesRegex(STORE.SpoolError, "INVALID_PENDING_ABANDON_PAYLOAD"):
+            store.prepare_runner_frame(epoch, "ABANDON", {"ref": "pending-abandon"})
+        frame = store.prepare_runner_frame(epoch, "ABANDON", {"state": "ABANDONED"})
+        invalid_frame = dict(frame)
+        invalid_payload = {"ref": "pending-abandon"}
+        invalid_frame["payload"] = invalid_payload
+        invalid_frame["auth"] = store._frame_auth(
+            store.load_epoch(epoch).private_identities,
+            epoch,
+            frame["sequence"],
+            frame["stage"],
+            invalid_payload,
+            frame["previous_hash"],
+        )
+        invalid_frame["frame_hash"] = store._frame_hash(
+            epoch,
+            frame["sequence"],
+            frame["stage"],
+            invalid_payload,
+            frame["previous_hash"],
+            invalid_frame["auth"],
+        )
+        with self.assertRaisesRegex(STORE.SpoolError, "INVALID_PENDING_ABANDON_PAYLOAD"):
+            store.ingest_frame(epoch, invalid_frame)
         receipt = store.ingest_frame(epoch, frame)
         self.assertEqual(receipt.sequence, 1)
         snapshot = store.load_epoch(epoch)
         self.assertEqual(snapshot.record["state"], "ABANDONED")
-        self.assertEqual(snapshot.binding["state"], "PENDING")
+        self.assertEqual(snapshot.binding["artifact_binding_state"], "PENDING")
         self.assertEqual(snapshot.ledger["state"], "UNCONSUMED")
         self.assertEqual(snapshot.spool["last_stage"], "ABANDON")
         self.assertEqual(snapshot.spool["frame_count"], 1)
@@ -1340,6 +1402,28 @@ except Exception as error:
             store.resume_epoch(epoch)
         with self.assertRaisesRegex(STORE.EpochStateError, "EPOCH_TERMINAL"):
             store.bind_artifact_v2(epoch, 23, "late.tar")
+        frame_path = store._file_path(epoch, "frame-000000000001.json")
+        tampered_frame = json.loads(frame_path.read_text(encoding="utf-8"))
+        tampered_frame["payload"] = {"ref": "tampered-pending-abandon"}
+        tampered_frame["auth"] = store._frame_auth(
+            snapshot.private_identities,
+            epoch,
+            tampered_frame["sequence"],
+            tampered_frame["stage"],
+            tampered_frame["payload"],
+            tampered_frame["previous_hash"],
+        )
+        tampered_frame["frame_hash"] = store._frame_hash(
+            epoch,
+            tampered_frame["sequence"],
+            tampered_frame["stage"],
+            tampered_frame["payload"],
+            tampered_frame["previous_hash"],
+            tampered_frame["auth"],
+        )
+        frame_path.write_bytes(STORE.canonical_json_bytes(tampered_frame, max_bytes=STORE.MAX_FRAME_BYTES))
+        with self.assertRaisesRegex(STORE.IntegrityError, "INVALID_PENDING_ABANDON_PAYLOAD"):
+            store.load_epoch(epoch)
 
     def test_v2_authoritative_layout_rejects_mixed_missing_and_filename_schema_mismatch(self):
         mixed = self.new_store()
@@ -1365,9 +1449,26 @@ except Exception as error:
 
         legacy = self.new_store()
         legacy_epoch = self.create_epoch(legacy, "epoch-v1-dispatch-001", "authority-v1-dispatch-001")
-        self.assertEqual(legacy.load_epoch(legacy_epoch).version, "v1")
+        self.assertIs(type(legacy.load_epoch(legacy_epoch)), STORE.EpochSnapshot)
         with self.assertRaisesRegex(STORE.EpochStateError, "API_VERSION_MISMATCH"):
             legacy.bind_artifact_v2(legacy_epoch, 23, "opaque.tar")
+
+    def test_v2_generic_reads_and_digests_validate_the_complete_authority_graph_first(self):
+        store = self.new_store()
+        epoch = self.create_v2_epoch(store, "epoch-v2-full-dispatch-001", "authority-v2-full-dispatch-001")
+        manifest_path = store._file_path(epoch, STORE.MANIFEST_V2_FILENAME)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["schema"] = STORE.SCHEMA_MANIFEST
+        manifest_path.write_bytes(STORE.canonical_json_bytes(manifest, max_bytes=STORE.MAX_MANIFEST_BYTES))
+        operations = (
+            ("read_authoritative_bytes", lambda: store.read_authoritative_bytes(epoch, STORE.RECORD_V2_FILENAME)),
+            ("read_restore_ledger", lambda: store.read_restore_ledger(epoch)),
+            ("record_digest", lambda: store.record_digest(epoch)),
+            ("ledger_digest", lambda: store.ledger_digest(epoch)),
+        )
+        for name, operation in operations:
+            with self.subTest(operation=name), self.assertRaisesRegex(STORE.IntegrityError, "AUTHORITATIVE_STATE_INVALID"):
+                operation()
 
     def test_v2_binding_digest_and_cross_file_tamper_fail_closed(self):
         binding_tamper = self.new_store()
@@ -1384,7 +1485,7 @@ except Exception as error:
         digest_epoch = self.create_v2_epoch(digest_tamper, "epoch-v2-digest-tamper-001", "authority-v2-digest-tamper-001")
         record_path = digest_tamper._file_path(digest_epoch, STORE.RECORD_V2_FILENAME)
         record = json.loads(record_path.read_text(encoding="utf-8"))
-        record["binding_document_digest"] = STORE.recovery_commitment("tampered", "binding")
+        record["artifact_binding_digest"] = STORE.recovery_commitment("tampered", "binding")
         record_path.write_bytes(STORE.canonical_json_bytes(record, max_bytes=STORE.MAX_EPOCH_RECORD_BYTES))
         with self.assertRaisesRegex(STORE.IntegrityError, "ARTIFACT_BINDING_DIGEST_MISMATCH|CROSS_FILE_CONTRADICTION"):
             digest_tamper.load_epoch(digest_epoch)
@@ -1394,7 +1495,7 @@ except Exception as error:
             ("before", "before", STORE.ARTIFACT_BINDING_FILENAME, "UNCONSUMED", False),
             ("after-binding", "after", STORE.ARTIFACT_BINDING_FILENAME, "CONSUMED", True),
             ("after-manifest", "after", STORE.MANIFEST_V2_FILENAME, "CONSUMED", True),
-            ("after-record", "after", STORE.RECORD_V2_FILENAME, "CONSUMED", False),
+            ("after-record", "after", STORE.RECORD_V2_FILENAME, "UNCONSUMED", False),
         )
         for label, mode, filename, expected_safety, expects_invalid_reload in cases:
             with self.subTest(case=label):
@@ -1415,7 +1516,7 @@ except Exception as error:
                     with self.assertRaises(STORE.IntegrityError):
                         store.load_epoch(epoch)
                 else:
-                    self.assertEqual(store.load_epoch(epoch).binding["state"], "PENDING" if label == "before" else "BOUND")
+                    self.assertEqual(store.load_epoch(epoch).binding["artifact_binding_state"], "PENDING" if label == "before" else "BOUND")
                 if label == "before":
                     self.assertEqual(store.bind_artifact_v2(epoch, 23, "crash-artifact.tar"), store.load_epoch(epoch).binding["artifact_commitment"])
                 elif label == "after-record":
@@ -1436,7 +1537,7 @@ except Exception as error:
         with self.assertRaisesRegex(STORE.DurabilityError, "INJECTED_AFTER_COMPLETE_BIND") as raised:
             complete.bind_artifact_v2(complete_epoch, 23, "complete-artifact.tar")
         complete._load_epoch_unlocked = original_load
-        self.assertEqual(raised.exception.safety_state, "CONSUMED")
+        self.assertEqual(raised.exception.safety_state, "UNCONSUMED")
         commitment = complete.load_epoch(complete_epoch).binding["artifact_commitment"]
         self.assertEqual(complete.bind_artifact_v2(complete_epoch, 23, "complete-artifact.tar"), commitment)
 
@@ -1455,11 +1556,18 @@ except Exception as error:
                 record["artifact_binding_state"] = "PENDING"
                 record["artifact_commitment"] = None
                 binding = dict(snapshot.binding)
-                binding["state"] = "PENDING"
+                binding["artifact_binding_state"] = "PENDING"
                 binding["execution_row_id"] = None
                 binding["artifact_filename"] = None
                 binding["artifact_commitment"] = None
-                return STORE.EpochSnapshot(record, snapshot.manifest, snapshot.private_identities, snapshot.ledger, snapshot.spool, binding, "v2")
+                return STORE.V2EpochSnapshot(
+                    record,
+                    snapshot.manifest,
+                    snapshot.private_identities,
+                    snapshot.ledger,
+                    snapshot.spool,
+                    STORE.V2ArtifactBindingSnapshot(binding),
+                )
             return snapshot
 
         store._load_epoch_unlocked = return_pending_on_recheck
@@ -1497,7 +1605,7 @@ except Exception as error:
         self.assertTrue(all(not thread.is_alive() for thread in threads))
         self.assertEqual(len(results), 2)
         self.assertTrue(all(result[0] == "ok" for result in results))
-        self.assertEqual(first.load_epoch(epoch).binding["execution_row_id"], 23)
+        self.assertEqual(first.load_epoch(epoch).binding["execution_row_id"], "23")
 
     def test_v2_public_projection_excludes_raw_binding_identity(self):
         store = self.new_store()
