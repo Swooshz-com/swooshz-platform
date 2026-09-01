@@ -343,13 +343,16 @@ def parse_canonical_json(payload: bytes, *, max_bytes: int) -> Any:
     )
     try:
         value, end = decoder.raw_decode(text)
-    except (json.JSONDecodeError, ControllerStoreError):
+    except (json.JSONDecodeError, ControllerStoreError, ValueError, RecursionError):
         _fail(SchemaError, "INVALID_JSON")
-    if end != len(text) - 1 or text[end:] != "\n":
-        _fail(SchemaError, "JSON_TRAILING_INPUT")
-    _reject_noncanonical_value(value)
-    if canonical_json_bytes(value, max_bytes=max_bytes) != payload:
-        _fail(SchemaError, "JSON_NOT_CANONICAL")
+    try:
+        if end != len(text) - 1 or text[end:] != "\n":
+            _fail(SchemaError, "JSON_TRAILING_INPUT")
+        _reject_noncanonical_value(value)
+        if canonical_json_bytes(value, max_bytes=max_bytes) != payload:
+            _fail(SchemaError, "JSON_NOT_CANONICAL")
+    except (ValueError, RecursionError):
+        _fail(SchemaError, "INVALID_JSON")
     return value
 
 
@@ -1853,6 +1856,8 @@ class ControllerStore:
             raise
         except ControllerStoreError:
             _fail(IntegrityError, "AUTHORITATIVE_STATE_INVALID", safety_state="CONSUMED")
+        except (ValueError, RecursionError):
+            _fail(IntegrityError, "AUTHORITATIVE_STATE_INVALID", safety_state="CONSUMED")
         return validated, payload
 
     def _validate_epoch_entries(self, epoch_ref: str) -> None:
@@ -2335,7 +2340,7 @@ class ControllerStore:
             with self._epoch_lock(epoch_ref):
                 snapshot = self._load_epoch_unlocked(epoch_ref)
             return "UNCONSUMED" if snapshot.ledger["state"] == "UNCONSUMED" else "CONSUMED"
-        except ControllerStoreError:
+        except (ControllerStoreError, ValueError, RecursionError):
             return "CONSUMED"
 
     def consume_restore(
@@ -2358,6 +2363,12 @@ class ControllerStore:
                     _fail(LedgerError, "EPOCH_TERMINAL", safety_state="CONSUMED")
                 if ledger["transition_id"] != transition_id or ledger["transition_target"] != "RESTORE_STARTED" or ledger["transition_data_commitment"] != data_commitment:
                     _fail(LedgerError, "LEDGER_CONTRADICTION", safety_state="CONSUMED")
+                if (
+                    snapshot.record["state"] != "ACTIVE"
+                    or snapshot.spool["state"] != "OPEN"
+                    or snapshot.spool["last_stage"] != "RUNNER_STARTED"
+                ):
+                    _fail(LedgerError, "RESTORE_PERMIT_NOT_REUSABLE", safety_state="CONSUMED")
                 return RestorePermit(epoch_ref, transition_id, "CONSUMED", True)
             if snapshot.record["state"] in TERMINAL_EPOCH_STATES:
                 _fail(LedgerError, "EPOCH_TERMINAL", safety_state="CONSUMED")

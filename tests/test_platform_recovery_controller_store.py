@@ -288,6 +288,51 @@ class ControllerStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(STORE.LedgerError, "LEDGER_CONTRADICTION"):
             store.consume_restore(epoch, "transition-synthetic-002", expected_digest=store.ledger_digest(epoch), data={"classification": "different"})
 
+    def test_exact_duplicate_consume_is_not_reissued_after_restore_progression_or_reload(self):
+        for progressed_stage in ("RESTORE_BEGIN", "COMMIT", "ABANDON"):
+            with self.subTest(progressed_stage=progressed_stage):
+                store = self.new_store()
+                epoch = self.create_active_epoch(store, f"epoch-permit-non-reuse-{progressed_stage.lower()}")
+                self.prepare_runner_sequence(store, epoch)
+                transition_id = f"transition-permit-non-reuse-{progressed_stage.lower()}"
+                data = {"classification": f"permit-non-reuse-{progressed_stage.lower()}"}
+                store.consume_restore(
+                    epoch,
+                    transition_id,
+                    expected_digest=store.ledger_digest(epoch),
+                    data=data,
+                )
+
+                self.ingest_stage(store, epoch, "RESTORE_BEGIN", {"ref": f"restore-begin-{progressed_stage.lower()}"})
+                if progressed_stage == "COMMIT":
+                    self.ingest_stage(store, epoch, "COMMIT", {"ref": "commit-permit-non-reuse"})
+                elif progressed_stage == "ABANDON":
+                    store.abandon(epoch)
+
+                snapshot = store.load_epoch(epoch)
+                expected_state = {
+                    "RESTORE_BEGIN": ("ACTIVE", "OPEN", "RESTORE_BEGIN"),
+                    "COMMIT": ("CONSUMED", "COMMITTED", "COMMIT"),
+                    "ABANDON": ("ABANDONED", "ABANDONED", "ABANDON"),
+                }[progressed_stage]
+                self.assertEqual(
+                    (snapshot.record["state"], snapshot.spool["state"], snapshot.spool["last_stage"]),
+                    expected_state,
+                )
+
+                reloaded = STORE.ControllerStore.for_disposable_test_root(store.root)
+                for candidate in (store, reloaded):
+                    with self.subTest(progressed_stage=progressed_stage, candidate="reloaded" if candidate is reloaded else "original"):
+                        expected_error = "EPOCH_TERMINAL" if progressed_stage == "ABANDON" else "RESTORE_PERMIT_NOT_REUSABLE"
+                        with self.assertRaisesRegex(STORE.LedgerError, expected_error) as raised:
+                            candidate.consume_restore(
+                                epoch,
+                                transition_id,
+                                expected_digest=candidate.ledger_digest(epoch),
+                                data=data,
+                            )
+                        self.assertEqual(raised.exception.safety_state, "CONSUMED")
+
     def test_ledger_reset_is_rejected(self):
         store = self.new_store()
         epoch = self.create_active_epoch(store)
@@ -405,6 +450,23 @@ class ControllerStoreTests(unittest.TestCase):
             expected_digest=store.ledger_digest(epoch),
         )
         self.assertEqual(store.ledger_safety_classification(epoch), "CONSUMED")
+
+    def test_bounded_non_validatable_authority_is_conservatively_consumed(self):
+        malformed_payloads = (
+            ("large-integer", ("9" * 5000 + "\n").encode("ascii")),
+            ("deep-structure", ("[" * 2000 + "0" + "]" * 2000 + "\n").encode("ascii")),
+        )
+        for label, payload in malformed_payloads:
+            with self.subTest(label=label):
+                store = self.new_store()
+                epoch = self.create_epoch(store, f"epoch-classifier-malformed-{label}")
+                self.assertLessEqual(len(payload), STORE.MAX_MANIFEST_BYTES)
+                store._file_path(epoch, STORE.MANIFEST_FILENAME).write_bytes(payload)
+
+                self.assertEqual(store.ledger_safety_classification(epoch), "CONSUMED")
+                with self.assertRaisesRegex(STORE.IntegrityError, "AUTHORITATIVE_STATE_INVALID") as raised:
+                    store.load_epoch(epoch)
+                self.assertEqual(raised.exception.safety_state, "CONSUMED")
 
     def test_canonical_unconsumed_ledger_with_terminal_history_classifies_consumed(self):
         store = self.new_store()
