@@ -78,31 +78,31 @@ RUNNER_IMPORT_ROOTS = frozenset(
 class RunnerAbortCode(str, Enum):
     """The ten runner-requested pre-DISCOVERY abort reasons."""
 
-    ZERO_ROW_MATCH = "ZERO_ROW_MATCH"
-    MULTIPLE_ROW_MATCH = "MULTIPLE_ROW_MATCH"
-    PRIVATE_LOCATOR_MISSING = "PRIVATE_LOCATOR_MISSING"
-    QUERY_NOT_EXECUTED = "QUERY_NOT_EXECUTED"
-    QUERY_FAILED = "QUERY_FAILED"
-    ARTIFACT_MISSING = "ARTIFACT_MISSING"
-    ARTIFACT_CHANGED = "ARTIFACT_CHANGED"
+    PRESTATE_FAILED = "PRESTATE_FAILED"
+    BACKUP_NOT_QUALIFYING = "BACKUP_NOT_QUALIFYING"
+    LOCATOR_NOT_FOUND = "LOCATOR_NOT_FOUND"
+    LOCATOR_AMBIGUOUS = "LOCATOR_AMBIGUOUS"
     RESOURCE_COLLISION = "RESOURCE_COLLISION"
+    RESOURCE_CREATE_FAILED = "RESOURCE_CREATE_FAILED"
     ISOLATION_FAILED = "ISOLATION_FAILED"
-    CLEANUP_FAILED = "CLEANUP_FAILED"
+    CLEANUP_UNPROVEN = "CLEANUP_UNPROVEN"
+    RESTORE_PRECONDITION_FAILED = "RESTORE_PRECONDITION_FAILED"
+    RUNNER_ABORTED = "RUNNER_ABORTED"
 
 
 class RunnerControlCode(str, Enum):
     """Finite public-safe control/error codes."""
 
-    ZERO_ROW_MATCH = RunnerAbortCode.ZERO_ROW_MATCH.value
-    MULTIPLE_ROW_MATCH = RunnerAbortCode.MULTIPLE_ROW_MATCH.value
-    PRIVATE_LOCATOR_MISSING = RunnerAbortCode.PRIVATE_LOCATOR_MISSING.value
-    QUERY_NOT_EXECUTED = RunnerAbortCode.QUERY_NOT_EXECUTED.value
-    QUERY_FAILED = RunnerAbortCode.QUERY_FAILED.value
-    ARTIFACT_MISSING = RunnerAbortCode.ARTIFACT_MISSING.value
-    ARTIFACT_CHANGED = RunnerAbortCode.ARTIFACT_CHANGED.value
+    PRESTATE_FAILED = RunnerAbortCode.PRESTATE_FAILED.value
+    BACKUP_NOT_QUALIFYING = RunnerAbortCode.BACKUP_NOT_QUALIFYING.value
+    LOCATOR_NOT_FOUND = RunnerAbortCode.LOCATOR_NOT_FOUND.value
+    LOCATOR_AMBIGUOUS = RunnerAbortCode.LOCATOR_AMBIGUOUS.value
     RESOURCE_COLLISION = RunnerAbortCode.RESOURCE_COLLISION.value
+    RESOURCE_CREATE_FAILED = RunnerAbortCode.RESOURCE_CREATE_FAILED.value
     ISOLATION_FAILED = RunnerAbortCode.ISOLATION_FAILED.value
-    CLEANUP_FAILED = RunnerAbortCode.CLEANUP_FAILED.value
+    CLEANUP_UNPROVEN = RunnerAbortCode.CLEANUP_UNPROVEN.value
+    RESTORE_PRECONDITION_FAILED = RunnerAbortCode.RESTORE_PRECONDITION_FAILED.value
+    RUNNER_ABORTED = RunnerAbortCode.RUNNER_ABORTED.value
 
     DECISION_EOF = "DECISION_EOF"
     DECISION_TIMEOUT = "DECISION_TIMEOUT"
@@ -134,8 +134,8 @@ assert len(RUNNER_CONTROL_VALUES) == 31
 
 
 class ResultClassification(str, Enum):
-    COMMITTED = "COMMITTED"
-    ABANDONED = "ABANDONED"
+    SUCCESS = "SUCCESS"
+    FAILURE = "FAILURE"
 
 
 PUBLIC_ERROR_CODES = frozenset(
@@ -157,6 +157,12 @@ PUBLIC_ERROR_CODES = frozenset(
         "PROCESS_TIMEOUT",
         "PROCESS_EOF",
         "PROCESS_STDERR_FORBIDDEN",
+        "PROCESS_STDOUT_FORBIDDEN",
+        "PROCESS_CAPTURE_OVERFLOW",
+        "PROCESS_TRAILING_OUTPUT",
+        "PROCESS_EXIT_NONZERO",
+        "PROCESS_TERMINATION_UNCERTAIN",
+        "PROCESS_FINALITY_FAILED",
         "STORE_TRANSITION_FAILED",
         "POST_CAS_UNCERTAIN",
     }
@@ -212,11 +218,12 @@ HELLO_TYPE = 1
 PREAMBLE_TYPE = 2
 
 HELLO_MAGIC = b"SWZBRDG1"
-HELLO_STRUCT = struct.Struct("!8sBB32s")
+HELLO_STRUCT = struct.Struct("!8sBBH32s")
 HELLO_SIZE = HELLO_STRUCT.size
+HELLO_FLAGS = 0
 
 PREAMBLE_MAGIC = b"SWZPRE01"
-PREAMBLE_HEADER_STRUCT = struct.Struct("!8sBBHI")
+PREAMBLE_HEADER_STRUCT = struct.Struct("!8sBBHHH")
 PREAMBLE_BODY_STRUCT = struct.Struct("!32s32s32s32s32s32s32s32s")
 PREAMBLE_BODY_SIZE = PREAMBLE_BODY_STRUCT.size
 PREAMBLE_SIZE = PREAMBLE_HEADER_STRUCT.size + PREAMBLE_BODY_SIZE
@@ -239,8 +246,8 @@ AUTH_FRAME_TAG_SIZE = hashlib.sha256().digest_size
 AUTH_FRAME_OVERHEAD = AUTH_FRAME_HEADER_STRUCT.size + AUTH_FRAME_TAG_SIZE
 MAX_AUTH_FRAME_BYTES = 64 * 1024
 MAX_AUTH_PAYLOAD_BYTES = MAX_AUTH_FRAME_BYTES - AUTH_FRAME_OVERHEAD
-MAX_SESSION_FRAMES = 4096
-MAX_SESSION_BYTES = 4 * 1024 * 1024
+MAX_SESSION_FRAMES = 16
+MAX_SESSION_BYTES = 1048576
 FRAME_FLAGS = 0
 
 DIRECTION_LOCAL_TO_REMOTE = 1
@@ -263,9 +270,7 @@ MESSAGE_VALUES = frozenset(
     }
 )
 
-BOOT_MAGIC = b"SWZBOOT1"
-BOOT_HEADER_STRUCT = struct.Struct("!8sBBH27s32sI")
-BOOT_HEADER_SIZE = BOOT_HEADER_STRUCT.size
+BOOT_BARRIER_BYTES = 27
 MAX_RUNNER_BUNDLE_BYTES = 65536
 
 CONTROL_MAX_BYTES = 4096
@@ -282,6 +287,17 @@ CANONICAL_BARRIER_RE = re.compile(
 EXIT_SUCCESS = 0
 EXIT_RUNNER_ABORT = 65
 EXIT_PROTOCOL_FAILURE = 66
+
+# All phase bounds use one injected monotonic clock. The whole-session bound
+# is the outer cap for a single process/session.
+HELLO_TIMEOUT_SECONDS = 5.0
+BOOT_TIMEOUT_SECONDS = 5.0
+READY_TIMEOUT_SECONDS = 5.0
+DISCOVERY_TIMEOUT_SECONDS = 5.0
+PROCEED_TIMEOUT_SECONDS = 5.0
+RESULT_TIMEOUT_SECONDS = 5.0
+WHOLE_SESSION_TIMEOUT_SECONDS = 30.0
+MAX_STDERR_CAPTURE_BYTES = 4096
 
 
 def _as_bytes(value: str | bytes, *, label: str) -> bytes:
@@ -310,11 +326,35 @@ def LP(*parts: str | bytes) -> bytes:
 
 
 def _bridge_digest(domain: str, *parts: str | bytes) -> bytes:
-    return hashlib.sha256(LP("single-session-controller-bridge.v1", domain, *parts)).digest()
+    return _commitment_bytes(bridge_commitment(domain, *parts))
 
 
 def bridge_commitment(domain: str, *parts: str | bytes) -> str:
-    return "sha256:v1:" + _bridge_digest(domain, *parts).hex()
+    return STORE.bytes_commitment("bridge-" + domain, LP(*parts))
+
+
+def _commitment_bytes(value: str) -> bytes:
+    if not _is_commitment(value):
+        _raise(ProtocolError, "FRAME_INVALID")
+    try:
+        return bytes.fromhex(value[len("sha256:v1:") :])
+    except ValueError:
+        _raise(ProtocolError, "FRAME_INVALID")
+    raise AssertionError("unreachable")
+
+
+def _digest_commitment(value: bytes) -> str:
+    _validate_nonce(value, "commitment digest", 32)
+    return "sha256:v1:" + value.hex()
+
+
+def _store_json_commitment(domain: str, value: Mapping[str, Any], *, max_bytes: int) -> str:
+    try:
+        payload = STORE.canonical_json_bytes(dict(value), max_bytes=max_bytes)
+        return STORE.bytes_commitment(domain, payload)
+    except Exception:
+        _raise(ProtocolError, "STORE_TRANSITION_FAILED")
+    raise AssertionError("unreachable")
 
 
 def _is_commitment(value: Any) -> bool:
@@ -446,7 +486,22 @@ def _validate_control(value: Any, expected_type: str) -> dict[str, Any]:
             "isolation_state",
             "isolation_commitment",
         ),
-        "PROCEED": ("type", "version", "artifact_commitment", "isolation_commitment", "grant"),
+        "PROCEED": (
+            "type",
+            "version",
+            "epoch_digest",
+            "authority_digest",
+            "runner_digest",
+            "bundle_digest",
+            "barrier_utc",
+            "artifact_commitment",
+            "isolation_commitment",
+            "transition_id",
+            "pre_cas_ledger_digest",
+            "transition_data_commitment",
+            "consumed_record_digest",
+            "grant",
+        ),
         "ABORT": ("type", "version", "code"),
         "RESULT": ("type", "version", "classification", "result_commitment"),
     }[expected_type]
@@ -459,7 +514,24 @@ def _validate_control(value: Any, expected_type: str) -> dict[str, Any]:
         if value["isolation_state"] != "PASS" or not _is_commitment(value["isolation_commitment"]):
             _raise(ProtocolError, "DISCOVERY_INVALID")
     elif expected_type == "PROCEED":
-        if not _is_commitment(value["artifact_commitment"]) or not _is_commitment(value["isolation_commitment"]):
+        commitments = (
+            "epoch_digest",
+            "authority_digest",
+            "runner_digest",
+            "bundle_digest",
+            "artifact_commitment",
+            "isolation_commitment",
+            "pre_cas_ledger_digest",
+            "transition_data_commitment",
+            "consumed_record_digest",
+        )
+        if any(not _is_commitment(value[name]) for name in commitments):
+            _raise(ProtocolError, "PROCEED_INVALID")
+        validate_barrier_utc(value["barrier_utc"])
+        if (
+            type(value["transition_id"]) is not str
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value["transition_id"], re.ASCII)
+        ):
             _raise(ProtocolError, "PROCEED_INVALID")
         if not isinstance(value["grant"], str):
             _raise(ProtocolError, "PROCEED_INVALID")
@@ -472,12 +544,12 @@ def _validate_control(value: Any, expected_type: str) -> dict[str, Any]:
     elif expected_type == "ABORT":
         try:
             RunnerControlCode(value["code"])
-        except ValueError:
+        except (TypeError, ValueError):
             _raise(ProtocolError, "FRAME_INVALID")
     elif expected_type == "RESULT":
         try:
             ResultClassification(value["classification"])
-        except ValueError:
+        except (TypeError, ValueError):
             _raise(ProtocolError, "FRAME_INVALID")
         if not _is_commitment(value["result_commitment"]):
             _raise(ProtocolError, "FRAME_INVALID")
@@ -486,14 +558,14 @@ def _validate_control(value: Any, expected_type: str) -> dict[str, Any]:
 
 def encode_hello(n_remote: bytes) -> bytes:
     n_remote = _validate_nonce(n_remote, "n_remote", SESSION_NONCE_BYTES)
-    return HELLO_STRUCT.pack(HELLO_MAGIC, PROTOCOL_VERSION, HELLO_TYPE, n_remote)
+    return HELLO_STRUCT.pack(HELLO_MAGIC, PROTOCOL_VERSION, HELLO_TYPE, HELLO_FLAGS, n_remote)
 
 
 def decode_hello(payload: bytes) -> bytes:
     if not isinstance(payload, bytes) or len(payload) != HELLO_SIZE:
         _raise(ProtocolError, "HELLO_INVALID")
-    magic, version, kind, n_remote = HELLO_STRUCT.unpack(payload)
-    if magic != HELLO_MAGIC or version != PROTOCOL_VERSION or kind != HELLO_TYPE:
+    magic, version, kind, flags, n_remote = HELLO_STRUCT.unpack(payload)
+    if magic != HELLO_MAGIC or version != PROTOCOL_VERSION or kind != HELLO_TYPE or flags != HELLO_FLAGS:
         _raise(ProtocolError, "HELLO_INVALID")
     return _validate_nonce(n_remote, "n_remote", SESSION_NONCE_BYTES)
 
@@ -518,15 +590,31 @@ def encode_preamble(
         _validate_nonce(bundle_digest, "bundle_digest", 32),
         _validate_nonce(bootstrap_seed, "bootstrap_seed", 32),
     )
-    header = PREAMBLE_HEADER_STRUCT.pack(PREAMBLE_MAGIC, PROTOCOL_VERSION, PREAMBLE_TYPE, 0, PREAMBLE_BODY_SIZE)
+    header = PREAMBLE_HEADER_STRUCT.pack(
+        PREAMBLE_MAGIC,
+        PROTOCOL_VERSION,
+        PREAMBLE_TYPE,
+        FRAME_FLAGS,
+        PREAMBLE_BODY_SIZE,
+        0,
+    )
     return header + PREAMBLE_BODY_STRUCT.pack(*values)
 
 
 def decode_preamble(payload: bytes) -> dict[str, bytes]:
     if not isinstance(payload, bytes) or len(payload) != PREAMBLE_SIZE:
         _raise(ProtocolError, "PREAMBLE_INVALID")
-    magic, version, kind, flags, body_size = PREAMBLE_HEADER_STRUCT.unpack(payload[: PREAMBLE_HEADER_STRUCT.size])
-    if magic != PREAMBLE_MAGIC or version != PROTOCOL_VERSION or kind != PREAMBLE_TYPE or flags != 0 or body_size != PREAMBLE_BODY_SIZE:
+    magic, version, kind, flags, body_size, reserved = PREAMBLE_HEADER_STRUCT.unpack(
+        payload[: PREAMBLE_HEADER_STRUCT.size]
+    )
+    if (
+        magic != PREAMBLE_MAGIC
+        or version != PROTOCOL_VERSION
+        or kind != PREAMBLE_TYPE
+        or flags != FRAME_FLAGS
+        or body_size != PREAMBLE_BODY_SIZE
+        or reserved != 0
+    ):
         _raise(ProtocolError, "PREAMBLE_INVALID")
     raw = PREAMBLE_BODY_STRUCT.unpack(payload[PREAMBLE_HEADER_STRUCT.size :])
     values = dict(zip(PREAMBLE_FIELDS, raw))
@@ -537,39 +625,37 @@ def decode_preamble(payload: bytes) -> dict[str, bytes]:
 
 def encode_boot_payload(bundle: "RunnerBundle", barrier_utc: str) -> bytes:
     validate_barrier_utc(barrier_utc)
+    if not isinstance(bundle, RunnerBundle):
+        _raise(ProtocolError, "FRAME_INVALID")
+    validate_runner_bundle(bundle)
     source = bundle.source
-    digest = _bundle_digest_bytes(source)
-    return BOOT_HEADER_STRUCT.pack(
-        BOOT_MAGIC,
-        PROTOCOL_VERSION,
-        0,
-        0,
-        barrier_utc.encode("ascii", "strict"),
-        digest,
-        len(source),
-    ) + source
+    if type(source) is not bytes or not 1 <= len(source) <= MAX_RUNNER_BUNDLE_BYTES:
+        _raise(ProtocolError, "FRAME_INVALID")
+    return barrier_utc.encode("ascii", "strict") + source
 
 
-def decode_boot_payload(payload: bytes, *, expected_barrier: str, expected_digest: bytes) -> bytes:
-    if not isinstance(payload, bytes) or len(payload) < BOOT_HEADER_SIZE:
+def decode_boot_payload(
+    payload: bytes,
+    *,
+    expected_barrier: str | None = None,
+    expected_digest: bytes,
+) -> bytes:
+    if not isinstance(payload, bytes) or len(payload) <= BOOT_BARRIER_BYTES:
         _raise(ProtocolError, "FRAME_INVALID")
-    try:
-        magic, version, flags, reserved, barrier_bytes, digest, source_length = BOOT_HEADER_STRUCT.unpack(payload[:BOOT_HEADER_SIZE])
-    except struct.error:
+    if not isinstance(expected_digest, bytes) or len(expected_digest) != 32:
         _raise(ProtocolError, "FRAME_INVALID")
-    if magic != BOOT_MAGIC or version != 1 or flags != 0 or reserved != 0:
-        _raise(ProtocolError, "FRAME_INVALID")
+    barrier_bytes = payload[:BOOT_BARRIER_BYTES]
+    source = payload[BOOT_BARRIER_BYTES:]
     try:
         barrier = barrier_bytes.decode("ascii", "strict")
     except UnicodeDecodeError:
         _raise(ProtocolError, "FRAME_INVALID")
     validate_barrier_utc(barrier)
-    if barrier != expected_barrier or digest != expected_digest:
+    if expected_barrier is not None and barrier != expected_barrier:
         _raise(ProtocolError, "FRAME_INVALID")
-    if source_length <= 0 or source_length > MAX_RUNNER_BUNDLE_BYTES or len(payload) != BOOT_HEADER_SIZE + source_length:
+    if not 1 <= len(source) <= MAX_RUNNER_BUNDLE_BYTES:
         _raise(ProtocolError, "FRAME_INVALID")
-    source = payload[BOOT_HEADER_SIZE:]
-    if _bundle_digest_bytes(source) != digest:
+    if _bundle_digest_bytes(source) != expected_digest:
         _raise(ProtocolError, "FRAME_INVALID")
     return source
 
@@ -676,6 +762,7 @@ def decode_authenticated_frame(
         or len(frame) != AUTH_FRAME_OVERHEAD + payload_length
     ):
         _raise(ProtocolError, "FRAME_INVALID")
+    _validate_nonce(frame_nonce, "frame nonce", FRAME_NONCE_BYTES)
     payload_start = AUTH_FRAME_HEADER_STRUCT.size
     payload = frame[payload_start : payload_start + payload_length]
     if not hmac.compare_digest(frame[-AUTH_FRAME_TAG_SIZE:], _frame_auth(key, header, payload)):
@@ -684,63 +771,70 @@ def decode_authenticated_frame(
 
 
 def _bundle_digest_bytes(source: bytes) -> bytes:
-    return hashlib.sha256(LP("runner-bundle.v1", source)).digest()
+    if type(source) is not bytes:
+        _raise(BundleError, "BUNDLE_INVALID")
+    return _commitment_bytes(STORE.bytes_commitment("bridge-runner-bundle", source))
 
 
-def runner_bundle_commitment(source: bytes | str) -> str:
-    if isinstance(source, str):
-        source = source.encode("utf-8", "strict")
-    return "sha256:v1:" + _bundle_digest_bytes(source).hex()
+def runner_bundle_commitment(source: bytes) -> str:
+    if type(source) is not bytes:
+        _raise(BundleError, "BUNDLE_INVALID")
+    return STORE.bytes_commitment("bridge-runner-bundle", source)
 
 
-@dataclass(frozen=True, repr=False)
+@dataclass(frozen=True, slots=True, repr=False)
 class RunnerBundle:
-    source: bytes | str
-    expected_commitment: str | None = None
+    source: bytes
+    expected_commitment: str
 
     def __post_init__(self) -> None:
         source = self.source
-        if isinstance(source, str):
-            try:
-                source = source.encode("utf-8", "strict")
-            except UnicodeEncodeError:
-                _raise(BundleError, "BUNDLE_NOT_UTF8")
-        if not isinstance(source, bytes):
+        expected = self.expected_commitment
+        if type(source) is not bytes:
             _raise(BundleError, "BUNDLE_INVALID")
-        if not source or len(source) > MAX_RUNNER_BUNDLE_BYTES:
+        if not 1 <= len(source) <= MAX_RUNNER_BUNDLE_BYTES:
             _raise(BundleError, "BUNDLE_OVERSIZED" if len(source) > MAX_RUNNER_BUNDLE_BYTES else "BUNDLE_INVALID")
+        if source.startswith(b"\xef\xbb\xbf") or b"\x00" in source:
+            _raise(BundleError, "BUNDLE_INVALID")
         try:
             source.decode("utf-8", "strict")
         except UnicodeDecodeError:
             _raise(BundleError, "BUNDLE_NOT_UTF8")
-        if self.expected_commitment is not None and (
-            not _is_commitment(self.expected_commitment) or self.expected_commitment != runner_bundle_commitment(source)
-        ):
+        if type(expected) is not str or not _is_commitment(expected) or expected != runner_bundle_commitment(source):
             _raise(BundleError, "BUNDLE_COMMITMENT_MISMATCH")
-        object.__setattr__(self, "source", source)
 
     @property
     def commitment(self) -> str:
-        return runner_bundle_commitment(self.source)
+        return self.expected_commitment
 
     def __repr__(self) -> str:
-        return f"RunnerBundle(commitment={self.commitment!r}, bytes={len(self.source)})"
+        return f"RunnerBundle(commitment={self.expected_commitment!r}, bytes={len(self.source)})"
 
 
 def validate_runner_bundle(bundle: RunnerBundle) -> RunnerBundle:
     if not isinstance(bundle, RunnerBundle):
         _raise(BundleError, "BUNDLE_INVALID")
     try:
+        # This is the only local source operation. It compiles but never
+        # executes caller-supplied runner code.
         compile(bundle.source.decode("utf-8", "strict"), "<runner-bundle>", "exec", dont_inherit=True)
     except (SyntaxError, ValueError, TypeError, UnicodeDecodeError):
         _raise(BundleError, "BUNDLE_COMPILE_FAILED")
     return bundle
 
 
-def _derive_key(seed: bytes, domain: str, *parts: bytes) -> bytes:
-    # Sibling derivations intentionally all use the same bootstrap seed. In
-    # particular K_proceed is never derived from K_session.
-    return hmac.new(seed, LP("bridge-key.v1", domain, *parts), hashlib.sha256).digest()
+K_BRIDGE_ROOT_DOMAIN = "K_bridge_root.v1"
+K_BOOTSTRAP_SEED_DOMAIN = "K_bootstrap_seed.v1"
+K_SESSION_NONCE_DOMAIN = "N_session.v1"
+K_BOOT_DOMAIN = "K_boot.v1"
+K_SESSION_DOMAIN = "K_session.v1"
+K_PROCEED_DOMAIN = "K_proceed.v1"
+CAPABILITY_DOMAIN = "C_proceed.v1"
+
+
+def _derive_key(seed: bytes, domain: str, *parts: str | bytes) -> bytes:
+    _validate_key(seed, "key derivation seed")
+    return hmac.new(seed, LP(domain, *parts), hashlib.sha256).digest()
 
 
 def _session_transcript(
@@ -765,16 +859,56 @@ class BridgeKeyGraph:
     runner_digest: bytes = field(repr=False)
     bundle_digest: bytes = field(repr=False)
     bootstrap_seed: bytes = field(repr=False)
+    k_bridge_root: bytes | None = field(repr=False)
+    epoch_commitment: str = field(repr=False)
+    authority_commitment: str = field(repr=False)
+    runner_commitment: str = field(repr=False)
+    bundle_commitment: str = field(repr=False)
+    loader_commitment: str | None = field(repr=False)
+    barrier_utc: str | None = field(repr=False)
+    barrier_commitment: str | None = field(repr=False)
     k_boot: bytes = field(repr=False)
     k_session: bytes = field(repr=False)
     k_proceed: bytes = field(repr=False)
 
     def __repr__(self) -> str:
-        return "BridgeKeyGraph(session_bound=True, secrets=opaque)"
+        return "BridgeKeyGraph(session_bound=True, bindings=opaque, secrets=opaque)"
+
+    def with_barrier(self, barrier_utc: str) -> "BridgeKeyGraph":
+        return derive_key_graph_from_preamble(
+            {
+                "n_remote": self.n_remote,
+                "n_local": self.n_local,
+                "n_session": self.n_session,
+                "epoch_digest": self.epoch_digest,
+                "authority_digest": self.authority_digest,
+                "runner_digest": self.runner_digest,
+                "bundle_digest": self.bundle_digest,
+                "bootstrap_seed": self.bootstrap_seed,
+            },
+            barrier_utc=barrier_utc,
+            loader_commitment=self.loader_commitment,
+            record_commitment=self.epoch_commitment,
+            runner_commitment=self.runner_commitment,
+            authority_commitment=self.authority_commitment,
+            k_bridge_root=self.k_bridge_root,
+        )
 
 
-def derive_key_graph_from_preamble(preamble: Mapping[str, bytes]) -> BridgeKeyGraph:
-    values = {name: preamble[name] for name in PREAMBLE_FIELDS}
+def derive_key_graph_from_preamble(
+    preamble: Mapping[str, bytes],
+    *,
+    barrier_utc: str | None = None,
+    loader_commitment: str | None = None,
+    record_commitment: str | None = None,
+    runner_commitment: str | None = None,
+    authority_commitment: str | None = None,
+    k_bridge_root: bytes | None = None,
+) -> BridgeKeyGraph:
+    try:
+        values = {name: preamble[name] for name in PREAMBLE_FIELDS}
+    except (KeyError, TypeError):
+        _raise(ProtocolError, "PREAMBLE_INVALID")
     for name, value in values.items():
         _validate_nonce(value, name, 32)
     transcript = _session_transcript(
@@ -782,11 +916,74 @@ def derive_key_graph_from_preamble(preamble: Mapping[str, bytes]) -> BridgeKeyGr
         values["authority_digest"], values["runner_digest"], values["bundle_digest"],
     )
     seed = values["bootstrap_seed"]
+    expected_session_nonce = _derive_key(
+        seed,
+        K_SESSION_NONCE_DOMAIN,
+        values["n_remote"],
+        values["n_local"],
+        values["epoch_digest"],
+        values["authority_digest"],
+        values["runner_digest"],
+        values["bundle_digest"],
+    )
+    if not hmac.compare_digest(expected_session_nonce, values["n_session"]):
+        _raise(ProtocolError, "PREAMBLE_INVALID")
+    if barrier_utc is not None:
+        barrier_utc = _validate_canonical_barrier(barrier_utc)
+        barrier_commitment = STORE.bytes_commitment(
+            "bridge-barrier",
+            barrier_utc.encode("ascii", "strict"),
+        )
+        barrier_digest = _commitment_bytes(barrier_commitment)
+    else:
+        barrier_commitment = None
+        barrier_digest = b"\x00" * 32
+    epoch_commitment = (
+        _digest_commitment(values["epoch_digest"])
+        if record_commitment is None
+        else record_commitment
+    )
+    authority_commitment = (
+        _digest_commitment(values["authority_digest"])
+        if authority_commitment is None
+        else authority_commitment
+    )
+    runner_commitment = (
+        _digest_commitment(values["runner_digest"])
+        if runner_commitment is None
+        else runner_commitment
+    )
+    bundle_commitment = _digest_commitment(values["bundle_digest"])
+    loader_commitment = (
+        bridge_commitment("loader", "fixed-public-loader")
+        if loader_commitment is None
+        else loader_commitment
+    )
+    for commitment, digest in (
+        (epoch_commitment, values["epoch_digest"]),
+        (authority_commitment, values["authority_digest"]),
+        (runner_commitment, values["runner_digest"]),
+        (bundle_commitment, values["bundle_digest"]),
+    ):
+        if not _is_commitment(commitment) or _commitment_bytes(commitment) != digest:
+            _raise(ProtocolError, "PREAMBLE_INVALID")
+    if not _is_commitment(loader_commitment):
+        _raise(ProtocolError, "PREAMBLE_INVALID")
+    if k_bridge_root is not None:
+        _validate_key(k_bridge_root, "bridge root")
     return BridgeKeyGraph(
         **values,
-        k_boot=_derive_key(seed, "boot", *transcript),
-        k_session=_derive_key(seed, "session", *transcript),
-        k_proceed=_derive_key(seed, "proceed", *transcript),
+        k_bridge_root=k_bridge_root,
+        epoch_commitment=epoch_commitment,
+        authority_commitment=authority_commitment,
+        runner_commitment=runner_commitment,
+        bundle_commitment=bundle_commitment,
+        loader_commitment=loader_commitment,
+        barrier_utc=barrier_utc,
+        barrier_commitment=barrier_commitment,
+        k_boot=_derive_key(seed, K_BOOT_DOMAIN, *transcript),
+        k_session=_derive_key(seed, K_SESSION_DOMAIN, *transcript, barrier_digest),
+        k_proceed=_derive_key(seed, K_PROCEED_DOMAIN, *transcript, barrier_digest),
     )
 
 
@@ -800,6 +997,11 @@ def derive_local_key_graph(
     bundle: RunnerBundle,
     n_remote: bytes,
     n_local: bytes,
+    record_commitment: str | None = None,
+    loader_commitment: str | None = None,
+    barrier_utc: str | None = None,
+    runner_commitment: str | None = None,
+    authority_commitment: str | None = None,
 ) -> BridgeKeyGraph:
     validate_runner_bundle(bundle)
     try:
@@ -810,19 +1012,61 @@ def derive_local_key_graph(
         _raise(ProtocolError, "STORE_STATE_INVALID")
     n_remote = _validate_nonce(n_remote, "n_remote", 32)
     n_local = _validate_nonce(n_local, "n_local", 32)
-    epoch_digest = _bridge_digest("epoch", epoch_ref)
-    authority_digest = _bridge_digest("authority", authority_ref)
-    runner_digest = _bridge_digest("runner", runner_identity)
+    barrier_value = None if barrier_utc is None else _validate_canonical_barrier(barrier_utc)
+    barrier_wire = "" if barrier_value is None else barrier_value
+    record_commitment = record_commitment or bridge_commitment("record", epoch_ref, authority_ref)
+    loader_commitment = loader_commitment or bridge_commitment("loader", "fixed-public-loader")
+    runner_commitment = runner_commitment or bridge_commitment("runner", runner_identity)
+    authority_commitment = authority_commitment or bridge_commitment("authority", authority_ref)
+    for commitment in (record_commitment, loader_commitment, runner_commitment, authority_commitment):
+        if not _is_commitment(commitment):
+            _raise(ProtocolError, "STORE_STATE_INVALID")
+    epoch_digest = _commitment_bytes(record_commitment)
+    authority_digest = _commitment_bytes(authority_commitment)
+    runner_digest = _commitment_bytes(runner_commitment)
     bundle_digest = _bundle_digest_bytes(bundle.source)
-    seed = hmac.new(
+    barrier_commitment = STORE.bytes_commitment("bridge-barrier", barrier_wire.encode("ascii", "strict"))
+    root = hmac.new(
         spool_key,
         LP(
-            "bridge-bootstrap-seed.v1", salt, epoch_ref, authority_ref, n_remote, n_local,
-            epoch_digest, authority_digest, runner_digest, bundle_digest,
+            K_BRIDGE_ROOT_DOMAIN,
+            salt,
+            epoch_ref,
+            authority_ref,
+            record_commitment,
+            authority_commitment,
+            runner_commitment,
+            loader_commitment,
+            bundle.commitment,
+            barrier_commitment,
         ),
         hashlib.sha256,
     ).digest()
-    n_session = hmac.new(seed, LP("bridge-session-nonce.v1", n_remote, n_local), hashlib.sha256).digest()
+    seed = hmac.new(
+        root,
+        LP(
+            K_BOOTSTRAP_SEED_DOMAIN,
+            n_remote,
+            n_local,
+            epoch_digest,
+            authority_digest,
+            runner_digest,
+            bundle_digest,
+            _commitment_bytes(loader_commitment),
+            _commitment_bytes(barrier_commitment),
+        ),
+        hashlib.sha256,
+    ).digest()
+    n_session = _derive_key(
+        seed,
+        K_SESSION_NONCE_DOMAIN,
+        n_remote,
+        n_local,
+        epoch_digest,
+        authority_digest,
+        runner_digest,
+        bundle_digest,
+    )
     preamble = {
         "n_remote": n_remote,
         "n_local": n_local,
@@ -833,11 +1077,36 @@ def derive_local_key_graph(
         "bundle_digest": bundle_digest,
         "bootstrap_seed": seed,
     }
-    return derive_key_graph_from_preamble(preamble)
+    return derive_key_graph_from_preamble(
+        preamble,
+        barrier_utc=barrier_value,
+        loader_commitment=loader_commitment,
+        record_commitment=record_commitment,
+        runner_commitment=runner_commitment,
+        authority_commitment=authority_commitment,
+        k_bridge_root=root,
+    )
 
 
-def proceed_commitment(graph: BridgeKeyGraph, artifact_commitment: str, isolation_commitment: str) -> str:
-    if not _is_commitment(artifact_commitment) or not _is_commitment(isolation_commitment):
+def proceed_commitment(
+    graph: BridgeKeyGraph,
+    artifact_commitment: str,
+    isolation_commitment: str,
+    transition_id: str,
+    pre_cas_ledger_digest: str,
+    transition_data_commitment: str,
+    consumed_record_digest: str,
+) -> str:
+    if (
+        not _is_commitment(artifact_commitment)
+        or not _is_commitment(isolation_commitment)
+        or not _is_commitment(pre_cas_ledger_digest)
+        or not _is_commitment(transition_data_commitment)
+        or not _is_commitment(consumed_record_digest)
+        or type(transition_id) is not str
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", transition_id, re.ASCII)
+        or graph.barrier_utc is None
+    ):
         _raise(ProtocolError, "PROCEED_INVALID")
     return bridge_commitment(
         "proceed-capability",
@@ -845,13 +1114,24 @@ def proceed_commitment(graph: BridgeKeyGraph, artifact_commitment: str, isolatio
             graph.n_remote, graph.n_local, graph.n_session, graph.epoch_digest,
             graph.authority_digest, graph.runner_digest, graph.bundle_digest,
         ),
+        graph.barrier_utc,
+        graph.epoch_commitment,
+        graph.authority_commitment,
+        graph.runner_commitment,
+        graph.bundle_commitment,
+        graph.loader_commitment or "",
+        graph.barrier_commitment or "",
         artifact_commitment,
         isolation_commitment,
+        transition_id,
+        pre_cas_ledger_digest,
+        transition_data_commitment,
+        consumed_record_digest,
     )
 
 
 def _grant_token(graph: BridgeKeyGraph, capability_commitment: str) -> bytes:
-    return hmac.new(graph.k_proceed, LP("proceed-grant.v1", capability_commitment), hashlib.sha256).digest()
+    return hmac.new(graph.k_proceed, LP(CAPABILITY_DOMAIN, capability_commitment), hashlib.sha256).digest()
 
 
 class ProceedGrant:
@@ -1007,6 +1287,11 @@ class _ForbiddenTextStream(io.TextIOBase):
 
     def flush(self) -> None:
         raise RunnerControlError(self._code)
+
+    def close(self) -> None:
+        # TextIOBase finalization calls close while the temporary stream is
+        # being replaced.  Do not turn that bookkeeping into protocol stderr.
+        return None
 
     def read(self, _size: int = -1) -> str:
         raise RunnerControlError(self._code)
@@ -1181,25 +1466,743 @@ def _validate_run_callable(value: Any) -> None:
         _raise(RunnerControlError, RunnerControlCode.RUNNER_SIGNATURE_INVALID)
 
 
+def spawn_dummy_child() -> Any:
+    """Test-only local child; the operational API never selects this default."""
+
+    return _subprocess.Popen(
+        [sys.executable, str(pathlib.Path(__file__).resolve()), "--dummy-child"],
+        stdin=_subprocess.PIPE,
+        stdout=_subprocess.PIPE,
+        stderr=_subprocess.PIPE,
+        close_fds=True,
+        bufsize=0,
+        shell=False,
+    )
+
+
+def _transition_id(base: Mapping[str, Any]) -> str:
+    payload = STORE.canonical_json_bytes(
+        dict(base),
+        max_bytes=STORE.MAX_RESTORE_LEDGER_BYTES,
+    )
+    digest = _commitment_bytes(
+        STORE.bytes_commitment("bridge-restore-transition-id", payload)
+    ).hex()
+    return "bridge-restore-" + digest
+
+
+def build_restore_transition(
+    *,
+    epoch_ref: str,
+    authority_ref: str,
+    runner_commitment: str,
+    runner_bundle_commitment: str,
+    barrier_utc: str,
+    artifact_commitment: str,
+    isolation_commitment: str,
+    pre_cas_ledger_digest: str,
+) -> tuple[dict[str, Any], str, str]:
+    base = {
+        "schema": "bridge-restore-transition.v1",
+        "version": 1,
+        "epoch_ref": epoch_ref,
+        "authority_ref": authority_ref,
+        "runner_commitment": runner_commitment,
+        "runner_bundle_commitment": runner_bundle_commitment,
+        "barrier_utc": _validate_canonical_barrier(barrier_utc),
+        "artifact_commitment": artifact_commitment,
+        "isolation_commitment": isolation_commitment,
+        "pre_cas_ledger_digest": pre_cas_ledger_digest,
+    }
+    if any(
+        not _is_commitment(value)
+        for value in (
+            runner_commitment,
+            runner_bundle_commitment,
+            artifact_commitment,
+            isolation_commitment,
+            pre_cas_ledger_digest,
+        )
+    ):
+        _raise(ProtocolError, "STORE_TRANSITION_FAILED")
+    transition_id = _transition_id(base)
+    transition = dict(base)
+    transition["transition_id"] = transition_id
+    transition_commitment = _store_json_commitment(
+        "restore-ledger-transition",
+        transition,
+        max_bytes=STORE.MAX_RESTORE_LEDGER_BYTES,
+    )
+    return transition, transition_id, transition_commitment
+
+
+class ControllerBridge:
+    def __init__(
+        self,
+        store: Any,
+        epoch_ref: str,
+        barrier_utc: str,
+        runner_bundle: RunnerBundle,
+        *,
+        launcher: Callable[[], Any],
+        clock: Callable[[], float] = time.monotonic,
+        randomness: Callable[[int], bytes] = os.urandom,
+        counters: BridgeCounters | None = None,
+        timeout_seconds: float = WHOLE_SESSION_TIMEOUT_SECONDS,
+    ):
+        if not callable(launcher) or not callable(clock) or not callable(randomness):
+            raise TypeError("launcher, clock and randomness must be callable")
+        if type(timeout_seconds) not in (int, float) or timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
+        self.store = store
+        self.epoch_ref = epoch_ref
+        self.barrier_utc = _validate_canonical_barrier(barrier_utc)
+        self.runner_bundle = validate_runner_bundle(runner_bundle)
+        self.launcher = launcher
+        self.clock = clock
+        self.randomness = randomness
+        self.counters = counters or BridgeCounters()
+        self.timeout_seconds = float(timeout_seconds)
+        self._graph: BridgeKeyGraph | None = None
+        self._supervisor: ProcessSupervisor | None = None
+        self._next_sequence = 1
+        self._session_nonces: set[bytes] = set()
+        self._session_bytes = 0
+        self._terminal = False
+        self._abort_sent = False
+        self._proceed_sent = False
+        self._post_cas = False
+        self._finality_evidence: ProcessTerminalEvidence | None = None
+
+    def _load_initial_snapshot(self) -> STORE.V2EpochSnapshot:
+        try:
+            snapshot = self.store.load_epoch(self.epoch_ref)
+        except Exception:
+            _raise(BridgeError, "STORE_STATE_INVALID")
+        if not isinstance(snapshot, STORE.V2EpochSnapshot):
+            _raise(BridgeError, "STORE_STATE_INVALID")
+        if (
+            snapshot.record["state"] != "INITIALISED"
+            or snapshot.record["artifact_binding_state"] != "PENDING"
+            or snapshot.artifact_binding.artifact_binding_state != "PENDING"
+            or snapshot.ledger["state"] != "UNCONSUMED"
+            or snapshot.spool["state"] != "OPEN"
+            or snapshot.spool["last_stage"] != "NONE"
+        ):
+            _raise(BridgeError, "STORE_STATE_INVALID")
+        return snapshot
+
+    def _random_bytes(self, size: int) -> bytes:
+        try:
+            value = self.randomness(size)
+            return _validate_nonce(value, "randomness", size)
+        except Exception:
+            _raise(BridgeError, "PROTOCOL_FAILURE")
+        raise AssertionError("unreachable")
+
+    def _phase_deadline(self, outer_deadline: float, seconds: float) -> float:
+        return min(outer_deadline, self.clock() + seconds)
+
+    def _track_frame(self, frame: AuthenticatedFrame) -> None:
+        if frame.frame_nonce in self._session_nonces:
+            _raise(BridgeError, "PROTOCOL_FAILURE")
+        if len(self._session_nonces) >= MAX_SESSION_FRAMES:
+            _raise(BridgeError, "PROTOCOL_FAILURE")
+        new_bytes = self._session_bytes + AUTH_FRAME_OVERHEAD + len(frame.payload)
+        if new_bytes > MAX_SESSION_BYTES:
+            _raise(BridgeError, "PROTOCOL_FAILURE")
+        self._session_nonces.add(frame.frame_nonce)
+        self._session_bytes = new_bytes
+
+    def _new_frame_nonce(self) -> bytes:
+        value = self._random_bytes(FRAME_NONCE_BYTES)
+        if value in self._session_nonces:
+            _raise(BridgeError, "PROTOCOL_FAILURE")
+        return value
+
+    def _send(
+        self,
+        key: bytes,
+        direction: int,
+        message: int,
+        payload: bytes,
+        deadline: float,
+    ) -> None:
+        if self._terminal:
+            _raise(BridgeError, "PROTOCOL_FAILURE")
+        assert self._supervisor is not None and self._graph is not None
+        nonce = self._new_frame_nonce()
+        frame = encode_authenticated_frame(
+            key,
+            direction,
+            message,
+            self._next_sequence,
+            self._graph.n_session,
+            payload,
+            frame_nonce=nonce,
+        )
+        self._supervisor.write_all(frame, deadline)
+        self._track_frame(
+            AuthenticatedFrame(
+                direction,
+                message,
+                self._next_sequence,
+                self._graph.n_session,
+                nonce,
+                payload,
+            )
+        )
+        self._next_sequence += 1
+
+    def _receive(self, key: bytes, direction: int, deadline: float) -> AuthenticatedFrame:
+        if self._terminal:
+            _raise(BridgeError, "PROTOCOL_FAILURE")
+        assert self._supervisor is not None and self._graph is not None
+        header = self._supervisor.read_exact(AUTH_FRAME_HEADER_STRUCT.size, deadline)
+        try:
+            length = AUTH_FRAME_HEADER_STRUCT.unpack(header)[-1]
+        except struct.error:
+            _raise(BridgeError, "FRAME_INVALID")
+        if length > MAX_AUTH_PAYLOAD_BYTES:
+            _raise(BridgeError, "FRAME_INVALID")
+        raw = header + self._supervisor.read_exact(length + AUTH_FRAME_TAG_SIZE, deadline)
+        try:
+            frame = decode_authenticated_frame(
+                raw,
+                key,
+                expected_direction=direction,
+                expected_sequence=self._next_sequence,
+                expected_session_nonce=self._graph.n_session,
+            )
+        except BridgeError:
+            _raise(BridgeError, "FRAME_INVALID")
+        self._track_frame(frame)
+        self._next_sequence += 1
+        return frame
+
+    def _ingest_stage(self, stage: str, payload: Mapping[str, Any]) -> None:
+        try:
+            frame = self.store.prepare_runner_frame(self.epoch_ref, stage, dict(payload))
+            self.store.ingest_frame(self.epoch_ref, frame)
+        except Exception:
+            _raise(BridgeError, "STORE_TRANSITION_FAILED")
+
+    def _safe_abandon(self) -> None:
+        try:
+            snapshot = self.store.load_epoch(self.epoch_ref)
+            if snapshot.record["state"] not in getattr(
+                STORE,
+                "TERMINAL_EPOCH_STATES",
+                frozenset(),
+            ):
+                self.store.abandon(self.epoch_ref)
+        except Exception:
+            pass
+
+    def _projection(self) -> Mapping[str, Any] | None:
+        try:
+            return self.store.public_projection(self.epoch_ref)
+        except Exception:
+            return None
+
+    def _result(
+        self,
+        classification: str,
+        error_code: str | None,
+        *,
+        post_cas_uncertain: bool | None = None,
+    ) -> BridgeResult:
+        projection = self._projection()
+        state = projection["state"] if projection is not None else "UNKNOWN"
+        return BridgeResult(
+            classification,
+            state,
+            error_code,
+            projection,
+            self.counters,
+            self._post_cas if post_cas_uncertain is None else post_cas_uncertain,
+        )
+
+    def _close_and_collect(self, outer_deadline: float, *, expected_exit: int) -> str | None:
+        if self._supervisor is None:
+            return "PROCESS_TERMINATION_UNCERTAIN"
+        self._supervisor.close_stdin()
+        evidence = self._supervisor.await_natural(
+            self._phase_deadline(outer_deadline, RESULT_TIMEOUT_SECONDS)
+        )
+        self._finality_evidence = evidence
+        return ProcessSupervisor.finality_error(evidence, expected_exit=expected_exit)
+
+    def _send_abort_once(self, code: RunnerControlCode) -> None:
+        if self._abort_sent or self._terminal or self._graph is None:
+            return
+        try:
+            self._send(
+                self._graph.k_session,
+                DIRECTION_LOCAL_TO_REMOTE,
+                MESSAGE_ABORT,
+                encode_control({"type": "ABORT", "version": 1, "code": code.value}),
+                self.clock() + RESULT_TIMEOUT_SECONDS,
+            )
+        except BridgeError:
+            pass
+        self._abort_sent = True
+        self._terminal = True
+
+    def _assert_bound_reload(
+        self,
+        *,
+        row_id: int,
+        filename: str,
+        artifact_commitment: str,
+    ) -> STORE.V2EpochSnapshot:
+        try:
+            snapshot = self.store.load_epoch(self.epoch_ref)
+        except Exception:
+            _raise(BridgeError, "STORE_STATE_INVALID")
+        if not isinstance(snapshot, STORE.V2EpochSnapshot):
+            _raise(BridgeError, "STORE_STATE_INVALID")
+        binding = snapshot.artifact_binding
+        if not (
+            snapshot.record["state"] == "INITIALISED"
+            and snapshot.record["artifact_binding_state"] == "BOUND"
+            and binding.artifact_binding_state == "BOUND"
+            and binding.execution_row_id == str(row_id)
+            and binding.artifact_filename == filename
+            and binding.artifact_commitment == artifact_commitment
+            and snapshot.record["artifact_commitment"] == artifact_commitment
+            and snapshot.ledger["state"] == "UNCONSUMED"
+            and snapshot.spool["state"] == "OPEN"
+            and snapshot.spool["last_stage"] == "NONE"
+        ):
+            _raise(BridgeError, "STORE_STATE_INVALID")
+        return snapshot
+
+    def _assert_runner_started_reload(self) -> STORE.V2EpochSnapshot:
+        try:
+            snapshot = self.store.load_epoch(self.epoch_ref)
+        except Exception:
+            _raise(BridgeError, "STORE_STATE_INVALID")
+        if not (
+            isinstance(snapshot, STORE.V2EpochSnapshot)
+            and snapshot.record["state"] == "ACTIVE"
+            and snapshot.record["artifact_binding_state"] == "BOUND"
+            and snapshot.artifact_binding.artifact_binding_state == "BOUND"
+            and snapshot.ledger["state"] == "UNCONSUMED"
+            and snapshot.spool["state"] == "OPEN"
+            and snapshot.spool["last_stage"] == "RUNNER_STARTED"
+        ):
+            _raise(BridgeError, "STORE_STATE_INVALID")
+        return snapshot
+
+    def _assert_consumed_reload(
+        self,
+        *,
+        transition_id: str,
+        transition_commitment: str,
+    ) -> STORE.V2EpochSnapshot:
+        try:
+            snapshot = self.store.load_epoch(self.epoch_ref)
+        except Exception:
+            _raise(BridgeError, "POST_CAS_UNCERTAIN")
+        if not (
+            isinstance(snapshot, STORE.V2EpochSnapshot)
+            and snapshot.record["state"] == "ACTIVE"
+            and snapshot.record["artifact_binding_state"] == "BOUND"
+            and snapshot.artifact_binding.artifact_binding_state == "BOUND"
+            and snapshot.ledger["state"] == "CONSUMED"
+            and snapshot.ledger["transition_id"] == transition_id
+            and snapshot.ledger["transition_target"] == "RESTORE_STARTED"
+            and snapshot.ledger["transition_data_commitment"] == transition_commitment
+            and snapshot.spool["state"] == "OPEN"
+            and snapshot.spool["last_stage"] == "RUNNER_STARTED"
+        ):
+            _raise(BridgeError, "POST_CAS_UNCERTAIN")
+        return snapshot
+
+    def _should_proceed(self) -> bool:
+        return True
+
+    def _handle_remote_abort(
+        self,
+        frame: AuthenticatedFrame,
+        outer_deadline: float,
+    ) -> BridgeResult:
+        value = decode_control(frame.payload, "ABORT")
+        self._terminal = True
+        finality_error = self._close_and_collect(
+            outer_deadline,
+            expected_exit=EXIT_RUNNER_ABORT,
+        )
+        self._safe_abandon()
+        return self._result("FAILURE", finality_error or value["code"])
+
+    def _bind_and_consume(
+        self,
+        discovery: AuthenticatedFrame,
+        snapshot: STORE.V2EpochSnapshot,
+        outer_deadline: float,
+    ) -> tuple[str, str, str, str, str, str]:
+        value = decode_control(discovery.payload, "DISCOVERY")
+        self.counters.discovery_messages += 1
+        row_id, filename = _validate_discovery_tuple(
+            value["execution_row_id"],
+            value["artifact_filename"],
+        )
+        isolation_commitment = value["isolation_commitment"]
+        if value["isolation_state"] != "PASS" or not _is_commitment(isolation_commitment):
+            self._send_abort_once(RunnerControlCode.ISOLATION_FAILED)
+            self._close_and_collect(outer_deadline, expected_exit=EXIT_RUNNER_ABORT)
+            self._safe_abandon()
+            raise BridgeError("ISOLATION_FAILED")
+        expected_artifact = STORE.recovery_commitment(
+            "artifact-row",
+            str(row_id),
+            filename,
+        )
+        self.counters.bind_calls += 1
+        if self.counters.bind_calls != 1:
+            _raise(BridgeError, "STORE_TRANSITION_FAILED")
+        try:
+            actual_artifact = self.store.bind_artifact_v2(
+                self.epoch_ref,
+                row_id,
+                filename,
+            )
+        except Exception:
+            self._send_abort_once(RunnerControlCode.LOCAL_ABORT)
+            self._close_and_collect(outer_deadline, expected_exit=EXIT_RUNNER_ABORT)
+            self._safe_abandon()
+            raise BridgeError("LOCAL_ABORT")
+        if actual_artifact != expected_artifact:
+            self._send_abort_once(RunnerControlCode.LOCAL_ABORT)
+            self._close_and_collect(outer_deadline, expected_exit=EXIT_RUNNER_ABORT)
+            self._safe_abandon()
+            raise BridgeError("LOCAL_ABORT")
+        self._assert_bound_reload(
+            row_id=row_id,
+            filename=filename,
+            artifact_commitment=actual_artifact,
+        )
+        self.store.mark_ready(self.epoch_ref)
+        self._ingest_stage("EPOCH_READY", {"state": "READY"})
+        self.store.activate(self.epoch_ref)
+        self._ingest_stage("RUNNER_STARTED", {"state": "RUNNER_STARTED"})
+        started = self._assert_runner_started_reload()
+        pre_cas_ledger_digest = self.store.ledger_digest(self.epoch_ref)
+        transition, transition_id, transition_commitment = build_restore_transition(
+            epoch_ref=started.record["epoch_ref"],
+            authority_ref=started.record["authority_ref"],
+            runner_commitment=started.record["runner_commitment"],
+            runner_bundle_commitment=self.runner_bundle.commitment,
+            barrier_utc=self.barrier_utc,
+            artifact_commitment=actual_artifact,
+            isolation_commitment=isolation_commitment,
+            pre_cas_ledger_digest=pre_cas_ledger_digest,
+        )
+        try:
+            self.store.consume_restore(
+                self.epoch_ref,
+                transition_id,
+                expected_digest=pre_cas_ledger_digest,
+                data=transition,
+            )
+        except Exception:
+            _raise(BridgeError, "STORE_TRANSITION_FAILED")
+        self._post_cas = True
+        self._assert_consumed_reload(
+            transition_id=transition_id,
+            transition_commitment=transition_commitment,
+        )
+        self._ingest_stage(
+            "RESTORE_BEGIN",
+            {"ref": transition_id, "commitment": transition_commitment},
+        )
+        consumed_record_digest = self.store.record_digest(self.epoch_ref)
+        return (
+            actual_artifact,
+            isolation_commitment,
+            transition_id,
+            pre_cas_ledger_digest,
+            transition_commitment,
+            consumed_record_digest,
+        )
+
+    def _proceed_and_finalize(
+        self,
+        values: tuple[str, str, str, str, str, str],
+        outer_deadline: float,
+    ) -> BridgeResult:
+        (
+            actual_artifact,
+            isolation_commitment,
+            transition_id,
+            pre_cas_ledger_digest,
+            transition_commitment,
+            consumed_record_digest,
+        ) = values
+        assert self._graph is not None
+        capability = proceed_commitment(
+            self._graph,
+            actual_artifact,
+            isolation_commitment,
+            transition_id,
+            pre_cas_ledger_digest,
+            transition_commitment,
+            consumed_record_digest,
+        )
+        token = _grant_token(self._graph, capability)
+        proceed_payload = {
+            "type": "PROCEED",
+            "version": 1,
+            "epoch_digest": _digest_commitment(self._graph.epoch_digest),
+            "authority_digest": _digest_commitment(self._graph.authority_digest),
+            "runner_digest": _digest_commitment(self._graph.runner_digest),
+            "bundle_digest": _digest_commitment(self._graph.bundle_digest),
+            "barrier_utc": self.barrier_utc,
+            "artifact_commitment": actual_artifact,
+            "isolation_commitment": isolation_commitment,
+            "transition_id": transition_id,
+            "pre_cas_ledger_digest": pre_cas_ledger_digest,
+            "transition_data_commitment": transition_commitment,
+            "consumed_record_digest": consumed_record_digest,
+            "grant": base64.urlsafe_b64encode(token).decode("ascii").rstrip("="),
+        }
+        if not self._should_proceed():
+            self._send_abort_once(RunnerControlCode.LOCAL_ABORT)
+            self._close_and_collect(outer_deadline, expected_exit=EXIT_RUNNER_ABORT)
+            self._safe_abandon()
+            return self._result("FAILURE", "LOCAL_ABORT", post_cas_uncertain=True)
+        self._send(
+            self._graph.k_session,
+            DIRECTION_LOCAL_TO_REMOTE,
+            MESSAGE_PROCEED,
+            encode_control(proceed_payload),
+            self._phase_deadline(outer_deadline, PROCEED_TIMEOUT_SECONDS),
+        )
+        self._proceed_sent = True
+        self.counters.proceed_messages += 1
+        terminal = self._receive(
+            self._graph.k_session,
+            DIRECTION_REMOTE_TO_LOCAL,
+            self._phase_deadline(outer_deadline, RESULT_TIMEOUT_SECONDS),
+        )
+        self._terminal = True
+        if terminal.message == MESSAGE_ABORT:
+            abort_value = decode_control(terminal.payload, "ABORT")
+            self._close_and_collect(outer_deadline, expected_exit=EXIT_RUNNER_ABORT)
+            self._safe_abandon()
+            return self._result(
+                "FAILURE",
+                abort_value["code"],
+                post_cas_uncertain=True,
+            )
+        if terminal.message != MESSAGE_RESULT:
+            _raise(BridgeError, "FRAME_INVALID")
+        result_value = decode_control(terminal.payload, "RESULT")
+        self.counters.result_messages += 1
+        classification = ResultClassification(result_value["classification"])
+        finality_error = self._close_and_collect(
+            outer_deadline,
+            expected_exit=EXIT_SUCCESS,
+        )
+        if finality_error is not None:
+            self._safe_abandon()
+            return self._result(
+                "FAILURE",
+                finality_error,
+                post_cas_uncertain=True,
+            )
+        if classification is ResultClassification.FAILURE:
+            self._safe_abandon()
+            return self._result("FAILURE", None, post_cas_uncertain=False)
+        # A remote SUCCESS is evidence only.  The local canonical store is
+        # allowed to COMMIT only after process finality has passed.
+        self._ingest_stage(
+            "COMMIT",
+            {
+                "classification": ResultClassification.SUCCESS.value,
+                "commitment": result_value["result_commitment"],
+            },
+        )
+        return self._result("SUCCESS", None, post_cas_uncertain=False)
+
+    def run(self) -> BridgeResult:
+        outer_deadline = self.clock() + self.timeout_seconds
+        try:
+            snapshot = self._load_initial_snapshot()
+            process = self.launcher()
+            if process is None:
+                _raise(BridgeError, "PROTOCOL_FAILURE")
+            self._supervisor = ProcessSupervisor(process, clock=self.clock)
+            self._supervisor.start()
+            hello = decode_hello(
+                self._supervisor.read_exact(
+                    HELLO_SIZE,
+                    self._phase_deadline(outer_deadline, HELLO_TIMEOUT_SECONDS),
+                )
+            )
+            n_local = self._random_bytes(SESSION_NONCE_BYTES)
+            record_commitment = self.store.record_digest(self.epoch_ref)
+            authority_commitment = bridge_commitment(
+                "authority",
+                snapshot.record["authority_ref"],
+            )
+            self._graph = derive_local_key_graph(
+                spool_hmac_key=snapshot.private_identities["spool_hmac_key"],
+                salt=snapshot.private_identities["salt"],
+                epoch_ref=snapshot.record["epoch_ref"],
+                authority_ref=snapshot.record["authority_ref"],
+                runner_identity=snapshot.private_identities["runner_identity"],
+                bundle=self.runner_bundle,
+                n_remote=hello,
+                n_local=n_local,
+                record_commitment=record_commitment,
+                loader_commitment=fixed_loader_commitment(),
+                runner_commitment=snapshot.record["runner_commitment"],
+                authority_commitment=authority_commitment,
+                barrier_utc=self.barrier_utc,
+            )
+            self._supervisor.write_all(
+                encode_preamble(
+                    self._graph.n_remote,
+                    self._graph.n_local,
+                    self._graph.n_session,
+                    self._graph.epoch_digest,
+                    self._graph.authority_digest,
+                    self._graph.runner_digest,
+                    self._graph.bundle_digest,
+                    self._graph.bootstrap_seed,
+                ),
+                self._phase_deadline(outer_deadline, BOOT_TIMEOUT_SECONDS),
+            )
+            self._send(
+                self._graph.k_boot,
+                DIRECTION_LOCAL_TO_REMOTE,
+                MESSAGE_BOOT,
+                encode_boot_payload(self.runner_bundle, self.barrier_utc),
+                self._phase_deadline(outer_deadline, BOOT_TIMEOUT_SECONDS),
+            )
+            ready = self._receive(
+                self._graph.k_session,
+                DIRECTION_REMOTE_TO_LOCAL,
+                self._phase_deadline(outer_deadline, READY_TIMEOUT_SECONDS),
+            )
+            if ready.message == MESSAGE_ABORT:
+                return self._handle_remote_abort(ready, outer_deadline)
+            if ready.message != MESSAGE_READY:
+                _raise(BridgeError, "FRAME_INVALID")
+            ready_value = decode_control(ready.payload, "READY")
+            if ready_value["barrier_utc"] != self.barrier_utc:
+                _raise(BridgeError, "FRAME_INVALID")
+            discovery = self._receive(
+                self._graph.k_session,
+                DIRECTION_REMOTE_TO_LOCAL,
+                self._phase_deadline(outer_deadline, DISCOVERY_TIMEOUT_SECONDS),
+            )
+            if discovery.message == MESSAGE_ABORT:
+                return self._handle_remote_abort(discovery, outer_deadline)
+            if discovery.message != MESSAGE_DISCOVERY:
+                _raise(BridgeError, "FRAME_INVALID")
+            lifecycle_values = self._bind_and_consume(
+                discovery,
+                snapshot,
+                outer_deadline,
+            )
+            return self._proceed_and_finalize(lifecycle_values, outer_deadline)
+        except BridgeError as error:
+            if not self._post_cas and self._graph is not None and not self._terminal:
+                self._send_abort_once(RunnerControlCode.LOCAL_ABORT)
+            self._safe_abandon()
+            return self._result(
+                "FAILURE",
+                error.code,
+                post_cas_uncertain=self._post_cas,
+            )
+        except Exception:
+            if not self._post_cas and self._graph is not None and not self._terminal:
+                self._send_abort_once(RunnerControlCode.LOCAL_ABORT)
+            self._safe_abandon()
+            return self._result(
+                "FAILURE",
+                "PROTOCOL_FAILURE",
+                post_cas_uncertain=self._post_cas,
+            )
+        finally:
+            if self._supervisor is not None:
+                self._supervisor.stop()
+
+
+_Run318ControllerBridge = ControllerBridge
+
+
+class _DummyControllerBridge(ControllerBridge):
+    """Test-only decision injection kept outside the operational API."""
+
+    def __init__(self, *args: Any, decision: DummyDecision, **kwargs: Any):
+        super().__init__(*args, launcher=spawn_dummy_child, **kwargs)
+        self._test_decision = decision
+
+    def _should_proceed(self) -> bool:
+        return self._test_decision.proceed
+
+
+_Run318DummyControllerBridge = _DummyControllerBridge
+
+
+# Run-318 contract-final definitions
+
 class _RemoteChannel:
-    def __init__(self, reader: BinaryIO, writer: BinaryIO, graph: BridgeKeyGraph):
+    def __init__(
+        self,
+        reader: BinaryIO,
+        writer: BinaryIO,
+        graph: BridgeKeyGraph,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        randomness: Callable[[int], bytes] = os.urandom,
+    ):
         self.reader = reader
         self.writer = writer
         self.graph = graph
+        self._clock = clock
+        self._randomness = randomness
         self.sequence = 1
         self.bytes_seen = 0
+        self._frame_nonces: set[bytes] = set()
         self._read_lock = threading.Lock()
+
+    def _new_frame_nonce(self) -> bytes:
+        try:
+            value = self._randomness(FRAME_NONCE_BYTES)
+            _validate_nonce(value, "frame nonce", FRAME_NONCE_BYTES)
+        except Exception:
+            _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
+        if value in self._frame_nonces:
+            _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
+        return value
+
+    def _account_frame(self, frame: AuthenticatedFrame) -> None:
+        if frame.frame_nonce in self._frame_nonces:
+            _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
+        if len(self._frame_nonces) >= MAX_SESSION_FRAMES:
+            _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
+        new_total = self.bytes_seen + AUTH_FRAME_OVERHEAD + len(frame.payload)
+        if new_total > MAX_SESSION_BYTES:
+            _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
+        self._frame_nonces.add(frame.frame_nonce)
+        self.bytes_seen = new_total
 
     def _read_chunk_with_timeout(self, size: int, timeout: float | None) -> bytes:
         if timeout is None:
-            return self.reader.read(size)
+            return self.reader.read(size) or b""
         if timeout <= 0:
             _raise(RunnerControlError, RunnerControlCode.DECISION_TIMEOUT)
         result: queue.Queue[tuple[bytes | None, BaseException | None]] = queue.Queue(maxsize=1)
 
         def read_once() -> None:
             try:
-                result.put((self.reader.read(size), None))
+                result.put((self.reader.read(size) or b"", None))
             except BaseException as error:
                 result.put((None, error))
 
@@ -1215,9 +2218,9 @@ class _RemoteChannel:
 
     def _read_exact(self, size: int, *, timeout: float | None = None) -> bytes:
         chunks = bytearray()
-        deadline = None if timeout is None else time.monotonic() + timeout
+        deadline = None if timeout is None else self._clock() + timeout
         while len(chunks) < size:
-            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            remaining = None if deadline is None else max(0.0, deadline - self._clock())
             chunk = self._read_chunk_with_timeout(size - len(chunks), remaining)
             if not chunk:
                 _raise(RunnerControlError, RunnerControlCode.DECISION_EOF)
@@ -1227,66 +2230,79 @@ class _RemoteChannel:
     def _read_frame(self, key: bytes, direction: int, timeout: float | None = None) -> AuthenticatedFrame:
         with self._read_lock:
             header = self._read_exact(AUTH_FRAME_HEADER_STRUCT.size, timeout=timeout)
-        try:
-            values = AUTH_FRAME_HEADER_STRUCT.unpack(header)
-        except struct.error:
-            _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
-        length = values[-1]
-        if length > MAX_AUTH_PAYLOAD_BYTES:
-            _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
-        raw = header + self._read_exact(length + AUTH_FRAME_TAG_SIZE, timeout=timeout)
+            try:
+                length = AUTH_FRAME_HEADER_STRUCT.unpack(header)[-1]
+            except struct.error:
+                _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
+            if length > MAX_AUTH_PAYLOAD_BYTES:
+                _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
+            raw = header + self._read_exact(length + AUTH_FRAME_TAG_SIZE, timeout=timeout)
         try:
             frame = decode_authenticated_frame(
-                raw, key, expected_direction=direction, expected_sequence=self.sequence,
+                raw,
+                key,
+                expected_direction=direction,
+                expected_sequence=self.sequence,
                 expected_session_nonce=self.graph.n_session,
             )
         except BridgeError:
             _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
+        self._account_frame(frame)
         self.sequence += 1
-        self.bytes_seen += len(raw)
-        if self.bytes_seen > MAX_SESSION_BYTES:
-            _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
         return frame
 
     def send(self, key: bytes, direction: int, message: int, payload: bytes) -> None:
-        frame = encode_authenticated_frame(key, direction, message, self.sequence, self.graph.n_session, payload)
+        frame_nonce = self._new_frame_nonce()
+        frame = encode_authenticated_frame(
+            key,
+            direction,
+            message,
+            self.sequence,
+            self.graph.n_session,
+            payload,
+            frame_nonce=frame_nonce,
+        )
+        if self.bytes_seen + len(frame) > MAX_SESSION_BYTES or len(self._frame_nonces) >= MAX_SESSION_FRAMES:
+            _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
         try:
             self.writer.write(frame)
             self.writer.flush()
-        except (BrokenPipeError, OSError):
+        except (BrokenPipeError, OSError, ValueError):
             _raise(RunnerControlError, RunnerControlCode.PROTOCOL_BROKEN_PIPE)
-        self.sequence += 1
+        self._frame_nonces.add(frame_nonce)
         self.bytes_seen += len(frame)
-        if self.bytes_seen > MAX_SESSION_BYTES:
-            _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
+        self.sequence += 1
 
     def receive(self, key: bytes, direction: int, *, timeout: float | None = None) -> AuthenticatedFrame:
         return self._read_frame(key, direction, timeout=timeout)
 
 
 class RunnerRuntime:
-    """Exact capability surface visible to ``run(runtime)``."""
+    """The only public capability surface visible to run(runtime)."""
 
-    INITIAL = "INITIAL"
-    RUNNING = "RUNNING"
-    WAITING_DECISION = "WAITING_DECISION"
-    PROCEED_GRANTED = "PROCEED_GRANTED"
-    RESULT_SENT = "RESULT_SENT"
-    TERMINAL = "TERMINAL"
+    _INITIAL = "INITIAL"
+    _RUNNING = "RUNNING"
+    _WAITING_DECISION = "WAITING_DECISION"
+    _PROCEED_GRANTED = "PROCEED_GRANTED"
+    _RESULT_SENT = "RESULT_SENT"
+    _TERMINAL = "TERMINAL"
 
-    def __init__(self, channel: _RemoteChannel, barrier_utc: str, *, decision_timeout: float = 5.0):
+    def __init__(
+        self,
+        channel: _RemoteChannel,
+        barrier_utc: str,
+        *,
+        decision_timeout: float = PROCEED_TIMEOUT_SECONDS,
+    ):
         self._channel = channel
         self._barrier_utc = _validate_canonical_barrier(barrier_utc)
         self._decision_timeout = decision_timeout
-        self._state = self.INITIAL
-        self._owner_marker = object()
-        self._grant_records: dict[int, tuple[ProceedGrant, bytes, str, str]] = {}
+        self._state = self._INITIAL
+        self._grant_records: dict[int, tuple[ProceedGrant, str]] = {}
         self._terminal_frame_sent = False
         self._discovery_sent = False
-
-    @property
-    def state(self) -> str:
-        return self._state
+        self._pending_artifact: str | None = None
+        self._pending_isolation: str | None = None
 
     @property
     def barrier_utc(self) -> str:
@@ -1302,39 +2318,56 @@ class RunnerRuntime:
             encode_control({"type": "ABORT", "version": 1, "code": code.value}),
         )
         self._terminal_frame_sent = True
-        self._state = self.TERMINAL
+        self._state = self._TERMINAL
 
-    def send_discovery(self, execution_row_id: int, artifact_filename: str, isolation_state: str, isolation_commitment: str) -> None:
+    def discover(
+        self,
+        execution_row_id: int,
+        artifact_filename: str,
+        isolation_state: str,
+        isolation_commitment: str,
+    ) -> ProceedGrant:
         if self._discovery_sent:
             _raise(RunnerControlError, RunnerControlCode.DISCOVERY_DUPLICATE)
-        if self._state not in (self.INITIAL, self.RUNNING):
+        if self._state != self._RUNNING:
             _raise(RunnerControlError, RunnerControlCode.RUNTIME_TERMINAL)
         try:
-            execution_row_id, artifact_filename = _validate_discovery_tuple(execution_row_id, artifact_filename)
+            execution_row_id, artifact_filename = _validate_discovery_tuple(
+                execution_row_id,
+                artifact_filename,
+            )
         except BridgeError:
             _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
         if isolation_state != "PASS" or not _is_commitment(isolation_commitment):
-            _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
-        payload = encode_control(
-            {
-                "type": "DISCOVERY",
-                "version": 1,
-                "execution_row_id": execution_row_id,
-                "artifact_filename": artifact_filename,
-                "isolation_state": isolation_state,
-                "isolation_commitment": isolation_commitment,
-            }
+            _raise(RunnerControlError, RunnerControlCode.ISOLATION_FAILED)
+        artifact_commitment = STORE.recovery_commitment(
+            "artifact-row",
+            str(execution_row_id),
+            artifact_filename,
         )
         try:
-            self._channel.send(self._channel.graph.k_session, DIRECTION_REMOTE_TO_LOCAL, MESSAGE_DISCOVERY, payload)
-        except (BrokenPipeError, OSError):
-            _raise(RunnerControlError, RunnerControlCode.PROTOCOL_BROKEN_PIPE)
+            self._channel.send(
+                self._channel.graph.k_session,
+                DIRECTION_REMOTE_TO_LOCAL,
+                MESSAGE_DISCOVERY,
+                encode_control(
+                    {
+                        "type": "DISCOVERY",
+                        "version": 1,
+                        "execution_row_id": execution_row_id,
+                        "artifact_filename": artifact_filename,
+                        "isolation_state": "PASS",
+                        "isolation_commitment": isolation_commitment,
+                    }
+                ),
+            )
+        except RunnerControlError:
+            self._state = self._TERMINAL
+            raise
         self._discovery_sent = True
-        self._state = self.WAITING_DECISION
-
-    def wait_for_decision(self) -> ProceedGrant:
-        if not self._discovery_sent or self._state != self.WAITING_DECISION:
-            _raise(RunnerControlError, RunnerControlCode.RUNTIME_TERMINAL)
+        self._pending_artifact = artifact_commitment
+        self._pending_isolation = isolation_commitment
+        self._state = self._WAITING_DECISION
         try:
             frame = self._channel.receive(
                 self._channel.graph.k_session,
@@ -1342,39 +2375,77 @@ class RunnerRuntime:
                 timeout=self._decision_timeout,
             )
         except RunnerControlError:
+            self._state = self._TERMINAL
             raise
-        except (BrokenPipeError, OSError):
+        except (BrokenPipeError, OSError, ValueError):
+            self._state = self._TERMINAL
             _raise(RunnerControlError, RunnerControlCode.DECISION_BROKEN_PIPE)
-        except TimeoutError:
-            _raise(RunnerControlError, RunnerControlCode.DECISION_TIMEOUT)
         if frame.message == MESSAGE_ABORT:
-            value = decode_control(frame.payload, "ABORT")
-            code = RunnerControlCode(value["code"])
+            try:
+                value = decode_control(frame.payload, "ABORT")
+                code = RunnerControlCode(value["code"])
+            except (BridgeError, TypeError, ValueError):
+                self._state = self._TERMINAL
+                _raise(RunnerControlError, RunnerControlCode.PROCEED_INVALID)
             self._terminal_frame_sent = True
-            self._state = self.TERMINAL
+            self._state = self._TERMINAL
             raise RunnerControlError(code)
         if frame.message != MESSAGE_PROCEED:
+            self._state = self._TERMINAL
             _raise(RunnerControlError, RunnerControlCode.PROCEED_INVALID)
-        value = decode_control(frame.payload, "PROCEED")
-        capability = proceed_commitment(self._channel.graph, value["artifact_commitment"], value["isolation_commitment"])
-        raw_token = base64.urlsafe_b64decode(value["grant"] + "===")
-        if not hmac.compare_digest(raw_token, _grant_token(self._channel.graph, capability)):
+        try:
+            value = decode_control(frame.payload, "PROCEED")
+            expected = {
+                "epoch_digest": _digest_commitment(self._channel.graph.epoch_digest),
+                "authority_digest": _digest_commitment(self._channel.graph.authority_digest),
+                "runner_digest": _digest_commitment(self._channel.graph.runner_digest),
+                "bundle_digest": _digest_commitment(self._channel.graph.bundle_digest),
+                "barrier_utc": self._barrier_utc,
+                "artifact_commitment": self._pending_artifact,
+                "isolation_commitment": self._pending_isolation,
+            }
+            for name, expected_value in expected.items():
+                if value[name] != expected_value:
+                    _raise(RunnerControlError, RunnerControlCode.PROCEED_INVALID)
+            capability = proceed_commitment(
+                self._channel.graph,
+                value["artifact_commitment"],
+                value["isolation_commitment"],
+                value["transition_id"],
+                value["pre_cas_ledger_digest"],
+                value["transition_data_commitment"],
+                value["consumed_record_digest"],
+            )
+            raw_token = base64.urlsafe_b64decode(value["grant"] + "===")
+            if not hmac.compare_digest(raw_token, _grant_token(self._channel.graph, capability)):
+                _raise(RunnerControlError, RunnerControlCode.PROCEED_INVALID)
+        except RunnerControlError:
+            self._state = self._TERMINAL
+            raise
+        except (BridgeError, TypeError, ValueError, binascii.Error):
+            self._state = self._TERMINAL
             _raise(RunnerControlError, RunnerControlCode.PROCEED_INVALID)
         grant = ProceedGrant(ProceedGrant._SEAL)
-        self._grant_records[id(grant)] = (grant, raw_token, value["artifact_commitment"], value["isolation_commitment"])
-        self._state = self.PROCEED_GRANTED
+        self._grant_records[id(grant)] = (grant, capability)
+        self._state = self._PROCEED_GRANTED
         return grant
 
-    def send_result(self, grant: ProceedGrant, classification: ResultClassification | str, result_commitment: str) -> None:
-        if self._state == self.RESULT_SENT:
+    def send_result(
+        self,
+        grant: ProceedGrant,
+        classification: ResultClassification | str,
+        result_commitment: str,
+    ) -> None:
+        if self._state == self._RESULT_SENT:
             _raise(RunnerControlError, RunnerControlCode.RESULT_DUPLICATE)
-        if self._state != self.PROCEED_GRANTED:
+        if self._state != self._PROCEED_GRANTED:
             _raise(RunnerControlError, RunnerControlCode.RESULT_BEFORE_PROCEED)
-        if type(grant) is not ProceedGrant or id(grant) not in self._grant_records or self._grant_records[id(grant)][0] is not grant:
+        record = self._grant_records.get(id(grant))
+        if type(grant) is not ProceedGrant or record is None or record[0] is not grant:
             _raise(RunnerControlError, RunnerControlCode.PROCEED_INVALID)
         try:
             classification = ResultClassification(classification)
-        except (ValueError, TypeError):
+        except (TypeError, ValueError):
             _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
         if not _is_commitment(result_commitment):
             _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
@@ -1384,30 +2455,50 @@ class RunnerRuntime:
                 self._channel.graph.k_session,
                 DIRECTION_REMOTE_TO_LOCAL,
                 MESSAGE_RESULT,
-                encode_control({"type": "RESULT", "version": 1, "classification": classification.value, "result_commitment": result_commitment}),
+                encode_control(
+                    {
+                        "type": "RESULT",
+                        "version": 1,
+                        "classification": classification.value,
+                        "result_commitment": result_commitment,
+                    }
+                ),
             )
-        except (BrokenPipeError, OSError):
-            _raise(RunnerControlError, RunnerControlCode.PROTOCOL_BROKEN_PIPE)
+        except RunnerControlError:
+            self._state = self._TERMINAL
+            raise
         self._terminal_frame_sent = True
-        self._state = self.RESULT_SENT
+        self._state = self._RESULT_SENT
 
     def abort(self, code: RunnerAbortCode) -> None:
         if not isinstance(code, RunnerAbortCode):
             raise TypeError("RunnerRuntime.abort accepts RunnerAbortCode")
-        if self._terminal_frame_sent:
+        if self._state == self._TERMINAL or self._terminal_frame_sent:
             _raise(RunnerControlError, RunnerControlCode.RUNTIME_TERMINAL)
         control = RunnerControlCode(code.value)
         self._send_abort(control)
         raise RunnerControlError(control)
 
 
-class RemoteLoader:
-    """Fixed loader state machine used by the local dummy child."""
+# Run-318 contract-final definitions continue below.
 
-    def __init__(self, reader: BinaryIO, writer: BinaryIO, *, capture_fds: bool = False):
+class RemoteLoader:
+    """Fixed loader state machine used by the local-only dummy child."""
+
+    def __init__(
+        self,
+        reader: BinaryIO,
+        writer: BinaryIO,
+        *,
+        capture_fds: bool = False,
+        clock: Callable[[], float] = time.monotonic,
+        randomness: Callable[[int], bytes] = os.urandom,
+    ):
         self._raw_reader = reader
         self._raw_writer = writer
         self._capture_fds = capture_fds
+        self._clock = clock
+        self._randomness = randomness
         self._protocol_reader = reader
         self._protocol_writer = writer
         self._owned_streams: list[BinaryIO] = []
@@ -1422,10 +2513,36 @@ class RemoteLoader:
                 _raise(ProtocolError, "PROTOCOL_FAILURE")
         self._terminal_sent = False
 
-    def _read_exact(self, size: int) -> bytes:
+    def _read_chunk_with_timeout(self, size: int, timeout: float | None) -> bytes:
+        if timeout is None:
+            return self._protocol_reader.read(size) or b""
+        if timeout <= 0:
+            _raise(ProtocolError, "PROCESS_TIMEOUT")
+        result: queue.Queue[tuple[bytes | None, BaseException | None]] = queue.Queue(maxsize=1)
+
+        def read_once() -> None:
+            try:
+                result.put((self._protocol_reader.read(size) or b"", None))
+            except BaseException as error:
+                result.put((None, error))
+
+        thread = threading.Thread(target=read_once, daemon=True)
+        thread.start()
+        try:
+            chunk, error = result.get(timeout=timeout)
+        except queue.Empty:
+            _raise(ProtocolError, "PROCESS_TIMEOUT")
+        if error is not None:
+            raise error
+        return chunk or b""
+
+    def _read_exact(self, size: int, deadline: float) -> bytes:
         payload = bytearray()
         while len(payload) < size:
-            chunk = self._protocol_reader.read(size - len(payload))
+            remaining = deadline - self._clock()
+            if remaining <= 0:
+                _raise(ProtocolError, "PROCESS_TIMEOUT")
+            chunk = self._read_chunk_with_timeout(size - len(payload), remaining)
             if not chunk:
                 _raise(ProtocolError, "PROCESS_EOF")
             payload.extend(chunk)
@@ -1435,7 +2552,7 @@ class RemoteLoader:
         try:
             self._protocol_writer.write(payload)
             self._protocol_writer.flush()
-        except (BrokenPipeError, OSError):
+        except (BrokenPipeError, OSError, ValueError):
             _raise(ProtocolError, "PROTOCOL_BROKEN_PIPE")
 
     def _send_abort(self, channel: _RemoteChannel, code: RunnerControlCode) -> None:
@@ -1453,29 +2570,72 @@ class RemoteLoader:
         self._terminal_sent = True
 
     def run(self) -> int:
-        n_remote = os.urandom(32)
-        self._send_raw(encode_hello(n_remote))
         channel: _RemoteChannel | None = None
+        runtime: RunnerRuntime | None = None
+        pending_error: RunnerControlError | None = None
         try:
-            preamble = decode_preamble(self._read_exact(PREAMBLE_SIZE))
+            try:
+                n_remote = self._randomness(SESSION_NONCE_BYTES)
+                _validate_nonce(n_remote, "n_remote", SESSION_NONCE_BYTES)
+            except Exception:
+                return EXIT_PROTOCOL_FAILURE
+            self._send_raw(encode_hello(n_remote))
+            overall_deadline = self._clock() + WHOLE_SESSION_TIMEOUT_SECONDS
+            preamble = decode_preamble(
+                self._read_exact(
+                    PREAMBLE_SIZE,
+                    min(overall_deadline, self._clock() + HELLO_TIMEOUT_SECONDS),
+                )
+            )
+            if preamble["n_remote"] != n_remote:
+                _raise(ProtocolError, "HELLO_INVALID")
             graph = derive_key_graph_from_preamble(preamble)
-            channel = _RemoteChannel(self._protocol_reader, self._protocol_writer, graph)
-            boot_frame = channel.receive(graph.k_boot, DIRECTION_LOCAL_TO_REMOTE)
-            if boot_frame.message != MESSAGE_BOOT:
+            channel = _RemoteChannel(
+                self._protocol_reader,
+                self._protocol_writer,
+                graph,
+                clock=self._clock,
+                randomness=self._randomness,
+            )
+            boot = channel.receive(
+                graph.k_boot,
+                DIRECTION_LOCAL_TO_REMOTE,
+                timeout=max(
+                    0.0,
+                    min(overall_deadline, self._clock() + BOOT_TIMEOUT_SECONDS)
+                    - self._clock(),
+                ),
+            )
+            if boot.message != MESSAGE_BOOT:
                 _raise(ProtocolError, "FRAME_INVALID")
-            barrier = self._extract_barrier(boot_frame.payload)
-            source = decode_boot_payload(boot_frame.payload, expected_barrier=barrier, expected_digest=graph.bundle_digest)
-            bundle = RunnerBundle(source, expected_commitment="sha256:v1:" + graph.bundle_digest.hex())
+            barrier = self._extract_barrier(boot.payload)
+            source = decode_boot_payload(
+                boot.payload,
+                expected_barrier=barrier,
+                expected_digest=graph.bundle_digest,
+            )
+            bundle = RunnerBundle(
+                source,
+                expected_commitment=_digest_commitment(graph.bundle_digest),
+            )
             validate_runner_bundle(bundle)
+            graph = graph.with_barrier(barrier)
+            channel.graph = graph
             runtime = RunnerRuntime(channel, barrier)
             namespace = _runner_namespace()
-            pending_error: RunnerControlError | None = None
             try:
                 with runner_stdio_isolation(capture_fds=self._capture_fds):
                     try:
-                        # BOOT authentication and commitment verification completed
-                        # before this source execution.
-                        exec(compile(source.decode("utf-8", "strict"), "<runner-bundle>", "exec", dont_inherit=True), namespace, namespace)
+                        exec(
+                            compile(
+                                source.decode("utf-8", "strict"),
+                                "<runner-bundle>",
+                                "exec",
+                                dont_inherit=True,
+                            ),
+                            namespace,
+                            namespace,
+                        )
                         if "run" not in namespace:
                             _raise(RunnerControlError, RunnerControlCode.RUNNER_MISSING)
                         _validate_run_callable(namespace["run"])
@@ -1483,27 +2643,42 @@ class RemoteLoader:
                             graph.k_session,
                             DIRECTION_REMOTE_TO_LOCAL,
                             MESSAGE_READY,
-                            encode_control({"type": "READY", "version": 1, "barrier_utc": runtime.barrier_utc}),
+                            encode_control(
+                                {
+                                    "type": "READY",
+                                    "version": 1,
+                                    "barrier_utc": runtime.barrier_utc,
+                                }
+                            ),
                         )
-                        runtime._state = RunnerRuntime.RUNNING
+                        runtime._state = runtime._RUNNING
                         returned = namespace["run"](runtime)
-                        if runtime._state == RunnerRuntime.RESULT_SENT:
+                        if runtime._state == runtime._RESULT_SENT:
                             if returned is not None:
-                                _raise(RunnerControlError, RunnerControlCode.RUNNER_NON_NONE_RETURN)
-                            self._terminal_sent = True
-                        elif runtime._state != RunnerRuntime.TERMINAL:
-                            _raise(RunnerControlError, RunnerControlCode.RUNNER_NO_RESULT if returned is None else RunnerControlCode.RUNNER_NON_NONE_RETURN)
+                                _raise(
+                                    RunnerControlError,
+                                    RunnerControlCode.RUNNER_NON_NONE_RETURN,
+                                )
+                        elif runtime._state != runtime._TERMINAL:
+                            _raise(
+                                RunnerControlError,
+                                RunnerControlCode.RUNNER_NO_RESULT
+                                if returned is None
+                                else RunnerControlCode.RUNNER_NON_NONE_RETURN,
+                            )
                     except RunnerControlError as error:
                         pending_error = error
                     except BaseException:
-                        pending_error = RunnerControlError(RunnerControlCode.RUNNER_TOP_LEVEL_EXCEPTION)
+                        pending_error = RunnerControlError(
+                            RunnerControlCode.RUNNER_TOP_LEVEL_EXCEPTION
+                        )
             except RunnerControlError as error:
                 pending_error = error
             if pending_error is not None:
-                if not runtime._terminal_frame_sent:
+                if runtime is not None and not runtime._terminal_frame_sent:
                     self._send_abort(channel, pending_error.code)
                 return EXIT_RUNNER_ABORT
-            return EXIT_SUCCESS if self._terminal_sent or runtime._state == RunnerRuntime.RESULT_SENT else EXIT_RUNNER_ABORT
+            return EXIT_SUCCESS if runtime._state == runtime._RESULT_SENT else EXIT_RUNNER_ABORT
         except RunnerControlError as error:
             if channel is not None and not self._terminal_sent:
                 self._send_abort(channel, error.code)
@@ -1521,23 +2696,19 @@ class RemoteLoader:
 
     @staticmethod
     def _extract_barrier(payload: bytes) -> str:
-        if len(payload) < BOOT_HEADER_SIZE:
+        if not isinstance(payload, bytes) or len(payload) <= BOOT_BARRIER_BYTES:
             _raise(ProtocolError, "FRAME_INVALID")
         try:
-            barrier = BOOT_HEADER_STRUCT.unpack(payload[:BOOT_HEADER_SIZE])[4].decode("ascii", "strict")
-        except (struct.error, UnicodeDecodeError):
+            barrier = payload[:BOOT_BARRIER_BYTES].decode("ascii", "strict")
+        except UnicodeDecodeError:
             _raise(ProtocolError, "FRAME_INVALID")
         return _validate_canonical_barrier(barrier)
 
 
-# A fixed loader is public source only. It contains no private store values,
-# runner bytes, paths, credentials, keys, or transport target. It is an
-# in-memory entrypoint that the bridge module can embed; the dummy child uses
-# the same RemoteLoader directly. A future live authority may use the fixed
-# command only under its own separately authorised launch wrapper.
 FIXED_LOADER_SOURCE = (
-    "def fixed_loader_entrypoint(reader, writer):\n"
-    "    return RemoteLoader(reader, writer, capture_fds=True).run()\n"
+    "import sys\n"
+    "from platform_recovery_controller_bridge import RemoteLoader\n"
+    "raise SystemExit(RemoteLoader(sys.stdin.buffer, sys.stdout.buffer, capture_fds=True).run())\n"
 )
 FIXED_LOADER_MAX_BYTES = 4096
 
@@ -1546,15 +2717,42 @@ def build_fixed_loader_source() -> bytes:
     source = FIXED_LOADER_SOURCE.encode("ascii", "strict")
     if len(source) > FIXED_LOADER_MAX_BYTES:
         _raise(ProtocolError, "FRAME_INVALID")
+    compile(source.decode("ascii"), "<fixed-loader>", "exec", dont_inherit=True)
     return source
 
 
+def fixed_loader_commitment() -> str:
+    return bridge_commitment("loader", "fixed-public-loader")
+
+
 def build_fixed_loader_command() -> tuple[str, str, str]:
-    return (sys.executable, str(pathlib.Path(__file__).resolve()), "--dummy-child")
+    return ("python3", "-c", FIXED_LOADER_SOURCE)
 
 
-# ---------------------------------------------------------------------------
-# Windows-safe local process supervision and controller/store integration
+@dataclass(frozen=True, slots=True, repr=False)
+class ProcessTerminalEvidence:
+    exit_code: int | None
+    natural_exit: bool
+    stdout_eof: bool
+    stderr_eof: bool
+    stdout_trailing_bytes: int
+    stderr_bytes: int
+    stdout_overflow: bool
+    stderr_overflow: bool
+    termination_uncertain: bool
+
+    def __repr__(self) -> str:
+        return (
+            "ProcessTerminalEvidence("
+            f"exit_code={self.exit_code!r}, natural_exit={self.natural_exit!r}, "
+            f"stdout_eof={self.stdout_eof!r}, stderr_eof={self.stderr_eof!r}, "
+            f"stdout_trailing_bytes={self.stdout_trailing_bytes}, "
+            f"stderr_bytes={self.stderr_bytes}, "
+            f"stdout_overflow={self.stdout_overflow!r}, "
+            f"stderr_overflow={self.stderr_overflow!r}, "
+            f"termination_uncertain={self.termination_uncertain!r})"
+        )
+
 
 class _BoundedCapture:
     def __init__(self, limit: int):
@@ -1571,20 +2769,42 @@ class _BoundedCapture:
 
 
 class ProcessSupervisor:
-    """Dedicated reader threads + queue, safe for Windows anonymous pipes."""
+    """Windows-safe bounded reader-thread supervision for anonymous pipes."""
 
-    def __init__(self, process: Any, *, max_capture_bytes: int = 4096):
+    def __init__(
+        self,
+        process: Any,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        max_stdout_bytes: int = MAX_SESSION_BYTES,
+        max_stderr_bytes: int = MAX_STDERR_CAPTURE_BYTES,
+    ):
         self.process = process
-        self.stdout_queue: queue.Queue[tuple[str, bytes | None]] = queue.Queue(maxsize=32)
-        self.stderr_capture = _BoundedCapture(max_capture_bytes)
+        self._clock = clock
+        self._max_stdout_bytes = max_stdout_bytes
+        self.stdout_queue: queue.Queue[tuple[str, bytes | None]] = queue.Queue(maxsize=64)
+        self.stderr_capture = _BoundedCapture(max_stderr_bytes)
+        self.stdout_bytes_seen = 0
+        self.stdout_overflow = False
         self.stderr_done = threading.Event()
         self.stdout_done = threading.Event()
         self._stdout_buffer = bytearray()
         self._threads: list[threading.Thread] = []
+        self._started = False
 
     def start(self) -> None:
-        for name, stream, done in (("stdout", self.process.stdout, self.stdout_done), ("stderr", self.process.stderr, self.stderr_done)):
-            thread = threading.Thread(target=self._reader, args=(name, stream, done), daemon=True)
+        if self._started:
+            return
+        self._started = True
+        for name, stream, done in (
+            ("stdout", self.process.stdout, self.stdout_done),
+            ("stderr", self.process.stderr, self.stderr_done),
+        ):
+            thread = threading.Thread(
+                target=self._reader,
+                args=(name, stream, done),
+                daemon=True,
+            )
             thread.start()
             self._threads.append(thread)
 
@@ -1593,34 +2813,34 @@ class ProcessSupervisor:
             while True:
                 chunk = stream.read(4096)
                 if not chunk:
-                    if name == "stdout":
-                        self.stdout_queue.put((name, None))
                     return
                 if name == "stderr":
                     self.stderr_capture.add(chunk)
-                else:
-                    self.stdout_queue.put((name, chunk))
-        except (OSError, ValueError):
-            if name == "stdout":
+                    continue
+                self.stdout_bytes_seen += len(chunk)
+                if self.stdout_bytes_seen > self._max_stdout_bytes:
+                    self.stdout_overflow = True
                 try:
-                    self.stdout_queue.put((name, None))
-                except Exception:
-                    pass
+                    self.stdout_queue.put((name, chunk), timeout=0.05)
+                except queue.Full:
+                    self.stdout_overflow = True
+        except (OSError, ValueError):
+            return
         finally:
             done.set()
 
     def read_exact(self, size: int, deadline: float) -> bytes:
         while len(self._stdout_buffer) < size:
-            remaining = deadline - time.monotonic()
+            if self.stdout_overflow:
+                _raise(BridgeError, "PROCESS_CAPTURE_OVERFLOW")
+            remaining = deadline - self._clock()
             if remaining <= 0:
                 _raise(BridgeError, "PROCESS_TIMEOUT")
             try:
-                name, chunk = self.stdout_queue.get(timeout=min(remaining, 0.25))
+                _name, chunk = self.stdout_queue.get(timeout=min(remaining, 0.05))
             except queue.Empty:
-                if self.process.poll() is not None and self.stdout_done.is_set():
+                if self.stdout_done.is_set():
                     _raise(BridgeError, "PROCESS_EOF")
-                continue
-            if name != "stdout":
                 continue
             if chunk is None:
                 _raise(BridgeError, "PROCESS_EOF")
@@ -1634,7 +2854,7 @@ class ProcessSupervisor:
             _raise(BridgeError, "PROTOCOL_FAILURE")
         written = 0
         while written < len(payload):
-            if time.monotonic() >= deadline:
+            if self._clock() >= deadline:
                 _raise(BridgeError, "PROCESS_TIMEOUT")
             try:
                 count = self.process.stdin.write(payload[written:])
@@ -1648,17 +2868,97 @@ class ProcessSupervisor:
         except (BrokenPipeError, OSError, ValueError):
             _raise(BridgeError, "PROTOCOL_BROKEN_PIPE")
 
+    def close_stdin(self) -> None:
+        stream = getattr(self.process, "stdin", None)
+        if stream is None:
+            return
+        try:
+            stream.close()
+        except (BrokenPipeError, OSError, ValueError):
+            pass
+
+    def _drain_stdout_queue(self) -> int:
+        trailing = len(self._stdout_buffer)
+        self._stdout_buffer.clear()
+        while True:
+            try:
+                _name, chunk = self.stdout_queue.get_nowait()
+            except queue.Empty:
+                return trailing
+            if chunk:
+                trailing += len(chunk)
+
+    def await_natural(self, deadline: float) -> ProcessTerminalEvidence:
+        wait_completed = False
+        exit_code: int | None = None
+        remaining = max(0.0, deadline - self._clock())
+        try:
+            exit_code = self.process.wait(timeout=remaining)
+            wait_completed = True
+        except (_subprocess.TimeoutExpired, TimeoutError, OSError, ValueError):
+            wait_completed = False
+        if exit_code is None:
+            try:
+                candidate = getattr(self.process, "returncode", None)
+                if isinstance(candidate, int):
+                    exit_code = candidate
+            except Exception:
+                pass
+        threads_done = True
+        for thread in self._threads:
+            remaining = max(0.0, deadline - self._clock())
+            thread.join(timeout=remaining)
+            if thread.is_alive():
+                threads_done = False
+        trailing = self._drain_stdout_queue()
+        termination_uncertain = not wait_completed or not threads_done or exit_code is None
+        return ProcessTerminalEvidence(
+            exit_code=exit_code,
+            natural_exit=wait_completed and not termination_uncertain,
+            stdout_eof=self.stdout_done.is_set(),
+            stderr_eof=self.stderr_done.is_set(),
+            stdout_trailing_bytes=trailing,
+            stderr_bytes=self.stderr_capture.data_seen,
+            stdout_overflow=self.stdout_overflow,
+            stderr_overflow=self.stderr_capture.overflow,
+            termination_uncertain=termination_uncertain,
+        )
+
+    @staticmethod
+    def finality_error(
+        evidence: ProcessTerminalEvidence,
+        *,
+        expected_exit: int = EXIT_SUCCESS,
+    ) -> str | None:
+        if evidence.stdout_overflow or evidence.stderr_overflow:
+            return "PROCESS_CAPTURE_OVERFLOW"
+        if evidence.stdout_trailing_bytes:
+            return "PROCESS_TRAILING_OUTPUT"
+        if not evidence.stdout_eof or not evidence.stderr_eof:
+            return "PROCESS_TERMINATION_UNCERTAIN"
+        if evidence.termination_uncertain or not evidence.natural_exit:
+            return "PROCESS_TERMINATION_UNCERTAIN"
+        if evidence.exit_code != expected_exit:
+            return "PROCESS_EXIT_NONZERO"
+        if evidence.stderr_bytes:
+            return "PROCESS_STDERR_FORBIDDEN"
+        return None
+
     def stop(self) -> None:
         try:
             if self.process.poll() is None:
                 self.process.terminate()
                 try:
                     self.process.wait(timeout=0.5)
-                except (_subprocess.TimeoutExpired, OSError):
+                except (_subprocess.TimeoutExpired, OSError, ValueError):
                     self.process.kill()
-        except (OSError, ValueError):
+        except (OSError, ValueError, AttributeError):
             pass
-        for stream in (getattr(self.process, "stdin", None), getattr(self.process, "stdout", None), getattr(self.process, "stderr", None)):
+        for stream in (
+            getattr(self.process, "stdin", None),
+            getattr(self.process, "stdout", None),
+            getattr(self.process, "stderr", None),
+        ):
             try:
                 if stream is not None:
                     stream.close()
@@ -1668,254 +2968,10 @@ class ProcessSupervisor:
             thread.join(timeout=1.0)
 
 
-def spawn_dummy_child() -> Any:
-    """Spawn only the repository-local synthetic loader; never SSH."""
-
-    return _subprocess.Popen(
-        [sys.executable, str(pathlib.Path(__file__).resolve()), "--dummy-child"],
-        stdin=_subprocess.PIPE,
-        stdout=_subprocess.PIPE,
-        stderr=_subprocess.PIPE,
-        close_fds=True,
-        bufsize=0,
-        shell=False,
-    )
-
-
-class ControllerBridge:
-    def __init__(
-        self,
-        store: Any,
-        epoch_ref: str,
-        barrier_utc: str,
-        runner_bundle: RunnerBundle,
-        *,
-        process_factory: Callable[[], Any] | None = None,
-        decision: DummyDecision | None = None,
-        counters: BridgeCounters | None = None,
-        timeout_seconds: float = 5.0,
-    ):
-        self.store = store
-        self.epoch_ref = epoch_ref
-        self.barrier_utc = _validate_canonical_barrier(barrier_utc)
-        self.runner_bundle = validate_runner_bundle(runner_bundle)
-        self.process_factory = process_factory or spawn_dummy_child
-        self.decision = decision or DummyDecision.allow()
-        self.counters = counters or BridgeCounters()
-        self.timeout_seconds = timeout_seconds
-        self._graph: BridgeKeyGraph | None = None
-        self._supervisor: ProcessSupervisor | None = None
-        self._session_cursor = 1
-        self._post_cas = False
-
-    def _load_initial_snapshot(self) -> Any:
-        try:
-            snapshot = self.store.load_epoch(self.epoch_ref)
-        except Exception:
-            _raise(BridgeError, "STORE_STATE_INVALID")
-        if not isinstance(snapshot, STORE.V2EpochSnapshot):
-            _raise(BridgeError, "STORE_STATE_INVALID")
-        if (
-            snapshot.record["state"] != "INITIALISED"
-            or snapshot.record["artifact_binding_state"] != "PENDING"
-            or snapshot.ledger["state"] != "UNCONSUMED"
-            or snapshot.spool["state"] != "OPEN"
-            or snapshot.spool["last_stage"] != "NONE"
-        ):
-            _raise(BridgeError, "STORE_STATE_INVALID")
-        return snapshot
-
-    def _send(self, key: bytes, direction: int, message: int, payload: bytes, deadline: float) -> None:
-        assert self._supervisor is not None and self._graph is not None
-        frame = encode_authenticated_frame(key, direction, message, self._session_cursor, self._graph.n_session, payload)
-        self._supervisor.write_all(frame, deadline)
-        self._session_cursor += 1
-
-    def _receive(self, key: bytes, direction: int, deadline: float) -> AuthenticatedFrame:
-        assert self._supervisor is not None and self._graph is not None
-        header = self._supervisor.read_exact(AUTH_FRAME_HEADER_STRUCT.size, deadline)
-        try:
-            length = AUTH_FRAME_HEADER_STRUCT.unpack(header)[-1]
-        except struct.error:
-            _raise(BridgeError, "FRAME_INVALID")
-        if length > MAX_AUTH_PAYLOAD_BYTES:
-            _raise(BridgeError, "FRAME_INVALID")
-        raw = header + self._supervisor.read_exact(length + AUTH_FRAME_TAG_SIZE, deadline)
-        frame = decode_authenticated_frame(
-            raw, key, expected_direction=direction, expected_sequence=self._session_cursor,
-            expected_session_nonce=self._graph.n_session,
-        )
-        self._session_cursor += 1
-        return frame
-
-    def _ingest_stage(self, stage: str, payload: Mapping[str, Any]) -> None:
-        try:
-            frame = self.store.prepare_runner_frame(self.epoch_ref, stage, dict(payload))
-            self.store.ingest_frame(self.epoch_ref, frame)
-        except Exception:
-            _raise(BridgeError, "STORE_TRANSITION_FAILED")
-
-    def _abandon(self) -> None:
-        try:
-            snapshot = self.store.load_epoch(self.epoch_ref)
-            if snapshot.record["state"] not in getattr(STORE, "TERMINAL_EPOCH_STATES", frozenset()):
-                self.store.abandon(self.epoch_ref)
-        except Exception:
-            pass
-
-    def _projection(self) -> Mapping[str, Any] | None:
-        try:
-            return self.store.public_projection(self.epoch_ref)
-        except Exception:
-            return None
-
-    def run(self) -> BridgeResult:
-        snapshot = self._load_initial_snapshot()
-        try:
-            process = self.process_factory()
-            self._supervisor = ProcessSupervisor(process)
-            self._supervisor.start()
-            deadline = time.monotonic() + self.timeout_seconds
-            hello = decode_hello(self._supervisor.read_exact(HELLO_SIZE, deadline))
-            n_local = os.urandom(32)
-            self._graph = derive_local_key_graph(
-                spool_hmac_key=snapshot.private_identities["spool_hmac_key"],
-                salt=snapshot.private_identities["salt"],
-                epoch_ref=snapshot.record["epoch_ref"],
-                authority_ref=snapshot.record["authority_ref"],
-                runner_identity=snapshot.private_identities["runner_identity"],
-                bundle=self.runner_bundle,
-                n_remote=hello,
-                n_local=n_local,
-            )
-            self._supervisor.write_all(
-                encode_preamble(
-                    self._graph.n_remote, self._graph.n_local, self._graph.n_session,
-                    self._graph.epoch_digest, self._graph.authority_digest,
-                    self._graph.runner_digest, self._graph.bundle_digest,
-                    self._graph.bootstrap_seed,
-                ),
-                deadline,
-            )
-            self._send(self._graph.k_boot, DIRECTION_LOCAL_TO_REMOTE, MESSAGE_BOOT, encode_boot_payload(self.runner_bundle, self.barrier_utc), deadline)
-            ready = self._receive(self._graph.k_session, DIRECTION_REMOTE_TO_LOCAL, deadline)
-            if ready.message != MESSAGE_READY:
-                if ready.message == MESSAGE_ABORT:
-                    value = decode_control(ready.payload, "ABORT")
-                    self._abandon()
-                    return BridgeResult("ABANDONED", "ABANDONED", value["code"], self._projection(), self.counters)
-                _raise(BridgeError, "FRAME_INVALID")
-            ready_value = decode_control(ready.payload, "READY")
-            if ready_value["barrier_utc"] != self.barrier_utc:
-                _raise(BridgeError, "FRAME_INVALID")
-            discovery = self._receive(self._graph.k_session, DIRECTION_REMOTE_TO_LOCAL, deadline)
-            if discovery.message == MESSAGE_ABORT:
-                value = decode_control(discovery.payload, "ABORT")
-                self._abandon()
-                return BridgeResult("ABANDONED", "ABANDONED", value["code"], self._projection(), self.counters)
-            if discovery.message != MESSAGE_DISCOVERY:
-                _raise(BridgeError, "FRAME_INVALID")
-            value = decode_control(discovery.payload, "DISCOVERY")
-            self.counters.discovery_messages += 1
-            row_id, filename = _validate_discovery_tuple(value["execution_row_id"], value["artifact_filename"])
-            isolation_commitment = value["isolation_commitment"]
-            if value["isolation_state"] != "PASS" or not _is_commitment(isolation_commitment):
-                _raise(BridgeError, "DISCOVERY_INVALID")
-
-            # The only canonical artifact-binding mutation. All tuple checks
-            # happen above, before this call.
-            expected_artifact = STORE.recovery_commitment("artifact-row", str(row_id), filename)
-            self.counters.bind_calls += 1
-            if self.counters.bind_calls > 1:
-                _raise(BridgeError, "STORE_TRANSITION_FAILED")
-            actual_artifact = self.store.bind_artifact_v2(self.epoch_ref, row_id, filename)
-            if actual_artifact != expected_artifact:
-                _raise(BridgeError, "STORE_TRANSITION_FAILED")
-            self.store.mark_ready(self.epoch_ref)
-            self._ingest_stage("EPOCH_READY", {"state": "READY"})
-            self.store.activate(self.epoch_ref)
-            self._ingest_stage("RUNNER_STARTED", {"state": "RUNNER_STARTED"})
-
-            cas_data = {
-                "artifact_commitment": actual_artifact,
-                "isolation_commitment": isolation_commitment,
-                "runner_bundle_commitment": self.runner_bundle.commitment,
-            }
-            try:
-                expected_ledger_digest = self.store.ledger_digest(self.epoch_ref)
-                self.store.consume_restore(
-                    self.epoch_ref,
-                    "bridge-restore-" + uuid.uuid4().hex,
-                    expected_digest=expected_ledger_digest,
-                    data=cas_data,
-                )
-            except Exception:
-                _raise(BridgeError, "STORE_TRANSITION_FAILED")
-            self._post_cas = True
-            consumed = self.store.load_epoch(self.epoch_ref)
-            if consumed.ledger["state"] != "CONSUMED":
-                _raise(BridgeError, "POST_CAS_UNCERTAIN")
-            self._ingest_stage(
-                "RESTORE_BEGIN",
-                {"commitment": bridge_commitment("restore-begin", actual_artifact, isolation_commitment)},
-            )
-
-            if self.decision.proceed:
-                capability = proceed_commitment(self._graph, actual_artifact, isolation_commitment)
-                token = _grant_token(self._graph, capability)
-                self._send(
-                    self._graph.k_session,
-                    DIRECTION_LOCAL_TO_REMOTE,
-                    MESSAGE_PROCEED,
-                    encode_control(
-                        {
-                            "type": "PROCEED",
-                            "version": 1,
-                            "artifact_commitment": actual_artifact,
-                            "isolation_commitment": isolation_commitment,
-                            "grant": base64.urlsafe_b64encode(token).decode("ascii").rstrip("="),
-                        }
-                    ),
-                    deadline,
-                )
-                self.counters.proceed_messages += 1
-                terminal = self._receive(self._graph.k_session, DIRECTION_REMOTE_TO_LOCAL, deadline)
-                if terminal.message == MESSAGE_ABORT:
-                    abort_value = decode_control(terminal.payload, "ABORT")
-                    self._abandon()
-                    return BridgeResult("ABANDONED", "ABANDONED", abort_value["code"], self._projection(), self.counters, True)
-                if terminal.message != MESSAGE_RESULT:
-                    _raise(BridgeError, "FRAME_INVALID")
-                result_value = decode_control(terminal.payload, "RESULT")
-                self.counters.result_messages += 1
-                classification = ResultClassification(result_value["classification"])
-                if classification is ResultClassification.COMMITTED:
-                    self._ingest_stage("COMMIT", {"classification": classification.value, "commitment": result_value["result_commitment"]})
-                else:
-                    self._abandon()
-                final = self._projection()
-                final_state = final["state"] if final is not None else classification.value
-                return BridgeResult(classification.value, final_state, None, final, self.counters)
-
-            abort_code = self.decision.abort_code or RunnerControlCode.LOCAL_ABORT
-            self._send(
-                self._graph.k_session,
-                DIRECTION_LOCAL_TO_REMOTE,
-                MESSAGE_ABORT,
-                encode_control({"type": "ABORT", "version": 1, "code": abort_code.value}),
-                deadline,
-            )
-            self._abandon()
-            return BridgeResult("ABANDONED", "ABANDONED", abort_code.value, self._projection(), self.counters, True)
-        except BridgeError as error:
-            self._abandon()
-            return BridgeResult("ABANDONED", "ABANDONED", error.code, self._projection(), self.counters, self._post_cas)
-        except Exception:
-            self._abandon()
-            return BridgeResult("ABANDONED", "ABANDONED", "PROTOCOL_FAILURE", self._projection(), self.counters, self._post_cas)
-        finally:
-            if self._supervisor is not None:
-                self._supervisor.stop()
+# Final exported order: the operational bridge is the corrected Run-318
+# controller, and all public entrypoints follow the final supervisor.
+ControllerBridge = _Run318ControllerBridge
+_DummyControllerBridge = _Run318DummyControllerBridge
 
 
 def run_controller_bridge(
@@ -1924,18 +2980,48 @@ def run_controller_bridge(
     barrier_utc: str,
     runner_bundle: RunnerBundle,
     *,
-    process_factory: Callable[[], Any] | None = None,
-    decision: DummyDecision | None = None,
+    launcher: Callable[[], Any],
+    clock: Callable[[], float] = time.monotonic,
+    randomness: Callable[[int], bytes] = os.urandom,
     counters: BridgeCounters | None = None,
-    timeout_seconds: float = 5.0,
+    timeout_seconds: float = WHOLE_SESSION_TIMEOUT_SECONDS,
 ) -> BridgeResult:
     return ControllerBridge(
         store,
         epoch_ref,
         barrier_utc,
         runner_bundle,
-        process_factory=process_factory,
-        decision=decision,
+        launcher=launcher,
+        clock=clock,
+        randomness=randomness,
+        counters=counters,
+        timeout_seconds=timeout_seconds,
+    ).run()
+
+
+def run_dummy_controller_bridge(
+    store: Any,
+    epoch_ref: str,
+    barrier_utc: str,
+    runner_bundle: RunnerBundle,
+    *,
+    decision: DummyDecision | None = None,
+    clock: Callable[[], float] = time.monotonic,
+    randomness: Callable[[int], bytes] = os.urandom,
+    counters: BridgeCounters | None = None,
+    timeout_seconds: float = WHOLE_SESSION_TIMEOUT_SECONDS,
+) -> BridgeResult:
+    chosen = decision or DummyDecision.allow()
+    if not isinstance(chosen, DummyDecision):
+        raise TypeError("decision must be DummyDecision")
+    return _DummyControllerBridge(
+        store,
+        epoch_ref,
+        barrier_utc,
+        runner_bundle,
+        decision=chosen,
+        clock=clock,
+        randomness=randomness,
         counters=counters,
         timeout_seconds=timeout_seconds,
     ).run()
