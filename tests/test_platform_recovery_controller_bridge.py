@@ -8,6 +8,8 @@ import io
 import json
 import os
 import pathlib
+import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -707,6 +709,91 @@ class ContractTests(BridgeTestCase):
         self.assertNotIn(b"--dummy-child", source)
         for private_value in PRIVATE_V2.values():
             self.assertNotIn(private_value.encode(), source)
+
+    def test_fixed_loader_clean_interpreter_is_source_bound_and_standalone(self):
+        payload = BRIDGE.CANONICAL_LOADER_PAYLOAD_BYTES
+        compile(payload.decode("ascii"), "<canonical-fixed-loader>", "exec", dont_inherit=True)
+        self.assertEqual(
+            BRIDGE.fixed_loader_commitment(),
+            BRIDGE.STORE.bytes_commitment("bridge-loader", payload),
+        )
+        mutated = payload[:-1] + bytes((payload[-1] ^ 1,))
+        self.assertNotEqual(
+            BRIDGE.fixed_loader_commitment(),
+            BRIDGE.STORE.bytes_commitment("bridge-loader", mutated),
+        )
+        for forbidden in (
+            b"platform_recovery_controller_bridge",
+            b"platform_recovery_controller_store",
+            b"platform_persisted_locator_adapter",
+            b"--dummy-child",
+            b"paramiko",
+            b"socket",
+            b"ssh",
+        ):
+            self.assertNotIn(forbidden, payload)
+            self.assertNotIn(forbidden, BRIDGE.build_fixed_loader_source())
+
+        command = BRIDGE.build_fixed_loader_command()
+        interpreter = shutil.which(command[0])
+        if interpreter is None or (
+            os.name == "nt"
+            and pathlib.Path(interpreter).parent.name.casefold() == "windowsapps"
+        ):
+            if os.name != "nt":
+                self.skipTest("python3 is not available on PATH")
+            interpreter = sys.executable
+        child_command = [interpreter, *command[1:]]
+        child_holder = {}
+        with tempfile.TemporaryDirectory(prefix="run319-clean-interpreter-") as empty:
+            empty_path = pathlib.Path(empty)
+            environment = dict(os.environ)
+            for name in (
+                "PYTHONHOME",
+                "PYTHONINSPECT",
+                "PYTHONPATH",
+                "PYTHONSTARTUP",
+                "PYTHONUSERBASE",
+            ):
+                environment.pop(name, None)
+            environment["PYTHONNOUSERSITE"] = "1"
+
+            def launcher():
+                process = subprocess.Popen(
+                    child_command,
+                    cwd=empty_path,
+                    env=environment,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    close_fds=True,
+                    bufsize=0,
+                    shell=False,
+                )
+                child_holder["process"] = process
+                return process
+
+            store = self.new_store("epoch-bridge-run319-clean-001")
+            result = BRIDGE.run_controller_bridge(
+                store,
+                "epoch-bridge-run319-clean-001",
+                BARRIER_UTC,
+                bundle(valid_runner_source()),
+                launcher=launcher,
+                timeout_seconds=8.0,
+            )
+            self.assertEqual(result.classification, "SUCCESS")
+            self.assertEqual(result.error_code, None)
+            self.assertEqual(result.counters.ssh_launches, 0)
+            self.assertEqual(result.counters.network_connections, 0)
+            self.assertEqual(result.counters.provider_calls, 0)
+            self.assertEqual(result.counters.backup_calls, 0)
+            self.assertEqual(result.counters.restore_attempts, 0)
+            self.assertEqual(result.counters.discovery_messages, 1)
+            self.assertEqual(result.counters.proceed_messages, 1)
+            self.assertEqual(result.counters.result_messages, 1)
+            self.assertEqual(child_holder["process"].returncode, BRIDGE.EXIT_SUCCESS)
+            self.assertEqual(tuple(empty_path.iterdir()), ())
 
     def test_operational_entrypoint_requires_caller_launcher_and_local_compile_only(self):
         controller_parameters = inspect.signature(BRIDGE.ControllerBridge).parameters

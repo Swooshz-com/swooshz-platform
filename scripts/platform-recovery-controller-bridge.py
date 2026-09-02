@@ -24,6 +24,7 @@ import importlib.util
 import inspect
 import io
 import json
+import lzma
 import os
 import pathlib
 import queue
@@ -955,7 +956,7 @@ def derive_key_graph_from_preamble(
     )
     bundle_commitment = _digest_commitment(values["bundle_digest"])
     loader_commitment = (
-        bridge_commitment("loader", "fixed-public-loader")
+        fixed_loader_commitment()
         if loader_commitment is None
         else loader_commitment
     )
@@ -1015,7 +1016,7 @@ def derive_local_key_graph(
     barrier_value = None if barrier_utc is None else _validate_canonical_barrier(barrier_utc)
     barrier_wire = "" if barrier_value is None else barrier_value
     record_commitment = record_commitment or bridge_commitment("record", epoch_ref, authority_ref)
-    loader_commitment = loader_commitment or bridge_commitment("loader", "fixed-public-loader")
+    loader_commitment = loader_commitment or fixed_loader_commitment()
     runner_commitment = runner_commitment or bridge_commitment("runner", runner_identity)
     authority_commitment = authority_commitment or bridge_commitment("authority", authority_ref)
     for commitment in (record_commitment, loader_commitment, runner_commitment, authority_commitment):
@@ -2703,14 +2704,24 @@ class RemoteLoader:
         except UnicodeDecodeError:
             _raise(ProtocolError, "FRAME_INVALID")
         return _validate_canonical_barrier(barrier)
-
-
-FIXED_LOADER_SOURCE = (
-    "import sys\n"
-    "from platform_recovery_controller_bridge import RemoteLoader\n"
-    "raise SystemExit(RemoteLoader(sys.stdin.buffer, sys.stdout.buffer, capture_fds=True).run())\n"
+_CANONICAL_LOADER_COMPRESSED = "T>t=p0RR90|NsC0{{S?bN@uuIJafwOWx8GH_92ly!q_WVJd&ajOcvkVg|WZnDW|>F*7r?_-DsrT$O`2ATKzXl>q_c7<nb}X)M77Sv#Son+VC@&SCBg)>&QJ%cgg$~VZ%ZnYVOjg{+A{NRdJ7pp6rfAD;wxL6UwLu`kaAdaTSnUHyK*D7oAm+&Gz=V+(&3nw_rgj4oG~FNl{PH0n6$~M|OG04XxC37A(T_j8B>7QOh@rUHh)=y~{-ofFB3f;GaR*rkIE#+I#!1f2Gt4F7O0nc4^8AZ}qaOlEx5!J4uiG5)X7SOxGA#+pm2_!L`5azl|26UBj0wULUX*>N)BH=r>2-$bW}I>t<PM6~X{p1^g2h;E$o*bfyOYM%9FyFcT<Cxh3Z*_}9|xNSJwYgq)H_B}Cy+`-7o&G<hyN<V?oqRZZKUa#3o(+oCNAg?+u@>)XIhg(LOGKVQdll|n}F<qhfO^CDo);RB|mEH6m66&Qt8@E$Pf#1zG#@KpHiQ1&aECpBAfF`_JL?FnIW3>H}9Sekevv@G#UW0B&082OD${e!2si=TV1bw0GwoU|$Qo#_**o~Q=oVOrp9ebJBbzPw_T@k-oT@#C$R1;@xthf_e#ou-AF-z4ElwJsdi!*?foA}vjT=ijJyDU2K4tbuPT!6Zo#-PeayCN)Uf2PV|4iBt*38Y0R?QKKn>!mvPh{U}ceP{aOK3zhOpNoeGU@}2b9NSqj!dZXTQZ4`GYX9q4leLbf|HFbSLi#cj8Ra*R!&RAKK!29`6DhG$P)mySvmEsJQq53VvP$@1!fkxQIDPy+@gzJY;$c?>=O)WyDj258mX^!wJkR3HBe<EJ7N1AOXJclD<ZdMBN*pg6_T5(ECR*XgE|A93_O8-S*kxqW)T79-4xI(;2eIA%ADBTjsoc6GdGbkC(@GWsYbhie~5I$xI$I2$F!g}reX{%px<hoelzF}}L>Wue9UW_!SHVA+3njOLu4k@{R185HcCIPi}y*~uGH3H{$A6;ldWh^K5y-^}mpC9u+r%uef{DCF0s~UI-!;|*^rm`+n{kn0c@*|q;ejAoGe#$*L-^OY_C$1Rs2%a_4h9F%@d+Aii?v#5H{k}<Bp;lY#86vREKz(8r2_7fI?l<C}g^^*=Dy3Jn+vR?eq-rCr5D!Dv$ZN$iSLYvaqeki=6{@DC+2XWPUPzGRd{`x)2|vgQy;BDuDt3<=vw?Mj@N6)-vA8)@cm!e=ky4TaF4=|f^3rKv?)T=#EgHIQ$f;ci5ogPxSg+11;V)4%ACY9{Q8@AM`s)5E-7E98NGyzt97f9Jxc&?GZOplz#|{|q!;8WW;5t&p|4|2VTzZ^}{h-d2JVpWe0uri)1(D_{07`(4QPk=-;$#s^!$+6A4aPKE;_%J0!MwLvO+KT+O@%`x3aV5dvmOic$uhj7)p+M#m}F`{7ANb<^iOupt0w<mLKR?0o!F5TO)o^h4m8a$HLk{eA9PF9mju_?H;oiUcX?B1lx|px`mr@B;5-ad(|6dZuHQT-I#`LG>px2u^AtFK`+Md76<F0K#>X)731#vYlPTUHv6BPr5IizoOd?*a;pR$_iYOq^#(m||tfDTLz@jR48Kx-2|B26<#?hD!wv--OL=olQLeo9=`j9!gE+bL1Y3c6K(yY_!gK<X7;)zVMFIC6TN}8Z#%vca=dF@K|E11OUn68D=<a9JDssovH)8aH^pOLnil)pkx!qQ$ovaQeVm>`euDF=N-TrHAkZP8vM0vR_$@<-|F(+pP#j$cZ6W`#r5iJ^{LW~@P{QgVS&s?LKR;Nr<S{8+$5cnNw)g*K$io@k&3i<+(QTGjMpP2FG3AyaKEW;i<d^-QXg-N-S~4yNm%FW~)fenj>1b$cxXiGxzN{GletRS%)39Xz+<C~^4pZ+TWiP6`(nah&?EX4OfZmN`@L9{PW7e-K543ww=%p<^HcL{9e5<l@E6FwKI!uMa`SYx|;FXao{Zm%}j9%p#6R9d<^WWv{#+g*>A;U6uq$*Di;B#kVD1PsQMes?z+4W93IiEMQktu5DFJi$eL@B}NW5?3%Rf(9RA%i0<c(^G7FE;QzGT)7Pr<KoGmusur&SC}c5_3H!x$Ho~at(*LS?YFw>%WU|$+l;jZXHkBnK;7rbCMug+t=BQhA=!V3u&uOy`{;lQHqh&Ip-+nMP)v~@6HBkhbt}yB+2lYy+cwI@bC2@Y%496v>Nv7M3{cwKDIf^=;yl{$fh|SN>fXpgc3V`{V3X9%36?Y3r0qmXuFyPIim$f+1?;Hp$HuWY^?nXUP>w5rLn$84}>C33#n^UY~6=o$4Ih7w{=8)O34!m@I2x5FIu0&JThRl*1&=NIy_xQImSD~qnEK^qI&DIdX#V{%<^f{TdP7m@K@NIwBRd1QsvNhz$>_4=&r<lEHK1HkvI>yH`t6c8WH^}Z2oSk{>qXH@NbrRpPaH%nK-W;ZYM}akJCMQ!TxEPQE@>aM4HU!Nq2raDm*6Ale;l(iYzBKp%#M3+3*70)`l4Y%+a?=EF@E>?prXh`Ky174cuzm~guwn5~DDxZ#a=Z#%tu6VupPhw5^Wo=F*gLJhg6ADuK#<aC#iMIsolKQQG^>QmiE_h|nWV)RRE=QIZ1)AKJx5DDXmy`ALYxm{*O*2`p#tk_H8KSsxZ%=GgPvYn7j@G-6_|-p(!&68T>Jh~yYGQWrbTUUA`<&W0f}cO8RMTDp2p@V7WT5D5>~PU`+wYTb|uOn%Pl0Sx0c~V#CTkvqD^^!-(={-?*!+!GueL(5dUpNVx7Dg#|AspLN6;OAR87ko1CpAnTL|zM+O8}J0#K(z(EMvNlYX)ViwBJTE?+GuuKx~&bk^<`ot)Xf=qK|&#ehBa=K{^rZ2U?&wRxa5@uBx_k_Kn@rmg2+MQ{xQi(Q8l9KWD<DX}tKR`p9aP<7L1`NS0l7}y_dpS7R{Hrl2nM^cg9i$XahNQDmAS6$D1Ewo-&3ke9Fs%=rBjdcRk=$*np=<giW`iD09!YTJ{~U=`NO>yev5jhLlu$vD?M^Ah+Ctcrch0HxDP<F#)lK~9Pt36ftyhmWa=s>H!-xr+`{Nt(fUC0KP*tA%N@6fBq&dE2e}L27@#K^E9jk%JHls5;l<~*jbqFSeSob&$6&xG2oBq=!`q!%-2`ZnO5e8)Un^?+kUE=@m#ihtAyp4$9vYo<MSR(E!*d<Gc^D5(Zw2BD0?=jKEb<qy?U%xbs2D8gIYC3|BZUh*rB#S5yK`j6gH#CDL7t)(wt9M`T>73d|gOZi?ygwN<L^ittIxu!NUf(rRm7?rk;UpDCL4TZS)Sx4RqIW`CFZ}u;`wwiiNA;FD5r4F8f3`N9gMfY^!3%EomKj1Ae<<DSJ~nWxkCOIJCEU9h$_7?5>l^Y(Oh8=2snw*o3nCJ*(^bNE<DiNQ8MY70XDqCQ+7xrOG+^c3TF<`B7_=%+jb1a83T=eO$zv7UVS)yZSBpZ|L<aP_pz$`$Md>}n&Hx^w!F;PoT^^oh%ISNAE;8`!Y@fn$u*J3>DfE~Ph<^`|$h&lnn60x}V)VG0KHmL55S`)mD9y$~>_&ho$R#N4>;In^st&xxlMhVho`Fcjwxd{K`RzDXUpIU06yBRB#Vs8pee<@<ig-<DWaga_m%XjDfjLqDcFEKLB{bmeO{4U`uh@k2IIlpN{g05_mm)+`Pf2Fs9=5bzc^8TfD~{O|+T;%=4X3|9ui$}?`0B?_B(8-`xdYGi=0ry@*$uQ22n?lSAu46ge$@1|y`!wJRSt{r9CT!vqHn!+&br%)L}EKwZlIX3#(_!FSKA5{N1d&!t=Kpv_A-lHl&TH=$VZfhg`Iy$5*X>-A9KQjAm!Hs+q4JyD1?>iqaQ?8K%^M<yX-e+;s%eT!EBd>(5FIr8S9mfRj`(Fq;EURFNe$D8`Ioa$qIt*ZoW^fT$<u;MiCYzXiIJ!DPv1zLk|DVv0sdv(9ba`NvhfF)lOx9w2f~+6^~$Q8ltMXk4)b!kHRo9_zTF3I))e#{D-g)<bFVX*i_eaevba&bNK"
+CANONICAL_LOADER_PAYLOAD_BYTES = lzma.decompress(
+    base64.b85decode(_CANONICAL_LOADER_COMPRESSED)
 )
+if len(CANONICAL_LOADER_PAYLOAD_BYTES) > 65536:
+    raise RuntimeError("fixed loader payload oversized")
 FIXED_LOADER_MAX_BYTES = 4096
+_FIXED_LOADER_COMPRESSED = _CANONICAL_LOADER_COMPRESSED
+FIXED_LOADER_SOURCE = (
+    "import lzma as l,base64 as b\n"
+    "p=l.decompress(b.b85decode(" + repr(_FIXED_LOADER_COMPRESSED) + "))\n"
+    "if len(p)>65536:raise ValueError(0)\n"
+    "exec(compile(p,\"\",\"exec\"),{\"p\":p})\n"
+)
+
+
+
+
 
 
 def build_fixed_loader_source() -> bytes:
@@ -2722,7 +2733,7 @@ def build_fixed_loader_source() -> bytes:
 
 
 def fixed_loader_commitment() -> str:
-    return bridge_commitment("loader", "fixed-public-loader")
+    return STORE.bytes_commitment("bridge-loader", CANONICAL_LOADER_PAYLOAD_BYTES)
 
 
 def build_fixed_loader_command() -> tuple[str, str, str]:
