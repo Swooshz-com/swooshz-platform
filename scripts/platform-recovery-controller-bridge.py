@@ -1337,7 +1337,14 @@ def _drain_fd(fd: int, capture: _FDOutputCapture) -> None:
 
 @contextlib.contextmanager
 def runner_stdio_isolation(*, capture_fds: bool) -> Any:
-    old_stdout, old_stderr, old_stdin = sys.stdout, sys.stderr, sys.stdin
+    old_streams = (
+        sys.stdout,
+        sys.stderr,
+        sys.stdin,
+        sys.__stdout__,
+        sys.__stderr__,
+        sys.__stdin__,
+    )
     saved: list[int] = []
     reader_threads: list[threading.Thread] = []
     captures = (_FDOutputCapture(4096), _FDOutputCapture(4096))
@@ -1357,12 +1364,22 @@ def runner_stdio_isolation(*, capture_fds: bool) -> Any:
             os.dup2(err_write, 2)
             os.close(out_write)
             os.close(err_write)
-        sys.stdout = _ForbiddenTextStream(RunnerControlCode.RUNNER_STDOUT_FORBIDDEN)
-        sys.stderr = _ForbiddenTextStream(RunnerControlCode.RUNNER_STDERR_FORBIDDEN)
-        sys.stdin = _ForbiddenTextStream(RunnerControlCode.RUNNER_INPUT_FORBIDDEN)
+        forbidden_stdout = _ForbiddenTextStream(RunnerControlCode.RUNNER_STDOUT_FORBIDDEN)
+        forbidden_stderr = _ForbiddenTextStream(RunnerControlCode.RUNNER_STDERR_FORBIDDEN)
+        forbidden_stdin = _ForbiddenTextStream(RunnerControlCode.RUNNER_INPUT_FORBIDDEN)
+        sys.stdout = sys.__stdout__ = forbidden_stdout
+        sys.stderr = sys.__stderr__ = forbidden_stderr
+        sys.stdin = sys.__stdin__ = forbidden_stdin
         yield
     finally:
-        sys.stdout, sys.stderr, sys.stdin = old_stdout, old_stderr, old_stdin
+        (
+            sys.stdout,
+            sys.stderr,
+            sys.stdin,
+            sys.__stdout__,
+            sys.__stderr__,
+            sys.__stdin__,
+        ) = old_streams
         if capture_fds and saved:
             for target, source in ((0, saved[0]), (1, saved[1]), (2, saved[2])):
                 try:
@@ -2704,7 +2721,7 @@ class RemoteLoader:
         except UnicodeDecodeError:
             _raise(ProtocolError, "FRAME_INVALID")
         return _validate_canonical_barrier(barrier)
-_CANONICAL_LOADER_COMPRESSED = "T>t=p0RR90|NsC0{{S?bN@uuIJafwOWx8GH_92ly!q_WVJd&ajOcvkVg|WZnDW|>F*7r?_-DsrT$O`2ATKzXl>q_c7<nb}X)M77Sv#Son+VC@&SCBg)>&QJ%cgg$~VZ%ZnYVOjg{+A{NRdJ7pp6rfAD;wxL6UwLu`kaAdaTSnUHyK*D7oAm+&Gz=V+(&3nw_rgj4oG~FNl{PH0n6$~M|OG04XxC37A(T_j8B>7QOh@rUHh)=y~{-ofFB3f;GaR*rkIE#+I#!1f2Gt4F7O0nc4^8AZ}qaOlEx5!J4uiG5)X7SOxGA#+pm2_!L`5azl|26UBj0wULUX*>N)BH=r>2-$bW}I>t<PM6~X{p1^g2h;E$o*bfyOYM%9FyFcT<Cxh3Z*_}9|xNSJwYgq)H_B}Cy+`-7o&G<hyN<V?oqRZZKUa#3o(+oCNAg?+u@>)XIhg(LOGKVQdll|n}F<qhfO^CDo);RB|mEH6m66&Qt8@E$Pf#1zG#@KpHiQ1&aECpBAfF`_JL?FnIW3>H}9Sekevv@G#UW0B&082OD${e!2si=TV1bw0GwoU|$Qo#_**o~Q=oVOrp9ebJBbzPw_T@k-oT@#C$R1;@xthf_e#ou-AF-z4ElwJsdi!*?foA}vjT=ijJyDU2K4tbuPT!6Zo#-PeayCN)Uf2PV|4iBt*38Y0R?QKKn>!mvPh{U}ceP{aOK3zhOpNoeGU@}2b9NSqj!dZXTQZ4`GYX9q4leLbf|HFbSLi#cj8Ra*R!&RAKK!29`6DhG$P)mySvmEsJQq53VvP$@1!fkxQIDPy+@gzJY;$c?>=O)WyDj258mX^!wJkR3HBe<EJ7N1AOXJclD<ZdMBN*pg6_T5(ECR*XgE|A93_O8-S*kxqW)T79-4xI(;2eIA%ADBTjsoc6GdGbkC(@GWsYbhie~5I$xI$I2$F!g}reX{%px<hoelzF}}L>Wue9UW_!SHVA+3njOLu4k@{R185HcCIPi}y*~uGH3H{$A6;ldWh^K5y-^}mpC9u+r%uef{DCF0s~UI-!;|*^rm`+n{kn0c@*|q;ejAoGe#$*L-^OY_C$1Rs2%a_4h9F%@d+Aii?v#5H{k}<Bp;lY#86vREKz(8r2_7fI?l<C}g^^*=Dy3Jn+vR?eq-rCr5D!Dv$ZN$iSLYvaqeki=6{@DC+2XWPUPzGRd{`x)2|vgQy;BDuDt3<=vw?Mj@N6)-vA8)@cm!e=ky4TaF4=|f^3rKv?)T=#EgHIQ$f;ci5ogPxSg+11;V)4%ACY9{Q8@AM`s)5E-7E98NGyzt97f9Jxc&?GZOplz#|{|q!;8WW;5t&p|4|2VTzZ^}{h-d2JVpWe0uri)1(D_{07`(4QPk=-;$#s^!$+6A4aPKE;_%J0!MwLvO+KT+O@%`x3aV5dvmOic$uhj7)p+M#m}F`{7ANb<^iOupt0w<mLKR?0o!F5TO)o^h4m8a$HLk{eA9PF9mju_?H;oiUcX?B1lx|px`mr@B;5-ad(|6dZuHQT-I#`LG>px2u^AtFK`+Md76<F0K#>X)731#vYlPTUHv6BPr5IizoOd?*a;pR$_iYOq^#(m||tfDTLz@jR48Kx-2|B26<#?hD!wv--OL=olQLeo9=`j9!gE+bL1Y3c6K(yY_!gK<X7;)zVMFIC6TN}8Z#%vca=dF@K|E11OUn68D=<a9JDssovH)8aH^pOLnil)pkx!qQ$ovaQeVm>`euDF=N-TrHAkZP8vM0vR_$@<-|F(+pP#j$cZ6W`#r5iJ^{LW~@P{QgVS&s?LKR;Nr<S{8+$5cnNw)g*K$io@k&3i<+(QTGjMpP2FG3AyaKEW;i<d^-QXg-N-S~4yNm%FW~)fenj>1b$cxXiGxzN{GletRS%)39Xz+<C~^4pZ+TWiP6`(nah&?EX4OfZmN`@L9{PW7e-K543ww=%p<^HcL{9e5<l@E6FwKI!uMa`SYx|;FXao{Zm%}j9%p#6R9d<^WWv{#+g*>A;U6uq$*Di;B#kVD1PsQMes?z+4W93IiEMQktu5DFJi$eL@B}NW5?3%Rf(9RA%i0<c(^G7FE;QzGT)7Pr<KoGmusur&SC}c5_3H!x$Ho~at(*LS?YFw>%WU|$+l;jZXHkBnK;7rbCMug+t=BQhA=!V3u&uOy`{;lQHqh&Ip-+nMP)v~@6HBkhbt}yB+2lYy+cwI@bC2@Y%496v>Nv7M3{cwKDIf^=;yl{$fh|SN>fXpgc3V`{V3X9%36?Y3r0qmXuFyPIim$f+1?;Hp$HuWY^?nXUP>w5rLn$84}>C33#n^UY~6=o$4Ih7w{=8)O34!m@I2x5FIu0&JThRl*1&=NIy_xQImSD~qnEK^qI&DIdX#V{%<^f{TdP7m@K@NIwBRd1QsvNhz$>_4=&r<lEHK1HkvI>yH`t6c8WH^}Z2oSk{>qXH@NbrRpPaH%nK-W;ZYM}akJCMQ!TxEPQE@>aM4HU!Nq2raDm*6Ale;l(iYzBKp%#M3+3*70)`l4Y%+a?=EF@E>?prXh`Ky174cuzm~guwn5~DDxZ#a=Z#%tu6VupPhw5^Wo=F*gLJhg6ADuK#<aC#iMIsolKQQG^>QmiE_h|nWV)RRE=QIZ1)AKJx5DDXmy`ALYxm{*O*2`p#tk_H8KSsxZ%=GgPvYn7j@G-6_|-p(!&68T>Jh~yYGQWrbTUUA`<&W0f}cO8RMTDp2p@V7WT5D5>~PU`+wYTb|uOn%Pl0Sx0c~V#CTkvqD^^!-(={-?*!+!GueL(5dUpNVx7Dg#|AspLN6;OAR87ko1CpAnTL|zM+O8}J0#K(z(EMvNlYX)ViwBJTE?+GuuKx~&bk^<`ot)Xf=qK|&#ehBa=K{^rZ2U?&wRxa5@uBx_k_Kn@rmg2+MQ{xQi(Q8l9KWD<DX}tKR`p9aP<7L1`NS0l7}y_dpS7R{Hrl2nM^cg9i$XahNQDmAS6$D1Ewo-&3ke9Fs%=rBjdcRk=$*np=<giW`iD09!YTJ{~U=`NO>yev5jhLlu$vD?M^Ah+Ctcrch0HxDP<F#)lK~9Pt36ftyhmWa=s>H!-xr+`{Nt(fUC0KP*tA%N@6fBq&dE2e}L27@#K^E9jk%JHls5;l<~*jbqFSeSob&$6&xG2oBq=!`q!%-2`ZnO5e8)Un^?+kUE=@m#ihtAyp4$9vYo<MSR(E!*d<Gc^D5(Zw2BD0?=jKEb<qy?U%xbs2D8gIYC3|BZUh*rB#S5yK`j6gH#CDL7t)(wt9M`T>73d|gOZi?ygwN<L^ittIxu!NUf(rRm7?rk;UpDCL4TZS)Sx4RqIW`CFZ}u;`wwiiNA;FD5r4F8f3`N9gMfY^!3%EomKj1Ae<<DSJ~nWxkCOIJCEU9h$_7?5>l^Y(Oh8=2snw*o3nCJ*(^bNE<DiNQ8MY70XDqCQ+7xrOG+^c3TF<`B7_=%+jb1a83T=eO$zv7UVS)yZSBpZ|L<aP_pz$`$Md>}n&Hx^w!F;PoT^^oh%ISNAE;8`!Y@fn$u*J3>DfE~Ph<^`|$h&lnn60x}V)VG0KHmL55S`)mD9y$~>_&ho$R#N4>;In^st&xxlMhVho`Fcjwxd{K`RzDXUpIU06yBRB#Vs8pee<@<ig-<DWaga_m%XjDfjLqDcFEKLB{bmeO{4U`uh@k2IIlpN{g05_mm)+`Pf2Fs9=5bzc^8TfD~{O|+T;%=4X3|9ui$}?`0B?_B(8-`xdYGi=0ry@*$uQ22n?lSAu46ge$@1|y`!wJRSt{r9CT!vqHn!+&br%)L}EKwZlIX3#(_!FSKA5{N1d&!t=Kpv_A-lHl&TH=$VZfhg`Iy$5*X>-A9KQjAm!Hs+q4JyD1?>iqaQ?8K%^M<yX-e+;s%eT!EBd>(5FIr8S9mfRj`(Fq;EURFNe$D8`Ioa$qIt*ZoW^fT$<u;MiCYzXiIJ!DPv1zLk|DVv0sdv(9ba`NvhfF)lOx9w2f~+6^~$Q8ltMXk4)b!kHRo9_zTF3I))e#{D-g)<bFVX*i_eaevba&bNK"
+_CANONICAL_LOADER_COMPRESSED = '0{{R40RR90|NsC0{{S?cCB?5^w9L~?Wdi+g@<q4RkwX-*;}|VoaYLlQqScdBjmi@kmh3H=5D*K%f(YqF4)B7-`++6-!+H(ey(h&bKlb+a;uDHZLc_P7aff)IF+Ygcx)%GqD`ix@MUegBee4wG7%qOl(A5~b<A(J{Gn^adBwb#yQf=BVf}ZBu5`?&tYiy|WouBtD3iL|ym(kB{gqcKxzly=&=bM*JW??rKg3#PBNVfJ;wh-!DE#EZwKb1U`#P(g_0Gn7xM<U+H5_>naW9H}t>U2}*HQoOouQ%Djm&X`z<t^Li&Zco(Eff*?(A4HWYG?mZN|V!`pnbwm5L(0{&ofU^AEkX<6%@c?R|5_COwGbCEKySI^UzlUVy6qn%_eL|N0V|_+2ir1YRR1H_Xu@_DFjki-6iqYB$kQbSh@jo8a#erbD@*%UaV!&(W@vFO?3pxT5`uKnxzcvLdc9OA^)4t<H$@4<P~ilUD>xx2bX)5s}y=%ws7-eBjkpJ?*&ta#~#}N9@~FSkw~Bm>4maXO!9kpyz44&1#0Vnh?g&J8cYt-#%FN?%(DdI#T=Gcp>avD)TM!L`amxaaUMlneohKn>3&Wxuc1yI&DaRO-b+qEk0!cEb45`>Ci8dICbAGZ%Q>^3KQ8}$f-obc>qtCX5-__O{vFH%Pc=iR;2WR0Kai6=cv>qE!c|7xXdNJb$+{K)zI>uC{&Kk=l!+&h;*~wY*H}>{@I)9vdp3>?W{rSW0C3H;XnWp7K+O2In<o$meG3^=1Kh>|(Gk?&<P^f+MboNlXG`m{UiBP{=cM|vtY^Plc8{brX1;E?1Mw~ys(vv@3xQ}|*SHuWuD?ORwE4}?oK$Mr;k;0QYJn*CdoYeRy2`REX{=()pwKEci71jFRp9w16$2ue2=~V}oqS?DoLIA2m5U~oy)tmt(B-ILJxEI{;bPEMaz{b?8^o_TLXkp5iTP}NtMgR6f+5gh!2EgXm?2-u*o63_yVw7@<HlO@xd_@~bH#2uz07F^4;$)8=7+i<>7So%Hnh+*58p+|ck{2PcbzmSeFK=f+=Q^|2zv2pmg)5piQBNQv9{z{#?5uPSNc$houD74YBntF#s+>k7ju9(sr;EiB$#RR9O3O=-84&xpjy!$PzuD;8901}8DK#V>GAU@AN;)KnQHDrAh=~AVb5eD0&(8^<S{FlQL^g3uv-@M)HH7w@9c4LVs<zus*Ynvr{ToN_BduPzkc4wH_l8G7?+*;CqM7q0J5<ENOJignS%_2@)7<}f(OApQmUq`u;F?AKt>q*PwvBWb0rqGXuNfBvp*|rt0c$-gF6A$liPn78!q$hPi?jsXCCA%o6}DlDbh`8MAWh<-$~BY<nsbZ1YlaqXlazFzXCLEIbf2C${jxdhlPSl*`OTWywt=}HBf%TEj!ZLk?<b;o8>o7lBp7Qww4fIc(fFi12U9eiYXbI!%-Ds{7FYO&??e6`=@Irn+v3-g|EwQ`k3D))LHt|!qHZG1I|r~#jpjG159ao9y6~+v6NmQr*yAkpi`lyz~JxGW*`575eQ%AK4&vd`t^YK>bzx;n?CpbETqyE>-}@O2wqL&@MkdJKBv+{#OMCM(d<v8p6hIgOEc%!axg6<W{%EaA?HK^!r~uCoj`k@MnHP|%zQESDPM1>Q`*wV*Toxum$@8ZN+2e--{?Tdp+4+_SvWN)b7qq992414kPS&2;j5=#L9tT~ugCk$xb5BcO8w&Otq5D$Acfq~EH&oef7EYtUWt4y&d9_Wk^8l0nhP>Q&8Azs{Cejdw<`}}UxtBF;|w_w=`g6_e*?<;<7NQGQ>DxWUDT^3STPSfDoIoXK6>Nug1HPoHRedaCil#BhsfH!Y=!frB*nE#yYRRL=(jGPY2-*Uo6lEaNR-9ypGk^ZqZR0XhOwLlMgo@ClukhTMF_oOjHY@2hOPnH(w$Egn!BUBOiM<QTk7cD_ch?dshB-x_!$XDHy!vnmOhj4YU5&Idmb6%XI&((0l<LdoDA1#B=>p}FS*eQ8O&KIw7x=J(TB)zG&4(}pf|z4Mc+@U#7uLK{vP1mKqP<OPc^8K@#yc9#5`v1GU}d!@aW!&s-vIXAvnCzb4Kz8>qljB2V?}HB$Ht3Vmd0<WHnn3z+Il0e`AX?g_}<ZVxM-JL=^1GnFR7-P^Kabeqo+?!5Ci1gm*ua+{kQH_+e<WHxccin@%0S0{UyadnL=;DJBOo{^ANaf}4ib!w-KF39D&@A3nRlFcuD<HKT30P;anot8c+!Q8x4zKnIC#++kOHnzd+kME^U*?Vz3`j-X)!dWn;O#LWDymq6bphNbq{l1`e{^L%eV$k4{+_7T<*^-_YSFK&qM-{G2ilW7ng+*&I)I2XK-#@x=WAES&E7%<0Pe1U962N88^_ofrf^h1bdSDSn%xDw9GpM!&NCG$km)965$X~1#2;tUo9fwmHlXFAf~AlFa#jae7#jTvvgn+za4qfiXcJd|DCAPKQYltn-{eB9cHHp(Cp4fXqRkD5j7V6xDc<LEW7ds(*ns}{dAHjw{USSUp2_*0-begJ~>@kr?)aWEQ{9*ta+QcpH5**ML9nAJe+9i^+oyj}_0XXw>(5=QmYoN*6134`M7hn5R+)fvOv0L+0YmNP7YKD#VsQR(`m90fqmxkF)%YiQFT7^tzc41>bPm@2oH2>FuECx@&Ae;7=qL<$nl7V2`E%za-P25-ri=?)l)RdXwmqlv<Bw}IR&VR)k7Q>C}mPR;jrXk;SnFRZ)h0SeEtwA0<(hR~Pq6<H)&<)}RyH)pE=$$%!V9>pwnReXtR?w5{^@f?AjfEzwbVw`gjW&R`8ut1`@AJ)IoR>hg#VcI=Yd4;QxB(L#+sh9i@!`-dxLcJNTI3yA`y@=xjc)6xS+P>B;SR7&69;ZTTmDd)_xbxqyV(bPDptj5A1n8=78W^%lWFQ;@A7wKL(mj?M_m^mef>}E}jm32POM0((pmrZ&z6Z2M0#xigHnV&Z8pv`E3#4du*l$L|hLsVI+N<C3LJzB{U}GmeXaju^7aN?gwd(pd-M!rO9D&`@Z89lHWag6LlkxurOWrlnMVEL^PI1GKV7+*5t==_5(7(Peo>=Ax%XhRmC!%2%x-*uIQ5!PwU@7!vv{DulGgR3w#49Rk38!51Jhp(uJnA9X)6T+fIon*Q06dmy1pQk-)S<ZQh5%}4YJFEC09oY;)UzBrB8Dp|fx>o$H}s4-$|m;qT#ZVw_iw!p@I9)unE0)DmcKRBi3HhmNd}2rFB_ukI~+t@=A>rZ8S=RhQj?J$YqQRBcDtK6HF6v*nEo#W9nQEshF#DW)yeMrT6FcBXPoD4O%s4h4t(3}8mso{TrIlL6IgNHex9C5KI3A8b6@>PGV1(Ge6o}FoOM*^PHu%OGiJpZms-ld0LL9`Ph^2+1!35p{w>|Q=ca?`#dA=?@+Q7!*paBWn9BfGdWVM<km>>cl%{nU0!WGP_$|;kWClDf<+RZ(33f6#91nI}7$Q5x+w%aZ+NMuwZ4`;K>dVJXKk06I?kX$hrm$iQ3|4mQl_a#V2s;+~>d!C9+NZTq`Kd7S;5ekg14`T~J$-o{=tJ-$=~<^24Pt|WejkIuIC<rNY3u%8kqXq>u?}Lpn4gU(15%5XI&k#l?KJkZzp+*6ZDq`u0FPcvV*@VUx2*V6Jtp_G6l*u3m#_c7#mUzx&Wi?6fne1TZZePeh%CO(w?{H-l1__Gq#2@s%jNH`GPJ8T8f_cEuV$BJoxoKus>-Y(Om>|U28&PIaR*zRj{zlFS_7oxV}c&WTY1By7Y(qo&;`gemT{c4cg&ULVohXbrq{#~R$DZXS96{A*^WsFbOElwA+YN|(@!G)1x|2=s|P+8wK@=h#6DLsc&Y`$wilt$&rtRq|F&@g15njq?1EiV11Nn&41S2V#$`4!BS1nfTrAFB7{NNLBx0!;>1e?m9pUgrU&=qsk#gPsNmSx#MX9v!0F2=^T&Y!)uY4MtcwJ@{Z_$hdz%<Au3#**1&nQKI%o{(zj|~k`d0o2b*Nr0`c8*X%DBf9I6qxR+Xge1ig_u-p$I-c^79C1l6;rFX7k-BixK=g-vH$+W%B2'
 CANONICAL_LOADER_PAYLOAD_BYTES = lzma.decompress(
     base64.b85decode(_CANONICAL_LOADER_COMPRESSED)
 )
@@ -2713,10 +2730,9 @@ if len(CANONICAL_LOADER_PAYLOAD_BYTES) > 65536:
 FIXED_LOADER_MAX_BYTES = 4096
 _FIXED_LOADER_COMPRESSED = _CANONICAL_LOADER_COMPRESSED
 FIXED_LOADER_SOURCE = (
-    "import lzma as l,base64 as b\n"
-    "p=l.decompress(b.b85decode(" + repr(_FIXED_LOADER_COMPRESSED) + "))\n"
-    "if len(p)>65536:raise ValueError(0)\n"
-    "exec(compile(p,\"\",\"exec\"),{\"p\":p})\n"
+    "import lzma,base64;exec(p:=lzma.decompress(base64.b85decode("
+    + repr(_FIXED_LOADER_COMPRESSED)
+    + ")))"
 )
 
 

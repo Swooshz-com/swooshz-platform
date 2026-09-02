@@ -795,6 +795,229 @@ class ContractTests(BridgeTestCase):
             self.assertEqual(child_holder["process"].returncode, BRIDGE.EXIT_SUCCESS)
             self.assertEqual(tuple(empty_path.iterdir()), ())
 
+    def test_fixed_loader_clean_interpreter_guard_negative_matrix(self):
+        command = BRIDGE.build_fixed_loader_command()
+        interpreter = shutil.which(command[0])
+        if interpreter is None or (
+            os.name == "nt"
+            and pathlib.Path(interpreter).parent.name.casefold() == "windowsapps"
+        ):
+            if os.name != "nt":
+                self.skipTest("python3 is not available on PATH")
+            interpreter = sys.executable
+        child_command = [interpreter, *command[1:]]
+        environment = dict(os.environ)
+        for name in (
+            "PYTHONHOME",
+            "PYTHONINSPECT",
+            "PYTHONPATH",
+            "PYTHONSTARTUP",
+            "PYTHONUSERBASE",
+        ):
+            environment.pop(name, None)
+        environment["PYTHONNOUSERSITE"] = "1"
+        sentinel = "RUN320_PRIVATE_SENTINEL"
+        child_marker = "RUN320_CHILD_SENTINEL"
+        child_program = f"open({child_marker!r}, 'w').close()"
+        valid_source = valid_runner_source()
+
+        def source_with(body):
+            return (
+                "def run(runtime):\n"
+                + "".join(f"    {line}\n" for line in body.splitlines())
+                + "".join(f"{line}\n" for line in valid_source.splitlines()[1:])
+            )
+
+        def run_case(
+            label,
+            body,
+            expected_error,
+            *,
+            expected_classification="FAILURE",
+            expected_messages=0,
+        ):
+            epoch_ref = f"epoch-bridge-run320-clean-{label}"
+            store = self.new_store(epoch_ref)
+            child_holder = {}
+            with tempfile.TemporaryDirectory(
+                prefix="run320-clean-interpreter-"
+            ) as empty:
+                empty_path = pathlib.Path(empty)
+
+                def launcher():
+                    process = subprocess.Popen(
+                        child_command,
+                        cwd=empty_path,
+                        env=environment,
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        close_fds=True,
+                        bufsize=0,
+                        shell=False,
+                    )
+                    child_holder["process"] = process
+                    return process
+
+                result = BRIDGE.run_controller_bridge(
+                    store,
+                    epoch_ref,
+                    BARRIER_UTC,
+                    bundle(source_with(body)),
+                    launcher=launcher,
+                    timeout_seconds=8.0,
+                )
+                self.assertEqual(result.classification, expected_classification)
+                self.assertEqual(result.error_code, expected_error)
+                self.assertEqual(result.post_cas_uncertain, False)
+                self.assertEqual(result.counters.bind_calls, expected_messages)
+                self.assertEqual(
+                    result.counters.discovery_messages,
+                    expected_messages,
+                )
+                self.assertEqual(
+                    result.counters.proceed_messages,
+                    expected_messages,
+                )
+                self.assertEqual(
+                    result.counters.result_messages,
+                    expected_messages,
+                )
+                for name in (
+                    "ssh_launches",
+                    "network_connections",
+                    "provider_calls",
+                    "backup_calls",
+                    "restore_attempts",
+                ):
+                    self.assertEqual(getattr(result.counters, name), 0)
+                expected_exit = (
+                    BRIDGE.EXIT_SUCCESS
+                    if expected_classification == "SUCCESS"
+                    else BRIDGE.EXIT_RUNNER_ABORT
+                )
+                self.assertEqual(
+                    child_holder["process"].returncode,
+                    expected_exit,
+                )
+                self.assertEqual(tuple(empty_path.iterdir()), ())
+                public = "\n".join(
+                    (
+                        repr(result),
+                        repr(result.projection),
+                        json.dumps(result.projection, sort_keys=True),
+                    )
+                )
+                self.assertNotIn(sentinel, public)
+                self.assertNotIn(child_marker, public)
+
+        stdio = (
+            "stdin=subprocess.PIPE, stdout=subprocess.PIPE, "
+            "stderr=subprocess.PIPE"
+        )
+        popen_prefix = (
+            "import subprocess\n"
+            "import sys\n"
+            f"subprocess.Popen([sys.executable, '-c', {child_program!r}]"
+        )
+        rejection_cases = (
+            ("forbidden-import", "import socket", "RUNNER_TOP_LEVEL_EXCEPTION"),
+            (
+                "raw-subprocess",
+                popen_prefix + ")",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "check-output-missing-stdio",
+                "import subprocess\n"
+                "import sys\n"
+                f"subprocess.check_output([sys.executable, '-c', {child_program!r}])",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "shell-unsafe",
+                popen_prefix + f", {stdio}, close_fds=True, shell=True)",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "close-fds-unsafe",
+                popen_prefix + f", {stdio}, close_fds=False, shell=False)",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "pass-fds-handle",
+                popen_prefix
+                + f", {stdio}, close_fds=True, shell=False, pass_fds=(1,))",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "capture-output-unsafe",
+                "import subprocess\n"
+                "import sys\n"
+                f"subprocess.run([sys.executable, '-c', {child_program!r}], "
+                f"{stdio}, close_fds=True, shell=False, capture_output=True)",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "print-forbidden",
+                f"print({sentinel!r})",
+                "RUNNER_STDOUT_FORBIDDEN",
+            ),
+            (
+                "stdout-forbidden",
+                f"import sys\nsys.stdout.write({sentinel!r})",
+                "RUNNER_STDOUT_FORBIDDEN",
+            ),
+            (
+                "stdout-buffer-forbidden",
+                f"import sys\nsys.stdout.buffer.write({sentinel.encode()!r})",
+                "RUNNER_STDOUT_FORBIDDEN",
+            ),
+            (
+                "dunder-stdout-forbidden",
+                f"import sys\nsys.__stdout__.write({sentinel!r})",
+                "RUNNER_STDOUT_FORBIDDEN",
+            ),
+            (
+                "stderr-forbidden",
+                f"import sys\nsys.stderr.write({sentinel!r})",
+                "RUNNER_STDERR_FORBIDDEN",
+            ),
+            (
+                "stderr-buffer-forbidden",
+                f"import sys\nsys.stderr.buffer.write({sentinel.encode()!r})",
+                "RUNNER_STDERR_FORBIDDEN",
+            ),
+            (
+                "dunder-stderr-forbidden",
+                f"import sys\nsys.__stderr__.write({sentinel!r})",
+                "RUNNER_STDERR_FORBIDDEN",
+            ),
+            ("input-forbidden", "input()", "RUNNER_INPUT_FORBIDDEN"),
+            (
+                "stdin-readline-forbidden",
+                "import sys\nsys.stdin.readline()",
+                "RUNNER_INPUT_FORBIDDEN",
+            ),
+            (
+                "dunder-stdin-forbidden",
+                "import sys\nsys.__stdin__.read(1)",
+                "RUNNER_INPUT_FORBIDDEN",
+            ),
+        )
+        for label, body, expected_error in rejection_cases:
+            run_case(label, body, expected_error)
+
+        run_case(
+            "direct-fd-discard",
+            "import os\n"
+            f"os.write(1, {sentinel.encode()!r})\n"
+            f"os.write(2, {sentinel.encode()!r})",
+            None,
+            expected_classification="SUCCESS",
+            expected_messages=1,
+        )
+
     def test_operational_entrypoint_requires_caller_launcher_and_local_compile_only(self):
         controller_parameters = inspect.signature(BRIDGE.ControllerBridge).parameters
         run_parameters = inspect.signature(BRIDGE.run_controller_bridge).parameters
