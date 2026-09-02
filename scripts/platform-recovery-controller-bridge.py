@@ -76,67 +76,43 @@ RUNNER_IMPORT_ROOTS = frozenset(
 )
 
 
-class RunnerAbortCode(str, Enum):
-    """The ten runner-requested pre-DISCOVERY abort reasons."""
-
-    PRESTATE_FAILED = "PRESTATE_FAILED"
-    BACKUP_NOT_QUALIFYING = "BACKUP_NOT_QUALIFYING"
-    LOCATOR_NOT_FOUND = "LOCATOR_NOT_FOUND"
-    LOCATOR_AMBIGUOUS = "LOCATOR_AMBIGUOUS"
-    RESOURCE_COLLISION = "RESOURCE_COLLISION"
-    RESOURCE_CREATE_FAILED = "RESOURCE_CREATE_FAILED"
-    ISOLATION_FAILED = "ISOLATION_FAILED"
-    CLEANUP_UNPROVEN = "CLEANUP_UNPROVEN"
-    RESTORE_PRECONDITION_FAILED = "RESTORE_PRECONDITION_FAILED"
-    RUNNER_ABORTED = "RUNNER_ABORTED"
-
-
-class RunnerControlCode(str, Enum):
-    """Finite public-safe control/error codes."""
-
-    PRESTATE_FAILED = RunnerAbortCode.PRESTATE_FAILED.value
-    BACKUP_NOT_QUALIFYING = RunnerAbortCode.BACKUP_NOT_QUALIFYING.value
-    LOCATOR_NOT_FOUND = RunnerAbortCode.LOCATOR_NOT_FOUND.value
-    LOCATOR_AMBIGUOUS = RunnerAbortCode.LOCATOR_AMBIGUOUS.value
-    RESOURCE_COLLISION = RunnerAbortCode.RESOURCE_COLLISION.value
-    RESOURCE_CREATE_FAILED = RunnerAbortCode.RESOURCE_CREATE_FAILED.value
-    ISOLATION_FAILED = RunnerAbortCode.ISOLATION_FAILED.value
-    CLEANUP_UNPROVEN = RunnerAbortCode.CLEANUP_UNPROVEN.value
-    RESTORE_PRECONDITION_FAILED = RunnerAbortCode.RESTORE_PRECONDITION_FAILED.value
-    RUNNER_ABORTED = RunnerAbortCode.RUNNER_ABORTED.value
-
-    DECISION_EOF = "DECISION_EOF"
-    DECISION_TIMEOUT = "DECISION_TIMEOUT"
-    DECISION_BROKEN_PIPE = "DECISION_BROKEN_PIPE"
-    PROTOCOL_BROKEN_PIPE = "PROTOCOL_BROKEN_PIPE"
-    PROCEED_INVALID = "PROCEED_INVALID"
-    PROTOCOL_FAILURE = "PROTOCOL_FAILURE"
-    LOCAL_ABORT = "LOCAL_ABORT"
-    RUNTIME_TERMINAL = "RUNTIME_TERMINAL"
-    RUNNER_STDOUT_FORBIDDEN = "RUNNER_STDOUT_FORBIDDEN"
-    RUNNER_STDERR_FORBIDDEN = "RUNNER_STDERR_FORBIDDEN"
-    RUNNER_INPUT_FORBIDDEN = "RUNNER_INPUT_FORBIDDEN"
-    SUBPROCESS_STDIO_REQUIRED = "SUBPROCESS_STDIO_REQUIRED"
-    DISCOVERY_DUPLICATE = "DISCOVERY_DUPLICATE"
-    RESULT_BEFORE_PROCEED = "RESULT_BEFORE_PROCEED"
-    RESULT_DUPLICATE = "RESULT_DUPLICATE"
-    RUNNER_MISSING = "RUNNER_MISSING"
-    RUNNER_NOT_CALLABLE = "RUNNER_NOT_CALLABLE"
-    RUNNER_SIGNATURE_INVALID = "RUNNER_SIGNATURE_INVALID"
-    RUNNER_TOP_LEVEL_EXCEPTION = "RUNNER_TOP_LEVEL_EXCEPTION"
-    RUNNER_NO_RESULT = "RUNNER_NO_RESULT"
-    RUNNER_NON_NONE_RETURN = "RUNNER_NON_NONE_RETURN"
-
-
-RUNNER_ABORT_VALUES = tuple(code.value for code in RunnerAbortCode)
-RUNNER_CONTROL_VALUES = tuple(code.value for code in RunnerControlCode)
+RUNNER_ABORT_VALUES = (
+    "PRESTATE_FAILED",
+    "BACKUP_NOT_QUALIFYING",
+    "LOCATOR_NOT_FOUND",
+    "LOCATOR_AMBIGUOUS",
+    "RESOURCE_COLLISION",
+    "RESOURCE_CREATE_FAILED",
+    "ISOLATION_FAILED",
+    "CLEANUP_UNPROVEN",
+    "RESTORE_PRECONDITION_FAILED",
+    "RUNNER_ABORTED",
+)
+RUNNER_CONTROL_VALUES = RUNNER_ABORT_VALUES + (
+    "DECISION_EOF",
+    "DECISION_TIMEOUT",
+    "DECISION_BROKEN_PIPE",
+    "PROCEED_INVALID",
+    "PROTOCOL_BROKEN_PIPE",
+    "PROTOCOL_FAILURE",
+    "LOCAL_ABORT",
+    "RUNTIME_TERMINAL",
+    "RUNNER_STDOUT_FORBIDDEN",
+    "RUNNER_STDERR_FORBIDDEN",
+    "RUNNER_INPUT_FORBIDDEN",
+    "SUBPROCESS_STDIO_REQUIRED",
+    "DISCOVERY_DUPLICATE",
+    "RESULT_BEFORE_PROCEED",
+    "RESULT_DUPLICATE",
+    "RUNNER_MISSING",
+    "RUNNER_NOT_CALLABLE",
+    "RUNNER_SIGNATURE_INVALID",
+    "RUNNER_TOP_LEVEL_EXCEPTION",
+    "RUNNER_NO_RESULT",
+    "RUNNER_NON_NONE_RETURN",
+)
 assert len(RUNNER_ABORT_VALUES) == 10
 assert len(RUNNER_CONTROL_VALUES) == 31
-
-
-class ResultClassification(str, Enum):
-    SUCCESS = "SUCCESS"
-    FAILURE = "FAILURE"
 
 
 PUBLIC_ERROR_CODES = frozenset(
@@ -176,7 +152,7 @@ class BridgeError(Exception):
     def __init__(self, code: str | Enum):
         value = code.value if isinstance(code, Enum) else code
         if value not in PUBLIC_ERROR_CODES:
-            value = RunnerControlCode.PROTOCOL_FAILURE.value
+            value = "PROTOCOL_FAILURE"
         self.code = value
         super().__init__(value)
 
@@ -187,24 +163,6 @@ class ProtocolError(BridgeError):
 
 class BundleError(BridgeError):
     pass
-
-
-class RunnerControlError(BridgeError):
-    """Public error delivered to trusted runner code."""
-
-    def __init__(self, code: RunnerControlCode | RunnerAbortCode | str):
-        if isinstance(code, RunnerAbortCode):
-            code = RunnerControlCode(code.value)
-        elif not isinstance(code, RunnerControlCode):
-            try:
-                code = RunnerControlCode(code)
-            except ValueError:
-                code = RunnerControlCode.PROTOCOL_FAILURE
-        super().__init__(code.value)
-        # BridgeError keeps its public string representation deliberately
-        # terse. The runner-facing contract additionally requires the typed
-        # control enum on ``.code``.
-        self.code = code
 
 
 def _raise(error_type: type[BridgeError], code: str | Enum) -> None:
@@ -1135,33 +1093,6 @@ def _grant_token(graph: BridgeKeyGraph, capability_commitment: str) -> bytes:
     return hmac.new(graph.k_proceed, LP(CAPABILITY_DOMAIN, capability_commitment), hashlib.sha256).digest()
 
 
-class ProceedGrant:
-    """Opaque, session-bound, one-use runner capability."""
-
-    __slots__ = ("_seal",)
-    _SEAL = object()
-
-    def __init__(self, seal: object | None = None):
-        if seal is not self._SEAL:
-            raise TypeError("opaque capability")
-        self._seal = seal
-
-    def __repr__(self) -> str:
-        return "<ProceedGrant opaque>"
-
-    def __str__(self) -> str:
-        return "<ProceedGrant opaque>"
-
-    def __copy__(self) -> "ProceedGrant":
-        raise TypeError("opaque capability")
-
-    def __deepcopy__(self, _memo: dict[int, Any]) -> "ProceedGrant":
-        raise TypeError("opaque capability")
-
-    def __reduce__(self) -> Any:
-        raise TypeError("opaque capability")
-
-
 @dataclass(frozen=True)
 class DummyDecision:
     proceed: bool
@@ -1184,7 +1115,7 @@ class DummyDecision:
         return cls(True)
 
     @classmethod
-    def deny(cls, code: RunnerControlCode = RunnerControlCode.LOCAL_ABORT) -> "DummyDecision":
+    def deny(cls, code: RunnerControlCode | None = None) -> "DummyDecision":
         return cls(False, code)
 
 
@@ -1276,214 +1207,7 @@ def _validate_canonical_barrier(value: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Runner runtime and guarded loader
-
-class _ForbiddenTextStream(io.TextIOBase):
-    def __init__(self, code: RunnerControlCode):
-        self._code = code
-        self.buffer = self
-
-    def write(self, _value: Any) -> int:
-        raise RunnerControlError(self._code)
-
-    def flush(self) -> None:
-        raise RunnerControlError(self._code)
-
-    def close(self) -> None:
-        # TextIOBase finalization calls close while the temporary stream is
-        # being replaced.  Do not turn that bookkeeping into protocol stderr.
-        return None
-
-    def read(self, _size: int = -1) -> str:
-        raise RunnerControlError(self._code)
-
-    def fileno(self) -> int:
-        raise RunnerControlError(self._code)
-
-    @property
-    def encoding(self) -> str:
-        return "utf-8"
-
-
-class _FDOutputCapture:
-    def __init__(self, limit: int):
-        self.limit = limit
-        self.bytes_seen = 0
-        self.overflow = False
-        self._lock = threading.Lock()
-
-    def add(self, payload: bytes) -> None:
-        with self._lock:
-            self.bytes_seen += len(payload)
-            if self.bytes_seen > self.limit:
-                self.overflow = True
-
-
-def _drain_fd(fd: int, capture: _FDOutputCapture) -> None:
-    try:
-        while True:
-            payload = os.read(fd, 4096)
-            if not payload:
-                return
-            capture.add(payload)
-    except OSError:
-        return
-    finally:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-
-
-@contextlib.contextmanager
-def runner_stdio_isolation(*, capture_fds: bool) -> Any:
-    old_streams = (
-        sys.stdout,
-        sys.stderr,
-        sys.stdin,
-        sys.__stdout__,
-        sys.__stderr__,
-        sys.__stdin__,
-    )
-    saved: list[int] = []
-    reader_threads: list[threading.Thread] = []
-    captures = (_FDOutputCapture(4096), _FDOutputCapture(4096))
-    try:
-        if capture_fds:
-            saved = [os.dup(0), os.dup(1), os.dup(2)]
-            out_read, out_write = os.pipe()
-            err_read, err_write = os.pipe()
-            for fd, capture in ((out_read, captures[0]), (err_read, captures[1])):
-                thread = threading.Thread(target=_drain_fd, args=(fd, capture), daemon=True)
-                thread.start()
-                reader_threads.append(thread)
-            null_fd = os.open(os.devnull, os.O_RDONLY)
-            os.dup2(null_fd, 0)
-            os.close(null_fd)
-            os.dup2(out_write, 1)
-            os.dup2(err_write, 2)
-            os.close(out_write)
-            os.close(err_write)
-        forbidden_stdout = _ForbiddenTextStream(RunnerControlCode.RUNNER_STDOUT_FORBIDDEN)
-        forbidden_stderr = _ForbiddenTextStream(RunnerControlCode.RUNNER_STDERR_FORBIDDEN)
-        forbidden_stdin = _ForbiddenTextStream(RunnerControlCode.RUNNER_INPUT_FORBIDDEN)
-        sys.stdout = sys.__stdout__ = forbidden_stdout
-        sys.stderr = sys.__stderr__ = forbidden_stderr
-        sys.stdin = sys.__stdin__ = forbidden_stdin
-        yield
-    finally:
-        (
-            sys.stdout,
-            sys.stderr,
-            sys.stdin,
-            sys.__stdout__,
-            sys.__stderr__,
-            sys.__stdin__,
-        ) = old_streams
-        if capture_fds and saved:
-            for target, source in ((0, saved[0]), (1, saved[1]), (2, saved[2])):
-                try:
-                    os.dup2(source, target)
-                except OSError:
-                    pass
-            for source in saved:
-                try:
-                    os.close(source)
-                except OSError:
-                    pass
-            for thread in reader_threads:
-                thread.join(timeout=1.0)
-            if captures[0].bytes_seen or captures[0].overflow:
-                raise RunnerControlError(RunnerControlCode.RUNNER_STDOUT_FORBIDDEN)
-            if captures[1].bytes_seen or captures[1].overflow:
-                raise RunnerControlError(RunnerControlCode.RUNNER_STDERR_FORBIDDEN)
-
-
-def _validate_subprocess_options(options: dict[str, Any], *, check_output: bool = False) -> None:
-    required = ("stdin", "stderr") if check_output else ("stdin", "stdout", "stderr")
-    if any(name not in options or options[name] is None for name in required):
-        _raise(RunnerControlError, RunnerControlCode.SUBPROCESS_STDIO_REQUIRED)
-    if options.get("shell", False) is not False or options.get("close_fds", True) is not True:
-        _raise(RunnerControlError, RunnerControlCode.SUBPROCESS_STDIO_REQUIRED)
-    if options.get("pass_fds", ()) not in ((), []):
-        _raise(RunnerControlError, RunnerControlCode.SUBPROCESS_STDIO_REQUIRED)
-    if options.get("capture_output", False):
-        _raise(RunnerControlError, RunnerControlCode.SUBPROCESS_STDIO_REQUIRED)
-
-
-class _GuardedSubprocessModule:
-    PIPE = _subprocess.PIPE
-    DEVNULL = _subprocess.DEVNULL
-    STDOUT = _subprocess.STDOUT
-    TimeoutExpired = _subprocess.TimeoutExpired
-    CompletedProcess = _subprocess.CompletedProcess
-
-    @staticmethod
-    def Popen(args: Any, *positional: Any, **options: Any) -> Any:
-        if positional:
-            _raise(RunnerControlError, RunnerControlCode.SUBPROCESS_STDIO_REQUIRED)
-        _validate_subprocess_options(options)
-        return _subprocess.Popen(args, **options)
-
-    @staticmethod
-    def run(args: Any, *positional: Any, **options: Any) -> Any:
-        if positional:
-            _raise(RunnerControlError, RunnerControlCode.SUBPROCESS_STDIO_REQUIRED)
-        _validate_subprocess_options(options)
-        return _subprocess.run(args, **options)
-
-    @staticmethod
-    def check_output(args: Any, *positional: Any, **options: Any) -> Any:
-        if positional:
-            _raise(RunnerControlError, RunnerControlCode.SUBPROCESS_STDIO_REQUIRED)
-        _validate_subprocess_options(options, check_output=True)
-        options["stdout"] = _subprocess.PIPE
-        return _subprocess.check_output(args, **options)
-
-
-_GUARDED_SUBPROCESS = _GuardedSubprocessModule()
-
-
-def _guarded_import(name: str, globals_: Any = None, locals_: Any = None, fromlist: Any = (), level: int = 0) -> Any:
-    if level != 0 or not isinstance(name, str) or name.split(".", 1)[0] not in RUNNER_IMPORT_ROOTS:
-        raise ImportError("RUNNER_IMPORT_FORBIDDEN")
-    if name.split(".", 1)[0] == "subprocess":
-        return _GUARDED_SUBPROCESS
-    return builtins.__import__(name, globals_, locals_, fromlist, level)
-
-
-def _runner_namespace() -> dict[str, Any]:
-    runner_builtins = dict(vars(builtins))
-    runner_builtins["__import__"] = _guarded_import
-    return {
-        "__name__": "__runner_bundle__",
-        "__builtins__": runner_builtins,
-        "RunnerAbortCode": RunnerAbortCode,
-        "RunnerControlCode": RunnerControlCode,
-        "ResultClassification": ResultClassification,
-    }
-
-
-def _validate_run_callable(value: Any) -> None:
-    if value is None:
-        _raise(RunnerControlError, RunnerControlCode.RUNNER_MISSING)
-    if not callable(value):
-        _raise(RunnerControlError, RunnerControlCode.RUNNER_NOT_CALLABLE)
-    if inspect.iscoroutinefunction(value) or inspect.isasyncgenfunction(value):
-        _raise(RunnerControlError, RunnerControlCode.RUNNER_SIGNATURE_INVALID)
-    try:
-        signature = inspect.signature(value)
-    except (TypeError, ValueError):
-        _raise(RunnerControlError, RunnerControlCode.RUNNER_SIGNATURE_INVALID)
-    parameters = list(signature.parameters.values())
-    if (
-        len(parameters) != 1
-        or parameters[0].kind not in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-        or parameters[0].default is not inspect.Parameter.empty
-    ):
-        _raise(RunnerControlError, RunnerControlCode.RUNNER_SIGNATURE_INVALID)
-
-
+# Remote runtime, channel, and import boundary are the canonical payload exports below.
 def spawn_dummy_child() -> Any:
     """Test-only local child; the operational API never selects this default."""
 
@@ -1590,6 +1314,12 @@ class ControllerBridge:
         self._abort_sent = False
         self._proceed_sent = False
         self._post_cas = False
+        self._post_cas_uncertain = False
+        self._pre_cas_abandon_allowed = False
+        self._restore_begin_durable = False
+        self._abandon_attempted = False
+        self._cas_classification_reload_count = 0
+        self._cas_classification_snapshot: STORE.V2EpochSnapshot | None = None
         self._finality_evidence: ProcessTerminalEvidence | None = None
 
     def _load_initial_snapshot(self) -> STORE.V2EpochSnapshot:
@@ -1608,6 +1338,7 @@ class ControllerBridge:
             or snapshot.spool["last_stage"] != "NONE"
         ):
             _raise(BridgeError, "STORE_STATE_INVALID")
+        self._pre_cas_abandon_allowed = True
         return snapshot
 
     def _random_bytes(self, size: int) -> bytes:
@@ -1706,15 +1437,14 @@ class ControllerBridge:
             _raise(BridgeError, "STORE_TRANSITION_FAILED")
 
     def _safe_abandon(self) -> None:
+        if self._abandon_attempted:
+            return
+        if not (self._pre_cas_abandon_allowed or self._restore_begin_durable):
+            return
+        self._abandon_attempted = True
         try:
-            snapshot = self.store.load_epoch(self.epoch_ref)
-            if snapshot.record["state"] not in getattr(
-                STORE,
-                "TERMINAL_EPOCH_STATES",
-                frozenset(),
-            ):
-                self.store.abandon(self.epoch_ref)
-        except Exception:
+            self.store.abandon(self.epoch_ref)
+        except BaseException:
             pass
 
     def _projection(self) -> Mapping[str, Any] | None:
@@ -1813,30 +1543,159 @@ class ControllerBridge:
             _raise(BridgeError, "STORE_STATE_INVALID")
         return snapshot
 
-    def _assert_consumed_reload(
+    def _same_captured_snapshot(
         self,
+        actual: Any,
+        started: STORE.V2EpochSnapshot,
+        *,
+        ledger_state: str,
+        transition_id: str | None = None,
+        transition_commitment: str | None = None,
+    ) -> bool:
+        if not isinstance(actual, STORE.V2EpochSnapshot):
+            return False
+        expected_record = dict(started.record)
+        expected_manifest = dict(started.manifest)
+        expected_ledger = dict(started.ledger)
+        if ledger_state == "CONSUMED":
+            expected_record["restore_ledger_state"] = "CONSUMED"
+            expected_manifest["restore_ledger_state"] = "CONSUMED"
+            try:
+                manifest_bytes = STORE.canonical_json_bytes(
+                    actual.manifest,
+                    max_bytes=STORE.MAX_MANIFEST_BYTES,
+                )
+                expected_record["manifest_digest"] = STORE.bytes_commitment(
+                    "manifest",
+                    manifest_bytes,
+                )
+            except BaseException:
+                return False
+            expected_ledger.update(
+                {
+                    "state": "CONSUMED",
+                    "transition_id": transition_id,
+                    "transition_target": "RESTORE_STARTED",
+                    "transition_data_commitment": transition_commitment,
+                }
+            )
+        elif ledger_state != "UNCONSUMED":
+            return False
+        return (
+            actual.record == expected_record
+            and actual.manifest == expected_manifest
+            and actual.private_identities == started.private_identities
+            and actual.artifact_binding == started.artifact_binding
+            and actual.ledger == expected_ledger
+            and actual.spool == started.spool
+        )
+
+    def _same_consumed_proof(
+        self,
+        actual: Any,
+        started: STORE.V2EpochSnapshot,
         *,
         transition_id: str,
         transition_commitment: str,
-    ) -> STORE.V2EpochSnapshot:
+    ) -> bool:
+        return self._same_captured_snapshot(
+            actual,
+            started,
+            ledger_state="CONSUMED",
+            transition_id=transition_id,
+            transition_commitment=transition_commitment,
+        )
+
+    def _same_unconsumed_proof(
+        self,
+        actual: Any,
+        started: STORE.V2EpochSnapshot,
+    ) -> bool:
+        return self._same_captured_snapshot(
+            actual,
+            started,
+            ledger_state="UNCONSUMED",
+        )
+
+    def _returned_consumed_proof(
+        self,
+        value: Any,
+        *,
+        transition_id: str,
+    ) -> bool:
+        permit_type = getattr(STORE, "RestorePermit", None)
+        return (
+            permit_type is not None
+            and isinstance(value, permit_type)
+            and value.epoch_ref == self.epoch_ref
+            and value.transition_id == transition_id
+            and value.state == "CONSUMED"
+            and value.idempotent is False
+        )
+
+    def _classify_cas(
+        self,
+        started: STORE.V2EpochSnapshot,
+        *,
+        transition_id: str,
+        transition_commitment: str,
+        cas_result: Any,
+        cas_error: BaseException | None,
+    ) -> tuple[str, STORE.V2EpochSnapshot | None]:
+        self._cas_classification_reload_count += 1
         try:
-            snapshot = self.store.load_epoch(self.epoch_ref)
-        except Exception:
-            _raise(BridgeError, "POST_CAS_UNCERTAIN")
-        if not (
-            isinstance(snapshot, STORE.V2EpochSnapshot)
-            and snapshot.record["state"] == "ACTIVE"
-            and snapshot.record["artifact_binding_state"] == "BOUND"
-            and snapshot.artifact_binding.artifact_binding_state == "BOUND"
-            and snapshot.ledger["state"] == "CONSUMED"
-            and snapshot.ledger["transition_id"] == transition_id
-            and snapshot.ledger["transition_target"] == "RESTORE_STARTED"
-            and snapshot.ledger["transition_data_commitment"] == transition_commitment
-            and snapshot.spool["state"] == "OPEN"
-            and snapshot.spool["last_stage"] == "RUNNER_STARTED"
+            observed = self.store.load_epoch(self.epoch_ref)
+        except BaseException:
+            return "C", None
+        if self._same_consumed_proof(
+            observed,
+            started,
+            transition_id=transition_id,
+            transition_commitment=transition_commitment,
+        ) and (
+            cas_error is not None
+            or self._returned_consumed_proof(
+                cas_result,
+                transition_id=transition_id,
+            )
         ):
-            _raise(BridgeError, "POST_CAS_UNCERTAIN")
-        return snapshot
+            return "A", observed
+        if (
+            cas_error is not None
+            and getattr(cas_error, "safety_state", None) == "UNCONSUMED"
+            and self._same_unconsumed_proof(observed, started)
+        ):
+            return "B", observed
+        return "C", observed
+
+    def _resolve_cas(
+        self,
+        started: STORE.V2EpochSnapshot,
+        *,
+        transition_id: str,
+        transition_commitment: str,
+        cas_result: Any,
+        cas_error: BaseException | None,
+    ) -> STORE.V2EpochSnapshot:
+        classification, observed = self._classify_cas(
+            started,
+            transition_id=transition_id,
+            transition_commitment=transition_commitment,
+            cas_result=cas_result,
+            cas_error=cas_error,
+        )
+        self._cas_classification_snapshot = observed
+        if classification == "A" and observed is not None:
+            self._post_cas = True
+            self._pre_cas_abandon_allowed = False
+            return observed
+        if classification == "B":
+            self._pre_cas_abandon_allowed = True
+            _raise(BridgeError, "STORE_TRANSITION_FAILED")
+        self._post_cas = True
+        self._post_cas_uncertain = True
+        self._pre_cas_abandon_allowed = False
+        _raise(BridgeError, "POST_CAS_UNCERTAIN")
 
     def _should_proceed(self) -> bool:
         return True
@@ -1918,24 +1777,29 @@ class ControllerBridge:
             isolation_commitment=isolation_commitment,
             pre_cas_ledger_digest=pre_cas_ledger_digest,
         )
+        cas_result = None
+        cas_error: BaseException | None = None
         try:
-            self.store.consume_restore(
+            cas_result = self.store.consume_restore(
                 self.epoch_ref,
                 transition_id,
                 expected_digest=pre_cas_ledger_digest,
                 data=transition,
             )
-        except Exception:
-            _raise(BridgeError, "STORE_TRANSITION_FAILED")
-        self._post_cas = True
-        self._assert_consumed_reload(
+        except BaseException as error:
+            cas_error = error
+        self._resolve_cas(
+            started,
             transition_id=transition_id,
             transition_commitment=transition_commitment,
+            cas_result=cas_result,
+            cas_error=cas_error,
         )
         self._ingest_stage(
             "RESTORE_BEGIN",
             {"ref": transition_id, "commitment": transition_commitment},
         )
+        self._restore_begin_durable = True
         consumed_record_digest = self.store.record_digest(self.epoch_ref)
         return (
             actual_artifact,
@@ -2129,7 +1993,7 @@ class ControllerBridge:
             )
             return self._proceed_and_finalize(lifecycle_values, outer_deadline)
         except BridgeError as error:
-            if not self._post_cas and self._graph is not None and not self._terminal:
+            if self._graph is not None and not self._terminal:
                 self._send_abort_once(RunnerControlCode.LOCAL_ABORT)
             self._safe_abandon()
             return self._result(
@@ -2138,7 +2002,7 @@ class ControllerBridge:
                 post_cas_uncertain=self._post_cas,
             )
         except Exception:
-            if not self._post_cas and self._graph is not None and not self._terminal:
+            if self._graph is not None and not self._terminal:
                 self._send_abort_once(RunnerControlCode.LOCAL_ABORT)
             self._safe_abandon()
             return self._result(
@@ -2168,578 +2032,1250 @@ class _DummyControllerBridge(ControllerBridge):
 _Run318DummyControllerBridge = _DummyControllerBridge
 
 
-# Run-318 contract-final definitions
-
-class _RemoteChannel:
-    def __init__(
-        self,
-        reader: BinaryIO,
-        writer: BinaryIO,
-        graph: BridgeKeyGraph,
-        *,
-        clock: Callable[[], float] = time.monotonic,
-        randomness: Callable[[int], bytes] = os.urandom,
-    ):
-        self.reader = reader
-        self.writer = writer
-        self.graph = graph
-        self._clock = clock
-        self._randomness = randomness
-        self.sequence = 1
-        self.bytes_seen = 0
-        self._frame_nonces: set[bytes] = set()
-        self._read_lock = threading.Lock()
-
-    def _new_frame_nonce(self) -> bytes:
-        try:
-            value = self._randomness(FRAME_NONCE_BYTES)
-            _validate_nonce(value, "frame nonce", FRAME_NONCE_BYTES)
-        except Exception:
-            _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
-        if value in self._frame_nonces:
-            _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
-        return value
-
-    def _account_frame(self, frame: AuthenticatedFrame) -> None:
-        if frame.frame_nonce in self._frame_nonces:
-            _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
-        if len(self._frame_nonces) >= MAX_SESSION_FRAMES:
-            _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
-        new_total = self.bytes_seen + AUTH_FRAME_OVERHEAD + len(frame.payload)
-        if new_total > MAX_SESSION_BYTES:
-            _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
-        self._frame_nonces.add(frame.frame_nonce)
-        self.bytes_seen = new_total
-
-    def _read_chunk_with_timeout(self, size: int, timeout: float | None) -> bytes:
-        if timeout is None:
-            return self.reader.read(size) or b""
-        if timeout <= 0:
-            _raise(RunnerControlError, RunnerControlCode.DECISION_TIMEOUT)
-        result: queue.Queue[tuple[bytes | None, BaseException | None]] = queue.Queue(maxsize=1)
-
-        def read_once() -> None:
-            try:
-                result.put((self.reader.read(size) or b"", None))
-            except BaseException as error:
-                result.put((None, error))
-
-        thread = threading.Thread(target=read_once, daemon=True)
-        thread.start()
-        try:
-            chunk, error = result.get(timeout=timeout)
-        except queue.Empty:
-            _raise(RunnerControlError, RunnerControlCode.DECISION_TIMEOUT)
-        if error is not None:
-            raise error
-        return chunk or b""
-
-    def _read_exact(self, size: int, *, timeout: float | None = None) -> bytes:
-        chunks = bytearray()
-        deadline = None if timeout is None else self._clock() + timeout
-        while len(chunks) < size:
-            remaining = None if deadline is None else max(0.0, deadline - self._clock())
-            chunk = self._read_chunk_with_timeout(size - len(chunks), remaining)
-            if not chunk:
-                _raise(RunnerControlError, RunnerControlCode.DECISION_EOF)
-            chunks.extend(chunk)
-        return bytes(chunks)
-
-    def _read_frame(self, key: bytes, direction: int, timeout: float | None = None) -> AuthenticatedFrame:
-        with self._read_lock:
-            header = self._read_exact(AUTH_FRAME_HEADER_STRUCT.size, timeout=timeout)
-            try:
-                length = AUTH_FRAME_HEADER_STRUCT.unpack(header)[-1]
-            except struct.error:
-                _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
-            if length > MAX_AUTH_PAYLOAD_BYTES:
-                _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
-            raw = header + self._read_exact(length + AUTH_FRAME_TAG_SIZE, timeout=timeout)
-        try:
-            frame = decode_authenticated_frame(
-                raw,
-                key,
-                expected_direction=direction,
-                expected_sequence=self.sequence,
-                expected_session_nonce=self.graph.n_session,
-            )
-        except BridgeError:
-            _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
-        self._account_frame(frame)
-        self.sequence += 1
-        return frame
-
-    def send(self, key: bytes, direction: int, message: int, payload: bytes) -> None:
-        frame_nonce = self._new_frame_nonce()
-        frame = encode_authenticated_frame(
-            key,
-            direction,
-            message,
-            self.sequence,
-            self.graph.n_session,
-            payload,
-            frame_nonce=frame_nonce,
-        )
-        if self.bytes_seen + len(frame) > MAX_SESSION_BYTES or len(self._frame_nonces) >= MAX_SESSION_FRAMES:
-            _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
-        try:
-            self.writer.write(frame)
-            self.writer.flush()
-        except (BrokenPipeError, OSError, ValueError):
-            _raise(RunnerControlError, RunnerControlCode.PROTOCOL_BROKEN_PIPE)
-        self._frame_nonces.add(frame_nonce)
-        self.bytes_seen += len(frame)
-        self.sequence += 1
-
-    def receive(self, key: bytes, direction: int, *, timeout: float | None = None) -> AuthenticatedFrame:
-        return self._read_frame(key, direction, timeout=timeout)
-
-
-class RunnerRuntime:
-    """The only public capability surface visible to run(runtime)."""
-
-    _INITIAL = "INITIAL"
-    _RUNNING = "RUNNING"
-    _WAITING_DECISION = "WAITING_DECISION"
-    _PROCEED_GRANTED = "PROCEED_GRANTED"
-    _RESULT_SENT = "RESULT_SENT"
-    _TERMINAL = "TERMINAL"
-
-    def __init__(
-        self,
-        channel: _RemoteChannel,
-        barrier_utc: str,
-        *,
-        decision_timeout: float = PROCEED_TIMEOUT_SECONDS,
-    ):
-        self._channel = channel
-        self._barrier_utc = _validate_canonical_barrier(barrier_utc)
-        self._decision_timeout = decision_timeout
-        self._state = self._INITIAL
-        self._grant_records: dict[int, tuple[ProceedGrant, str]] = {}
-        self._terminal_frame_sent = False
-        self._discovery_sent = False
-        self._pending_artifact: str | None = None
-        self._pending_isolation: str | None = None
-
-    @property
-    def barrier_utc(self) -> str:
-        return self._barrier_utc
-
-    def _send_abort(self, code: RunnerControlCode) -> None:
-        if self._terminal_frame_sent:
-            return
-        self._channel.send(
-            self._channel.graph.k_session,
-            DIRECTION_REMOTE_TO_LOCAL,
-            MESSAGE_ABORT,
-            encode_control({"type": "ABORT", "version": 1, "code": code.value}),
-        )
-        self._terminal_frame_sent = True
-        self._state = self._TERMINAL
-
-    def discover(
-        self,
-        execution_row_id: int,
-        artifact_filename: str,
-        isolation_state: str,
-        isolation_commitment: str,
-    ) -> ProceedGrant:
-        if self._discovery_sent:
-            _raise(RunnerControlError, RunnerControlCode.DISCOVERY_DUPLICATE)
-        if self._state != self._RUNNING:
-            _raise(RunnerControlError, RunnerControlCode.RUNTIME_TERMINAL)
-        try:
-            execution_row_id, artifact_filename = _validate_discovery_tuple(
-                execution_row_id,
-                artifact_filename,
-            )
-        except BridgeError:
-            _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
-        if isolation_state != "PASS" or not _is_commitment(isolation_commitment):
-            _raise(RunnerControlError, RunnerControlCode.ISOLATION_FAILED)
-        artifact_commitment = STORE.recovery_commitment(
-            "artifact-row",
-            str(execution_row_id),
-            artifact_filename,
-        )
-        try:
-            self._channel.send(
-                self._channel.graph.k_session,
-                DIRECTION_REMOTE_TO_LOCAL,
-                MESSAGE_DISCOVERY,
-                encode_control(
-                    {
-                        "type": "DISCOVERY",
-                        "version": 1,
-                        "execution_row_id": execution_row_id,
-                        "artifact_filename": artifact_filename,
-                        "isolation_state": "PASS",
-                        "isolation_commitment": isolation_commitment,
-                    }
-                ),
-            )
-        except RunnerControlError:
-            self._state = self._TERMINAL
-            raise
-        self._discovery_sent = True
-        self._pending_artifact = artifact_commitment
-        self._pending_isolation = isolation_commitment
-        self._state = self._WAITING_DECISION
-        try:
-            frame = self._channel.receive(
-                self._channel.graph.k_session,
-                DIRECTION_LOCAL_TO_REMOTE,
-                timeout=self._decision_timeout,
-            )
-        except RunnerControlError:
-            self._state = self._TERMINAL
-            raise
-        except (BrokenPipeError, OSError, ValueError):
-            self._state = self._TERMINAL
-            _raise(RunnerControlError, RunnerControlCode.DECISION_BROKEN_PIPE)
-        if frame.message == MESSAGE_ABORT:
-            try:
-                value = decode_control(frame.payload, "ABORT")
-                code = RunnerControlCode(value["code"])
-            except (BridgeError, TypeError, ValueError):
-                self._state = self._TERMINAL
-                _raise(RunnerControlError, RunnerControlCode.PROCEED_INVALID)
-            self._terminal_frame_sent = True
-            self._state = self._TERMINAL
-            raise RunnerControlError(code)
-        if frame.message != MESSAGE_PROCEED:
-            self._state = self._TERMINAL
-            _raise(RunnerControlError, RunnerControlCode.PROCEED_INVALID)
-        try:
-            value = decode_control(frame.payload, "PROCEED")
-            expected = {
-                "epoch_digest": _digest_commitment(self._channel.graph.epoch_digest),
-                "authority_digest": _digest_commitment(self._channel.graph.authority_digest),
-                "runner_digest": _digest_commitment(self._channel.graph.runner_digest),
-                "bundle_digest": _digest_commitment(self._channel.graph.bundle_digest),
-                "barrier_utc": self._barrier_utc,
-                "artifact_commitment": self._pending_artifact,
-                "isolation_commitment": self._pending_isolation,
-            }
-            for name, expected_value in expected.items():
-                if value[name] != expected_value:
-                    _raise(RunnerControlError, RunnerControlCode.PROCEED_INVALID)
-            capability = proceed_commitment(
-                self._channel.graph,
-                value["artifact_commitment"],
-                value["isolation_commitment"],
-                value["transition_id"],
-                value["pre_cas_ledger_digest"],
-                value["transition_data_commitment"],
-                value["consumed_record_digest"],
-            )
-            raw_token = base64.urlsafe_b64decode(value["grant"] + "===")
-            if not hmac.compare_digest(raw_token, _grant_token(self._channel.graph, capability)):
-                _raise(RunnerControlError, RunnerControlCode.PROCEED_INVALID)
-        except RunnerControlError:
-            self._state = self._TERMINAL
-            raise
-        except (BridgeError, TypeError, ValueError, binascii.Error):
-            self._state = self._TERMINAL
-            _raise(RunnerControlError, RunnerControlCode.PROCEED_INVALID)
-        grant = ProceedGrant(ProceedGrant._SEAL)
-        self._grant_records[id(grant)] = (grant, capability)
-        self._state = self._PROCEED_GRANTED
-        return grant
-
-    def send_result(
-        self,
-        grant: ProceedGrant,
-        classification: ResultClassification | str,
-        result_commitment: str,
-    ) -> None:
-        if self._state == self._RESULT_SENT:
-            _raise(RunnerControlError, RunnerControlCode.RESULT_DUPLICATE)
-        if self._state != self._PROCEED_GRANTED:
-            _raise(RunnerControlError, RunnerControlCode.RESULT_BEFORE_PROCEED)
-        record = self._grant_records.get(id(grant))
-        if type(grant) is not ProceedGrant or record is None or record[0] is not grant:
-            _raise(RunnerControlError, RunnerControlCode.PROCEED_INVALID)
-        try:
-            classification = ResultClassification(classification)
-        except (TypeError, ValueError):
-            _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
-        if not _is_commitment(result_commitment):
-            _raise(RunnerControlError, RunnerControlCode.PROTOCOL_FAILURE)
-        del self._grant_records[id(grant)]
-        try:
-            self._channel.send(
-                self._channel.graph.k_session,
-                DIRECTION_REMOTE_TO_LOCAL,
-                MESSAGE_RESULT,
-                encode_control(
-                    {
-                        "type": "RESULT",
-                        "version": 1,
-                        "classification": classification.value,
-                        "result_commitment": result_commitment,
-                    }
-                ),
-            )
-        except RunnerControlError:
-            self._state = self._TERMINAL
-            raise
-        self._terminal_frame_sent = True
-        self._state = self._RESULT_SENT
-
-    def abort(self, code: RunnerAbortCode) -> None:
-        if not isinstance(code, RunnerAbortCode):
-            raise TypeError("RunnerRuntime.abort accepts RunnerAbortCode")
-        if self._state == self._TERMINAL or self._terminal_frame_sent:
-            _raise(RunnerControlError, RunnerControlCode.RUNTIME_TERMINAL)
-        control = RunnerControlCode(code.value)
-        self._send_abort(control)
-        raise RunnerControlError(control)
-
-
-# Run-318 contract-final definitions continue below.
-
-class RemoteLoader:
-    """Fixed loader state machine used by the local-only dummy child."""
-
-    def __init__(
-        self,
-        reader: BinaryIO,
-        writer: BinaryIO,
-        *,
-        capture_fds: bool = False,
-        clock: Callable[[], float] = time.monotonic,
-        randomness: Callable[[int], bytes] = os.urandom,
-    ):
-        self._raw_reader = reader
-        self._raw_writer = writer
-        self._capture_fds = capture_fds
-        self._clock = clock
-        self._randomness = randomness
-        self._protocol_reader = reader
-        self._protocol_writer = writer
-        self._owned_streams: list[BinaryIO] = []
-        if capture_fds:
-            try:
-                reader_fd = os.dup(reader.fileno())
-                writer_fd = os.dup(writer.fileno())
-                self._protocol_reader = os.fdopen(reader_fd, "rb", buffering=0)
-                self._protocol_writer = os.fdopen(writer_fd, "wb", buffering=0)
-                self._owned_streams = [self._protocol_reader, self._protocol_writer]
-            except (AttributeError, OSError):
-                _raise(ProtocolError, "PROTOCOL_FAILURE")
-        self._terminal_sent = False
-
-    def _read_chunk_with_timeout(self, size: int, timeout: float | None) -> bytes:
-        if timeout is None:
-            return self._protocol_reader.read(size) or b""
-        if timeout <= 0:
-            _raise(ProtocolError, "PROCESS_TIMEOUT")
-        result: queue.Queue[tuple[bytes | None, BaseException | None]] = queue.Queue(maxsize=1)
-
-        def read_once() -> None:
-            try:
-                result.put((self._protocol_reader.read(size) or b"", None))
-            except BaseException as error:
-                result.put((None, error))
-
-        thread = threading.Thread(target=read_once, daemon=True)
-        thread.start()
-        try:
-            chunk, error = result.get(timeout=timeout)
-        except queue.Empty:
-            _raise(ProtocolError, "PROCESS_TIMEOUT")
-        if error is not None:
-            raise error
-        return chunk or b""
-
-    def _read_exact(self, size: int, deadline: float) -> bytes:
-        payload = bytearray()
-        while len(payload) < size:
-            remaining = deadline - self._clock()
-            if remaining <= 0:
-                _raise(ProtocolError, "PROCESS_TIMEOUT")
-            chunk = self._read_chunk_with_timeout(size - len(payload), remaining)
-            if not chunk:
-                _raise(ProtocolError, "PROCESS_EOF")
-            payload.extend(chunk)
-        return bytes(payload)
-
-    def _send_raw(self, payload: bytes) -> None:
-        try:
-            self._protocol_writer.write(payload)
-            self._protocol_writer.flush()
-        except (BrokenPipeError, OSError, ValueError):
-            _raise(ProtocolError, "PROTOCOL_BROKEN_PIPE")
-
-    def _send_abort(self, channel: _RemoteChannel, code: RunnerControlCode) -> None:
-        if self._terminal_sent:
-            return
-        try:
-            channel.send(
-                channel.graph.k_session,
-                DIRECTION_REMOTE_TO_LOCAL,
-                MESSAGE_ABORT,
-                encode_control({"type": "ABORT", "version": 1, "code": code.value}),
-            )
-        except BridgeError:
-            pass
-        self._terminal_sent = True
-
-    def run(self) -> int:
-        channel: _RemoteChannel | None = None
-        runtime: RunnerRuntime | None = None
-        pending_error: RunnerControlError | None = None
-        try:
-            try:
-                n_remote = self._randomness(SESSION_NONCE_BYTES)
-                _validate_nonce(n_remote, "n_remote", SESSION_NONCE_BYTES)
-            except Exception:
-                return EXIT_PROTOCOL_FAILURE
-            self._send_raw(encode_hello(n_remote))
-            overall_deadline = self._clock() + WHOLE_SESSION_TIMEOUT_SECONDS
-            preamble = decode_preamble(
-                self._read_exact(
-                    PREAMBLE_SIZE,
-                    min(overall_deadline, self._clock() + HELLO_TIMEOUT_SECONDS),
-                )
-            )
-            if preamble["n_remote"] != n_remote:
-                _raise(ProtocolError, "HELLO_INVALID")
-            graph = derive_key_graph_from_preamble(preamble)
-            channel = _RemoteChannel(
-                self._protocol_reader,
-                self._protocol_writer,
-                graph,
-                clock=self._clock,
-                randomness=self._randomness,
-            )
-            boot = channel.receive(
-                graph.k_boot,
-                DIRECTION_LOCAL_TO_REMOTE,
-                timeout=max(
-                    0.0,
-                    min(overall_deadline, self._clock() + BOOT_TIMEOUT_SECONDS)
-                    - self._clock(),
-                ),
-            )
-            if boot.message != MESSAGE_BOOT:
-                _raise(ProtocolError, "FRAME_INVALID")
-            barrier = self._extract_barrier(boot.payload)
-            source = decode_boot_payload(
-                boot.payload,
-                expected_barrier=barrier,
-                expected_digest=graph.bundle_digest,
-            )
-            bundle = RunnerBundle(
-                source,
-                expected_commitment=_digest_commitment(graph.bundle_digest),
-            )
-            validate_runner_bundle(bundle)
-            graph = graph.with_barrier(barrier)
-            channel.graph = graph
-            runtime = RunnerRuntime(channel, barrier)
-            namespace = _runner_namespace()
-            try:
-                with runner_stdio_isolation(capture_fds=self._capture_fds):
-                    try:
-                        exec(
-                            compile(
-                                source.decode("utf-8", "strict"),
-                                "<runner-bundle>",
-                                "exec",
-                                dont_inherit=True,
-                            ),
-                            namespace,
-                            namespace,
-                        )
-                        if "run" not in namespace:
-                            _raise(RunnerControlError, RunnerControlCode.RUNNER_MISSING)
-                        _validate_run_callable(namespace["run"])
-                        channel.send(
-                            graph.k_session,
-                            DIRECTION_REMOTE_TO_LOCAL,
-                            MESSAGE_READY,
-                            encode_control(
-                                {
-                                    "type": "READY",
-                                    "version": 1,
-                                    "barrier_utc": runtime.barrier_utc,
-                                }
-                            ),
-                        )
-                        runtime._state = runtime._RUNNING
-                        returned = namespace["run"](runtime)
-                        if runtime._state == runtime._RESULT_SENT:
-                            if returned is not None:
-                                _raise(
-                                    RunnerControlError,
-                                    RunnerControlCode.RUNNER_NON_NONE_RETURN,
-                                )
-                        elif runtime._state != runtime._TERMINAL:
-                            _raise(
-                                RunnerControlError,
-                                RunnerControlCode.RUNNER_NO_RESULT
-                                if returned is None
-                                else RunnerControlCode.RUNNER_NON_NONE_RETURN,
-                            )
-                    except RunnerControlError as error:
-                        pending_error = error
-                    except BaseException:
-                        pending_error = RunnerControlError(
-                            RunnerControlCode.RUNNER_TOP_LEVEL_EXCEPTION
-                        )
-            except RunnerControlError as error:
-                pending_error = error
-            if pending_error is not None:
-                if runtime is not None and not runtime._terminal_frame_sent:
-                    self._send_abort(channel, pending_error.code)
-                return EXIT_RUNNER_ABORT
-            return EXIT_SUCCESS if runtime._state == runtime._RESULT_SENT else EXIT_RUNNER_ABORT
-        except RunnerControlError as error:
-            if channel is not None and not self._terminal_sent:
-                self._send_abort(channel, error.code)
-            return EXIT_RUNNER_ABORT
-        except BridgeError:
-            return EXIT_PROTOCOL_FAILURE
-        except Exception:
-            return EXIT_PROTOCOL_FAILURE
-        finally:
-            for stream in self._owned_streams:
-                try:
-                    stream.close()
-                except OSError:
-                    pass
-
-    @staticmethod
-    def _extract_barrier(payload: bytes) -> str:
-        if not isinstance(payload, bytes) or len(payload) <= BOOT_BARRIER_BYTES:
-            _raise(ProtocolError, "FRAME_INVALID")
-        try:
-            barrier = payload[:BOOT_BARRIER_BYTES].decode("ascii", "strict")
-        except UnicodeDecodeError:
-            _raise(ProtocolError, "FRAME_INVALID")
-        return _validate_canonical_barrier(barrier)
-_CANONICAL_LOADER_COMPRESSED = '0{{R40RR90|NsC0{{S?cCB?5^w9L~?Wdi+g@<q4RkwX-*;}|VoaYLlQqScdBjmi@kmh3H=5D*K%f(YqF4)B7-`++6-!+H(ey(h&bKlb+a;uDHZLc_P7aff)IF+Ygcx)%GqD`ix@MUegBee4wG7%qOl(A5~b<A(J{Gn^adBwb#yQf=BVf}ZBu5`?&tYiy|WouBtD3iL|ym(kB{gqcKxzly=&=bM*JW??rKg3#PBNVfJ;wh-!DE#EZwKb1U`#P(g_0Gn7xM<U+H5_>naW9H}t>U2}*HQoOouQ%Djm&X`z<t^Li&Zco(Eff*?(A4HWYG?mZN|V!`pnbwm5L(0{&ofU^AEkX<6%@c?R|5_COwGbCEKySI^UzlUVy6qn%_eL|N0V|_+2ir1YRR1H_Xu@_DFjki-6iqYB$kQbSh@jo8a#erbD@*%UaV!&(W@vFO?3pxT5`uKnxzcvLdc9OA^)4t<H$@4<P~ilUD>xx2bX)5s}y=%ws7-eBjkpJ?*&ta#~#}N9@~FSkw~Bm>4maXO!9kpyz44&1#0Vnh?g&J8cYt-#%FN?%(DdI#T=Gcp>avD)TM!L`amxaaUMlneohKn>3&Wxuc1yI&DaRO-b+qEk0!cEb45`>Ci8dICbAGZ%Q>^3KQ8}$f-obc>qtCX5-__O{vFH%Pc=iR;2WR0Kai6=cv>qE!c|7xXdNJb$+{K)zI>uC{&Kk=l!+&h;*~wY*H}>{@I)9vdp3>?W{rSW0C3H;XnWp7K+O2In<o$meG3^=1Kh>|(Gk?&<P^f+MboNlXG`m{UiBP{=cM|vtY^Plc8{brX1;E?1Mw~ys(vv@3xQ}|*SHuWuD?ORwE4}?oK$Mr;k;0QYJn*CdoYeRy2`REX{=()pwKEci71jFRp9w16$2ue2=~V}oqS?DoLIA2m5U~oy)tmt(B-ILJxEI{;bPEMaz{b?8^o_TLXkp5iTP}NtMgR6f+5gh!2EgXm?2-u*o63_yVw7@<HlO@xd_@~bH#2uz07F^4;$)8=7+i<>7So%Hnh+*58p+|ck{2PcbzmSeFK=f+=Q^|2zv2pmg)5piQBNQv9{z{#?5uPSNc$houD74YBntF#s+>k7ju9(sr;EiB$#RR9O3O=-84&xpjy!$PzuD;8901}8DK#V>GAU@AN;)KnQHDrAh=~AVb5eD0&(8^<S{FlQL^g3uv-@M)HH7w@9c4LVs<zus*Ynvr{ToN_BduPzkc4wH_l8G7?+*;CqM7q0J5<ENOJignS%_2@)7<}f(OApQmUq`u;F?AKt>q*PwvBWb0rqGXuNfBvp*|rt0c$-gF6A$liPn78!q$hPi?jsXCCA%o6}DlDbh`8MAWh<-$~BY<nsbZ1YlaqXlazFzXCLEIbf2C${jxdhlPSl*`OTWywt=}HBf%TEj!ZLk?<b;o8>o7lBp7Qww4fIc(fFi12U9eiYXbI!%-Ds{7FYO&??e6`=@Irn+v3-g|EwQ`k3D))LHt|!qHZG1I|r~#jpjG159ao9y6~+v6NmQr*yAkpi`lyz~JxGW*`575eQ%AK4&vd`t^YK>bzx;n?CpbETqyE>-}@O2wqL&@MkdJKBv+{#OMCM(d<v8p6hIgOEc%!axg6<W{%EaA?HK^!r~uCoj`k@MnHP|%zQESDPM1>Q`*wV*Toxum$@8ZN+2e--{?Tdp+4+_SvWN)b7qq992414kPS&2;j5=#L9tT~ugCk$xb5BcO8w&Otq5D$Acfq~EH&oef7EYtUWt4y&d9_Wk^8l0nhP>Q&8Azs{Cejdw<`}}UxtBF;|w_w=`g6_e*?<;<7NQGQ>DxWUDT^3STPSfDoIoXK6>Nug1HPoHRedaCil#BhsfH!Y=!frB*nE#yYRRL=(jGPY2-*Uo6lEaNR-9ypGk^ZqZR0XhOwLlMgo@ClukhTMF_oOjHY@2hOPnH(w$Egn!BUBOiM<QTk7cD_ch?dshB-x_!$XDHy!vnmOhj4YU5&Idmb6%XI&((0l<LdoDA1#B=>p}FS*eQ8O&KIw7x=J(TB)zG&4(}pf|z4Mc+@U#7uLK{vP1mKqP<OPc^8K@#yc9#5`v1GU}d!@aW!&s-vIXAvnCzb4Kz8>qljB2V?}HB$Ht3Vmd0<WHnn3z+Il0e`AX?g_}<ZVxM-JL=^1GnFR7-P^Kabeqo+?!5Ci1gm*ua+{kQH_+e<WHxccin@%0S0{UyadnL=;DJBOo{^ANaf}4ib!w-KF39D&@A3nRlFcuD<HKT30P;anot8c+!Q8x4zKnIC#++kOHnzd+kME^U*?Vz3`j-X)!dWn;O#LWDymq6bphNbq{l1`e{^L%eV$k4{+_7T<*^-_YSFK&qM-{G2ilW7ng+*&I)I2XK-#@x=WAES&E7%<0Pe1U962N88^_ofrf^h1bdSDSn%xDw9GpM!&NCG$km)965$X~1#2;tUo9fwmHlXFAf~AlFa#jae7#jTvvgn+za4qfiXcJd|DCAPKQYltn-{eB9cHHp(Cp4fXqRkD5j7V6xDc<LEW7ds(*ns}{dAHjw{USSUp2_*0-begJ~>@kr?)aWEQ{9*ta+QcpH5**ML9nAJe+9i^+oyj}_0XXw>(5=QmYoN*6134`M7hn5R+)fvOv0L+0YmNP7YKD#VsQR(`m90fqmxkF)%YiQFT7^tzc41>bPm@2oH2>FuECx@&Ae;7=qL<$nl7V2`E%za-P25-ri=?)l)RdXwmqlv<Bw}IR&VR)k7Q>C}mPR;jrXk;SnFRZ)h0SeEtwA0<(hR~Pq6<H)&<)}RyH)pE=$$%!V9>pwnReXtR?w5{^@f?AjfEzwbVw`gjW&R`8ut1`@AJ)IoR>hg#VcI=Yd4;QxB(L#+sh9i@!`-dxLcJNTI3yA`y@=xjc)6xS+P>B;SR7&69;ZTTmDd)_xbxqyV(bPDptj5A1n8=78W^%lWFQ;@A7wKL(mj?M_m^mef>}E}jm32POM0((pmrZ&z6Z2M0#xigHnV&Z8pv`E3#4du*l$L|hLsVI+N<C3LJzB{U}GmeXaju^7aN?gwd(pd-M!rO9D&`@Z89lHWag6LlkxurOWrlnMVEL^PI1GKV7+*5t==_5(7(Peo>=Ax%XhRmC!%2%x-*uIQ5!PwU@7!vv{DulGgR3w#49Rk38!51Jhp(uJnA9X)6T+fIon*Q06dmy1pQk-)S<ZQh5%}4YJFEC09oY;)UzBrB8Dp|fx>o$H}s4-$|m;qT#ZVw_iw!p@I9)unE0)DmcKRBi3HhmNd}2rFB_ukI~+t@=A>rZ8S=RhQj?J$YqQRBcDtK6HF6v*nEo#W9nQEshF#DW)yeMrT6FcBXPoD4O%s4h4t(3}8mso{TrIlL6IgNHex9C5KI3A8b6@>PGV1(Ge6o}FoOM*^PHu%OGiJpZms-ld0LL9`Ph^2+1!35p{w>|Q=ca?`#dA=?@+Q7!*paBWn9BfGdWVM<km>>cl%{nU0!WGP_$|;kWClDf<+RZ(33f6#91nI}7$Q5x+w%aZ+NMuwZ4`;K>dVJXKk06I?kX$hrm$iQ3|4mQl_a#V2s;+~>d!C9+NZTq`Kd7S;5ekg14`T~J$-o{=tJ-$=~<^24Pt|WejkIuIC<rNY3u%8kqXq>u?}Lpn4gU(15%5XI&k#l?KJkZzp+*6ZDq`u0FPcvV*@VUx2*V6Jtp_G6l*u3m#_c7#mUzx&Wi?6fne1TZZePeh%CO(w?{H-l1__Gq#2@s%jNH`GPJ8T8f_cEuV$BJoxoKus>-Y(Om>|U28&PIaR*zRj{zlFS_7oxV}c&WTY1By7Y(qo&;`gemT{c4cg&ULVohXbrq{#~R$DZXS96{A*^WsFbOElwA+YN|(@!G)1x|2=s|P+8wK@=h#6DLsc&Y`$wilt$&rtRq|F&@g15njq?1EiV11Nn&41S2V#$`4!BS1nfTrAFB7{NNLBx0!;>1e?m9pUgrU&=qsk#gPsNmSx#MX9v!0F2=^T&Y!)uY4MtcwJ@{Z_$hdz%<Au3#**1&nQKI%o{(zj|~k`d0o2b*Nr0`c8*X%DBf9I6qxR+Xge1ig_u-p$I-c^79C1l6;rFX7k-BixK=g-vH$+W%B2'
-CANONICAL_LOADER_PAYLOAD_BYTES = lzma.decompress(
-    base64.b85decode(_CANONICAL_LOADER_COMPRESSED)
+# Canonical remote exports are loaded from CANONICAL_LOADER_PAYLOAD_BYTES below.
+# RunnerRuntime is exported by the canonical payload.
+# RemoteLoader is exported by the canonical payload.
+CANONICAL_LOADER_PAYLOAD_BYTES = (
+    b"import base64 as _b64\n"
+    b"import binascii as _bin\n"
+    b"import builtins as _builtins\n"
+    b"import contextlib as _ctx\n"
+    b"import datetime as _datetime\n"
+    b"import hashlib as _hashlib\n"
+    b"import hmac as _hmac\n"
+    b"import inspect as _inspect\n"
+    b"import io as _io\n"
+    b"import json as _json\n"
+    b"import os as _os\n"
+    b"import queue as _queue\n"
+    b"import re as _re\n"
+    b"import struct as _struct\n"
+    b"import subprocess as _subprocess\n"
+    b"import sys as _sys\n"
+    b"import threading as _threading\n"
+    b"import time as _time\n"
+    b"import types as _types\n"
+    b"from enum import Enum as _Enum\n"
+    b"\n"
+    b"_VERSION = 1\n"
+    b"_HELLO_MAGIC = b\"SWZBRDG1\"\n"
+    b"_HELLO = _struct.Struct(\"!8sBBH32s\")\n"
+    b"_PREAMBLE_MAGIC = b\"SWZPRE01\"\n"
+    b"_PREAMBLE_HEADER = _struct.Struct(\"!8sBBHHH\")\n"
+    b"_PREAMBLE_BODY = _struct.Struct(\"!32s32s32s32s32s32s32s32s\")\n"
+    b"_FRAME_MAGIC = b\"SWZFRM01\"\n"
+    b"_FRAME = _struct.Struct(\"!8sBBBBQ32s16sI\")\n"
+    b"_TAG_BYTES = 32\n"
+    b"_FRAME_OVERHEAD = _FRAME.size + _TAG_BYTES\n"
+    b"_MAX_FRAME = 64 * 1024\n"
+    b"_MAX_PAYLOAD = _MAX_FRAME - _FRAME_OVERHEAD\n"
+    b"_MAX_FRAMES = 16\n"
+    b"_MAX_SESSION_BYTES = 1048576\n"
+    b"_FRAME_FLAGS = 0\n"
+    b"_LOCAL_TO_REMOTE = 1\n"
+    b"_REMOTE_TO_LOCAL = 2\n"
+    b"_BOOT = 1\n"
+    b"_READY = 2\n"
+    b"_DISCOVERY = 3\n"
+    b"_PROCEED = 4\n"
+    b"_ABORT = 5\n"
+    b"_RESULT = 6\n"
+    b"_BOOT_BARRIER_BYTES = 27\n"
+    b"_MAX_BUNDLE_BYTES = 65536\n"
+    b"_CONTROL_MAX_BYTES = 4096\n"
+    b"_COMMITMENT_RE = _re.compile(r\"sha256:v1:[0-9a-f]{64}\\Z\", _re.ASCII)\n"
+    b"_BARRIER_RE = _re.compile(\n"
+    b"    r\"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z\",\n"
+    b"    _re.ASCII,\n"
+    b")\n"
+    b"_ROOTS = frozenset({\n"
+    b"    \"base64\", \"binascii\", \"collections\", \"contextlib\", \"dataclasses\",\n"
+    b"    \"datetime\", \"hashlib\", \"hmac\", \"io\", \"json\", \"math\", \"os\",\n"
+    b"    \"pathlib\", \"queue\", \"re\", \"selectors\", \"shlex\", \"signal\", \"stat\",\n"
+    b"    \"struct\", \"subprocess\", \"sys\", \"threading\", \"time\", \"typing\", \"uuid\",\n"
+    b"})\n"
+    b"\n"
+    b"class RunnerAbortCode(str, _Enum):\n"
+    b"    PRESTATE_FAILED = \"PRESTATE_FAILED\"\n"
+    b"    BACKUP_NOT_QUALIFYING = \"BACKUP_NOT_QUALIFYING\"\n"
+    b"    LOCATOR_NOT_FOUND = \"LOCATOR_NOT_FOUND\"\n"
+    b"    LOCATOR_AMBIGUOUS = \"LOCATOR_AMBIGUOUS\"\n"
+    b"    RESOURCE_COLLISION = \"RESOURCE_COLLISION\"\n"
+    b"    RESOURCE_CREATE_FAILED = \"RESOURCE_CREATE_FAILED\"\n"
+    b"    ISOLATION_FAILED = \"ISOLATION_FAILED\"\n"
+    b"    CLEANUP_UNPROVEN = \"CLEANUP_UNPROVEN\"\n"
+    b"    RESTORE_PRECONDITION_FAILED = \"RESTORE_PRECONDITION_FAILED\"\n"
+    b"    RUNNER_ABORTED = \"RUNNER_ABORTED\"\n"
+    b"\n"
+    b"class RunnerControlCode(str, _Enum):\n"
+    b"    PRESTATE_FAILED = RunnerAbortCode.PRESTATE_FAILED.value\n"
+    b"    BACKUP_NOT_QUALIFYING = RunnerAbortCode.BACKUP_NOT_QUALIFYING.value\n"
+    b"    LOCATOR_NOT_FOUND = RunnerAbortCode.LOCATOR_NOT_FOUND.value\n"
+    b"    LOCATOR_AMBIGUOUS = RunnerAbortCode.LOCATOR_AMBIGUOUS.value\n"
+    b"    RESOURCE_COLLISION = RunnerAbortCode.RESOURCE_COLLISION.value\n"
+    b"    RESOURCE_CREATE_FAILED = RunnerAbortCode.RESOURCE_CREATE_FAILED.value\n"
+    b"    ISOLATION_FAILED = RunnerAbortCode.ISOLATION_FAILED.value\n"
+    b"    CLEANUP_UNPROVEN = RunnerAbortCode.CLEANUP_UNPROVEN.value\n"
+    b"    RESTORE_PRECONDITION_FAILED = RunnerAbortCode.RESTORE_PRECONDITION_FAILED.value\n"
+    b"    RUNNER_ABORTED = RunnerAbortCode.RUNNER_ABORTED.value\n"
+    b"    DECISION_EOF = \"DECISION_EOF\"\n"
+    b"    DECISION_TIMEOUT = \"DECISION_TIMEOUT\"\n"
+    b"    DECISION_BROKEN_PIPE = \"DECISION_BROKEN_PIPE\"\n"
+    b"    PROTOCOL_BROKEN_PIPE = \"PROTOCOL_BROKEN_PIPE\"\n"
+    b"    PROCEED_INVALID = \"PROCEED_INVALID\"\n"
+    b"    PROTOCOL_FAILURE = \"PROTOCOL_FAILURE\"\n"
+    b"    LOCAL_ABORT = \"LOCAL_ABORT\"\n"
+    b"    RUNTIME_TERMINAL = \"RUNTIME_TERMINAL\"\n"
+    b"    RUNNER_STDOUT_FORBIDDEN = \"RUNNER_STDOUT_FORBIDDEN\"\n"
+    b"    RUNNER_STDERR_FORBIDDEN = \"RUNNER_STDERR_FORBIDDEN\"\n"
+    b"    RUNNER_INPUT_FORBIDDEN = \"RUNNER_INPUT_FORBIDDEN\"\n"
+    b"    SUBPROCESS_STDIO_REQUIRED = \"SUBPROCESS_STDIO_REQUIRED\"\n"
+    b"    DISCOVERY_DUPLICATE = \"DISCOVERY_DUPLICATE\"\n"
+    b"    RESULT_BEFORE_PROCEED = \"RESULT_BEFORE_PROCEED\"\n"
+    b"    RESULT_DUPLICATE = \"RESULT_DUPLICATE\"\n"
+    b"    RUNNER_MISSING = \"RUNNER_MISSING\"\n"
+    b"    RUNNER_NOT_CALLABLE = \"RUNNER_NOT_CALLABLE\"\n"
+    b"    RUNNER_SIGNATURE_INVALID = \"RUNNER_SIGNATURE_INVALID\"\n"
+    b"    RUNNER_TOP_LEVEL_EXCEPTION = \"RUNNER_TOP_LEVEL_EXCEPTION\"\n"
+    b"    RUNNER_NO_RESULT = \"RUNNER_NO_RESULT\"\n"
+    b"    RUNNER_NON_NONE_RETURN = \"RUNNER_NON_NONE_RETURN\"\n"
+    b"\n"
+    b"class ResultClassification(str, _Enum):\n"
+    b"    SUCCESS = \"SUCCESS\"\n"
+    b"    FAILURE = \"FAILURE\"\n"
+    b"\n"
+    b"class RunnerControlError(Exception):\n"
+    b"    def __init__(self, code):\n"
+    b"        if isinstance(code, RunnerAbortCode):\n"
+    b"            code = RunnerControlCode(code.value)\n"
+    b"        elif not isinstance(code, RunnerControlCode):\n"
+    b"            try:\n"
+    b"                code = RunnerControlCode(code)\n"
+    b"            except (TypeError, ValueError):\n"
+    b"                code = RunnerControlCode.PROTOCOL_FAILURE\n"
+    b"        self.code = code\n"
+    b"        super().__init__(code.value)\n"
+    b"\n"
+    b"def _fail(code):\n"
+    b"    raise RunnerControlError(code)\n"
+    b"\n"
+    b"def _lp(*parts):\n"
+    b"    result = bytearray()\n"
+    b"    for part in parts:\n"
+    b"        if isinstance(part, bytes):\n"
+    b"            value = part\n"
+    b"        elif isinstance(part, str):\n"
+    b"            value = part.encode(\"utf-8\", \"strict\")\n"
+    b"        else:\n"
+    b"            _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"        if len(value) > 0xffffffff:\n"
+    b"            _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"        result.extend(_struct.pack(\"!I\", len(value)))\n"
+    b"        result.extend(value)\n"
+    b"    return bytes(result)\n"
+    b"\n"
+    b"def _recovery_commitment(domain, *parts):\n"
+    b"    return \"sha256:v1:\" + _hashlib.sha256(\n"
+    b"        _lp(\"recovery-commitment.v1\", domain, *parts)\n"
+    b"    ).hexdigest()\n"
+    b"\n"
+    b"def _bytes_commitment(domain, payload):\n"
+    b"    if not isinstance(payload, bytes):\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    framed = _lp(\"recovery-commitment.v1\", domain)\n"
+    b"    return \"sha256:v1:\" + _hashlib.sha256(\n"
+    b"        framed + _struct.pack(\"!I\", len(payload)) + payload\n"
+    b"    ).hexdigest()\n"
+    b"\n"
+    b"def _bridge_commitment(domain, *parts):\n"
+    b"    return _bytes_commitment(\"bridge-\" + domain, _lp(*parts))\n"
+    b"\n"
+    b"def _is_commitment(value):\n"
+    b"    return isinstance(value, str) and _COMMITMENT_RE.fullmatch(value) is not None\n"
+    b"\n"
+    b"def _commitment_bytes(value):\n"
+    b"    if not _is_commitment(value):\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    try:\n"
+    b"        return bytes.fromhex(value[10:])\n"
+    b"    except ValueError:\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"\n"
+    b"def _digest_commitment(value):\n"
+    b"    if not isinstance(value, bytes) or len(value) != 32:\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    return \"sha256:v1:\" + value.hex()\n"
+    b"\n"
+    b"def _nonce(value, size):\n"
+    b"    if not isinstance(value, bytes) or len(value) != size or not any(value):\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    return value\n"
+    b"\n"
+    b"def _derive(seed, domain, *parts):\n"
+    b"    return _hmac.new(_nonce(seed, 32), _lp(domain, *parts), _hashlib.sha256).digest()\n"
+    b"\n"
+    b"def _json_bytes(value, limit):\n"
+    b"    def check(child):\n"
+    b"        if isinstance(child, float):\n"
+    b"            _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"        if isinstance(child, dict):\n"
+    b"            for key, item in child.items():\n"
+    b"                if not isinstance(key, str):\n"
+    b"                    _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"                check(item)\n"
+    b"        elif isinstance(child, list):\n"
+    b"            for item in child:\n"
+    b"                check(item)\n"
+    b"        elif isinstance(child, str):\n"
+    b"            child.encode(\"utf-8\", \"strict\")\n"
+    b"        elif child is not None and type(child) not in (int, bool):\n"
+    b"            _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    check(value)\n"
+    b"    try:\n"
+    b"        result = _json.dumps(\n"
+    b"            value, ensure_ascii=False, allow_nan=False, separators=(\",\", \":\")\n"
+    b"        ).encode(\"utf-8\", \"strict\")\n"
+    b"    except (TypeError, ValueError, UnicodeError, OverflowError):\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    if len(result) > limit:\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    return result\n"
+    b"\n"
+    b"def _parse_json(payload, limit):\n"
+    b"    if not isinstance(payload, bytes) or not payload or len(payload) > limit:\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    try:\n"
+    b"        text = payload.decode(\"utf-8\", \"strict\")\n"
+    b"    except UnicodeDecodeError:\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    if text[:1] in \" \\t\\r\\n\" or text[-1:] in \" \\t\\r\\n\":\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    def pairs(items):\n"
+    b"        result = {}\n"
+    b"        for key, value in items:\n"
+    b"            if key in result:\n"
+    b"                _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"            result[key] = value\n"
+    b"        return result\n"
+    b"    try:\n"
+    b"        decoder = _json.JSONDecoder(\n"
+    b"            object_pairs_hook=pairs,\n"
+    b"            parse_constant=lambda _value: _fail(RunnerControlCode.PROTOCOL_FAILURE),\n"
+    b"        )\n"
+    b"        value, end = decoder.raw_decode(text)\n"
+    b"    except (_json.JSONDecodeError, RecursionError, ValueError, RunnerControlError):\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    if end != len(text) or _json_bytes(value, limit) != payload:\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    return value\n"
+    b"\n"
+    b"def _barrier(value):\n"
+    b"    if not isinstance(value, str) or _BARRIER_RE.fullmatch(value) is None:\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    try:\n"
+    b"        parsed = _datetime.datetime.strptime(value, \"%Y-%m-%dT%H:%M:%S.%fZ\")\n"
+    b"    except ValueError:\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    if parsed.strftime(\"%Y-%m-%dT%H:%M:%S.%fZ\") != value:\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    if len(value.encode(\"ascii\", \"strict\")) != 27:\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    return value\n"
+    b"\n"
+    b"def _discovery_tuple(row, filename):\n"
+    b"    if type(row) is not int or not 0 < row <= 0x7fffffffffffffff:\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    if not isinstance(filename, str):\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    encoded = filename.encode(\"utf-8\", \"strict\")\n"
+    b"    if (\n"
+    b"        not encoded or len(encoded) > 2048 or filename in (\".\", \"..\")\n"
+    b"        or \"/\" in filename or \"\\\\\" in filename\n"
+    b"        or any(ord(char) <= 0x1f or ord(char) == 0x7f for char in filename)\n"
+    b"    ):\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    return row, filename\n"
+    b"\n"
+    b"def _validate_control(value, expected):\n"
+    b"    fields = {\n"
+    b"        \"READY\": (\"type\", \"version\", \"barrier_utc\"),\n"
+    b"        \"DISCOVERY\": (\n"
+    b"            \"type\", \"version\", \"execution_row_id\", \"artifact_filename\",\n"
+    b"            \"isolation_state\", \"isolation_commitment\",\n"
+    b"        ),\n"
+    b"        \"PROCEED\": (\n"
+    b"            \"type\", \"version\", \"epoch_digest\", \"authority_digest\",\n"
+    b"            \"runner_digest\", \"bundle_digest\", \"barrier_utc\",\n"
+    b"            \"artifact_commitment\", \"isolation_commitment\", \"transition_id\",\n"
+    b"            \"pre_cas_ledger_digest\", \"transition_data_commitment\",\n"
+    b"            \"consumed_record_digest\", \"grant\",\n"
+    b"        ),\n"
+    b"        \"ABORT\": (\"type\", \"version\", \"code\"),\n"
+    b"        \"RESULT\": (\"type\", \"version\", \"classification\", \"result_commitment\"),\n"
+    b"    }[expected]\n"
+    b"    if (\n"
+    b"        not isinstance(value, dict)\n"
+    b"        or tuple(value.keys()) != fields\n"
+    b"        or value.get(\"type\") != expected\n"
+    b"        or value.get(\"version\") != 1\n"
+    b"    ):\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    if expected == \"READY\":\n"
+    b"        _barrier(value[\"barrier_utc\"])\n"
+    b"    elif expected == \"DISCOVERY\":\n"
+    b"        _discovery_tuple(value[\"execution_row_id\"], value[\"artifact_filename\"])\n"
+    b"        if value[\"isolation_state\"] != \"PASS\" or not _is_commitment(value[\"isolation_commitment\"]):\n"
+    b"            _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    elif expected == \"PROCEED\":\n"
+    b"        for name in (\n"
+    b"            \"epoch_digest\", \"authority_digest\", \"runner_digest\", \"bundle_digest\",\n"
+    b"            \"artifact_commitment\", \"isolation_commitment\",\n"
+    b"            \"pre_cas_ledger_digest\", \"transition_data_commitment\",\n"
+    b"            \"consumed_record_digest\",\n"
+    b"        ):\n"
+    b"            if not _is_commitment(value[name]):\n"
+    b"                _fail(RunnerControlCode.PROCEED_INVALID)\n"
+    b"        _barrier(value[\"barrier_utc\"])\n"
+    b"        if (\n"
+    b"            type(value[\"transition_id\"]) is not str\n"
+    b"            or _re.fullmatch(\n"
+    b"                r\"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\",\n"
+    b"                value[\"transition_id\"],\n"
+    b"                _re.ASCII,\n"
+    b"            ) is None\n"
+    b"        ):\n"
+    b"            _fail(RunnerControlCode.PROCEED_INVALID)\n"
+    b"        if not isinstance(value[\"grant\"], str):\n"
+    b"            _fail(RunnerControlCode.PROCEED_INVALID)\n"
+    b"        try:\n"
+    b"            raw = _b64.urlsafe_b64decode(value[\"grant\"] + \"===\")\n"
+    b"        except (ValueError, TypeError, _bin.Error):\n"
+    b"            _fail(RunnerControlCode.PROCEED_INVALID)\n"
+    b"        if (\n"
+    b"            len(raw) != 32\n"
+    b"            or _b64.urlsafe_b64encode(raw).decode(\"ascii\").rstrip(\"=\")\n"
+    b"            != value[\"grant\"]\n"
+    b"        ):\n"
+    b"            _fail(RunnerControlCode.PROCEED_INVALID)\n"
+    b"    elif expected == \"ABORT\":\n"
+    b"        try:\n"
+    b"            RunnerControlCode(value[\"code\"])\n"
+    b"        except (TypeError, ValueError):\n"
+    b"            _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    else:\n"
+    b"        try:\n"
+    b"            ResultClassification(value[\"classification\"])\n"
+    b"        except (TypeError, ValueError):\n"
+    b"            _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"        if not _is_commitment(value[\"result_commitment\"]):\n"
+    b"            _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    return value\n"
+    b"\n"
+    b"def _encode_control(value):\n"
+    b"    return _json_bytes(value, _CONTROL_MAX_BYTES)\n"
+    b"\n"
+    b"def _decode_control(payload, expected=None):\n"
+    b"    value = _parse_json(payload, _CONTROL_MAX_BYTES)\n"
+    b"    if not isinstance(value, dict) or value.get(\"type\") not in (\n"
+    b"        \"READY\", \"DISCOVERY\", \"PROCEED\", \"ABORT\", \"RESULT\"\n"
+    b"    ):\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    if expected is not None and value[\"type\"] != expected:\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    return _validate_control(value, value[\"type\"])\n"
+    b"\n"
+    b"def _decode_preamble(payload):\n"
+    b"    if not isinstance(payload, bytes) or len(payload) != 272:\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    try:\n"
+    b"        header = _PREAMBLE_HEADER.unpack(payload[:_PREAMBLE_HEADER.size])\n"
+    b"        body = _PREAMBLE_BODY.unpack(payload[_PREAMBLE_HEADER.size:])\n"
+    b"    except _struct.error:\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    if header != (_PREAMBLE_MAGIC, 1, 2, 0, 256, 0):\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    return dict(zip(\n"
+    b"        (\n"
+    b"            \"n_remote\", \"n_local\", \"n_session\", \"epoch_digest\",\n"
+    b"            \"authority_digest\", \"runner_digest\", \"bundle_digest\",\n"
+    b"            \"bootstrap_seed\",\n"
+    b"        ),\n"
+    b"        body,\n"
+    b"    ))\n"
+    b"\n"
+    b"def _decode_boot(payload, expected_digest):\n"
+    b"    if not isinstance(payload, bytes) or len(payload) <= _BOOT_BARRIER_BYTES:\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    try:\n"
+    b"        barrier = payload[:_BOOT_BARRIER_BYTES].decode(\"ascii\", \"strict\")\n"
+    b"    except UnicodeDecodeError:\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    _barrier(barrier)\n"
+    b"    source = payload[_BOOT_BARRIER_BYTES:]\n"
+    b"    if not 1 <= len(source) <= _MAX_BUNDLE_BYTES:\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    if _commitment_bytes(_bytes_commitment(\"bridge-runner-bundle\", source)) != expected_digest:\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    return barrier, source\n"
+    b"\n"
+    b"def _frame_auth(key, header, payload):\n"
+    b"    return _hmac.new(_nonce(key, 32), header + payload, _hashlib.sha256).digest()\n"
+    b"\n"
+    b"class _Frame:\n"
+    b"    __slots__ = (\"direction\", \"message\", \"sequence\", \"session_nonce\", \"frame_nonce\", \"payload\")\n"
+    b"    def __init__(self, direction, message, sequence, session_nonce, frame_nonce, payload):\n"
+    b"        self.direction = direction\n"
+    b"        self.message = message\n"
+    b"        self.sequence = sequence\n"
+    b"        self.session_nonce = session_nonce\n"
+    b"        self.frame_nonce = frame_nonce\n"
+    b"        self.payload = payload\n"
+    b"    def __repr__(self):\n"
+    b"        return (\n"
+    b"            f\"AuthenticatedFrame(direction={self.direction}, message={self.message}, \"\n"
+    b"            f\"sequence={self.sequence}, payload_bytes={len(self.payload)})\"\n"
+    b"        )\n"
+    b"\n"
+    b"def _encode_frame(key, direction, message, sequence, session_nonce, payload, nonce):\n"
+    b"    if direction not in (1, 2) or message not in (1, 2, 3, 4, 5, 6):\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    if type(sequence) is not int or not 1 <= sequence <= _MAX_FRAMES:\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    _nonce(key, 32)\n"
+    b"    _nonce(session_nonce, 32)\n"
+    b"    _nonce(nonce, 16)\n"
+    b"    if not isinstance(payload, bytes) or len(payload) > _MAX_PAYLOAD:\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    header = _FRAME.pack(\n"
+    b"        _FRAME_MAGIC, 1, direction, message, 0, sequence,\n"
+    b"        session_nonce, nonce, len(payload)\n"
+    b"    )\n"
+    b"    return header + payload + _frame_auth(key, header, payload)\n"
+    b"\n"
+    b"def _decode_frame(payload, key, direction, sequence, session_nonce):\n"
+    b"    if not isinstance(payload, bytes) or len(payload) < _FRAME_OVERHEAD:\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    try:\n"
+    b"        header = payload[:_FRAME.size]\n"
+    b"        magic, version, actual_direction, message, flags, actual_sequence, actual_session, nonce, length = _FRAME.unpack(header)\n"
+    b"    except _struct.error:\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    if (\n"
+    b"        magic != _FRAME_MAGIC or version != 1 or flags != 0\n"
+    b"        or actual_direction != direction or message not in (1, 2, 3, 4, 5, 6)\n"
+    b"        or actual_sequence != sequence or actual_session != session_nonce\n"
+    b"        or length > _MAX_PAYLOAD or len(payload) != _FRAME_OVERHEAD + length\n"
+    b"    ):\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    _nonce(nonce, 16)\n"
+    b"    body = payload[_FRAME.size:_FRAME.size + length]\n"
+    b"    if not _hmac.compare_digest(payload[-32:], _frame_auth(key, header, body)):\n"
+    b"        _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"    return _Frame(actual_direction, message, actual_sequence, actual_session, nonce, body)\n"
+    b"\n"
+    b"def _read_once(stream, size, timeout):\n"
+    b"    if timeout is None:\n"
+    b"        return stream.read(size) or b\"\"\n"
+    b"    if timeout <= 0:\n"
+    b"        _fail(RunnerControlCode.DECISION_TIMEOUT)\n"
+    b"    result = _queue.Queue(maxsize=1)\n"
+    b"    def read():\n"
+    b"        try:\n"
+    b"            result.put((stream.read(size) or b\"\", None))\n"
+    b"        except BaseException as error:\n"
+    b"            result.put((None, error))\n"
+    b"    thread = _threading.Thread(target=read, daemon=True)\n"
+    b"    thread.start()\n"
+    b"    try:\n"
+    b"        value, error = result.get(timeout=timeout)\n"
+    b"    except _queue.Empty:\n"
+    b"        _fail(RunnerControlCode.DECISION_TIMEOUT)\n"
+    b"    if error is not None:\n"
+    b"        if isinstance(error, (BrokenPipeError, OSError, ValueError)):\n"
+    b"            _fail(RunnerControlCode.DECISION_BROKEN_PIPE)\n"
+    b"        raise error\n"
+    b"    return value\n"
+    b"\n"
+    b"def _read_exact(stream, size, timeout=None, clock=_time.monotonic):\n"
+    b"    result = bytearray()\n"
+    b"    deadline = None if timeout is None else clock() + timeout\n"
+    b"    while len(result) < size:\n"
+    b"        remaining = None if deadline is None else max(0.0, deadline - clock())\n"
+    b"        chunk = _read_once(stream, size - len(result), remaining)\n"
+    b"        if not chunk:\n"
+    b"            _fail(RunnerControlCode.DECISION_EOF)\n"
+    b"        result.extend(chunk)\n"
+    b"    return bytes(result)\n"
+    b"\n"
+    b"class _Graph:\n"
+    b"    __slots__ = (\n"
+    b"        \"n_remote\", \"n_local\", \"n_session\", \"epoch_digest\",\n"
+    b"        \"authority_digest\", \"runner_digest\", \"bundle_digest\",\n"
+    b"        \"bootstrap_seed\", \"epoch_commitment\", \"authority_commitment\",\n"
+    b"        \"runner_commitment\", \"bundle_commitment\", \"loader_commitment\",\n"
+    b"        \"barrier_utc\", \"barrier_commitment\", \"k_boot\", \"k_session\",\n"
+    b"        \"k_proceed\",\n"
+    b"    )\n"
+    b"    def __init__(self, values, barrier=None):\n"
+    b"        self.n_remote = _nonce(values[\"n_remote\"], 32)\n"
+    b"        self.n_local = _nonce(values[\"n_local\"], 32)\n"
+    b"        self.n_session = _nonce(values[\"n_session\"], 32)\n"
+    b"        self.epoch_digest = _nonce(values[\"epoch_digest\"], 32)\n"
+    b"        self.authority_digest = _nonce(values[\"authority_digest\"], 32)\n"
+    b"        self.runner_digest = _nonce(values[\"runner_digest\"], 32)\n"
+    b"        self.bundle_digest = _nonce(values[\"bundle_digest\"], 32)\n"
+    b"        self.bootstrap_seed = _nonce(values[\"bootstrap_seed\"], 32)\n"
+    b"        transcript = (\n"
+    b"            self.n_remote, self.n_local, self.n_session, self.epoch_digest,\n"
+    b"            self.authority_digest, self.runner_digest, self.bundle_digest,\n"
+    b"        )\n"
+    b"        expected = _derive(\n"
+    b"            self.bootstrap_seed, \"N_session.v1\", self.n_remote, self.n_local,\n"
+    b"            self.epoch_digest, self.authority_digest, self.runner_digest,\n"
+    b"            self.bundle_digest,\n"
+    b"        )\n"
+    b"        if not _hmac.compare_digest(expected, self.n_session):\n"
+    b"            _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"        self.epoch_commitment = _digest_commitment(self.epoch_digest)\n"
+    b"        self.authority_commitment = _digest_commitment(self.authority_digest)\n"
+    b"        self.runner_commitment = _digest_commitment(self.runner_digest)\n"
+    b"        self.bundle_commitment = _digest_commitment(self.bundle_digest)\n"
+    b"        self.loader_commitment = _bytes_commitment(\"bridge-loader\", p)\n"
+    b"        if barrier is None:\n"
+    b"            self.barrier_utc = None\n"
+    b"            self.barrier_commitment = None\n"
+    b"            barrier_digest = b\"\\0\" * 32\n"
+    b"        else:\n"
+    b"            self.barrier_utc = _barrier(barrier)\n"
+    b"            self.barrier_commitment = _bytes_commitment(\n"
+    b"                \"bridge-barrier\", barrier.encode(\"ascii\", \"strict\")\n"
+    b"            )\n"
+    b"            barrier_digest = _commitment_bytes(self.barrier_commitment)\n"
+    b"        self.k_boot = _derive(self.bootstrap_seed, \"K_boot.v1\", *transcript)\n"
+    b"        self.k_session = _derive(\n"
+    b"            self.bootstrap_seed, \"K_session.v1\", *transcript, barrier_digest\n"
+    b"        )\n"
+    b"        self.k_proceed = _derive(\n"
+    b"            self.bootstrap_seed, \"K_proceed.v1\", *transcript, barrier_digest\n"
+    b"        )\n"
+    b"\n"
+    b"def _proceed_commitment(graph, artifact, isolation, transition_id, pre_cas, transition, consumed):\n"
+    b"    if (\n"
+    b"        not all(_is_commitment(value) for value in (\n"
+    b"            artifact, isolation, pre_cas, transition, consumed\n"
+    b"        ))\n"
+    b"        or type(transition_id) is not str\n"
+    b"        or _re.fullmatch(r\"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\", transition_id, _re.ASCII) is None\n"
+    b"        or graph.barrier_utc is None\n"
+    b"    ):\n"
+    b"        _fail(RunnerControlCode.PROCEED_INVALID)\n"
+    b"    return _bridge_commitment(\n"
+    b"        \"proceed-capability\",\n"
+    b"        graph.n_remote, graph.n_local, graph.n_session,\n"
+    b"        graph.epoch_digest, graph.authority_digest, graph.runner_digest,\n"
+    b"        graph.bundle_digest, graph.barrier_utc, graph.epoch_commitment,\n"
+    b"        graph.authority_commitment, graph.runner_commitment,\n"
+    b"        graph.bundle_commitment, graph.loader_commitment or \"\",\n"
+    b"        graph.barrier_commitment or \"\", artifact, isolation, transition_id,\n"
+    b"        pre_cas, transition, consumed,\n"
+    b"    )\n"
+    b"\n"
+    b"def _grant_token(graph, capability):\n"
+    b"    return _hmac.new(\n"
+    b"        graph.k_proceed, _lp(\"C_proceed.v1\", capability), _hashlib.sha256\n"
+    b"    ).digest()\n"
+    b"\n"
+    b"class _ForbiddenTextStream:\n"
+    b"    __slots__ = (\"_code\",)\n"
+    b"    def __init__(self, code):\n"
+    b"        self._code = code\n"
+    b"    @property\n"
+    b"    def buffer(self):\n"
+    b"        return self\n"
+    b"    def write(self, _value):\n"
+    b"        raise RunnerControlError(self._code)\n"
+    b"    def flush(self):\n"
+    b"        raise RunnerControlError(self._code)\n"
+    b"    def read(self, _size=-1):\n"
+    b"        raise RunnerControlError(self._code)\n"
+    b"    def readline(self, _size=-1):\n"
+    b"        raise RunnerControlError(self._code)\n"
+    b"    def fileno(self):\n"
+    b"        raise RunnerControlError(self._code)\n"
+    b"    def close(self):\n"
+    b"        return None\n"
+    b"    @property\n"
+    b"    def encoding(self):\n"
+    b"        return \"utf-8\"\n"
+    b"\n"
+    b"class _GuardedSysProxy:\n"
+    b"    __slots__ = (\"_raw\", \"_streams\")\n"
+    b"    _NAMES = (\n"
+    b"        \"executable\", \"stdin\", \"stdout\", \"stderr\",\n"
+    b"        \"__stdin__\", \"__stdout__\", \"__stderr__\",\n"
+    b"    )\n"
+    b"    def __init__(self, raw):\n"
+    b"        object.__setattr__(self, \"_raw\", raw)\n"
+    b"        object.__setattr__(self, \"_streams\", {})\n"
+    b"    def __getattribute__(self, name):\n"
+    b"        if name in _GuardedSysProxy._NAMES:\n"
+    b"            raw = object.__getattribute__(self, \"_raw\")\n"
+    b"            streams = object.__getattribute__(self, \"_streams\")\n"
+    b"            if name == \"executable\":\n"
+    b"                return raw.executable\n"
+    b"            return streams.get(name, getattr(raw, name))\n"
+    b"        raise AttributeError(name)\n"
+    b"    def __setattr__(self, _name, _value):\n"
+    b"        raise AttributeError(\"sealed sys\")\n"
+    b"    def __delattr__(self, _name):\n"
+    b"        raise AttributeError(\"sealed sys\")\n"
+    b"    def __dir__(self):\n"
+    b"        return list(_GuardedSysProxy._NAMES)\n"
+    b"    def __repr__(self):\n"
+    b"        return \"<GuardedSysProxy>\"\n"
+    b"\n"
+    b"class _GuardedModuleProxy:\n"
+    b"    __slots__ = (\"_module\", \"_root\")\n"
+    b"    def __init__(self, module, root):\n"
+    b"        object.__setattr__(self, \"_module\", module)\n"
+    b"        object.__setattr__(self, \"_root\", root)\n"
+    b"    def __getattribute__(self, name):\n"
+    b"        if name == \"__name__\":\n"
+    b"            return object.__getattribute__(self, \"_root\")\n"
+    b"        if not isinstance(name, str) or name.startswith(\"_\"):\n"
+    b"            raise AttributeError(name)\n"
+    b"        module = object.__getattribute__(self, \"_module\")\n"
+    b"        value = getattr(module, name)\n"
+    b"        if isinstance(value, _types.ModuleType):\n"
+    b"            child = getattr(value, \"__name__\", \"\")\n"
+    b"            root = child.split(\".\", 1)[0]\n"
+    b"            if root == \"sys\":\n"
+    b"                return _GUARDED_SYS\n"
+    b"            if root == \"subprocess\":\n"
+    b"                return _GUARDED_SUBPROCESS\n"
+    b"            if root not in _ROOTS:\n"
+    b"                raise ImportError(\"RUNNER_IMPORT_FORBIDDEN\")\n"
+    b"            return _module_proxy(value, root)\n"
+    b"        return value\n"
+    b"    def __setattr__(self, _name, _value):\n"
+    b"        raise AttributeError(\"sealed module\")\n"
+    b"    def __delattr__(self, _name):\n"
+    b"        raise AttributeError(\"sealed module\")\n"
+    b"    def __dir__(self):\n"
+    b"        module = object.__getattribute__(self, \"_module\")\n"
+    b"        return [name for name in dir(module) if not name.startswith(\"_\")]\n"
+    b"    def __repr__(self):\n"
+    b"        return \"<GuardedModuleProxy>\"\n"
+    b"\n"
+    b"_MODULE_PROXIES = {}\n"
+    b"def _module_proxy(module, root):\n"
+    b"    key = id(module)\n"
+    b"    proxy = _MODULE_PROXIES.get(key)\n"
+    b"    if proxy is None:\n"
+    b"        proxy = _GuardedModuleProxy(module, root)\n"
+    b"        _MODULE_PROXIES[key] = proxy\n"
+    b"    return proxy\n"
+    b"\n"
+    b"class _GuardedSubprocessProxy:\n"
+    b"    __slots__ = ()\n"
+    b"    _NAMES = (\n"
+    b"        \"PIPE\", \"DEVNULL\", \"STDOUT\", \"TimeoutExpired\",\n"
+    b"        \"CompletedProcess\", \"Popen\", \"run\", \"check_output\",\n"
+    b"    )\n"
+    b"    def __getattribute__(self, name):\n"
+    b"        if name == \"PIPE\":\n"
+    b"            return _subprocess.PIPE\n"
+    b"        if name == \"DEVNULL\":\n"
+    b"            return _subprocess.DEVNULL\n"
+    b"        if name == \"STDOUT\":\n"
+    b"            return _subprocess.STDOUT\n"
+    b"        if name == \"TimeoutExpired\":\n"
+    b"            return _subprocess.TimeoutExpired\n"
+    b"        if name == \"CompletedProcess\":\n"
+    b"            return _subprocess.CompletedProcess\n"
+    b"        if name in (\"Popen\", \"run\", \"check_output\"):\n"
+    b"            return object.__getattribute__(self, name)\n"
+    b"        raise AttributeError(name)\n"
+    b"    def __setattr__(self, _name, _value):\n"
+    b"        raise AttributeError(\"sealed subprocess\")\n"
+    b"    def __delattr__(self, _name):\n"
+    b"        raise AttributeError(\"sealed subprocess\")\n"
+    b"    def __dir__(self):\n"
+    b"        return list(_GuardedSubprocessProxy._NAMES)\n"
+    b"    def __repr__(self):\n"
+    b"        return \"<GuardedSubprocessProxy>\"\n"
+    b"    def Popen(self, args, *positional, **options):\n"
+    b"        if positional:\n"
+    b"            _fail(RunnerControlCode.SUBPROCESS_STDIO_REQUIRED)\n"
+    b"        _validate_subprocess(options)\n"
+    b"        return _subprocess.Popen(args, **options)\n"
+    b"    def run(self, args, *positional, **options):\n"
+    b"        if positional:\n"
+    b"            _fail(RunnerControlCode.SUBPROCESS_STDIO_REQUIRED)\n"
+    b"        _validate_subprocess(options)\n"
+    b"        return _subprocess.run(args, **options)\n"
+    b"    def check_output(self, args, *positional, **options):\n"
+    b"        if positional:\n"
+    b"            _fail(RunnerControlCode.SUBPROCESS_STDIO_REQUIRED)\n"
+    b"        _validate_subprocess(options, True)\n"
+    b"        options[\"stdout\"] = _subprocess.PIPE\n"
+    b"        return _subprocess.check_output(args, **options)\n"
+    b"\n"
+    b"def _validate_subprocess(options, check_output=False):\n"
+    b"    required = (\"stdin\", \"stderr\") if check_output else (\"stdin\", \"stdout\", \"stderr\")\n"
+    b"    if any(name not in options or options[name] is None for name in required):\n"
+    b"        _fail(RunnerControlCode.SUBPROCESS_STDIO_REQUIRED)\n"
+    b"    if options.get(\"shell\", False) is not False or options.get(\"close_fds\", True) is not True:\n"
+    b"        _fail(RunnerControlCode.SUBPROCESS_STDIO_REQUIRED)\n"
+    b"    if options.get(\"pass_fds\", ()) not in ((), []):\n"
+    b"        _fail(RunnerControlCode.SUBPROCESS_STDIO_REQUIRED)\n"
+    b"    if options.get(\"capture_output\", False):\n"
+    b"        _fail(RunnerControlCode.SUBPROCESS_STDIO_REQUIRED)\n"
+    b"\n"
+    b"_GUARDED_SUBPROCESS = _GuardedSubprocessProxy()\n"
+    b"_GUARDED_SYS = _GuardedSysProxy(_sys)\n"
+    b"\n"
+    b"def _guarded_import(name, globals_=None, locals_=None, fromlist=(), level=0):\n"
+    b"    if (\n"
+    b"        level != 0 or not isinstance(name, str)\n"
+    b"        or name.split(\".\", 1)[0] not in _ROOTS\n"
+    b"    ):\n"
+    b"        raise ImportError(\"RUNNER_IMPORT_FORBIDDEN\")\n"
+    b"    root = name.split(\".\", 1)[0]\n"
+    b"    if root == \"sys\":\n"
+    b"        return _GUARDED_SYS\n"
+    b"    if root == \"subprocess\":\n"
+    b"        return _GUARDED_SUBPROCESS\n"
+    b"    raw = _builtins.__import__(name, globals_, locals_, fromlist, level)\n"
+    b"    return _module_proxy(raw, root)\n"
+    b"\n"
+    b"def _runner_namespace():\n"
+    b"    builtins_copy = dict(_builtins.__dict__)\n"
+    b"    builtins_copy[\"__import__\"] = _guarded_import\n"
+    b"    return {\n"
+    b"        \"__name__\": \"__runner_bundle__\",\n"
+    b"        \"__builtins__\": builtins_copy,\n"
+    b"        \"RunnerAbortCode\": RunnerAbortCode,\n"
+    b"        \"RunnerControlCode\": RunnerControlCode,\n"
+    b"        \"ResultClassification\": ResultClassification,\n"
+    b"    }\n"
+    b"\n"
+    b"def _validate_run(value):\n"
+    b"    if value is None:\n"
+    b"        _fail(RunnerControlCode.RUNNER_MISSING)\n"
+    b"    if not callable(value):\n"
+    b"        _fail(RunnerControlCode.RUNNER_NOT_CALLABLE)\n"
+    b"    if _inspect.iscoroutinefunction(value) or _inspect.isasyncgenfunction(value):\n"
+    b"        _fail(RunnerControlCode.RUNNER_SIGNATURE_INVALID)\n"
+    b"    try:\n"
+    b"        signature = _inspect.signature(value)\n"
+    b"    except (TypeError, ValueError):\n"
+    b"        _fail(RunnerControlCode.RUNNER_SIGNATURE_INVALID)\n"
+    b"    parameters = list(signature.parameters.values())\n"
+    b"    if (\n"
+    b"        len(parameters) != 1\n"
+    b"        or parameters[0].kind not in (\n"
+    b"            _inspect.Parameter.POSITIONAL_ONLY,\n"
+    b"            _inspect.Parameter.POSITIONAL_OR_KEYWORD,\n"
+    b"        )\n"
+    b"        or parameters[0].default is not _inspect.Parameter.empty\n"
+    b"    ):\n"
+    b"        _fail(RunnerControlCode.RUNNER_SIGNATURE_INVALID)\n"
+    b"\n"
+    b"@_ctx.contextmanager\n"
+    b"def _isolate(capture):\n"
+    b"    old_streams = (\n"
+    b"        _sys.stdout, _sys.stderr, _sys.stdin,\n"
+    b"        _sys.__stdout__, _sys.__stderr__, _sys.__stdin__,\n"
+    b"    )\n"
+    b"    saved = []\n"
+    b"    readers = []\n"
+    b"    captures = [_Capture(4096), _Capture(4096)]\n"
+    b"    try:\n"
+    b"        saved = [_os.dup(0), _os.dup(1), _os.dup(2)]\n"
+    b"        if capture:\n"
+    b"            out_read, out_write = _os.pipe()\n"
+    b"            err_read, err_write = _os.pipe()\n"
+    b"            for fd, target in ((out_read, captures[0]), (err_read, captures[1])):\n"
+    b"                thread = _threading.Thread(target=_drain, args=(fd, target), daemon=True)\n"
+    b"                thread.start()\n"
+    b"                readers.append(thread)\n"
+    b"            null = _os.open(_os.devnull, _os.O_RDONLY)\n"
+    b"            _os.dup2(null, 0)\n"
+    b"            _os.close(null)\n"
+    b"            _os.dup2(out_write, 1)\n"
+    b"            _os.dup2(err_write, 2)\n"
+    b"            _os.close(out_write)\n"
+    b"            _os.close(err_write)\n"
+    b"        else:\n"
+    b"            null = _os.open(_os.devnull, _os.O_RDWR)\n"
+    b"            for target in (0, 1, 2):\n"
+    b"                _os.dup2(null, target)\n"
+    b"            _os.close(null)\n"
+    b"        blocked_out = _ForbiddenTextStream(RunnerControlCode.RUNNER_STDOUT_FORBIDDEN)\n"
+    b"        blocked_err = _ForbiddenTextStream(RunnerControlCode.RUNNER_STDERR_FORBIDDEN)\n"
+    b"        blocked_in = _ForbiddenTextStream(RunnerControlCode.RUNNER_INPUT_FORBIDDEN)\n"
+    b"        _sys.stdout = _sys.__stdout__ = blocked_out\n"
+    b"        _sys.stderr = _sys.__stderr__ = blocked_err\n"
+    b"        _sys.stdin = _sys.__stdin__ = blocked_in\n"
+    b"        object.__getattribute__(_GUARDED_SYS, \"_streams\").update({\n"
+    b"            \"stdin\": blocked_in, \"stdout\": blocked_out, \"stderr\": blocked_err,\n"
+    b"            \"__stdin__\": blocked_in, \"__stdout__\": blocked_out, \"__stderr__\": blocked_err,\n"
+    b"        })\n"
+    b"        yield\n"
+    b"    finally:\n"
+    b"        (\n"
+    b"            _sys.stdout, _sys.stderr, _sys.stdin,\n"
+    b"            _sys.__stdout__, _sys.__stderr__, _sys.__stdin__,\n"
+    b"        ) = old_streams\n"
+    b"        if saved:\n"
+    b"            for target, source in ((0, saved[0]), (1, saved[1]), (2, saved[2])):\n"
+    b"                try:\n"
+    b"                    _os.dup2(source, target)\n"
+    b"                except OSError:\n"
+    b"                    pass\n"
+    b"            for source in saved:\n"
+    b"                try:\n"
+    b"                    _os.close(source)\n"
+    b"                except OSError:\n"
+    b"                    pass\n"
+    b"        for thread in readers:\n"
+    b"            thread.join(timeout=1.0)\n"
+    b"        if capture:\n"
+    b"            if captures[0].bytes_seen:\n"
+    b"                raise RunnerControlError(RunnerControlCode.RUNNER_STDOUT_FORBIDDEN)\n"
+    b"            if captures[1].bytes_seen:\n"
+    b"                raise RunnerControlError(RunnerControlCode.RUNNER_STDERR_FORBIDDEN)\n"
+    b"\n"
+    b"class _Capture:\n"
+    b"    def __init__(self, limit):\n"
+    b"        self.limit = limit\n"
+    b"        self.bytes_seen = 0\n"
+    b"    def add(self, payload):\n"
+    b"        self.bytes_seen += len(payload)\n"
+    b"\n"
+    b"def _drain(fd, capture):\n"
+    b"    try:\n"
+    b"        while True:\n"
+    b"            payload = _os.read(fd, 4096)\n"
+    b"            if not payload:\n"
+    b"                return\n"
+    b"            capture.add(payload)\n"
+    b"    except OSError:\n"
+    b"        return\n"
+    b"    finally:\n"
+    b"        try:\n"
+    b"            _os.close(fd)\n"
+    b"        except OSError:\n"
+    b"            pass\n"
+    b"\n"
+    b"class _RemoteChannel:\n"
+    b"    def __init__(self, reader, writer, graph, clock=_time.monotonic, randomness=_os.urandom):\n"
+    b"        self.reader = reader\n"
+    b"        self.writer = writer\n"
+    b"        self.graph = graph\n"
+    b"        self._clock = clock\n"
+    b"        self._randomness = randomness\n"
+    b"        self.sequence = 1\n"
+    b"        self.bytes_seen = 0\n"
+    b"        self._nonces = set()\n"
+    b"        self._lock = _threading.Lock()\n"
+    b"    def _new_nonce(self):\n"
+    b"        try:\n"
+    b"            value = _nonce(self._randomness(16), 16)\n"
+    b"        except Exception:\n"
+    b"            _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"        if value in self._nonces:\n"
+    b"            _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"        return value\n"
+    b"    def _account(self, frame):\n"
+    b"        if frame.frame_nonce in self._nonces or len(self._nonces) >= 16:\n"
+    b"            _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"        total = self.bytes_seen + _FRAME_OVERHEAD + len(frame.payload)\n"
+    b"        if total > _MAX_SESSION_BYTES:\n"
+    b"            _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"        self._nonces.add(frame.frame_nonce)\n"
+    b"        self.bytes_seen = total\n"
+    b"    def receive(self, key, direction, timeout=None):\n"
+    b"        with self._lock:\n"
+    b"            header = _read_exact(self.reader, _FRAME.size, timeout, self._clock)\n"
+    b"            try:\n"
+    b"                length = _FRAME.unpack(header)[-1]\n"
+    b"            except _struct.error:\n"
+    b"                _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"            if length > _MAX_PAYLOAD:\n"
+    b"                _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"            raw = header + _read_exact(\n"
+    b"                self.reader, length + _TAG_BYTES, timeout, self._clock\n"
+    b"            )\n"
+    b"        try:\n"
+    b"            frame = _decode_frame(raw, key, direction, self.sequence, self.graph.n_session)\n"
+    b"        except RunnerControlError:\n"
+    b"            _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"        self._account(frame)\n"
+    b"        self.sequence += 1\n"
+    b"        return frame\n"
+    b"    def send(self, key, direction, message, payload):\n"
+    b"        nonce = self._new_nonce()\n"
+    b"        frame = _encode_frame(\n"
+    b"            key, direction, message, self.sequence, self.graph.n_session, payload, nonce\n"
+    b"        )\n"
+    b"        if self.bytes_seen + len(frame) > _MAX_SESSION_BYTES or len(self._nonces) >= 16:\n"
+    b"            _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"        try:\n"
+    b"            self.writer.write(frame)\n"
+    b"            self.writer.flush()\n"
+    b"        except (BrokenPipeError, OSError, ValueError):\n"
+    b"            _fail(RunnerControlCode.PROTOCOL_BROKEN_PIPE)\n"
+    b"        self._nonces.add(nonce)\n"
+    b"        self.bytes_seen += len(frame)\n"
+    b"        self.sequence += 1\n"
+    b"\n"
+    b"class ProceedGrant:\n"
+    b"    __slots__ = ()\n"
+    b"    def __new__(cls, *args, **kwargs):\n"
+    b"        raise TypeError(\"opaque capability\")\n"
+    b"    def __repr__(self):\n"
+    b"        return \"<ProceedGrant opaque>\"\n"
+    b"    __str__ = __repr__\n"
+    b"    def __copy__(self):\n"
+    b"        raise TypeError(\"opaque capability\")\n"
+    b"    def __deepcopy__(self, _memo):\n"
+    b"        raise TypeError(\"opaque capability\")\n"
+    b"    def __reduce__(self):\n"
+    b"        raise TypeError(\"opaque capability\")\n"
+    b"\n"
+    b"def _mint_grant():\n"
+    b"    return object.__new__(ProceedGrant)\n"
+    b"\n"
+    b"class RunnerRuntime:\n"
+    b"    _INITIAL = \"INITIAL\"\n"
+    b"    _RUNNING = \"RUNNING\"\n"
+    b"    _WAITING_DECISION = \"WAITING_DECISION\"\n"
+    b"    _PROCEED_GRANTED = \"PROCEED_GRANTED\"\n"
+    b"    _RESULT_SENT = \"RESULT_SENT\"\n"
+    b"    _TERMINAL = \"TERMINAL\"\n"
+    b"    def __init__(self, channel, barrier_utc, decision_timeout=5.0):\n"
+    b"        self._channel = channel\n"
+    b"        self._barrier_utc = _barrier(barrier_utc)\n"
+    b"        self._decision_timeout = decision_timeout\n"
+    b"        self._state = self._INITIAL\n"
+    b"        self._grants = {}\n"
+    b"        self._terminal_frame_sent = False\n"
+    b"        self._discovery_sent = False\n"
+    b"        self._pending_artifact = None\n"
+    b"        self._pending_isolation = None\n"
+    b"    @property\n"
+    b"    def barrier_utc(self):\n"
+    b"        return self._barrier_utc\n"
+    b"    def _send_abort(self, code):\n"
+    b"        if self._terminal_frame_sent:\n"
+    b"            return\n"
+    b"        self._channel.send(\n"
+    b"            self._channel.graph.k_session, _REMOTE_TO_LOCAL, _ABORT,\n"
+    b"            _encode_control({\"type\": \"ABORT\", \"version\": 1, \"code\": code.value}),\n"
+    b"        )\n"
+    b"        self._terminal_frame_sent = True\n"
+    b"        self._state = self._TERMINAL\n"
+    b"    def discover(self, execution_row_id, artifact_filename, isolation_state, isolation_commitment):\n"
+    b"        if self._discovery_sent:\n"
+    b"            _fail(RunnerControlCode.DISCOVERY_DUPLICATE)\n"
+    b"        if self._state != self._RUNNING:\n"
+    b"            _fail(RunnerControlCode.RUNTIME_TERMINAL)\n"
+    b"        try:\n"
+    b"            row, filename = _discovery_tuple(execution_row_id, artifact_filename)\n"
+    b"        except RunnerControlError:\n"
+    b"            _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"        if isolation_state != \"PASS\" or not _is_commitment(isolation_commitment):\n"
+    b"            _fail(RunnerControlCode.ISOLATION_FAILED)\n"
+    b"        artifact = _recovery_commitment(\"artifact-row\", str(row), filename)\n"
+    b"        self._channel.send(\n"
+    b"            self._channel.graph.k_session, _REMOTE_TO_LOCAL, _DISCOVERY,\n"
+    b"            _encode_control({\n"
+    b"                \"type\": \"DISCOVERY\", \"version\": 1,\n"
+    b"                \"execution_row_id\": row, \"artifact_filename\": filename,\n"
+    b"                \"isolation_state\": \"PASS\",\n"
+    b"                \"isolation_commitment\": isolation_commitment,\n"
+    b"            }),\n"
+    b"        )\n"
+    b"        self._discovery_sent = True\n"
+    b"        self._pending_artifact = artifact\n"
+    b"        self._pending_isolation = isolation_commitment\n"
+    b"        self._state = self._WAITING_DECISION\n"
+    b"        try:\n"
+    b"            frame = self._channel.receive(\n"
+    b"                self._channel.graph.k_session, _LOCAL_TO_REMOTE, timeout=self._decision_timeout\n"
+    b"            )\n"
+    b"        except RunnerControlError:\n"
+    b"            self._state = self._TERMINAL\n"
+    b"            raise\n"
+    b"        if frame.message == _ABORT:\n"
+    b"            try:\n"
+    b"                value = _decode_control(frame.payload, \"ABORT\")\n"
+    b"                code = RunnerControlCode(value[\"code\"])\n"
+    b"            except (RunnerControlError, TypeError, ValueError):\n"
+    b"                self._state = self._TERMINAL\n"
+    b"                _fail(RunnerControlCode.PROCEED_INVALID)\n"
+    b"            self._terminal_frame_sent = True\n"
+    b"            self._state = self._TERMINAL\n"
+    b"            raise RunnerControlError(code)\n"
+    b"        if frame.message != _PROCEED:\n"
+    b"            self._state = self._TERMINAL\n"
+    b"            _fail(RunnerControlCode.PROCEED_INVALID)\n"
+    b"        try:\n"
+    b"            value = _decode_control(frame.payload, \"PROCEED\")\n"
+    b"            expected = {\n"
+    b"                \"epoch_digest\": _digest_commitment(self._channel.graph.epoch_digest),\n"
+    b"                \"authority_digest\": _digest_commitment(self._channel.graph.authority_digest),\n"
+    b"                \"runner_digest\": _digest_commitment(self._channel.graph.runner_digest),\n"
+    b"                \"bundle_digest\": _digest_commitment(self._channel.graph.bundle_digest),\n"
+    b"                \"barrier_utc\": self._barrier_utc,\n"
+    b"                \"artifact_commitment\": self._pending_artifact,\n"
+    b"                \"isolation_commitment\": self._pending_isolation,\n"
+    b"            }\n"
+    b"            if any(value[name] != expected_value for name, expected_value in expected.items()):\n"
+    b"                _fail(RunnerControlCode.PROCEED_INVALID)\n"
+    b"            capability = _proceed_commitment(\n"
+    b"                self._channel.graph, value[\"artifact_commitment\"],\n"
+    b"                value[\"isolation_commitment\"], value[\"transition_id\"],\n"
+    b"                value[\"pre_cas_ledger_digest\"],\n"
+    b"                value[\"transition_data_commitment\"],\n"
+    b"                value[\"consumed_record_digest\"],\n"
+    b"            )\n"
+    b"            raw = _b64.urlsafe_b64decode(value[\"grant\"] + \"===\")\n"
+    b"            if not _hmac.compare_digest(raw, _grant_token(self._channel.graph, capability)):\n"
+    b"                _fail(RunnerControlCode.PROCEED_INVALID)\n"
+    b"        except RunnerControlError:\n"
+    b"            self._state = self._TERMINAL\n"
+    b"            raise\n"
+    b"        except (TypeError, ValueError, _bin.Error):\n"
+    b"            self._state = self._TERMINAL\n"
+    b"            _fail(RunnerControlCode.PROCEED_INVALID)\n"
+    b"        grant = _mint_grant()\n"
+    b"        self._grants[id(grant)] = (grant, capability)\n"
+    b"        self._state = self._PROCEED_GRANTED\n"
+    b"        return grant\n"
+    b"    def send_result(self, grant, classification, result_commitment):\n"
+    b"        if self._state == self._RESULT_SENT:\n"
+    b"            _fail(RunnerControlCode.RESULT_DUPLICATE)\n"
+    b"        if self._state != self._PROCEED_GRANTED:\n"
+    b"            _fail(RunnerControlCode.RESULT_BEFORE_PROCEED)\n"
+    b"        record = self._grants.get(id(grant))\n"
+    b"        if type(grant) is not ProceedGrant or record is None or record[0] is not grant:\n"
+    b"            _fail(RunnerControlCode.PROCEED_INVALID)\n"
+    b"        try:\n"
+    b"            classification = ResultClassification(classification)\n"
+    b"        except (TypeError, ValueError):\n"
+    b"            _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"        if not _is_commitment(result_commitment):\n"
+    b"            _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"        del self._grants[id(grant)]\n"
+    b"        self._channel.send(\n"
+    b"            self._channel.graph.k_session, _REMOTE_TO_LOCAL, _RESULT,\n"
+    b"            _encode_control({\n"
+    b"                \"type\": \"RESULT\", \"version\": 1,\n"
+    b"                \"classification\": classification.value,\n"
+    b"                \"result_commitment\": result_commitment,\n"
+    b"            }),\n"
+    b"        )\n"
+    b"        self._terminal_frame_sent = True\n"
+    b"        self._state = self._RESULT_SENT\n"
+    b"    def abort(self, code):\n"
+    b"        if not isinstance(code, RunnerAbortCode):\n"
+    b"            raise TypeError(\"RunnerRuntime.abort accepts RunnerAbortCode\")\n"
+    b"        if self._state == self._TERMINAL or self._terminal_frame_sent:\n"
+    b"            _fail(RunnerControlCode.RUNTIME_TERMINAL)\n"
+    b"        self._send_abort(RunnerControlCode(code.value))\n"
+    b"        raise RunnerControlError(RunnerControlCode(code.value))\n"
+    b"\n"
+    b"class RemoteLoader:\n"
+    b"    def __init__(self, reader, writer, capture_fds=False, clock=_time.monotonic, randomness=_os.urandom):\n"
+    b"        self._raw_reader = reader\n"
+    b"        self._raw_writer = writer\n"
+    b"        self._capture_fds = capture_fds\n"
+    b"        self._clock = clock\n"
+    b"        self._randomness = randomness\n"
+    b"        self._protocol_reader = reader\n"
+    b"        self._protocol_writer = writer\n"
+    b"        self._owned = []\n"
+    b"        try:\n"
+    b"            reader_fd = reader.fileno()\n"
+    b"            writer_fd = writer.fileno()\n"
+    b"            self._protocol_reader = _os.fdopen(_os.dup(reader_fd), \"rb\", buffering=0)\n"
+    b"            self._protocol_writer = _os.fdopen(_os.dup(writer_fd), \"wb\", buffering=0)\n"
+    b"            self._owned = [self._protocol_reader, self._protocol_writer]\n"
+    b"        except (AttributeError, OSError, _io.UnsupportedOperation):\n"
+    b"            self._protocol_reader = reader\n"
+    b"            self._protocol_writer = writer\n"
+    b"        self._terminal_sent = False\n"
+    b"    def _send_raw(self, payload):\n"
+    b"        try:\n"
+    b"            self._protocol_writer.write(payload)\n"
+    b"            self._protocol_writer.flush()\n"
+    b"        except (BrokenPipeError, OSError, ValueError):\n"
+    b"            _fail(RunnerControlCode.PROTOCOL_BROKEN_PIPE)\n"
+    b"    def _abort(self, channel, code):\n"
+    b"        if self._terminal_sent:\n"
+    b"            return\n"
+    b"        try:\n"
+    b"            channel.send(\n"
+    b"                channel.graph.k_session, _REMOTE_TO_LOCAL, _ABORT,\n"
+    b"                _encode_control({\"type\": \"ABORT\", \"version\": 1, \"code\": code.value}),\n"
+    b"            )\n"
+    b"        except RunnerControlError:\n"
+    b"            pass\n"
+    b"        self._terminal_sent = True\n"
+    b"    def run(self):\n"
+    b"        channel = None\n"
+    b"        runtime = None\n"
+    b"        pending = None\n"
+    b"        try:\n"
+    b"            try:\n"
+    b"                n_remote = _nonce(self._randomness(32), 32)\n"
+    b"            except Exception:\n"
+    b"                return 66\n"
+    b"            self._send_raw(_HELLO.pack(_HELLO_MAGIC, 1, 1, 0, n_remote))\n"
+    b"            deadline = self._clock() + 30.0\n"
+    b"            preamble = _decode_preamble(\n"
+    b"                _read_exact(\n"
+    b"                    self._protocol_reader, 272, 5.0, self._clock\n"
+    b"                )\n"
+    b"            )\n"
+    b"            if preamble[\"n_remote\"] != n_remote:\n"
+    b"                _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"            graph = _Graph(preamble)\n"
+    b"            channel = _RemoteChannel(\n"
+    b"                self._protocol_reader, self._protocol_writer, graph,\n"
+    b"                clock=self._clock, randomness=self._randomness\n"
+    b"            )\n"
+    b"            boot = channel.receive(\n"
+    b"                graph.k_boot, _LOCAL_TO_REMOTE,\n"
+    b"                max(0.0, min(deadline, self._clock() + 5.0) - self._clock()),\n"
+    b"            )\n"
+    b"            if boot.message != _BOOT:\n"
+    b"                _fail(RunnerControlCode.PROTOCOL_FAILURE)\n"
+    b"            barrier, source = _decode_boot(boot.payload, graph.bundle_digest)\n"
+    b"            graph = _Graph(preamble, barrier)\n"
+    b"            channel.graph = graph\n"
+    b"            runtime = RunnerRuntime(channel, barrier)\n"
+    b"            namespace = _runner_namespace()\n"
+    b"            try:\n"
+    b"                with _isolate(self._capture_fds):\n"
+    b"                    exec(\n"
+    b"                        compile(\n"
+    b"                            source.decode(\"utf-8\", \"strict\"),\n"
+    b"                            \"<runner-bundle>\", \"exec\", dont_inherit=True,\n"
+    b"                        ),\n"
+    b"                        namespace, namespace,\n"
+    b"                    )\n"
+    b"                    _validate_run(namespace.get(\"run\"))\n"
+    b"                    channel.send(\n"
+    b"                        graph.k_session, _REMOTE_TO_LOCAL, _READY,\n"
+    b"                        _encode_control({\n"
+    b"                            \"type\": \"READY\", \"version\": 1,\n"
+    b"                            \"barrier_utc\": runtime.barrier_utc,\n"
+    b"                        }),\n"
+    b"                    )\n"
+    b"                    runtime._state = runtime._RUNNING\n"
+    b"                    returned = namespace[\"run\"](runtime)\n"
+    b"                    if runtime._state == runtime._RESULT_SENT:\n"
+    b"                        if returned is not None:\n"
+    b"                            _fail(RunnerControlCode.RUNNER_NON_NONE_RETURN)\n"
+    b"                    elif runtime._state != runtime._TERMINAL:\n"
+    b"                        _fail(\n"
+    b"                            RunnerControlCode.RUNNER_NO_RESULT\n"
+    b"                            if returned is None else RunnerControlCode.RUNNER_NON_NONE_RETURN\n"
+    b"                        )\n"
+    b"            except RunnerControlError as error:\n"
+    b"                pending = error\n"
+    b"            except BaseException:\n"
+    b"                pending = RunnerControlError(RunnerControlCode.RUNNER_TOP_LEVEL_EXCEPTION)\n"
+    b"            if pending is not None:\n"
+    b"                if runtime is not None and not runtime._terminal_frame_sent:\n"
+    b"                    self._abort(channel, pending.code)\n"
+    b"                return 65\n"
+    b"            return 0 if runtime is not None and runtime._state == runtime._RESULT_SENT else 65\n"
+    b"        except RunnerControlError as error:\n"
+    b"            if runtime is None:\n"
+    b"                return 66\n"
+    b"            if channel is not None and not self._terminal_sent:\n"
+    b"                self._abort(channel, error.code)\n"
+    b"            return 65\n"
+    b"        except Exception:\n"
+    b"            return 66\n"
+    b"        finally:\n"
+    b"            for stream in self._owned:\n"
+    b"                try:\n"
+    b"                    stream.close()\n"
+    b"                except (OSError, ValueError):\n"
+    b"                    pass\n"
+    b"\n"
+    b"__all__ = (\n"
+    b"    \"RunnerAbortCode\", \"RunnerControlCode\", \"ResultClassification\",\n"
+    b"    \"RunnerControlError\", \"ProceedGrant\", \"RunnerRuntime\",\n"
+    b"    \"_RemoteChannel\", \"RemoteLoader\",\n"
+    b")\n"
 )
-if len(CANONICAL_LOADER_PAYLOAD_BYTES) > 65536:
-    raise RuntimeError("fixed loader payload oversized")
-FIXED_LOADER_MAX_BYTES = 4096
-_FIXED_LOADER_COMPRESSED = _CANONICAL_LOADER_COMPRESSED
+if len(CANONICAL_LOADER_PAYLOAD_BYTES) > MAX_RUNNER_BUNDLE_BYTES:
+    raise RuntimeError("canonical loader payload too large")
+FIXED_LOADER_MAX_BYTES = 16384
+_CANONICAL_REMOTE_NAMESPACE = {
+    "__name__": "__canonical_remote_payload__",
+    "p": CANONICAL_LOADER_PAYLOAD_BYTES,
+}
+exec(
+    compile(
+        CANONICAL_LOADER_PAYLOAD_BYTES,
+        "__canonical_remote_payload__",
+        "exec",
+        dont_inherit=True,
+    ),
+    _CANONICAL_REMOTE_NAMESPACE,
+    _CANONICAL_REMOTE_NAMESPACE,
+)
+_EXPECTED_REMOTE_EXPORTS = (
+    "RunnerAbortCode",
+    "RunnerControlCode",
+    "ResultClassification",
+    "RunnerControlError",
+    "ProceedGrant",
+    "RunnerRuntime",
+    "_RemoteChannel",
+    "RemoteLoader",
+)
+if tuple(_CANONICAL_REMOTE_NAMESPACE.get("__all__", ())) != _EXPECTED_REMOTE_EXPORTS:
+    raise RuntimeError("canonical remote export contract mismatch")
+if any(name not in _CANONICAL_REMOTE_NAMESPACE for name in _EXPECTED_REMOTE_EXPORTS):
+    raise RuntimeError("canonical remote export missing")
+_REMOTE_EXPORTS = types.MappingProxyType(
+    {name: _CANONICAL_REMOTE_NAMESPACE[name] for name in _EXPECTED_REMOTE_EXPORTS}
+)
+RunnerAbortCode = _REMOTE_EXPORTS["RunnerAbortCode"]
+RunnerControlCode = _REMOTE_EXPORTS["RunnerControlCode"]
+ResultClassification = _REMOTE_EXPORTS["ResultClassification"]
+RunnerControlError = _REMOTE_EXPORTS["RunnerControlError"]
+ProceedGrant = _REMOTE_EXPORTS["ProceedGrant"]
+RunnerRuntime = _REMOTE_EXPORTS["RunnerRuntime"]
+_RemoteChannel = _REMOTE_EXPORTS["_RemoteChannel"]
+RemoteLoader = _REMOTE_EXPORTS["RemoteLoader"]
+
+_FIXED_LOADER_ENCODED = base64.b85encode(
+    lzma.compress(
+        CANONICAL_LOADER_PAYLOAD_BYTES,
+        format=lzma.FORMAT_XZ,
+        check=lzma.CHECK_CRC64,
+        preset=lzma.PRESET_EXTREME | 9,
+    )
+).decode("ascii")
 FIXED_LOADER_SOURCE = (
-    "import lzma,base64;exec(p:=lzma.decompress(base64.b85decode("
-    + repr(_FIXED_LOADER_COMPRESSED)
-    + ")))"
+    "import base64,lzma,sys\n"
+    "p=lzma.decompress(base64.b85decode("
+    + repr(_FIXED_LOADER_ENCODED)
+    + "),format=lzma.FORMAT_XZ)\n"
+    "g={'__name__':'__canonical_remote_payload__','p':p}\n"
+    "exec(compile(p,'__canonical_remote_payload__','exec'),g,g)\n"
+    "raise SystemExit(g['RemoteLoader'](sys.stdin.buffer,sys.stdout.buffer).run())\n"
 )
-
-
-
-
-
-
 def build_fixed_loader_source() -> bytes:
     source = FIXED_LOADER_SOURCE.encode("ascii", "strict")
     if len(source) > FIXED_LOADER_MAX_BYTES:
@@ -3055,7 +3591,11 @@ def run_dummy_controller_bridge(
 
 
 def _dummy_child_main() -> int:
-    return RemoteLoader(sys.stdin.buffer, sys.stdout.buffer, capture_fds=True).run()
+    return _REMOTE_EXPORTS["RemoteLoader"](
+        sys.stdin.buffer,
+        sys.stdout.buffer,
+        capture_fds=True,
+    ).run()
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -6,6 +6,7 @@ import importlib.util
 import inspect
 import io
 import json
+import lzma
 import os
 import pathlib
 import shutil
@@ -14,6 +15,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 
 
@@ -27,6 +29,37 @@ BRIDGE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 sys.modules[SPEC.name] = BRIDGE
 SPEC.loader.exec_module(BRIDGE)
+
+
+REMOTE = BRIDGE._REMOTE_EXPORTS
+EXACT_REMOTE_IMPORT_ROOTS = (
+    "base64",
+    "binascii",
+    "collections",
+    "contextlib",
+    "dataclasses",
+    "datetime",
+    "hashlib",
+    "hmac",
+    "io",
+    "json",
+    "math",
+    "os",
+    "pathlib",
+    "queue",
+    "re",
+    "selectors",
+    "shlex",
+    "signal",
+    "stat",
+    "struct",
+    "subprocess",
+    "sys",
+    "threading",
+    "time",
+    "typing",
+    "uuid",
+)
 
 
 BARRIER_UTC = "2026-08-31T00:00:00.000000Z"
@@ -152,6 +185,123 @@ def frame_stages(store, epoch_ref):
         payload = store.adapter.read_authority(entry, max_bytes=BRIDGE.STORE.MAX_FRAME_BYTES)
         stages.append(json.loads(payload.decode("utf-8"))["stage"])
     return stages
+
+
+class CasFaultStore:
+    """Transparent test fault injector for one controller CAS attempt."""
+
+    def __init__(self, delegate, mode):
+        self._delegate = delegate
+        self.mode = mode
+        self.consume_calls = 0
+        self.abandon_calls = 0
+        self.classification_reload_calls = 0
+        self._cas_attempted = False
+        self.started_snapshot = None
+
+    def __getattr__(self, name):
+        return getattr(self._delegate, name)
+
+    def load_epoch(self, epoch_ref):
+        if not self._cas_attempted:
+            snapshot = self._delegate.load_epoch(epoch_ref)
+            if (
+                snapshot.record.get("state") == "ACTIVE"
+                and snapshot.ledger.get("state") == "UNCONSUMED"
+                and snapshot.spool.get("last_stage") == "RUNNER_STARTED"
+            ):
+                self.started_snapshot = copy.deepcopy(snapshot)
+            return snapshot
+        self.classification_reload_calls += 1
+        if self.mode == "C_reload_unreadable":
+            raise BRIDGE.STORE.ControllerStoreError("INJECTED_RELOAD_UNREADABLE")
+        observed = self._delegate.load_epoch(epoch_ref)
+        if self.mode == "C_reload_unchanged_unconsumed":
+            if self.started_snapshot is None:
+                raise AssertionError("CAS started snapshot was not captured")
+            return self.started_snapshot
+        if self.mode == "C_reload_contradictory":
+            if not isinstance(observed, BRIDGE.STORE.V2EpochSnapshot):
+                raise AssertionError("CAS fixture must use a V2 snapshot")
+            ledger = dict(observed.ledger)
+            ledger["transition_id"] = "injected-contradiction"
+            return BRIDGE.STORE.V2EpochSnapshot(
+                observed.record,
+                observed.manifest,
+                observed.private_identities,
+                observed.artifact_binding,
+                ledger,
+                observed.spool,
+            )
+        return observed
+
+    def consume_restore(self, epoch_ref, transition_id, *, expected_digest, data=None):
+        self.consume_calls += 1
+        self._cas_attempted = True
+        if self.mode == "B_unchanged_unconsumed":
+            raise BRIDGE.STORE.ControllerStoreError(
+                "INJECTED_UNCONSUMED",
+                safety_state="UNCONSUMED",
+            )
+        if self.mode == "C_consumed_hint_without_proof":
+            raise BRIDGE.STORE.ControllerStoreError(
+                "INJECTED_CONSUMED_HINT",
+                safety_state="CONSUMED",
+            )
+        if self.mode == "C_partial_record_manifest":
+            original = self._delegate._state_update_unlocked
+
+            def fail_partial(*_args, **_kwargs):
+                raise BRIDGE.STORE.ControllerStoreError(
+                    "INJECTED_PARTIAL_STATE_UPDATE",
+                    safety_state="CONSUMED",
+                )
+
+            self._delegate._state_update_unlocked = fail_partial
+            try:
+                return self._delegate.consume_restore(
+                    epoch_ref,
+                    transition_id,
+                    expected_digest=expected_digest,
+                    data=data,
+                )
+            finally:
+                self._delegate._state_update_unlocked = original
+        permit = self._delegate.consume_restore(
+            epoch_ref,
+            transition_id,
+            expected_digest=expected_digest,
+            data=data,
+        )
+        if self.mode in {"A_after_write_error", "A_restore_begin_failure"}:
+            raise BRIDGE.STORE.ControllerStoreError(
+                "INJECTED_AFTER_WRITE",
+                safety_state="CONSUMED",
+            )
+        if self.mode == "C_normal_return_without_proof":
+            return None
+        if self.mode in {
+            "C_reload_unreadable",
+            "C_reload_unchanged_unconsumed",
+            "C_reload_contradictory",
+        }:
+            raise BRIDGE.STORE.ControllerStoreError(
+                "INJECTED_RELOAD_PROOF_UNAVAILABLE",
+                safety_state="CONSUMED",
+            )
+        return permit
+
+    def prepare_runner_frame(self, epoch_ref, stage, payload):
+        if self.mode == "A_restore_begin_failure" and stage == "RESTORE_BEGIN":
+            raise BRIDGE.STORE.ControllerStoreError(
+                "INJECTED_RESTORE_BEGIN_FAILURE",
+                safety_state="CONSUMED",
+            )
+        return self._delegate.prepare_runner_frame(epoch_ref, stage, payload)
+
+    def abandon(self, epoch_ref):
+        self.abandon_calls += 1
+        return self._delegate.abandon(epoch_ref)
 
 
 class BridgeTestCase(unittest.TestCase):
@@ -287,6 +437,143 @@ class ContractTests(BridgeTestCase):
         self.assertNotIn("state", runtime_names)
         self.assertNotIn("send_discovery", runtime_names)
         self.assertNotIn("wait_for_decision", runtime_names)
+
+    def test_canonical_payload_and_fixed_wrapper_are_single_source_and_repeatable(self):
+        payload = BRIDGE.CANONICAL_LOADER_PAYLOAD_BYTES
+        self.assertIs(type(payload), bytes)
+        self.assertLessEqual(len(payload), BRIDGE.MAX_RUNNER_BUNDLE_BYTES)
+        self.assertEqual(payload.decode("ascii").encode("ascii"), payload)
+        compile(payload.decode("ascii"), "<canonical-payload-test>", "exec", dont_inherit=True)
+        self.assertIs(BRIDGE._CANONICAL_REMOTE_NAMESPACE["p"], payload)
+        self.assertIs(type(REMOTE), types.MappingProxyType)
+        self.assertEqual(tuple(REMOTE), BRIDGE._EXPECTED_REMOTE_EXPORTS)
+        for name in BRIDGE._EXPECTED_REMOTE_EXPORTS:
+            self.assertIs(REMOTE[name], BRIDGE._CANONICAL_REMOTE_NAMESPACE[name])
+            self.assertIs(getattr(BRIDGE, name), REMOTE[name])
+        self.assertEqual(payload.count(b"class RunnerControlError(Exception):"), 1)
+        self.assertEqual(payload.count(b"class ProceedGrant:"), 1)
+        self.assertEqual(payload.count(b"class RunnerRuntime:"), 1)
+        self.assertEqual(payload.count(b"class _RemoteChannel:"), 1)
+        self.assertEqual(payload.count(b"class RemoteLoader:"), 1)
+
+        source_one = BRIDGE.build_fixed_loader_source()
+        source_two = BRIDGE.build_fixed_loader_source()
+        self.assertEqual(source_one, source_two)
+        self.assertLessEqual(len(source_one), BRIDGE.FIXED_LOADER_MAX_BYTES)
+        wrapper_text = source_one.decode("ascii")
+        compile(wrapper_text, "<fixed-wrapper-test>", "exec", dont_inherit=True)
+        tree = ast.parse(wrapper_text)
+        encoded = [
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and len(node.value) > 100
+        ]
+        self.assertEqual(len(encoded), 1)
+        compressed = base64.b85decode(encoded[0].encode("ascii"))
+        self.assertEqual(compressed[:6], b"\xfd7zXZ\x00")
+        self.assertEqual(compressed[7] & 0x0F, lzma.CHECK_CRC64)
+        self.assertEqual(
+            lzma.decompress(compressed, format=lzma.FORMAT_XZ),
+            payload,
+        )
+        self.assertEqual(
+            BRIDGE.fixed_loader_commitment(),
+            BRIDGE.STORE.bytes_commitment("bridge-loader", payload),
+        )
+        self.assertEqual(
+            BRIDGE.build_fixed_loader_command(),
+            ("python3", "-c", BRIDGE.FIXED_LOADER_SOURCE),
+        )
+        source_text = SOURCE_PATH.read_text(encoding="utf-8")
+        for obsolete in (
+            "_CANONICAL_LOADER_COMPRESSED",
+            "_FIXED_LOADER_COMPRESSED",
+        ):
+            self.assertNotIn(obsolete, source_text)
+        for forbidden in (
+            b"platform_recovery_controller_bridge",
+            b"platform_recovery_controller_store",
+            b"platform_persisted_locator_adapter",
+            b"paramiko",
+            b"socket",
+            b"ssh",
+        ):
+            self.assertNotIn(forbidden, payload)
+            self.assertNotIn(forbidden, source_one)
+
+    def test_full_allowlisted_import_matrix_crosses_guarded_boundary(self):
+        body = "".join(f"    import {root}\n" for root in EXACT_REMOTE_IMPORT_ROOTS)
+        body += (
+            "    if set(dir(sys)) != {\"executable\", \"stdin\", \"stdout\", \"stderr\", "
+            "\"__stdin__\", \"__stdout__\", \"__stderr__\"}:\n"
+            "        raise RuntimeError('sys surface escaped')\n"
+            "    if type(sys).__name__ != '_GuardedSysProxy' or hasattr(sys, 'modules'):\n"
+            "        raise RuntimeError('raw sys escaped')\n"
+            "    if type(subprocess).__name__ != '_GuardedSubprocessProxy' or hasattr(subprocess, '__dict__'):\n"
+            "        raise RuntimeError('raw subprocess escaped')\n"
+            + "    for name in "
+            + repr(EXACT_REMOTE_IMPORT_ROOTS)
+            + ":\n"
+            "        module = __import__(name)\n"
+            "        expected = ('_GuardedSysProxy' if name == 'sys' else "
+            "'_GuardedSubprocessProxy' if name == 'subprocess' else "
+            "'_GuardedModuleProxy')\n"
+            "        if type(module).__name__ != expected:\n"
+            "            raise RuntimeError('raw module escaped')\n"
+            "    try:\n"
+            "        sys.stdout = None\n"
+            "    except AttributeError:\n"
+            "        pass\n"
+            "    else:\n"
+            "        raise RuntimeError('sys mutation escaped')\n"
+            "    try:\n"
+            "        del sys.stderr\n"
+            "    except AttributeError:\n"
+            "        pass\n"
+            "    else:\n"
+            "        raise RuntimeError('sys deletion escaped')\n"
+            f"    grant = runtime.discover({ARTIFACT_ROW_ID!r}, {ARTIFACT_FILENAME!r}, 'PASS', {ISOLATION_COMMITMENT!r})\n"
+            f"    runtime.send_result(grant, 'SUCCESS', {RESULT_COMMITMENT!r})\n"
+        )
+        source = "def run(runtime):\n" + body
+        store, result = self.run_bundle(
+            source,
+            epoch_ref="epoch-bridge-run323-import-matrix",
+        )
+        self.assertEqual(result.classification, "SUCCESS")
+        self.assertEqual(result.counters.public()["discovery_messages"], 1)
+        self.assertEqual(result.counters.public()["proceed_messages"], 1)
+        self.assertEqual(
+            store.load_epoch("epoch-bridge-run323-import-matrix").ledger["state"],
+            "CONSUMED",
+        )
+
+    def test_module_boundary_rejects_raw_protocol_and_loader_surfaces(self):
+        cases = (
+            "import sys\nsys.modules",
+            "from sys import modules\n",
+            "import subprocess\nsubprocess.__dict__",
+            "import json\njson.__dict__",
+            "import sys\nsys.__class__",
+        )
+        for index, body in enumerate(cases):
+            with self.subTest(index=index):
+                source = "def run(runtime):\n" + "".join(
+                    f"    {line}\n" for line in body.splitlines()
+                )
+                store, result = self.run_bundle(
+                    source,
+                    epoch_ref=f"epoch-bridge-run323-boundary-{index}",
+                )
+                self.assertEqual(result.classification, "FAILURE")
+                self.assertEqual(result.error_code, "RUNNER_TOP_LEVEL_EXCEPTION")
+                self.assertEqual(result.counters.public()["proceed_messages"], 0)
+                self.assertEqual(
+                    store.load_epoch(f"epoch-bridge-run323-boundary-{index}").record["state"],
+                    "ABANDONED",
+                )
 
     def test_bundle_is_exact_bytes_bound_and_source_is_opaque(self):
         source = valid_runner_source().encode()
@@ -690,7 +977,7 @@ class ContractTests(BridgeTestCase):
             seed,
         )
         output = io.BytesIO()
-        loader = BRIDGE.RemoteLoader(
+        loader = REMOTE["RemoteLoader"](
             io.BytesIO(preamble),
             output,
             randomness=lambda size: b"r" * size,
@@ -1073,7 +1360,7 @@ class ContractTests(BridgeTestCase):
             payload,
             frame_nonce=nonce,
         )
-        channel = BRIDGE._RemoteChannel(io.BytesIO(first + second), io.BytesIO(), graph)
+        channel = REMOTE["_RemoteChannel"](io.BytesIO(first + second), io.BytesIO(), graph)
         channel.receive(graph.k_session, BRIDGE.DIRECTION_REMOTE_TO_LOCAL)
         with self.assertRaises(BRIDGE.RunnerControlError) as raised:
             channel.receive(graph.k_session, BRIDGE.DIRECTION_REMOTE_TO_LOCAL)
@@ -1160,7 +1447,7 @@ class RuntimeTests(BridgeTestCase):
     def runtime(self, incoming=None):
         graph = self.graph_for_contract()
         channel = self.FakeChannel(graph, incoming)
-        runtime = BRIDGE.RunnerRuntime(channel, BARRIER_UTC, decision_timeout=0.01)
+        runtime = REMOTE["RunnerRuntime"](channel, BARRIER_UTC, decision_timeout=0.01)
         runtime._state = runtime._RUNNING
         return runtime, channel, graph
 
@@ -1191,9 +1478,12 @@ class RuntimeTests(BridgeTestCase):
         )
         self.assertEqual(repr(grant), "<ProceedGrant opaque>")
         self.assertNotIn(PRIVATE_V2["spool_hmac_key"], repr(grant))
+        self.assertEqual(REMOTE["ProceedGrant"].__slots__, ())
         with self.assertRaises(TypeError):
-            BRIDGE.ProceedGrant()
-        forged = BRIDGE.ProceedGrant(BRIDGE.ProceedGrant._SEAL)
+            REMOTE["ProceedGrant"]()
+        with self.assertRaises(TypeError):
+            REMOTE["ProceedGrant"](object())
+        forged = object.__new__(REMOTE["ProceedGrant"])
         with self.assertRaises(BRIDGE.RunnerControlError) as raised:
             runtime.send_result(forged, "SUCCESS", RESULT_COMMITMENT)
         self.assertIs(raised.exception.code, BRIDGE.RunnerControlCode.PROCEED_INVALID)
@@ -1239,6 +1529,84 @@ class RuntimeTests(BridgeTestCase):
                 ISOLATION_COMMITMENT,
             )
         self.assertIs(raised.exception.code, BRIDGE.RunnerControlCode.PROCEED_INVALID)
+
+
+class CasFaultMatrixTests(BridgeTestCase):
+    def run_fault(self, mode, epoch_ref):
+        store = self.new_store(epoch_ref)
+        faulty = CasFaultStore(store, mode)
+        result = BRIDGE.run_dummy_controller_bridge(
+            faulty,
+            epoch_ref,
+            BARRIER_UTC,
+            bundle(valid_runner_source()),
+            timeout_seconds=8.0,
+        )
+        return store, faulty, result
+
+    def test_one_way_cas_classifier_is_complete_and_single_shot(self):
+        cases = (
+            ("A_after_write_error", "A"),
+            ("B_unchanged_unconsumed", "B"),
+            ("C_consumed_hint_without_proof", "C"),
+            ("C_normal_return_without_proof", "C"),
+            ("C_partial_record_manifest", "C"),
+            ("C_reload_unreadable", "C"),
+            ("C_reload_unchanged_unconsumed", "C"),
+            ("C_reload_contradictory", "C"),
+        )
+        for mode, expected in cases:
+            with self.subTest(mode=mode):
+                epoch_ref = f"epoch-bridge-run323-cas-{mode}"
+                store, faulty, result = self.run_fault(mode, epoch_ref)
+                counters = result.counters.public()
+                self.assertEqual(faulty.consume_calls, 1)
+                self.assertEqual(faulty.classification_reload_calls, 1)
+                self.assertEqual(counters["bind_calls"], 1)
+                self.assertEqual(counters["restore_attempts"], 0)
+                if expected == "A":
+                    self.assertEqual(result.classification, "SUCCESS")
+                    self.assertIsNone(result.error_code)
+                    self.assertFalse(result.post_cas_uncertain)
+                    self.assertEqual(counters["proceed_messages"], 1)
+                    self.assertEqual(faulty.abandon_calls, 0)
+                    self.assertEqual(
+                        store.load_epoch(epoch_ref).ledger["state"],
+                        "CONSUMED",
+                    )
+                    self.assertEqual(
+                        frame_stages(store, epoch_ref),
+                        ["EPOCH_READY", "RUNNER_STARTED", "RESTORE_BEGIN", "COMMIT"],
+                    )
+                elif expected == "B":
+                    self.assertEqual(result.classification, "FAILURE")
+                    self.assertEqual(result.error_code, "STORE_TRANSITION_FAILED")
+                    self.assertFalse(result.post_cas_uncertain)
+                    self.assertEqual(counters["proceed_messages"], 0)
+                    self.assertEqual(faulty.abandon_calls, 1)
+                    self.assertEqual(
+                        store.load_epoch(epoch_ref).record["state"],
+                        "ABANDONED",
+                    )
+                else:
+                    self.assertEqual(result.classification, "FAILURE")
+                    self.assertEqual(result.error_code, "POST_CAS_UNCERTAIN")
+                    self.assertTrue(result.post_cas_uncertain)
+                    self.assertEqual(counters["proceed_messages"], 0)
+                    self.assertEqual(faulty.abandon_calls, 0)
+                    self.assertNotIn("RESTORE_BEGIN", frame_stages(store, epoch_ref))
+
+    def test_exact_consumed_classification_cannot_fall_back_to_pre_cas_abandon(self):
+        epoch_ref = "epoch-bridge-run323-cas-a-restore-begin-failure"
+        store, faulty, result = self.run_fault("A_restore_begin_failure", epoch_ref)
+        self.assertEqual(faulty.consume_calls, 1)
+        self.assertEqual(faulty.classification_reload_calls, 1)
+        self.assertEqual(faulty.abandon_calls, 0)
+        self.assertEqual(result.classification, "FAILURE")
+        self.assertEqual(result.error_code, "STORE_TRANSITION_FAILED")
+        self.assertTrue(result.post_cas_uncertain)
+        self.assertEqual(result.counters.public()["proceed_messages"], 0)
+        self.assertEqual(store.load_epoch(epoch_ref).ledger["state"], "CONSUMED")
 
 
 class DummyChildMatrixTests(BridgeTestCase):
