@@ -198,6 +198,9 @@ class CasFaultStore:
         self.classification_reload_calls = 0
         self._cas_attempted = False
         self.started_snapshot = None
+        self.write_attempts = []
+        self.delegated_write_paths = []
+        self.injected_write_path = None
 
     def __getattr__(self, name):
         return getattr(self._delegate, name)
@@ -248,16 +251,43 @@ class CasFaultStore:
                 "INJECTED_CONSUMED_HINT",
                 safety_state="CONSUMED",
             )
-        if self.mode == "C_partial_record_manifest":
-            original = self._delegate._state_update_unlocked
+        if self.mode in {"C_v2_manifest_write", "C_v2_record_write"}:
+            original_write_document = self._delegate._write_document
 
-            def fail_partial(*_args, **_kwargs):
-                raise BRIDGE.STORE.ControllerStoreError(
-                    "INJECTED_PARTIAL_STATE_UPDATE",
-                    safety_state="CONSUMED",
+            def write_document(path, value, *, max_bytes, replace):
+                filename = pathlib.Path(path).name
+                self.write_attempts.append(filename)
+                if (
+                    self.mode == "C_v2_manifest_write"
+                    and filename == BRIDGE.STORE.MANIFEST_V2_FILENAME
+                    and BRIDGE.STORE.LEDGER_FILENAME in self.delegated_write_paths
+                ):
+                    self.injected_write_path = filename
+                    raise BRIDGE.STORE.ControllerStoreError(
+                        "INJECTED_V2_MANIFEST_WRITE",
+                        safety_state="CONSUMED",
+                    )
+                if (
+                    self.mode == "C_v2_record_write"
+                    and filename == BRIDGE.STORE.RECORD_V2_FILENAME
+                    and BRIDGE.STORE.LEDGER_FILENAME in self.delegated_write_paths
+                    and BRIDGE.STORE.MANIFEST_V2_FILENAME in self.delegated_write_paths
+                ):
+                    self.injected_write_path = filename
+                    raise BRIDGE.STORE.ControllerStoreError(
+                        "INJECTED_V2_RECORD_WRITE",
+                        safety_state="CONSUMED",
+                    )
+                result = original_write_document(
+                    path,
+                    value,
+                    max_bytes=max_bytes,
+                    replace=replace,
                 )
+                self.delegated_write_paths.append(filename)
+                return result
 
-            self._delegate._state_update_unlocked = fail_partial
+            self._delegate._write_document = write_document
             try:
                 return self._delegate.consume_restore(
                     epoch_ref,
@@ -266,7 +296,7 @@ class CasFaultStore:
                     data=data,
                 )
             finally:
-                self._delegate._state_update_unlocked = original
+                self._delegate._write_document = original_write_document
         permit = self._delegate.consume_restore(
             epoch_ref,
             transition_id,
@@ -1363,6 +1393,38 @@ class ContractTests(BridgeTestCase):
             "import sys\n"
             f"subprocess.Popen([sys.executable, '-c', {child_program!r}]"
         )
+        captured_child_program = (
+            "import sys\n"
+            "sys.stdout.buffer.write(b'RUN327_CAPTURED_CHILD')\n"
+        )
+        run_case(
+            "captured-child",
+            "import subprocess\n"
+            "import sys\n"
+            f"process = subprocess.Popen((sys.executable, '-c', {captured_child_program!r}), "
+            "stdin=subprocess.PIPE, stdout=subprocess.PIPE, "
+            "stderr=subprocess.PIPE, shell=False, close_fds=True, pass_fds=())\n"
+            "stdout, stderr = process.communicate(timeout=2)\n"
+            "if process.returncode != 0 or stdout != b'RUN327_CAPTURED_CHILD' or stderr != b'':\n"
+            "    raise RuntimeError('captured child contract failed')",
+            None,
+            expected_classification="SUCCESS",
+            expected_messages=1,
+        )
+        run_case(
+            "accepted-stdio-values",
+            "import subprocess\n"
+            "import sys\n"
+            "process = subprocess.Popen((sys.executable, '-c', 'pass'), "
+            "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
+            "stderr=subprocess.STDOUT, shell=False, close_fds=True, "
+            "pass_fds=())\n"
+            "if process.wait(timeout=2) != 0:\n"
+            "    raise RuntimeError('stdio value contract failed')",
+            None,
+            expected_classification="SUCCESS",
+            expected_messages=1,
+        )
         rejection_cases = (
             ("forbidden-import", "import socket", "RUNNER_TOP_LEVEL_EXCEPTION"),
             (
@@ -1399,6 +1461,137 @@ class ContractTests(BridgeTestCase):
                 "import sys\n"
                 f"subprocess.run([sys.executable, '-c', {child_program!r}], "
                 f"{stdio}, close_fds=True, shell=False, capture_output=True)",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "argv-not-sequence",
+                "import subprocess\n"
+                "import sys\n"
+                f"subprocess.Popen('not-an-argv-sequence', {stdio}, "
+                "close_fds=True, shell=False, pass_fds=())",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "argv-empty",
+                "import subprocess\n"
+                "import sys\n"
+                f"subprocess.Popen([], {stdio}, close_fds=True, "
+                "shell=False, pass_fds=())",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "argv-member-not-string",
+                "import subprocess\n"
+                "import sys\n"
+                f"subprocess.Popen([sys.executable, 7], {stdio}, "
+                "close_fds=True, shell=False, pass_fds=())",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "args-missing",
+                "import subprocess\n"
+                f"subprocess.Popen({stdio}, close_fds=True, shell=False, "
+                "pass_fds=())",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "positional-extra",
+                popen_prefix
+                + f", 'extra', {stdio}, close_fds=True, shell=False, pass_fds=())",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "duplicate-args",
+                popen_prefix
+                + f", {stdio}, close_fds=True, shell=False, pass_fds=(), "
+                "args=['duplicate'])",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "stdin-stdout-constant",
+                popen_prefix
+                + ", stdin=subprocess.STDOUT, stdout=subprocess.PIPE, "
+                "stderr=subprocess.PIPE, close_fds=True, shell=False, pass_fds=())",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "stdout-stderr-constant",
+                popen_prefix
+                + ", stdin=subprocess.PIPE, stdout=subprocess.STDOUT, "
+                "stderr=subprocess.PIPE, close_fds=True, shell=False, pass_fds=())",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "stderr-none",
+                popen_prefix
+                + ", stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=None, "
+                "close_fds=True, shell=False, pass_fds=())",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "shell-not-exact-false",
+                popen_prefix
+                + f", {stdio}, close_fds=True, shell=None, pass_fds=())",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "close-fds-not-exact-true",
+                popen_prefix
+                + f", {stdio}, close_fds=1, shell=False, pass_fds=())",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "pass-fds-list",
+                popen_prefix
+                + f", {stdio}, close_fds=True, shell=False, pass_fds=[])",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "stdin-inherited-fd",
+                popen_prefix
+                + ", stdin=0, stdout=subprocess.PIPE, stderr=subprocess.PIPE, "
+                "close_fds=True, shell=False, pass_fds=())",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "stdout-inherited-fd",
+                popen_prefix
+                + ", stdin=subprocess.PIPE, stdout=1, stderr=subprocess.PIPE, "
+                "close_fds=True, shell=False, pass_fds=())",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "stdin-file-object",
+                "import io\n"
+                + popen_prefix
+                + ", stdin=io.BytesIO(), stdout=subprocess.PIPE, "
+                "stderr=subprocess.PIPE, close_fds=True, shell=False, pass_fds=())",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "check-output-stdout-constant",
+                "import subprocess\n"
+                "import sys\n"
+                f"subprocess.check_output([sys.executable, '-c', {child_program!r}], "
+                "stdin=subprocess.PIPE, stdout=subprocess.STDOUT, "
+                "stderr=subprocess.PIPE, shell=False, close_fds=True, pass_fds=())",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "check-output-positional-extra",
+                "import subprocess\n"
+                "import sys\n"
+                f"subprocess.check_output([sys.executable, '-c', {child_program!r}], "
+                "'extra', stdin=subprocess.PIPE, stderr=subprocess.PIPE, "
+                "shell=False, close_fds=True, pass_fds=())",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "run-unknown-keyword",
+                "import subprocess\n"
+                "import sys\n"
+                f"subprocess.run([sys.executable, '-c', {child_program!r}], "
+                f"{stdio}, close_fds=True, shell=False, pass_fds=(), timeout=2)",
                 "SUBPROCESS_STDIO_REQUIRED",
             ),
             (
@@ -1448,8 +1641,41 @@ class ContractTests(BridgeTestCase):
                 "RUNNER_INPUT_FORBIDDEN",
             ),
         )
+        forbidden_keyword_cases = (
+            ("capture-output-keyword", "capture_output=True"),
+            ("cwd-keyword", "cwd='.'"),
+            ("env-keyword", "env={}"),
+            ("executable-keyword", "executable=None"),
+            ("preexec-fn-keyword", "preexec_fn=None"),
+            ("startupinfo-keyword", "startupinfo=None"),
+            ("creationflags-keyword", "creationflags=0"),
+            ("restore-signals-keyword", "restore_signals=True"),
+            ("new-session-keyword", "start_new_session=False"),
+            ("process-group-keyword", "process_group=None"),
+            ("user-keyword", "user=None"),
+            ("group-keyword", "group=None"),
+            ("extra-groups-keyword", "extra_groups=()"),
+            ("umask-keyword", "umask=0"),
+            ("text-keyword", "text=False"),
+            ("encoding-keyword", "encoding=None"),
+            ("errors-keyword", "errors=None"),
+            ("universal-newlines-keyword", "universal_newlines=False"),
+            ("bufsize-keyword", "bufsize=0"),
+            ("pipesize-keyword", "pipesize=0"),
+            ("input-keyword", "input=b''"),
+            ("timeout-keyword", "timeout=2"),
+            ("check-keyword", "check=False"),
+            ("unknown-keyword", "not_a_real_option=None"),
+        )
         for label, body, expected_error in rejection_cases:
             run_case(label, body, expected_error)
+        for label, keyword in forbidden_keyword_cases:
+            run_case(
+                label,
+                popen_prefix
+                + f", {stdio}, close_fds=True, shell=False, pass_fds=(), {keyword})",
+                "SUBPROCESS_STDIO_REQUIRED",
+            )
 
         run_case(
             "direct-fd-discard",
@@ -1706,7 +1932,8 @@ class CasFaultMatrixTests(BridgeTestCase):
             ("B_unchanged_unconsumed", "B"),
             ("C_consumed_hint_without_proof", "C"),
             ("C_normal_return_without_proof", "C"),
-            ("C_partial_record_manifest", "C"),
+            ("C_v2_manifest_write", "C"),
+            ("C_v2_record_write", "C"),
             ("C_reload_unreadable", "C"),
             ("C_reload_unchanged_unconsumed", "C"),
             ("C_reload_contradictory", "C"),
@@ -1719,12 +1946,21 @@ class CasFaultMatrixTests(BridgeTestCase):
                 self.assertEqual(faulty.consume_calls, 1)
                 self.assertEqual(faulty.classification_reload_calls, 1)
                 self.assertEqual(counters["bind_calls"], 1)
+                self.assertEqual(counters["discovery_messages"], 1)
                 self.assertEqual(counters["restore_attempts"], 0)
+                for name in (
+                    "ssh_launches",
+                    "network_connections",
+                    "provider_calls",
+                    "backup_calls",
+                ):
+                    self.assertEqual(counters[name], 0)
                 if expected == "A":
                     self.assertEqual(result.classification, "SUCCESS")
                     self.assertIsNone(result.error_code)
                     self.assertFalse(result.post_cas_uncertain)
                     self.assertEqual(counters["proceed_messages"], 1)
+                    self.assertEqual(counters["result_messages"], 1)
                     self.assertEqual(faulty.abandon_calls, 0)
                     self.assertEqual(
                         store.load_epoch(epoch_ref).ledger["state"],
@@ -1739,6 +1975,7 @@ class CasFaultMatrixTests(BridgeTestCase):
                     self.assertEqual(result.error_code, "STORE_TRANSITION_FAILED")
                     self.assertFalse(result.post_cas_uncertain)
                     self.assertEqual(counters["proceed_messages"], 0)
+                    self.assertEqual(counters["result_messages"], 0)
                     self.assertEqual(faulty.abandon_calls, 1)
                     self.assertEqual(
                         store.load_epoch(epoch_ref).record["state"],
@@ -1749,8 +1986,45 @@ class CasFaultMatrixTests(BridgeTestCase):
                     self.assertEqual(result.error_code, "POST_CAS_UNCERTAIN")
                     self.assertTrue(result.post_cas_uncertain)
                     self.assertEqual(counters["proceed_messages"], 0)
+                    self.assertEqual(counters["result_messages"], 0)
                     self.assertEqual(faulty.abandon_calls, 0)
                     self.assertNotIn("RESTORE_BEGIN", frame_stages(store, epoch_ref))
+                    if mode == "C_v2_manifest_write":
+                        self.assertEqual(
+                            faulty.write_attempts,
+                            [
+                                BRIDGE.STORE.LEDGER_FILENAME,
+                                BRIDGE.STORE.MANIFEST_V2_FILENAME,
+                            ],
+                        )
+                        self.assertEqual(
+                            faulty.delegated_write_paths,
+                            [BRIDGE.STORE.LEDGER_FILENAME],
+                        )
+                        self.assertEqual(
+                            faulty.injected_write_path,
+                            BRIDGE.STORE.MANIFEST_V2_FILENAME,
+                        )
+                    elif mode == "C_v2_record_write":
+                        self.assertEqual(
+                            faulty.write_attempts,
+                            [
+                                BRIDGE.STORE.LEDGER_FILENAME,
+                                BRIDGE.STORE.MANIFEST_V2_FILENAME,
+                                BRIDGE.STORE.RECORD_V2_FILENAME,
+                            ],
+                        )
+                        self.assertEqual(
+                            faulty.delegated_write_paths,
+                            [
+                                BRIDGE.STORE.LEDGER_FILENAME,
+                                BRIDGE.STORE.MANIFEST_V2_FILENAME,
+                            ],
+                        )
+                        self.assertEqual(
+                            faulty.injected_write_path,
+                            BRIDGE.STORE.RECORD_V2_FILENAME,
+                        )
 
     def test_exact_consumed_classification_cannot_fall_back_to_pre_cas_abandon(self):
         epoch_ref = "epoch-bridge-run323-cas-a-restore-begin-failure"
