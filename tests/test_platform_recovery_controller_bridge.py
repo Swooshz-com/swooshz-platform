@@ -575,6 +575,162 @@ class ContractTests(BridgeTestCase):
                     "ABANDONED",
                 )
 
+    def test_static_process_capability_policy_is_complete_and_immutable(self):
+        expected = {
+            "os": frozenset(
+                {
+                    "system", "popen", "startfile",
+                    "fork", "forkpty", "vfork",
+                    "posix_spawn", "posix_spawnp",
+                    "execl", "execle", "execlp", "execlpe",
+                    "execv", "execve", "execvp", "execvpe",
+                    "spawnl", "spawnle", "spawnlp", "spawnlpe",
+                    "spawnv", "spawnve", "spawnvp", "spawnvpe",
+                    "P_WAIT", "P_NOWAIT", "P_NOWAITO", "P_OVERLAY",
+                    "P_DETACH", "P_DETACHED",
+                    "dup", "dup2", "dup3", "pipe", "pipe2",
+                    "openpty", "posix_openpt", "grantpt", "unlockpt",
+                    "login_tty",
+                    "get_inheritable", "set_inheritable",
+                    "get_handle_inheritable", "set_handle_inheritable",
+                    "get_blocking", "set_blocking", "pidfd_getfd",
+                    "O_CLOEXEC", "O_CLOFORK", "O_NOINHERIT",
+                    "register_at_fork",
+                }
+            ),
+            "contextlib": frozenset(
+                {"redirect_stdin", "redirect_stdout", "redirect_stderr"}
+            ),
+            "signal": frozenset({"set_wakeup_fd"}),
+        }
+        policy = BRIDGE._CANONICAL_REMOTE_NAMESPACE[
+            "_PROCESS_CAPABILITY_POLICY"
+        ]
+        self.assertIs(type(policy), types.MappingProxyType)
+        self.assertEqual(dict(policy), expected)
+        for root, names in expected.items():
+            raw_module = __import__(root)
+            proxy = BRIDGE._CANONICAL_REMOTE_NAMESPACE["_GuardedModuleProxy"](
+                raw_module, root
+            )
+            for name in names:
+                with self.subTest(root=root, name=name):
+                    with self.assertRaises(AttributeError) as raised:
+                        getattr(proxy, name)
+                    self.assertEqual(raised.exception.args, (name,))
+                    self.assertNotIn(name, dir(proxy))
+        with self.assertRaises(TypeError):
+            policy["os"] = frozenset()
+        with self.assertRaises(AttributeError):
+            policy["os"].add("future_process_capability")
+
+        classified = {
+            (root, name)
+            for root, names in expected.items()
+            for name in names
+        }
+
+        def require_classified(inventory):
+            unknown = set(inventory) - classified
+            if unknown:
+                raise AssertionError(
+                    f"unclassified process capabilities: {sorted(unknown)!r}"
+                )
+
+        require_classified(classified)
+        with self.assertRaises(AssertionError):
+            require_classified(classified | {("os", "future_process_capability")})
+
+    def test_process_capability_policy_is_enforced_by_production_payload(self):
+        policy = BRIDGE._CANONICAL_REMOTE_NAMESPACE[
+            "_PROCESS_CAPABILITY_POLICY"
+        ]
+        source_lines = ["def run(runtime):"]
+        for root, names in sorted(policy.items()):
+            for name in sorted(names):
+                source_lines.extend(
+                    [
+                        f"    module = __import__({root!r})",
+                        f"    name = {name!r}",
+                        "    try:",
+                        "        getattr(module, name)",
+                        "    except AttributeError as error:",
+                        "        if error.args != (name,):",
+                        "            raise RuntimeError('wrong denial')",
+                        "    else:",
+                        "        raise RuntimeError('capability not denied')",
+                    ]
+                )
+        source_lines.extend(
+            [
+                "    for module_name in ('contextlib', 'pathlib', 'uuid'):",
+                "        module = __import__(module_name)",
+                "        for alias_name in ('os', 'sys'):",
+                "            try:",
+                "                alias = getattr(module, alias_name)",
+                "            except AttributeError:",
+                "                continue",
+                "            expected_type = {",
+                "                'os': '_GuardedModuleProxy',",
+                "                'sys': '_GuardedSysProxy',",
+                "            }[alias_name]",
+                "            if type(alias).__name__ != expected_type:",
+                "                raise RuntimeError('module alias escaped')",
+                "    import contextlib",
+                "    try:",
+                "        contextlib.redirect_stdout",
+                "    except AttributeError as error:",
+                "        if error.args != ('redirect_stdout',):",
+                "            raise RuntimeError('wrong stdio denial')",
+                "    else:",
+                "        raise RuntimeError('stdio bypass escaped')",
+                "    import sys",
+                "    for stream_name in ('stdin', 'stdout', 'stderr', '__stdin__', '__stdout__', '__stderr__'):",
+                "        if type(getattr(sys, stream_name)).__name__ != '_ForbiddenTextStream':",
+                "            raise RuntimeError('sys stream escaped')",
+                f"    grant = runtime.discover({ARTIFACT_ROW_ID!r}, {ARTIFACT_FILENAME!r}, 'PASS', {ISOLATION_COMMITMENT!r})",
+                f"    runtime.send_result(grant, 'SUCCESS', {RESULT_COMMITMENT!r})",
+            ]
+        )
+        store, result = self.run_bundle(
+            "\n".join(source_lines) + "\n",
+            epoch_ref="epoch-bridge-run326-process-policy",
+        )
+        self.assertEqual(result.classification, "SUCCESS")
+        self.assertIsNone(result.error_code)
+        self.assertEqual(result.counters.public()["discovery_messages"], 1)
+        self.assertEqual(result.counters.public()["proceed_messages"], 1)
+        self.assertEqual(result.counters.public()["result_messages"], 1)
+        self.assertEqual(
+            store.load_epoch("epoch-bridge-run326-process-policy").ledger["state"],
+            "CONSUMED",
+        )
+
+    def test_mandatory_os_system_and_popen_surfaces_are_unreachable(self):
+        cases = (
+            (
+                "os-system",
+                "def run(runtime):\n"
+                "    import os\n"
+                "    os.system\n",
+            ),
+            (
+                "os-popen",
+                "def run(runtime):\n"
+                "    import os\n"
+                "    os.popen\n",
+            ),
+        )
+        for label, source in cases:
+            with self.subTest(label=label):
+                epoch_ref = f"epoch-bridge-run326-{label}"
+                store, result = self.run_bundle(source, epoch_ref=epoch_ref)
+                self.assertEqual(result.classification, "FAILURE")
+                self.assertEqual(result.error_code, "RUNNER_TOP_LEVEL_EXCEPTION")
+                self.assertEqual(result.counters.public()["discovery_messages"], 0)
+                self.assertEqual(result.counters.public()["proceed_messages"], 0)
+                self.assertEqual(store.load_epoch(epoch_ref).record["state"], "ABANDONED")
+
     def test_bundle_is_exact_bytes_bound_and_source_is_opaque(self):
         source = valid_runner_source().encode()
         commitment = BRIDGE.STORE.bytes_commitment("bridge-runner-bundle", source)
