@@ -174,6 +174,164 @@ def valid_runner_source(
     )
 
 
+def production_graph(source=None):
+    source = (valid_runner_source() if source is None else source).encode(
+        "utf-8"
+    )
+    return BRIDGE.derive_local_key_graph(
+        spool_hmac_key=PRIVATE_V2["spool_hmac_key"],
+        salt=PRIVATE_V2["salt"],
+        epoch_ref=EPOCH_REF,
+        authority_ref=AUTHORITY_REF,
+        runner_identity=PRIVATE_V2["runner_identity"],
+        bundle=bundle(source),
+        n_remote=b"R" * 32,
+        n_local=b"L" * 32,
+        barrier_utc=BARRIER_UTC,
+    )
+
+
+def production_proceed_frame_bytes(
+    graph,
+    *,
+    sequence=1,
+    session_nonce=None,
+    frame_nonce=b"p" * 16,
+    changes=None,
+):
+    artifact = BRIDGE.STORE.recovery_commitment(
+        "artifact-row",
+        str(ARTIFACT_ROW_ID),
+        ARTIFACT_FILENAME,
+    )
+    values = {
+        "type": "PROCEED",
+        "version": 1,
+        "epoch_digest": BRIDGE._digest_commitment(graph.epoch_digest),
+        "authority_digest": BRIDGE._digest_commitment(graph.authority_digest),
+        "runner_digest": BRIDGE._digest_commitment(graph.runner_digest),
+        "bundle_digest": BRIDGE._digest_commitment(graph.bundle_digest),
+        "barrier_utc": BARRIER_UTC,
+        "artifact_commitment": artifact,
+        "isolation_commitment": ISOLATION_COMMITMENT,
+        "transition_id": "bridge-restore-test",
+        "pre_cas_ledger_digest": BRIDGE.bridge_commitment("ledger", "pre"),
+        "transition_data_commitment": BRIDGE.bridge_commitment(
+            "transition", "data"
+        ),
+        "consumed_record_digest": BRIDGE.bridge_commitment("record", "consumed"),
+    }
+    capability = BRIDGE.proceed_commitment(
+        graph,
+        values["artifact_commitment"],
+        values["isolation_commitment"],
+        values["transition_id"],
+        values["pre_cas_ledger_digest"],
+        values["transition_data_commitment"],
+        values["consumed_record_digest"],
+    )
+    values["grant"] = base64.urlsafe_b64encode(
+        BRIDGE._grant_token(graph, capability)
+    ).decode("ascii").rstrip("=")
+    if changes:
+        values.update(changes)
+    return BRIDGE.encode_authenticated_frame(
+        graph.k_session,
+        BRIDGE.DIRECTION_LOCAL_TO_REMOTE,
+        BRIDGE.MESSAGE_PROCEED,
+        sequence,
+        graph.n_session if session_nonce is None else session_nonce,
+        BRIDGE.encode_control(values),
+        frame_nonce=frame_nonce,
+    )
+
+
+def decode_production_remote_frames(
+    output, graph, *, starting_sequence=2, skipped_sequences=()
+):
+    self_hello = BRIDGE.decode_hello(output[: BRIDGE.HELLO_SIZE])
+    if self_hello != graph.n_remote:
+        raise AssertionError("production remote HELLO did not bind to the graph")
+    frames = []
+    offset = BRIDGE.HELLO_SIZE
+    sequence = starting_sequence
+    while offset < len(output):
+        while sequence in skipped_sequences:
+            sequence += 1
+        header_end = offset + BRIDGE.AUTH_FRAME_HEADER_STRUCT.size
+        header = output[offset:header_end]
+        if len(header) != BRIDGE.AUTH_FRAME_HEADER_STRUCT.size:
+            raise AssertionError("truncated production remote frame header")
+        length = BRIDGE.AUTH_FRAME_HEADER_STRUCT.unpack(header)[-1]
+        frame_end = header_end + length + BRIDGE.AUTH_FRAME_TAG_SIZE
+        raw = output[offset:frame_end]
+        frame = BRIDGE.decode_authenticated_frame(
+            raw,
+            graph.k_session,
+            expected_direction=BRIDGE.DIRECTION_REMOTE_TO_LOCAL,
+            expected_sequence=sequence,
+            expected_session_nonce=graph.n_session,
+        )
+        frames.append(frame)
+        offset = frame_end
+        sequence += 1
+    return frames
+
+
+def run_production_remote_loader(source, *, incoming_builder=None, capture_fds=False):
+    source = source.encode("utf-8") if isinstance(source, str) else source
+    graph = production_graph(source.decode("utf-8"))
+    runner = bundle(source)
+    preamble = BRIDGE.encode_preamble(
+        graph.n_remote,
+        graph.n_local,
+        graph.n_session,
+        graph.epoch_digest,
+        graph.authority_digest,
+        graph.runner_digest,
+        graph.bundle_digest,
+        graph.bootstrap_seed,
+    )
+    boot = BRIDGE.encode_authenticated_frame(
+        graph.k_boot,
+        BRIDGE.DIRECTION_LOCAL_TO_REMOTE,
+        BRIDGE.MESSAGE_BOOT,
+        1,
+        graph.n_session,
+        BRIDGE.encode_boot_payload(runner, BARRIER_UTC),
+        frame_nonce=b"B" * 16,
+    )
+    incoming = b""
+    if incoming_builder is not None:
+        incoming = incoming_builder(graph, sequence=4)
+    output = io.BytesIO()
+    random_counter = 0
+
+    def randomness(size):
+        nonlocal random_counter
+        if size == 32:
+            return graph.n_remote
+        if size == 16:
+            random_counter += 1
+            return bytes([random_counter]) * 16
+        raise AssertionError(f"unexpected production-loader randomness size: {size}")
+
+    exit_code = REMOTE["RemoteLoader"](
+        io.BytesIO(preamble + boot + incoming),
+        output,
+        capture_fds=capture_fds,
+        randomness=randomness,
+    ).run()
+    skipped = (4,) if incoming_builder is not None else ()
+    return (
+        exit_code,
+        decode_production_remote_frames(
+            output.getvalue(), graph, skipped_sequences=skipped
+        ),
+        graph,
+    )
+
+
 def frame_stages(store, epoch_ref):
     frames_dir = store._frames_path(epoch_ref)
     entries = sorted(
@@ -485,6 +643,10 @@ class ContractTests(BridgeTestCase):
         self.assertEqual(payload.count(b"class RunnerRuntime:"), 1)
         self.assertEqual(payload.count(b"class _RemoteChannel:"), 1)
         self.assertEqual(payload.count(b"class RemoteLoader:"), 1)
+        self.assertEqual(payload.count(b"_subprocess.Popen("), 1)
+        self.assertNotIn(b"_subprocess.run", payload)
+        self.assertNotIn(b"_subprocess.check_output", payload)
+        self.assertIn(b"def _launch_child(args, options):", payload)
 
         source_one = BRIDGE.build_fixed_loader_source()
         source_two = BRIDGE.build_fixed_loader_source()
@@ -654,22 +816,76 @@ class ContractTests(BridgeTestCase):
         with self.assertRaises(AttributeError):
             policy["os"].add("future_process_capability")
 
-        classified = {
-            (root, name)
-            for root, names in expected.items()
-            for name in names
-        }
-
-        def require_classified(inventory):
-            unknown = set(inventory) - classified
-            if unknown:
-                raise AssertionError(
-                    f"unclassified process capabilities: {sorted(unknown)!r}"
+        registry = BRIDGE._CANONICAL_REMOTE_NAMESPACE[
+            "_CAPABILITY_CLASSIFICATION_REGISTRY"
+        ]
+        self.assertIs(type(registry), types.MappingProxyType)
+        self.assertEqual(set(registry), {"nt", "posix"})
+        for platform in ("nt", "posix"):
+            self.assertIs(type(registry[platform]), types.MappingProxyType)
+            self.assertEqual(
+                set(registry[platform]),
+                {"os", "contextlib", "signal", "subprocess", "sys"},
+            )
+            for entries in registry[platform].values():
+                self.assertIs(type(entries), types.MappingProxyType)
+                self.assertTrue(
+                    set(entries.values())
+                    <= {"DENY", "RETAIN_SAFE", "GUARDED_SAFE"}
                 )
 
-        require_classified(classified)
-        with self.assertRaises(AssertionError):
-            require_classified(classified | {("os", "future_process_capability")})
+        observed = BRIDGE._CANONICAL_REMOTE_NAMESPACE[
+            "_raw_capability_inventory"
+        ]()
+        BRIDGE._CANONICAL_REMOTE_NAMESPACE["_require_capability_classifications"](
+            os.name
+        )
+        self.assertTrue(observed)
+        current_registry = registry[os.name]
+        unclassified = [
+            item
+            for item in observed
+            if item[1] not in current_registry
+            or item[2] not in current_registry[item[1]]
+        ]
+        self.assertEqual(unclassified, [])
+        self.assertEqual(
+            current_registry["os"]["kill"],
+            "RETAIN_SAFE",
+        )
+        self.assertNotIn("kill", expected["os"])
+        for root, names in expected.items():
+            for name in names:
+                self.assertEqual(
+                    current_registry[root][name],
+                    "DENY",
+                    (os.name, root, name),
+                )
+
+        fake_modules = {
+            "os": types.SimpleNamespace(exec_future=lambda: None),
+            "contextlib": types.SimpleNamespace(),
+            "signal": types.SimpleNamespace(),
+        }
+        with self.assertRaises(ImportError) as raised:
+            BRIDGE._CANONICAL_REMOTE_NAMESPACE[
+                "_require_capability_classifications"
+            ]("nt", fake_modules)
+        self.assertIn("unclassified", str(raised.exception).lower())
+        self.assertIn("exec_future", str(raised.exception))
+        with self.assertRaises(ImportError) as raised:
+            BRIDGE._CANONICAL_REMOTE_NAMESPACE["_capability_registry"](
+                "unsupported-platform"
+            )
+        self.assertIn("unsupported-platform", str(raised.exception))
+        self.assertEqual(
+            registry[os.name]["subprocess"]["Popen"],
+            "GUARDED_SAFE",
+        )
+        self.assertEqual(
+            registry[os.name]["sys"]["stdout"],
+            "GUARDED_SAFE",
+        )
 
     def test_process_capability_policy_is_enforced_by_production_payload(self):
         policy = BRIDGE._CANONICAL_REMOTE_NAMESPACE[
@@ -1425,6 +1641,82 @@ class ContractTests(BridgeTestCase):
             expected_classification="SUCCESS",
             expected_messages=1,
         )
+        run_case(
+            "run-completed-process-zero-and-nonzero",
+            "import subprocess\n"
+            "import sys\n"
+            'run_child = \'import sys; sys.stdout.buffer.write(b"RUN330_RUN_OUT"); '
+            'sys.stderr.buffer.write(b"RUN330_RUN_ERR"); raise SystemExit(7)\'\n'
+            "completed = subprocess.run(\n"
+            "    args=(sys.executable, '-c', run_child),\n"
+            "    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,\n"
+            "    stderr=subprocess.PIPE, shell=False, close_fds=True, pass_fds=(),\n"
+            ")\n"
+            "if (type(completed).__name__ != 'CompletedProcess'\n"
+            "        or completed.returncode != 7\n"
+            "        or completed.stdout != b'RUN330_RUN_OUT'\n"
+            "        or completed.stderr != b'RUN330_RUN_ERR'):\n"
+            "    raise RuntimeError('run semantics failed')",
+            None,
+            expected_classification="SUCCESS",
+            expected_messages=1,
+        )
+        run_case(
+            "check-output-zero-captured",
+            "import subprocess\n"
+            "import sys\n"
+            "check_child = \"import sys; sys.stdout.buffer.write(b'RUN330_CHECK_ZERO')\"\n"
+            "output = subprocess.check_output(\n"
+            "    (sys.executable, '-c', check_child),\n"
+            "    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,\n"
+            "    stderr=subprocess.PIPE, shell=False, close_fds=True, pass_fds=(),\n"
+            ")\n"
+            "if output != b'RUN330_CHECK_ZERO':\n"
+            "    raise RuntimeError('check_output zero semantics failed')",
+            None,
+            expected_classification="SUCCESS",
+            expected_messages=1,
+        )
+        run_case(
+            "check-output-nonzero-captured",
+            "import subprocess\n"
+            "import sys\n"
+            'check_child = \'import sys; sys.stdout.buffer.write(b"RUN330_CHECK_OUT"); '
+            'sys.stderr.buffer.write(b"RUN330_CHECK_ERR"); raise SystemExit(9)\'\n'
+            "try:\n"
+            "    subprocess.check_output(\n"
+            "        (sys.executable, '-c', check_child),\n"
+            "        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,\n"
+            "        stderr=subprocess.PIPE, shell=False, close_fds=True, pass_fds=(),\n"
+            "    )\n"
+            "except Exception as error:\n"
+            "    if (type(error).__name__ != 'CalledProcessError'\n"
+            "            or error.returncode != 9\n"
+            "            or error.output != b'RUN330_CHECK_OUT'\n"
+            "            or error.stderr != b'RUN330_CHECK_ERR'):\n"
+            "        raise RuntimeError('check_output nonzero semantics failed')\n"
+            "else:\n"
+            "    raise RuntimeError('check_output did not raise')",
+            None,
+            expected_classification="SUCCESS",
+            expected_messages=1,
+        )
+        run_case(
+            "check-output-stderr-stdout-combined",
+            "import subprocess\n"
+            "import sys\n"
+            "combined_child = \"import sys; sys.stderr.buffer.write(b'RUN330_COMBINED')\"\n"
+            "output = subprocess.check_output(\n"
+            "    (sys.executable, '-c', combined_child),\n"
+            "    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,\n"
+            "    stderr=subprocess.STDOUT, shell=False, close_fds=True, pass_fds=(),\n"
+            ")\n"
+            "if output != b'RUN330_COMBINED':\n"
+            "    raise RuntimeError('check_output stderr=STDOUT failed')",
+            None,
+            expected_classification="SUCCESS",
+            expected_messages=1,
+        )
         rejection_cases = (
             ("forbidden-import", "import socket", "RUNNER_TOP_LEVEL_EXCEPTION"),
             (
@@ -1437,6 +1729,84 @@ class ContractTests(BridgeTestCase):
                 "import subprocess\n"
                 "import sys\n"
                 f"subprocess.check_output([sys.executable, '-c', {child_program!r}])",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "popen-shell-omitted",
+                popen_prefix
+                + f", {stdio}, close_fds=True, pass_fds=())",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "popen-close-fds-omitted",
+                popen_prefix
+                + f", {stdio}, shell=False, pass_fds=())",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "popen-pass-fds-omitted",
+                popen_prefix
+                + f", {stdio}, shell=False, close_fds=True)",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "run-shell-omitted",
+                "import subprocess\n"
+                "import sys\n"
+                f"subprocess.run([sys.executable, '-c', {child_program!r}], "
+                f"{stdio}, close_fds=True, pass_fds=())",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "run-close-fds-omitted",
+                "import subprocess\n"
+                "import sys\n"
+                f"subprocess.run([sys.executable, '-c', {child_program!r}], "
+                f"{stdio}, shell=False, pass_fds=())",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "run-pass-fds-omitted",
+                "import subprocess\n"
+                "import sys\n"
+                f"subprocess.run([sys.executable, '-c', {child_program!r}], "
+                f"{stdio}, shell=False, close_fds=True)",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "check-output-shell-omitted",
+                "import subprocess\n"
+                "import sys\n"
+                f"subprocess.check_output([sys.executable, '-c', {child_program!r}], "
+                "stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, "
+                "close_fds=True, pass_fds=())",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "check-output-close-fds-omitted",
+                "import subprocess\n"
+                "import sys\n"
+                f"subprocess.check_output([sys.executable, '-c', {child_program!r}], "
+                "stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, "
+                "shell=False, pass_fds=())",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "check-output-pass-fds-omitted",
+                "import subprocess\n"
+                "import sys\n"
+                f"subprocess.check_output([sys.executable, '-c', {child_program!r}], "
+                "stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, "
+                "shell=False, close_fds=True)",
+                "SUBPROCESS_STDIO_REQUIRED",
+            ),
+            (
+                "check-output-devnull-stdout",
+                "import subprocess\n"
+                "import sys\n"
+                f"subprocess.check_output([sys.executable, '-c', {child_program!r}], "
+                "stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, "
+                "shell=False, close_fds=True, pass_fds=())",
                 "SUBPROCESS_STDIO_REQUIRED",
             ),
             (
@@ -1911,6 +2281,408 @@ class RuntimeTests(BridgeTestCase):
                 ISOLATION_COMMITMENT,
             )
         self.assertIs(raised.exception.code, BRIDGE.RunnerControlCode.PROCEED_INVALID)
+
+
+class ProductionRuntimeWireTests(BridgeTestCase):
+    def test_remote_loader_valid_flow_has_exact_ready_discovery_result_counts(self):
+        exit_code, frames, _graph = run_production_remote_loader(
+            valid_runner_source(),
+            incoming_builder=production_proceed_frame_bytes,
+        )
+        self.assertEqual(exit_code, BRIDGE.EXIT_SUCCESS)
+        self.assertEqual(
+            [frame.message for frame in frames],
+            [
+                BRIDGE.MESSAGE_READY,
+                BRIDGE.MESSAGE_DISCOVERY,
+                BRIDGE.MESSAGE_RESULT,
+            ],
+        )
+        controls = [BRIDGE.decode_control(frame.payload) for frame in frames]
+        self.assertEqual(
+            [control["type"] for control in controls],
+            ["READY", "DISCOVERY", "RESULT"],
+        )
+        self.assertEqual(controls[0]["barrier_utc"], BARRIER_UTC)
+        self.assertEqual(controls[1]["execution_row_id"], ARTIFACT_ROW_ID)
+        self.assertEqual(controls[1]["artifact_filename"], ARTIFACT_FILENAME)
+        self.assertEqual(controls[2]["classification"], "SUCCESS")
+
+    def test_invalid_discovery_and_isolation_emit_ready_then_one_abort(self):
+        cases = (
+            (
+                "invalid-discovery",
+                "def run(runtime):\n"
+                f"    runtime.discover(True, {ARTIFACT_FILENAME!r}, 'PASS', {ISOLATION_COMMITMENT!r})\n",
+                "PROTOCOL_FAILURE",
+            ),
+            (
+                "invalid-isolation",
+                "def run(runtime):\n"
+                f"    runtime.discover({ARTIFACT_ROW_ID!r}, {ARTIFACT_FILENAME!r}, 'FAIL', {ISOLATION_COMMITMENT!r})\n",
+                "ISOLATION_FAILED",
+            ),
+        )
+        for label, source, expected_code in cases:
+            with self.subTest(label=label):
+                exit_code, frames, _graph = run_production_remote_loader(source)
+                self.assertEqual(exit_code, BRIDGE.EXIT_RUNNER_ABORT)
+                self.assertEqual(
+                    [frame.message for frame in frames],
+                    [BRIDGE.MESSAGE_READY, BRIDGE.MESSAGE_ABORT],
+                )
+                self.assertEqual(
+                    BRIDGE.decode_control(frames[-1].payload)["code"],
+                    expected_code,
+                )
+
+    def test_runner_shape_and_early_return_failures_have_exact_wire_counts(self):
+        shape_cases = (
+            ("missing", "value = 1\n", "RUNNER_MISSING"),
+            ("non-callable", "run = 7\n", "RUNNER_NOT_CALLABLE"),
+            (
+                "async",
+                "async def run(runtime):\n"
+                "    return None\n",
+                "RUNNER_SIGNATURE_INVALID",
+            ),
+            (
+                "async-generator",
+                "async def run(runtime):\n"
+                "    yield None\n",
+                "RUNNER_SIGNATURE_INVALID",
+            ),
+            (
+                "wrong-arity",
+                "def run(runtime, extra):\n"
+                "    return None\n",
+                "RUNNER_SIGNATURE_INVALID",
+            ),
+            (
+                "defaulted",
+                "def run(runtime=None):\n"
+                "    return None\n",
+                "RUNNER_SIGNATURE_INVALID",
+            ),
+            (
+                "variadic",
+                "def run(*runtime):\n"
+                "    return None\n",
+                "RUNNER_SIGNATURE_INVALID",
+            ),
+        )
+        for label, source, expected_code in shape_cases:
+            with self.subTest(label=label):
+                exit_code, frames, _graph = run_production_remote_loader(source)
+                self.assertEqual(exit_code, BRIDGE.EXIT_RUNNER_ABORT)
+                self.assertEqual(
+                    [frame.message for frame in frames],
+                    [BRIDGE.MESSAGE_ABORT],
+                )
+                self.assertEqual(
+                    BRIDGE.decode_control(frames[0].payload)["code"],
+                    expected_code,
+                )
+
+        early_cases = (
+            (
+                "none-return",
+                "def run(runtime):\n"
+                "    pass\n",
+                "RUNNER_NO_RESULT",
+            ),
+            (
+                "non-none-return",
+                "def run(runtime):\n"
+                "    return 'unexpected'\n",
+                "RUNNER_NON_NONE_RETURN",
+            ),
+        )
+        for label, source, expected_code in early_cases:
+            with self.subTest(label=label):
+                exit_code, frames, _graph = run_production_remote_loader(source)
+                self.assertEqual(exit_code, BRIDGE.EXIT_RUNNER_ABORT)
+                self.assertEqual(
+                    [frame.message for frame in frames],
+                    [BRIDGE.MESSAGE_READY, BRIDGE.MESSAGE_ABORT],
+                )
+                self.assertEqual(
+                    BRIDGE.decode_control(frames[-1].payload)["code"],
+                    expected_code,
+                )
+
+    def test_decision_eof_timeout_and_reader_broken_pipe_are_exact_runtime_errors(self):
+        class BrokenReader:
+            def read(self, _size):
+                raise BrokenPipeError("synthetic reader failure")
+
+        cases = (
+            ("eof", io.BytesIO(), 1.0, "DECISION_EOF"),
+            ("timeout", io.BytesIO(), 0.0, "DECISION_TIMEOUT"),
+            ("broken-pipe", BrokenReader(), 1.0, "DECISION_BROKEN_PIPE"),
+        )
+        for label, reader, timeout, expected_code in cases:
+            with self.subTest(label=label):
+                graph = production_graph()
+                channel = REMOTE["_RemoteChannel"](
+                    reader, io.BytesIO(), graph
+                )
+                runtime = REMOTE["RunnerRuntime"](
+                    channel, BARRIER_UTC, decision_timeout=timeout
+                )
+                runtime._state = runtime._RUNNING
+                with self.assertRaises(BRIDGE.RunnerControlError) as raised:
+                    runtime.discover(
+                        ARTIFACT_ROW_ID,
+                        ARTIFACT_FILENAME,
+                        "PASS",
+                        ISOLATION_COMMITMENT,
+                    )
+                self.assertEqual(raised.exception.code.value, expected_code)
+
+    def test_protocol_writer_broken_pipe_is_exact_runtime_error(self):
+        class BrokenWriter:
+            def write(self, _payload):
+                raise BrokenPipeError("synthetic writer failure")
+
+            def flush(self):
+                raise BrokenPipeError("synthetic writer failure")
+
+        graph = production_graph()
+        channel = REMOTE["_RemoteChannel"](
+            io.BytesIO(), BrokenWriter(), graph
+        )
+        runtime = REMOTE["RunnerRuntime"](channel, BARRIER_UTC)
+        runtime._state = runtime._RUNNING
+        with self.assertRaises(BRIDGE.RunnerControlError) as raised:
+            runtime.discover(
+                ARTIFACT_ROW_ID,
+                ARTIFACT_FILENAME,
+                "PASS",
+                ISOLATION_COMMITMENT,
+            )
+        self.assertEqual(raised.exception.code.value, "PROTOCOL_BROKEN_PIPE")
+
+    def test_authenticated_wire_hmac_direction_session_nonce_length_and_sequence_fail_closed(self):
+        graph = production_graph()
+        valid = production_proceed_frame_bytes(graph)
+        tampered_hmac = bytearray(valid)
+        tampered_hmac[-1] ^= 1
+        invalid_nonce = bytearray(valid)
+        nonce_start = BRIDGE.AUTH_FRAME_HEADER_STRUCT.size - BRIDGE.FRAME_NONCE_BYTES
+        invalid_nonce[nonce_start : nonce_start + BRIDGE.FRAME_NONCE_BYTES] = b"\0" * BRIDGE.FRAME_NONCE_BYTES
+        invalid_length = bytearray(valid)
+        length_start = BRIDGE.AUTH_FRAME_HEADER_STRUCT.size - 4
+        invalid_length[length_start : length_start + 4] = b"\0" * 4
+        valid_frame = BRIDGE.decode_authenticated_frame(
+            valid,
+            graph.k_session,
+            expected_direction=BRIDGE.DIRECTION_LOCAL_TO_REMOTE,
+            expected_sequence=1,
+            expected_session_nonce=graph.n_session,
+        )
+        wrong_direction = BRIDGE.encode_authenticated_frame(
+            graph.k_session,
+            BRIDGE.DIRECTION_REMOTE_TO_LOCAL,
+            BRIDGE.MESSAGE_PROCEED,
+            1,
+            graph.n_session,
+            valid_frame.payload,
+            frame_nonce=valid_frame.frame_nonce,
+        )
+        cases = (
+            ("hmac", bytes(tampered_hmac), graph.k_session),
+            ("direction", wrong_direction, graph.k_session),
+            (
+                "session",
+                production_proceed_frame_bytes(graph, session_nonce=b"S" * 32),
+                graph.k_session,
+            ),
+            ("nonce", bytes(invalid_nonce), graph.k_session),
+            ("length", bytes(invalid_length), graph.k_session),
+            (
+                "sequence",
+                production_proceed_frame_bytes(graph, sequence=2),
+                graph.k_session,
+            ),
+        )
+        for label, raw, key in cases:
+            with self.subTest(label=label):
+                channel = REMOTE["_RemoteChannel"](
+                    io.BytesIO(raw), io.BytesIO(), graph
+                )
+                with self.assertRaises(BRIDGE.RunnerControlError) as raised:
+                    channel.receive(key, BRIDGE.DIRECTION_LOCAL_TO_REMOTE)
+                self.assertEqual(raised.exception.code.value, "PROTOCOL_FAILURE")
+
+        duplicate_nonce = production_proceed_frame_bytes(
+            graph, sequence=2, frame_nonce=b"p" * BRIDGE.FRAME_NONCE_BYTES
+        )
+        channel = REMOTE["_RemoteChannel"](
+            io.BytesIO(valid + duplicate_nonce), io.BytesIO(), graph
+        )
+        channel.receive(graph.k_session, BRIDGE.DIRECTION_LOCAL_TO_REMOTE)
+        with self.assertRaises(BRIDGE.RunnerControlError) as raised:
+            channel.receive(graph.k_session, BRIDGE.DIRECTION_LOCAL_TO_REMOTE)
+        self.assertEqual(raised.exception.code.value, "PROTOCOL_FAILURE")
+
+    def test_authenticated_frame_and_byte_ceilings_are_exact(self):
+        graph = production_graph()
+        payload = b"x" * BRIDGE.MAX_AUTH_PAYLOAD_BYTES
+        raw = b"".join(
+            BRIDGE.encode_authenticated_frame(
+                graph.k_session,
+                BRIDGE.DIRECTION_LOCAL_TO_REMOTE,
+                BRIDGE.MESSAGE_READY,
+                sequence,
+                graph.n_session,
+                payload,
+                frame_nonce=bytes([sequence]) * BRIDGE.FRAME_NONCE_BYTES,
+            )
+            for sequence in range(1, BRIDGE.MAX_SESSION_FRAMES + 1)
+        )
+        channel = REMOTE["_RemoteChannel"](
+            io.BytesIO(raw), io.BytesIO(), graph
+        )
+        for _ in range(BRIDGE.MAX_SESSION_FRAMES):
+            channel.receive(graph.k_session, BRIDGE.DIRECTION_LOCAL_TO_REMOTE)
+        self.assertEqual(channel.bytes_seen, BRIDGE.MAX_SESSION_BYTES)
+        with self.assertRaises(BRIDGE.RunnerControlError) as raised:
+            channel._account(
+                BRIDGE.AuthenticatedFrame(
+                    BRIDGE.DIRECTION_LOCAL_TO_REMOTE,
+                    BRIDGE.MESSAGE_READY,
+                    BRIDGE.MAX_SESSION_FRAMES + 1,
+                    graph.n_session,
+                    b"q" * BRIDGE.FRAME_NONCE_BYTES,
+                    b"",
+                )
+            )
+        self.assertEqual(raised.exception.code.value, "PROTOCOL_FAILURE")
+
+        overflow = REMOTE["_RemoteChannel"](
+            io.BytesIO(), io.BytesIO(), graph
+        )
+        overflow.bytes_seen = (
+            BRIDGE.MAX_SESSION_BYTES
+            - BRIDGE.AUTH_FRAME_OVERHEAD
+            - BRIDGE.MAX_AUTH_PAYLOAD_BYTES
+            + 1
+        )
+        with self.assertRaises(BRIDGE.RunnerControlError) as raised:
+            overflow._account(
+                BRIDGE.AuthenticatedFrame(
+                    BRIDGE.DIRECTION_LOCAL_TO_REMOTE,
+                    BRIDGE.MESSAGE_READY,
+                    1,
+                    graph.n_session,
+                    b"q" * BRIDGE.FRAME_NONCE_BYTES,
+                    payload,
+                )
+            )
+        self.assertEqual(raised.exception.code.value, "PROTOCOL_FAILURE")
+
+    def test_runtime_state_errors_are_production_wire_observable(self):
+        graph = production_graph()
+        writer = io.BytesIO()
+        channel = REMOTE["_RemoteChannel"](
+            io.BytesIO(production_proceed_frame_bytes(graph, sequence=2)),
+            writer,
+            graph,
+        )
+        runtime = REMOTE["RunnerRuntime"](channel, BARRIER_UTC)
+        runtime._state = runtime._RUNNING
+        grant = runtime.discover(
+            ARTIFACT_ROW_ID,
+            ARTIFACT_FILENAME,
+            "PASS",
+            ISOLATION_COMMITMENT,
+        )
+        with self.assertRaises(BRIDGE.RunnerControlError) as raised:
+            runtime.discover(
+                ARTIFACT_ROW_ID,
+                ARTIFACT_FILENAME,
+                "PASS",
+                ISOLATION_COMMITMENT,
+            )
+        self.assertEqual(raised.exception.code.value, "DISCOVERY_DUPLICATE")
+        runtime.send_result(grant, "SUCCESS", RESULT_COMMITMENT)
+        with self.assertRaises(BRIDGE.RunnerControlError) as raised:
+            runtime.send_result(grant, "SUCCESS", RESULT_COMMITMENT)
+        self.assertEqual(raised.exception.code.value, "RESULT_DUPLICATE")
+        frames = decode_production_remote_frames(
+            BRIDGE.encode_hello(graph.n_remote) + writer.getvalue(),
+            graph,
+            starting_sequence=1,
+            skipped_sequences=(2,),
+        )
+        self.assertEqual(
+            [frame.message for frame in frames],
+            [BRIDGE.MESSAGE_DISCOVERY, BRIDGE.MESSAGE_RESULT],
+        )
+
+        before_grant = REMOTE["RunnerRuntime"](
+            REMOTE["_RemoteChannel"](io.BytesIO(), io.BytesIO(), graph),
+            BARRIER_UTC,
+        )
+        before_grant._state = before_grant._RUNNING
+        with self.assertRaises(BRIDGE.RunnerControlError) as raised:
+            before_grant.send_result(None, "SUCCESS", RESULT_COMMITMENT)
+        self.assertEqual(raised.exception.code.value, "RESULT_BEFORE_PROCEED")
+
+    def test_remote_loader_duplicate_discovery_and_result_fail_without_extra_grant(self):
+        duplicate_discovery = (
+            "def run(runtime):\n"
+            f"    grant = runtime.discover({ARTIFACT_ROW_ID!r}, {ARTIFACT_FILENAME!r}, 'PASS', {ISOLATION_COMMITMENT!r})\n"
+            f"    runtime.discover({ARTIFACT_ROW_ID!r}, {ARTIFACT_FILENAME!r}, 'PASS', {ISOLATION_COMMITMENT!r})\n"
+        )
+        early_result = (
+            "def run(runtime):\n"
+            f"    runtime.send_result(None, 'SUCCESS', {RESULT_COMMITMENT!r})\n"
+        )
+        duplicate_result = (
+            "def run(runtime):\n"
+            f"    grant = runtime.discover({ARTIFACT_ROW_ID!r}, {ARTIFACT_FILENAME!r}, 'PASS', {ISOLATION_COMMITMENT!r})\n"
+            f"    runtime.send_result(grant, 'SUCCESS', {RESULT_COMMITMENT!r})\n"
+            f"    runtime.send_result(grant, 'SUCCESS', {RESULT_COMMITMENT!r})\n"
+        )
+        cases = (
+            (
+                "duplicate-discovery",
+                duplicate_discovery,
+                production_proceed_frame_bytes,
+                [BRIDGE.MESSAGE_READY, BRIDGE.MESSAGE_DISCOVERY, BRIDGE.MESSAGE_ABORT],
+                "DISCOVERY_DUPLICATE",
+            ),
+            (
+                "result-before-proceed",
+                early_result,
+                None,
+                [BRIDGE.MESSAGE_READY, BRIDGE.MESSAGE_ABORT],
+                "RESULT_BEFORE_PROCEED",
+            ),
+            (
+                "duplicate-result",
+                duplicate_result,
+                production_proceed_frame_bytes,
+                [BRIDGE.MESSAGE_READY, BRIDGE.MESSAGE_DISCOVERY, BRIDGE.MESSAGE_RESULT],
+                None,
+            ),
+        )
+        for label, source, incoming_builder, expected_messages, expected_code in cases:
+            with self.subTest(label=label):
+                exit_code, frames, _graph = run_production_remote_loader(
+                    source, incoming_builder=incoming_builder
+                )
+                self.assertEqual(exit_code, BRIDGE.EXIT_RUNNER_ABORT)
+                self.assertEqual(
+                    [frame.message for frame in frames], expected_messages
+                )
+                terminal = BRIDGE.decode_control(frames[-1].payload)
+                if expected_code is None:
+                    self.assertEqual(terminal["type"], "RESULT")
+                else:
+                    self.assertEqual(terminal["code"], expected_code)
 
 
 class CasFaultMatrixTests(BridgeTestCase):
