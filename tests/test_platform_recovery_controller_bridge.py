@@ -61,6 +61,33 @@ EXACT_REMOTE_IMPORT_ROOTS = (
     "uuid",
 )
 
+_TEST_CAPABILITY_LITERAL_ROOTS = {
+    "os": {
+        "DENY": frozenset("dup dup2 dup3 execl execle execlp execlpe execv execve execvp execvpe fork forkpty get_blocking get_handle_inheritable get_inheritable grantpt login_tty O_CLOEXEC O_CLOFORK O_NOINHERIT openpty P_DETACH P_DETACHED P_NOWAIT P_NOWAITO P_OVERLAY P_WAIT pidfd_getfd pipe pipe2 popen posix_openpt posix_spawn posix_spawnp register_at_fork set_blocking set_handle_inheritable set_inheritable spawnl spawnle spawnlp spawnlpe spawnv spawnve spawnvp spawnvpe startfile system unlockpt vfork".split()),
+        "RETAIN_SAFE": frozenset("abc abort access add_dll_directory alarm altsep chdir chmod chown chroot CLD_CONTINUED CLD_DUMPED CLD_EXITED CLD_KILLED CLD_STOPPED CLD_TRAPPED close closerange confstr confstr_names copy_file_range cpu_count ctermid curdir defpath device_encoding devnull DirEntry environ error eventfd eventfd_read eventfd_write EX__BASE EX_CANTCREAT EX_CONFIG EX_DATAERR EX_IOERR EX_NOHOST EX_NOINPUT EX_NOMSG EX_NOPERM EX_NOUSER EX_OK EX_OSERR EX_OSFILE EX_PROTOCOL EX_SOFTWARE EX_TEMPFAIL EX_UNAVAILABLE EX_USAGE extsep F_OK fchmod fchmodat fchown fchownat fdatasync fdopen fpathconf fsdecode fsencode fspath fstat fstatvfs fsync ftruncate fwalk GenericAlias get_exec_path get_terminal_size getcwd getcwdb getegid getenv geteuid getgid getgrouplist getgroups getloadavg getlogin getpgid getpgrp getpid getppid getpriority getrandom getsid getuid if_indextoname if_nameindex if_nametoindex initgroups isatty kill killpg lchmod lchown linesep link listdir listdrives listmounts listvolumes listxattr lockf lseek lstat major makedev makedirs Mapping memfd_create mkdir mkfifo mknod MutableMapping name nice O_APPEND O_ASYNC O_BINARY O_CREAT O_DIRECT O_DIRECTORY O_DSYNC O_EXCL O_LARGEFILE O_NOATIME O_NOCTTY O_NOFOLLOW O_NONBLOCK O_PATH O_RANDOM O_RDONLY O_RDWR O_RSYNC O_SEQUENTIAL O_SHORT_LIVED O_SYNC O_TEMPORARY O_TEXT O_TMPFILE O_TRUNC O_WRONLY open pardir path pathconf pathconf_names PathLike pathsep pidfd_open POSIX_FADV_DONTNEED POSIX_FADV_NOREUSE POSIX_FADV_NORMAL POSIX_FADV_RANDOM POSIX_FADV_SEQUENTIAL POSIX_FADV_WILLNEED posix_fadvise posix_fallocate POSIX_SPAWN_CLOSE POSIX_SPAWN_DUP2 POSIX_SPAWN_OPEN pread preadv process_cpu_count putenv pwrite pwritev R_OK read readinto readlink readv realpath reload_environ remove removedirs removexattr rename renames replace rmdir RTLD_DEEPBIND RTLD_GLOBAL RTLD_LAZY RTLD_LOCAL scandir sched_get_priority_max sched_get_priority_min sched_getaffinity sched_getparam sched_getscheduler sched_rr_get_interval sched_setaffinity sched_setparam sched_setscheduler SEEK_CUR SEEK_END SEEK_SET sendfile sep setegid seteuid setgid setgroups setns setpgid setpgrp setsid setuid setxattr st stat stat_result statvfs_result strerror supports_bytes_environ supports_dir_fd supports_effective_ids supports_fd supports_follow_symlinks symlink sync sys sysconf sysconf_names tcgetpgrp tcsetpgrp terminal_size times times_result TMP_MAX truncate ttyname umask uname uname_result unlink unsetenv urandom utime W_OK wait wait3 wait4 waitid waitpid waitstatus_to_exitcode walk WCONTINUED WCOREDUMP WEXITED WIFCONTINUED WIFEXITED WIFSIGNALED WIFSTOPPED WNOHANG WNOWAIT write writev WSTOPPED WUNTRACED X_OK".split()),
+    },
+    "contextlib": {
+        "DENY": frozenset("redirect_stderr redirect_stdin redirect_stdout".split()),
+        "RETAIN_SAFE": frozenset("abc AbstractAsyncContextManager AbstractContextManager aclosing AsyncContextDecorator asynccontextmanager AsyncExitStack chdir closing ContextDecorator contextmanager deque ExitStack GenericAlias MethodType nullcontext os suppress sys wraps".split()),
+    },
+    "signal": {
+        "DENY": frozenset("set_wakeup_fd".split()),
+        "RETAIN_SAFE": frozenset("alarm CTRL_BREAK_EVENT CTRL_C_EVENT default_int_handler getsignal Handlers ITIMER_PROF ITIMER_REAL ITIMER_VIRTUAL NSIG pause pthread_kill pthread_sigmask raise_signal SIG_DFL SIG_IGN SIGABRT SIGALRM SIGBREAK SIGBUS SIGCHLD SIGCONT SIGFPE SIGILL SIGINT siginterrupt SIGIO SIGIOT SIGKILL signal Signals sigpending SIGPIPE SIGPOLL SIGPROF SIGPWR SIGQUIT SIGRTMAX SIGRTMIN SIGSEGV SIGSTKFLT SIGSTOP SIGSYS SIGTERM sigtimedwait SIGTSTP SIGTTIN SIGTTOU SIGURG SIGUSR1 SIGVTALRM sigwait sigwaitinfo SIGWINCH SIGXCPU SIGXFSZ strsignal valid_signals".split()),
+    },
+    "subprocess": {
+        "DENY": frozenset("ABOVE_NORMAL_PRIORITY_CLASS BELOW_NORMAL_PRIORITY_CLASS builtins call CalledProcessError check_call contextlib CREATE_BREAKAWAY_FROM_JOB CREATE_DEFAULT_ERROR_MODE CREATE_NEW_CONSOLE CREATE_NEW_PROCESS_GROUP CREATE_NO_WINDOW DETACHED_PROCESS errno fcntl getoutput getstatusoutput Handle HIGH_PRIORITY_CLASS IDLE_PRIORITY_CLASS io list2cmdline locale msvcrt NORMAL_PRIORITY_CLASS os posix REALTIME_PRIORITY_CLASS resource select signal STARTF_FORCEOFFFEEDBACK STARTF_FORCEONFEEDBACK STARTF_USESHOWWINDOW STARTF_USESTDHANDLES STARTUPINFO STD_ERROR_HANDLE STD_INPUT_HANDLE STD_OUTPUT_HANDLE SubprocessError SW_HIDE sys termios threading time types warnings".split()),
+        "GUARDED_SAFE": frozenset("check_output CompletedProcess DEVNULL PIPE Popen run STDOUT TimeoutExpired".split()),
+    },
+    "sys": {
+        "DENY": frozenset("activate_stack_trampoline addaudithook api_version argv audit base_exec_prefix base_prefix breakpointhook builtin_module_names byteorder call_tracing copyright deactivate_stack_trampoline displayhook dllhandle dont_write_bytecode exc_info excepthook exception exec_prefix exit flags float_info float_repr_style get_asyncgen_hooks get_coroutine_origin_tracking_depth get_int_max_str_digits getallocatedblocks getdefaultencoding getfilesystemencodeerrors getfilesystemencoding getprofile getrecursionlimit getrefcount getsizeof getswitchinterval gettrace getunicodeinternedsize getwindowsversion hash_info hexversion implementation int_info intern is_finalizing is_remote_debug_enabled is_stack_trampoline_active maxsize maxunicode meta_path modules monitoring orig_argv path path_hooks path_importer_cache platform platlibdir prefix pycache_prefix remote_exec set_asyncgen_hooks set_coroutine_origin_tracking_depth set_int_max_str_digits setprofile setrecursionlimit setswitchinterval settrace stdlib_module_names thread_info unraisablehook version version_info warnoptions winver".split()),
+        "GUARDED_SAFE": frozenset("__stderr__ __stdin__ __stdout__ executable stderr stdin stdout".split()),
+    },
+}
+TEST_CAPABILITY_LITERAL_REGISTRY = {
+    "nt": _TEST_CAPABILITY_LITERAL_ROOTS,
+    "posix": _TEST_CAPABILITY_LITERAL_ROOTS,
+}
+
 
 BARRIER_UTC = "2026-08-31T00:00:00.000000Z"
 EPOCH_REF = "epoch-bridge-synthetic-001"
@@ -174,7 +201,7 @@ def valid_runner_source(
     )
 
 
-def production_graph(source=None):
+def production_graph(source=None, *, n_remote=b"R" * 32, n_local=b"L" * 32):
     source = (valid_runner_source() if source is None else source).encode(
         "utf-8"
     )
@@ -185,8 +212,8 @@ def production_graph(source=None):
         authority_ref=AUTHORITY_REF,
         runner_identity=PRIVATE_V2["runner_identity"],
         bundle=bundle(source),
-        n_remote=b"R" * 32,
-        n_local=b"L" * 32,
+        n_remote=n_remote,
+        n_local=n_local,
         barrier_utc=BARRIER_UTC,
     )
 
@@ -278,7 +305,9 @@ def decode_production_remote_frames(
     return frames
 
 
-def run_production_remote_loader(source, *, incoming_builder=None, capture_fds=False):
+def run_production_remote_loader(
+    source, *, incoming_builder=None, capture_fds=False, reader_factory=None
+):
     source = source.encode("utf-8") if isinstance(source, str) else source
     graph = production_graph(source.decode("utf-8"))
     runner = bundle(source)
@@ -304,6 +333,10 @@ def run_production_remote_loader(source, *, incoming_builder=None, capture_fds=F
     incoming = b""
     if incoming_builder is not None:
         incoming = incoming_builder(graph, sequence=4)
+    input_bytes = preamble + boot + incoming
+    reader = io.BytesIO(input_bytes)
+    if reader_factory is not None:
+        reader = reader_factory(input_bytes)
     output = io.BytesIO()
     random_counter = 0
 
@@ -317,7 +350,7 @@ def run_production_remote_loader(source, *, incoming_builder=None, capture_fds=F
         raise AssertionError(f"unexpected production-loader randomness size: {size}")
 
     exit_code = REMOTE["RemoteLoader"](
-        io.BytesIO(preamble + boot + incoming),
+        reader,
         output,
         capture_fds=capture_fds,
         randomness=randomness,
@@ -330,6 +363,76 @@ def run_production_remote_loader(source, *, incoming_builder=None, capture_fds=F
         ),
         graph,
     )
+
+
+def run_fixed_loader_profile(source, *, incoming=b""):
+    source = source.encode("utf-8") if isinstance(source, str) else source
+    runner = bundle(source)
+    command = BRIDGE.build_fixed_loader_command()
+    interpreter = shutil.which(command[0])
+    if interpreter is None or (
+        os.name == "nt"
+        and pathlib.Path(interpreter).parent.name.casefold() == "windowsapps"
+    ):
+        if os.name != "nt":
+            raise unittest.SkipTest("python3 is not available on PATH")
+        interpreter = sys.executable
+    environment = dict(os.environ)
+    for name in (
+        "PYTHONHOME",
+        "PYTHONINSPECT",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "PYTHONUSERBASE",
+    ):
+        environment.pop(name, None)
+    environment["PYTHONNOUSERSITE"] = "1"
+    with tempfile.TemporaryDirectory(prefix="run331-fixed-wire-") as empty:
+        process = subprocess.Popen(
+            [interpreter, *command[1:]],
+            cwd=empty,
+            env=environment,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            close_fds=True,
+            bufsize=0,
+            shell=False,
+        )
+        try:
+            hello = process.stdout.read(BRIDGE.HELLO_SIZE)
+            graph = production_graph(
+                source.decode("utf-8"), n_remote=BRIDGE.decode_hello(hello)
+            )
+            preamble = BRIDGE.encode_preamble(
+                graph.n_remote,
+                graph.n_local,
+                graph.n_session,
+                graph.epoch_digest,
+                graph.authority_digest,
+                graph.runner_digest,
+                graph.bundle_digest,
+                graph.bootstrap_seed,
+            )
+            boot = BRIDGE.encode_authenticated_frame(
+                graph.k_boot,
+                BRIDGE.DIRECTION_LOCAL_TO_REMOTE,
+                BRIDGE.MESSAGE_BOOT,
+                1,
+                graph.n_session,
+                BRIDGE.encode_boot_payload(runner, BARRIER_UTC),
+                frame_nonce=b"B" * 16,
+            )
+            stdout_tail, stderr = process.communicate(preamble + boot + incoming, timeout=8)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            raise
+        output = hello + stdout_tail
+        frames = decode_production_remote_frames(output, graph)
+        if tuple(pathlib.Path(empty).iterdir()):
+            raise AssertionError("fixed loader created an unexpected file")
+    return process.returncode, frames, graph, stderr
 
 
 def frame_stages(store, epoch_ref):
@@ -863,7 +966,10 @@ class ContractTests(BridgeTestCase):
                 )
 
         fake_modules = {
-            "os": types.SimpleNamespace(exec_future=lambda: None),
+            "os": types.SimpleNamespace(
+                exec_future=lambda: None,
+                novel_capability=lambda: None,
+            ),
             "contextlib": types.SimpleNamespace(),
             "signal": types.SimpleNamespace(),
         }
@@ -873,6 +979,8 @@ class ContractTests(BridgeTestCase):
             ]("nt", fake_modules)
         self.assertIn("unclassified", str(raised.exception).lower())
         self.assertIn("exec_future", str(raised.exception))
+        self.assertIn("novel_capability", str(raised.exception))
+        self.assertFalse("novel_capability".startswith(("exec", "spawn", "fork", "posix_spawn", "dup", "pipe")))
         with self.assertRaises(ImportError) as raised:
             BRIDGE._CANONICAL_REMOTE_NAMESPACE["_capability_registry"](
                 "unsupported-platform"
@@ -886,6 +994,126 @@ class ContractTests(BridgeTestCase):
             registry[os.name]["sys"]["stdout"],
             "GUARDED_SAFE",
         )
+
+    def test_raw_capability_universe_and_aliases_close_against_independent_literal_registry(self):
+        roots = ("os", "contextlib", "signal", "subprocess", "sys")
+        self.assertEqual(set(TEST_CAPABILITY_LITERAL_REGISTRY), {"nt", "posix"})
+        literal = TEST_CAPABILITY_LITERAL_REGISTRY[os.name]
+        self.assertEqual(set(literal), set(roots))
+        observed = BRIDGE._CANONICAL_REMOTE_NAMESPACE["_raw_capability_inventory"](
+            os.name
+        )
+        self.assertEqual({item[1] for item in observed}, set(roots))
+        allowed_categories = {
+            "os": {"DENY", "RETAIN_SAFE"},
+            "contextlib": {"DENY", "RETAIN_SAFE"},
+            "signal": {"DENY", "RETAIN_SAFE"},
+            "subprocess": {"DENY", "GUARDED_SAFE"},
+            "sys": {"DENY", "GUARDED_SAFE"},
+        }
+        for root in roots:
+            with self.subTest(root=root):
+                groups = literal[root]
+                self.assertEqual(set(groups), allowed_categories[root])
+                classified = {}
+                for classification, names in groups.items():
+                    for name in names:
+                        self.assertNotIn(name, classified)
+                        classified[name] = classification
+                missing = sorted(
+                    name
+                    for _platform, item_root, name in observed
+                    if item_root == root and name not in classified
+                )
+                self.assertEqual(missing, [])
+                if root == "subprocess":
+                    self.assertEqual(
+                        {
+                            name: classified[name]
+                            for _platform, item_root, name in observed
+                            if item_root == root
+                        }.get("Popen"),
+                        "GUARDED_SAFE",
+                    )
+                    self.assertTrue(
+                        all(
+                            classified[name] == "DENY"
+                            for _platform, item_root, name in observed
+                            if item_root == root and name not in {
+                                "PIPE",
+                                "DEVNULL",
+                                "STDOUT",
+                                "TimeoutExpired",
+                                "CompletedProcess",
+                                "Popen",
+                                "run",
+                                "check_output",
+                            }
+                        )
+                    )
+                if root == "sys":
+                    for name in (
+                        "executable",
+                        "stdin",
+                        "stdout",
+                        "stderr",
+                        "__stdin__",
+                        "__stdout__",
+                        "__stderr__",
+                    ):
+                        self.assertEqual(classified[name], "GUARDED_SAFE")
+        self.assertEqual(
+            literal["os"]["RETAIN_SAFE"]
+            & literal["os"]["DENY"],
+            frozenset(),
+        )
+        for name in ("open", "fdopen", "read", "write", "close", "replace", "getenv"):
+            self.assertEqual(literal["os"]["RETAIN_SAFE"].__contains__(name), True)
+        for name in ("system", "popen", "fork", "execv", "dup2", "pipe"):
+            self.assertEqual(literal["os"]["DENY"].__contains__(name), True)
+
+        alias_roots = EXACT_REMOTE_IMPORT_ROOTS
+        raw_sources = {root: __import__(root) for root in alias_roots}
+        independent_aliases = []
+        for root in sorted(alias_roots):
+            module = raw_sources[root]
+            for name in dir(module):
+                if not isinstance(name, str) or name.startswith("_"):
+                    continue
+                try:
+                    value = getattr(module, name)
+                except AttributeError:
+                    continue
+                if isinstance(value, types.ModuleType):
+                    child_name = getattr(value, "__name__", "")
+                    child_root = (
+                        child_name.split(".", 1)[0]
+                        if isinstance(child_name, str)
+                        else ""
+                    )
+                    independent_aliases.append((root, name, child_root))
+        independent_aliases = tuple(sorted(set(independent_aliases)))
+        aliases = BRIDGE._CANONICAL_REMOTE_NAMESPACE["_raw_module_alias_inventory"]()
+        self.assertEqual(aliases, independent_aliases)
+        self.assertTrue(aliases)
+        guard_alias = BRIDGE._CANONICAL_REMOTE_NAMESPACE["_guard_module_alias"]
+        for root, name, child_root in aliases:
+            with self.subTest(alias=(root, name, child_root)):
+                value = getattr(raw_sources[root], name)
+                if child_root not in alias_roots:
+                    with self.assertRaises(ImportError) as raised:
+                        guard_alias(value, child_root)
+                    self.assertEqual(str(raised.exception), "RUNNER_IMPORT_FORBIDDEN")
+                else:
+                    guarded = guard_alias(value, child_root)
+                    expected = (
+                        "_GuardedSysProxy"
+                        if child_root == "sys"
+                        else "_GuardedSubprocessProxy"
+                        if child_root == "subprocess"
+                        else "_GuardedModuleProxy"
+                    )
+                    self.assertEqual(type(guarded).__name__, expected)
 
     def test_process_capability_policy_is_enforced_by_production_payload(self):
         policy = BRIDGE._CANONICAL_REMOTE_NAMESPACE[
@@ -1717,6 +1945,30 @@ class ContractTests(BridgeTestCase):
             expected_classification="SUCCESS",
             expected_messages=1,
         )
+        run_case(
+            "check-output-stderr-stdout-combined-nonzero",
+            "import subprocess\n"
+            "import sys\n"
+            'combined_child = \'import sys; sys.stdout.buffer.write(b"RUN331_COMBINED_OUT"); '
+            'sys.stderr.buffer.write(b"RUN331_COMBINED_ERR"); raise SystemExit(13)\'\n'
+            "try:\n"
+            "    subprocess.check_output(\n"
+            "        (sys.executable, '-c', combined_child),\n"
+            "        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,\n"
+            "        stderr=subprocess.STDOUT, shell=False, close_fds=True, pass_fds=(),\n"
+            "    )\n"
+            "except Exception as error:\n"
+            "    if (type(error).__name__ != 'CalledProcessError'\n"
+            "            or error.returncode != 13\n"
+            "            or error.output != b'RUN331_COMBINED_OUTRUN331_COMBINED_ERR'\n"
+            "            or error.stderr is not None):\n"
+            "        raise RuntimeError('check_output combined nonzero semantics failed')\n"
+            "else:\n"
+            "    raise RuntimeError('check_output combined nonzero did not raise')",
+            None,
+            expected_classification="SUCCESS",
+            expected_messages=1,
+        )
         rejection_cases = (
             ("forbidden-import", "import socket", "RUNNER_TOP_LEVEL_EXCEPTION"),
             (
@@ -2308,6 +2560,45 @@ class ProductionRuntimeWireTests(BridgeTestCase):
         self.assertEqual(controls[1]["artifact_filename"], ARTIFACT_FILENAME)
         self.assertEqual(controls[2]["classification"], "SUCCESS")
 
+    def test_fixed_loader_eof_has_exact_ready_discovery_abort_wire(self):
+        exit_code, frames, _graph, stderr = run_fixed_loader_profile(
+            valid_runner_source()
+        )
+        self.assertEqual(exit_code, BRIDGE.EXIT_RUNNER_ABORT)
+        self.assertEqual(stderr, b"")
+        self.assertEqual(
+            [frame.message for frame in frames],
+            [BRIDGE.MESSAGE_READY, BRIDGE.MESSAGE_DISCOVERY, BRIDGE.MESSAGE_ABORT],
+        )
+        self.assertEqual(
+            BRIDGE.decode_control(frames[-1].payload)["code"],
+            "DECISION_EOF",
+        )
+
+    def test_production_loader_reader_broken_pipe_has_exact_abort_wire(self):
+        class BrokenAfterPayload:
+            def __init__(self, payload):
+                self._payload = io.BytesIO(payload)
+
+            def read(self, size):
+                payload = self._payload.read(size)
+                if payload:
+                    return payload
+                raise BrokenPipeError("synthetic production reader failure")
+
+        exit_code, frames, _graph = run_production_remote_loader(
+            valid_runner_source(), reader_factory=BrokenAfterPayload
+        )
+        self.assertEqual(exit_code, BRIDGE.EXIT_RUNNER_ABORT)
+        self.assertEqual(
+            [frame.message for frame in frames],
+            [BRIDGE.MESSAGE_READY, BRIDGE.MESSAGE_DISCOVERY, BRIDGE.MESSAGE_ABORT],
+        )
+        self.assertEqual(
+            BRIDGE.decode_control(frames[-1].payload)["code"],
+            "DECISION_BROKEN_PIPE",
+        )
+
     def test_invalid_discovery_and_isolation_emit_ready_then_one_abort(self):
         cases = (
             (
@@ -2335,6 +2626,31 @@ class ProductionRuntimeWireTests(BridgeTestCase):
                     BRIDGE.decode_control(frames[-1].payload)["code"],
                     expected_code,
                 )
+
+    def test_capture_mode_direct_fd1_and_fd2_abort_without_sentinel_contamination(self):
+        cases = ((1, "RUN331_STDOUT_CAPTURE_SENTINEL", "RUNNER_STDOUT_FORBIDDEN"),
+                 (2, "RUN331_STDERR_CAPTURE_SENTINEL", "RUNNER_STDERR_FORBIDDEN"))
+        for fd, sentinel, expected_code in cases:
+            with self.subTest(fd=fd):
+                source = (
+                    "def run(runtime):\n"
+                    "    import os\n"
+                    f"    os.write({fd}, {sentinel.encode()!r})\n"
+                )
+                exit_code, frames, _graph = run_production_remote_loader(
+                    source, capture_fds=True
+                )
+                self.assertEqual(exit_code, BRIDGE.EXIT_RUNNER_ABORT)
+                self.assertEqual(
+                    [frame.message for frame in frames],
+                    [BRIDGE.MESSAGE_READY, BRIDGE.MESSAGE_ABORT],
+                )
+                self.assertEqual(
+                    BRIDGE.decode_control(frames[-1].payload)["code"],
+                    expected_code,
+                )
+                wire_payload = b"".join(frame.payload for frame in frames)
+                self.assertNotIn(sentinel.encode(), wire_payload)
 
     def test_runner_shape_and_early_return_failures_have_exact_wire_counts(self):
         shape_cases = (
@@ -2370,6 +2686,13 @@ class ProductionRuntimeWireTests(BridgeTestCase):
                 "    return None\n",
                 "RUNNER_SIGNATURE_INVALID",
             ),
+            (
+                "uninspectable-signature",
+                "def run(runtime):\n"
+                "    return None\n"
+                "run.__signature__ = object()\n",
+                "RUNNER_SIGNATURE_INVALID",
+            ),
         )
         for label, source, expected_code in shape_cases:
             with self.subTest(label=label):
@@ -2383,6 +2706,19 @@ class ProductionRuntimeWireTests(BridgeTestCase):
                     BRIDGE.decode_control(frames[0].payload)["code"],
                     expected_code,
                 )
+
+        exit_code, frames, _graph, stderr = run_fixed_loader_profile(
+            "def run(runtime):\n"
+            "    return None\n"
+            "run.__signature__ = object()\n"
+        )
+        self.assertEqual(exit_code, BRIDGE.EXIT_RUNNER_ABORT)
+        self.assertEqual(stderr, b"")
+        self.assertEqual([frame.message for frame in frames], [BRIDGE.MESSAGE_ABORT])
+        self.assertEqual(
+            BRIDGE.decode_control(frames[0].payload)["code"],
+            "RUNNER_SIGNATURE_INVALID",
+        )
 
         early_cases = (
             (
@@ -2526,6 +2862,54 @@ class ProductionRuntimeWireTests(BridgeTestCase):
             channel.receive(graph.k_session, BRIDGE.DIRECTION_LOCAL_TO_REMOTE)
         self.assertEqual(raised.exception.code.value, "PROTOCOL_FAILURE")
 
+    def test_authenticated_stale_and_cross_session_proceed_payloads_fail_semantically(self):
+        def cross_session_builder(graph, sequence):
+            other = production_graph(
+                valid_runner_source(), n_remote=b"O" * 32, n_local=b"M" * 32
+            )
+            other_frame = BRIDGE.decode_authenticated_frame(
+                production_proceed_frame_bytes(other, sequence=sequence),
+                other.k_session,
+                expected_direction=BRIDGE.DIRECTION_LOCAL_TO_REMOTE,
+                expected_sequence=sequence,
+                expected_session_nonce=other.n_session,
+            )
+            return BRIDGE.encode_authenticated_frame(
+                graph.k_session,
+                BRIDGE.DIRECTION_LOCAL_TO_REMOTE,
+                BRIDGE.MESSAGE_PROCEED,
+                sequence,
+                graph.n_session,
+                other_frame.payload,
+                frame_nonce=b"x" * BRIDGE.FRAME_NONCE_BYTES,
+            )
+
+        cases = (
+            (
+                "stale",
+                lambda graph, sequence: production_proceed_frame_bytes(
+                    graph,
+                    sequence=sequence,
+                    frame_nonce=b"s" * BRIDGE.FRAME_NONCE_BYTES,
+                    changes={"barrier_utc": "2026-08-30T00:00:00.000000Z"},
+                ),
+            ),
+            ("cross-session", cross_session_builder),
+        )
+        for label, incoming_builder in cases:
+            with self.subTest(label=label):
+                exit_code, frames, _graph = run_production_remote_loader(
+                    valid_runner_source(), incoming_builder=incoming_builder
+                )
+                self.assertEqual(exit_code, BRIDGE.EXIT_RUNNER_ABORT)
+                self.assertEqual(
+                    [frame.message for frame in frames],
+                    [BRIDGE.MESSAGE_READY, BRIDGE.MESSAGE_DISCOVERY, BRIDGE.MESSAGE_ABORT],
+                )
+                terminal = BRIDGE.decode_control(frames[-1].payload)
+                self.assertEqual(terminal["code"], "PROCEED_INVALID")
+                self.assertNotIn(BRIDGE.MESSAGE_RESULT, [frame.message for frame in frames])
+
     def test_authenticated_frame_and_byte_ceilings_are_exact(self):
         graph = production_graph()
         payload = b"x" * BRIDGE.MAX_AUTH_PAYLOAD_BYTES
@@ -2541,27 +2925,37 @@ class ProductionRuntimeWireTests(BridgeTestCase):
             )
             for sequence in range(1, BRIDGE.MAX_SESSION_FRAMES + 1)
         )
+        seventeenth = BRIDGE.encode_authenticated_frame(
+            graph.k_session,
+            BRIDGE.DIRECTION_LOCAL_TO_REMOTE,
+            BRIDGE.MESSAGE_READY,
+            BRIDGE.MAX_SESSION_FRAMES,
+            graph.n_session,
+            b"x",
+            frame_nonce=b"q" * BRIDGE.FRAME_NONCE_BYTES,
+        )
         channel = REMOTE["_RemoteChannel"](
-            io.BytesIO(raw), io.BytesIO(), graph
+            io.BytesIO(raw + seventeenth), io.BytesIO(), graph
         )
         for _ in range(BRIDGE.MAX_SESSION_FRAMES):
             channel.receive(graph.k_session, BRIDGE.DIRECTION_LOCAL_TO_REMOTE)
         self.assertEqual(channel.bytes_seen, BRIDGE.MAX_SESSION_BYTES)
+        channel.sequence = BRIDGE.MAX_SESSION_FRAMES
         with self.assertRaises(BRIDGE.RunnerControlError) as raised:
-            channel._account(
-                BRIDGE.AuthenticatedFrame(
-                    BRIDGE.DIRECTION_LOCAL_TO_REMOTE,
-                    BRIDGE.MESSAGE_READY,
-                    BRIDGE.MAX_SESSION_FRAMES + 1,
-                    graph.n_session,
-                    b"q" * BRIDGE.FRAME_NONCE_BYTES,
-                    b"",
-                )
-            )
+            channel.receive(graph.k_session, BRIDGE.DIRECTION_LOCAL_TO_REMOTE)
         self.assertEqual(raised.exception.code.value, "PROTOCOL_FAILURE")
 
+        overflow_raw = BRIDGE.encode_authenticated_frame(
+            graph.k_session,
+            BRIDGE.DIRECTION_LOCAL_TO_REMOTE,
+            BRIDGE.MESSAGE_READY,
+            1,
+            graph.n_session,
+            payload,
+            frame_nonce=b"q" * BRIDGE.FRAME_NONCE_BYTES,
+        )
         overflow = REMOTE["_RemoteChannel"](
-            io.BytesIO(), io.BytesIO(), graph
+            io.BytesIO(overflow_raw), io.BytesIO(), graph
         )
         overflow.bytes_seen = (
             BRIDGE.MAX_SESSION_BYTES
@@ -2570,17 +2964,12 @@ class ProductionRuntimeWireTests(BridgeTestCase):
             + 1
         )
         with self.assertRaises(BRIDGE.RunnerControlError) as raised:
-            overflow._account(
-                BRIDGE.AuthenticatedFrame(
-                    BRIDGE.DIRECTION_LOCAL_TO_REMOTE,
-                    BRIDGE.MESSAGE_READY,
-                    1,
-                    graph.n_session,
-                    b"q" * BRIDGE.FRAME_NONCE_BYTES,
-                    payload,
-                )
-            )
+            overflow.receive(graph.k_session, BRIDGE.DIRECTION_LOCAL_TO_REMOTE)
         self.assertEqual(raised.exception.code.value, "PROTOCOL_FAILURE")
+        self.assertEqual(
+            overflow.bytes_seen + len(overflow_raw),
+            BRIDGE.MAX_SESSION_BYTES + 1,
+        )
 
     def test_runtime_state_errors_are_production_wire_observable(self):
         graph = production_graph()
