@@ -61,31 +61,19 @@ EXACT_REMOTE_IMPORT_ROOTS = (
     "uuid",
 )
 
-_TEST_CAPABILITY_LITERAL_ROOTS = {
-    "os": {
-        "DENY": frozenset("dup dup2 dup3 execl execle execlp execlpe execv execve execvp execvpe fork forkpty get_blocking get_handle_inheritable get_inheritable grantpt login_tty O_CLOEXEC O_CLOFORK O_NOINHERIT openpty P_DETACH P_DETACHED P_NOWAIT P_NOWAITO P_OVERLAY P_WAIT pidfd_getfd pipe pipe2 popen posix_openpt posix_spawn posix_spawnp register_at_fork set_blocking set_handle_inheritable set_inheritable spawnl spawnle spawnlp spawnlpe spawnv spawnve spawnvp spawnvpe startfile system unlockpt vfork".split()),
-        "RETAIN_SAFE": frozenset("abc abort access add_dll_directory alarm altsep chdir chmod chown chroot CLD_CONTINUED CLD_DUMPED CLD_EXITED CLD_KILLED CLD_STOPPED CLD_TRAPPED close closerange confstr confstr_names copy_file_range cpu_count ctermid curdir defpath device_encoding devnull DirEntry environ error eventfd eventfd_read eventfd_write EX__BASE EX_CANTCREAT EX_CONFIG EX_DATAERR EX_IOERR EX_NOHOST EX_NOINPUT EX_NOMSG EX_NOPERM EX_NOUSER EX_OK EX_OSERR EX_OSFILE EX_PROTOCOL EX_SOFTWARE EX_TEMPFAIL EX_UNAVAILABLE EX_USAGE extsep F_OK fchmod fchmodat fchown fchownat fdatasync fdopen fpathconf fsdecode fsencode fspath fstat fstatvfs fsync ftruncate fwalk GenericAlias get_exec_path get_terminal_size getcwd getcwdb getegid getenv geteuid getgid getgrouplist getgroups getloadavg getlogin getpgid getpgrp getpid getppid getpriority getrandom getsid getuid if_indextoname if_nameindex if_nametoindex initgroups isatty kill killpg lchmod lchown linesep link listdir listdrives listmounts listvolumes listxattr lockf lseek lstat major makedev makedirs Mapping memfd_create mkdir mkfifo mknod MutableMapping name nice O_APPEND O_ASYNC O_BINARY O_CREAT O_DIRECT O_DIRECTORY O_DSYNC O_EXCL O_LARGEFILE O_NOATIME O_NOCTTY O_NOFOLLOW O_NONBLOCK O_PATH O_RANDOM O_RDONLY O_RDWR O_RSYNC O_SEQUENTIAL O_SHORT_LIVED O_SYNC O_TEMPORARY O_TEXT O_TMPFILE O_TRUNC O_WRONLY open pardir path pathconf pathconf_names PathLike pathsep pidfd_open POSIX_FADV_DONTNEED POSIX_FADV_NOREUSE POSIX_FADV_NORMAL POSIX_FADV_RANDOM POSIX_FADV_SEQUENTIAL POSIX_FADV_WILLNEED posix_fadvise posix_fallocate POSIX_SPAWN_CLOSE POSIX_SPAWN_DUP2 POSIX_SPAWN_OPEN pread preadv process_cpu_count putenv pwrite pwritev R_OK read readinto readlink readv realpath reload_environ remove removedirs removexattr rename renames replace rmdir RTLD_DEEPBIND RTLD_GLOBAL RTLD_LAZY RTLD_LOCAL scandir sched_get_priority_max sched_get_priority_min sched_getaffinity sched_getparam sched_getscheduler sched_rr_get_interval sched_setaffinity sched_setparam sched_setscheduler SEEK_CUR SEEK_END SEEK_SET sendfile sep setegid seteuid setgid setgroups setns setpgid setpgrp setsid setuid setxattr st stat stat_result statvfs_result strerror supports_bytes_environ supports_dir_fd supports_effective_ids supports_fd supports_follow_symlinks symlink sync sys sysconf sysconf_names tcgetpgrp tcsetpgrp terminal_size times times_result TMP_MAX truncate ttyname umask uname uname_result unlink unsetenv urandom utime W_OK wait wait3 wait4 waitid waitpid waitstatus_to_exitcode walk WCONTINUED WCOREDUMP WEXITED WIFCONTINUED WIFEXITED WIFSIGNALED WIFSTOPPED WNOHANG WNOWAIT write writev WSTOPPED WUNTRACED X_OK".split()),
-    },
-    "contextlib": {
-        "DENY": frozenset("redirect_stderr redirect_stdin redirect_stdout".split()),
-        "RETAIN_SAFE": frozenset("abc AbstractAsyncContextManager AbstractContextManager aclosing AsyncContextDecorator asynccontextmanager AsyncExitStack chdir closing ContextDecorator contextmanager deque ExitStack GenericAlias MethodType nullcontext os suppress sys wraps".split()),
-    },
-    "signal": {
-        "DENY": frozenset("set_wakeup_fd".split()),
-        "RETAIN_SAFE": frozenset("alarm CTRL_BREAK_EVENT CTRL_C_EVENT default_int_handler getsignal Handlers ITIMER_PROF ITIMER_REAL ITIMER_VIRTUAL NSIG pause pthread_kill pthread_sigmask raise_signal SIG_DFL SIG_IGN SIGABRT SIGALRM SIGBREAK SIGBUS SIGCHLD SIGCONT SIGFPE SIGILL SIGINT siginterrupt SIGIO SIGIOT SIGKILL signal Signals sigpending SIGPIPE SIGPOLL SIGPROF SIGPWR SIGQUIT SIGRTMAX SIGRTMIN SIGSEGV SIGSTKFLT SIGSTOP SIGSYS SIGTERM sigtimedwait SIGTSTP SIGTTIN SIGTTOU SIGURG SIGUSR1 SIGVTALRM sigwait sigwaitinfo SIGWINCH SIGXCPU SIGXFSZ strsignal valid_signals".split()),
-    },
-    "subprocess": {
-        "DENY": frozenset("ABOVE_NORMAL_PRIORITY_CLASS BELOW_NORMAL_PRIORITY_CLASS builtins call CalledProcessError check_call contextlib CREATE_BREAKAWAY_FROM_JOB CREATE_DEFAULT_ERROR_MODE CREATE_NEW_CONSOLE CREATE_NEW_PROCESS_GROUP CREATE_NO_WINDOW DETACHED_PROCESS errno fcntl getoutput getstatusoutput Handle HIGH_PRIORITY_CLASS IDLE_PRIORITY_CLASS io list2cmdline locale msvcrt NORMAL_PRIORITY_CLASS os posix REALTIME_PRIORITY_CLASS resource select signal STARTF_FORCEOFFFEEDBACK STARTF_FORCEONFEEDBACK STARTF_USESHOWWINDOW STARTF_USESTDHANDLES STARTUPINFO STD_ERROR_HANDLE STD_INPUT_HANDLE STD_OUTPUT_HANDLE SubprocessError SW_HIDE sys termios threading time types warnings".split()),
-        "GUARDED_SAFE": frozenset("check_output CompletedProcess DEVNULL PIPE Popen run STDOUT TimeoutExpired".split()),
-    },
-    "sys": {
-        "DENY": frozenset("activate_stack_trampoline addaudithook api_version argv audit base_exec_prefix base_prefix breakpointhook builtin_module_names byteorder call_tracing copyright deactivate_stack_trampoline displayhook dllhandle dont_write_bytecode exc_info excepthook exception exec_prefix exit flags float_info float_repr_style get_asyncgen_hooks get_coroutine_origin_tracking_depth get_int_max_str_digits getallocatedblocks getdefaultencoding getfilesystemencodeerrors getfilesystemencoding getprofile getrecursionlimit getrefcount getsizeof getswitchinterval gettrace getunicodeinternedsize getwindowsversion hash_info hexversion implementation int_info intern is_finalizing is_remote_debug_enabled is_stack_trampoline_active maxsize maxunicode meta_path modules monitoring orig_argv path path_hooks path_importer_cache platform platlibdir prefix pycache_prefix remote_exec set_asyncgen_hooks set_coroutine_origin_tracking_depth set_int_max_str_digits setprofile setrecursionlimit setswitchinterval settrace stdlib_module_names thread_info unraisablehook version version_info warnoptions winver".split()),
-        "GUARDED_SAFE": frozenset("__stderr__ __stdin__ __stdout__ executable stderr stdin stdout".split()),
-    },
+TEST_CAPABILITY_DENIED = {
+    "os": frozenset("dup dup2 dup3 execl execle execlp execlpe execv execve execvp execvpe fork forkpty get_blocking get_handle_inheritable get_inheritable grantpt login_tty O_CLOEXEC O_CLOFORK O_NOINHERIT openpty P_DETACH P_DETACHED P_NOWAIT P_NOWAITO P_OVERLAY P_WAIT pidfd_getfd pipe pipe2 popen posix_openpt posix_spawn posix_spawnp register_at_fork set_blocking set_handle_inheritable set_inheritable spawnl spawnle spawnlp spawnlpe spawnv spawnve spawnvp spawnvpe startfile system unlockpt vfork".split()),
+    "contextlib": frozenset("redirect_stderr redirect_stdin redirect_stdout".split()),
+    "signal": frozenset("set_wakeup_fd".split()),
 }
-TEST_CAPABILITY_LITERAL_REGISTRY = {
-    "nt": _TEST_CAPABILITY_LITERAL_ROOTS,
-    "posix": _TEST_CAPABILITY_LITERAL_ROOTS,
+TEST_CAPABILITY_RETAIN_SAFE = {
+    "os": frozenset("abc abort access add_dll_directory alarm altsep chdir chmod chown chroot CLD_CONTINUED CLD_DUMPED CLD_EXITED CLD_KILLED CLD_STOPPED CLD_TRAPPED close closerange confstr confstr_names copy_file_range cpu_count ctermid curdir defpath device_encoding devnull DirEntry environ error eventfd eventfd_read eventfd_write EX__BASE EX_CANTCREAT EX_CONFIG EX_DATAERR EX_IOERR EX_NOHOST EX_NOINPUT EX_NOMSG EX_NOPERM EX_NOUSER EX_OK EX_OSERR EX_OSFILE EX_PROTOCOL EX_SOFTWARE EX_TEMPFAIL EX_UNAVAILABLE EX_USAGE extsep F_OK fchmod fchmodat fchown fchownat fdatasync fdopen fpathconf fsdecode fsencode fspath fstat fstatvfs fsync ftruncate fwalk GenericAlias get_exec_path get_terminal_size getcwd getcwdb getegid getenv geteuid getgid getgrouplist getgroups getloadavg getlogin getpgid getpgrp getpid getppid getpriority getrandom getsid getuid if_indextoname if_nameindex if_nametoindex initgroups isatty kill killpg lchmod lchown linesep link listdir listdrives listmounts listvolumes listxattr lockf lseek lstat major makedev makedirs Mapping memfd_create mkdir mkfifo mknod MutableMapping name nice O_APPEND O_ASYNC O_BINARY O_CREAT O_DIRECT O_DIRECTORY O_DSYNC O_EXCL O_LARGEFILE O_NOATIME O_NOCTTY O_NOFOLLOW O_NONBLOCK O_PATH O_RANDOM O_RDONLY O_RDWR O_RSYNC O_SEQUENTIAL O_SHORT_LIVED O_SYNC O_TEMPORARY O_TEXT O_TMPFILE O_TRUNC O_WRONLY open pardir path pathconf pathconf_names PathLike pathsep pidfd_open POSIX_FADV_DONTNEED POSIX_FADV_NOREUSE POSIX_FADV_NORMAL POSIX_FADV_RANDOM POSIX_FADV_SEQUENTIAL POSIX_FADV_WILLNEED posix_fadvise posix_fallocate POSIX_SPAWN_CLOSE POSIX_SPAWN_DUP2 POSIX_SPAWN_OPEN pread preadv process_cpu_count putenv pwrite pwritev R_OK read readinto readlink readv realpath reload_environ remove removedirs removexattr rename renames replace rmdir RTLD_DEEPBIND RTLD_GLOBAL RTLD_LAZY RTLD_LOCAL scandir sched_get_priority_max sched_get_priority_min sched_getaffinity sched_getparam sched_getscheduler sched_rr_get_interval sched_setaffinity sched_setparam sched_setscheduler SEEK_CUR SEEK_END SEEK_SET sendfile sep setegid seteuid setgid setgroups setns setpgid setpgrp setsid setuid setxattr st stat stat_result statvfs_result strerror supports_bytes_environ supports_dir_fd supports_effective_ids supports_fd supports_follow_symlinks symlink sync sys sysconf sysconf_names tcgetpgrp tcsetpgrp terminal_size times times_result TMP_MAX truncate ttyname umask uname uname_result unlink unsetenv urandom utime W_OK wait wait3 wait4 waitid waitpid waitstatus_to_exitcode walk WCONTINUED WCOREDUMP WEXITED WIFCONTINUED WIFEXITED WIFSIGNALED WIFSTOPPED WNOHANG WNOWAIT write WSTOPPED WUNTRACED writev X_OK".split()),
+    "contextlib": frozenset("abc AbstractAsyncContextManager AbstractContextManager aclosing AsyncContextDecorator asynccontextmanager AsyncExitStack chdir closing ContextDecorator contextmanager deque ExitStack GenericAlias MethodType nullcontext os suppress sys wraps".split()),
+    "signal": frozenset("alarm CTRL_BREAK_EVENT CTRL_C_EVENT default_int_handler getsignal Handlers ITIMER_PROF ITIMER_REAL ITIMER_VIRTUAL NSIG pause pthread_kill pthread_sigmask raise_signal SIG_DFL SIG_IGN SIGABRT SIGALRM SIGBREAK SIGBUS SIGCHLD SIGCONT SIGFPE SIGILL SIGINT siginterrupt SIGIO SIGIOT SIGKILL signal Signals sigpending SIGPIPE SIGPOLL SIGPROF SIGPWR SIGQUIT SIGRTMAX SIGRTMIN SIGSEGV SIGSTKFLT SIGSTOP SIGSYS SIGTERM sigtimedwait SIGTSTP SIGTTIN SIGTTOU SIGURG SIGUSR1 SIGVTALRM sigwait sigwaitinfo SIGWINCH SIGXCPU SIGXFSZ strsignal valid_signals".split()),
+}
+TEST_CAPABILITY_GUARDED_SAFE = {
+    "subprocess": frozenset("check_output CompletedProcess DEVNULL PIPE Popen run STDOUT TimeoutExpired".split()),
+    "sys": frozenset("__stderr__ __stdin__ __stdout__ executable stderr stdin stdout".split()),
 }
 
 
@@ -871,43 +859,14 @@ class ContractTests(BridgeTestCase):
                 )
 
     def test_static_process_capability_policy_is_complete_and_immutable(self):
-        expected = {
-            "os": frozenset(
-                {
-                    "system", "popen", "startfile",
-                    "fork", "forkpty", "vfork",
-                    "posix_spawn", "posix_spawnp",
-                    "execl", "execle", "execlp", "execlpe",
-                    "execv", "execve", "execvp", "execvpe",
-                    "spawnl", "spawnle", "spawnlp", "spawnlpe",
-                    "spawnv", "spawnve", "spawnvp", "spawnvpe",
-                    "P_WAIT", "P_NOWAIT", "P_NOWAITO", "P_OVERLAY",
-                    "P_DETACH", "P_DETACHED",
-                    "dup", "dup2", "dup3", "pipe", "pipe2",
-                    "openpty", "posix_openpt", "grantpt", "unlockpt",
-                    "login_tty",
-                    "get_inheritable", "set_inheritable",
-                    "get_handle_inheritable", "set_handle_inheritable",
-                    "get_blocking", "set_blocking", "pidfd_getfd",
-                    "O_CLOEXEC", "O_CLOFORK", "O_NOINHERIT",
-                    "register_at_fork",
-                }
-            ),
-            "contextlib": frozenset(
-                {"redirect_stdin", "redirect_stdout", "redirect_stderr"}
-            ),
-            "signal": frozenset({"set_wakeup_fd"}),
-        }
-        policy = BRIDGE._CANONICAL_REMOTE_NAMESPACE[
-            "_PROCESS_CAPABILITY_POLICY"
-        ]
+        namespace = BRIDGE._CANONICAL_REMOTE_NAMESPACE
+        expected = TEST_CAPABILITY_DENIED
+        policy = namespace["_PROCESS_CAPABILITY_POLICY"]
         self.assertIs(type(policy), types.MappingProxyType)
         self.assertEqual(dict(policy), expected)
         for root, names in expected.items():
             raw_module = __import__(root)
-            proxy = BRIDGE._CANONICAL_REMOTE_NAMESPACE["_GuardedModuleProxy"](
-                raw_module, root
-            )
+            proxy = namespace["_GuardedModuleProxy"](raw_module, root)
             for name in names:
                 with self.subTest(root=root, name=name):
                     with self.assertRaises(AttributeError) as raised:
@@ -919,163 +878,176 @@ class ContractTests(BridgeTestCase):
         with self.assertRaises(AttributeError):
             policy["os"].add("future_process_capability")
 
-        registry = BRIDGE._CANONICAL_REMOTE_NAMESPACE[
-            "_CAPABILITY_CLASSIFICATION_REGISTRY"
-        ]
+        registry = namespace["_CAPABILITY_CLASSIFICATION_REGISTRY"]
         self.assertIs(type(registry), types.MappingProxyType)
+        expected_roots = (
+            set(TEST_CAPABILITY_DENIED)
+            | set(TEST_CAPABILITY_RETAIN_SAFE)
+            | set(TEST_CAPABILITY_GUARDED_SAFE)
+        )
         self.assertEqual(set(registry), {"nt", "posix"})
         for platform in ("nt", "posix"):
-            self.assertIs(type(registry[platform]), types.MappingProxyType)
-            self.assertEqual(
-                set(registry[platform]),
-                {"os", "contextlib", "signal", "subprocess", "sys"},
-            )
-            for entries in registry[platform].values():
-                self.assertIs(type(entries), types.MappingProxyType)
-                self.assertTrue(
-                    set(entries.values())
-                    <= {"DENY", "RETAIN_SAFE", "GUARDED_SAFE"}
-                )
-
-        observed = BRIDGE._CANONICAL_REMOTE_NAMESPACE[
-            "_raw_capability_inventory"
-        ]()
-        BRIDGE._CANONICAL_REMOTE_NAMESPACE["_require_capability_classifications"](
-            os.name
-        )
-        self.assertTrue(observed)
-        current_registry = registry[os.name]
-        unclassified = [
-            item
-            for item in observed
-            if item[1] not in current_registry
-            or item[2] not in current_registry[item[1]]
-        ]
-        self.assertEqual(unclassified, [])
-        self.assertEqual(
-            current_registry["os"]["kill"],
-            "RETAIN_SAFE",
-        )
-        self.assertNotIn("kill", expected["os"])
-        for root, names in expected.items():
-            for name in names:
-                self.assertEqual(
-                    current_registry[root][name],
-                    "DENY",
-                    (os.name, root, name),
-                )
-
-        fake_modules = {
-            "os": types.SimpleNamespace(
-                exec_future=lambda: None,
-                novel_capability=lambda: None,
-            ),
-            "contextlib": types.SimpleNamespace(),
-            "signal": types.SimpleNamespace(),
-        }
-        with self.assertRaises(ImportError) as raised:
-            BRIDGE._CANONICAL_REMOTE_NAMESPACE[
-                "_require_capability_classifications"
-            ]("nt", fake_modules)
-        self.assertIn("unclassified", str(raised.exception).lower())
-        self.assertIn("exec_future", str(raised.exception))
-        self.assertIn("novel_capability", str(raised.exception))
-        self.assertFalse("novel_capability".startswith(("exec", "spawn", "fork", "posix_spawn", "dup", "pipe")))
-        with self.assertRaises(ImportError) as raised:
-            BRIDGE._CANONICAL_REMOTE_NAMESPACE["_capability_registry"](
-                "unsupported-platform"
-            )
-        self.assertIn("unsupported-platform", str(raised.exception))
-        self.assertEqual(
-            registry[os.name]["subprocess"]["Popen"],
-            "GUARDED_SAFE",
-        )
-        self.assertEqual(
-            registry[os.name]["sys"]["stdout"],
-            "GUARDED_SAFE",
-        )
-
-    def test_raw_capability_universe_and_aliases_close_against_independent_literal_registry(self):
-        roots = ("os", "contextlib", "signal", "subprocess", "sys")
-        self.assertEqual(set(TEST_CAPABILITY_LITERAL_REGISTRY), {"nt", "posix"})
-        literal = TEST_CAPABILITY_LITERAL_REGISTRY[os.name]
-        self.assertEqual(set(literal), set(roots))
-        observed = BRIDGE._CANONICAL_REMOTE_NAMESPACE["_raw_capability_inventory"](
-            os.name
-        )
-        self.assertEqual({item[1] for item in observed}, set(roots))
-        allowed_categories = {
-            "os": {"DENY", "RETAIN_SAFE"},
-            "contextlib": {"DENY", "RETAIN_SAFE"},
-            "signal": {"DENY", "RETAIN_SAFE"},
-            "subprocess": {"DENY", "GUARDED_SAFE"},
-            "sys": {"DENY", "GUARDED_SAFE"},
-        }
-        for root in roots:
-            with self.subTest(root=root):
-                groups = literal[root]
-                self.assertEqual(set(groups), allowed_categories[root])
-                classified = {}
-                for classification, names in groups.items():
-                    for name in names:
-                        self.assertNotIn(name, classified)
-                        classified[name] = classification
-                missing = sorted(
-                    name
-                    for _platform, item_root, name in observed
-                    if item_root == root and name not in classified
-                )
-                self.assertEqual(missing, [])
-                if root == "subprocess":
-                    self.assertEqual(
-                        {
-                            name: classified[name]
-                            for _platform, item_root, name in observed
-                            if item_root == root
-                        }.get("Popen"),
-                        "GUARDED_SAFE",
-                    )
+            with self.subTest(platform=platform):
+                platform_registry = registry[platform]
+                self.assertIs(type(platform_registry), types.MappingProxyType)
+                self.assertEqual(set(platform_registry), expected_roots)
+                for root, entries in platform_registry.items():
+                    self.assertIs(type(entries), types.MappingProxyType)
                     self.assertTrue(
-                        all(
-                            classified[name] == "DENY"
-                            for _platform, item_root, name in observed
-                            if item_root == root and name not in {
-                                "PIPE",
-                                "DEVNULL",
-                                "STDOUT",
-                                "TimeoutExpired",
-                                "CompletedProcess",
-                                "Popen",
-                                "run",
-                                "check_output",
-                            }
-                        )
+                        set(entries.values())
+                        <= {"DENY", "RETAIN_SAFE", "GUARDED_SAFE"}
                     )
-                if root == "sys":
-                    for name in (
-                        "executable",
-                        "stdin",
-                        "stdout",
-                        "stderr",
-                        "__stdin__",
-                        "__stdout__",
-                        "__stderr__",
-                    ):
-                        self.assertEqual(classified[name], "GUARDED_SAFE")
-        self.assertEqual(
-            literal["os"]["RETAIN_SAFE"]
-            & literal["os"]["DENY"],
-            frozenset(),
-        )
-        for name in ("open", "fdopen", "read", "write", "close", "replace", "getenv"):
-            self.assertEqual(literal["os"]["RETAIN_SAFE"].__contains__(name), True)
-        for name in ("system", "popen", "fork", "execv", "dup2", "pipe"):
-            self.assertEqual(literal["os"]["DENY"].__contains__(name), True)
+                    expected_names = (
+                        set(TEST_CAPABILITY_DENIED.get(root, ()))
+                        | set(TEST_CAPABILITY_RETAIN_SAFE.get(root, ()))
+                        | set(TEST_CAPABILITY_GUARDED_SAFE.get(root, ()))
+                    )
+                    self.assertEqual(set(entries), expected_names)
+                for root, names in TEST_CAPABILITY_DENIED.items():
+                    self.assertEqual(
+                        {platform_registry[root][name] for name in names},
+                        {"DENY"},
+                        (platform, root),
+                    )
+                for root, names in TEST_CAPABILITY_RETAIN_SAFE.items():
+                    self.assertEqual(
+                        {platform_registry[root][name] for name in names},
+                        {"RETAIN_SAFE"},
+                        (platform, root),
+                    )
+                for root, names in TEST_CAPABILITY_GUARDED_SAFE.items():
+                    self.assertEqual(
+                        {platform_registry[root][name] for name in names},
+                        {"GUARDED_SAFE"},
+                        (platform, root),
+                    )
 
+        payload_text = BRIDGE.CANONICAL_LOADER_PAYLOAD_BYTES.decode("ascii")
+        classification_text = payload_text[
+            payload_text.index("def _capability_classification_map") :
+            payload_text.index("def _guard_module_alias")
+        ]
+        self.assertNotIn("_capability_entries", payload_text)
+        self.assertNotIn("_raw_capability_inventory", payload_text)
+        self.assertNotIn("_require_capability_classifications", payload_text)
+        self.assertNotIn("_raw_module_alias_inventory", payload_text)
+        self.assertNotIn("_verify_module_alias_inventory", payload_text)
+        self.assertNotIn("dir(", classification_text)
+        self.assertNotIn("_PROCESS_CAPABILITY_POLICY", classification_text)
+        self.assertNotIn("default=_CAPABILITY", classification_text)
+        self.assertNotIn("*", classification_text)
+
+    def test_capability_attributes_fail_closed_before_raw_lookup(self):
+        namespace = BRIDGE._CANONICAL_REMOTE_NAMESPACE
+
+        class LookupSpy:
+            def __init__(self):
+                object.__setattr__(self, "lookups", [])
+
+            def __getattribute__(self, name):
+                if name != "lookups":
+                    object.__getattribute__(self, "lookups").append(name)
+                return object.__getattribute__(self, name)
+
+        raw = LookupSpy()
+        object.__setattr__(raw, "neutral_danger", lambda: None)
+        object.__setattr__(raw, "unrelated_benign", object())
+        proxy = namespace["_GuardedModuleProxy"](raw, "os")
+        for name in (
+            "neutral_danger",
+            "unrelated_benign",
+            "missing_capability",
+            "__private_capability",
+            "__name__",
+        ):
+            with self.subTest(name=name):
+                with self.assertRaises(AttributeError) as raised:
+                    getattr(proxy, name)
+                self.assertEqual(raised.exception.args, (name,))
+        self.assertEqual(raw.lookups, [])
+
+    def test_explicit_retained_capabilities_are_classified_and_reachable_when_present(self):
+        namespace = BRIDGE._CANONICAL_REMOTE_NAMESPACE
+        classify = namespace["_capability_classification"]
+        proxy_type = namespace["_GuardedModuleProxy"]
+        registry = namespace["_CAPABILITY_CLASSIFICATION_REGISTRY"]
+        for platform in ("nt", "posix"):
+            for root, names in TEST_CAPABILITY_RETAIN_SAFE.items():
+                with self.subTest(platform=platform, root=root):
+                    entries = registry[platform][root]
+                    self.assertEqual(
+                        {entries[name] for name in names},
+                        {"RETAIN_SAFE"},
+                    )
+                    if platform == os.name:
+                        values = {name: object() for name in names}
+                        raw = types.SimpleNamespace(**values)
+                        proxy = proxy_type(raw, root)
+                        for name, value in values.items():
+                            with self.subTest(name=name):
+                                self.assertEqual(
+                                    classify(root, name),
+                                    "RETAIN_SAFE",
+                                )
+                                self.assertIs(getattr(proxy, name), value)
+
+    def test_frozen_guarded_surfaces_cannot_widen_from_extra_raw_names(self):
+        namespace = BRIDGE._CANONICAL_REMOTE_NAMESPACE
+        proxy_type = namespace["_GuardedModuleProxy"]
+        registry = namespace["_CAPABILITY_CLASSIFICATION_REGISTRY"]
+        extras = {
+            "subprocess": ("selectors", "raw_extra_callable"),
+            "sys": ("modules", "raw_extra_callable"),
+        }
+        for platform in ("nt", "posix"):
+            for root, names in TEST_CAPABILITY_GUARDED_SAFE.items():
+                with self.subTest(platform=platform, root=root):
+                    self.assertEqual(set(registry[platform][root]), set(names))
+                    raw_values = {
+                        name: object()
+                        for name in (*names, *extras[root])
+                    }
+                    raw = types.SimpleNamespace(**raw_values)
+                    proxy = proxy_type(raw, root)
+                    for name in names:
+                        with self.subTest(name=name):
+                            self.assertIsNot(
+                                getattr(proxy, name),
+                                raw_values[name],
+                            )
+                    for name in extras[root]:
+                        with self.subTest(name=name):
+                            with self.assertRaises(AttributeError) as raised:
+                                getattr(proxy, name)
+                            self.assertEqual(raised.exception.args, (name,))
+                    self.assertEqual(set(dir(proxy)), set(names))
+
+        self.assertEqual(
+            set(dir(namespace["_GUARDED_SUBPROCESS"])),
+            set(TEST_CAPABILITY_GUARDED_SAFE["subprocess"]),
+        )
+        self.assertEqual(
+            set(dir(namespace["_GUARDED_SYS"])),
+            set(TEST_CAPABILITY_GUARDED_SAFE["sys"]),
+        )
+
+    def test_unsupported_capability_platform_fails_closed(self):
+        registry = BRIDGE._CANONICAL_REMOTE_NAMESPACE["_capability_registry"]
+        with self.assertRaises(ImportError) as raised:
+            registry("unsupported-platform")
+        self.assertEqual(
+            str(raised.exception),
+            "RUNNER_CAPABILITY_PLATFORM_UNSUPPORTED:'unsupported-platform'",
+        )
+
+    def test_all_import_roots_reguard_module_valued_aliases_independently(self):
         alias_roots = EXACT_REMOTE_IMPORT_ROOTS
         raw_sources = {root: __import__(root) for root in alias_roots}
+        self.assertEqual(set(raw_sources), set(EXACT_REMOTE_IMPORT_ROOTS))
         independent_aliases = []
+        scanned_roots = set()
         for root in sorted(alias_roots):
+            scanned_roots.add(root)
             module = raw_sources[root]
             for name in dir(module):
                 if not isinstance(name, str) or name.startswith("_"):
@@ -1084,26 +1056,29 @@ class ContractTests(BridgeTestCase):
                     value = getattr(module, name)
                 except AttributeError:
                     continue
-                if isinstance(value, types.ModuleType):
-                    child_name = getattr(value, "__name__", "")
-                    child_root = (
-                        child_name.split(".", 1)[0]
-                        if isinstance(child_name, str)
-                        else ""
-                    )
-                    independent_aliases.append((root, name, child_root))
+                if not isinstance(value, types.ModuleType):
+                    continue
+                child_name = getattr(value, "__name__", "")
+                child_root = (
+                    child_name.split(".", 1)[0]
+                    if isinstance(child_name, str)
+                    else ""
+                )
+                independent_aliases.append((root, name, child_root))
+        self.assertEqual(scanned_roots, set(EXACT_REMOTE_IMPORT_ROOTS))
         independent_aliases = tuple(sorted(set(independent_aliases)))
-        aliases = BRIDGE._CANONICAL_REMOTE_NAMESPACE["_raw_module_alias_inventory"]()
-        self.assertEqual(aliases, independent_aliases)
-        self.assertTrue(aliases)
+        self.assertTrue(independent_aliases)
         guard_alias = BRIDGE._CANONICAL_REMOTE_NAMESPACE["_guard_module_alias"]
-        for root, name, child_root in aliases:
+        for root, name, child_root in independent_aliases:
             with self.subTest(alias=(root, name, child_root)):
                 value = getattr(raw_sources[root], name)
                 if child_root not in alias_roots:
                     with self.assertRaises(ImportError) as raised:
                         guard_alias(value, child_root)
-                    self.assertEqual(str(raised.exception), "RUNNER_IMPORT_FORBIDDEN")
+                    self.assertEqual(
+                        str(raised.exception),
+                        "RUNNER_IMPORT_FORBIDDEN",
+                    )
                 else:
                     guarded = guard_alias(value, child_root)
                     expected = (
@@ -1115,12 +1090,49 @@ class ContractTests(BridgeTestCase):
                     )
                     self.assertEqual(type(guarded).__name__, expected)
 
+    def test_guarded_dir_exposes_only_declared_present_names(self):
+        namespace = BRIDGE._CANONICAL_REMOTE_NAMESPACE
+
+        class NoRawDir:
+            def __init__(self):
+                object.__setattr__(self, "open", object())
+                object.__setattr__(self, "path", types.ModuleType("forbidden_root"))
+                object.__setattr__(self, "system", object())
+                object.__setattr__(self, "neutral_danger", object())
+                object.__setattr__(self, "__private_capability", object())
+
+            def __dir__(self):
+                raise AssertionError("raw dir must not be called")
+
+        raw = NoRawDir()
+        proxy = namespace["_GuardedModuleProxy"](raw, "os")
+        self.assertEqual(set(dir(proxy)), {"open"})
+        self.assertNotIn("system", dir(proxy))
+        self.assertNotIn("path", dir(proxy))
+        self.assertNotIn("neutral_danger", dir(proxy))
+        self.assertNotIn("__private_capability", dir(proxy))
+
+    def test_retained_module_values_are_reguarded_by_actual_target_root(self):
+        namespace = BRIDGE._CANONICAL_REMOTE_NAMESPACE
+        proxy_type = namespace["_GuardedModuleProxy"]
+        for child_root, expected_type in (
+            ("sys", "_GuardedSysProxy"),
+            ("subprocess", "_GuardedSubprocessProxy"),
+            ("json", "_GuardedModuleProxy"),
+        ):
+            with self.subTest(child_root=child_root):
+                raw = types.SimpleNamespace(path=types.ModuleType(child_root))
+                guarded = proxy_type(raw, "os")
+                self.assertEqual(type(guarded.path).__name__, expected_type)
+        raw = types.SimpleNamespace(path=types.ModuleType("forbidden_root"))
+        guarded = proxy_type(raw, "os")
+        with self.assertRaises(ImportError) as raised:
+            _ = guarded.path
+        self.assertEqual(str(raised.exception), "RUNNER_IMPORT_FORBIDDEN")
+
     def test_process_capability_policy_is_enforced_by_production_payload(self):
-        policy = BRIDGE._CANONICAL_REMOTE_NAMESPACE[
-            "_PROCESS_CAPABILITY_POLICY"
-        ]
         source_lines = ["def run(runtime):"]
-        for root, names in sorted(policy.items()):
+        for root, names in sorted(TEST_CAPABILITY_DENIED.items()):
             for name in sorted(names):
                 source_lines.extend(
                     [
