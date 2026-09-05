@@ -60,6 +60,12 @@ jobs:
       - name: Recovery controller store tests
         run: python3 -m unittest tests/test_platform_recovery_controller_store.py
 
+      - name: Recovery controller bridge tests
+        run: python3 -m unittest tests/test_platform_recovery_controller_bridge.py
+
+      - name: Recovery remote agent tests
+        run: python3 -m unittest tests/test_platform_recovery_remote_agent.py
+
       - name: PostgreSQL 17 disposable runtime posture tests
         # The runner owns the exact codex-platform127-pg17 postgres:17 fixture and listener.
         # Its disposable container uses POSTGRES_HOST_AUTH_METHOD=trust only locally.
