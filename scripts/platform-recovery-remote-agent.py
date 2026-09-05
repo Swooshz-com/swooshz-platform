@@ -15,15 +15,18 @@ import dataclasses
 import datetime
 import errno
 import hashlib
+import io
 import json
 import os
 import pathlib
 import queue
 import re
+import select
 import socket
 import stat
 import struct
 import sys
+import threading
 import time
 import types
 import urllib.parse
@@ -113,7 +116,8 @@ READY_FIELDS = (
 DISCOVERY_FIELDS = (
     "type", "version", "schema", "epoch_ref", "authority_ref",
     "execution_row_id", "artifact_filename", "image_commitment",
-    "target_commitment", "isolation_commitment",
+    "target_commitment", "isolation_commitment", "artifact_commitment",
+    "artifact_stream_commitment",
 )
 PROCEED_FIELDS = (
     "type", "version", "schema", "epoch_ref", "authority_ref", "barrier_utc",
@@ -701,22 +705,32 @@ def admit_recovery_directory(directory_fd: int, *, fstat_fn: Callable[[int], Any
     return metadata
 
 
-def open_recovery_directory(*, open_root_fn: Callable[..., int] | None = None, openat2_fn: Callable[..., int] = openat2, fstat_fn: Callable[[int], Any] = os.fstat) -> tuple[int, Any]:
+def open_recovery_directory(*, open_root_fn: Callable[..., int] | None = None, openat2_fn: Callable[..., int] = openat2, fstat_fn: Callable[[int], Any] = os.fstat, close_fn: Callable[[int], Any] = os.close) -> tuple[int, Any]:
     opener = os.open if open_root_fn is None else open_root_fn
     root_fd = opener("/", RECOVERY_DIR_FLAGS)
+    directory_fd: int | None = None
     try:
         directory_fd = openat2_fn(root_fd, "opt/swooshz/recovery", RECOVERY_DIR_FLAGS, RECOVERY_RESOLVE_FLAGS)
         metadata = admit_recovery_directory(directory_fd, fstat_fn=fstat_fn)
     except Exception:
+        if directory_fd is not None:
+            try:
+                close_fn(directory_fd)
+            except OSError:
+                pass
         try:
-            os.close(root_fd)
+            close_fn(root_fd)
         except OSError:
             pass
         raise
     try:
-        os.close(root_fd)
-    except OSError:
-        pass
+        close_fn(root_fd)
+    except OSError as error:
+        try:
+            close_fn(directory_fd)
+        except OSError:
+            pass
+        raise DescriptorAdmissionError("RECOVERY_ROOT_CLOSE_FAILED") from error
     return directory_fd, metadata
 
 
@@ -727,93 +741,6 @@ class AttestedAgent:
     identity_before: tuple[int, int, int, int, int, int]
     identity_after: tuple[int, int, int, int, int, int]
     commitment: str
-
-
-def attest_agent_descriptor(
-    agent_fd: int,
-    *,
-    fstat_fn: Callable[[int], Any] = os.fstat,
-    read_fn: Callable[[int, int], bytes] = os.read,
-    lseek_fn: Callable[[int, int, int], int] = os.lseek,
-) -> AttestedAgent:
-    before_stat = fstat_fn(agent_fd)
-    if not stat.S_ISREG(int(before_stat.st_mode)) or int(before_stat.st_uid) != 0 or int(before_stat.st_gid) != 0:
-        raise DescriptorAdmissionError("AGENT_OWNER_INVALID")
-    _require_mode(before_stat, 0o555, "AGENT")
-    if not 1 <= int(before_stat.st_size) <= MAX_AGENT_BYTES:
-        raise DescriptorAdmissionError("AGENT_SIZE_INVALID")
-    before = _stat_identity(before_stat)
-    try:
-        lseek_fn(agent_fd, 0, os.SEEK_SET)
-    except OSError as error:
-        raise DescriptorAdmissionError("AGENT_SEEK_FAILED") from error
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        chunk = read_fn(agent_fd, READ_CHUNK_BYTES)
-        if not isinstance(chunk, bytes) or len(chunk) > READ_CHUNK_BYTES:
-            raise DescriptorAdmissionError("AGENT_READ_INVALID")
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > MAX_AGENT_BYTES:
-            raise DescriptorAdmissionError("AGENT_SIZE_INVALID")
-        chunks.append(chunk)
-    after_stat = fstat_fn(agent_fd)
-    after = _stat_identity(after_stat)
-    if after != before or total != before[2]:
-        raise DescriptorAdmissionError("AGENT_SUBSTITUTED")
-    source = b"".join(chunks)
-    return AttestedAgent(agent_fd, source, before, after, bytes_commitment("recovery-agent-bytes", source))
-
-
-def park_fd(fd: int, *, minimum: int = 5, dup_fn: Callable[..., int] | None = None) -> int:
-    if type(fd) is not int or fd < 0:
-        raise DescriptorAdmissionError("FD_INVALID")
-    if fd >= minimum:
-        return fd
-    if dup_fn is not None:
-        return int(dup_fn(fd, minimum))
-    import fcntl
-    return int(fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, minimum))
-
-
-def normalize_child_fds(
-    agent_fd: int,
-    error_fd: int,
-    *,
-    dup2_fn: Callable[..., Any] | None = None,
-    set_inheritable_fn: Callable[[int, bool], Any] | None = None,
-    close_fn: Callable[[int], Any] = os.close,
-) -> tuple[int, int]:
-    if agent_fd == error_fd or agent_fd < 0 or error_fd < 0:
-        raise DescriptorAdmissionError("FD_COLLISION")
-    dup2 = os.dup2 if dup2_fn is None else dup2_fn
-    set_inheritable = os.set_inheritable if set_inheritable_fn is None else set_inheritable_fn
-    sources = {agent_fd, error_fd}
-    if 3 in sources or 4 in sources:
-        import fcntl
-        parked: dict[int, int] = {}
-        for value in sources:
-            if value in (3, 4):
-                parked[value] = int(fcntl.fcntl(value, fcntl.F_DUPFD_CLOEXEC, 5))
-        agent_fd = parked.get(agent_fd, agent_fd)
-        error_fd = parked.get(error_fd, error_fd)
-    dup2(agent_fd, 3, inheritable=True)
-    dup2(error_fd, 4, inheritable=False)
-    set_inheritable(3, True)
-    set_inheritable(4, False)
-    if agent_fd not in (3, 4):
-        try:
-            close_fn(agent_fd)
-        except OSError:
-            pass
-    if error_fd not in (3, 4):
-        try:
-            close_fn(error_fd)
-        except OSError:
-            pass
-    return 3, 4
 
 
 def build_execveat_plan() -> tuple[int, str, tuple[str, ...], Mapping[str, str], int]:
@@ -848,7 +775,7 @@ def execveat(
 
 
 def write_exec_error(error_fd: int, error_number: int, *, write_fn: Callable[[int, bytes], int] = os.write) -> None:
-    if type(error_number) is not int or not 0 <= error_number <= 0xFFFFFFFF:
+    if type(error_number) is not int or not 1 <= error_number <= 0xFFFFFFFF:
         raise DescriptorAdmissionError("EXEC_ERROR_INVALID")
     payload = struct.pack(">I", error_number)
     offset = 0
@@ -869,69 +796,6 @@ class LaunchPlan:
     pidfd: int | None
     execveat_argv: tuple[str, ...]
     execveat_environment: Mapping[str, str]
-
-
-def build_launch_plan(
-    directory_fd: int,
-    agent: AttestedAgent,
-    *,
-    error_read_fd: int = 5,
-    error_write_fd: int = 6,
-    pid: int | None = None,
-    pidfd: int | None = None,
-) -> LaunchPlan:
-    if directory_fd < 0 or agent.fd < 0:
-        raise DescriptorAdmissionError("FD_INVALID")
-    if agent.fd < 5 or error_read_fd < 5 or error_write_fd < 5:
-        raise DescriptorAdmissionError("FD_NOT_PARKED")
-    if len({agent.fd, error_read_fd, error_write_fd}) != 3:
-        raise DescriptorAdmissionError("FD_COLLISION")
-    _, _, argv, environment, _ = build_execveat_plan()
-    return LaunchPlan(agent, directory_fd, error_read_fd, error_write_fd, pid, pidfd, argv, environment)
-
-
-def spawn_descriptor_agent(
-    *,
-    open_directory_fn: Callable[[], tuple[int, Any]] = open_recovery_directory,
-    open_agent_fn: Callable[[int], int] | None = None,
-    fstat_fn: Callable[[int], Any] = os.fstat,
-    read_fn: Callable[[int, int], bytes] = os.read,
-    fork_fn: Callable[[], int] | None = None,
-    pidfd_fn: Callable[[int], int] | None = None,
-) -> LaunchPlan:
-    directory_fd, _ = open_directory_fn()
-    opener = openat2 if open_agent_fn is None else open_agent_fn
-    agent_fd = opener(directory_fd, "recovery-agent-v1", AGENT_OPEN_FLAGS, RECOVERY_RESOLVE_FLAGS) if open_agent_fn is None else opener(directory_fd)
-    agent = attest_agent_descriptor(agent_fd, fstat_fn=fstat_fn, read_fn=read_fn)
-    error_read_fd, error_write_fd = os.pipe2(O_CLOEXEC)
-    agent_fd = park_fd(agent.fd)
-    error_read_fd = park_fd(error_read_fd)
-    error_write_fd = park_fd(error_write_fd)
-    pid = (os.fork if fork_fn is None else fork_fn)()
-    if pid == 0:
-        try:
-            os.close(error_read_fd)
-            normalize_child_fds(agent_fd, error_write_fd)
-            execveat(3, build_execveat_plan()[2], build_execveat_plan()[3])
-        except OSError as error:
-            write_exec_error(4, int(getattr(error, "errno", errno.EIO) or errno.EIO))
-            os._exit(126)
-        except Exception:
-            write_exec_error(4, errno.EFAULT)
-            os._exit(126)
-        raise AssertionError("child did not exit")
-    pidfd_opener = os.pidfd_open if pidfd_fn is None else pidfd_fn
-    try:
-        pidfd = pidfd_opener(pid, 0)
-    except Exception as error:
-        raise DescriptorAdmissionError("PIDFD_UNAVAILABLE") from error
-    try:
-        os.close(error_write_fd)
-        os.close(directory_fd)
-        os.close(agent_fd)
-    except OSError:
-        pass
-    return build_launch_plan(directory_fd, agent, error_read_fd=error_read_fd, error_write_fd=error_write_fd, pid=pid, pidfd=pidfd)
 
 
 class BoundedCapture:
@@ -980,9 +844,19 @@ class ProcessFinality:
 
 
 def validate_process_finality(value: ProcessFinality) -> ProcessFinality:
-    if not isinstance(value, ProcessFinality) or value.trailing_unframed_bytes < 0:
+    if not isinstance(value, ProcessFinality):
         raise FinalityError("PROCESS_FINALITY_INVALID")
-    if value.success and (not _is_commitment(value.stdout_capture_commitment) or not _is_commitment(value.stderr_capture_commitment)):
+    if value.exec_error is not None and (type(value.exec_error) is not int or not 1 <= value.exec_error <= 0xFFFFFFFF):
+        raise FinalityError("PROCESS_FINALITY_INVALID")
+    if value.pidfd_observed is not True and value.pidfd_observed is not False:
+        raise FinalityError("PROCESS_FINALITY_INVALID")
+    if value.exit_status is not None and (type(value.exit_status) is not int or not -1 <= value.exit_status <= 255):
+        raise FinalityError("PROCESS_FINALITY_INVALID")
+    if any(type(item) is not bool for item in (value.stdin_eof, value.stdout_eof, value.stderr_eof)):
+        raise FinalityError("PROCESS_FINALITY_INVALID")
+    if type(value.trailing_unframed_bytes) is not int or value.trailing_unframed_bytes < 0:
+        raise FinalityError("PROCESS_FINALITY_INVALID")
+    if not _is_commitment(value.stdout_capture_commitment) or not _is_commitment(value.stderr_capture_commitment):
         raise FinalityError("PROCESS_FINALITY_INVALID")
     return value
 
@@ -997,85 +871,8 @@ class ArtifactIdentity:
     gid: int
 
 
-@dataclass(frozen=True)
-class QualifiedArtifact:
-    fd: int
-    identity_before: ArtifactIdentity
-    identity_after: ArtifactIdentity
-    bytes_read: int
-    stream_sha256: str
-    reopen_count: int
-    reselection_count: int
-    stdin_same_descriptor: bool
-
-
 def _artifact_identity(value: Any) -> ArtifactIdentity:
     return ArtifactIdentity(int(value.st_dev), int(value.st_ino), int(value.st_size), int(value.st_mode), int(value.st_uid), int(value.st_gid))
-
-
-def qualify_artifact_descriptor(
-    fd: int,
-    *,
-    fstat_fn: Callable[[int], Any] = os.fstat,
-    read_fn: Callable[[int, int], bytes] = os.read,
-    lseek_fn: Callable[[int, int, int], int] = os.lseek,
-) -> QualifiedArtifact:
-    before = _artifact_identity(fstat_fn(fd))
-    if not stat.S_ISREG(before.mode) or before.size < 1 or before.size > 64 * 1024 * 1024:
-        raise DescriptorAdmissionError("ARTIFACT_ADMISSION_FAILED")
-    try:
-        lseek_fn(fd, 0, os.SEEK_SET)
-    except OSError as error:
-        raise DescriptorAdmissionError("ARTIFACT_SEEK_FAILED") from error
-    digest = hashlib.sha256()
-    count = 0
-    while True:
-        chunk = read_fn(fd, READ_CHUNK_BYTES)
-        if not isinstance(chunk, bytes) or len(chunk) > READ_CHUNK_BYTES:
-            raise DescriptorAdmissionError("ARTIFACT_READ_FAILED")
-        if not chunk:
-            break
-        count += len(chunk)
-        digest.update(chunk)
-        if count > before.size:
-            raise DescriptorAdmissionError("ARTIFACT_SIZE_CHANGED")
-    after = _artifact_identity(fstat_fn(fd))
-    if before != after or count != before.size:
-        raise DescriptorAdmissionError("ARTIFACT_SUBSTITUTED")
-    return QualifiedArtifact(fd, before, after, count, digest.hexdigest(), 0, 0, True)
-
-
-def stream_qualified_artifact(
-    artifact: QualifiedArtifact,
-    output: BinaryIO,
-    *,
-    fstat_fn: Callable[[int], Any] = os.fstat,
-    read_fn: Callable[[int, int], bytes] = os.read,
-    lseek_fn: Callable[[int, int, int], int] = os.lseek,
-) -> int:
-    if artifact.reopen_count != 0 or artifact.reselection_count != 0 or not artifact.stdin_same_descriptor:
-        raise DescriptorAdmissionError("ARTIFACT_CONTINUITY_INVALID")
-    if _artifact_identity(fstat_fn(artifact.fd)) != artifact.identity_after:
-        raise DescriptorAdmissionError("ARTIFACT_SUBSTITUTED")
-    lseek_fn(artifact.fd, 0, os.SEEK_SET)
-    total = 0
-    digest = hashlib.sha256()
-    while True:
-        chunk = read_fn(artifact.fd, READ_CHUNK_BYTES)
-        if not chunk:
-            break
-        _write_all(output, chunk)
-        total += len(chunk)
-        digest.update(chunk)
-    if total != artifact.bytes_read:
-        raise DescriptorAdmissionError("ARTIFACT_CONTINUITY_INVALID")
-    if _artifact_identity(fstat_fn(artifact.fd)) != artifact.identity_after:
-        raise DescriptorAdmissionError("ARTIFACT_SUBSTITUTED")
-    if digest.hexdigest() != artifact.stream_sha256:
-        raise DescriptorAdmissionError("ARTIFACT_CONTENT_CHANGED")
-    return total
-
-
 ARTIFACT_STREAM_FIELDS = (
     "schema", "artifact_commitment", "fd_before", "fd_after", "bytes_read",
     "stream_sha256", "read_chunk_bytes", "no_follow", "fstat_equal",
@@ -1095,30 +892,6 @@ def _artifact_identity_object(identity: ArtifactIdentity) -> dict[str, int]:
     }
     if tuple(value.keys()) != ARTIFACT_IDENTITY_FIELDS:
         raise DescriptorAdmissionError("ARTIFACT_IDENTITY_FIELDS_INVALID")
-    return value
-
-
-def build_artifact_stream_evidence(artifact: QualifiedArtifact, artifact_commitment: str) -> dict[str, Any]:
-    if not isinstance(artifact, QualifiedArtifact) or not _is_commitment(artifact_commitment):
-        raise DescriptorAdmissionError("ARTIFACT_EVIDENCE_INVALID")
-    value = {
-        "schema": SCHEMA_ARTIFACT_STREAM,
-        "artifact_commitment": artifact_commitment,
-        "fd_before": _artifact_identity_object(artifact.identity_before),
-        "fd_after": _artifact_identity_object(artifact.identity_after),
-        "bytes_read": artifact.bytes_read,
-        "stream_sha256": artifact.stream_sha256,
-        "read_chunk_bytes": READ_CHUNK_BYTES,
-        "no_follow": True,
-        "fstat_equal": artifact.identity_before == artifact.identity_after,
-        "reopen_count": artifact.reopen_count,
-        "reselection_count": artifact.reselection_count,
-        "stdin_same_descriptor": artifact.stdin_same_descriptor,
-    }
-    if tuple(value.keys()) != ARTIFACT_STREAM_FIELDS or not value["fstat_equal"] or value["reopen_count"] != 0 or value["reselection_count"] != 0 or value["stdin_same_descriptor"] is not True:
-        raise DescriptorAdmissionError("ARTIFACT_EVIDENCE_INVALID")
-    if type(value["bytes_read"]) is not int or value["bytes_read"] < 1 or not re.fullmatch(r"[0-9a-f]{64}", value["stream_sha256"]):
-        raise DescriptorAdmissionError("ARTIFACT_EVIDENCE_INVALID")
     return value
 
 
@@ -1143,26 +916,6 @@ def validate_artifact_stream_evidence(value: Mapping[str, Any]) -> dict[str, Any
 def artifact_stream_evidence_commitment(value: Mapping[str, Any]) -> str:
     checked = validate_artifact_stream_evidence(value)
     return bytes_commitment("artifact-stream-evidence", canonical_json(checked, terminal_lf=True))
-
-@dataclass(frozen=True)
-class DockerInstallationConfig:
-    socket_path: str
-    image_ref: str
-    image_id: str
-    run_id: str
-    volume_id: str
-    target_id: str
-
-    def __post_init__(self) -> None:
-        if self.socket_path != "/var/run/docker.sock":
-            raise DockerAdmissionError("DOCKER_SOCKET_INVALID")
-        if self.image_ref != "postgres:17-alpine":
-            raise DockerAdmissionError("DOCKER_IMAGE_REF_INVALID")
-        _validate_image_id(self.image_id)
-        _validate_ref(self.run_id, "run_id")
-        _validate_ref(self.volume_id, "volume_id")
-        _validate_ref(self.target_id, "target_id")
-
 
 class UnixSocketHTTPClient:
     """The only production Docker transport: a fixed Unix-domain socket."""
@@ -1226,173 +979,11 @@ class UnixSocketHTTPClient:
         return status, value
 
 
-@dataclass(frozen=True)
-class DockerDiscovery:
-    image_commitment: str
-    target_commitment: str
-    isolation_commitment: str
-    execution_row_id: int
-    artifact_filename: str
-
-
 def _docker_commitment(domain: str, value: Mapping[str, Any]) -> str:
-    return bytes_commitment(domain, canonical_json(dict(value), limit=MAX_CONTROL_PAYLOAD_BYTES))
-
-
-class ProductionDockerBackend:
-    """Fixed-image, one-run Docker boundary with no CLI or network fallback."""
-
-    def __init__(self, config: DockerInstallationConfig, *, client: UnixSocketHTTPClient | None = None) -> None:
-        self.config = config
-        self.client = client or UnixSocketHTTPClient(config.socket_path)
-        self.inspect_count = 0
-        self.pull_count = 0
-        self.tag_resolution_count = 0
-        self.target_create_count = 0
-        self.volume_create_count = 0
-
-    def inspect_image(self) -> Mapping[str, Any]:
-        self.inspect_count += 1
-        status, value = self.client.request("GET", "/images/" + urllib.parse.quote(self.config.image_ref, safe="") + "/json")
-        if status != 200:
-            raise DockerAdmissionError("IMAGE_INSPECT_FAILED")
-        image_id = value.get("Id")
-        if image_id != self.config.image_id or IMAGE_ID_RE.fullmatch(str(image_id)) is None:
-            raise DockerAdmissionError("IMAGE_ID_MISMATCH")
-        if value.get("Os") != "linux" or value.get("Architecture") not in {"amd64", "x86_64"}:
-            raise DockerAdmissionError("IMAGE_PLATFORM_INVALID")
-        image = {
-            "schema": SCHEMA_IMAGE_EVIDENCE,
-            "image_ref": self.config.image_ref,
-            "image_id": self.config.image_id,
-            "inspect_count": self.inspect_count,
-            "pull_count": self.pull_count,
-            "tag_resolution_count": self.tag_resolution_count,
-            "image_os": value["Os"],
-            "image_architecture": value["Architecture"],
-        }
-        return image
-
-    def create_isolated_target(self, image: Mapping[str, Any]) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
-        if image.get("image_id") != self.config.image_id or image.get("image_ref") != self.config.image_ref:
-            raise DockerAdmissionError("IMAGE_BINDING_INVALID")
-        volume_name = "swooshz-recovery-volume-" + self.config.volume_id
-        status, volume = self.client.request(
-            "POST",
-            "/volumes/create",
-            {"Name": volume_name, "Labels": {"com.swooshz.recovery.run": self.config.run_id}},
-        )
-        if status != 201:
-            raise DockerAdmissionError("VOLUME_CREATE_FAILED")
-        self.volume_create_count += 1
-        volume_name = str(volume.get("Name", volume_name))
-        target_name = "swooshz-recovery-target-" + self.config.target_id
-        host_config = {
-            "NetworkMode": "none",
-            "Privileged": False,
-            "ReadonlyRootfs": True,
-            "CapDrop": ["ALL"],
-            "CapAdd": [],
-            "Binds": [f"{volume_name}:/var/lib/postgresql/data:rw"],
-            "PublishAllPorts": False,
-            "PortBindings": {},
-            "ExtraHosts": [],
-            "SecurityOpt": [],
-        }
-        if host_config["NetworkMode"] != "none" or host_config["Privileged"] or host_config["CapDrop"] != ["ALL"] or host_config["CapAdd"] != []:
-            raise DockerAdmissionError("ISOLATION_INVALID")
-        status, target = self.client.request(
-            "POST",
-            "/containers/create?name=" + urllib.parse.quote(target_name, safe=""),
-            {
-                "Image": self.config.image_id,
-                "Env": ["POSTGRES_DB=coolify"],
-                "HostConfig": host_config,
-                "Labels": {"com.swooshz.recovery.run": self.config.run_id},
-            },
-        )
-        if status != 201:
-            raise DockerAdmissionError("TARGET_CREATE_FAILED")
-        self.target_create_count += 1
-        target_id = target.get("Id", self.config.target_id)
-        target_evidence = {
-            "schema": SCHEMA_TARGET_EVIDENCE,
-            "epoch_ref": self.config.run_id,
-            "image_commitment": _docker_commitment("image-evidence", image),
-            "target_id": self.config.target_id,
-            "volume_id": self.config.volume_id,
-            "preexisting_target": False,
-            "preexisting_volume": False,
-            "target_create_count": self.target_create_count,
-            "volume_create_count": self.volume_create_count,
-            "run_owned": isinstance(target_id, str) and bool(target_id),
-        }
-        isolation = {
-            "schema": SCHEMA_ISOLATION_EVIDENCE,
-            "target_commitment": _docker_commitment("target-evidence", target_evidence),
-            "image_commitment": target_evidence["image_commitment"],
-            "effective_image_id": self.config.image_id,
-            "network_mode": "none",
-            "privileged": False,
-            "rootfs_read_only": True,
-            "cap_drop": ["ALL"],
-            "cap_add": [],
-            "extra_mounts": 0,
-            "volume_destination": "/var/lib/postgresql/data",
-            "volume_read_only": False,
-            "readback_count": 1,
-        }
-        return target_evidence, isolation
-
-    def open_locator_process(self) -> Any:
-        """Return one Engine-attached process or fail closed when not bound."""
-        raise DockerAdmissionError("PRODUCTION_DOCKER_PROCESS_BINDING_REQUIRED")
-
-    def discover(self, epoch_ref: str, barrier_utc: str) -> DockerDiscovery:
-        _validate_ref(epoch_ref, "epoch_ref")
-        validate_barrier_utc(barrier_utc)
-        image = self.inspect_image()
-        target, isolation = self.create_isolated_target(image)
-        global _ACTIVE_PRODUCTION_BACKEND
-        _ACTIVE_PRODUCTION_BACKEND = self
-        try:
-            outcome = invoke_canonical_locator_once(barrier_utc)
-        finally:
-            _ACTIVE_PRODUCTION_BACKEND = None
-        if getattr(outcome, "classification", None) != "EXACTLY_ONE":
-            raise DockerAdmissionError("LOCATOR_NOT_FOUND", safety_state="UNCONSUMED")
-        execution_id = getattr(outcome, "execution_id", None)
-        filename = getattr(outcome, "filename", None)
-        if type(execution_id) is not int or execution_id <= 0 or not isinstance(filename, str):
-            raise DockerAdmissionError("LOCATOR_OUTPUT_INVALID", safety_state="UNCONSUMED")
-        return DockerDiscovery(
-            _docker_commitment("image-evidence", image),
-            _docker_commitment("target-evidence", target),
-            _docker_commitment("isolation-evidence", isolation),
-            execution_id,
-            _validate_filename(filename),
-        )
-    def cleanup(self, target_evidence: Mapping[str, Any], volume_id: str) -> Mapping[str, Any]:
-        if target_evidence.get("run_owned") is not True or target_evidence.get("target_id") != self.config.target_id or volume_id != self.config.volume_id:
-            raise DockerAdmissionError("CLEANUP_OWNERSHIP_INVALID", safety_state="CONSUMED")
-        if target_evidence.get("preexisting_target") or target_evidence.get("preexisting_volume"):
-            raise DockerAdmissionError("CLEANUP_PREEXISTING_INVALID", safety_state="CONSUMED")
-        target_name = "swooshz-recovery-target-" + self.config.target_id
-        volume_name = "swooshz-recovery-volume-" + self.config.volume_id
-        target_status, _ = self.client.request("DELETE", "/containers/" + urllib.parse.quote(target_name, safe="") + "?force=true")
-        volume_status, _ = self.client.request("DELETE", "/volumes/" + urllib.parse.quote(volume_name, safe=""))
-        if target_status not in {204, 404} or volume_status not in {204, 404}:
-            raise DockerAdmissionError("CLEANUP_FAILED", safety_state="CONSUMED")
-        return {
-            "schema": SCHEMA_CLEANUP_EVIDENCE,
-            "target_id": self.config.target_id,
-            "volume_id": self.config.volume_id,
-            "run_owned": True,
-            "prune": False,
-            "target_deleted": target_status == 204,
-            "volume_deleted": volume_status == 204,
-            "status": "COMPLETE",
-        }
+    return bytes_commitment(
+        domain,
+        canonical_json(dict(value), limit=MAX_CONTROL_PAYLOAD_BYTES, terminal_lf=True),
+    )
 
 
 class TestOnlyDockerBackend:
@@ -1943,7 +1534,11 @@ def run_agent_protocol(
     session = SessionMachine(local_role=False, n_local=n_local)
     session.accept(boot_frame)
     boot = boot_frame.payload
-    source_commitments = fixed_source_commitments()
+    if test_mode:
+        source_commitments = fixed_source_commitments()
+    else:
+        attested = attest_agent_descriptor(3, expected_commitment=boot["agent_commitment"])
+        source_commitments = compute_production_commitments(attested.bytes)
     if (
         boot["bundle_commitment"] != source_commitments["bundle_commitment"]
         or boot["launcher_commitment"] != source_commitments["launcher_commitment"]
@@ -2014,6 +1609,1819 @@ def run_supervisor(argv: list[str]) -> None:
     if os.environ.get("SSH_ORIGINAL_COMMAND", "") != "":
         raise DescriptorAdmissionError("REMOTE_COMMAND_FORBIDDEN")
     spawn_descriptor_agent()
+
+
+PRODUCTION_ARTIFACT_ROOT = "/opt/swooshz/recovery/artifacts"
+PRODUCTION_IMAGE_ID_PATH = "/opt/swooshz/recovery/postgres-image-id"
+PRODUCTION_AGENT_COMMITMENT_PATH = "/opt/swooshz/recovery/recovery-agent-v1.commitment"
+DOCKER_EXEC_ENVIRONMENT = ("HOME=/nonexistent", "LANG=C", "LC_ALL=C")
+RESTORE_COMMAND = (
+    "/usr/local/bin/pg_restore",
+    "--exit-on-error",
+    "--no-owner",
+    "--no-privileges",
+    "--dbname=coolify",
+    "-",
+)
+
+
+def _read_socket_exact(sock: socket.socket, length: int) -> bytes:
+    chunks: list[bytes] = []
+    remaining = length
+    while remaining:
+        chunk = sock.recv(min(4096, remaining))
+        if not chunk:
+            raise DockerAdmissionError("DOCKER_STREAM_TRUNCATED", safety_state="CONSUMED")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+class _PrefetchedSocket:
+    def __init__(self, sock: socket.socket, prefix: bytes) -> None:
+        self._sock = sock
+        self._prefix = bytearray(prefix)
+
+    def recv(self, size: int, *args: Any) -> bytes:
+        if self._prefix:
+            chunk = bytes(self._prefix[:size])
+            del self._prefix[:size]
+            return chunk
+        return self._sock.recv(size, *args)
+
+    def sendall(self, value: bytes) -> None:
+        self._sock.sendall(value)
+
+    def shutdown(self, how: int) -> None:
+        self._sock.shutdown(how)
+
+    def settimeout(self, value: float | None) -> None:
+        self._sock.settimeout(value)
+
+    def fileno(self) -> int:
+        return self._sock.fileno()
+
+    def close(self) -> None:
+        self._sock.close()
+
+
+def _open_hijacked_socket(client: UnixSocketHTTPClient, path: str, body: Mapping[str, Any]) -> Any:
+    if sys.platform != "linux":
+        raise DockerAdmissionError("DOCKER_UNIX_SOCKET_UNAVAILABLE")
+    payload = canonical_json(dict(body), limit=MAX_HTTP_BODY_BYTES)
+    request = (
+        f"POST {path} HTTP/1.1\r\n"
+        "Host: localhost\r\n"
+        "Connection: Upgrade\r\n"
+        "Upgrade: tcp\r\n"
+        "Content-Type: application/json\r\n"
+        f"Content-Length: {len(payload)}\r\n\r\n"
+    ).encode("ascii") + payload
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(client.timeout)
+    try:
+        sock.connect(client.socket_path)
+        sock.sendall(request)
+        response = bytearray()
+        while b"\r\n\r\n" not in response and len(response) <= MAX_HTTP_HEADER_BYTES:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            response.extend(chunk)
+        header_end = response.find(b"\r\n\r\n")
+        if header_end <= 0:
+            raise DockerAdmissionError("DOCKER_UPGRADE_INVALID")
+        first = bytes(response[:header_end]).split(b"\r\n", 1)[0].split()
+        if len(first) < 2 or int(first[1]) not in {101, 200}:
+            raise DockerAdmissionError("DOCKER_EXEC_START_FAILED")
+        remainder = bytes(response[header_end + 4:])
+        sock.settimeout(None)
+        return _PrefetchedSocket(sock, remainder) if remainder else sock
+    except (OSError, ValueError, DockerAdmissionError):
+        sock.close()
+        raise
+
+
+class _EngineInput(io.RawIOBase):
+    def __init__(self, sock: socket.socket, lock: threading.Lock) -> None:
+        self._sock = sock
+        self._lock = lock
+        self._closed = False
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, value: bytes) -> int:
+        if self._closed or not isinstance(value, bytes):
+            raise OSError("docker stdin closed")
+        with self._lock:
+            self._sock.sendall(value)
+        return len(value)
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            try:
+                self._sock.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+        super().close()
+
+
+class _EngineOutput(io.RawIOBase):
+    def __init__(self, events: queue.Queue[bytes | None]) -> None:
+        self._events = events
+        self._buffer = bytearray()
+        self._eof = False
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, size: int = -1) -> bytes:
+        if size == 0:
+            return b""
+        while not self._eof and (size < 0 or len(self._buffer) < size):
+            item = self._events.get()
+            if item is None:
+                self._eof = True
+                break
+            self._buffer.extend(item)
+            if size < 0:
+                continue
+        if size < 0:
+            result = bytes(self._buffer)
+            self._buffer.clear()
+            return result
+        result = bytes(self._buffer[:size])
+        del self._buffer[:size]
+        return result
+
+
+class _DockerEngineProcess:
+    def __init__(self, client: UnixSocketHTTPClient, exec_id: str, sock: socket.socket) -> None:
+        self.client = client
+        self.exec_id = exec_id
+        self._socket = sock
+        self._write_lock = threading.Lock()
+        self.stdin = _EngineInput(sock, self._write_lock)
+        self._stdout_events: queue.Queue[bytes | None] = queue.Queue()
+        self._stderr_events: queue.Queue[bytes | None] = queue.Queue()
+        self.stdout = _EngineOutput(self._stdout_events)
+        self.stderr = _EngineOutput(self._stderr_events)
+        self.returncode: int | None = None
+        self._reader_error: Exception | None = None
+        self._stream_eof = False
+        self._reader_done = threading.Event()
+        self._reader = threading.Thread(target=self._read_multiplexed, daemon=True)
+        self._reader.start()
+
+    def _read_multiplexed(self) -> None:
+        try:
+            while True:
+                first = self._socket.recv(8)
+                if not first:
+                    self._stream_eof = True
+                    return
+                header = bytearray(first)
+                while len(header) < 8:
+                    chunk = self._socket.recv(8 - len(header))
+                    if not chunk:
+                        raise DockerAdmissionError("DOCKER_STREAM_TRUNCATED", safety_state="CONSUMED")
+                    header.extend(chunk)
+                if header[1:4] != b"\x00\x00\x00":
+                    raise DockerAdmissionError("DOCKER_STREAM_HEADER_INVALID", safety_state="CONSUMED")
+                stream_id = header[0]
+                length = struct.unpack(">I", header[4:])[0]
+                if length > MAX_HTTP_BODY_BYTES:
+                    raise DockerAdmissionError("DOCKER_STREAM_OVERSIZE", safety_state="CONSUMED")
+                payload = _read_socket_exact(self._socket, length)
+                if stream_id == 1:
+                    self._stdout_events.put(payload)
+                elif stream_id == 2:
+                    self._stderr_events.put(payload)
+                else:
+                    raise DockerAdmissionError("DOCKER_STREAM_ID_INVALID", safety_state="CONSUMED")
+        except (OSError, DockerAdmissionError, ValueError) as error:
+            self._reader_error = error
+        finally:
+            self._stdout_events.put(None)
+            self._stderr_events.put(None)
+            self._reader_done.set()
+
+    def poll(self) -> int | None:
+        if self.returncode is not None:
+            return self.returncode
+        status, value = self.client.request("GET", "/exec/" + urllib.parse.quote(self.exec_id, safe="") + "/json")
+        if status != 200 or type(value.get("Running")) is not bool:
+            raise DockerAdmissionError("DOCKER_EXEC_READBACK_INVALID", safety_state="CONSUMED")
+        if value["Running"]:
+            return None
+        exit_code = value.get("ExitCode")
+        if type(exit_code) is not int or not 0 <= exit_code <= 255:
+            raise DockerAdmissionError("DOCKER_EXEC_EXIT_INVALID", safety_state="CONSUMED")
+        self.returncode = exit_code
+        return exit_code
+
+    def wait(self, timeout: float | None = None) -> int:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            result = self.poll()
+            if result is not None:
+                self._reader_done.wait(timeout=timeout)
+                return result
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("docker exec wait timeout")
+            time.sleep(0.02)
+
+    def terminate(self) -> None:
+        self.close()
+
+    def kill(self) -> None:
+        self.close()
+
+    def close(self) -> None:
+        try:
+            self.stdin.close()
+        except OSError:
+            pass
+        try:
+            self._socket.close()
+        except OSError:
+            pass
+        self._reader_done.wait(timeout=1.0)
+
+
+def _client_open_exec_process(
+    client: UnixSocketHTTPClient,
+    container_id: str,
+    command: tuple[str, ...],
+    *,
+    environment: tuple[str, ...] = DOCKER_EXEC_ENVIRONMENT,
+) -> _DockerEngineProcess:
+    if not isinstance(container_id, str) or not container_id:
+        raise DockerAdmissionError("DOCKER_TARGET_ID_INVALID")
+    if not isinstance(command, tuple) or not command or any(not isinstance(item, str) or not item for item in command):
+        raise DockerAdmissionError("DOCKER_COMMAND_INVALID")
+    if tuple(environment) != DOCKER_EXEC_ENVIRONMENT:
+        raise DockerAdmissionError("DOCKER_ENVIRONMENT_INVALID")
+    status, response = client.request(
+        "POST",
+        "/containers/" + urllib.parse.quote(container_id, safe="") + "/exec",
+        {
+            "AttachStdin": True,
+            "AttachStdout": True,
+            "AttachStderr": True,
+            "Tty": False,
+            "Cmd": list(command),
+            "Env": list(environment),
+        },
+    )
+    exec_id = response.get("Id")
+    if status != 201 or not isinstance(exec_id, str) or not exec_id:
+        raise DockerAdmissionError("DOCKER_EXEC_CREATE_FAILED", safety_state="CONSUMED")
+    sock = _open_hijacked_socket(
+        client,
+        "/exec/" + urllib.parse.quote(exec_id, safe="") + "/start",
+        {"Detach": False, "Tty": False},
+    )
+    return _DockerEngineProcess(client, exec_id, sock)
+
+
+UnixSocketHTTPClient.open_exec_process = _client_open_exec_process
+
+
+TARGET_EVIDENCE_FIELDS = (
+    "schema", "epoch_ref", "image_commitment", "target_id", "volume_id",
+    "target_name", "volume_name", "preexisting_target", "preexisting_volume",
+    "target_create_count", "volume_create_count", "readback_count", "run_owned",
+)
+
+
+def validate_target_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, Mapping) or tuple(value.keys()) != TARGET_EVIDENCE_FIELDS:
+        raise DockerAdmissionError("TARGET_EVIDENCE_INVALID")
+    if value["schema"] != SCHEMA_TARGET_EVIDENCE or not isinstance(value["epoch_ref"], str):
+        raise DockerAdmissionError("TARGET_EVIDENCE_INVALID")
+    _validate_commitment(value["image_commitment"], "image_commitment")
+    for key in ("target_id", "volume_id", "target_name", "volume_name"):
+        if not isinstance(value[key], str) or not value[key]:
+            raise DockerAdmissionError("TARGET_EVIDENCE_INVALID")
+    if value["preexisting_target"] is not False or value["preexisting_volume"] is not False:
+        raise DockerAdmissionError("TARGET_EVIDENCE_INVALID")
+    if value["target_create_count"] != 1 or value["volume_create_count"] != 1 or value["readback_count"] != 2 or value["run_owned"] is not True:
+        raise DockerAdmissionError("TARGET_EVIDENCE_INVALID")
+    return dict(value)
+
+
+@dataclass(frozen=True)
+class DockerDiscovery:
+    image_commitment: str
+    target_commitment: str
+    isolation_commitment: str
+    execution_row_id: int
+    artifact_filename: str
+    artifact_commitment: str | None = None
+    artifact_stream_commitment: str | None = None
+    artifact_stream_evidence: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class _OwnedDockerResources:
+    target_id: str
+    target_name: str
+    volume_name: str
+    run_id: str
+
+
+def _validate_not_preexisting(client: Any, method: str, path: str, code: str) -> None:
+    status, _ = client.request(method, path)
+    if status == 404:
+        return
+    if status == 200:
+        raise DockerAdmissionError(code, safety_state="UNCONSUMED")
+    raise DockerAdmissionError(code + "_UNKNOWN", safety_state="UNCONSUMED")
+
+
+def _read_admitted_text(path: str, *, label: str) -> str:
+    if sys.platform != "linux" or not getattr(os, "O_NOFOLLOW", 0):
+        raise DescriptorAdmissionError("INSTALLATION_NO_FOLLOW_UNAVAILABLE")
+    flags = os.O_RDONLY | O_CLOEXEC | os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except OSError as error:
+        raise DescriptorAdmissionError(f"{label.upper()}_OPEN_FAILED") from error
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_gid != 0 or stat.S_IMODE(metadata.st_mode) != 0o444:
+            raise DescriptorAdmissionError(f"{label.upper()}_ADMISSION_FAILED")
+        raw = os.read(fd, 4096)
+        if os.read(fd, 1):
+            raise DescriptorAdmissionError(f"{label.upper()}_OVERSIZE")
+        after = os.fstat(fd)
+        if _stat_identity(after) != _stat_identity(metadata):
+            raise DescriptorAdmissionError(f"{label.upper()}_SUBSTITUTED")
+    finally:
+        os.close(fd)
+    if not raw.endswith(b"\n") or raw.count(b"\n") != 1:
+        raise DescriptorAdmissionError(f"{label.upper()}_FORMAT_INVALID")
+    try:
+        value = raw[:-1].decode("ascii", "strict")
+    except UnicodeDecodeError as error:
+        raise DescriptorAdmissionError(f"{label.upper()}_FORMAT_INVALID") from error
+    if not _is_commitment(value):
+        raise DescriptorAdmissionError(f"{label.upper()}_FORMAT_INVALID")
+    return value
+
+
+def open_artifact_descriptor(root: str, filename: str) -> int:
+    _validate_filename(filename)
+    if sys.platform != "linux" or not getattr(os, "O_NOFOLLOW", 0):
+        raise DescriptorAdmissionError("ARTIFACT_NO_FOLLOW_UNAVAILABLE")
+    root_fd = os.open(root, O_RDONLY | O_DIRECTORY | O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        root_stat = os.fstat(root_fd)
+        if not stat.S_ISDIR(root_stat.st_mode) or root_stat.st_uid != 0 or root_stat.st_gid != 0:
+            raise DescriptorAdmissionError("ARTIFACT_ROOT_ADMISSION_FAILED")
+        fd = os.open(filename, os.O_RDONLY | O_CLOEXEC | os.O_NOFOLLOW, dir_fd=root_fd)
+    finally:
+        os.close(root_fd)
+    metadata = os.fstat(fd)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != 0
+        or metadata.st_gid != 0
+        or metadata.st_mode & (stat.S_ISUID | stat.S_ISGID)
+        or metadata.st_size < 1
+        or metadata.st_size > 64 * 1024 * 1024
+    ):
+        os.close(fd)
+        raise DescriptorAdmissionError("ARTIFACT_ADMISSION_FAILED")
+    return fd
+
+
+@dataclass(frozen=True)
+class QualifiedArtifact:
+    fd: int
+    identity_before: ArtifactIdentity
+    identity_after: ArtifactIdentity
+    bytes_read: int
+    stream_sha256: str
+    reopen_count: int
+    reselection_count: int
+    stdin_same_descriptor: bool
+    no_follow_verified: bool = False
+
+
+def qualify_artifact_descriptor(
+    fd: int,
+    *,
+    fstat_fn: Callable[[int], Any] = os.fstat,
+    read_fn: Callable[[int, int], bytes] = os.read,
+    lseek_fn: Callable[[int, int, int], int] = os.lseek,
+    no_follow_verified: bool = False,
+) -> QualifiedArtifact:
+    before = _artifact_identity(fstat_fn(fd))
+    if not stat.S_ISREG(before.mode) or before.size < 1 or before.size > 64 * 1024 * 1024:
+        raise DescriptorAdmissionError("ARTIFACT_ADMISSION_FAILED")
+    lseek_fn(fd, 0, os.SEEK_SET)
+    digest = hashlib.sha256()
+    count = 0
+    while True:
+        chunk = read_fn(fd, READ_CHUNK_BYTES)
+        if not isinstance(chunk, bytes) or len(chunk) > READ_CHUNK_BYTES:
+            raise DescriptorAdmissionError("ARTIFACT_READ_FAILED")
+        if not chunk:
+            break
+        count += len(chunk)
+        digest.update(chunk)
+        if count > before.size:
+            raise DescriptorAdmissionError("ARTIFACT_SIZE_CHANGED")
+    after = _artifact_identity(fstat_fn(fd))
+    if before != after or count != before.size:
+        raise DescriptorAdmissionError("ARTIFACT_SUBSTITUTED")
+    return QualifiedArtifact(fd, before, after, count, digest.hexdigest(), 0, 0, True, no_follow_verified)
+
+
+def stream_qualified_artifact(
+    artifact: QualifiedArtifact,
+    output: BinaryIO,
+    *,
+    fstat_fn: Callable[[int], Any] = os.fstat,
+    read_fn: Callable[[int, int], bytes] = os.read,
+    lseek_fn: Callable[[int, int, int], int] = os.lseek,
+) -> int:
+    if (
+        not artifact.no_follow_verified
+        or artifact.reopen_count != 0
+        or artifact.reselection_count != 0
+        or artifact.stdin_same_descriptor is not True
+    ):
+        raise DescriptorAdmissionError("ARTIFACT_CONTINUITY_INVALID")
+    if _artifact_identity(fstat_fn(artifact.fd)) != artifact.identity_after:
+        raise DescriptorAdmissionError("ARTIFACT_SUBSTITUTED")
+    lseek_fn(artifact.fd, 0, os.SEEK_SET)
+    total = 0
+    digest = hashlib.sha256()
+    while True:
+        chunk = read_fn(artifact.fd, READ_CHUNK_BYTES)
+        if not isinstance(chunk, bytes):
+            raise DescriptorAdmissionError("ARTIFACT_READ_FAILED")
+        if not chunk:
+            break
+        _write_all(output, chunk)
+        total += len(chunk)
+        digest.update(chunk)
+    if (
+        total != artifact.bytes_read
+        or digest.hexdigest() != artifact.stream_sha256
+        or _artifact_identity(fstat_fn(artifact.fd)) != artifact.identity_after
+    ):
+        raise DescriptorAdmissionError("ARTIFACT_CONTINUITY_INVALID")
+    return total
+
+
+def build_artifact_stream_evidence(artifact: QualifiedArtifact, artifact_commitment: str) -> dict[str, Any]:
+    if not isinstance(artifact, QualifiedArtifact) or not _is_commitment(artifact_commitment) or not artifact.no_follow_verified:
+        raise DescriptorAdmissionError("ARTIFACT_EVIDENCE_INVALID")
+    value = {
+        "schema": SCHEMA_ARTIFACT_STREAM,
+        "artifact_commitment": artifact_commitment,
+        "fd_before": _artifact_identity_object(artifact.identity_before),
+        "fd_after": _artifact_identity_object(artifact.identity_after),
+        "bytes_read": artifact.bytes_read,
+        "stream_sha256": artifact.stream_sha256,
+        "read_chunk_bytes": READ_CHUNK_BYTES,
+        "no_follow": True,
+        "fstat_equal": artifact.identity_before == artifact.identity_after,
+        "reopen_count": artifact.reopen_count,
+        "reselection_count": artifact.reselection_count,
+        "stdin_same_descriptor": artifact.stdin_same_descriptor,
+    }
+    return validate_artifact_stream_evidence(value)
+
+
+@dataclass(frozen=True)
+class DockerInstallationConfig:
+    socket_path: str
+    image_ref: str
+    image_id: str
+    run_id: str
+    volume_id: str
+    target_id: str
+
+    def __post_init__(self) -> None:
+        if self.socket_path != "/var/run/docker.sock":
+            raise DockerAdmissionError("DOCKER_SOCKET_INVALID")
+        if self.image_ref != "postgres:17-alpine":
+            raise DockerAdmissionError("DOCKER_IMAGE_REF_INVALID")
+        _validate_image_id(self.image_id)
+        _validate_ref(self.run_id, "run_id")
+        _validate_ref(self.volume_id, "volume_id")
+        _validate_ref(self.target_id, "target_id")
+
+    @classmethod
+    def from_installed(cls, epoch_ref: str) -> "DockerInstallationConfig":
+        image_id = _read_admitted_text(PRODUCTION_IMAGE_ID_PATH, label="docker_image_id")
+        return cls(
+            "/var/run/docker.sock",
+            "postgres:17-alpine",
+            image_id,
+            epoch_ref,
+            "volume-" + epoch_ref,
+            "target-" + epoch_ref,
+        )
+
+
+def _canonical_locator_shell_wrapper() -> str:
+    module = compile_restricted_locator()
+    wrapper = module.__dict__.get("SHELL_WRAPPER")
+    if not isinstance(wrapper, str) or not wrapper.endswith("\n"):
+        raise LoaderIntegrityError("LOCATOR_WRAPPER_INVALID")
+    return wrapper
+
+
+def _target_inspection(
+    value: Mapping[str, Any],
+    *,
+    target_id: str,
+    target_name: str,
+    volume_name: str,
+    image_id: str,
+    run_id: str,
+    require_running: bool = False,
+) -> None:
+    if value.get("Id") != target_id or value.get("Name") not in {target_name, "/" + target_name}:
+        raise DockerAdmissionError("TARGET_IDENTITY_MISMATCH", safety_state="UNCONSUMED")
+    if require_running and (
+        not isinstance(value.get("State"), Mapping)
+        or value["State"].get("Running") is not True
+    ):
+        raise DockerAdmissionError("TARGET_NOT_RUNNING", safety_state="UNCONSUMED")
+    config = value.get("Config")
+    host = value.get("HostConfig")
+    labels = value.get("Config", {}).get("Labels") if isinstance(config, Mapping) else None
+    if not isinstance(config, Mapping) or config.get("Image") != image_id or config.get("Env") != ["POSTGRES_DB=coolify"]:
+        raise DockerAdmissionError("TARGET_IMAGE_READBACK_MISMATCH", safety_state="UNCONSUMED")
+    if not isinstance(labels, Mapping) or labels.get("com.swooshz.recovery.run") != run_id:
+        raise DockerAdmissionError("TARGET_OWNERSHIP_UNPROVEN", safety_state="UNCONSUMED")
+    if not isinstance(host, Mapping):
+        raise DockerAdmissionError("TARGET_ISOLATION_READBACK_INVALID", safety_state="UNCONSUMED")
+    if (
+        host.get("NetworkMode") != "none"
+        or host.get("Privileged") is not False
+        or host.get("ReadonlyRootfs") is not True
+        or host.get("CapDrop") != ["ALL"]
+        or host.get("CapAdd") != []
+        or host.get("PublishAllPorts") is not False
+        or host.get("PortBindings") != {}
+        or host.get("ExtraHosts") != []
+        or host.get("SecurityOpt") != []
+        or host.get("Binds") != [f"{volume_name}:/var/lib/postgresql/data:rw"]
+    ):
+        raise DockerAdmissionError("TARGET_ISOLATION_READBACK_INVALID", safety_state="UNCONSUMED")
+    mounts = value.get("Mounts")
+    if not isinstance(mounts, list) or len(mounts) != 1 or not isinstance(mounts[0], Mapping):
+        raise DockerAdmissionError("TARGET_MOUNT_READBACK_INVALID", safety_state="UNCONSUMED")
+    mount = mounts[0]
+    if (
+        mount.get("Destination") != "/var/lib/postgresql/data"
+        or mount.get("RW") is not True
+        or mount.get("Name") != volume_name
+        or mount.get("Type") not in {None, "volume"}
+    ):
+        raise DockerAdmissionError("TARGET_MOUNT_READBACK_INVALID", safety_state="UNCONSUMED")
+    network_settings = value.get("NetworkSettings")
+    networks = network_settings.get("Networks") if isinstance(network_settings, Mapping) else None
+    if networks != {}:
+        raise DockerAdmissionError("TARGET_NETWORK_READBACK_INVALID", safety_state="UNCONSUMED")
+
+
+class ProductionDockerBackend:
+    """Engine-only production backend with readback-bound, run-owned resources."""
+
+    test_only = False
+
+    @classmethod
+    def from_installed(cls, epoch_ref: str) -> "ProductionDockerBackend":
+        return cls(DockerInstallationConfig.from_installed(epoch_ref))
+
+    def __init__(self, config: DockerInstallationConfig, *, client: UnixSocketHTTPClient | None = None) -> None:
+        if not isinstance(config, DockerInstallationConfig):
+            raise DockerAdmissionError("DOCKER_CONFIG_INVALID")
+        self.config = config
+        self.client = client or UnixSocketHTTPClient(config.socket_path)
+        self.inspect_count = 0
+        self.pull_count = 0
+        self.tag_resolution_count = 0
+        self.target_create_count = 0
+        self.volume_create_count = 0
+        self._resources: _OwnedDockerResources | None = None
+        self._image: Mapping[str, Any] | None = None
+        self._target: Mapping[str, Any] | None = None
+        self._isolation: Mapping[str, Any] | None = None
+        self._artifact: QualifiedArtifact | None = None
+        self._artifact_evidence: Mapping[str, Any] | None = None
+        self._boot: Mapping[str, Any] | None = None
+        self._cleanup_done = False
+
+    def _close_artifact_descriptor(self) -> None:
+        artifact = self._artifact
+        self._artifact = None
+        if artifact is None:
+            return
+        try:
+            os.close(artifact.fd)
+        except OSError as error:
+            raise DockerAdmissionError("ARTIFACT_DESCRIPTOR_CLOSE_FAILED", safety_state="CONSUMED") from error
+
+    def bind_boot(self, boot: Mapping[str, Any]) -> None:
+        if not isinstance(boot, Mapping) or boot.get("type") != "BOOT":
+            raise DockerAdmissionError("BOOT_BINDING_INVALID")
+        self._boot = dict(boot)
+
+    def _cleanup_created_volume(self, volume_name: str) -> None:
+        path = "/volumes/" + urllib.parse.quote(volume_name, safe="")
+        status, value = self.client.request("GET", path)
+        if status == 404:
+            return
+        if status != 200 or not isinstance(value, Mapping) or value.get("Name") != volume_name:
+            raise DockerAdmissionError("VOLUME_CLEANUP_OWNERSHIP_UNPROVEN", safety_state="UNCONSUMED")
+        labels = value.get("Labels")
+        if not isinstance(labels, Mapping) or labels.get("com.swooshz.recovery.run") != self.config.run_id:
+            raise DockerAdmissionError("VOLUME_CLEANUP_OWNERSHIP_UNPROVEN", safety_state="UNCONSUMED")
+        delete_status, _ = self.client.request("DELETE", path)
+        if delete_status not in {204, 404}:
+            raise DockerAdmissionError("VOLUME_CLEANUP_FAILED", safety_state="UNCONSUMED")
+        final_status, _ = self.client.request("GET", path)
+        if final_status != 404:
+            raise DockerAdmissionError("VOLUME_CLEANUP_FINALITY_UNCERTAIN", safety_state="UNCONSUMED")
+
+    def _cleanup_unqualified_resources(self) -> None:
+        resources = self._resources
+        if resources is None:
+            return
+        container_path = "/containers/" + urllib.parse.quote(resources.target_id, safe="")
+        target_path = container_path + "/json"
+        volume_path = "/volumes/" + urllib.parse.quote(resources.volume_name, safe="")
+        target_status, target = self.client.request("GET", target_path)
+        if target_status not in {200, 404}:
+            raise DockerAdmissionError("PARTIAL_TARGET_READBACK_FAILED", safety_state="UNCONSUMED")
+        if target_status == 200:
+            if not isinstance(target, Mapping):
+                raise DockerAdmissionError("PARTIAL_TARGET_READBACK_FAILED", safety_state="UNCONSUMED")
+            _target_inspection(
+                target,
+                target_id=resources.target_id,
+                target_name=resources.target_name,
+                volume_name=resources.volume_name,
+                image_id=self.config.image_id,
+                run_id=resources.run_id,
+            )
+        volume_status, volume = self.client.request("GET", volume_path)
+        if volume_status not in {200, 404}:
+            raise DockerAdmissionError("PARTIAL_VOLUME_READBACK_FAILED", safety_state="UNCONSUMED")
+        if volume_status == 200 and (
+            not isinstance(volume, Mapping)
+            or volume.get("Name") != resources.volume_name
+            or not isinstance(volume.get("Labels"), Mapping)
+            or volume["Labels"].get("com.swooshz.recovery.run") != resources.run_id
+        ):
+            raise DockerAdmissionError("PARTIAL_VOLUME_OWNERSHIP_UNPROVEN", safety_state="UNCONSUMED")
+        target_delete_status = 404
+        volume_delete_status = 404
+        if target_status == 200:
+            target_delete_status, _ = self.client.request("DELETE", container_path + "?force=true")
+        if volume_status == 200:
+            volume_delete_status, _ = self.client.request("DELETE", volume_path)
+        if target_delete_status not in {204, 404} or volume_delete_status not in {204, 404}:
+            raise DockerAdmissionError("PARTIAL_CLEANUP_FAILED", safety_state="UNCONSUMED")
+        final_target_status, _ = self.client.request("GET", target_path)
+        final_volume_status, _ = self.client.request("GET", volume_path)
+        if final_target_status != 404 or final_volume_status != 404:
+            raise DockerAdmissionError("PARTIAL_CLEANUP_FINALITY_UNCERTAIN", safety_state="UNCONSUMED")
+        self._cleanup_done = True
+
+    def inspect_image(self) -> Mapping[str, Any]:
+        self.inspect_count += 1
+        status, value = self.client.request(
+            "GET",
+            "/images/" + urllib.parse.quote(self.config.image_ref, safe="") + "/json",
+        )
+        if status != 200 or not isinstance(value, Mapping):
+            raise DockerAdmissionError("IMAGE_INSPECT_FAILED", safety_state="UNCONSUMED")
+        if value.get("Id") != self.config.image_id or value.get("Os") != "linux" or value.get("Architecture") not in {"amd64", "x86_64"}:
+            raise DockerAdmissionError("IMAGE_ADMISSION_FAILED", safety_state="UNCONSUMED")
+        image = {
+            "schema": SCHEMA_IMAGE_EVIDENCE,
+            "image_ref": self.config.image_ref,
+            "image_id": self.config.image_id,
+            "inspect_count": self.inspect_count,
+            "pull_count": self.pull_count,
+            "tag_resolution_count": self.tag_resolution_count,
+            "image_os": value["Os"],
+            "image_architecture": value["Architecture"],
+        }
+        return validate_image_evidence(image)
+
+    def create_isolated_target(self, image: Mapping[str, Any]) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+        checked_image = validate_image_evidence(image)
+        if checked_image["image_id"] != self.config.image_id or checked_image["image_ref"] != self.config.image_ref:
+            raise DockerAdmissionError("IMAGE_BINDING_INVALID", safety_state="UNCONSUMED")
+        volume_name = "swooshz-recovery-volume-" + self.config.volume_id
+        target_name = "swooshz-recovery-target-" + self.config.target_id
+        volume_created = False
+        try:
+            _validate_not_preexisting(self.client, "GET", "/volumes/" + urllib.parse.quote(volume_name, safe=""), "VOLUME_PREEXISTING")
+            _validate_not_preexisting(
+                self.client,
+                "GET",
+                "/containers/" + urllib.parse.quote(target_name, safe="") + "/json",
+                "TARGET_PREEXISTING",
+            )
+            labels = {"com.swooshz.recovery.run": self.config.run_id}
+            status, volume = self.client.request("POST", "/volumes/create", {"Name": volume_name, "Labels": labels})
+            if status != 201 or not isinstance(volume, Mapping) or volume.get("Name") != volume_name:
+                raise DockerAdmissionError("VOLUME_CREATE_READBACK_INVALID", safety_state="UNCONSUMED")
+            volume_created = True
+            self.volume_create_count += 1
+            status, volume_readback = self.client.request("GET", "/volumes/" + urllib.parse.quote(volume_name, safe=""))
+            if status != 200 or not isinstance(volume_readback, Mapping) or volume_readback.get("Name") != volume_name or not isinstance(volume_readback.get("Labels"), Mapping) or volume_readback["Labels"].get("com.swooshz.recovery.run") != self.config.run_id:
+                raise DockerAdmissionError("VOLUME_OWNERSHIP_UNPROVEN", safety_state="UNCONSUMED")
+            host_config = {
+                "NetworkMode": "none",
+                "Privileged": False,
+                "ReadonlyRootfs": True,
+                "CapDrop": ["ALL"],
+                "CapAdd": [],
+                "Binds": [f"{volume_name}:/var/lib/postgresql/data:rw"],
+                "PublishAllPorts": False,
+                "PortBindings": {},
+                "ExtraHosts": [],
+                "SecurityOpt": [],
+            }
+            status, target = self.client.request(
+                "POST",
+                "/containers/create?name=" + urllib.parse.quote(target_name, safe=""),
+                {
+                    "Image": self.config.image_id,
+                    "Env": ["POSTGRES_DB=coolify"],
+                    "HostConfig": host_config,
+                    "Labels": labels,
+                },
+            )
+            target_id = target.get("Id") if isinstance(target, Mapping) else None
+            if status != 201 or not isinstance(target_id, str) or not target_id:
+                raise DockerAdmissionError("TARGET_CREATE_READBACK_INVALID", safety_state="UNCONSUMED")
+            self.target_create_count += 1
+            self._resources = _OwnedDockerResources(target_id, target_name, volume_name, self.config.run_id)
+            container_path = "/containers/" + urllib.parse.quote(target_id, safe="")
+            status, target_readback = self.client.request("GET", container_path + "/json")
+            if status != 200 or not isinstance(target_readback, Mapping):
+                raise DockerAdmissionError("TARGET_READBACK_FAILED", safety_state="UNCONSUMED")
+            _target_inspection(
+                target_readback,
+                target_id=target_id,
+                target_name=target_name,
+                volume_name=volume_name,
+                image_id=self.config.image_id,
+                run_id=self.config.run_id,
+            )
+            target_evidence = validate_target_evidence({
+                "schema": SCHEMA_TARGET_EVIDENCE,
+                "epoch_ref": self.config.run_id,
+                "image_commitment": _docker_commitment("image-evidence", checked_image),
+                "target_id": target_id,
+                "volume_id": volume_name,
+                "target_name": target_name,
+                "volume_name": volume_name,
+                "preexisting_target": False,
+                "preexisting_volume": False,
+                "target_create_count": self.target_create_count,
+                "volume_create_count": self.volume_create_count,
+                "readback_count": 2,
+                "run_owned": True,
+            })
+            isolation = validate_isolation_evidence({
+                "schema": SCHEMA_ISOLATION_EVIDENCE,
+                "target_commitment": _docker_commitment("target-evidence", target_evidence),
+                "image_commitment": target_evidence["image_commitment"],
+                "effective_image_id": target_readback["Config"]["Image"],
+                "network_mode": target_readback["HostConfig"]["NetworkMode"],
+                "privileged": target_readback["HostConfig"]["Privileged"],
+                "rootfs_read_only": target_readback["HostConfig"]["ReadonlyRootfs"],
+                "cap_drop": target_readback["HostConfig"]["CapDrop"],
+                "cap_add": target_readback["HostConfig"]["CapAdd"],
+                "extra_mounts": 0,
+                "volume_destination": "/var/lib/postgresql/data",
+                "volume_read_only": False,
+                "readback_count": 1,
+            })
+            self._image = checked_image
+            self._target = target_evidence
+            self._isolation = isolation
+            status, _ = self.client.request("POST", container_path + "/start")
+            if status != 204:
+                raise DockerAdmissionError("TARGET_START_FAILED", safety_state="UNCONSUMED")
+            status, running_readback = self.client.request("GET", container_path + "/json")
+            if status != 200 or not isinstance(running_readback, Mapping):
+                raise DockerAdmissionError("TARGET_RUNNING_READBACK_FAILED", safety_state="UNCONSUMED")
+            _target_inspection(
+                running_readback,
+                target_id=target_id,
+                target_name=target_name,
+                volume_name=volume_name,
+                image_id=self.config.image_id,
+                run_id=self.config.run_id,
+                require_running=True,
+            )
+            return target_evidence, isolation
+        except Exception as error:
+            if self._resources is not None and not self._cleanup_done:
+                try:
+                    if self._target is not None:
+                        self.cleanup(self._target, volume_name)
+                    else:
+                        self._cleanup_unqualified_resources()
+                except Exception as cleanup_error:
+                    raise DockerAdmissionError("TARGET_CLEANUP_FAILED", safety_state="CONSUMED") from cleanup_error
+            elif volume_created:
+                try:
+                    self._cleanup_created_volume(volume_name)
+                except Exception as cleanup_error:
+                    raise DockerAdmissionError("VOLUME_CLEANUP_FAILED", safety_state="UNCONSUMED") from cleanup_error
+            raise error
+
+    def open_locator_process(self) -> Any:
+        if self._resources is None:
+            raise DockerAdmissionError("DOCKER_TARGET_NOT_ADMITTED", safety_state="UNCONSUMED")
+        opener = getattr(self.client, "open_exec_process", None)
+        if not callable(opener):
+            raise DockerAdmissionError("PRODUCTION_DOCKER_ENGINE_REQUIRED", safety_state="UNCONSUMED")
+        return opener(
+            self._resources.target_id,
+            ("/bin/sh", "-c", _canonical_locator_shell_wrapper()),
+            environment=DOCKER_EXEC_ENVIRONMENT,
+        )
+
+    def _open_restore_process(self) -> Any:
+        if self._resources is None or not callable(getattr(self.client, "open_exec_process", None)):
+            raise DockerAdmissionError("PRODUCTION_DOCKER_ENGINE_REQUIRED", safety_state="CONSUMED")
+        return self.client.open_exec_process(
+            self._resources.target_id,
+            RESTORE_COMMAND,
+            environment=DOCKER_EXEC_ENVIRONMENT,
+        )
+
+    def discover(self, epoch_ref: str, barrier_utc: str) -> DockerDiscovery:
+        _validate_ref(epoch_ref, "epoch_ref")
+        validate_barrier_utc(barrier_utc)
+        image = self.inspect_image()
+        target, isolation = self.create_isolated_target(image)
+
+        def cleanup_after_failure() -> None:
+            try:
+                resources = self._resources
+                if resources is None:
+                    raise DockerAdmissionError("CLEANUP_OWNERSHIP_INVALID", safety_state="CONSUMED")
+                self.cleanup(target, resources.volume_name)
+            except Exception as cleanup_error:
+                raise DockerAdmissionError("DISCOVERY_CLEANUP_FAILED", safety_state="CONSUMED") from cleanup_error
+
+        global _ACTIVE_PRODUCTION_BACKEND
+        _ACTIVE_PRODUCTION_BACKEND = self
+        try:
+            outcome = invoke_canonical_locator_once(barrier_utc)
+        except Exception:
+            cleanup_after_failure()
+            raise
+        finally:
+            _ACTIVE_PRODUCTION_BACKEND = None
+        if getattr(outcome, "classification", None) != "EXACTLY_ONE":
+            cleanup_after_failure()
+            raise DockerAdmissionError("LOCATOR_NOT_FOUND", safety_state="UNCONSUMED")
+        execution_id = getattr(outcome, "execution_id", None)
+        filename = getattr(outcome, "filename", None)
+        if type(execution_id) is not int or execution_id <= 0 or not isinstance(filename, str):
+            cleanup_after_failure()
+            raise DockerAdmissionError("LOCATOR_OUTPUT_INVALID", safety_state="UNCONSUMED")
+        fd: int | None = None
+        try:
+            filename = _validate_filename(filename)
+            artifact_commitment = text_commitment("artifact-row", str(execution_id), filename)
+            fd = open_artifact_descriptor(PRODUCTION_ARTIFACT_ROOT, filename)
+            artifact = qualify_artifact_descriptor(fd, no_follow_verified=True)
+            artifact_evidence = build_artifact_stream_evidence(artifact, artifact_commitment)
+        except Exception:
+            close_error: OSError | None = None
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError as error:
+                    close_error = error
+            cleanup_after_failure()
+            if close_error is not None:
+                raise DockerAdmissionError("ARTIFACT_DESCRIPTOR_CLOSE_FAILED", safety_state="CONSUMED") from close_error
+            raise
+        self._artifact = artifact
+        self._artifact_evidence = artifact_evidence
+        stream_commitment = artifact_stream_evidence_commitment(artifact_evidence)
+        discovery = DockerDiscovery(
+            _docker_commitment("image-evidence", image),
+            _docker_commitment("target-evidence", target),
+            _docker_commitment("isolation-evidence", isolation),
+            execution_id,
+            filename,
+            artifact_commitment,
+            stream_commitment,
+            artifact_evidence,
+        )
+        return discovery
+
+    def _verify_proceed_bindings(self, proceed: Mapping[str, Any]) -> None:
+        if self._boot is None or self._resources is None or self._image is None or self._target is None or self._isolation is None or self._artifact is None or self._artifact_evidence is None:
+            raise DockerAdmissionError("RESTORE_BINDING_UNAVAILABLE", safety_state="CONSUMED")
+        for key, expected in (
+            ("image_commitment", _docker_commitment("image-evidence", self._image)),
+            ("target_commitment", _docker_commitment("target-evidence", self._target)),
+            ("isolation_commitment", _docker_commitment("isolation-evidence", self._isolation)),
+            ("artifact_stream_commitment", artifact_stream_evidence_commitment(self._artifact_evidence)),
+        ):
+            if proceed.get(key) != expected:
+                raise DockerAdmissionError("RESTORE_BINDING_MISMATCH", safety_state="CONSUMED")
+        if proceed.get("artifact_commitment") != self._artifact_evidence["artifact_commitment"]:
+            raise DockerAdmissionError("ARTIFACT_BINDING_MISMATCH", safety_state="CONSUMED")
+        expected_data = {
+            "schema": "restore-ledger-transition-data.v2",
+            "version": 2,
+            "epoch_ref": proceed["epoch_ref"],
+            "authority_ref": proceed["authority_ref"],
+            "barrier_utc": proceed["barrier_utc"],
+            "barrier_commitment": proceed["barrier_commitment"],
+            "runner_commitment": proceed["runner_commitment"],
+            "bundle_commitment": proceed["bundle_commitment"],
+            "image_commitment": proceed["image_commitment"],
+            "target_commitment": proceed["target_commitment"],
+            "isolation_commitment": proceed["isolation_commitment"],
+            "artifact_commitment": proceed["artifact_commitment"],
+            "artifact_stream_commitment": proceed["artifact_stream_commitment"],
+            "pre_cas_ledger_digest": proceed["pre_cas_ledger_digest"],
+        }
+        data_bytes = canonical_json(expected_data, limit=MAX_CONTROL_PAYLOAD_BYTES, terminal_lf=True)
+        expected_id = "restore-v2-" + hashlib.sha256(_length_prefixed(("restore-transition-id.v2", data_bytes))).hexdigest()[:48]
+        if proceed["transition_id"] != expected_id or proceed["transition_data_commitment"] != bytes_commitment("restore-ledger-transition", data_bytes):
+            raise DockerAdmissionError("TRANSITION_BINDING_MISMATCH", safety_state="CONSUMED")
+
+    def _supervise_restore_process(self, process: Any) -> ProcessFinality:
+        stdout_capture = BoundedCapture()
+        stderr_capture = BoundedCapture()
+        stdout_eof = False
+        stderr_eof = False
+        errors: list[Exception] = []
+
+        def drain(stream: Any, capture: BoundedCapture, which: str) -> None:
+            nonlocal stdout_eof, stderr_eof
+            try:
+                while True:
+                    chunk = stream.read(READ_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    capture.append(bytes(chunk))
+                if which == "stdout":
+                    stdout_eof = True
+                else:
+                    stderr_eof = True
+            except Exception as error:
+                errors.append(error)
+
+        threads = [
+            threading.Thread(target=drain, args=(process.stdout, stdout_capture, "stdout"), daemon=True),
+            threading.Thread(target=drain, args=(process.stderr, stderr_capture, "stderr"), daemon=True),
+        ]
+        for thread in threads:
+            thread.start()
+        exit_status: int | None = None
+        try:
+            exit_status = process.wait(timeout=17.0)
+        except Exception as error:
+            errors.append(error)
+        for thread in threads:
+            thread.join(timeout=2.0)
+        reader_error = getattr(process, "_reader_error", None)
+        reader_done = getattr(process, "_reader_done", None)
+        if (
+            errors
+            or reader_error is not None
+            or getattr(process, "_stream_eof", True) is not True
+            or any(thread.is_alive() for thread in threads)
+            or (reader_done is not None and not reader_done.is_set())
+        ):
+            raise FinalityError("DOCKER_PROCESS_FINALITY_FAILED", safety_state="CONSUMED")
+        if type(exit_status) is not int or not 0 <= exit_status <= 255:
+            raise FinalityError("DOCKER_PROCESS_EXIT_INVALID", safety_state="CONSUMED")
+        return validate_process_finality(ProcessFinality(
+            None,
+            True,
+            exit_status,
+            True,
+            stdout_eof,
+            stderr_eof,
+            0,
+            bytes_commitment("stdout-capture", stdout_capture.snapshot()),
+            bytes_commitment("stderr-capture", stderr_capture.snapshot()),
+        ))
+
+    def restore(self, proceed: Mapping[str, Any]) -> Mapping[str, Any]:
+        self._verify_proceed_bindings(proceed)
+        process = self._open_restore_process()
+        streamed = 0
+        stdin_eof = False
+        try:
+            streamed = stream_qualified_artifact(self._artifact, process.stdin)
+            process.stdin.close()
+            stdin_eof = True
+            finality = self._supervise_restore_process(process)
+        except RecoveryError:
+            try:
+                process.close()
+            except Exception:
+                pass
+            raise
+        except Exception as error:
+            raise FinalityError("DOCKER_RESTORE_FINALITY_FAILED", safety_state="CONSUMED") from error
+        try:
+            process.close()
+        except Exception as error:
+            raise FinalityError("DOCKER_PROCESS_CLOSE_FAILED", safety_state="CONSUMED") from error
+        cleanup = self.cleanup(self._target, self._resources.volume_name)
+        process_evidence = {
+            "schema": SCHEMA_PROCESS_EVIDENCE,
+            "exec_error": finality.exec_error,
+            "pidfd_observed": finality.pidfd_observed,
+            "exit_status": finality.exit_status,
+            "stdin_eof": stdin_eof,
+            "stdout_eof": finality.stdout_eof,
+            "stderr_eof": finality.stderr_eof,
+            "trailing_unframed_bytes": finality.trailing_unframed_bytes,
+            "stdout_capture_commitment": finality.stdout_capture_commitment,
+            "stderr_capture_commitment": finality.stderr_capture_commitment,
+            "engine_readback": True,
+        }
+        process_commitment = _docker_commitment("process-evidence", process_evidence)
+        restore_evidence = {
+            "schema": SCHEMA_RESTORE_EVIDENCE,
+            "artifact_commitment": proceed["artifact_commitment"],
+            "artifact_stream_commitment": proceed["artifact_stream_commitment"],
+            "bytes_streamed": streamed,
+            "stdin_same_descriptor": True,
+            "status": "COMPLETE" if finality.success and stdin_eof else "FAILED",
+        }
+        restore_commitment = _docker_commitment("restore-evidence", restore_evidence)
+        cleanup_commitment = _docker_commitment("cleanup-evidence", cleanup)
+        success = finality.success and stdin_eof and cleanup["status"] == "COMPLETE"
+        result = {
+            "schema": SCHEMA_RESULT,
+            "classification": "SUCCESS" if success else "FAILURE",
+            "stage": "CLEANUP",
+            "epoch_ref": proceed["epoch_ref"],
+            "authority_ref": proceed["authority_ref"],
+            "barrier_utc": proceed["barrier_utc"],
+            "ssh_endpoint_commitment": self._boot["ssh_endpoint_commitment"],
+            "epoch_commitment": proceed["epoch_commitment"],
+            "authority_commitment": proceed["authority_commitment"],
+            "barrier_commitment": proceed["barrier_commitment"],
+            "runner_commitment": proceed["runner_commitment"],
+            "bundle_commitment": proceed["bundle_commitment"],
+            "launcher_commitment": proceed["launcher_commitment"],
+            "agent_commitment": proceed["agent_commitment"],
+            "image_commitment": proceed["image_commitment"],
+            "target_commitment": proceed["target_commitment"],
+            "isolation_commitment": proceed["isolation_commitment"],
+            "artifact_commitment": proceed["artifact_commitment"],
+            "artifact_stream_commitment": proceed["artifact_stream_commitment"],
+            "transition_id": proceed["transition_id"],
+            "pre_cas_ledger_digest": proceed["pre_cas_ledger_digest"],
+            "transition_data_commitment": proceed["transition_data_commitment"],
+            "consumed_record_commitment": proceed["consumed_record_commitment"],
+            "restore_begin_commitment": proceed["restore_begin_commitment"],
+            "process_commitment": process_commitment,
+            "restore_commitment": restore_commitment,
+            "cleanup_commitment": cleanup_commitment,
+            "stdout_capture_commitment": finality.stdout_capture_commitment,
+            "stderr_capture_commitment": finality.stderr_capture_commitment,
+            "result_code": "RESTORE_SUCCEEDED" if success else "RESTORE_PROCESS_FAILED",
+            "restore_count": 1 if success else 0,
+            "exit_status": finality.exit_status,
+            "stdin_eof": stdin_eof,
+            "stdout_eof": finality.stdout_eof,
+            "stderr_eof": finality.stderr_eof,
+            "trailing_unframed_bytes": finality.trailing_unframed_bytes,
+            "cleanup_state": cleanup["status"],
+        }
+        return validate_result_evidence(result)
+
+    def cleanup(self, target_evidence: Mapping[str, Any], volume_id: str) -> Mapping[str, Any]:
+        if self._cleanup_done:
+            raise DockerAdmissionError("CLEANUP_DUPLICATE", safety_state="CONSUMED")
+        if self._resources is None or not isinstance(target_evidence, Mapping):
+            raise DockerAdmissionError("CLEANUP_OWNERSHIP_INVALID", safety_state="CONSUMED")
+        checked = validate_target_evidence(target_evidence)
+        if (
+            checked["target_id"] != self._resources.target_id
+            or checked["volume_id"] != self._resources.volume_name
+            or volume_id != self._resources.volume_name
+            or checked["run_owned"] is not True
+        ):
+            raise DockerAdmissionError("CLEANUP_OWNERSHIP_INVALID", safety_state="CONSUMED")
+        container_path = "/containers/" + urllib.parse.quote(self._resources.target_id, safe="")
+        target_path = container_path + "/json"
+        volume_path = "/volumes/" + urllib.parse.quote(self._resources.volume_name, safe="")
+        target_status, current_target = self.client.request("GET", target_path)
+        if target_status not in {200, 404}:
+            raise DockerAdmissionError("CLEANUP_TARGET_READBACK_FAILED", safety_state="CONSUMED")
+        if target_status == 200:
+            if not isinstance(current_target, Mapping):
+                raise DockerAdmissionError("CLEANUP_TARGET_READBACK_FAILED", safety_state="CONSUMED")
+            _target_inspection(
+                current_target,
+                target_id=self._resources.target_id,
+                target_name=self._resources.target_name,
+                volume_name=self._resources.volume_name,
+                image_id=self.config.image_id,
+                run_id=self._resources.run_id,
+            )
+        volume_status, current_volume = self.client.request("GET", volume_path)
+        if volume_status not in {200, 404}:
+            raise DockerAdmissionError("CLEANUP_VOLUME_READBACK_FAILED", safety_state="CONSUMED")
+        if volume_status == 200 and (
+            not isinstance(current_volume, Mapping)
+            or current_volume.get("Name") != self._resources.volume_name
+            or not isinstance(current_volume.get("Labels"), Mapping)
+            or current_volume["Labels"].get("com.swooshz.recovery.run") != self._resources.run_id
+        ):
+            raise DockerAdmissionError("CLEANUP_VOLUME_READBACK_FAILED", safety_state="CONSUMED")
+        target_delete_status = 404
+        volume_delete_status = 404
+        if target_status == 200:
+            target_delete_status, _ = self.client.request("DELETE", container_path + "?force=true")
+        if volume_status == 200:
+            volume_delete_status, _ = self.client.request("DELETE", volume_path)
+        if target_delete_status not in {204, 404} or volume_delete_status not in {204, 404}:
+            raise DockerAdmissionError("CLEANUP_FAILED", safety_state="CONSUMED")
+        final_target_status, _ = self.client.request("GET", target_path)
+        final_volume_status, _ = self.client.request("GET", volume_path)
+        if final_target_status != 404 or final_volume_status != 404:
+            raise DockerAdmissionError("CLEANUP_FINALITY_UNCERTAIN", safety_state="CONSUMED")
+        self._close_artifact_descriptor()
+        self._cleanup_done = True
+        return {
+            "schema": SCHEMA_CLEANUP_EVIDENCE,
+            "target_id": self._resources.target_id,
+            "volume_id": self._resources.volume_name,
+            "run_owned": True,
+            "prune": False,
+            "target_deleted": target_delete_status == 204,
+            "volume_deleted": volume_delete_status == 204,
+            "status": "COMPLETE",
+        }
+CLEANUP_EVIDENCE_FIELDS = (
+    "schema", "target_id", "volume_id", "run_owned", "prune",
+    "target_deleted", "volume_deleted", "status",
+)
+PROCESS_EVIDENCE_FIELDS = (
+    "schema", "exec_error", "pidfd_observed", "exit_status", "stdin_eof",
+    "stdout_eof", "stderr_eof", "trailing_unframed_bytes",
+    "stdout_capture_commitment", "stderr_capture_commitment", "engine_readback",
+)
+RESTORE_EVIDENCE_FIELDS = (
+    "schema", "artifact_commitment", "artifact_stream_commitment",
+    "bytes_streamed", "stdin_same_descriptor", "status",
+)
+
+
+def validate_cleanup_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, Mapping) or tuple(value.keys()) != CLEANUP_EVIDENCE_FIELDS:
+        raise DockerAdmissionError("CLEANUP_EVIDENCE_INVALID", safety_state="CONSUMED")
+    if (
+        value["schema"] != SCHEMA_CLEANUP_EVIDENCE
+        or not isinstance(value["target_id"], str)
+        or not isinstance(value["volume_id"], str)
+        or value["run_owned"] is not True
+        or value["prune"] is not False
+        or type(value["target_deleted"]) is not bool
+        or type(value["volume_deleted"]) is not bool
+        or value["status"] != "COMPLETE"
+    ):
+        raise DockerAdmissionError("CLEANUP_EVIDENCE_INVALID", safety_state="CONSUMED")
+    return dict(value)
+
+
+def validate_isolation_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
+    required = (
+        "schema", "target_commitment", "image_commitment", "effective_image_id",
+        "network_mode", "privileged", "rootfs_read_only", "cap_drop", "cap_add",
+        "extra_mounts", "volume_destination", "volume_read_only", "readback_count",
+    )
+    if not isinstance(value, Mapping) or tuple(value.keys()) != required:
+        raise DockerAdmissionError("ISOLATION_EVIDENCE_INVALID", safety_state="UNCONSUMED")
+    if (
+        value["schema"] != SCHEMA_ISOLATION_EVIDENCE
+        or value["network_mode"] != "none"
+        or value["privileged"] is not False
+        or value["rootfs_read_only"] is not True
+        or value["cap_drop"] != ["ALL"]
+        or value["cap_add"] != []
+        or value["extra_mounts"] != 0
+        or value["volume_destination"] != "/var/lib/postgresql/data"
+        or value["volume_read_only"] is not False
+        or value["readback_count"] != 1
+    ):
+        raise DockerAdmissionError("ISOLATION_EVIDENCE_INVALID", safety_state="UNCONSUMED")
+    _validate_image_id(value["effective_image_id"])
+    _validate_commitment(value["image_commitment"], "image_commitment")
+    _validate_commitment(value["target_commitment"], "target_commitment")
+    return dict(value)
+
+
+def validate_result_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, Mapping) or tuple(value.keys()) != RESULT_EVIDENCE_FIELDS:
+        raise ProtocolError("RESULT_EVIDENCE_INVALID")
+    if value["schema"] != SCHEMA_RESULT or value["classification"] not in RESULT_CLASSIFICATIONS:
+        raise ProtocolError("RESULT_EVIDENCE_INVALID")
+    for key, child in value.items():
+        if key.endswith("_commitment") or key.endswith("_digest"):
+            _validate_commitment(child, key)
+    if value["stage"] not in {"RESTORE", "CLEANUP", "PROCESS"} or not isinstance(value["result_code"], str):
+        raise ProtocolError("RESULT_EVIDENCE_INVALID")
+    if type(value["restore_count"]) is not int or not 0 <= value["restore_count"] <= 1:
+        raise ProtocolError("RESULT_EVIDENCE_INVALID")
+    if type(value["exit_status"]) is not int or not -1 <= value["exit_status"] <= 255:
+        raise ProtocolError("RESULT_EVIDENCE_INVALID")
+    for key in ("stdin_eof", "stdout_eof", "stderr_eof"):
+        if type(value[key]) is not bool:
+            raise ProtocolError("RESULT_EVIDENCE_INVALID")
+    if type(value["trailing_unframed_bytes"]) is not int or value["trailing_unframed_bytes"] < 0:
+        raise ProtocolError("RESULT_EVIDENCE_INVALID")
+    if value["cleanup_state"] not in {"COMPLETE", "FAILED", "NOT_STARTED"}:
+        raise ProtocolError("RESULT_EVIDENCE_INVALID")
+    if value["classification"] == "SUCCESS" and (
+        value["result_code"] != "RESTORE_SUCCEEDED"
+        or value["restore_count"] != 1
+        or value["exit_status"] != 0
+        or value["stdin_eof"] is not True
+        or value["stdout_eof"] is not True
+        or value["stderr_eof"] is not True
+        or value["trailing_unframed_bytes"] != 0
+        or value["cleanup_state"] != "COMPLETE"
+    ):
+        raise ProtocolError("RESULT_EVIDENCE_INVALID")
+    return dict(value)
+
+
+def _transition_data_from_proceed(proceed: Mapping[str, Any]) -> tuple[dict[str, Any], bytes]:
+    data = {
+        "schema": "restore-ledger-transition-data.v2",
+        "version": 2,
+        "epoch_ref": proceed["epoch_ref"],
+        "authority_ref": proceed["authority_ref"],
+        "barrier_utc": proceed["barrier_utc"],
+        "barrier_commitment": proceed["barrier_commitment"],
+        "runner_commitment": proceed["runner_commitment"],
+        "bundle_commitment": proceed["bundle_commitment"],
+        "image_commitment": proceed["image_commitment"],
+        "target_commitment": proceed["target_commitment"],
+        "isolation_commitment": proceed["isolation_commitment"],
+        "artifact_commitment": proceed["artifact_commitment"],
+        "artifact_stream_commitment": proceed["artifact_stream_commitment"],
+        "pre_cas_ledger_digest": proceed["pre_cas_ledger_digest"],
+    }
+    return data, canonical_json(data, limit=MAX_CONTROL_PAYLOAD_BYTES, terminal_lf=True)
+
+
+def build_discovery_payload(epoch_ref: str, authority_ref: str, discovery: DockerDiscovery) -> dict[str, Any]:
+    _validate_ref(epoch_ref, "epoch_ref")
+    _validate_ref(authority_ref, "authority_ref")
+    if not isinstance(discovery, DockerDiscovery) or type(discovery.execution_row_id) is not int or discovery.execution_row_id <= 0:
+        raise ProtocolError("DISCOVERY_INVALID")
+    if not _is_commitment(discovery.artifact_commitment) or not _is_commitment(discovery.artifact_stream_commitment):
+        raise ProtocolError("DISCOVERY_ARTIFACT_BINDING_INVALID")
+    value = {
+        "type": "DISCOVERY",
+        "version": SWZFRM02_VERSION,
+        "schema": SCHEMA_WIRE,
+        "epoch_ref": epoch_ref,
+        "authority_ref": authority_ref,
+        "execution_row_id": discovery.execution_row_id,
+        "artifact_filename": _validate_filename(discovery.artifact_filename),
+        "image_commitment": _validate_commitment(discovery.image_commitment, "image_commitment"),
+        "target_commitment": _validate_commitment(discovery.target_commitment, "target_commitment"),
+        "isolation_commitment": _validate_commitment(discovery.isolation_commitment, "isolation_commitment"),
+        "artifact_commitment": discovery.artifact_commitment,
+        "artifact_stream_commitment": discovery.artifact_stream_commitment,
+    }
+    return validate_wire_payload(value, "DISCOVERY")
+
+
+def _validate_remote_proceed(boot: Mapping[str, Any], discovery: Mapping[str, Any], proceed: Mapping[str, Any]) -> None:
+    for field in (
+        "epoch_ref", "authority_ref", "barrier_utc", "epoch_commitment",
+        "authority_commitment", "barrier_commitment", "runner_commitment",
+        "bundle_commitment", "launcher_commitment", "agent_commitment",
+    ):
+        if proceed[field] != boot[field]:
+            raise ProtocolError("PROCEED_MISMATCH")
+    for field in (
+        "image_commitment", "target_commitment", "isolation_commitment",
+        "artifact_commitment", "artifact_stream_commitment",
+    ):
+        if proceed[field] != discovery[field]:
+            raise ProtocolError("PROCEED_MISMATCH")
+    _data, data_bytes = _transition_data_from_proceed(proceed)
+    expected_id = "restore-v2-" + hashlib.sha256(_length_prefixed(("restore-transition-id.v2", data_bytes))).hexdigest()[:48]
+    expected_commitment = bytes_commitment("restore-ledger-transition", data_bytes)
+    if proceed["transition_id"] != expected_id or proceed["transition_data_commitment"] != expected_commitment:
+        raise ProtocolError("PROCEED_TRANSITION_MISMATCH")
+
+
+def attest_agent_descriptor(
+    agent_fd: int,
+    *,
+    expected_commitment: str | None = None,
+    fstat_fn: Callable[[int], Any] = os.fstat,
+    read_fn: Callable[[int, int], bytes] = os.read,
+    lseek_fn: Callable[[int, int, int], int] = os.lseek,
+) -> AttestedAgent:
+    before_stat = fstat_fn(agent_fd)
+    if not stat.S_ISREG(int(before_stat.st_mode)) or int(before_stat.st_uid) != 0 or int(before_stat.st_gid) != 0:
+        raise DescriptorAdmissionError("AGENT_OWNER_INVALID")
+    _require_mode(before_stat, 0o555, "AGENT")
+    if not 1 <= int(before_stat.st_size) <= MAX_AGENT_BYTES:
+        raise DescriptorAdmissionError("AGENT_SIZE_INVALID")
+    before = _stat_identity(before_stat)
+    try:
+        lseek_fn(agent_fd, 0, os.SEEK_SET)
+    except OSError as error:
+        raise DescriptorAdmissionError("AGENT_SEEK_FAILED") from error
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = read_fn(agent_fd, READ_CHUNK_BYTES)
+        if not isinstance(chunk, bytes) or len(chunk) > READ_CHUNK_BYTES:
+            raise DescriptorAdmissionError("AGENT_READ_INVALID")
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_AGENT_BYTES:
+            raise DescriptorAdmissionError("AGENT_SIZE_INVALID")
+        chunks.append(chunk)
+    after = _stat_identity(fstat_fn(agent_fd))
+    source = b"".join(chunks)
+    commitment = bytes_commitment("recovery-agent-bytes", source)
+    if after != before or total != before[2]:
+        raise DescriptorAdmissionError("AGENT_SUBSTITUTED")
+    if expected_commitment is not None and commitment != expected_commitment:
+        raise DescriptorAdmissionError("AGENT_COMMITMENT_MISMATCH")
+    return AttestedAgent(agent_fd, source, before, after, commitment)
+
+
+def _park_distinct_fd(fd: int, used: set[int], *, minimum: int = 5) -> int:
+    if type(fd) is not int or fd < 0:
+        raise DescriptorAdmissionError("FD_INVALID")
+    if fd >= minimum and fd not in used:
+        used.add(fd)
+        return fd
+    import fcntl
+    parked = int(fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, minimum))
+    while parked in used:
+        next_fd = int(fcntl.fcntl(parked, fcntl.F_DUPFD_CLOEXEC, minimum))
+        os.close(parked)
+        parked = next_fd
+    used.add(parked)
+    os.close(fd)
+    return parked
+
+
+def normalize_child_fds(
+    agent_fd: int,
+    error_fd: int,
+    *,
+    expected_identity: tuple[int, int, int, int, int, int] | None = None,
+    dup2_fn: Callable[..., Any] | None = None,
+    set_inheritable_fn: Callable[[int, bool], Any] | None = None,
+    fstat_fn: Callable[[int], Any] = os.fstat,
+    close_fn: Callable[[int], Any] = os.close,
+) -> tuple[int, int]:
+    if agent_fd == error_fd or agent_fd < 0 or error_fd < 0:
+        raise DescriptorAdmissionError("FD_COLLISION")
+    dup2 = os.dup2 if dup2_fn is None else dup2_fn
+    set_inheritable = os.set_inheritable if set_inheritable_fn is None else set_inheritable_fn
+    if agent_fd == 4:
+        agent_fd = _park_distinct_fd(agent_fd, set())
+    if error_fd == 3:
+        error_fd = _park_distinct_fd(error_fd, {agent_fd})
+    if agent_fd != 3:
+        dup2(agent_fd, 3, inheritable=True)
+    else:
+        set_inheritable(3, True)
+    if error_fd != 4:
+        dup2(error_fd, 4, inheritable=False)
+    else:
+        set_inheritable(4, False)
+    set_inheritable(3, True)
+    set_inheritable(4, False)
+    if expected_identity is not None:
+        if _stat_identity(fstat_fn(3)) != expected_identity:
+            raise DescriptorAdmissionError("AGENT_HANDOFF_MISMATCH")
+    if agent_fd not in (3, 4):
+        try:
+            close_fn(agent_fd)
+        except OSError:
+            pass
+    if error_fd not in (3, 4):
+        try:
+            close_fn(error_fd)
+        except OSError:
+            pass
+    return 3, 4
+
+
+@dataclass(frozen=True)
+class LaunchPlan:
+    agent: AttestedAgent
+    directory_fd: int
+    error_read_fd: int
+    error_write_fd: int
+    pid: int | None
+    pidfd: int | None
+    execveat_argv: tuple[str, ...]
+    execveat_environment: Mapping[str, str]
+
+
+def build_launch_plan(
+    directory_fd: int,
+    agent: AttestedAgent,
+    *,
+    error_read_fd: int = 5,
+    error_write_fd: int = 6,
+    pid: int | None = None,
+    pidfd: int | None = None,
+) -> LaunchPlan:
+    if min(directory_fd, agent.fd, error_read_fd, error_write_fd) < 0:
+        raise DescriptorAdmissionError("FD_INVALID")
+    if pidfd is not None and (type(pidfd) is not int or pidfd < 5):
+        raise DescriptorAdmissionError("PIDFD_NOT_PARKED")
+    if len({agent.fd, error_read_fd, error_write_fd}) != 3:
+        raise DescriptorAdmissionError("FD_COLLISION")
+    if pidfd is not None and pidfd in {agent.fd, error_read_fd, error_write_fd}:
+        raise DescriptorAdmissionError("PIDFD_COLLISION")
+    _, _, argv, environment, _ = build_execveat_plan()
+    return LaunchPlan(agent, directory_fd, error_read_fd, error_write_fd, pid, pidfd, argv, environment)
+
+
+def spawn_descriptor_agent(
+    *,
+    expected_agent_commitment: str | None = None,
+    open_directory_fn: Callable[[], tuple[int, Any]] = open_recovery_directory,
+    open_agent_fn: Callable[[int], int] | None = None,
+    fstat_fn: Callable[[int], Any] = os.fstat,
+    read_fn: Callable[[int, int], bytes] = os.read,
+    fork_fn: Callable[[], int] | None = None,
+    pidfd_fn: Callable[[int], int] | None = None,
+) -> LaunchPlan:
+    if sys.platform != "linux" or expected_agent_commitment is None or not _is_commitment(expected_agent_commitment):
+        raise DescriptorAdmissionError("AGENT_COMMITMENT_REQUIRED")
+    directory_fd, _ = open_directory_fn()
+    opened_agent_fd: int | None = None
+    error_read_fd: int | None = None
+    error_write_fd: int | None = None
+    pid: int | None = None
+    raw_pidfd: int | None = None
+    pidfd_owned: int | None = None
+    child_started = False
+
+    def close_owned(fd: int | None) -> None:
+        if fd is None:
+            return
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+    try:
+        if open_agent_fn is None:
+            opened_agent_fd = openat2(directory_fd, "recovery-agent-v1", AGENT_OPEN_FLAGS, RECOVERY_RESOLVE_FLAGS)
+        else:
+            opened_agent_fd = open_agent_fn(directory_fd)
+        error_read_fd, error_write_fd = os.pipe2(O_CLOEXEC)
+        used: set[int] = set()
+        directory_fd = _park_distinct_fd(directory_fd, used)
+        agent_fd = _park_distinct_fd(opened_agent_fd, used)
+        opened_agent_fd = None
+        error_read_fd = _park_distinct_fd(error_read_fd, used)
+        error_write_fd = _park_distinct_fd(error_write_fd, used)
+        agent = attest_agent_descriptor(
+            agent_fd,
+            expected_commitment=expected_agent_commitment,
+            fstat_fn=fstat_fn,
+            read_fn=read_fn,
+        )
+        fork = os.fork if fork_fn is None else fork_fn
+        pid = fork()
+        if pid == 0:
+            try:
+                os.close(error_read_fd)
+                normalize_child_fds(
+                    agent_fd,
+                    error_write_fd,
+                    expected_identity=agent.identity_before,
+                    fstat_fn=os.fstat,
+                )
+                if directory_fd not in (3, 4):
+                    os.close(directory_fd)
+                try:
+                    max_fd = int(os.sysconf("SC_OPEN_MAX"))
+                except (AttributeError, OSError, ValueError):
+                    max_fd = 1 << 20
+                os.closerange(5, max(5, max_fd))
+                _, _, exec_argv, exec_environment, _ = build_execveat_plan()
+                execveat(3, exec_argv, exec_environment)
+            except OSError as error:
+                write_exec_error(4, int(getattr(error, "errno", errno.EIO) or errno.EIO))
+                os._exit(126)
+            except Exception:
+                write_exec_error(4, errno.EFAULT)
+                os._exit(126)
+            os._exit(126)
+        child_started = True
+        plan_directory_fd = directory_fd
+        plan_agent_fd = agent.fd
+        plan_error_read_fd = error_read_fd
+        plan_error_write_fd = error_write_fd
+        close_owned(error_write_fd)
+        error_write_fd = None
+        close_owned(directory_fd)
+        directory_fd = -1
+        close_owned(plan_agent_fd)
+        agent_fd = -1
+        pidfd_opener = os.pidfd_open if pidfd_fn is None else pidfd_fn
+        try:
+            raw_pidfd = pidfd_opener(pid, 0)
+            pidfd = _park_distinct_fd(
+                raw_pidfd,
+                {plan_agent_fd, plan_error_read_fd, plan_error_write_fd, plan_directory_fd},
+            )
+            raw_pidfd = None
+            pidfd_owned = pidfd
+        except Exception as error:
+            close_owned(raw_pidfd)
+            close_owned(error_read_fd)
+            try:
+                os.kill(pid, 9)
+            except OSError:
+                pass
+            try:
+                os.waitpid(pid, 0)
+            except OSError:
+                pass
+            raise DescriptorAdmissionError("PIDFD_UNAVAILABLE") from error
+        plan = build_launch_plan(
+            plan_directory_fd,
+            agent,
+            error_read_fd=plan_error_read_fd,
+            error_write_fd=plan_error_write_fd,
+            pid=pid,
+            pidfd=pidfd,
+        )
+        child_started = False
+        return plan
+    except Exception:
+        if child_started and pid is not None:
+            try:
+                os.kill(pid, 9)
+            except OSError:
+                pass
+            try:
+                os.waitpid(pid, 0)
+            except OSError:
+                pass
+        close_owned(raw_pidfd)
+        close_owned(pidfd_owned)
+        close_owned(error_read_fd)
+        close_owned(error_write_fd)
+        close_owned(opened_agent_fd)
+        close_owned(directory_fd if directory_fd >= 0 else None)
+        raise
+
+
+def _default_poller() -> Any:
+    poll = getattr(select, "poll", None)
+    if not callable(poll):
+        raise FinalityError("PIDFD_POLL_UNAVAILABLE", safety_state="UNCONSUMED")
+    return poll()
+
+
+def supervise_descriptor_agent(
+    plan: LaunchPlan,
+    *,
+    timeout: float = 17.0,
+    poll_factory: Callable[[], Any] = _default_poller,
+    waitpid_fn: Callable[[int, int], tuple[int, int]] = os.waitpid,
+    read_fn: Callable[[int, int], bytes] = os.read,
+    close_fn: Callable[[int], Any] = os.close,
+    clock_fn: Callable[[], float] = time.monotonic,
+) -> ProcessFinality:
+    if not isinstance(plan, LaunchPlan) or plan.pid is None or plan.pidfd is None:
+        raise FinalityError("LAUNCH_PLAN_INVALID", safety_state="UNCONSUMED")
+    poller = poll_factory()
+    poll_mask = (
+        int(getattr(select, "POLLIN", 0x001))
+        | int(getattr(select, "POLLHUP", 0x010))
+        | int(getattr(select, "POLLERR", 0x008))
+    )
+    poller.register(plan.error_read_fd, poll_mask)
+    poller.register(plan.pidfd, poll_mask)
+    deadline = clock_fn() + timeout
+    error_bytes = bytearray()
+    error_eof = False
+    pid_observed = False
+    status: int | None = None
+    try:
+        while not (error_eof and pid_observed):
+            remaining = max(0.0, deadline - clock_fn())
+            if remaining == 0.0:
+                raise FinalityError("AGENT_SUPERVISION_TIMEOUT", safety_state="UNCONSUMED")
+            events = poller.poll(int(min(remaining, 0.25) * 1000))
+            if not events:
+                continue
+            for fd, event in events:
+                if fd == plan.error_read_fd and not error_eof:
+                    chunk = read_fn(plan.error_read_fd, 4 - len(error_bytes) if len(error_bytes) < 4 else 1)
+                    if chunk:
+                        error_bytes.extend(chunk)
+                        if len(error_bytes) > 4:
+                            raise FinalityError("EXEC_ERROR_PIPE_INVALID", safety_state="UNCONSUMED")
+                    else:
+                        error_eof = True
+                if fd == plan.pidfd and not pid_observed:
+                    child, raw_status = waitpid_fn(plan.pid, 0)
+                    if child == plan.pid:
+                        pid_observed = True
+                        wifexited = getattr(os, "WIFEXITED", None)
+                        if callable(wifexited) and wifexited(raw_status):
+                            status = os.WEXITSTATUS(raw_status)
+                        elif not callable(wifexited) and type(raw_status) is int and 0 <= raw_status <= 255:
+                            status = raw_status
+                        else:
+                            status = -1
+        if len(error_bytes) not in {0, 4}:
+            raise FinalityError("EXEC_ERROR_PIPE_INVALID", safety_state="UNCONSUMED")
+        exec_error = struct.unpack(">I", bytes(error_bytes))[0] if len(error_bytes) == 4 else None
+        if exec_error == 0:
+            raise FinalityError("EXEC_ERROR_PIPE_INVALID", safety_state="UNCONSUMED")
+        empty = bytes_commitment("stdout-capture", b"")
+        empty_err = bytes_commitment("stderr-capture", b"")
+        return validate_process_finality(ProcessFinality(exec_error, pid_observed, status, True, True, True, 0, empty, empty_err))
+    finally:
+        for fd in (plan.error_read_fd, plan.pidfd):
+            try:
+                close_fn(fd)
+            except OSError:
+                pass
+
+
+def read_admitted_agent_commitment() -> str:
+    return _read_admitted_text(PRODUCTION_AGENT_COMMITMENT_PATH, label="agent_commitment")
+
+
+def run_agent_protocol(
+    input_stream: BinaryIO,
+    output_stream: BinaryIO,
+    *,
+    backend: Any | None = None,
+    environment: Mapping[str, str] | None = None,
+    argv: tuple[str, ...] = ("/dev/fd/3", "--agent-v1", "--protocol-v2"),
+    test_mode: bool = False,
+) -> None:
+    env = dict(os.environ if environment is None else environment)
+    if not test_mode:
+        assert_isolated_runtime()
+        if env != {"SWZ_RECOVERY_AGENT_FD": "3"}:
+            raise DescriptorAdmissionError("AGENT_ENVIRONMENT_INVALID")
+    validate_agent_entry(argv, env, fd3_present=True)
+    boot_frame = read_frame(input_stream)
+    if boot_frame is None or boot_frame.message != MESSAGE_BOOT or boot_frame.direction != DIRECTION_LOCAL_TO_REMOTE:
+        raise ProtocolError("BOOT_INVALID")
+    n_local = boot_frame.n_local
+    session = SessionMachine(local_role=False, n_local=n_local)
+    session.accept(boot_frame)
+    boot = boot_frame.payload
+    if test_mode:
+        source_commitments = fixed_source_commitments()
+    else:
+        attested = attest_agent_descriptor(3, expected_commitment=boot["agent_commitment"])
+        source_commitments = compute_production_commitments(attested.bytes)
+    if (
+        boot["bundle_commitment"] != source_commitments["bundle_commitment"]
+        or boot["launcher_commitment"] != source_commitments["launcher_commitment"]
+        or boot["agent_commitment"] != source_commitments["agent_commitment"]
+    ):
+        raise LoaderIntegrityError("AGENT_COMMITMENT_MISMATCH")
+    if backend is None:
+        backend = ProductionDockerBackend.from_installed(boot["epoch_ref"])
+    if not isinstance(backend, ProductionDockerBackend) and not getattr(backend, "test_only", False):
+        raise DockerAdmissionError("PRODUCTION_BACKEND_INJECTION_FORBIDDEN")
+    if getattr(backend, "test_only", False) and not test_mode:
+        raise DockerAdmissionError("TEST_BACKEND_FORBIDDEN")
+    binder = getattr(backend, "bind_boot", None)
+    if callable(binder):
+        binder(boot)
+    ready = {
+        "type": "READY",
+        "version": SWZFRM02_VERSION,
+        "schema": SCHEMA_WIRE,
+        "n_local": n_local.hex(),
+        "epoch_ref": boot["epoch_ref"],
+        "authority_ref": boot["authority_ref"],
+        "barrier_utc": boot["barrier_utc"],
+        "epoch_commitment": boot["epoch_commitment"],
+        "authority_commitment": boot["authority_commitment"],
+        "barrier_commitment": boot["barrier_commitment"],
+        "runner_commitment": boot["runner_commitment"],
+        "bundle_commitment": boot["bundle_commitment"],
+        "launcher_commitment": boot["launcher_commitment"],
+        "agent_commitment": boot["agent_commitment"],
+    }
+    ready_frame = decode_frame(encode_frame(DIRECTION_REMOTE_TO_LOCAL, MESSAGE_READY, session.next_sequence, n_local, ready))
+    session.accept(ready_frame)
+    write_frame(output_stream, encode_frame(DIRECTION_REMOTE_TO_LOCAL, MESSAGE_READY, ready_frame.sequence, n_local, ready))
+    discovery: DockerDiscovery | None = None
+    try:
+        try:
+            discovery = backend.discover(boot["epoch_ref"], boot["barrier_utc"])
+        except RecoveryError:
+            raise
+        except Exception as error:
+            raise DockerAdmissionError("DISCOVERY_FAILED", safety_state="UNCONSUMED") from error
+        discovery_payload = build_discovery_payload(boot["epoch_ref"], boot["authority_ref"], discovery)
+        discovery_frame = decode_frame(encode_frame(DIRECTION_REMOTE_TO_LOCAL, MESSAGE_DISCOVERY, session.next_sequence, n_local, discovery_payload))
+        session.accept(discovery_frame)
+        write_frame(output_stream, encode_frame(DIRECTION_REMOTE_TO_LOCAL, MESSAGE_DISCOVERY, discovery_frame.sequence, n_local, discovery_payload))
+        proceed_frame = read_frame(input_stream)
+        if proceed_frame is None or proceed_frame.message != MESSAGE_PROCEED or proceed_frame.direction != DIRECTION_LOCAL_TO_REMOTE:
+            raise ProtocolError("PROCEED_INVALID")
+        session.accept(proceed_frame)
+        _validate_remote_proceed(boot, discovery_payload, proceed_frame.payload)
+        if test_mode or getattr(backend, "test_only", False):
+            raise DockerAdmissionError("TEST_SUCCESS_NOT_OPERATIONAL", safety_state="UNCONSUMED")
+        restore = getattr(backend, "restore", None)
+        if not callable(restore):
+            raise DockerAdmissionError("PRODUCTION_RESTORE_BINDING_REQUIRED", safety_state="CONSUMED")
+        evidence = validate_result_evidence(restore(proceed_frame.payload))
+        result_value = {
+            "type": "RESULT",
+            "version": SWZFRM02_VERSION,
+            "schema": SCHEMA_WIRE,
+            "classification": evidence["classification"],
+            "result_evidence": evidence,
+            "result_commitment": result_commitment(evidence),
+        }
+        result_frame = decode_frame(encode_frame(DIRECTION_REMOTE_TO_LOCAL, MESSAGE_RESULT, session.next_sequence, n_local, result_value))
+        session.accept(result_frame)
+        write_frame(output_stream, encode_frame(DIRECTION_REMOTE_TO_LOCAL, MESSAGE_RESULT, result_frame.sequence, n_local, result_value))
+    except Exception:
+        if discovery is not None and isinstance(backend, ProductionDockerBackend) and not backend._cleanup_done:
+            try:
+                if backend._resources is None or backend._target is None:
+                    raise DockerAdmissionError("CLEANUP_OWNERSHIP_INVALID", safety_state="CONSUMED")
+                backend.cleanup(backend._target, backend._resources.volume_name)
+            except Exception as cleanup_error:
+                raise DockerAdmissionError("CLEANUP_FINALITY_UNCERTAIN", safety_state="CONSUMED") from cleanup_error
+        raise
+
+
+def run_supervisor(argv: list[str]) -> None:
+    assert_isolated_runtime()
+    validate_supervisor_entry(argv, dict(os.environ))
+    os.environ.clear()
+    validate_supervisor_entry(argv, {})
+    expected = read_admitted_agent_commitment()
+    plan = spawn_descriptor_agent(expected_agent_commitment=expected)
+    finality = supervise_descriptor_agent(plan)
+    if not finality.success:
+        raise DescriptorAdmissionError("AGENT_PROCESS_FAILED")
+
+
+def agent_main(argv: list[str] | None = None) -> int:
+    assert_isolated_runtime()
+    values = list(sys.argv if argv is None else argv)
+    env = dict(os.environ)
+    mode = classify_dispatch(values, env, fd3_present=_fd_present(3))
+    if mode == "agent":
+        run_agent_protocol(sys.stdin.buffer, sys.stdout.buffer)
+        return 0
+    if mode == "supervisor":
+        run_supervisor(values)
+        return 0
+    raise DescriptorAdmissionError("DISPATCH_INVALID")
 
 
 if __name__ == "__main__":

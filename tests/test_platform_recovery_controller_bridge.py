@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import ctypes
+import hashlib
 import importlib.util
 import os
 import pathlib
@@ -178,10 +179,16 @@ class FakeSession:
                 "epoch_ref": decoded.payload["epoch_ref"],
                 "authority_ref": decoded.payload["authority_ref"],
                 "execution_row_id": ROW_ID,
-                "artifact_filename": ARTIFACT_FILENAME,
-                "image_commitment": c("image"),
-                "target_commitment": c("target"),
-                "isolation_commitment": c("isolation"),
+            "artifact_filename": ARTIFACT_FILENAME,
+            "image_commitment": c("image"),
+            "target_commitment": c("target"),
+            "isolation_commitment": c("isolation"),
+            "artifact_commitment": REMOTE.text_commitment(
+                "artifact-row",
+                str(ROW_ID),
+                ARTIFACT_FILENAME,
+            ),
+            "artifact_stream_commitment": c("artifact-stream"),
             }
             self.incoming.append(
                 REMOTE.decode_frame(
@@ -238,6 +245,17 @@ class FakeSession:
     def close(self) -> None:
         self.closed = True
 
+    def finalize(self) -> BRIDGE.SessionFinality:
+        return BRIDGE.SessionFinality(
+            0,
+            True,
+            True,
+            True,
+            0,
+            c("stdout-capture"),
+            c("stderr-capture"),
+        )
+
 
 class CasFaultStore:
     def __init__(self, delegate: object, mode: str) -> None:
@@ -251,7 +269,7 @@ class CasFaultStore:
     def consume_restore(self, epoch_ref: str, transition_id: str, *, expected_digest: str, data: object = None) -> object:
         self.consume_calls += 1
         if self.mode == "B":
-            raise STORE.ControllerStoreError("INJECTED_UNCONSUMED", safety_state="UNCONSUMED")
+            raise STORE.LedgerError("CAS_MISMATCH", safety_state="UNCONSUMED")
         permit = self.delegate.consume_restore(
             epoch_ref,
             transition_id,
@@ -302,30 +320,50 @@ class EndpointAndProtocolTests(BridgeTestCase):
             BRIDGE.build_ssh_argv(configured),
             (
                 configured.ssh_binary, "-F", "none", "-p", "2222",
-                "-i", "/etc/swooshz/recovery/id_ed25519",
+                "-o", "IdentityFile=/etc/swooshz/recovery/id_ed25519",
                 "-o", "IdentitiesOnly=yes",
                 "-o", "IdentityAgent=none",
                 "-o", "CertificateFile=none",
+                "-o", "PKCS11Provider=none",
+                "-o", "GSSAPIAuthentication=no",
+                "-o", "HostbasedAuthentication=no",
+                "-o", "KbdInteractiveAuthentication=no",
+                "-o", "PasswordAuthentication=no",
+                "-o", "PubkeyAuthentication=yes",
+                "-o", "PreferredAuthentications=publickey",
+                "-o", "BatchMode=yes",
                 "-o", "UserKnownHostsFile=/etc/swooshz/recovery/known_hosts",
                 "-o", "GlobalKnownHostsFile=none",
+                "-o", "KnownHostsCommand=none",
+                "-o", "PermitRemoteOpen=none",
                 "-o", "StrictHostKeyChecking=yes",
                 "-o", "UpdateHostKeys=no",
                 "-o", "VerifyHostKeyDNS=no",
                 "-o", "CanonicalizeHostname=no",
+                "-o", "CanonicalizeFallbackLocal=no",
+                "-o", "CheckHostIP=no",
+                "-o", "HashKnownHosts=no",
                 "-o", "ProxyCommand=none",
                 "-o", "ProxyJump=none",
+                "-o", "ProxyUseFdpass=no",
                 "-o", "ClearAllForwardings=yes",
                 "-o", "ForwardAgent=no",
                 "-o", "ForwardX11=no",
                 "-o", "ForwardX11Trusted=no",
                 "-o", "RequestTTY=no",
-                "-o", "RemoteCommand=none",
                 "-o", "PermitLocalCommand=no",
-                "-o", "LocalCommand=none",
                 "-o", "ControlMaster=no",
                 "-o", "ControlPath=none",
                 "-o", "ControlPersist=no",
-                "-o", "SendEnv=",
+                "-o", "SessionType=default",
+                "-o", "EscapeChar=none",
+                "-o", "StdinNull=no",
+                "-o", "Compression=no",
+                "-o", "TCPKeepAlive=no",
+                "-o", "ConnectionAttempts=1",
+                "-o", "ConnectTimeout=5",
+                "-o", "ServerAliveInterval=1",
+                "-o", "ServerAliveCountMax=3",
                 "swooshz-recovery@recovery.example",
             ),
         )
@@ -333,13 +371,21 @@ class EndpointAndProtocolTests(BridgeTestCase):
         self.assertEqual(configured.bundle_commitment, REMOTE.compute_bundle_commitment(configured.launcher_commitment, configured.agent_commitment))
         self.assertEqual(
             BRIDGE.validate_account_bootstrap({
+                "user": BRIDGE.RECOVERY_USER,
+                "uid": 1001,
+                "gid": 1001,
                 "login_shell": "/bin/sh",
                 "home": "/var/empty/swooshz-recovery",
+                "home_uid": 0,
+                "home_gid": 0,
+                "home_mode": 0o755,
                 "forced_command": BRIDGE.FORCED_COMMAND,
                 "ssh_original_command": "",
                 "permit_user_rc": "no",
                 "permit_user_environment": "no",
                 "accept_env": "",
+                "authorized_key_restriction": "restrict",
+                "startup_policy": "noninteractive-login-shell",
             })["home"],
             "/var/empty/swooshz-recovery",
         )
@@ -347,6 +393,16 @@ class EndpointAndProtocolTests(BridgeTestCase):
             BRIDGE.EndpointConfig(
                 **{**configured.__dict__, "port": 0}
             )
+        with self.assertRaises(BRIDGE.EndpointAdmissionError):
+            BRIDGE.OpenSSHSession(configured)
+
+        argv = BRIDGE.build_ssh_argv(configured)
+        with self.assertRaises(BRIDGE.EndpointAdmissionError):
+            BRIDGE.validate_ssh_effective_readback(configured, argv + ("/bin/sh",))
+        forbidden = list(argv)
+        forbidden[forbidden.index("PermitLocalCommand=no")] = "RemoteCommand=/bin/sh"
+        with self.assertRaises(BRIDGE.EndpointAdmissionError):
+            BRIDGE.validate_ssh_effective_readback(configured, tuple(forbidden))
 
     def test_barrier_and_transition_domains_are_distinct(self) -> None:
         barrier = BRIDGE.build_barrier_commitment(BARRIER_UTC)
@@ -378,26 +434,69 @@ class EndpointAndProtocolTests(BridgeTestCase):
             ),
         )
 
+    def test_authoritative_transition_kat_is_byte_exact(self) -> None:
+        values = {
+            "epoch_ref": "epoch-kat-001",
+            "authority_ref": "authority-kat-001",
+            "barrier_utc": "2026-09-04T00:00:00.000000Z",
+            "barrier_commitment": "sha256:v1:987f4bbd978903b272c8801c486b84e48fe9522e7cb22cfdcf98c60287eebdc9",
+            "runner_commitment": "sha256:v1:46d24a269701c36717f27dca4d205e9c525ece5965bdcc15452027f781556cde",
+            "bundle_commitment": "sha256:v1:4d60d7ac7d4ac28d3040d5543f8659037d4a1708235042b9d0b847f130b72bb4",
+            "image_commitment": "sha256:v1:a14f52080ef31a7a733b9101b9a6d882fef3d4901238edfef6507bcd6da72ec6",
+            "target_commitment": "sha256:v1:159c8bdee81330f1588350855fb4fc1a7d3cd5fc8cddf0d6294b0d520ae2e9ec",
+            "isolation_commitment": "sha256:v1:c1245bf941fc8e059a2d0104e4b747e7e5042746659b73b47b706906e43220ad",
+            "artifact_commitment": "sha256:v1:059cd76ead3ad80a0027789aad1faab689652146c401485f0bc2d40429bae918",
+            "artifact_stream_commitment": "sha256:v1:bed2a6629680112a812d796bae566c178617d64f1be6fa844273324f2ee74c21",
+            "pre_cas_ledger_digest": "sha256:v1:45b59bb90160abcea595878c62ae740e934ba1c682ce96a28ea00fe96f46e82c",
+        }
+        transition = BRIDGE.build_restore_transition(**values)
+        expected = (
+            b'{"schema":"restore-ledger-transition-data.v2","version":2,"epoch_ref":"epoch-kat-001","authority_ref":"authority-kat-001","barrier_utc":"2026-09-04T00:00:00.000000Z","barrier_commitment":"sha256:v1:987f4bbd978903b272c8801c486b84e48fe9522e7cb22cfdcf98c60287eebdc9","runner_commitment":"sha256:v1:46d24a269701c36717f27dca4d205e9c525ece5965bdcc15452027f781556cde","bundle_commitment":"sha256:v1:4d60d7ac7d4ac28d3040d5543f8659037d4a1708235042b9d0b847f130b72bb4","image_commitment":"sha256:v1:a14f52080ef31a7a733b9101b9a6d882fef3d4901238edfef6507bcd6da72ec6","target_commitment":"sha256:v1:159c8bdee81330f1588350855fb4fc1a7d3cd5fc8cddf0d6294b0d520ae2e9ec","isolation_commitment":"sha256:v1:c1245bf941fc8e059a2d0104e4b747e7e5042746659b73b47b706906e43220ad","artifact_commitment":"sha256:v1:059cd76ead3ad80a0027789aad1faab689652146c401485f0bc2d40429bae918","artifact_stream_commitment":"sha256:v1:bed2a6629680112a812d796bae566c178617d64f1be6fa844273324f2ee74c21","pre_cas_ledger_digest":"sha256:v1:45b59bb90160abcea595878c62ae740e934ba1c682ce96a28ea00fe96f46e82c"}\n'
+        )
+        self.assertEqual(REMOTE.canonical_json(transition.data, terminal_lf=True), expected)
+        self.assertEqual(len(expected), 1058)
+
+        def lp(*parts: str) -> bytes:
+            return b"".join(
+                len(part.encode("utf-8")).to_bytes(4, "big") + part.encode("utf-8")
+                for part in parts
+            )
+
+        digest = hashlib.sha256(
+            lp("restore-transition-id.v2")
+            + len(expected).to_bytes(4, "big")
+            + expected
+        ).hexdigest()
+        commitment = "sha256:v1:" + hashlib.sha256(
+            lp("recovery-commitment.v1", "restore-ledger-transition")
+            + len(expected).to_bytes(4, "big")
+            + expected
+        ).hexdigest()
+        self.assertEqual(digest, "d36f96eadb647f14a9cc9c81b4ce5e22f1c96f80e618744c8d2c97216e0be289")
+        self.assertEqual(transition.transition_id, "restore-v2-d36f96eadb647f14a9cc9c81b4ce5e22f1c96f80e618744c")
+        self.assertEqual(commitment, "sha256:v1:cbb7eb82b39152a585ba3d91b72f8855134e6b9a49463c2f015b2f720f39490a")
+        self.assertEqual(transition.data_commitment, commitment)
+
 
 class StoreSequenceTests(BridgeTestCase):
     def test_cas_a_durable_restore_begin_and_commit(self) -> None:
         store, _ = self.new_store()
         result, session = self.run_bridge(store)
-        self.assertEqual(result.classification, "SUCCESS")
-        self.assertEqual(result.cas_classification, "A")
-        self.assertTrue(result.finality_complete)
+        self.assertEqual(result.classification, "FAILURE")
+        self.assertEqual(result.cas_classification, "C")
+        self.assertFalse(result.finality_complete)
         self.assertEqual(
             result.trace,
-            ("BOOT", "READY", "DISCOVERY", "PRE_CAS", "CAS_A", "PROCEED", "RESULT", "COMMIT", "FINAL"),
+            ("BOOT", "READY", "DISCOVERY", "PRE_CAS", "CAS_A", "PROCEED", "RESULT", "CAS_C"),
         )
         snapshot = store.load_epoch(EPOCH_REF)
-        self.assertEqual(snapshot.record["state"], "CONSUMED")
+        self.assertEqual(snapshot.record["state"], "ACTIVE")
         self.assertEqual(snapshot.ledger["state"], "CONSUMED")
-        self.assertEqual(snapshot.spool["last_stage"], "COMMIT")
+        self.assertEqual(snapshot.spool["last_stage"], "RESTORE_BEGIN")
         sent_types = [frame.message for frame in session.sent]
         self.assertEqual(sent_types, [BRIDGE.MESSAGE_BOOT, BRIDGE.MESSAGE_PROCEED])
         self.assertTrue(session.closed)
-        self.assertEqual(result.result_evidence["cleanup_state"], "COMPLETE")
+        self.assertIsNone(result.result_evidence)
 
     def test_cas_b_abandons_and_emits_only_the_legal_abort(self) -> None:
         store, _ = self.new_store()

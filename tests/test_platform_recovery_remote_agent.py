@@ -6,11 +6,15 @@ import importlib.util
 import io
 import os
 import pathlib
+import socket
 import stat
+import struct
 import sys
 import tempfile
+import threading
 import types
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -229,6 +233,7 @@ class RemoteAgentContractTests(unittest.TestCase):
             open_root_fn=open_root,
             openat2_fn=openat2_fn,
             fstat_fn=lambda fd: metadata,
+            close_fn=lambda _fd: None,
         )
         self.assertEqual(opened, 91)
         self.assertEqual(calls[0][0], "/")
@@ -286,7 +291,10 @@ class RemoteAgentContractTests(unittest.TestCase):
             path.write_bytes(b"artifact-bytes")
             fd = os.open(path, os.O_RDONLY)
             try:
-                qualified = AGENT.qualify_artifact_descriptor(fd)
+                unqualified = AGENT.qualify_artifact_descriptor(fd)
+                with self.assertRaises(AGENT.DescriptorAdmissionError):
+                    AGENT.stream_qualified_artifact(unqualified, io.BytesIO())
+                qualified = AGENT.qualify_artifact_descriptor(fd, no_follow_verified=True)
                 self.assertEqual(qualified.reopen_count, 0)
                 self.assertTrue(qualified.stdin_same_descriptor)
                 output = io.BytesIO()
@@ -310,12 +318,50 @@ class RemoteAgentContractTests(unittest.TestCase):
                 self.calls: list[tuple[str, str, object]] = []
             def request(self, method: str, path: str, body: object = None) -> tuple[int, dict[str, object]]:
                 self.calls.append((method, path, body))
-                if method == "GET":
+                if method == "GET" and path.startswith("/images/"):
                     return 200, {"Id": image_id, "Os": "linux", "Architecture": "amd64"}
+                if method == "GET" and path == "/volumes/swooshz-recovery-volume-volume-fixture":
+                    if any(call[0] == "POST" and call[1] == "/volumes/create" for call in self.calls):
+                        return 200, {"Name": "swooshz-recovery-volume-volume-fixture", "Labels": {"com.swooshz.recovery.run": "run-fixture"}}
+                    return 404, {}
+                if method == "GET" and path == "/containers/swooshz-recovery-target-target-fixture/json":
+                    return 404, {}
+                if method == "GET" and path == "/containers/container-fixture/json":
+                    return 200, {
+                        "Id": "container-fixture",
+                        "Name": "/swooshz-recovery-target-target-fixture",
+                        "State": {"Running": True},
+                        "Config": {
+                            "Image": image_id,
+                            "Env": ["POSTGRES_DB=coolify"],
+                            "Labels": {"com.swooshz.recovery.run": "run-fixture"},
+                        },
+                        "HostConfig": {
+                            "NetworkMode": "none",
+                            "Privileged": False,
+                            "ReadonlyRootfs": True,
+                            "CapDrop": ["ALL"],
+                            "CapAdd": [],
+                            "PublishAllPorts": False,
+                            "PortBindings": {},
+                            "ExtraHosts": [],
+                            "SecurityOpt": [],
+                            "Binds": ["swooshz-recovery-volume-volume-fixture:/var/lib/postgresql/data:rw"],
+                        },
+                        "Mounts": [{
+                            "Destination": "/var/lib/postgresql/data",
+                            "RW": True,
+                            "Name": "swooshz-recovery-volume-volume-fixture",
+                            "Type": "volume",
+                        }],
+                        "NetworkSettings": {"Networks": {}},
+                    }
                 if path == "/volumes/create":
                     return 201, {"Name": "swooshz-recovery-volume-volume-fixture"}
                 if path.startswith("/containers/create"):
                     return 201, {"Id": "container-fixture"}
+                if path == "/containers/container-fixture/start":
+                    return 204, {}
                 raise AssertionError((method, path))
         client = FakeClient()
         config = AGENT.DockerInstallationConfig(
@@ -340,6 +386,7 @@ class RemoteAgentContractTests(unittest.TestCase):
         self.assertEqual(isolation["cap_drop"], ["ALL"])
         self.assertEqual(backend.pull_count, 0)
         self.assertEqual(backend.tag_resolution_count, 0)
+        self.assertIn(("POST", "/containers/container-fixture/start", None), client.calls)
         with self.assertRaises(AGENT.DockerAdmissionError):
             backend.open_locator_process()
         with self.assertRaises(AGENT.DockerAdmissionError):
@@ -357,5 +404,453 @@ class RemoteAgentContractTests(unittest.TestCase):
         self.assertEqual(source.count("module.execute_operation("), 1)
         self.assertIn('ctypes.c_int(0x1000)', source)
         self.assertIn('("/dev/fd/3", "--agent-v1", "--protocol-v2")', source)
+
+    def test_engine_multiplexing_requires_clean_eof_and_zero_reserved_stream_bytes(self) -> None:
+        class Client:
+            def request(self, method: str, path: str, body: object = None) -> tuple[int, dict[str, object]]:
+                self.last = (method, path, body)
+                return 200, {"Running": False, "ExitCode": 0}
+
+        def frame(stream_id: int, payload: bytes) -> bytes:
+            return bytes((stream_id, 0, 0, 0)) + struct.pack(">I", len(payload)) + payload
+
+        left, right = socket.socketpair()
+        try:
+            right.sendall(frame(1, b"out") + frame(2, b"err"))
+            right.shutdown(socket.SHUT_WR)
+            process = AGENT._DockerEngineProcess(Client(), "exec-fixture", left)
+            process.stdin.close()
+            self.assertEqual(process.wait(timeout=1.0), 0)
+            self.assertEqual(process.stdout.read(), b"out")
+            self.assertEqual(process.stderr.read(), b"err")
+            self.assertTrue(process._stream_eof)
+            self.assertIsNone(process._reader_error)
+            process.close()
+        finally:
+            right.close()
+
+        for malformed in (
+            bytes((1, 1, 0, 0)) + struct.pack(">I", 0),
+            bytes((3, 0, 0, 0)) + struct.pack(">I", 0),
+            b"\x01\x00",
+        ):
+            malformed_left, malformed_right = socket.socketpair()
+            try:
+                malformed_right.sendall(malformed)
+                malformed_right.shutdown(socket.SHUT_WR)
+                process = AGENT._DockerEngineProcess(Client(), "exec-fixture", malformed_left)
+                self.assertTrue(process._reader_done.wait(timeout=1.0))
+                self.assertIsNotNone(process._reader_error)
+                self.assertIn(
+                    getattr(process._reader_error, "code", ""),
+                    {"DOCKER_STREAM_HEADER_INVALID", "DOCKER_STREAM_ID_INVALID", "DOCKER_STREAM_TRUNCATED"},
+                )
+                process.close()
+            finally:
+                malformed_right.close()
+
+    def test_descriptor_supervision_requires_pidfd_and_exact_exec_pipe_eof(self) -> None:
+        identity = (1, 2, 1, 0, 0, 0)
+        agent = AGENT.AttestedAgent(7, b"x", identity, identity, commitment("recovery-agent-bytes", b"x"))
+        plan = AGENT.build_launch_plan(10, agent, error_read_fd=11, error_write_fd=12, pid=42, pidfd=13)
+
+        class Poller:
+            def __init__(self, batches: list[list[tuple[int, int]]]) -> None:
+                self.batches = iter(batches)
+                self.registered: list[tuple[int, int]] = []
+            def register(self, fd: int, event: int) -> None:
+                self.registered.append((fd, event))
+            def poll(self, _timeout: int) -> list[tuple[int, int]]:
+                return next(self.batches)
+
+        closed: list[int] = []
+        success = AGENT.supervise_descriptor_agent(
+            plan,
+            poll_factory=lambda: Poller([[(11, 1), (13, 1)]]),
+            read_fn=lambda _fd, _size: b"",
+            waitpid_fn=lambda _pid, _options: (42, 0),
+            close_fn=lambda fd: closed.append(fd),
+            clock_fn=lambda: 0.0,
+        )
+        self.assertTrue(success.success)
+        self.assertTrue(success.pidfd_observed)
+        self.assertEqual(closed, [11, 13])
+
+        error_bytes = iter((b"\x00\x00\x00~", b""))
+        failure = AGENT.supervise_descriptor_agent(
+            plan,
+            poll_factory=lambda: Poller([[(11, 1)], [(11, 1)], [(13, 1)]]),
+            read_fn=lambda _fd, _size: next(error_bytes),
+            waitpid_fn=lambda _pid, _options: (42, 0),
+            close_fn=lambda _fd: None,
+            clock_fn=lambda: 0.0,
+        )
+        self.assertFalse(failure.success)
+        self.assertEqual(failure.exec_error, 126)
+
+        with self.assertRaisesRegex(AGENT.FinalityError, "EXEC_ERROR_PIPE_INVALID"):
+            AGENT.supervise_descriptor_agent(
+                plan,
+                poll_factory=lambda: Poller([[(11, 1)]]),
+                read_fn=lambda _fd, _size: b"\x00\x00\x00~\x01",
+                waitpid_fn=lambda _pid, _options: (42, 0),
+                close_fn=lambda _fd: None,
+                clock_fn=lambda: 0.0,
+            )
+
+    def test_production_exec_commands_are_engine_bound_and_exact(self) -> None:
+        image_id = "sha256:" + ("b" * 64)
+        config = AGENT.DockerInstallationConfig(
+            "/var/run/docker.sock",
+            "postgres:17-alpine",
+            image_id,
+            "run-fixture",
+            "volume-fixture",
+            "target-fixture",
+        )
+        client = AGENT.UnixSocketHTTPClient()
+        calls: list[tuple[str, str, object]] = []
+        next_exec = iter(("locator-exec", "restore-exec"))
+
+        def request(method: str, path: str, body: object = None) -> tuple[int, dict[str, object]]:
+            calls.append((method, path, body))
+            return 201, {"Id": next(next_exec)}
+
+        client.request = request  # type: ignore[method-assign]
+        backend = AGENT.ProductionDockerBackend(config, client=client)
+        backend._resources = AGENT._OwnedDockerResources(
+            "container-fixture",
+            "swooshz-recovery-target-target-fixture",
+            "swooshz-recovery-volume-volume-fixture",
+            "run-fixture",
+        )
+        peers: list[socket.socket] = []
+
+        def socket_for_exec(*_args: object, **_kwargs: object) -> socket.socket:
+            local, peer = socket.socketpair()
+            peer.shutdown(socket.SHUT_WR)
+            peers.append(peer)
+            return local
+
+        try:
+            with mock.patch.object(AGENT, "_open_hijacked_socket", side_effect=socket_for_exec):
+                locator = backend.open_locator_process()
+                restore = backend._open_restore_process()
+            self.assertEqual(calls[0][0:2], ("POST", "/containers/container-fixture/exec"))
+            self.assertEqual(calls[0][2]["Cmd"], ["/bin/sh", "-c", AGENT._canonical_locator_shell_wrapper()])
+            self.assertEqual(calls[0][2]["Env"], list(AGENT.DOCKER_EXEC_ENVIRONMENT))
+            self.assertEqual(calls[1][2]["Cmd"], list(AGENT.RESTORE_COMMAND))
+            self.assertEqual(calls[1][2]["Env"], list(AGENT.DOCKER_EXEC_ENVIRONMENT))
+            for body in (calls[0][2], calls[1][2]):
+                self.assertEqual(
+                    {key: body[key] for key in ("AttachStdin", "AttachStdout", "AttachStderr", "Tty")},
+                    {"AttachStdin": True, "AttachStdout": True, "AttachStderr": True, "Tty": False},
+                )
+            locator.close()
+            restore.close()
+        finally:
+            for peer in peers:
+                peer.close()
+
+    def test_docker_commitment_vectors_use_one_terminal_cj_lf(self) -> None:
+        def lp(*parts: str) -> bytes:
+            return b"".join(
+                len(part.encode("utf-8")).to_bytes(4, "big") + part.encode("utf-8")
+                for part in parts
+            )
+
+        def independent(domain: str, payload: bytes) -> str:
+            preimage = lp("recovery-commitment.v1", domain) + len(payload).to_bytes(4, "big") + payload
+            return "sha256:v1:" + hashlib.sha256(preimage).hexdigest()
+
+        vectors = (
+            ("image-evidence", {"schema": "cj-vector.v1", "value": 1}),
+            ("target-evidence", {"schema": "cj-vector.v1", "value": 1}),
+            ("isolation-evidence", {"schema": "cj-vector.v1", "value": 1}),
+        )
+        expected = b'{"schema":"cj-vector.v1","value":1}\n'
+        for domain, value in vectors:
+            payload = AGENT.canonical_json(value, terminal_lf=True)
+            self.assertEqual(payload, expected)
+            self.assertEqual(payload.count(b"\n"), 1)
+            self.assertEqual(AGENT._docker_commitment(domain, value), independent(domain, payload))
+            self.assertNotEqual(AGENT._docker_commitment(domain, value), independent(domain, payload[:-1]))
+
+    def test_production_orchestration_uses_backend_and_engine_doubles(self) -> None:
+        image_id = "sha256:" + ("c" * 64)
+        config = AGENT.DockerInstallationConfig(
+            "/var/run/docker.sock",
+            "postgres:17-alpine",
+            image_id,
+            "epoch-fixture",
+            "volume-fixture",
+            "target-fixture",
+        )
+
+        class DeterministicProcess:
+            def __init__(self) -> None:
+                self.stdin = io.BytesIO()
+                self.stdout = io.BytesIO()
+                self.stderr = io.BytesIO()
+                self._reader_error = None
+                self._stream_eof = True
+                self._reader_done = threading.Event()
+                self._reader_done.set()
+                self.closed = False
+
+            def wait(self, timeout: float | None = None) -> int:
+                return 0
+
+            def close(self) -> None:
+                self.closed = True
+
+        class EngineDouble:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, str, object]] = []
+                self.target_exists = False
+                self.volume_exists = False
+                self.processes: list[DeterministicProcess] = []
+
+            def request(self, method: str, path: str, body: object = None) -> tuple[int, dict[str, object]]:
+                self.calls.append((method, path, body))
+                if method == "GET" and path.startswith("/images/"):
+                    return 200, {"Id": image_id, "Os": "linux", "Architecture": "amd64"}
+                if path == "/volumes/swooshz-recovery-volume-volume-fixture":
+                    if method == "GET":
+                        if not self.volume_exists:
+                            return 404, {}
+                        return 200, {
+                            "Name": "swooshz-recovery-volume-volume-fixture",
+                            "Labels": {"com.swooshz.recovery.run": "epoch-fixture"},
+                        }
+                    if method == "DELETE":
+                        self.volume_exists = False
+                        return 204, {}
+                if path == "/containers/swooshz-recovery-target-target-fixture/json" and method == "GET":
+                    if not self.target_exists:
+                        return 404, {}
+                    return 200, self.target_readback("container-fixture")
+                if path == "/volumes/create" and method == "POST":
+                    self.volume_exists = True
+                    return 201, {"Name": "swooshz-recovery-volume-volume-fixture"}
+                if path.startswith("/containers/create") and method == "POST":
+                    self.target_exists = True
+                    return 201, {"Id": "container-fixture"}
+                if path == "/containers/container-fixture/json" and method == "GET":
+                    if not self.target_exists:
+                        return 404, {}
+                    return 200, self.target_readback("container-fixture")
+                if path == "/containers/container-fixture/start" and method == "POST":
+                    return 204, {}
+                if path == "/containers/container-fixture?force=true" and method == "DELETE":
+                    self.target_exists = False
+                    return 204, {}
+                raise AssertionError((method, path, body))
+
+            @staticmethod
+            def target_readback(container_id: str) -> dict[str, object]:
+                return {
+                    "Id": container_id,
+                    "Name": "/swooshz-recovery-target-target-fixture",
+                    "State": {"Running": True},
+                    "Config": {
+                        "Image": image_id,
+                        "Env": ["POSTGRES_DB=coolify"],
+                        "Labels": {"com.swooshz.recovery.run": "epoch-fixture"},
+                    },
+                    "HostConfig": {
+                        "NetworkMode": "none",
+                        "Privileged": False,
+                        "ReadonlyRootfs": True,
+                        "CapDrop": ["ALL"],
+                        "CapAdd": [],
+                        "PublishAllPorts": False,
+                        "PortBindings": {},
+                        "ExtraHosts": [],
+                        "SecurityOpt": [],
+                        "Binds": ["swooshz-recovery-volume-volume-fixture:/var/lib/postgresql/data:rw"],
+                    },
+                    "Mounts": [{
+                        "Destination": "/var/lib/postgresql/data",
+                        "RW": True,
+                        "Name": "swooshz-recovery-volume-volume-fixture",
+                        "Type": "volume",
+                    }],
+                    "NetworkSettings": {"Networks": {}},
+                }
+
+            def open_exec_process(self, container_id: str, command: tuple[str, ...], *, environment: tuple[str, ...]) -> DeterministicProcess:
+                self.calls.append(("EXEC", container_id, {"Cmd": command, "Env": environment}))
+                process = DeterministicProcess()
+                self.processes.append(process)
+                return process
+
+        engine = EngineDouble()
+        backend = AGENT.ProductionDockerBackend(config, client=engine)
+        source = (ROOT / "scripts" / "platform-recovery-remote-agent.py").read_bytes()
+        source_commitments = AGENT.compute_production_commitments(source)
+        n_local = bytes(range(32))
+        boot = boot_payload(n_local)
+        boot.update({
+            "bundle_commitment": source_commitments["bundle_commitment"],
+            "launcher_commitment": source_commitments["launcher_commitment"],
+            "agent_commitment": source_commitments["agent_commitment"],
+        })
+
+        def build_proceed() -> bytes:
+            image_commitment = AGENT._docker_commitment("image-evidence", backend._image)
+            target_commitment = AGENT._docker_commitment("target-evidence", backend._target)
+            isolation_commitment = AGENT._docker_commitment("isolation-evidence", backend._isolation)
+            artifact_commitment = backend._artifact_evidence["artifact_commitment"]
+            artifact_stream_commitment = AGENT.artifact_stream_evidence_commitment(backend._artifact_evidence)
+            proceed = {
+                "type": "PROCEED",
+                "version": AGENT.SWZFRM02_VERSION,
+                "schema": AGENT.SCHEMA_WIRE,
+                "epoch_ref": boot["epoch_ref"],
+                "authority_ref": boot["authority_ref"],
+                "barrier_utc": boot["barrier_utc"],
+                "epoch_commitment": boot["epoch_commitment"],
+                "authority_commitment": boot["authority_commitment"],
+                "barrier_commitment": boot["barrier_commitment"],
+                "runner_commitment": boot["runner_commitment"],
+                "bundle_commitment": boot["bundle_commitment"],
+                "launcher_commitment": boot["launcher_commitment"],
+                "agent_commitment": boot["agent_commitment"],
+                "image_commitment": image_commitment,
+                "target_commitment": target_commitment,
+                "isolation_commitment": isolation_commitment,
+                "artifact_commitment": artifact_commitment,
+                "artifact_stream_commitment": artifact_stream_commitment,
+                "transition_id": "restore-v2-" + ("0" * 48),
+                "pre_cas_ledger_digest": commitment("pre-cas-ledger"),
+                "transition_data_commitment": commitment("transition"),
+                "consumed_record_commitment": commitment("consumed-record"),
+                "restore_begin_commitment": commitment("restore-begin"),
+            }
+            _data, data_bytes = AGENT._transition_data_from_proceed(proceed)
+            digest = hashlib.sha256(AGENT._length_prefixed(("restore-transition-id.v2", data_bytes))).hexdigest()
+            proceed["transition_id"] = "restore-v2-" + digest[:48]
+            proceed["transition_data_commitment"] = AGENT.bytes_commitment("restore-ledger-transition", data_bytes)
+            return AGENT.encode_frame(AGENT.DIRECTION_LOCAL_TO_REMOTE, AGENT.MESSAGE_PROCEED, 3, n_local, proceed)
+
+        class DeferredInput:
+            def __init__(self) -> None:
+                self.pending = bytearray(AGENT.encode_frame(AGENT.DIRECTION_LOCAL_TO_REMOTE, AGENT.MESSAGE_BOOT, 0, n_local, boot))
+
+            def read(self, size: int = -1) -> bytes:
+                if not self.pending:
+                    self.pending.extend(build_proceed())
+                if size < 0:
+                    size = len(self.pending)
+                value = bytes(self.pending[:size])
+                del self.pending[:size]
+                return value
+
+        def deterministic_locator(_barrier: str) -> types.SimpleNamespace:
+            process = AGENT.fixed_process_factory()
+            process.close()
+            return types.SimpleNamespace(classification="EXACTLY_ONE", execution_id=1, filename="backup.tar")
+
+        with tempfile.TemporaryDirectory(prefix="run358-artifact-") as temp:
+            artifact_path = pathlib.Path(temp) / "backup.tar"
+            artifact_path.write_bytes(b"offline-production-artifact")
+            with mock.patch.object(AGENT, "assert_isolated_runtime"), \
+                    mock.patch.object(AGENT, "attest_agent_descriptor", return_value=AGENT.AttestedAgent(3, source, (1, 2, len(source), 0o100555, 0, 0), (1, 2, len(source), 0o100555, 0, 0), source_commitments["agent_commitment"])), \
+                    mock.patch.object(AGENT, "invoke_canonical_locator_once", side_effect=deterministic_locator), \
+                    mock.patch.object(AGENT, "open_artifact_descriptor", side_effect=lambda _root, _filename: os.open(artifact_path, os.O_RDONLY)):
+                output_stream = io.BytesIO()
+                AGENT.run_agent_protocol(
+                    DeferredInput(),
+                    output_stream,
+                    backend=backend,
+                    environment={"SWZ_RECOVERY_AGENT_FD": "3"},
+                    test_mode=False,
+                )
+
+        output_stream.seek(0)
+        emitted = []
+        while True:
+            frame = AGENT.read_frame(output_stream, eof_ok=True)
+            if frame is None:
+                break
+            emitted.append(frame)
+        self.assertEqual([frame.message for frame in emitted], [AGENT.MESSAGE_READY, AGENT.MESSAGE_DISCOVERY, AGENT.MESSAGE_RESULT])
+        self.assertEqual(emitted[-1].payload["classification"], "SUCCESS")
+        exec_calls = [call for call in engine.calls if call[0] == "EXEC"]
+        self.assertEqual(len(exec_calls), 2)
+        self.assertEqual(exec_calls[-1][2]["Cmd"], AGENT.RESTORE_COMMAND)
+        self.assertTrue(all(process.closed for process in engine.processes))
+
+    def test_test_mode_protocol_emits_no_operational_success(self) -> None:
+        n_local = bytes(range(32))
+        boot = boot_payload(n_local)
+        source = AGENT.fixed_source_commitments()
+        boot.update({
+            "bundle_commitment": source["bundle_commitment"],
+            "launcher_commitment": source["launcher_commitment"],
+            "agent_commitment": source["agent_commitment"],
+        })
+        discovery = AGENT.DockerDiscovery(
+            commitment("image"),
+            commitment("target"),
+            commitment("isolation"),
+            1,
+            "backup.tar",
+            commitment("artifact-row"),
+            commitment("artifact-stream"),
+        )
+        discovery_payload = AGENT.build_discovery_payload("epoch-fixture", "authority-fixture", discovery)
+        proceed = {
+            "type": "PROCEED",
+            "version": AGENT.SWZFRM02_VERSION,
+            "schema": AGENT.SCHEMA_WIRE,
+            "epoch_ref": boot["epoch_ref"],
+            "authority_ref": boot["authority_ref"],
+            "barrier_utc": boot["barrier_utc"],
+            "epoch_commitment": boot["epoch_commitment"],
+            "authority_commitment": boot["authority_commitment"],
+            "barrier_commitment": boot["barrier_commitment"],
+            "runner_commitment": boot["runner_commitment"],
+            "bundle_commitment": boot["bundle_commitment"],
+            "launcher_commitment": boot["launcher_commitment"],
+            "agent_commitment": boot["agent_commitment"],
+            "image_commitment": discovery_payload["image_commitment"],
+            "target_commitment": discovery_payload["target_commitment"],
+            "isolation_commitment": discovery_payload["isolation_commitment"],
+            "artifact_commitment": discovery_payload["artifact_commitment"],
+            "artifact_stream_commitment": discovery_payload["artifact_stream_commitment"],
+            "transition_id": "restore-v2-" + ("0" * 48),
+            "pre_cas_ledger_digest": commitment("ledger"),
+            "transition_data_commitment": commitment("transition"),
+            "consumed_record_commitment": commitment("record"),
+            "restore_begin_commitment": commitment("restore-begin"),
+        }
+        _data, data_bytes = AGENT._transition_data_from_proceed(proceed)
+        proceed["transition_id"] = "restore-v2-" + hashlib.sha256(
+            AGENT._length_prefixed(("restore-transition-id.v2", data_bytes))
+        ).hexdigest()[:48]
+        proceed["transition_data_commitment"] = AGENT.bytes_commitment("restore-ledger-transition", data_bytes)
+        input_stream = io.BytesIO(
+            AGENT.encode_frame(AGENT.DIRECTION_LOCAL_TO_REMOTE, AGENT.MESSAGE_BOOT, 0, n_local, boot)
+            + AGENT.encode_frame(AGENT.DIRECTION_LOCAL_TO_REMOTE, AGENT.MESSAGE_PROCEED, 3, n_local, proceed)
+        )
+        output_stream = io.BytesIO()
+        with self.assertRaisesRegex(AGENT.DockerAdmissionError, "TEST_SUCCESS_NOT_OPERATIONAL"):
+            AGENT.run_agent_protocol(
+                input_stream,
+                output_stream,
+                backend=AGENT.TestOnlyDockerBackend(discovery=discovery),
+                environment={"SWZ_RECOVERY_AGENT_FD": "3"},
+                test_mode=True,
+            )
+        output_stream.seek(0)
+        emitted = []
+        while True:
+            frame = AGENT.read_frame(output_stream, eof_ok=True)
+            if frame is None:
+                break
+            emitted.append(frame)
+        self.assertEqual([frame.message for frame in emitted], [AGENT.MESSAGE_READY, AGENT.MESSAGE_DISCOVERY])
 if __name__ == "__main__":
     unittest.main()
