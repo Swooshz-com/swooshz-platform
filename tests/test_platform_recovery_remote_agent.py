@@ -6,6 +6,7 @@ import importlib.util
 import io
 import os
 import pathlib
+import queue
 import socket
 import stat
 import struct
@@ -310,6 +311,138 @@ class RemoteAgentContractTests(unittest.TestCase):
             AGENT.TestOnlyDockerBackend(discovery=fixture).operation("2026-09-05T00:00:00.000000Z")
 
 
+    def test_typed_installed_metadata_readers_and_provenance_are_fail_closed(self) -> None:
+        image_id = "sha256:" + ("d" * 64)
+        with mock.patch.object(AGENT, "_read_admitted_image_id", return_value=image_id):
+            config = AGENT.DockerInstallationConfig.from_installed("epoch-fixture")
+        self.assertEqual(config.image_id, image_id)
+        with mock.patch.object(AGENT, "_read_admitted_line", return_value=commitment("image")):
+            with self.assertRaisesRegex(AGENT.DescriptorAdmissionError, "DOCKER_IMAGE_ID_FORMAT_INVALID"):
+                AGENT._read_admitted_image_id("fixture")
+        with mock.patch.object(AGENT, "_read_admitted_line", return_value=image_id):
+            with self.assertRaisesRegex(AGENT.DescriptorAdmissionError, "AGENT_COMMITMENT_FORMAT_INVALID"):
+                AGENT._read_admitted_recovery_commitment("fixture", label="agent_commitment")
+        config = AGENT.DockerInstallationConfig(
+            "/var/run/docker.sock", "postgres:17-alpine", image_id,
+            "run-fixture", "volume-fixture", "target-fixture",
+        )
+        with self.assertRaisesRegex(AGENT.DockerAdmissionError, "DOCKER_PROVENANCE_INVALID"):
+            AGENT.ProductionDockerBackend(config, client=object(), provenance="operational")
+
+    def test_engine_short_reads_and_bounded_backpressure(self) -> None:
+        events: queue.Queue[bytes | None] = queue.Queue(maxsize=1)
+        events.put(b"short")
+        output = AGENT._EngineOutput(events)
+        self.assertEqual(output.read(4096), b"short")
+        finished: queue.Queue[bytes | None] = queue.Queue(maxsize=1)
+        done = threading.Event()
+        done.set()
+        self.assertEqual(AGENT._EngineOutput(finished, done_event=done).read(4096), b"")
+        full: queue.Queue[bytes | None] = queue.Queue(maxsize=1)
+        full.put(b"occupied")
+        with mock.patch.object(AGENT, "ENGINE_QUEUE_TIMEOUT_SECONDS", 0.001), \
+                mock.patch.object(AGENT, "ENGINE_IO_DEADLINE_SECONDS", 0.002):
+            with self.assertRaisesRegex(AGENT.DockerAdmissionError, "DOCKER_STREAM_BACKPRESSURE"):
+                AGENT._put_engine_event(full, b"blocked")
+
+    def test_restore_supervision_kills_and_reaps_once_on_finality_failure(self) -> None:
+        image_id = "sha256:" + ("e" * 64)
+        config = AGENT.DockerInstallationConfig(
+            "/var/run/docker.sock", "postgres:17-alpine", image_id,
+            "run-fixture", "volume-fixture", "target-fixture",
+        )
+        backend = AGENT.ProductionDockerBackend(config, client=object())
+
+        class StuckProcess:
+            def __init__(self) -> None:
+                self.stdin = io.BytesIO()
+                self.stdout = io.BytesIO()
+                self.stderr = io.BytesIO()
+                self._reader_error = None
+                self._stream_eof = True
+                self._reader_done = threading.Event()
+                self._reader_done.set()
+                self.wait_calls = 0
+                self.kill_calls = 0
+
+            def wait(self, timeout: float | None = None) -> int:
+                self.wait_calls += 1
+                if self.wait_calls == 1:
+                    raise TimeoutError("fixture timeout")
+                return 0
+
+            def kill(self) -> None:
+                self.kill_calls += 1
+
+        process = StuckProcess()
+        with mock.patch.object(AGENT, "ENGINE_IO_DEADLINE_SECONDS", 0.02):
+            with self.assertRaisesRegex(AGENT.FinalityError, "DOCKER_PROCESS_FINALITY_FAILED"):
+                backend._supervise_restore_process(process)
+        self.assertEqual(process.kill_calls, 1)
+        self.assertEqual(process.wait_calls, 2)
+
+    def test_ambiguous_locator_preserves_sticky_cleanup_boundary(self) -> None:
+        image_id = "sha256:" + ("f" * 64)
+        config = AGENT.DockerInstallationConfig(
+            "/var/run/docker.sock", "postgres:17-alpine", image_id,
+            "run-fixture", "volume-fixture", "target-fixture",
+        )
+        backend = AGENT.ProductionDockerBackend(config, client=object())
+        backend._admit_metadata_source = mock.Mock(return_value={
+            "source_id": "metadata-source-fixture",
+            "source_name": "coolify-db",
+            "readback_count": 1,
+        })
+        backend.inspect_image = mock.Mock(return_value={"schema": AGENT.SCHEMA_IMAGE_EVIDENCE})
+        backend.create_isolated_target = mock.Mock(return_value=({"target": True}, {"isolation": True}))
+        backend.cleanup = mock.Mock()
+        with mock.patch.object(
+            AGENT,
+            "invoke_canonical_locator_once",
+            return_value=types.SimpleNamespace(classification="AMBIGUOUS", query_started=True),
+        ):
+            with self.assertRaisesRegex(AGENT.DockerAdmissionError, "LOCATOR_FINALITY_UNCERTAIN"):
+                backend.discover("run-fixture", "2026-09-05T00:00:00.000000Z")
+        backend.cleanup.assert_not_called()
+
+    def test_terminal_input_and_failure_finality_require_observed_eof(self) -> None:
+        self.assertEqual(AGENT.observe_terminal_input(io.BytesIO(b""), timeout=0.1), (True, 0))
+        self.assertEqual(AGENT.observe_terminal_input(io.BytesIO(b"trailing"), timeout=0.1), (True, 8))
+        value: dict[str, object] = {}
+        for field in AGENT.RESULT_EVIDENCE_FIELDS:
+            if field == "schema":
+                value[field] = AGENT.SCHEMA_RESULT
+            elif field == "classification":
+                value[field] = "FAILURE"
+            elif field == "stage":
+                value[field] = "PROCESS"
+            elif field == "result_code":
+                value[field] = "RESTORE_PROCESS_FAILED"
+            elif field == "restore_count":
+                value[field] = 0
+            elif field == "exit_status":
+                value[field] = 1
+            elif field in {"stdin_eof", "stdout_eof", "stderr_eof", "terminal_input_eof"}:
+                value[field] = True
+            elif field in {"trailing_unframed_bytes", "terminal_input_trailing_bytes"}:
+                value[field] = 0
+            elif field == "cleanup_state":
+                value[field] = "COMPLETE"
+            elif field.endswith("_commitment") or field.endswith("_digest"):
+                value[field] = commitment(field)
+            else:
+                value[field] = "fixture"
+        self.assertEqual(AGENT.validate_result_evidence(value)["classification"], "FAILURE")
+        incomplete = dict(value)
+        incomplete["stdout_eof"] = False
+        with self.assertRaisesRegex(AGENT.ProtocolError, "RESULT_EVIDENCE_INVALID"):
+            AGENT.validate_result_evidence(incomplete)
+        incomplete = dict(value)
+        incomplete["terminal_input_trailing_bytes"] = 1
+        with self.assertRaisesRegex(AGENT.ProtocolError, "RESULT_EVIDENCE_INVALID"):
+            AGENT.validate_result_evidence(incomplete)
+
+
 
     def test_docker_socket_only_image_target_isolation_and_no_fake_success(self) -> None:
         image_id = "sha256:" + ("a" * 64)
@@ -373,6 +506,11 @@ class RemoteAgentContractTests(unittest.TestCase):
             "target-fixture",
         )
         backend = AGENT.ProductionDockerBackend(config, client=client)
+        backend._metadata_source = {
+            "source_id": "metadata-source-fixture",
+            "source_name": "coolify-db",
+            "readback_count": 1,
+        }
         image = backend.inspect_image()
         target, isolation = backend.create_isolated_target(image)
         self.assertEqual(image["inspect_count"], 1)
@@ -524,6 +662,11 @@ class RemoteAgentContractTests(unittest.TestCase):
             "swooshz-recovery-volume-volume-fixture",
             "run-fixture",
         )
+        backend._metadata_source = {
+            "source_id": "metadata-source-fixture",
+            "source_name": "coolify-db",
+            "readback_count": 1,
+        }
         peers: list[socket.socket] = []
 
         def socket_for_exec(*_args: object, **_kwargs: object) -> socket.socket:
@@ -536,7 +679,7 @@ class RemoteAgentContractTests(unittest.TestCase):
             with mock.patch.object(AGENT, "_open_hijacked_socket", side_effect=socket_for_exec):
                 locator = backend.open_locator_process()
                 restore = backend._open_restore_process()
-            self.assertEqual(calls[0][0:2], ("POST", "/containers/container-fixture/exec"))
+            self.assertEqual(calls[0][0:2], ("POST", "/containers/metadata-source-fixture/exec"))
             self.assertEqual(calls[0][2]["Cmd"], ["/bin/sh", "-c", AGENT._canonical_locator_shell_wrapper()])
             self.assertEqual(calls[0][2]["Env"], list(AGENT.DOCKER_EXEC_ENVIRONMENT))
             self.assertEqual(calls[1][2]["Cmd"], list(AGENT.RESTORE_COMMAND))
@@ -615,6 +758,12 @@ class RemoteAgentContractTests(unittest.TestCase):
                 self.calls.append((method, path, body))
                 if method == "GET" and path.startswith("/images/"):
                     return 200, {"Id": image_id, "Os": "linux", "Architecture": "amd64"}
+                if method == "GET" and path == "/containers/coolify-db/json":
+                    return 200, {
+                        "Id": "metadata-source-fixture",
+                        "Name": "/coolify-db",
+                        "State": {"Running": True},
+                    }
                 if path == "/volumes/swooshz-recovery-volume-volume-fixture":
                     if method == "GET":
                         if not self.volume_exists:
@@ -688,7 +837,7 @@ class RemoteAgentContractTests(unittest.TestCase):
         engine = EngineDouble()
         backend = AGENT.ProductionDockerBackend(config, client=engine)
         source = (ROOT / "scripts" / "platform-recovery-remote-agent.py").read_bytes()
-        source_commitments = AGENT.compute_production_commitments(source)
+        source_commitments = AGENT.fixed_source_commitments()
         n_local = bytes(range(32))
         boot = boot_payload(n_local)
         boot.update({
@@ -737,10 +886,14 @@ class RemoteAgentContractTests(unittest.TestCase):
         class DeferredInput:
             def __init__(self) -> None:
                 self.pending = bytearray(AGENT.encode_frame(AGENT.DIRECTION_LOCAL_TO_REMOTE, AGENT.MESSAGE_BOOT, 0, n_local, boot))
+                self.proceed_sent = False
 
             def read(self, size: int = -1) -> bytes:
                 if not self.pending:
+                    if self.proceed_sent:
+                        return b""
                     self.pending.extend(build_proceed())
+                    self.proceed_sent = True
                 if size < 0:
                     size = len(self.pending)
                 value = bytes(self.pending[:size])
@@ -760,13 +913,14 @@ class RemoteAgentContractTests(unittest.TestCase):
                     mock.patch.object(AGENT, "invoke_canonical_locator_once", side_effect=deterministic_locator), \
                     mock.patch.object(AGENT, "open_artifact_descriptor", side_effect=lambda _root, _filename: os.open(artifact_path, os.O_RDONLY)):
                 output_stream = io.BytesIO()
-                AGENT.run_agent_protocol(
-                    DeferredInput(),
-                    output_stream,
-                    backend=backend,
-                    environment={"SWZ_RECOVERY_AGENT_FD": "3"},
-                    test_mode=False,
-                )
+                with self.assertRaisesRegex(AGENT.DockerAdmissionError, "SYNTHETIC_BACKEND_OPERATIONAL_SUCCESS_FORBIDDEN"):
+                    AGENT.run_agent_protocol(
+                        DeferredInput(),
+                        output_stream,
+                        backend=backend,
+                        environment={"SWZ_RECOVERY_AGENT_FD": "3"},
+                        test_mode=True,
+                    )
 
         output_stream.seek(0)
         emitted = []
@@ -775,8 +929,7 @@ class RemoteAgentContractTests(unittest.TestCase):
             if frame is None:
                 break
             emitted.append(frame)
-        self.assertEqual([frame.message for frame in emitted], [AGENT.MESSAGE_READY, AGENT.MESSAGE_DISCOVERY, AGENT.MESSAGE_RESULT])
-        self.assertEqual(emitted[-1].payload["classification"], "SUCCESS")
+        self.assertEqual([frame.message for frame in emitted], [AGENT.MESSAGE_READY, AGENT.MESSAGE_DISCOVERY])
         exec_calls = [call for call in engine.calls if call[0] == "EXEC"]
         self.assertEqual(len(exec_calls), 2)
         self.assertEqual(exec_calls[-1][2]["Cmd"], AGENT.RESTORE_COMMAND)

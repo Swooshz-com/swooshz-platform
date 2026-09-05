@@ -22,6 +22,7 @@ import pathlib
 import queue
 import re
 import select
+import signal
 import socket
 import stat
 import struct
@@ -65,6 +66,11 @@ MAX_AGENT_BYTES = 524288
 READ_CHUNK_BYTES = 4096
 MAX_HTTP_HEADER_BYTES = 16384
 MAX_HTTP_BODY_BYTES = 65536
+MAX_EFFECTIVE_CONFIG_BYTES = 65536
+ENGINE_EVENT_QUEUE_MAX = 16
+ENGINE_QUEUE_TIMEOUT_SECONDS = 0.25
+ENGINE_IO_DEADLINE_SECONDS = 17.0
+METADATA_SOURCE_CONTAINER_NAME = "coolify-db"
 
 SWZFRM02_MAGIC = b"SWZFRM02"
 SWZFRM02_VERSION = 2
@@ -1407,7 +1413,8 @@ RESULT_EVIDENCE_FIELDS = (
     "process_commitment", "restore_commitment", "cleanup_commitment",
     "stdout_capture_commitment", "stderr_capture_commitment", "result_code",
     "restore_count", "exit_status", "stdin_eof", "stdout_eof", "stderr_eof",
-    "trailing_unframed_bytes", "cleanup_state",
+    "trailing_unframed_bytes", "terminal_input_eof", "terminal_input_trailing_bytes",
+    "cleanup_state",
 )
 ABORT_EVIDENCE_FIELDS = (
     "schema", "epoch_ref", "authority_ref", "ssh_endpoint_commitment",
@@ -1729,8 +1736,14 @@ class _EngineInput(io.RawIOBase):
 
 
 class _EngineOutput(io.RawIOBase):
-    def __init__(self, events: queue.Queue[bytes | None]) -> None:
+    def __init__(
+        self,
+        events: queue.Queue[bytes | None],
+        *,
+        done_event: threading.Event | None = None,
+    ) -> None:
         self._events = events
+        self._done_event = done_event
         self._buffer = bytearray()
         self._eof = False
 
@@ -1740,14 +1753,45 @@ class _EngineOutput(io.RawIOBase):
     def read(self, size: int = -1) -> bytes:
         if size == 0:
             return b""
-        while not self._eof and (size < 0 or len(self._buffer) < size):
-            item = self._events.get()
-            if item is None:
-                self._eof = True
-                break
-            self._buffer.extend(item)
-            if size < 0:
-                continue
+        if not self._buffer and not self._eof:
+            while not self._eof and not self._buffer:
+                try:
+                    item = self._events.get(timeout=ENGINE_QUEUE_TIMEOUT_SECONDS)
+                except queue.Empty:
+                    if self._done_event is not None and self._done_event.is_set():
+                        self._eof = True
+                    continue
+                if item is None:
+                    self._eof = True
+                elif item:
+                    self._buffer.extend(item)
+        if size < 0:
+            while not self._eof:
+                try:
+                    item = self._events.get_nowait()
+                except queue.Empty:
+                    break
+                if item is None:
+                    self._eof = True
+                    break
+                if item:
+                    self._buffer.extend(item)
+        else:
+            # A short chunk that is already available is a valid read result.
+            # Do not wait for a full requested size: doing so deadlocks when
+            # the producer is waiting for the consumer to make progress.
+            while not self._eof and len(self._buffer) < size:
+                try:
+                    item = self._events.get_nowait()
+                except queue.Empty:
+                    if self._done_event is not None and self._done_event.is_set():
+                        self._eof = True
+                    break
+                if item is None:
+                    self._eof = True
+                    break
+                if item:
+                    self._buffer.extend(item)
         if size < 0:
             result = bytes(self._buffer)
             self._buffer.clear()
@@ -1757,6 +1801,17 @@ class _EngineOutput(io.RawIOBase):
         return result
 
 
+def _put_engine_event(events: queue.Queue[bytes | None], item: bytes | None) -> None:
+    deadline = time.monotonic() + ENGINE_IO_DEADLINE_SECONDS
+    while True:
+        try:
+            events.put(item, timeout=ENGINE_QUEUE_TIMEOUT_SECONDS)
+            return
+        except queue.Full:
+            if time.monotonic() >= deadline:
+                raise DockerAdmissionError("DOCKER_STREAM_BACKPRESSURE", safety_state="CONSUMED")
+
+
 class _DockerEngineProcess:
     def __init__(self, client: UnixSocketHTTPClient, exec_id: str, sock: socket.socket) -> None:
         self.client = client
@@ -1764,14 +1819,14 @@ class _DockerEngineProcess:
         self._socket = sock
         self._write_lock = threading.Lock()
         self.stdin = _EngineInput(sock, self._write_lock)
-        self._stdout_events: queue.Queue[bytes | None] = queue.Queue()
-        self._stderr_events: queue.Queue[bytes | None] = queue.Queue()
-        self.stdout = _EngineOutput(self._stdout_events)
-        self.stderr = _EngineOutput(self._stderr_events)
+        self._stdout_events: queue.Queue[bytes | None] = queue.Queue(maxsize=ENGINE_EVENT_QUEUE_MAX)
+        self._stderr_events: queue.Queue[bytes | None] = queue.Queue(maxsize=ENGINE_EVENT_QUEUE_MAX)
         self.returncode: int | None = None
         self._reader_error: Exception | None = None
         self._stream_eof = False
         self._reader_done = threading.Event()
+        self.stdout = _EngineOutput(self._stdout_events, done_event=self._reader_done)
+        self.stderr = _EngineOutput(self._stderr_events, done_event=self._reader_done)
         self._reader = threading.Thread(target=self._read_multiplexed, daemon=True)
         self._reader.start()
 
@@ -1796,16 +1851,22 @@ class _DockerEngineProcess:
                     raise DockerAdmissionError("DOCKER_STREAM_OVERSIZE", safety_state="CONSUMED")
                 payload = _read_socket_exact(self._socket, length)
                 if stream_id == 1:
-                    self._stdout_events.put(payload)
+                    _put_engine_event(self._stdout_events, payload)
                 elif stream_id == 2:
-                    self._stderr_events.put(payload)
+                    _put_engine_event(self._stderr_events, payload)
                 else:
                     raise DockerAdmissionError("DOCKER_STREAM_ID_INVALID", safety_state="CONSUMED")
         except (OSError, DockerAdmissionError, ValueError) as error:
             self._reader_error = error
         finally:
-            self._stdout_events.put(None)
-            self._stderr_events.put(None)
+            try:
+                _put_engine_event(self._stdout_events, None)
+            except Exception:
+                pass
+            try:
+                _put_engine_event(self._stderr_events, None)
+            except Exception:
+                pass
             self._reader_done.set()
 
     def poll(self) -> int | None:
@@ -1827,7 +1888,8 @@ class _DockerEngineProcess:
         while True:
             result = self.poll()
             if result is not None:
-                self._reader_done.wait(timeout=timeout)
+                remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+                self._reader_done.wait(timeout=remaining)
                 return result
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError("docker exec wait timeout")
@@ -1942,7 +2004,7 @@ def _validate_not_preexisting(client: Any, method: str, path: str, code: str) ->
     raise DockerAdmissionError(code + "_UNKNOWN", safety_state="UNCONSUMED")
 
 
-def _read_admitted_text(path: str, *, label: str) -> str:
+def _read_admitted_line(path: str, *, label: str) -> str:
     if sys.platform != "linux" or not getattr(os, "O_NOFOLLOW", 0):
         raise DescriptorAdmissionError("INSTALLATION_NO_FOLLOW_UNAVAILABLE")
     flags = os.O_RDONLY | O_CLOEXEC | os.O_NOFOLLOW
@@ -1968,7 +2030,19 @@ def _read_admitted_text(path: str, *, label: str) -> str:
         value = raw[:-1].decode("ascii", "strict")
     except UnicodeDecodeError as error:
         raise DescriptorAdmissionError(f"{label.upper()}_FORMAT_INVALID") from error
+    return value
+
+
+def _read_admitted_recovery_commitment(path: str, *, label: str) -> str:
+    value = _read_admitted_line(path, label=label)
     if not _is_commitment(value):
+        raise DescriptorAdmissionError(f"{label.upper()}_FORMAT_INVALID")
+    return value
+
+
+def _read_admitted_image_id(path: str, *, label: str = "docker_image_id") -> str:
+    value = _read_admitted_line(path, label=label)
+    if IMAGE_ID_RE.fullmatch(value) is None:
         raise DescriptorAdmissionError(f"{label.upper()}_FORMAT_INVALID")
     return value
 
@@ -2108,6 +2182,7 @@ class DockerInstallationConfig:
     run_id: str
     volume_id: str
     target_id: str
+    metadata_source_name: str = METADATA_SOURCE_CONTAINER_NAME
 
     def __post_init__(self) -> None:
         if self.socket_path != "/var/run/docker.sock":
@@ -2118,10 +2193,12 @@ class DockerInstallationConfig:
         _validate_ref(self.run_id, "run_id")
         _validate_ref(self.volume_id, "volume_id")
         _validate_ref(self.target_id, "target_id")
+        if self.metadata_source_name != METADATA_SOURCE_CONTAINER_NAME:
+            raise DockerAdmissionError("DOCKER_METADATA_SOURCE_INVALID")
 
     @classmethod
     def from_installed(cls, epoch_ref: str) -> "DockerInstallationConfig":
-        image_id = _read_admitted_text(PRODUCTION_IMAGE_ID_PATH, label="docker_image_id")
+        image_id = _read_admitted_image_id(PRODUCTION_IMAGE_ID_PATH)
         return cls(
             "/var/run/docker.sock",
             "postgres:17-alpine",
@@ -2205,11 +2282,28 @@ class ProductionDockerBackend:
     def from_installed(cls, epoch_ref: str) -> "ProductionDockerBackend":
         return cls(DockerInstallationConfig.from_installed(epoch_ref))
 
-    def __init__(self, config: DockerInstallationConfig, *, client: UnixSocketHTTPClient | None = None) -> None:
+    def __init__(
+        self,
+        config: DockerInstallationConfig,
+        *,
+        client: UnixSocketHTTPClient | None = None,
+        provenance: str | None = None,
+    ) -> None:
         if not isinstance(config, DockerInstallationConfig):
             raise DockerAdmissionError("DOCKER_CONFIG_INVALID")
         self.config = config
-        self.client = client or UnixSocketHTTPClient(config.socket_path)
+        selected_client = client or UnixSocketHTTPClient(config.socket_path)
+        if provenance not in {None, "operational", "synthetic"}:
+            raise DockerAdmissionError("DOCKER_PROVENANCE_INVALID")
+        self.client = selected_client
+        if provenance == "operational" and type(selected_client) is not UnixSocketHTTPClient:
+            raise DockerAdmissionError("DOCKER_PROVENANCE_INVALID")
+        self.provenance = (
+            provenance
+            if provenance is not None
+            else ("operational" if type(selected_client) is UnixSocketHTTPClient else "synthetic")
+        )
+        self.synthetic_provenance = self.provenance == "synthetic"
         self.inspect_count = 0
         self.pull_count = 0
         self.tag_resolution_count = 0
@@ -2222,7 +2316,10 @@ class ProductionDockerBackend:
         self._artifact: QualifiedArtifact | None = None
         self._artifact_evidence: Mapping[str, Any] | None = None
         self._boot: Mapping[str, Any] | None = None
+        self._metadata_source: Mapping[str, Any] | None = None
         self._cleanup_done = False
+        self._operation_state = "INITIAL"
+        self._cleanup_authority: str | None = None
 
     def _close_artifact_descriptor(self) -> None:
         artifact = self._artifact
@@ -2238,6 +2335,38 @@ class ProductionDockerBackend:
         if not isinstance(boot, Mapping) or boot.get("type") != "BOOT":
             raise DockerAdmissionError("BOOT_BINDING_INVALID")
         self._boot = dict(boot)
+
+    def _admit_metadata_source(self) -> Mapping[str, Any]:
+        path = "/containers/" + urllib.parse.quote(self.config.metadata_source_name, safe="") + "/json"
+        status, value = self.client.request("GET", path)
+        if status != 200 or not isinstance(value, Mapping):
+            raise DockerAdmissionError("METADATA_SOURCE_READBACK_FAILED", safety_state="UNCONSUMED")
+        source_id = value.get("Id")
+        source_name = value.get("Name")
+        state = value.get("State")
+        if (
+            not isinstance(source_id, str)
+            or not source_id
+            or source_name not in {self.config.metadata_source_name, "/" + self.config.metadata_source_name}
+            or not isinstance(state, Mapping)
+            or state.get("Running") is not True
+        ):
+            raise DockerAdmissionError("METADATA_SOURCE_READBACK_INVALID", safety_state="UNCONSUMED")
+        return {
+            "source_id": source_id,
+            "source_name": self.config.metadata_source_name,
+            "readback_count": 1,
+        }
+
+    def mark_discovery_emitted(self) -> None:
+        if self._operation_state != "DISCOVERY_READY":
+            raise DockerAdmissionError("DISCOVERY_STATE_INVALID", safety_state="CONSUMED")
+        self._operation_state = "DISCOVERY_EMITTED"
+
+    def record_proceed_boundary(self) -> None:
+        if self._operation_state != "DISCOVERY_EMITTED":
+            raise DockerAdmissionError("PROCEED_STATE_INVALID", safety_state="CONSUMED")
+        self._operation_state = "PROCEED_RECEIVED"
 
     def _cleanup_created_volume(self, volume_name: str) -> None:
         path = "/volumes/" + urllib.parse.quote(volume_name, safe="")
@@ -2374,6 +2503,8 @@ class ProductionDockerBackend:
                 raise DockerAdmissionError("TARGET_CREATE_READBACK_INVALID", safety_state="UNCONSUMED")
             self.target_create_count += 1
             self._resources = _OwnedDockerResources(target_id, target_name, volume_name, self.config.run_id)
+            if self._metadata_source is None or self._metadata_source["source_id"] == target_id or self._metadata_source["source_name"] in {target_name, "/" + target_name}:
+                raise DockerAdmissionError("METADATA_RESTORE_TARGET_NOT_DISTINCT", safety_state="UNCONSUMED")
             container_path = "/containers/" + urllib.parse.quote(target_id, safe="")
             status, target_readback = self.client.request("GET", container_path + "/json")
             if status != 200 or not isinstance(target_readback, Mapping):
@@ -2438,6 +2569,7 @@ class ProductionDockerBackend:
         except Exception as error:
             if self._resources is not None and not self._cleanup_done:
                 try:
+                    self._cleanup_authority = "PRE_DISCOVERY_FAILURE"
                     if self._target is not None:
                         self.cleanup(self._target, volume_name)
                     else:
@@ -2452,13 +2584,13 @@ class ProductionDockerBackend:
             raise error
 
     def open_locator_process(self) -> Any:
-        if self._resources is None:
-            raise DockerAdmissionError("DOCKER_TARGET_NOT_ADMITTED", safety_state="UNCONSUMED")
+        if self._resources is None or self._metadata_source is None:
+            raise DockerAdmissionError("METADATA_SOURCE_NOT_ADMITTED", safety_state="UNCONSUMED")
         opener = getattr(self.client, "open_exec_process", None)
         if not callable(opener):
             raise DockerAdmissionError("PRODUCTION_DOCKER_ENGINE_REQUIRED", safety_state="UNCONSUMED")
         return opener(
-            self._resources.target_id,
+            self._metadata_source["source_id"],
             ("/bin/sh", "-c", _canonical_locator_shell_wrapper()),
             environment=DOCKER_EXEC_ENVIRONMENT,
         )
@@ -2475,6 +2607,7 @@ class ProductionDockerBackend:
     def discover(self, epoch_ref: str, barrier_utc: str) -> DockerDiscovery:
         _validate_ref(epoch_ref, "epoch_ref")
         validate_barrier_utc(barrier_utc)
+        self._metadata_source = self._admit_metadata_source()
         image = self.inspect_image()
         target, isolation = self.create_isolated_target(image)
 
@@ -2483,6 +2616,7 @@ class ProductionDockerBackend:
                 resources = self._resources
                 if resources is None:
                     raise DockerAdmissionError("CLEANUP_OWNERSHIP_INVALID", safety_state="CONSUMED")
+                self._cleanup_authority = "PRE_DISCOVERY_FAILURE"
                 self.cleanup(target, resources.volume_name)
             except Exception as cleanup_error:
                 raise DockerAdmissionError("DISCOVERY_CLEANUP_FAILED", safety_state="CONSUMED") from cleanup_error
@@ -2497,6 +2631,8 @@ class ProductionDockerBackend:
         finally:
             _ACTIVE_PRODUCTION_BACKEND = None
         if getattr(outcome, "classification", None) != "EXACTLY_ONE":
+            if getattr(outcome, "query_started", False):
+                raise DockerAdmissionError("LOCATOR_FINALITY_UNCERTAIN", safety_state="CONSUMED")
             cleanup_after_failure()
             raise DockerAdmissionError("LOCATOR_NOT_FOUND", safety_state="UNCONSUMED")
         execution_id = getattr(outcome, "execution_id", None)
@@ -2535,11 +2671,14 @@ class ProductionDockerBackend:
             stream_commitment,
             artifact_evidence,
         )
+        self._operation_state = "DISCOVERY_READY"
         return discovery
 
     def _verify_proceed_bindings(self, proceed: Mapping[str, Any]) -> None:
-        if self._boot is None or self._resources is None or self._image is None or self._target is None or self._isolation is None or self._artifact is None or self._artifact_evidence is None:
+        if self._boot is None or self._resources is None or self._metadata_source is None or self._image is None or self._target is None or self._isolation is None or self._artifact is None or self._artifact_evidence is None:
             raise DockerAdmissionError("RESTORE_BINDING_UNAVAILABLE", safety_state="CONSUMED")
+        if self._metadata_source["source_id"] == self._resources.target_id or self._metadata_source["source_name"] in {self._resources.target_name, "/" + self._resources.target_name}:
+            raise DockerAdmissionError("METADATA_RESTORE_TARGET_NOT_DISTINCT", safety_state="CONSUMED")
         for key, expected in (
             ("image_commitment", _docker_commitment("image-evidence", self._image)),
             ("target_commitment", _docker_commitment("target-evidence", self._target)),
@@ -2571,12 +2710,36 @@ class ProductionDockerBackend:
         if proceed["transition_id"] != expected_id or proceed["transition_data_commitment"] != bytes_commitment("restore-ledger-transition", data_bytes):
             raise DockerAdmissionError("TRANSITION_BINDING_MISMATCH", safety_state="CONSUMED")
 
-    def _supervise_restore_process(self, process: Any) -> ProcessFinality:
+    def _kill_and_reap_restore_process(self, process: Any) -> None:
+        kill = getattr(process, "kill", None)
+        terminate = getattr(process, "terminate", None)
+        if callable(kill):
+            try:
+                kill()
+            except Exception:
+                pass
+        elif callable(terminate):
+            try:
+                terminate()
+            except Exception:
+                pass
+        wait = getattr(process, "wait", None)
+        if not callable(wait):
+            raise FinalityError("DOCKER_PROCESS_REAP_UNAVAILABLE", safety_state="CONSUMED")
+        try:
+            wait(timeout=1.0)
+        except Exception as error:
+            raise FinalityError("DOCKER_PROCESS_REAP_FAILED", safety_state="CONSUMED") from error
+
+    def _supervise_restore_process(self, process: Any) -> tuple[ProcessFinality, int]:
         stdout_capture = BoundedCapture()
         stderr_capture = BoundedCapture()
         stdout_eof = False
         stderr_eof = False
+        stdin_eof = False
+        streamed = 0
         errors: list[Exception] = []
+        deadline = time.monotonic() + ENGINE_IO_DEADLINE_SECONDS
 
         def drain(stream: Any, capture: BoundedCapture, which: str) -> None:
             nonlocal stdout_eof, stderr_eof
@@ -2593,53 +2756,78 @@ class ProductionDockerBackend:
             except Exception as error:
                 errors.append(error)
 
+        def write_input() -> None:
+            nonlocal stdin_eof, streamed
+            try:
+                streamed = stream_qualified_artifact(self._artifact, process.stdin)
+                process.stdin.close()
+                stdin_eof = True
+            except Exception as error:
+                errors.append(error)
+
         threads = [
             threading.Thread(target=drain, args=(process.stdout, stdout_capture, "stdout"), daemon=True),
             threading.Thread(target=drain, args=(process.stderr, stderr_capture, "stderr"), daemon=True),
+            threading.Thread(target=write_input, daemon=True),
         ]
         for thread in threads:
             thread.start()
         exit_status: int | None = None
+        wait_error: Exception | None = None
         try:
-            exit_status = process.wait(timeout=17.0)
+            remaining = max(0.0, deadline - time.monotonic())
+            exit_status = process.wait(timeout=remaining)
         except Exception as error:
-            errors.append(error)
-        for thread in threads:
-            thread.join(timeout=2.0)
+            wait_error = error
+        while time.monotonic() < deadline and any(thread.is_alive() for thread in threads):
+            for thread in threads:
+                thread.join(timeout=min(0.05, max(0.0, deadline - time.monotonic())))
         reader_error = getattr(process, "_reader_error", None)
         reader_done = getattr(process, "_reader_done", None)
-        if (
-            errors
-            or reader_error is not None
-            or getattr(process, "_stream_eof", True) is not True
-            or any(thread.is_alive() for thread in threads)
-            or (reader_done is not None and not reader_done.is_set())
-        ):
-            raise FinalityError("DOCKER_PROCESS_FINALITY_FAILED", safety_state="CONSUMED")
-        if type(exit_status) is not int or not 0 <= exit_status <= 255:
-            raise FinalityError("DOCKER_PROCESS_EXIT_INVALID", safety_state="CONSUMED")
-        return validate_process_finality(ProcessFinality(
+        complete = (
+            wait_error is None
+            and type(exit_status) is int
+            and 0 <= exit_status <= 255
+            and not errors
+            and reader_error is None
+            and getattr(process, "_stream_eof", True) is True
+            and stdin_eof
+            and stdout_eof
+            and stderr_eof
+            and not any(thread.is_alive() for thread in threads)
+            and (reader_done is None or reader_done.is_set())
+        )
+        if not complete:
+            try:
+                self._kill_and_reap_restore_process(process)
+            finally:
+                raise FinalityError("DOCKER_PROCESS_FINALITY_FAILED", safety_state="CONSUMED")
+        finality = validate_process_finality(ProcessFinality(
             None,
             True,
             exit_status,
-            True,
+            stdin_eof,
             stdout_eof,
             stderr_eof,
             0,
             bytes_commitment("stdout-capture", stdout_capture.snapshot()),
             bytes_commitment("stderr-capture", stderr_capture.snapshot()),
         ))
+        return finality, streamed
 
-    def restore(self, proceed: Mapping[str, Any]) -> Mapping[str, Any]:
+    def restore(
+        self,
+        proceed: Mapping[str, Any],
+        *,
+        terminal_input_eof: bool,
+        terminal_input_trailing_bytes: int,
+    ) -> Mapping[str, Any]:
+        if terminal_input_eof is not True or type(terminal_input_trailing_bytes) is not int or terminal_input_trailing_bytes < 0:
+            raise FinalityError("TERMINAL_INPUT_FINALITY_INVALID", safety_state="CONSUMED")
         self._verify_proceed_bindings(proceed)
         process = self._open_restore_process()
-        streamed = 0
-        stdin_eof = False
         try:
-            streamed = stream_qualified_artifact(self._artifact, process.stdin)
-            process.stdin.close()
-            stdin_eof = True
-            finality = self._supervise_restore_process(process)
+            finality, streamed = self._supervise_restore_process(process)
         except RecoveryError:
             try:
                 process.close()
@@ -2652,13 +2840,14 @@ class ProductionDockerBackend:
             process.close()
         except Exception as error:
             raise FinalityError("DOCKER_PROCESS_CLOSE_FAILED", safety_state="CONSUMED") from error
+        self._cleanup_authority = "RESTORE_FINALITY"
         cleanup = self.cleanup(self._target, self._resources.volume_name)
         process_evidence = {
             "schema": SCHEMA_PROCESS_EVIDENCE,
             "exec_error": finality.exec_error,
             "pidfd_observed": finality.pidfd_observed,
             "exit_status": finality.exit_status,
-            "stdin_eof": stdin_eof,
+            "stdin_eof": finality.stdin_eof,
             "stdout_eof": finality.stdout_eof,
             "stderr_eof": finality.stderr_eof,
             "trailing_unframed_bytes": finality.trailing_unframed_bytes,
@@ -2673,11 +2862,11 @@ class ProductionDockerBackend:
             "artifact_stream_commitment": proceed["artifact_stream_commitment"],
             "bytes_streamed": streamed,
             "stdin_same_descriptor": True,
-            "status": "COMPLETE" if finality.success and stdin_eof else "FAILED",
+            "status": "COMPLETE" if finality.success and finality.stdin_eof else "FAILED",
         }
         restore_commitment = _docker_commitment("restore-evidence", restore_evidence)
         cleanup_commitment = _docker_commitment("cleanup-evidence", cleanup)
-        success = finality.success and stdin_eof and cleanup["status"] == "COMPLETE"
+        success = finality.success and finality.stdin_eof and cleanup["status"] == "COMPLETE"
         result = {
             "schema": SCHEMA_RESULT,
             "classification": "SUCCESS" if success else "FAILURE",
@@ -2711,10 +2900,12 @@ class ProductionDockerBackend:
             "result_code": "RESTORE_SUCCEEDED" if success else "RESTORE_PROCESS_FAILED",
             "restore_count": 1 if success else 0,
             "exit_status": finality.exit_status,
-            "stdin_eof": stdin_eof,
+            "stdin_eof": finality.stdin_eof,
             "stdout_eof": finality.stdout_eof,
             "stderr_eof": finality.stderr_eof,
             "trailing_unframed_bytes": finality.trailing_unframed_bytes,
+            "terminal_input_eof": terminal_input_eof,
+            "terminal_input_trailing_bytes": terminal_input_trailing_bytes,
             "cleanup_state": cleanup["status"],
         }
         return validate_result_evidence(result)
@@ -2722,6 +2913,8 @@ class ProductionDockerBackend:
     def cleanup(self, target_evidence: Mapping[str, Any], volume_id: str) -> Mapping[str, Any]:
         if self._cleanup_done:
             raise DockerAdmissionError("CLEANUP_DUPLICATE", safety_state="CONSUMED")
+        if self._cleanup_authority not in {"PRE_DISCOVERY_FAILURE", "RESTORE_FINALITY"}:
+            raise DockerAdmissionError("CLEANUP_AUTHORITY_UNPROVEN", safety_state="CONSUMED")
         if self._resources is None or not isinstance(target_evidence, Mapping):
             raise DockerAdmissionError("CLEANUP_OWNERSHIP_INVALID", safety_state="CONSUMED")
         checked = validate_target_evidence(target_evidence)
@@ -2773,6 +2966,8 @@ class ProductionDockerBackend:
             raise DockerAdmissionError("CLEANUP_FINALITY_UNCERTAIN", safety_state="CONSUMED")
         self._close_artifact_descriptor()
         self._cleanup_done = True
+        self._operation_state = "CLEANED"
+        self._cleanup_authority = None
         return {
             "schema": SCHEMA_CLEANUP_EVIDENCE,
             "target_id": self._resources.target_id,
@@ -2861,7 +3056,19 @@ def validate_result_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
             raise ProtocolError("RESULT_EVIDENCE_INVALID")
     if type(value["trailing_unframed_bytes"]) is not int or value["trailing_unframed_bytes"] < 0:
         raise ProtocolError("RESULT_EVIDENCE_INVALID")
+    if type(value["terminal_input_eof"]) is not bool or type(value["terminal_input_trailing_bytes"]) is not int or value["terminal_input_trailing_bytes"] < 0:
+        raise ProtocolError("RESULT_EVIDENCE_INVALID")
     if value["cleanup_state"] not in {"COMPLETE", "FAILED", "NOT_STARTED"}:
+        raise ProtocolError("RESULT_EVIDENCE_INVALID")
+    if (
+        value["stdin_eof"] is not True
+        or value["stdout_eof"] is not True
+        or value["stderr_eof"] is not True
+        or value["trailing_unframed_bytes"] != 0
+        or value["terminal_input_eof"] is not True
+        or value["terminal_input_trailing_bytes"] != 0
+        or value["cleanup_state"] != "COMPLETE"
+    ):
         raise ProtocolError("RESULT_EVIDENCE_INVALID")
     if value["classification"] == "SUCCESS" and (
         value["result_code"] != "RESTORE_SUCCEEDED"
@@ -2871,6 +3078,8 @@ def validate_result_evidence(value: Mapping[str, Any]) -> dict[str, Any]:
         or value["stdout_eof"] is not True
         or value["stderr_eof"] is not True
         or value["trailing_unframed_bytes"] != 0
+        or value["terminal_input_eof"] is not True
+        or value["terminal_input_trailing_bytes"] != 0
         or value["cleanup_state"] != "COMPLETE"
     ):
         raise ProtocolError("RESULT_EVIDENCE_INVALID")
@@ -2990,11 +3199,17 @@ def _park_distinct_fd(fd: int, used: set[int], *, minimum: int = 5) -> int:
         used.add(fd)
         return fd
     import fcntl
-    parked = int(fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, minimum))
-    while parked in used:
-        next_fd = int(fcntl.fcntl(parked, fcntl.F_DUPFD_CLOEXEC, minimum))
-        os.close(parked)
-        parked = next_fd
+    # Allocate once above every currently reserved descriptor.  Recycling a
+    # duplicate by closing it and retrying can return a historical fd number
+    # and makes the launch plan's identity non-mechanical.
+    floor = max(minimum, (max(used) + 1) if used else minimum)
+    parked = int(fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, floor))
+    if parked < floor or parked in used:
+        try:
+            os.close(parked)
+        except OSError:
+            pass
+        raise DescriptorAdmissionError("FD_ALLOCATION_CONTRADICTION")
     used.add(parked)
     os.close(fd)
     return parked
@@ -3182,6 +3397,9 @@ def spawn_descriptor_agent(
                 os.waitpid(pid, 0)
             except OSError:
                 pass
+            # The child has had its one bounded termination/reap attempt;
+            # the outer failure path must not repeat either operation.
+            child_started = False
             raise DescriptorAdmissionError("PIDFD_UNAVAILABLE") from error
         plan = build_launch_plan(
             plan_directory_fd,
@@ -3228,6 +3446,7 @@ def supervise_descriptor_agent(
     read_fn: Callable[[int, int], bytes] = os.read,
     close_fn: Callable[[int], Any] = os.close,
     clock_fn: Callable[[], float] = time.monotonic,
+    kill_fn: Callable[[int, int], Any] = os.kill,
 ) -> ProcessFinality:
     if not isinstance(plan, LaunchPlan) or plan.pid is None or plan.pidfd is None:
         raise FinalityError("LAUNCH_PLAN_INVALID", safety_state="UNCONSUMED")
@@ -3244,6 +3463,31 @@ def supervise_descriptor_agent(
     error_eof = False
     pid_observed = False
     status: int | None = None
+    terminated = False
+    reaped = False
+
+    def terminate_and_reap() -> None:
+        nonlocal terminated, reaped, pid_observed, status
+        if not terminated:
+            try:
+                kill_fn(plan.pid, getattr(signal, "SIGKILL", 9))
+            except ProcessLookupError:
+                pass
+            except OSError:
+                pass
+            terminated = True
+        if not reaped:
+            child, raw_status = waitpid_fn(plan.pid, 0)
+            if child != plan.pid:
+                raise FinalityError("AGENT_REAP_INVALID", safety_state="UNCONSUMED")
+            reaped = True
+            pid_observed = True
+            if callable(getattr(os, "WIFEXITED", None)) and os.WIFEXITED(raw_status):
+                status = os.WEXITSTATUS(raw_status)
+            elif type(raw_status) is int and 0 <= raw_status <= 255:
+                status = raw_status
+            else:
+                status = -1
     try:
         while not (error_eof and pid_observed):
             remaining = max(0.0, deadline - clock_fn())
@@ -3264,6 +3508,7 @@ def supervise_descriptor_agent(
                 if fd == plan.pidfd and not pid_observed:
                     child, raw_status = waitpid_fn(plan.pid, 0)
                     if child == plan.pid:
+                        reaped = True
                         pid_observed = True
                         wifexited = getattr(os, "WIFEXITED", None)
                         if callable(wifexited) and wifexited(raw_status):
@@ -3280,6 +3525,10 @@ def supervise_descriptor_agent(
         empty = bytes_commitment("stdout-capture", b"")
         empty_err = bytes_commitment("stderr-capture", b"")
         return validate_process_finality(ProcessFinality(exec_error, pid_observed, status, True, True, True, 0, empty, empty_err))
+    except Exception:
+        if not reaped:
+            terminate_and_reap()
+        raise
     finally:
         for fd in (plan.error_read_fd, plan.pidfd):
             try:
@@ -3289,7 +3538,40 @@ def supervise_descriptor_agent(
 
 
 def read_admitted_agent_commitment() -> str:
-    return _read_admitted_text(PRODUCTION_AGENT_COMMITMENT_PATH, label="agent_commitment")
+    return _read_admitted_recovery_commitment(PRODUCTION_AGENT_COMMITMENT_PATH, label="agent_commitment")
+
+
+def observe_terminal_input(input_stream: BinaryIO, *, timeout: float = ENGINE_IO_DEADLINE_SECONDS) -> tuple[bool, int]:
+    """Observe the controller half-close and count every post-PROCEED byte."""
+
+    trailing = 0
+    error: Exception | None = None
+
+    def drain() -> None:
+        nonlocal trailing, error
+        try:
+            while True:
+                chunk = input_stream.read(READ_CHUNK_BYTES)
+                if not chunk:
+                    return
+                if not isinstance(chunk, bytes) or len(chunk) > READ_CHUNK_BYTES:
+                    raise FinalityError("TERMINAL_INPUT_READ_INVALID", safety_state="CONSUMED")
+                trailing += len(chunk)
+                if trailing > MAX_SESSION_BYTES:
+                    raise FinalityError("TERMINAL_INPUT_OVERSIZE", safety_state="CONSUMED")
+        except Exception as caught:
+            error = caught
+
+    reader = threading.Thread(target=drain, daemon=True)
+    reader.start()
+    reader.join(timeout=max(0.0, timeout))
+    if reader.is_alive():
+        raise FinalityError("TERMINAL_INPUT_EOF_UNOBSERVED", safety_state="CONSUMED")
+    if error is not None:
+        if isinstance(error, RecoveryError):
+            raise error
+        raise FinalityError("TERMINAL_INPUT_READ_FAILED", safety_state="CONSUMED") from error
+    return True, trailing
 
 
 def run_agent_protocol(
@@ -3327,6 +3609,8 @@ def run_agent_protocol(
         raise LoaderIntegrityError("AGENT_COMMITMENT_MISMATCH")
     if backend is None:
         backend = ProductionDockerBackend.from_installed(boot["epoch_ref"])
+    elif not test_mode:
+        raise DockerAdmissionError("PRODUCTION_BACKEND_INJECTION_FORBIDDEN")
     if not isinstance(backend, ProductionDockerBackend) and not getattr(backend, "test_only", False):
         raise DockerAdmissionError("PRODUCTION_BACKEND_INJECTION_FORBIDDEN")
     if getattr(backend, "test_only", False) and not test_mode:
@@ -3354,6 +3638,8 @@ def run_agent_protocol(
     session.accept(ready_frame)
     write_frame(output_stream, encode_frame(DIRECTION_REMOTE_TO_LOCAL, MESSAGE_READY, ready_frame.sequence, n_local, ready))
     discovery: DockerDiscovery | None = None
+    discovery_emitted = False
+    proceed_received = False
     try:
         try:
             discovery = backend.discover(boot["epoch_ref"], boot["barrier_utc"])
@@ -3364,18 +3650,40 @@ def run_agent_protocol(
         discovery_payload = build_discovery_payload(boot["epoch_ref"], boot["authority_ref"], discovery)
         discovery_frame = decode_frame(encode_frame(DIRECTION_REMOTE_TO_LOCAL, MESSAGE_DISCOVERY, session.next_sequence, n_local, discovery_payload))
         session.accept(discovery_frame)
+        mark_discovery = getattr(backend, "mark_discovery_emitted", None)
+        if callable(mark_discovery):
+            mark_discovery()
+        discovery_emitted = True
         write_frame(output_stream, encode_frame(DIRECTION_REMOTE_TO_LOCAL, MESSAGE_DISCOVERY, discovery_frame.sequence, n_local, discovery_payload))
         proceed_frame = read_frame(input_stream)
         if proceed_frame is None or proceed_frame.message != MESSAGE_PROCEED or proceed_frame.direction != DIRECTION_LOCAL_TO_REMOTE:
             raise ProtocolError("PROCEED_INVALID")
         session.accept(proceed_frame)
+        record_proceed = getattr(backend, "record_proceed_boundary", None)
+        if callable(record_proceed):
+            record_proceed()
+        proceed_received = True
         _validate_remote_proceed(boot, discovery_payload, proceed_frame.payload)
-        if test_mode or getattr(backend, "test_only", False):
+        terminal_input_eof, terminal_input_trailing_bytes = observe_terminal_input(input_stream)
+        if terminal_input_trailing_bytes != 0:
+            raise FinalityError("TERMINAL_INPUT_TRAILING_BYTES", safety_state="CONSUMED")
+        if getattr(backend, "test_only", False):
             raise DockerAdmissionError("TEST_SUCCESS_NOT_OPERATIONAL", safety_state="UNCONSUMED")
         restore = getattr(backend, "restore", None)
         if not callable(restore):
             raise DockerAdmissionError("PRODUCTION_RESTORE_BINDING_REQUIRED", safety_state="CONSUMED")
-        evidence = validate_result_evidence(restore(proceed_frame.payload))
+        evidence = dict(
+            restore(
+                proceed_frame.payload,
+                terminal_input_eof=terminal_input_eof,
+                terminal_input_trailing_bytes=terminal_input_trailing_bytes,
+            )
+        )
+        if getattr(backend, "synthetic_provenance", False) and evidence.get("classification") == "SUCCESS":
+            raise DockerAdmissionError("SYNTHETIC_BACKEND_OPERATIONAL_SUCCESS_FORBIDDEN", safety_state="CONSUMED")
+        evidence["terminal_input_eof"] = terminal_input_eof
+        evidence["terminal_input_trailing_bytes"] = terminal_input_trailing_bytes
+        evidence = validate_result_evidence(evidence)
         result_value = {
             "type": "RESULT",
             "version": SWZFRM02_VERSION,
@@ -3388,7 +3696,7 @@ def run_agent_protocol(
         session.accept(result_frame)
         write_frame(output_stream, encode_frame(DIRECTION_REMOTE_TO_LOCAL, MESSAGE_RESULT, result_frame.sequence, n_local, result_value))
     except Exception:
-        if discovery is not None and isinstance(backend, ProductionDockerBackend) and not backend._cleanup_done:
+        if discovery is not None and not discovery_emitted and not proceed_received and isinstance(backend, ProductionDockerBackend) and not backend._cleanup_done:
             try:
                 if backend._resources is None or backend._target is None:
                     raise DockerAdmissionError("CLEANUP_OWNERSHIP_INVALID", safety_state="CONSUMED")

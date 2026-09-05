@@ -152,6 +152,8 @@ def result_evidence(proceed: dict[str, object], endpoint_commitment: str) -> dic
         "stdout_eof": True,
         "stderr_eof": True,
         "trailing_unframed_bytes": 0,
+        "terminal_input_eof": True,
+        "terminal_input_trailing_bytes": 0,
         "cleanup_state": "COMPLETE",
     }
     return REMOTE.validate_result_evidence(value)
@@ -164,6 +166,7 @@ class FakeSession:
         self.incoming: deque[REMOTE.DecodedFrame] = deque()
         self.sent: list[REMOTE.DecodedFrame] = []
         self.closed = False
+        self.input_finished = False
 
     def send_frame(self, frame: bytes) -> None:
         decoded = REMOTE.decode_frame(frame)
@@ -241,6 +244,9 @@ class FakeSession:
         if not self.incoming:
             return None
         return self.incoming.popleft()
+
+    def finish_input(self) -> None:
+        self.input_finished = True
 
     def close(self) -> None:
         self.closed = True
@@ -476,6 +482,114 @@ class EndpointAndProtocolTests(BridgeTestCase):
         self.assertEqual(transition.transition_id, "restore-v2-d36f96eadb647f14a9cc9c81b4ce5e22f1c96f80e618744c")
         self.assertEqual(commitment, "sha256:v1:cbb7eb82b39152a585ba3d91b72f8855134e6b9a49463c2f015b2f720f39490a")
         self.assertEqual(transition.data_commitment, commitment)
+
+
+    def test_effective_ssh_readback_account_and_path_safety_are_observed(self) -> None:
+        configured = endpoint()
+        argv = BRIDGE.build_ssh_argv(configured)
+        observed = {
+            "user": BRIDGE.RECOVERY_USER,
+            "hostname": configured.host,
+            "port": "2222",
+            "identityfile": [configured.identity_path],
+            "identitiesonly": "yes",
+            "identityagent": "none",
+            "certificatefile": "none",
+            "pkcs11provider": "none",
+            "gssapiauthentication": "no",
+            "hostbasedauthentication": "no",
+            "kbdinteractiveauthentication": "no",
+            "passwordauthentication": "no",
+            "pubkeyauthentication": "yes",
+            "preferredauthentications": "publickey",
+            "batchmode": "yes",
+            "userknownhostsfile": configured.known_hosts_path,
+            "globalknownhostsfile": "none",
+            "knownhostscommand": "none",
+            "permitremoteopen": "none",
+            "stricthostkeychecking": "yes",
+            "updatehostkeys": "no",
+            "verifyhostkeydns": "no",
+            "canonicalizehostname": "no",
+            "canonicalizefallbacklocal": "no",
+            "checkhostip": "no",
+            "hashknownhosts": "no",
+            "proxycommand": "none",
+            "proxyjump": "none",
+            "proxyusefdpass": "no",
+            "clearallforwardings": "yes",
+            "forwardagent": "no",
+            "forwardx11": "no",
+            "forwardx11trusted": "no",
+            "requesttty": "no",
+            "permitlocalcommand": "no",
+            "controlmaster": "no",
+            "controlpath": "none",
+            "controlpersist": "no",
+            "sessiontype": "default",
+            "escapechar": "none",
+            "stdinnull": "no",
+            "compression": "no",
+            "tcpkeepalive": "no",
+            "connectionattempts": "1",
+            "connecttimeout": "5",
+            "serveraliveinterval": "1",
+            "serveralivecountmax": "3",
+        }
+        raw = b"".join(
+            f"{key} {value}\n".encode("ascii")
+            for key, value in observed.items()
+            for value in (value if key == "identityfile" else [value])
+        )
+        calls: list[tuple[list[str], dict[str, object]]] = []
+
+        def run(argv_value: list[str], **kwargs: object) -> types.SimpleNamespace:
+            calls.append((argv_value, kwargs))
+            return types.SimpleNamespace(returncode=0, stdout=raw, stderr=b"")
+
+        readback = BRIDGE.validate_ssh_effective_readback(configured, argv, run_fn=run)
+        self.assertEqual(readback["observed"]["argv"][1], "-G")
+        self.assertEqual(calls[0][0], [configured.ssh_binary, "-G", *argv[1:]])
+        self.assertEqual(calls[0][1]["timeout"], 5.0)
+
+        account = types.SimpleNamespace(
+            pw_name=BRIDGE.RECOVERY_USER,
+            pw_uid=1001,
+            pw_gid=1001,
+            pw_dir=BRIDGE.RECOVERY_HOME,
+            pw_shell=BRIDGE.RECOVERY_SHELL,
+        )
+        directories = {
+            "/var", "/var/empty", BRIDGE.RECOVERY_HOME,
+            "/usr", "/usr/bin", "/bin",
+        }
+
+        def lstat(path: str) -> types.SimpleNamespace:
+            if path in directories:
+                return types.SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0, st_gid=0)
+            if path == "/bin/sh":
+                return types.SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_uid=0, st_gid=0)
+            if path == "/usr/bin/dash":
+                return types.SimpleNamespace(st_mode=stat.S_IFREG | 0o555, st_uid=0, st_gid=0)
+            raise OSError(path)
+
+        actual = BRIDGE.read_local_account_bootstrap(
+            getpwnam_fn=lambda _user: account,
+            lstat_fn=lstat,
+            realpath_fn=lambda _path: "/usr/bin/dash",
+        )
+        self.assertEqual(actual["uid"], 1001)
+        self.assertEqual(actual["login_shell"], "/bin/sh")
+        with self.assertRaisesRegex(BRIDGE.EndpointAdmissionError, "TEST_PATH_UNSAFE"):
+            BRIDGE._validate_safe_path_components(
+                "/unsafe/file",
+                "test",
+                lstat_fn=lambda _path: types.SimpleNamespace(
+                    st_mode=stat.S_IFDIR | 0o777,
+                    st_uid=0,
+                    st_gid=0,
+                ),
+            )
 
 
 class StoreSequenceTests(BridgeTestCase):

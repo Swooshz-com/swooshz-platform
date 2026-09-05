@@ -22,8 +22,14 @@ import subprocess
 import sys
 import threading
 import time
+import types
 from dataclasses import dataclass
 from typing import Any, BinaryIO, Callable, Mapping
+
+try:
+    import pwd
+except ImportError:  # pragma: no cover - Windows has no POSIX account database.
+    pwd = None
 
 from_remote = importlib.util.spec_from_file_location(
     "platform_recovery_remote_agent_bridge",
@@ -61,6 +67,7 @@ MAX_FRAME_BYTES = REMOTE.MAX_FRAME_BYTES
 MAX_CONTROL_PAYLOAD_BYTES = REMOTE.MAX_CONTROL_PAYLOAD_BYTES
 MAX_SESSION_FRAMES = REMOTE.MAX_SESSION_FRAMES
 MAX_SESSION_BYTES = REMOTE.MAX_SESSION_BYTES
+MAX_EFFECTIVE_CONFIG_BYTES = 65536
 
 DIRECTION_LOCAL_TO_REMOTE = REMOTE.DIRECTION_LOCAL_TO_REMOTE
 DIRECTION_REMOTE_TO_LOCAL = REMOTE.DIRECTION_REMOTE_TO_LOCAL
@@ -334,6 +341,80 @@ def validate_account_bootstrap(value: Mapping[str, Any]) -> dict[str, Any]:
         raise EndpointAdmissionError("ACCOUNT_BOOTSTRAP_INVALID")
     return result
 
+
+def read_local_account_bootstrap(
+    *,
+    getpwnam_fn: Callable[[str], Any] | None = None,
+    lstat_fn: Callable[[str], Any] = os.lstat,
+    realpath_fn: Callable[[str], str] = os.path.realpath,
+) -> dict[str, Any]:
+    """Read the local account and interpreter state used by the SSH entrypoint."""
+
+    selected_getpwnam = getpwnam_fn
+    if selected_getpwnam is None:
+        if pwd is None:
+            raise EndpointAdmissionError("ACCOUNT_BOOTSTRAP_READBACK_UNAVAILABLE")
+        selected_getpwnam = pwd.getpwnam
+    try:
+        account = selected_getpwnam(RECOVERY_USER)
+    except (KeyError, OSError, TypeError) as error:
+        raise EndpointAdmissionError("ACCOUNT_BOOTSTRAP_READBACK_FAILED") from error
+    if (
+        getattr(account, "pw_name", None) != RECOVERY_USER
+        or getattr(account, "pw_dir", None) != RECOVERY_HOME
+        or getattr(account, "pw_shell", None) != RECOVERY_SHELL
+    ):
+        raise EndpointAdmissionError("ACCOUNT_BOOTSTRAP_READBACK_MISMATCH")
+    try:
+        home = lstat_fn(RECOVERY_HOME)
+        shell_entry = lstat_fn(RECOVERY_SHELL)
+        interpreter_path = realpath_fn(RECOVERY_SHELL)
+        _validate_safe_path_components(RECOVERY_HOME, "account_home", lstat_fn=lstat_fn)
+        _validate_safe_path_components(interpreter_path, "interpreter", lstat_fn=lstat_fn)
+        interpreter = lstat_fn(interpreter_path)
+    except (OSError, ValueError, TypeError) as error:
+        raise EndpointAdmissionError("ACCOUNT_BOOTSTRAP_READBACK_FAILED") from error
+    if (
+        not stat.S_ISDIR(int(home.st_mode))
+        or int(home.st_uid) != 0
+        or int(home.st_gid) != 0
+        or stat.S_IMODE(int(home.st_mode)) != 0o755
+        or int(shell_entry.st_uid) != 0
+        or int(shell_entry.st_gid) != 0
+        or (
+            not stat.S_ISLNK(int(shell_entry.st_mode))
+            and int(shell_entry.st_mode) & (stat.S_IWGRP | stat.S_IWOTH | stat.S_ISUID | stat.S_ISGID)
+        )
+        or (
+            not stat.S_ISLNK(int(shell_entry.st_mode))
+            and not stat.S_ISREG(int(shell_entry.st_mode))
+        )
+        or not stat.S_ISREG(int(interpreter.st_mode))
+        or int(interpreter.st_uid) != 0
+        or int(interpreter.st_gid) != 0
+        or int(interpreter.st_mode) & (stat.S_IWGRP | stat.S_IWOTH)
+        or not int(interpreter.st_mode) & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    ):
+        raise EndpointAdmissionError("ACCOUNT_BOOTSTRAP_UNSAFE")
+    return validate_account_bootstrap({
+        "user": RECOVERY_USER,
+        "uid": int(account.pw_uid),
+        "gid": int(account.pw_gid),
+        "login_shell": RECOVERY_SHELL,
+        "home": RECOVERY_HOME,
+        "home_uid": int(home.st_uid),
+        "home_gid": int(home.st_gid),
+        "home_mode": stat.S_IMODE(int(home.st_mode)),
+        "forced_command": FORCED_COMMAND,
+        "ssh_original_command": "",
+        "permit_user_rc": "no",
+        "permit_user_environment": "no",
+        "accept_env": "",
+        "authorized_key_restriction": "restrict",
+        "startup_policy": "noninteractive-login-shell",
+    })
+
+
 def validate_effective_ssh_config(value: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(value, Mapping) or tuple(value.keys()) != EFFECTIVE_SSH_FIELDS:
         raise EndpointAdmissionError("SSHD_EFFECTIVE_FIELDS_INVALID")
@@ -504,6 +585,36 @@ def _read_exact_descriptor(
         chunks.append(chunk)
 
 
+def _validate_safe_path_components(
+    path: str,
+    label: str,
+    *,
+    lstat_fn: Callable[[str], Any] = os.lstat,
+) -> None:
+    if not isinstance(path, str) or not path.startswith("/") or "\x00" in path:
+        raise EndpointAdmissionError(f"{label.upper()}_PATH_INVALID")
+    parts = path.split("/")
+    if any(part in {"", ".", ".."} for part in parts[1:]):
+        raise EndpointAdmissionError(f"{label.upper()}_PATH_INVALID")
+    current = ""
+    for index, part in enumerate(parts[1:], start=1):
+        current += "/" + part
+        try:
+            metadata = lstat_fn(current)
+        except (OSError, ValueError) as error:
+            raise EndpointAdmissionError(f"{label.upper()}_PATH_READBACK_FAILED") from error
+        mode = int(metadata.st_mode)
+        if (
+            stat.S_ISLNK(mode)
+            or int(metadata.st_uid) != 0
+            or int(metadata.st_gid) != 0
+            or mode & (stat.S_IWGRP | stat.S_IWOTH | stat.S_ISUID | stat.S_ISGID)
+        ):
+            raise EndpointAdmissionError(f"{label.upper()}_PATH_UNSAFE")
+        if index < len(parts) - 1 and not stat.S_ISDIR(mode):
+            raise EndpointAdmissionError(f"{label.upper()}_PATH_UNSAFE")
+
+
 def _qualify_installation_file(
     path: str,
     expected: bytes,
@@ -514,12 +625,14 @@ def _qualify_installation_file(
     read_fn: Callable[[int, int], bytes] = os.read,
     lseek_fn: Callable[[int, int, int], int] = os.lseek,
     close_fn: Callable[[int], Any] = os.close,
+    lstat_fn: Callable[[str], Any] = os.lstat,
 ) -> dict[str, Any]:
     if sys.platform != "linux":
         raise EndpointAdmissionError("INSTALLATION_NO_FOLLOW_UNAVAILABLE")
     flags = getattr(os, "O_RDONLY", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     if not getattr(os, "O_NOFOLLOW", 0):
         raise EndpointAdmissionError("INSTALLATION_NO_FOLLOW_UNAVAILABLE")
+    _validate_safe_path_components(path, label, lstat_fn=lstat_fn)
     try:
         fd = open_fn(path, flags)
     except (OSError, ValueError) as error:
@@ -532,6 +645,9 @@ def _qualify_installation_file(
             or before_stat.st_uid != 0
             or before_stat.st_gid != 0
             or before_stat.st_mode & (stat.S_ISUID | stat.S_ISGID)
+            or before_stat.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            or (label == "ssh_binary" and not before_stat.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
+            or (label == "identity" and stat.S_IMODE(before_stat.st_mode) & 0o077)
         ):
             raise EndpointAdmissionError(f"{label.upper()}_ADMISSION_FAILED")
         lseek_fn(fd, 0, os.SEEK_SET)
@@ -552,6 +668,35 @@ def _qualify_installation_file(
             pass
 
 
+def _verify_bound_installation_files(endpoint: EndpointConfig, admitted: Mapping[str, Any]) -> None:
+    files = admitted.get("files") if isinstance(admitted, Mapping) else None
+    if not isinstance(files, Mapping):
+        raise EndpointAdmissionError("INSTALLATION_FILES_INVALID")
+    expected_files = (
+        ("ssh_binary", endpoint.ssh_binary, endpoint.ssh_binary_bytes),
+        ("identity", endpoint.identity_path, endpoint.client_identity_bytes),
+        ("known_hosts", endpoint.known_hosts_path, endpoint.known_hosts_bytes),
+        ("authorized_keys", endpoint.authorized_keys_path, endpoint.authorized_keys_bytes),
+        ("sshd_config", endpoint.sshd_config_path, endpoint.sshd_config_bytes),
+    )
+    for label, path, raw in expected_files:
+        current = _qualify_installation_file(path, raw, label)
+        declared = files.get(label)
+        if not isinstance(declared, Mapping):
+            raise EndpointAdmissionError("INSTALLATION_FILES_INVALID")
+        try:
+            declared_identity = tuple(int(item) for item in declared.get("identity", ()))
+        except (TypeError, ValueError):
+            declared_identity = ()
+        if (
+            declared.get("path") != current["path"]
+            or declared.get("bytes_commitment") != current["bytes_commitment"]
+            or declared_identity != current["identity"]
+            or declared.get("byte_length") != current["byte_length"]
+        ):
+            raise EndpointAdmissionError("INSTALLATION_READBACK_MISMATCH")
+
+
 def qualify_endpoint_installation(endpoint: EndpointConfig) -> Mapping[str, Any]:
     if not isinstance(endpoint, EndpointConfig) or not endpoint.installation_owned:
         raise EndpointAdmissionError("INSTALLATION_OWNERSHIP_REQUIRED")
@@ -561,10 +706,19 @@ def qualify_endpoint_installation(endpoint: EndpointConfig) -> Mapping[str, Any]
     if account is None or qualification is None:
         raise EndpointAdmissionError("INSTALLATION_QUALIFICATION_REQUIRED")
     checked_account = validate_account_bootstrap(account)
+    observed_local_account = read_local_account_bootstrap()
+    if observed_local_account != checked_account:
+        raise EndpointAdmissionError("ACCOUNT_BOOTSTRAP_READBACK_MISMATCH")
     if not isinstance(qualification, Mapping) or tuple(qualification.keys()) != INSTALLATION_QUALIFICATION_FIELDS:
         raise EndpointAdmissionError("INSTALLATION_QUALIFICATION_INVALID")
     if qualification["schema"] != INSTALLATION_QUALIFICATION_SCHEMA:
         raise EndpointAdmissionError("INSTALLATION_QUALIFICATION_INVALID")
+    observed_account = qualification.get("account_bootstrap")
+    if not isinstance(observed_account, Mapping):
+        raise EndpointAdmissionError("ACCOUNT_BOOTSTRAP_READBACK_REQUIRED")
+    checked_observed_account = validate_account_bootstrap(observed_account)
+    if checked_observed_account != observed_local_account:
+        raise EndpointAdmissionError("ACCOUNT_BOOTSTRAP_READBACK_MISMATCH")
     effective = validate_effective_ssh_config(qualification["effective_config"])
     if effective != dict(endpoint.effective_config):
         raise EndpointAdmissionError("SSHD_EFFECTIVE_READBACK_MISMATCH")
@@ -712,7 +866,147 @@ def build_ssh_argv(endpoint: EndpointConfig) -> tuple[str, ...]:
     return argv
 
 
-def validate_ssh_effective_readback(endpoint: EndpointConfig, argv: tuple[str, ...]) -> Mapping[str, Any]:
+def _parse_ssh_effective_output(raw: bytes) -> Mapping[str, Any]:
+    if not isinstance(raw, bytes) or not raw or len(raw) > MAX_EFFECTIVE_CONFIG_BYTES:
+        raise EndpointAdmissionError("SSH_EFFECTIVE_OUTPUT_INVALID")
+    try:
+        text = raw.decode("ascii", "strict")
+    except UnicodeDecodeError as error:
+        raise EndpointAdmissionError("SSH_EFFECTIVE_OUTPUT_INVALID") from error
+    values: dict[str, Any] = {}
+    for line in text.splitlines():
+        if not line or " " not in line:
+            continue
+        name, value = line.split(None, 1)
+        name = name.lower()
+        if name == "identityfile":
+            values.setdefault(name, []).append(value)
+        elif name in values:
+            raise EndpointAdmissionError("SSH_EFFECTIVE_OUTPUT_DUPLICATE")
+        else:
+            values[name] = value
+    if not values:
+        raise EndpointAdmissionError("SSH_EFFECTIVE_OUTPUT_INVALID")
+    return values
+
+
+def _ssh_readback_environment() -> dict[str, str]:
+    environment = {"LANG": "C", "LC_ALL": "C"}
+    if os.name == "nt":
+        for name in (
+            "ALLUSERSPROFILE", "APPDATA", "CommonProgramFiles", "CommonProgramFiles(x86)",
+            "CommonProgramW6432", "COMPUTERNAME", "ComSpec", "HOMEDRIVE", "HOMEPATH",
+            "HOME", "LOCALAPPDATA", "LOGONSERVER", "OS", "PATH", "PATHEXT", "ProgramData",
+            "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "PUBLIC", "SystemDrive",
+            "SystemRoot", "TEMP", "TMP", "USERDOMAIN", "USERDOMAIN_ROAMINGPROFILE",
+            "USERNAME", "USERPROFILE", "windir",
+        ):
+            value = os.environ.get(name)
+            if value is not None:
+                environment[name] = value
+    else:
+        path = os.environ.get("PATH")
+        if path is not None:
+            environment["PATH"] = path
+    return environment
+
+
+def read_ssh_effective_config(
+    endpoint: EndpointConfig,
+    argv: tuple[str, ...],
+    *,
+    run_fn: Callable[..., Any] = subprocess.run,
+) -> Mapping[str, Any]:
+    if not isinstance(endpoint, EndpointConfig) or not isinstance(argv, tuple):
+        raise EndpointAdmissionError("SSH_EFFECTIVE_READBACK_INVALID")
+    readback_argv = (argv[0], "-G", *argv[1:])
+    try:
+        completed = run_fn(
+            list(readback_argv),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=5.0,
+            env=_ssh_readback_environment(),
+        )
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        raise EndpointAdmissionError("SSH_EFFECTIVE_READBACK_FAILED") from error
+    if getattr(completed, "returncode", None) != 0:
+        raise EndpointAdmissionError("SSH_EFFECTIVE_READBACK_FAILED")
+    observed = _parse_ssh_effective_output(getattr(completed, "stdout", b""))
+    expected = {
+        "user": RECOVERY_USER,
+        "hostname": endpoint.host,
+        "port": str(endpoint.port),
+        "identityfile": [endpoint.identity_path],
+        "identitiesonly": "yes",
+        "identityagent": "none",
+        "certificatefile": "none",
+        "pkcs11provider": "none",
+        "gssapiauthentication": "no",
+        "hostbasedauthentication": "no",
+        "kbdinteractiveauthentication": "no",
+        "passwordauthentication": "no",
+        "pubkeyauthentication": frozenset({"yes", "true"}),
+        "preferredauthentications": "publickey",
+        "batchmode": "yes",
+        "userknownhostsfile": endpoint.known_hosts_path,
+        "globalknownhostsfile": "none",
+        "knownhostscommand": "none",
+        "permitremoteopen": "none",
+        "stricthostkeychecking": frozenset({"yes", "true"}),
+        "updatehostkeys": frozenset({"no", "false"}),
+        "verifyhostkeydns": frozenset({"no", "false"}),
+        "canonicalizehostname": frozenset({"no", "false"}),
+        "canonicalizefallbacklocal": "no",
+        "checkhostip": "no",
+        "hashknownhosts": "no",
+        "proxycommand": "none",
+        "proxyjump": "none",
+        "proxyusefdpass": "no",
+        "clearallforwardings": "yes",
+        "forwardagent": "no",
+        "forwardx11": "no",
+        "forwardx11trusted": "no",
+        "requesttty": frozenset({"no", "false"}),
+        "permitlocalcommand": "no",
+        "controlmaster": frozenset({"no", "false"}),
+        "controlpath": "none",
+        "controlpersist": "no",
+        "sessiontype": "default",
+        "escapechar": "none",
+        "stdinnull": frozenset({"no", "false"}),
+        "compression": "no",
+        "tcpkeepalive": "no",
+        "connectionattempts": "1",
+        "connecttimeout": "5",
+        "serveraliveinterval": "1",
+        "serveralivecountmax": "3",
+    }
+    optional_readback_fields = frozenset({
+        "pkcs11provider", "knownhostscommand", "proxycommand", "proxyjump", "controlpath",
+    })
+    for name, expected_value in expected.items():
+        observed_value = observed.get(name)
+        if observed_value is None and name in optional_readback_fields:
+            continue
+        if isinstance(expected_value, frozenset):
+            matches = observed_value in expected_value
+        else:
+            matches = observed_value == expected_value
+        if not matches:
+            raise EndpointAdmissionError("SSH_EFFECTIVE_READBACK_MISMATCH")
+    return {"argv": readback_argv, "values": dict(observed)}
+
+
+def validate_ssh_effective_readback(
+    endpoint: EndpointConfig,
+    argv: tuple[str, ...],
+    *,
+    observed_output: bytes | None = None,
+    run_fn: Callable[..., Any] = subprocess.run,
+) -> Mapping[str, Any]:
     if not isinstance(endpoint, EndpointConfig) or not isinstance(argv, tuple):
         raise EndpointAdmissionError("SSH_EFFECTIVE_READBACK_INVALID")
     if argv != build_ssh_argv(endpoint):
@@ -799,7 +1093,15 @@ def validate_ssh_effective_readback(endpoint: EndpointConfig, argv: tuple[str, .
         raise EndpointAdmissionError("SSH_EFFECTIVE_READBACK_INVALID")
     if any(name in options for name in ("SendEnv", "SetEnv", "RemoteCommand", "LocalCommand")):
         raise EndpointAdmissionError("SSH_EFFECTIVE_READBACK_INVALID")
-    return {"destination": destination, "options": dict(options)}
+    if observed_output is None:
+        effective = read_ssh_effective_config(endpoint, argv, run_fn=run_fn)
+    else:
+        effective = read_ssh_effective_config(
+            endpoint,
+            argv,
+            run_fn=lambda *_args, **_kwargs: types.SimpleNamespace(returncode=0, stdout=observed_output),
+        )
+    return {"destination": destination, "options": dict(options), "observed": effective}
 
 
 class OpenSSHSession:
@@ -1226,6 +1528,8 @@ def _is_success_result(evidence: Mapping[str, Any]) -> bool:
         and evidence["stdout_eof"] is True
         and evidence["stderr_eof"] is True
         and evidence["trailing_unframed_bytes"] == 0
+        and evidence["terminal_input_eof"] is True
+        and evidence["terminal_input_trailing_bytes"] == 0
         and evidence["cleanup_state"] == "COMPLETE"
     )
 
@@ -1560,6 +1864,10 @@ class ControllerBridge:
             )
             self.trace.append("PROCEED")
             self._send(MESSAGE_PROCEED, proceed)
+            finish_input = getattr(self._session, "finish_input", None)
+            if not callable(finish_input):
+                raise TransportError("SESSION_INPUT_FINALITY_UNAVAILABLE")
+            finish_input()
             result_frame = self._receive((MESSAGE_RESULT, MESSAGE_ABORT))
             if result_frame.message == MESSAGE_ABORT:
                 raise ProtocolError("REMOTE_ABORT")
@@ -1668,8 +1976,12 @@ class SessionFinality:
         )
 
     @property
+    def deterministic(self) -> bool:
+        return self.observed and self.trailing_unframed_bytes == 0
+
+    @property
     def success(self) -> bool:
-        return self.observed and self.process_exit_status == 0 and self.trailing_unframed_bytes == 0
+        return self.deterministic and self.process_exit_status == 0
 
 
 class OpenSSHSession:
@@ -1680,6 +1992,7 @@ class OpenSSHSession:
         self.installation = qualify_endpoint_installation(endpoint)
         argv = build_ssh_argv(endpoint)
         validate_ssh_effective_readback(endpoint, argv)
+        _verify_bound_installation_files(endpoint, self.installation)
         try:
             self.process = subprocess.Popen(
                 list(argv),
@@ -1695,6 +2008,18 @@ class OpenSSHSession:
             raise TransportError("SSH_SESSION_OPEN_FAILED") from error
         if self.process.stdin is None or self.process.stdout is None or self.process.stderr is None:
             raise TransportError("SSH_SESSION_PIPES_UNAVAILABLE")
+        try:
+            _verify_bound_installation_files(endpoint, self.installation)
+        except EndpointAdmissionError as error:
+            try:
+                self.process.kill()
+            except OSError:
+                pass
+            try:
+                self.process.wait(timeout=1.0)
+            except Exception:
+                pass
+            raise TransportError("SSH_INSTALLATION_DRIFT") from error
         self.stdin = self.process.stdin
         self.stdout = self.process.stdout
         self.stderr = self.process.stderr
@@ -1703,6 +2028,7 @@ class OpenSSHSession:
         self._stderr_eof = False
         self._closed = False
         self._finality: SessionFinality | None = None
+        self._input_closed = False
         self._stderr_thread = threading.Thread(target=self._drain_stderr, daemon=True)
         self._stderr_thread.start()
 
@@ -1721,7 +2047,7 @@ class OpenSSHSession:
             self._stderr_error = error
 
     def send_frame(self, frame: bytes) -> None:
-        if self._closed:
+        if self._closed or self._input_closed:
             raise TransportError("SSH_SESSION_CLOSED")
         try:
             REMOTE._write_all(self.stdin, frame)
@@ -1736,14 +2062,25 @@ class OpenSSHSession:
         except Exception as error:
             raise TransportError("SSH_FRAME_READ_FAILED") from error
 
+    def finish_input(self) -> None:
+        if self._closed:
+            raise TransportError("SSH_SESSION_CLOSED")
+        if self._input_closed:
+            return
+        try:
+            self.stdin.close()
+        except OSError as error:
+            raise TransportError("SSH_STDIN_EOF_FAILED") from error
+        self._input_closed = True
+
     def finalize(self) -> SessionFinality:
         if self._finality is not None:
             return self._finality
         stdin_eof = False
         try:
-            self.stdin.close()
+            self.finish_input()
             stdin_eof = True
-        except OSError:
+        except TransportError:
             pass
         stdout_capture = REMOTE.BoundedCapture(REMOTE.MAX_CAPTURE_BYTES)
         stdout_error: Exception | None = None
@@ -2181,9 +2518,11 @@ class ControllerBridge:
                 and evidence["stdout_eof"] is True
                 and evidence["stderr_eof"] is True
                 and evidence["trailing_unframed_bytes"] == 0
+                and evidence["terminal_input_eof"] is True
+                and evidence["terminal_input_trailing_bytes"] == 0
                 and evidence["cleanup_state"] == "COMPLETE"
             )
-            if not remote_deterministic or (evidence["classification"] == "SUCCESS" and not local_finality.success):
+            if not remote_deterministic or not local_finality.deterministic:
                 raise TransportError("POST_CAS_FINALITY_UNCERTAIN")
             self._close_session_after_finality()
             if evidence["classification"] == "FAILURE":
