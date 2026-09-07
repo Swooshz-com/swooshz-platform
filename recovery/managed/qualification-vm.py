@@ -13,6 +13,7 @@ import importlib.util
 import json
 import platform
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -31,6 +32,37 @@ class ProviderHold(GuestError):
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
+MAX_DIAGNOSTIC_CHARS = 4096
+
+
+def _bounded(value: object) -> str:
+    if isinstance(value, bytes):
+        text = value.decode("utf-8", "replace")
+    else:
+        text = "" if value is None else str(value)
+    if len(text) <= MAX_DIAGNOSTIC_CHARS:
+        return text
+    half = MAX_DIAGNOSTIC_CHARS // 2
+    return text[:half] + "\n...[truncated]...\n" + text[-half:]
+
+
+def _safe_command(command: list[str]) -> str:
+    safe: list[str] = []
+    for value in command:
+        text = str(value)
+        if "=" in text:
+            key, _, _ = text.partition("=")
+            if any(marker in key.upper() for marker in ("PASSWORD", "TOKEN", "SECRET", "PRIVATE_KEY")):
+                text = key + "=<redacted>"
+        safe.append(text)
+    return shlex.join(safe)
+
+
+def _process_failure(stage: str, command: list[str], result: object) -> str:
+    return (
+        f"stage={stage}; command={_safe_command(command)}; returncode={getattr(result, 'returncode', 'unknown')}; "
+        f"stdout={_bounded(getattr(result, 'stdout', None))}; stderr={_bounded(getattr(result, 'stderr', None))}"
+    )
 
 
 def tool(name: str) -> str:
@@ -89,12 +121,16 @@ def stage_runtime_dependencies(binary: Path, root: Path) -> None:
     ldd = shutil.which("ldd")
     if ldd is None:
         raise ProviderHold("guest-runtime-ldd-unavailable")
+    command = [ldd, str(binary)]
     try:
-        result = subprocess.run([ldd, str(binary)], check=False, text=True, capture_output=True)
+        result = subprocess.run(command, check=False, text=True, capture_output=True)
     except OSError as error:
-        raise ProviderHold("guest-runtime-ldd-unavailable") from error
+        raise ProviderHold(
+            f"stage=guest-runtime-dependencies; command={_safe_command(command)}; "
+            f"process-unavailable={type(error).__name__}"
+        ) from error
     if result.returncode != 0:
-        raise GuestError(f"guest-runtime-dependencies-unavailable:{binary.name}")
+        raise GuestError(_process_failure("guest-runtime-dependencies", command, result))
     paths: set[Path] = set()
     for line in (result.stdout or "").splitlines():
         match = re.search(r"=>\s+(/[^\s]+)", line)
@@ -239,17 +275,21 @@ def set_image_contexts(image: Path) -> None:
             (f"set_inode_field /{relative} gid 0", "guest-image-owner-update-failed"),
         ):
             try:
+                command_args = [debugfs, "-w", "-R", command, str(image)]
                 result = subprocess.run(
-                    [debugfs, "-w", "-R", command, str(image)],
+                    command_args,
                     check=False,
                     text=True,
                     capture_output=True,
                 )
             except OSError as error:
-                raise ProviderHold("guest-image-context-tool-unavailable") from error
+                raise ProviderHold(
+                    f"stage=guest-image-context; command={_safe_command(command_args)}; "
+                    f"process-unavailable={type(error).__name__}"
+                ) from error
             output = ((result.stdout or "") + (result.stderr or "")).lower()
             if result.returncode != 0 or any(marker in output for marker in ("error", "failed", "not found", "no such")):
-                raise GuestError(f"{failure}:{relative}")
+                raise GuestError(_process_failure(f"guest-image-context:{relative}", command_args, result))
 
 
 def build_rootfs(data_path: Path, root: Path) -> None:
@@ -269,16 +309,20 @@ def build_rootfs(data_path: Path, root: Path) -> None:
     except OSError as error:
         raise ProviderHold("guest-verity-data-unavailable") from error
     try:
+        command = [mkfs, "-q", "-F", "-O", "ext_attr", "-d", str(root), str(data_path)]
         result = subprocess.run(
-            [mkfs, "-q", "-F", "-O", "ext_attr", "-d", str(root), str(data_path)],
+            command,
             check=False,
             text=True,
             capture_output=True,
         )
     except OSError as error:
-        raise ProviderHold("guest-rootfs-format-unavailable") from error
+        raise ProviderHold(
+            f"stage=guest-rootfs-format; command={_safe_command(command)}; "
+            f"process-unavailable={type(error).__name__}"
+        ) from error
     if result.returncode != 0:
-        raise GuestError("guest-rootfs-format-failed")
+        raise GuestError(_process_failure("guest-rootfs-format", command, result))
     set_image_contexts(data_path)
 
 
@@ -497,20 +541,21 @@ def build_guest_fixtures(root: Path) -> dict[str, str]:
 def build_verity(data_path: Path, hash_path: Path) -> str:
     if not data_path.is_file() or data_path.stat().st_size == 0:
         raise GuestError("dm-verity-data-missing")
+    command = [
+        tool("veritysetup"), "format", str(data_path), str(hash_path),
+        "--data-block-size=4096", "--hash-block-size=4096",
+    ]
     result = subprocess.run(
-        [
-            tool("veritysetup"), "format", str(data_path), str(hash_path),
-            "--data-block-size=4096", "--hash-block-size=4096",
-        ],
+        command,
         check=False,
         text=True,
         capture_output=True,
     )
     if result.returncode != 0:
-        raise ProviderHold("dm-verity-format-unavailable")
+        raise ProviderHold(_process_failure("dm-verity-format", command, result))
     match = re.search(r"Root hash:\s*([0-9a-f]{64})", (result.stdout or "") + (result.stderr or ""))
     if match is None:
-        raise GuestError("dm-verity-root-hash-not-reported")
+        raise GuestError(_process_failure("dm-verity-format", command, result))
     return match.group(1)
 
 
@@ -878,20 +923,25 @@ def make_initramfs(root: Path, output: Path) -> None:
     gzip = tool("gzip")
     names = "\n".join(str(path.relative_to(root)) for path in sorted(root.rglob("*"))) + "\n"
     try:
+        command = [cpio, "-o", "-H", "newc", "--owner=0:0"]
         result = subprocess.run(
-            [cpio, "-o", "-H", "newc", "--owner=0:0"],
+            command,
             cwd=root,
             input=names.encode("utf-8"),
             capture_output=True,
             check=False,
         )
     except OSError as error:
-        raise ProviderHold("initramfs-cpio-unavailable") from error
+        raise ProviderHold(
+            f"stage=initramfs-cpio; command={_safe_command(command)}; "
+            f"process-unavailable={type(error).__name__}"
+        ) from error
     if result.returncode != 0:
-        raise ProviderHold("initramfs-cpio-failed")
-    compressed = subprocess.run([gzip, "-n"], input=result.stdout, capture_output=True, check=False)
+        raise ProviderHold(_process_failure("initramfs-cpio", command, result))
+    gzip_command = [gzip, "-n"]
+    compressed = subprocess.run(gzip_command, input=result.stdout, capture_output=True, check=False)
     if compressed.returncode != 0:
-        raise ProviderHold("initramfs-gzip-failed")
+        raise ProviderHold(_process_failure("initramfs-gzip", gzip_command, compressed))
     output.write_bytes(compressed.stdout)
 
 
@@ -918,13 +968,15 @@ def run_guest(kernel: Path, initramfs: Path, data: Path, hash_tree: Path, root_h
     try:
         result = subprocess.run(command, check=False, text=True, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired as error:
-        raise GuestError("guest-timeout") from error
+        raise GuestError(f"stage=guest-qemu; command={_safe_command(command)}; timeout={timeout}s") from error
     except OSError as error:
-        raise ProviderHold("guest-process-unavailable") from error
+        raise ProviderHold(
+            f"stage=guest-qemu; command={_safe_command(command)}; process-unavailable={type(error).__name__}"
+        ) from error
     output = (result.stdout or "") + (result.stderr or "")
     provider_markers = [line for line in output.splitlines() if line.startswith("SWZ_GUEST_PROVIDER=")]
     if provider_markers:
-        raise ProviderHold(provider_markers[-1])
+        raise ProviderHold(_process_failure("guest-qemu", command, result) + f"; marker={provider_markers[-1]}")
     required = (
         "SWZ_GUEST_SELINUX=Enforcing",
         "SWZ_GUEST_POLICY=PASS",
@@ -940,7 +992,7 @@ def run_guest(kernel: Path, initramfs: Path, data: Path, hash_tree: Path, root_h
         "SWZ_GUEST_RUNTIME=PASS",
     )
     if result.returncode != 0 or any(marker not in output for marker in required):
-        raise GuestError("guest-proof-failed")
+        raise GuestError(_process_failure("guest-qemu", command, result))
     return output
 
 

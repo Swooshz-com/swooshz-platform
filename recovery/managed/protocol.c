@@ -4,11 +4,6 @@
 #include <ctype.h>
 #include <string.h>
 
-static uint16_t read_u16(const uint8_t *p)
-{
-	return (uint16_t)(((uint16_t)p[0] << 8) | p[1]);
-}
-
 static uint32_t read_u32(const uint8_t *p)
 {
 	return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |

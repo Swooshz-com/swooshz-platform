@@ -1,6 +1,6 @@
 CC ?= cc
 CFLAGS ?= -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -fno-plt -fstack-protector-strong
-CPPFLAGS ?= -D_GNU_SOURCE -D_FORTIFY_SOURCE=2
+CPPFLAGS ?= -D_FORTIFY_SOURCE=2
 LDLIBS ?= -lcrypto
 BUILD ?= build
 

@@ -112,6 +112,15 @@ jobs:
       - name: Install application dependencies
         run: npm ci
 
+      - name: Run managed-boundary pre-guest qualification
+        run: |
+          mkdir -p _output/recovery-managed-build
+          python3 -B recovery/managed/qualify.py \
+            --phase preflight \
+            --expected-sha "$CANDIDATE_SHA" \
+            --output _output/recovery-managed-preflight-evidence.json \
+            --build-output _output/recovery-managed-build
+
       - name: Prepare disposable guest security toolchain
         run: |
           sudo apt-get update
@@ -127,10 +136,11 @@ jobs:
 
       - name: Run complete managed-boundary qualification
         run: |
-          mkdir -p _output/recovery-managed-build
           python3 -B recovery/managed/qualify.py \
+            --phase guest \
             --expected-sha "$CANDIDATE_SHA" \
             --output _output/recovery-managed-qualification-evidence.json \
+            --resume _output/recovery-managed-preflight-evidence.json \
             --build-output _output/recovery-managed-build
 
       - name: Upload managed-boundary evidence

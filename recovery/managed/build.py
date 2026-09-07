@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import platform
+import shlex
 import shutil
 import subprocess
 import sys
@@ -33,6 +34,35 @@ class ProviderHold(BuildError):
     pass
 
 
+MAX_DIAGNOSTIC_CHARS = 4096
+
+
+def _bounded(value: str | None) -> str:
+    text = value or ""
+    if len(text) <= MAX_DIAGNOSTIC_CHARS:
+        return text
+    return text[:MAX_DIAGNOSTIC_CHARS] + "\n...[truncated]"
+
+
+def _safe_command(command: list[str]) -> str:
+    safe: list[str] = []
+    for value in command:
+        text = str(value)
+        if "=" in text:
+            key, _, _ = text.partition("=")
+            if any(marker in key.upper() for marker in ("PASSWORD", "TOKEN", "SECRET", "PRIVATE_KEY")):
+                text = key + "=<redacted>"
+        safe.append(text)
+    return shlex.join(safe)
+
+
+def _process_failure(stage: str, command: list[str], result: subprocess.CompletedProcess[str]) -> str:
+    return (
+        f"stage={stage}; command={_safe_command(command)}; returncode={result.returncode}; "
+        f"stdout={_bounded(result.stdout)}; stderr={_bounded(result.stderr)}"
+    )
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -48,14 +78,16 @@ def require_tool(name: str) -> str:
     return path
 
 
-def run(command: list[str], *, cwd: Path | None = None) -> None:
+def run(command: list[str], *, cwd: Path | None = None, stage: str | None = None) -> None:
+    stage = stage or command[0]
     try:
         result = subprocess.run(command, cwd=cwd, check=False, text=True, capture_output=True)
     except OSError as error:
-        raise ProviderHold(f"process-unavailable:{command[0]}") from error
+        raise ProviderHold(
+            f"stage={stage}; command={_safe_command(command)}; process-unavailable={type(error).__name__}"
+        ) from error
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip().splitlines()
-        raise BuildError(f"command-failed:{command[0]}:{detail[-1] if detail else result.returncode}")
+        raise BuildError(_process_failure(stage, command, result))
 
 
 def download_verified(url: str, expected: str, cache_path: Path) -> Path:
@@ -107,10 +139,13 @@ def apply_exact_patch(source_root: Path, patch_path: Path) -> None:
         try:
             result = subprocess.run(command, cwd=source_root, check=False, text=True, capture_output=True)
         except OSError as error:
-            raise ProviderHold(f"process-unavailable:{command[0]}") from error
+            raise ProviderHold(
+                f"stage={'patch-dry-run' if command[1] == '--dry-run' else 'patch-apply'}; "
+                f"command={_safe_command(command)}; process-unavailable={type(error).__name__}"
+            ) from error
         if result.returncode != 0:
-            detail = (result.stderr or result.stdout or "").strip().splitlines()
-            raise BuildError(f"command-failed:{command[0]}:{detail[-1] if detail else result.returncode}")
+            stage = "patch-dry-run" if command[1] == "--dry-run" else "patch-apply"
+            raise BuildError(_process_failure(stage, command, result))
         output = ((result.stdout or "") + (result.stderr or "")).lower()
         if "offset" in output or "fuzz" in output:
             raise BuildError("patch-application-not-exact")
@@ -120,10 +155,15 @@ def capture_version(sshd: Path) -> str:
     try:
         result = subprocess.run([str(sshd), "-V"], check=False, text=True, capture_output=True)
     except OSError as error:
-        raise BuildError("openssh-version-execution-failed") from error
+        raise BuildError(
+            f"stage=openssh-version; command={_safe_command([str(sshd), '-V'])}; "
+            f"process-unavailable={type(error).__name__}"
+        ) from error
     output = (result.stdout or "") + (result.stderr or "")
+    if result.returncode != 0:
+        raise BuildError(_process_failure("openssh-version", [str(sshd), "-V"], result))
     if "OpenSSH_10.5p1" not in output or "swz-baseline=openssh-10.5p1" not in output:
-        raise BuildError("openssh-provenance-not-runtime-derived")
+        raise BuildError(_process_failure("openssh-version", [str(sshd), "-V"], result))
     return "OpenSSH_10.5p1"
 
 
@@ -146,8 +186,8 @@ def build_openssh(lock: dict[str, Any], output: Path, cache: Path) -> dict[str, 
             "./configure",
             *lock["configure"],
         ]
-        run(configure, cwd=source)
-        run(["make", "-j2"], cwd=source)
+        run(configure, cwd=source, stage="openssh-configure")
+        run(["make", "-j2"], cwd=source, stage="openssh-build")
         sshd = source / "sshd"
         ssh = source / "ssh"
         keygen = source / "ssh-keygen"
@@ -189,9 +229,9 @@ def build_musl(lock: dict[str, Any], output: Path, cache: Path) -> dict[str, str
         if "aux[AT_RANDOM] == 0" not in (source / "src/env/__libc_start_main.c").read_text(encoding="ascii"):
             raise BuildError("musl-patch-marker-missing")
         prefix = output / "musl"
-        run(["./configure", f"--prefix={prefix}"], cwd=source)
-        run(["make", "-j2"], cwd=source)
-        run(["make", "install"], cwd=source)
+        run(["./configure", f"--prefix={prefix}"], cwd=source, stage="musl-configure")
+        run(["make", "-j2"], cwd=source, stage="musl-build")
+        run(["make", "install"], cwd=source, stage="musl-install")
         libc = prefix / "lib" / "libc.so"
         if not libc.is_file():
             raise BuildError("musl-libc-missing")
@@ -209,7 +249,7 @@ def build_native(output: Path) -> dict[str, str]:
     make = require_tool("make")
     require_tool("cc")
     native_output = output / "native"
-    run([make, "-C", str(HERE), f"BUILD={native_output}", "all"])
+    run([make, "-C", str(HERE), f"BUILD={native_output}", "all"], stage="native-build")
     binaries = sorted(native_output.glob("swz-*"))
     if len(binaries) != 7 or any(not path.is_file() for path in binaries):
         raise BuildError("native-component-set-incomplete")

@@ -1,9 +1,11 @@
 import importlib.util
 import os
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -12,6 +14,11 @@ CONTROLLER = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 sys.modules[SPEC.name] = CONTROLLER
 SPEC.loader.exec_module(CONTROLLER)
+QUALIFY_SPEC = importlib.util.spec_from_file_location("swz_test_qualify", ROOT / "recovery/managed/qualify.py")
+assert QUALIFY_SPEC is not None and QUALIFY_SPEC.loader is not None
+QUALIFY = importlib.util.module_from_spec(QUALIFY_SPEC)
+sys.modules[QUALIFY_SPEC.name] = QUALIFY
+QUALIFY_SPEC.loader.exec_module(QUALIFY)
 
 
 class ControllerIntegrationTests(unittest.TestCase):
@@ -64,6 +71,25 @@ class ControllerIntegrationTests(unittest.TestCase):
         self.assertEqual(inputs.barrier_utc, "2026-09-07T00:00:00Z")
         self.assertTrue(inputs.bundle_commitment.startswith("sha256:v1:"))
         self.assertEqual(inputs.artifact_stream_commitment, "")
+
+    def test_disposable_locator_preserves_canonical_psql_path(self):
+        result = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(QUALIFY, "run", return_value=result) as run:
+            QUALIFY.ensure_disposable_locator_client_path("coolify-db")
+        command = run.call_args.args[0]
+        self.assertEqual(command[:5], ["docker", "exec", "--user", "root", "coolify-db"])
+        script = command[-1]
+        self.assertIn("command -v psql", script)
+        self.assertIn("/usr/local/bin/psql", script)
+
+    def test_locator_failure_diagnostic_retains_stage_and_output(self):
+        result = subprocess.CompletedProcess([], 1, "stdout-detail", "stderr-detail")
+        with mock.patch.object(QUALIFY, "run", return_value=result):
+            with self.assertRaises(QUALIFY.HarnessDefect) as raised:
+                QUALIFY.ensure_disposable_locator_client_path("coolify-db")
+        self.assertIn("stage=disposable-locator-client-path", str(raised.exception))
+        self.assertIn("stdout-detail", str(raised.exception))
+        self.assertIn("stderr-detail", str(raised.exception))
 
 
 if __name__ == "__main__":

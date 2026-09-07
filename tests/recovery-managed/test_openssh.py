@@ -29,13 +29,47 @@ class OpenSSHProviderHold(OpenSSHQualificationError):
     pass
 
 
+MAX_DIAGNOSTIC_CHARS = 4096
+
+
+def _bounded(value) -> str:
+    text = value.decode("utf-8", "replace") if isinstance(value, bytes) else (value or "")
+    if len(text) <= MAX_DIAGNOSTIC_CHARS:
+        return text
+    half = MAX_DIAGNOSTIC_CHARS // 2
+    return text[:half] + "\n...[truncated]...\n" + text[-half:]
+
+
+def _safe_command(command) -> str:
+    safe = []
+    for value in command:
+        text = str(value)
+        if "=" in text:
+            key, _, _ = text.partition("=")
+            if any(marker in key.upper() for marker in ("PASSWORD", "TOKEN", "SECRET", "PRIVATE_KEY")):
+                text = key + "=<redacted>"
+        safe.append(text)
+    return shlex.join(safe)
+
+
+def _process_failure(stage, command, result) -> str:
+    return (
+        f"stage={stage}; command={_safe_command(command)}; returncode={getattr(result, 'returncode', 'unknown')}; "
+        f"stdout={_bounded(getattr(result, 'stdout', None))}; stderr={_bounded(getattr(result, 'stderr', None))}"
+    )
+
+
 def _run(command, *, cwd=None, env=None, timeout=30):
     try:
         result = subprocess.run(command, cwd=cwd, env=env, check=False, text=True, capture_output=True, timeout=timeout)
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise OpenSSHProviderHold("openssh-process-unavailable") from error
+    except subprocess.TimeoutExpired as error:
+        raise OpenSSHProviderHold(f"stage=openssh-command; command={_safe_command(command)}; timeout={timeout}s") from error
+    except OSError as error:
+        raise OpenSSHProviderHold(
+            f"stage=openssh-command; command={_safe_command(command)}; process-unavailable={type(error).__name__}"
+        ) from error
     if result.returncode != 0:
-        raise OpenSSHQualificationError(f"openssh-command-failed:{command[0]}")
+        raise OpenSSHQualificationError(_process_failure("openssh-command", command, result))
     return result
 
 
@@ -175,12 +209,13 @@ def run_live_inetd_session(build_output: pathlib.Path) -> dict[str, str]:
         user = os.environ.get("USER") or os.environ.get("USERNAME")
         if not user:
             raise OpenSSHProviderHold("login-user-unavailable")
+        client_command = [
+            str(ssh), "-i", str(client_key), "-p", str(port), "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+            f"{user}@127.0.0.1", "ignored-command",
+        ]
         client = subprocess.run(
-            [
-                str(ssh), "-i", str(client_key), "-p", str(port), "-o", "BatchMode=yes",
-                "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-                f"{user}@127.0.0.1", "ignored-command",
-            ],
+            client_command,
             env=env,
             check=False,
             input=accepted_frame,
@@ -195,7 +230,7 @@ def run_live_inetd_session(build_output: pathlib.Path) -> dict[str, str]:
         if "error" in server_state:
             raise OpenSSHQualificationError("openssh-server-thread-failed") from server_state["error"]
         if client.returncode != 0:
-            raise OpenSSHQualificationError("openssh-live-session-failed")
+            raise OpenSSHQualificationError(_process_failure("openssh-live-session", client_command, client))
         try:
             challenge = BACKEND.decode_frame(client.stdout)
             challenge_payload = BACKEND.parse_managed_json(challenge.payload)

@@ -14,6 +14,7 @@ import importlib.util
 import json
 import os
 import platform
+import shlex
 import shutil
 import socket
 import subprocess
@@ -27,6 +28,37 @@ from typing import Any, Callable
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 BASE = "3bff98ac5ef10c1675d4691f516952ac937915d3"
+MAX_DIAGNOSTIC_CHARS = 4096
+
+
+def _bounded(value: object) -> str:
+    if isinstance(value, bytes):
+        text = value.decode("utf-8", "replace")
+    else:
+        text = "" if value is None else str(value)
+    if len(text) <= MAX_DIAGNOSTIC_CHARS:
+        return text
+    half = MAX_DIAGNOSTIC_CHARS // 2
+    return text[:half] + "\n...[truncated]...\n" + text[-half:]
+
+
+def _safe_command(command: list[str]) -> str:
+    safe: list[str] = []
+    for value in command:
+        text = str(value)
+        if "=" in text:
+            key, _, _ = text.partition("=")
+            if any(marker in key.upper() for marker in ("PASSWORD", "TOKEN", "SECRET", "PRIVATE_KEY")):
+                text = key + "=<redacted>"
+        safe.append(text)
+    return shlex.join(safe)
+
+
+def _process_failure(stage: str, command: list[str], result: object) -> str:
+    return (
+        f"stage={stage}; command={_safe_command(command)}; returncode={getattr(result, 'returncode', 'unknown')}; "
+        f"stdout={_bounded(getattr(result, 'stdout', None))}; stderr={_bounded(getattr(result, 'stderr', None))}"
+    )
 
 
 class CandidateDefect(RuntimeError):
@@ -55,6 +87,7 @@ def run(command: list[str], *, cwd: Path = ROOT, input_text: str | None = None, 
     effective_command = list(command)
     if os.name == "nt" and effective_command and effective_command[0] == "npm":
         effective_command[0] = shutil.which("npm.cmd") or effective_command[0]
+    stage = str(effective_command[0])
     try:
         result = subprocess.run(
             effective_command,
@@ -66,9 +99,11 @@ def run(command: list[str], *, cwd: Path = ROOT, input_text: str | None = None, 
             timeout=timeout,
         )
     except FileNotFoundError as error:
-        raise ProviderHold(f"tool-unavailable:{effective_command[0]}") from error
+        raise ProviderHold(
+            f"stage={stage}; command={_safe_command(effective_command)}; tool-unavailable={stage}"
+        ) from error
     except subprocess.TimeoutExpired as error:
-        raise HarnessDefect(f"command-timeout:{command[0]}") from error
+        raise HarnessDefect(f"stage={stage}; command={_safe_command(effective_command)}; timeout={timeout}s") from error
     return result
 
 
@@ -177,9 +212,10 @@ def run_deterministic_tests() -> None:
         raise ProviderHold("qualification-workspace-unavailable") from error
     if platform.system() != "Linux":
         raise ProviderHold("managed-deterministic-linux-required")
-    result = run([sys.executable, "-B", "-m", "unittest", "discover", "-s", "tests/recovery-managed", "-p", "test_*.py"], timeout=180)
+    command = [sys.executable, "-B", "-m", "unittest", "discover", "-s", "tests/recovery-managed", "-p", "test_*.py"]
+    result = run(command, timeout=180)
     if result.returncode != 0:
-        raise CandidateDefect("deterministic-tests-failed")
+        raise CandidateDefect(_process_failure("managed-deterministic-tests", command, result))
 
 
 def run_application_gates() -> None:
@@ -188,18 +224,22 @@ def run_application_gates() -> None:
     for command in (["npm", "run", "typecheck"], ["npm", "run", "build"], ["npm", "test"]):
         result = run(command, timeout=240)
         if result.returncode != 0:
-            raise CandidateDefect("application-gate-failed:" + command[-1])
+            raise CandidateDefect(_process_failure("application-" + command[-1], command, result))
 
 
 def run_container_build() -> None:
     require_tool("docker")
-    result = run(["docker", "build", "--pull=false", "-t", "swz-managed-platform-g3-ci", "."], timeout=600)
+    command = ["docker", "build", "--pull=false", "-t", "swz-managed-platform-g3-ci", "."]
+    result = run(command, timeout=600)
     if result.returncode != 0:
         output = (result.stdout or "") + (result.stderr or "")
+        output_lower = output.lower()
         provider_signals = (
-            "Cannot connect to the Docker daemon",
+            "cannot connect to the docker daemon",
             "docker_engine",
-            "Is the docker daemon running",
+            "dockerdesktoplinuxengine",
+            "is the docker daemon running",
+            "failed to connect to the docker api",
             "error during connect",
             "pull access denied",
             "failed to resolve source metadata",
@@ -208,20 +248,21 @@ def run_container_build() -> None:
             "i/o timeout",
             "unable to evaluate symlinks in context path",
         )
-        if any(signal in output for signal in provider_signals):
-            raise ProviderHold("disposable-container-provider-unavailable")
-        raise CandidateDefect("container-build-failed")
+        if any(signal in output_lower for signal in provider_signals):
+            raise ProviderHold(_process_failure("container-build", command, result))
+        raise CandidateDefect(_process_failure("container-build", command, result))
 
 
 def run_build(build_output: Path) -> None:
+    command = [sys.executable, "-B", str(HERE / "build.py"), "--output", str(build_output)]
     result = run(
-        [sys.executable, "-B", str(HERE / "build.py"), "--output", str(build_output)],
+        command,
         timeout=1800,
     )
     if result.returncode == 75:
-        raise ProviderHold("managed-build-provider-hold")
+        raise ProviderHold(_process_failure("managed-build", command, result))
     if result.returncode != 0:
-        raise CandidateDefect("managed-build-failed")
+        raise CandidateDefect(_process_failure("managed-build", command, result))
     manifest = build_output / "build-manifest.json"
     if not manifest.is_file():
         raise CandidateDefect("managed-build-manifest-missing")
@@ -232,15 +273,16 @@ def run_build(build_output: Path) -> None:
     if manifest_value.get("candidate_sha") != git_text("rev-parse", "HEAD").strip():
         raise CandidateDefect("managed-build-manifest-head-mismatch")
     install_plan = build_output / "install-plan.json"
+    install_command = [
+        sys.executable, "-B", str(HERE / "install-plan.py"),
+        "--manifest", str(manifest), "--output", str(install_plan),
+    ]
     result = run(
-        [
-            sys.executable, "-B", str(HERE / "install-plan.py"),
-            "--manifest", str(manifest), "--output", str(install_plan),
-        ],
+        install_command,
         timeout=120,
     )
     if result.returncode != 0:
-        raise CandidateDefect("install-plan-validation-failed")
+        raise CandidateDefect(_process_failure("install-plan-validation", install_command, result))
 
 
 def run_pinned_openssh_build(build_output: Path) -> dict[str, str]:
@@ -276,10 +318,11 @@ def run_pinned_openssh_build(build_output: Path) -> dict[str, str]:
             raise CandidateDefect("openssh-runtime-file-missing") from error
         if actual != openssh.get(key):
             raise CandidateDefect("openssh-runtime-digest-mismatch")
-    result = run([str(build_output / "openssh/sbin/sshd"), "-V"], timeout=30)
+    version_command = [str(build_output / "openssh/sbin/sshd"), "-V"]
+    result = run(version_command, timeout=30)
     output = (result.stdout or "") + (result.stderr or "")
     if "OpenSSH_10.5p1" not in output or "swz-baseline=openssh-10.5p1" not in output:
-        raise CandidateDefect("openssh-runtime-baseline-mismatch")
+        raise CandidateDefect(_process_failure("openssh-runtime-version", version_command, result))
     return {
         "version": openssh["version"],
         "archive_sha256": openssh["archive_sha256"],
@@ -288,12 +331,13 @@ def run_pinned_openssh_build(build_output: Path) -> dict[str, str]:
 
 
 def run_native_static_closure(build_output: Path) -> None:
+    command = ["make", "-C", str(HERE), f"BUILD={build_output / 'native'}", "static-closure"]
     result = run(
-        ["make", "-C", str(HERE), f"BUILD={build_output / 'native'}", "static-closure"],
+        command,
         timeout=180,
     )
     if result.returncode != 0:
-        raise CandidateDefect("native-static-closure-failed")
+        raise CandidateDefect(_process_failure("native-static-closure", command, result))
 
 
 def run_c_native_kat(output: Path) -> None:
@@ -303,20 +347,22 @@ def run_c_native_kat(output: Path) -> None:
     except OSError as error:
         raise ProviderHold("native-kat-output-unavailable") from error
     executable = output / "native-unit"
+    command = [
+        cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Wpedantic", "-Werror",
+        "-I", str(HERE), str(ROOT / "tests/recovery-managed/native_unit.c"),
+        str(HERE / "platform.c"), str(HERE / "protocol.c"), "-lcrypto",
+        "-o", str(executable),
+    ]
     result = run(
-        [
-            cc, "-std=c11", "-O2", "-Wall", "-Wextra", "-Wpedantic", "-Werror",
-            "-I", str(HERE), str(ROOT / "tests/recovery-managed/native_unit.c"),
-            str(HERE / "platform.c"), str(HERE / "protocol.c"), "-lcrypto",
-            "-o", str(executable),
-        ],
+        command,
         timeout=120,
     )
     if result.returncode != 0:
-        raise CandidateDefect("native-unit-build-failed")
-    result = run([str(executable)], timeout=30)
+        raise CandidateDefect(_process_failure("native-unit-build", command, result))
+    run_command = [str(executable)]
+    result = run(run_command, timeout=30)
     if result.returncode != 0 or "NATIVE_IDENTITY_KAT=PASS" not in result.stdout:
-        raise CandidateDefect("c-python-kat-failed")
+        raise CandidateDefect(_process_failure("native-unit-run", run_command, result))
 
 
 def run_openssh_live(build_output: Path) -> dict[str, str]:
@@ -489,6 +535,21 @@ def run_custody_negative(build_output: Path) -> None:
                 raise CandidateDefect("custody-post-retirement-reuse-accepted")
 
 
+def ensure_disposable_locator_client_path(container: str) -> None:
+    command = [
+        "docker", "exec", "--user", "root", container, "/bin/sh", "-c",
+        "set -eu; "
+        "if [ -x /usr/local/bin/psql ]; then exit 0; fi; "
+        "if [ -e /usr/local/bin/psql ]; then exit 66; fi; "
+        "psql_path=\"$(command -v psql || true)\"; "
+        "[ -n \"$psql_path\" ]; "
+        "ln -s \"$psql_path\" /usr/local/bin/psql",
+    ]
+    result = run(command, timeout=30)
+    if result.returncode != 0:
+        raise HarnessDefect(_process_failure("disposable-locator-client-path", command, result))
+
+
 def run_locator_integration(build_output: Path) -> dict[str, Any]:
     if platform.system() != "Linux":
         raise ProviderHold("locator-integration-linux-required")
@@ -501,19 +562,22 @@ def run_locator_integration(build_output: Path) -> dict[str, Any]:
     image = lock["postgres_qualification_image"]["image"]
     container = "coolify-db"
     existing = run(["docker", "ps", "-aq", "--filter", "name=^/" + container + "$"], timeout=30)
+    if existing.returncode != 0:
+        raise ProviderHold(_process_failure("disposable-container-preflight", ["docker", "ps", "-aq", "--filter", "name=^/" + container + "$"], existing))
     if existing.returncode == 0 and existing.stdout.strip():
         raise ProviderHold("disposable-container-name-in-use")
+    start_command = [
+        "docker", "run", "--rm", "--detach", "--name", container,
+        "--platform", lock["postgres_qualification_image"]["platform"],
+        "--env", "POSTGRES_PASSWORD=swz-disposable-password",
+        "--env", "POSTGRES_DB=coolify", "--env", "POSTGRES_USER=postgres", image,
+    ]
     started = run(
-        [
-            "docker", "run", "--rm", "--detach", "--name", container,
-            "--platform", lock["postgres_qualification_image"]["platform"],
-            "--env", "POSTGRES_PASSWORD=swz-disposable-password",
-            "--env", "POSTGRES_DB=coolify", "--env", "POSTGRES_USER=postgres", image,
-        ],
+        start_command,
         timeout=120,
     )
     if started.returncode != 0:
-        raise ProviderHold("postgres-disposable-container-unavailable")
+        raise ProviderHold(_process_failure("postgres-disposable-container-start", start_command, started))
     try:
         ready = False
         for _ in range(120):
@@ -540,10 +604,17 @@ INSERT INTO scheduled_database_backup_executions VALUES
   (23, 1, 'coolify', 'success', '2026-09-07T01:00:00Z', '830082', TRUE,
    'qualified-artifact', FALSE);
 """
-        setup = run(["docker", "exec", "-i", container, "psql", "-U", "postgres", "-d", "coolify", "-v", "ON_ERROR_STOP=1"], input_text=sql, timeout=30)
+        setup_command = ["docker", "exec", "-i", container, "psql", "-U", "postgres", "-d", "coolify", "-v", "ON_ERROR_STOP=1"]
+        setup = run(setup_command, input_text=sql, timeout=30)
         if setup.returncode != 0:
-            raise HarnessDefect("postgres-fixture-setup-failed")
-        outcome = runner.execute_locator("2026-09-07T00:00:00.000000Z")
+            raise HarnessDefect(_process_failure("postgres-fixture-setup", setup_command, setup))
+        ensure_disposable_locator_client_path(container)
+        try:
+            outcome = runner.execute_locator("2026-09-07T00:00:00.000000Z")
+        except Exception as error:
+            raise HarnessDefect(
+                f"stage=canonical-persisted-locator; error={type(error).__name__}:{_bounded(error)}"
+            ) from error
         with tempfile.TemporaryDirectory(prefix="swz-store-locator-") as temporary:
             root = Path(temporary)
             store_root = root / "store"
@@ -572,19 +643,20 @@ def run_guest(build_output: Path, output: Path) -> dict[str, Any]:
     if not guest_root_text:
         raise HarnessDefect("SWZ_GUEST_ROOT-not-provided")
     root = Path(guest_root_text)
+    command = [
+        sys.executable, "-B", str(HERE / "qualification-vm.py"),
+        "--build-output", str(build_output),
+        "--guest-root", str(root), "--policy", str(HERE / "selinux.cil"),
+        "--file-contexts", str(HERE / "file_contexts"), "--output", str(output),
+    ]
     result = run(
-        [
-            sys.executable, "-B", str(HERE / "qualification-vm.py"),
-            "--build-output", str(build_output),
-            "--guest-root", str(root), "--policy", str(HERE / "selinux.cil"),
-            "--file-contexts", str(HERE / "file_contexts"), "--output", str(output),
-        ],
+        command,
         timeout=180,
     )
     if result.returncode == 75:
-        raise ProviderHold("disposable-guest-provider-hold")
+        raise ProviderHold(_process_failure("disposable-guest-qualification", command, result))
     if result.returncode != 0:
-        raise CandidateDefect("disposable-guest-proof-failed")
+        raise CandidateDefect(_process_failure("disposable-guest-qualification", command, result))
     try:
         value = json.loads(output.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
@@ -600,21 +672,50 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, default=HERE / "qualification-evidence.json")
     parser.add_argument("--build-output", type=Path, default=HERE / "build-output")
     parser.add_argument("--expected-sha")
+    parser.add_argument("--phase", choices=("all", "preflight", "guest"), default="all")
+    parser.add_argument("--resume", type=Path)
     args = parser.parse_args(argv)
     cases = load_cases(args.cases)
-    evidence: dict[str, Any] = {
-        "schema": "swz-managed-qualification-evidence.v1",
-        "gate": "G3",
-        "candidate_sha": git_text("rev-parse", "HEAD").strip(),
-        "statuses": {},
-        "mandatory_security_skips": 0,
-    }
-    if args.expected_sha and evidence["candidate_sha"] != args.expected_sha:
+    candidate_sha = git_text("rev-parse", "HEAD").strip()
+    if args.expected_sha and candidate_sha != args.expected_sha:
         print("CANDIDATE_DEFECT=exact-head-mismatch", file=sys.stderr)
         return 1
-    failures: list[str] = []
-    holds: list[str] = []
-    build_state = {"built": False}
+    if args.phase == "guest":
+        if args.resume is None:
+            print("CANDIDATE_DEFECT=guest-phase-preflight-evidence-required", file=sys.stderr)
+            return 1
+        try:
+            evidence = json.loads(args.resume.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            print("CANDIDATE_DEFECT=preflight-evidence-invalid", file=sys.stderr)
+            return 1
+        if (
+            not isinstance(evidence, dict)
+            or evidence.get("schema") != "swz-managed-qualification-evidence.v1"
+            or evidence.get("gate") != "G3"
+            or evidence.get("candidate_sha") != candidate_sha
+            or not isinstance(evidence.get("statuses"), dict)
+        ):
+            print("CANDIDATE_DEFECT=preflight-evidence-mismatch", file=sys.stderr)
+            return 1
+        if evidence.get("failures") or evidence.get("provider_holds"):
+            print("CANDIDATE_DEFECT=preflight-evidence-not-clear", file=sys.stderr)
+            return 1
+        evidence["phase"] = "guest"
+        failures = list(evidence.get("failures", []))
+        holds = list(evidence.get("provider_holds", []))
+    else:
+        evidence = {
+            "schema": "swz-managed-qualification-evidence.v1",
+            "gate": "G3",
+            "candidate_sha": candidate_sha,
+            "phase": args.phase,
+            "statuses": {},
+            "mandatory_security_skips": 0,
+        }
+        failures = []
+        holds = []
+    build_state = {"built": args.phase == "guest"}
     guest_state: dict[str, Any] = {"value": None}
 
     def ensure_build() -> None:
@@ -635,7 +736,18 @@ def main(argv: list[str] | None = None) -> int:
             guest_state["value"] = run_guest(args.build_output, args.output.with_name("guest-evidence.json"))
         return guest_state["value"]
 
-    def execute(case_id: str, function: Callable[[], Any]) -> None:
+    def execute(case_id: str, function: Callable[[], Any], requires: tuple[str, ...] = ()) -> None:
+        blocked = [
+            dependency for dependency in requires
+            if evidence["statuses"].get(dependency, {}).get("status") != "PASS"
+        ]
+        if blocked:
+            evidence["statuses"][case_id] = {
+                "status": "QUALIFICATION_DEPENDENCY_FAILURE",
+                "blocked_by": blocked,
+                "detail": "prerequisite-not-pass",
+            }
+            return
         try:
             value = function()
         except ProviderHold as error:
@@ -648,35 +760,54 @@ def main(argv: list[str] | None = None) -> int:
             evidence["statuses"][case_id] = {"status": "CANDIDATE_DEFECT", "detail": str(error)}
             failures.append(case_id)
         except Exception as error:
-            evidence["statuses"][case_id] = {"status": "QUALIFICATION_HARNESS_DEFECT", "detail": type(error).__name__}
+            evidence["statuses"][case_id] = {
+                "status": "QUALIFICATION_HARNESS_DEFECT",
+                "detail": f"{type(error).__name__}:{_bounded(error)}",
+            }
             failures.append(case_id)
         else:
             evidence["statuses"][case_id] = {"status": "PASS", "evidence": value if isinstance(value, (dict, list, str, int, bool)) else "PASS"}
 
-    execute("repository-guardrails", exact_scope)
-    execute("application-typecheck-build-tests", run_application_gates)
-    execute("managed-boundary-deterministic-tests", run_deterministic_tests)
-    execute("storewire-identity-kats", run_deterministic_tests)
-    execute("canonical-store-locator-byte-equality", exact_scope)
-    execute("container-build", run_container_build)
-    execute("native-c11-build", ensure_build)
-    execute("native-static-closure", ensure_static_closure)
-    execute("c-python-identity-agreement", lambda: run_c_native_kat(args.build_output))
-    execute("native-lifecycle-listener-boundary", lambda: run_supervisor_lifecycle(args.build_output))
-    execute("socket-confinement", lambda: run_supervisor_lifecycle(args.build_output))
-    execute("host-key-custody-negative", lambda: run_custody_negative(args.build_output))
-    execute("host-key-custody-positive", ensure_openssh_live)
-    execute("pinned-openssh-build", lambda: (ensure_build(), run_pinned_openssh_build(args.build_output))[1])
-    execute("live-openssh-inetd-session", ensure_openssh_live)
-    execute("disposable-store-cas-locator-integration", lambda: run_locator_integration(args.build_output))
-    execute("dm-verity-booted-guest", ensure_guest)
-    execute("selinux-enforcing-guest", ensure_guest)
-    execute("selinux-denial-tests", ensure_guest)
-    execute("process-finality-generation-retirement", lambda: run_supervisor_lifecycle(args.build_output))
-    execute("publication-scope-provenance", exact_scope)
+    if args.phase in ("all", "preflight"):
+        execute("repository-guardrails", exact_scope)
+        execute("managed-boundary-deterministic-tests", run_deterministic_tests)
+        execute("storewire-identity-kats", run_deterministic_tests, ("managed-boundary-deterministic-tests",))
+        execute("c-python-identity-agreement", lambda: run_c_native_kat(args.build_output))
+        execute("application-typecheck-build-tests", run_application_gates)
+        execute("canonical-store-locator-byte-equality", exact_scope)
+        execute("container-build", run_container_build)
+        execute("native-c11-build", ensure_build)
+        execute("native-static-closure", ensure_static_closure, ("native-c11-build",))
+        execute("pinned-openssh-build", lambda: (ensure_build(), run_pinned_openssh_build(args.build_output))[1], ("native-c11-build",))
+        execute("disposable-store-cas-locator-integration", lambda: run_locator_integration(args.build_output), ("native-c11-build",))
+        execute("host-key-custody-negative", lambda: run_custody_negative(args.build_output), ("native-c11-build", "pinned-openssh-build"))
+        execute("host-key-custody-positive", ensure_openssh_live, ("native-c11-build", "pinned-openssh-build"))
+        execute("live-openssh-inetd-session", ensure_openssh_live, ("native-c11-build", "pinned-openssh-build"))
+        execute("native-lifecycle-listener-boundary", lambda: run_supervisor_lifecycle(args.build_output), ("native-c11-build",))
+        execute("socket-confinement", lambda: run_supervisor_lifecycle(args.build_output), ("native-lifecycle-listener-boundary",))
+        execute("process-finality-generation-retirement", lambda: run_supervisor_lifecycle(args.build_output), ("native-lifecycle-listener-boundary",))
+
+    host_prerequisites = (
+        "native-c11-build",
+        "native-static-closure",
+        "pinned-openssh-build",
+        "disposable-store-cas-locator-integration",
+        "host-key-custody-negative",
+        "host-key-custody-positive",
+        "live-openssh-inetd-session",
+        "native-lifecycle-listener-boundary",
+        "socket-confinement",
+        "process-finality-generation-retirement",
+    )
+    if args.phase in ("all", "guest"):
+        execute("dm-verity-booted-guest", ensure_guest, host_prerequisites)
+        execute("selinux-enforcing-guest", ensure_guest, ("dm-verity-booted-guest",))
+        execute("selinux-denial-tests", ensure_guest, ("dm-verity-booted-guest",))
+        execute("publication-scope-provenance", exact_scope)
+
     expected_ids = {case["id"] for case in cases}
     actual_ids = set(evidence["statuses"])
-    missing = expected_ids - actual_ids
+    missing = set() if args.phase == "preflight" else expected_ids - actual_ids
     if missing:
         for case_id in sorted(missing):
             evidence["statuses"][case_id] = {"status": "QUALIFICATION_HARNESS_DEFECT", "detail": "case-not-executed"}
@@ -698,7 +829,7 @@ def main(argv: list[str] | None = None) -> int:
     if holds:
         print("QUALIFICATION_PROVIDER_HOLD=" + ",".join(sorted(set(holds))), file=sys.stderr)
         return 75
-    print("QUALIFICATION=PASS")
+    print("QUALIFICATION=" + ("PRE-GUEST-PASS" if args.phase == "preflight" else "PASS"))
     return 0
 
 
