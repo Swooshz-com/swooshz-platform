@@ -1,0 +1,33 @@
+{
+  "schema": "swz-managed-image-layout.v1",
+  "architecture": "x86_64",
+  "boot": {
+    "kernel": "/boot/vmlinuz-qualified",
+    "initramfs": "/boot/swz-managed.cpio.gz",
+    "root_hash_required": true,
+    "verity_data_block_size": 4096,
+    "verity_hash_block_size": 4096
+  },
+  "immutable_closure": [
+    "/usr/local/libexec/swz-supervisor",
+    "/usr/local/libexec/swz-custodian",
+    "/usr/local/libexec/swz-dispatcher",
+    "/usr/local/libexec/swz-bootstrap",
+    "/usr/local/libexec/swz-broker",
+    "/usr/local/libexec/swz-launch-base",
+    "/usr/local/libexec/swz-agent",
+    "/opt/swz/openssh/sbin/sshd",
+    "/opt/swz/openssh/bin/ssh",
+    "/opt/swz/openssh/bin/ssh-keygen",
+    "/opt/swz/openssh/bin/ssh-agent",
+    "/opt/swz/openssh/bin/ssh-add",
+    "/etc/ssh/recovery_sshd_config",
+    "/etc/ssh/recovery_authorized_keys",
+    "/etc/selinux/swz/swz-managed.cil",
+    "/etc/selinux/swz/file_contexts"
+  ],
+  "writable_runtime": ["/run/swz", "/var/empty", "/tmp"],
+  "forbidden_mounts": ["/var/run/docker.sock", "/host", "/private", "/artifact-host"],
+  "rootfs_overlay": false,
+  "bind_mounts": false
+}

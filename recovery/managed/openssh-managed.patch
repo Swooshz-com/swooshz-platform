@@ -1,0 +1,65 @@
+diff --git a/version.h b/version.h
+--- a/version.h
++++ b/version.h
+@@ -4,3 +4,4 @@
+ 
+ #define SSH_PORTABLE	"p1"
+ #define SSH_RELEASE	SSH_VERSION SSH_PORTABLE
++#define SWZ_MANAGED_OPENSSH_BASELINE "openssh-10.5p1"
+diff --git a/sshd.c b/sshd.c
+--- a/sshd.c
++++ b/sshd.c
+@@ -605,9 +605,36 @@ drop_connection(int sock, int startups, int notify_pipe)
+ 	return 1;
+ }
+ 
++static int
++swz_managed_runtime_authorized(void)
++{
++	const char *accepted = getenv("SWZ_ACCEPTED");
++	const char *launch_authorized = getenv("SWZ_LAUNCH_AUTHORIZED");
++	const char *lifecycle = getenv("SWZ_LIFECYCLE");
++	const char *values[] = {
++		getenv("SWZ_SESSION"),
++		getenv("SWZ_GENERATION"),
++		getenv("SWZ_CONNECTION_COOKIE"),
++	};
++	if (accepted == NULL || strcmp(accepted, "1") != 0 ||
++	    launch_authorized == NULL || strcmp(launch_authorized, "1") != 0 ||
++	    lifecycle == NULL || strcmp(lifecycle, "ACTIVE") != 0)
++		return 0;
++	for (size_t value_index = 0; value_index < sizeof(values) / sizeof(values[0]); value_index++) {
++		if (values[value_index] == NULL || strlen(values[value_index]) != 64)
++			return 0;
++		for (size_t char_index = 0; char_index < 64; char_index++) {
++			char value = values[value_index][char_index];
++			if (!((value >= '0' && value <= '9') || (value >= 'a' && value <= 'f')))
++				return 0;
++		}
++	}
++	return 1;
++}
++
+ static void
+ usage(void)
+ {
+-	fprintf(stderr, "%s, %s\n", SSH_RELEASE, SSH_OPENSSL_VERSION);
++	fprintf(stderr, "%s, %s, swz-baseline=%s\n", SSH_RELEASE, SSH_OPENSSL_VERSION, SWZ_MANAGED_OPENSSH_BASELINE);
+ 	fprintf(stderr,
+ "usage: sshd [-46DdeGiqTtV] [-C connection_spec] [-c host_cert_file]\n"
+@@ -1380,4 +1407,4 @@ main(int ac, char **av)
+ 	case 'V':
+-		fprintf(stderr, "%s, %s\n",
++		fprintf(stderr, "%s, %s, swz-baseline=%s\n",
+ 			SSH_RELEASE, SSH_OPENSSL_VERSION, SWZ_MANAGED_OPENSSH_BASELINE);
+ 		exit(0);
+@@ -1385,7 +1412,9 @@ main(int ac, char **av)
+ 		default:
+ 			usage();
+ 			break;
+ 		}
+ 	}
++	if (!test_flag && !do_dump_cfg && !swz_managed_runtime_authorized())
++		fatal("managed runtime authority is not active");
+ 	if (!test_flag && !inetd_flag && !do_dump_cfg && !path_absolute(av[0]))
+ 		fatal("sshd requires execution with an absolute path");

@@ -1,0 +1,28 @@
+{
+  "schema": "swz-managed-qualification-cases.v1",
+  "gate": "G3",
+  "mandatory_security_skips": 0,
+  "cases": [
+    {"id": "repository-guardrails", "mandatory": true, "kind": "deterministic"},
+    {"id": "container-build", "mandatory": true, "kind": "provider"},
+    {"id": "application-typecheck-build-tests", "mandatory": true, "kind": "deterministic"},
+    {"id": "managed-boundary-deterministic-tests", "mandatory": true, "kind": "deterministic"},
+    {"id": "native-c11-build", "mandatory": true, "kind": "provider"},
+    {"id": "native-static-closure", "mandatory": true, "kind": "provider"},
+    {"id": "storewire-identity-kats", "mandatory": true, "kind": "deterministic"},
+    {"id": "c-python-identity-agreement", "mandatory": true, "kind": "provider"},
+    {"id": "canonical-store-locator-byte-equality", "mandatory": true, "kind": "deterministic"},
+    {"id": "disposable-store-cas-locator-integration", "mandatory": true, "kind": "provider"},
+    {"id": "pinned-openssh-build", "mandatory": true, "kind": "provider"},
+    {"id": "live-openssh-inetd-session", "mandatory": true, "kind": "provider"},
+    {"id": "host-key-custody-positive", "mandatory": true, "kind": "provider"},
+    {"id": "host-key-custody-negative", "mandatory": true, "kind": "provider"},
+    {"id": "native-lifecycle-listener-boundary", "mandatory": true, "kind": "provider"},
+    {"id": "socket-confinement", "mandatory": true, "kind": "provider"},
+    {"id": "dm-verity-booted-guest", "mandatory": true, "kind": "provider"},
+    {"id": "selinux-enforcing-guest", "mandatory": true, "kind": "provider"},
+    {"id": "selinux-denial-tests", "mandatory": true, "kind": "provider"},
+    {"id": "process-finality-generation-retirement", "mandatory": true, "kind": "provider"},
+    {"id": "publication-scope-provenance", "mandatory": true, "kind": "deterministic"}
+  ]
+}
