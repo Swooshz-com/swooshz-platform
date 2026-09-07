@@ -1,0 +1,29 @@
+{
+  "schema": "swz-recovery-managed-qualification-cases.v1",
+  "mandatory": true,
+  "cases": [
+    {"id": "native-build", "class": "native", "mandatory": true},
+    {"id": "static-closure", "class": "native", "mandatory": true},
+    {"id": "protocol-kats", "class": "deterministic", "mandatory": true},
+    {"id": "identity-kats", "class": "deterministic", "mandatory": true},
+    {"id": "c-python-identity", "class": "native", "mandatory": true},
+    {"id": "run374-golden-vector", "class": "deterministic", "mandatory": true},
+    {"id": "managed-domain-uniqueness", "class": "deterministic", "mandatory": true},
+    {"id": "identity-dag", "class": "deterministic", "mandatory": true},
+    {"id": "raw-derived-negative", "class": "deterministic", "mandatory": true},
+    {"id": "canonical-json-negative", "class": "deterministic", "mandatory": true},
+    {"id": "store-transition-kats", "class": "deterministic", "mandatory": true},
+    {"id": "store-wire-kats", "class": "deterministic", "mandatory": true},
+    {"id": "store-wire-c-python", "class": "native", "mandatory": true},
+    {"id": "controller-integration", "class": "deterministic", "mandatory": true},
+    {"id": "broker-integration", "class": "deterministic", "mandatory": true},
+    {"id": "openssh-namespace", "class": "hosted-security", "mandatory": true},
+    {"id": "selinux-enforcing", "class": "hosted-security", "mandatory": true},
+    {"id": "host-key-custody", "class": "hosted-security", "mandatory": true},
+    {"id": "socket-confinement", "class": "hosted-security", "mandatory": true},
+    {"id": "dm-verity-isolated-vm", "class": "hosted-security", "mandatory": true},
+    {"id": "process-finality", "class": "hosted-security", "mandatory": true},
+    {"id": "publication-scope", "class": "deterministic", "mandatory": true},
+    {"id": "canonical-store-locator", "class": "deterministic", "mandatory": true}
+  ]
+}
