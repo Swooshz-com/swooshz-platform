@@ -1,0 +1,17 @@
+{
+  "schema": "swz-recovery-account-config.v1",
+  "accounts": [
+    {
+      "name": "swooshz-recovery",
+      "uid": 65532,
+      "gid": 65532,
+      "home": "/var/empty/swooshz-recovery",
+      "shell": "/usr/sbin/nologin",
+      "password_login": false,
+      "supplementary_groups": []
+    }
+  ],
+  "root_login": false,
+  "authorized_keys_path": "/etc/ssh/recovery_authorized_keys",
+  "private_key_process": "external-custodian"
+}

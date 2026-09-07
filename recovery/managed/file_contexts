@@ -1,0 +1,5 @@
+/usr/libexec/swooshz-recovery(/.*)?    gen_context(system_u:object_r:swz_recovery_exec_t,s0)
+/var/lib/swooshz-recovery(/.*)?       gen_context(system_u:object_r:swz_recovery_var_t,s0)
+/run/swooshz-recovery(/.*)?           gen_context(system_u:object_r:swz_recovery_socket_t,s0)
+/etc/ssh/recovery_sshd_config         gen_context(system_u:object_r:sshd_config_t,s0)
+/etc/ssh/recovery_authorized_keys     gen_context(system_u:object_r:ssh_home_t,s0)

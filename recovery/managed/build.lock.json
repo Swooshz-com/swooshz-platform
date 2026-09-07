@@ -1,0 +1,43 @@
+{
+  "schema": "swz-recovery-managed-build-lock.v1",
+  "source_baseline": "openssh-10.5p1",
+  "compiler_policy": {
+    "language": "c11",
+    "warnings": ["Wall", "Wextra", "Werror", "pedantic"],
+    "hardening": ["fstack-protector-strong", "D_FORTIFY_SOURCE=2", "relro", "now"],
+    "native_endian_allowed": false,
+    "dynamic_loading_allowed": false,
+    "pam_allowed": false
+  },
+  "managed_sources": [
+    "recovery/managed/protocol.c",
+    "recovery/managed/platform.c",
+    "recovery/managed/supervisor.c",
+    "recovery/managed/custodian.c",
+    "recovery/managed/dispatcher.c",
+    "recovery/managed/bootstrap.c",
+    "recovery/managed/broker.c",
+    "recovery/managed/agent.c",
+    "recovery/managed/launch-base.c"
+  ],
+  "required_components": [
+    "recovery-supervisor",
+    "recovery-hostkey-custodian",
+    "recovery-dispatcher",
+    "recovery-bootstrap",
+    "recovery-broker",
+    "recovery-agent"
+  ],
+  "qualified_inputs_required": [
+    "installation_uuid",
+    "enrolled_ipv4",
+    "admission_root_public_key",
+    "recovery_host_public_key",
+    "controller_public_key",
+    "signed_boot_image_digest",
+    "dm_verity_root_digest",
+    "selinux_policy_digest"
+  ],
+  "invented_production_defaults": false,
+  "output_policy": "temporary-or-explicit-out-of-tree-only"
+}

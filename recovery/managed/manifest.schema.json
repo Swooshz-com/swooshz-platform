@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://swooshz.com/recovery/managed/manifest.v1.schema.json",
+  "title": "Swooshz managed recovery generation manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "generation_id", "installation_id", "image", "components", "policy", "qualified_inputs"],
+  "properties": {
+    "schema": {"const": "swz-recovery-generation-manifest.v1"},
+    "generation_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "installation_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root_digest", "image_digest", "block_size", "hash_block_size", "data_blocks", "hash_offset_bytes", "salt"],
+      "properties": {
+        "root_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "image_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "block_size": {"const": 4096},
+        "hash_block_size": {"const": 4096},
+        "data_blocks": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+        "hash_offset_bytes": {"type": "string", "pattern": "^[0-9]+$"},
+        "salt": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "components": {
+      "type": "array",
+      "minItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "path", "digest", "identity"],
+        "properties": {
+          "role": {"enum": ["supervisor", "custodian", "dispatcher", "bootstrap", "broker", "agent"]},
+          "path": {"type": "string", "pattern": "^/usr/libexec/swooshz-recovery/[a-z0-9-]+$"},
+          "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "identity": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_digest", "compiled_digest", "selinux_digest", "kernel_config_digest"],
+      "properties": {
+        "source_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "compiled_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "selinux_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "kernel_config_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "qualified_inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["installation_uuid", "enrolled_ipv4", "admission_root_public_key", "recovery_host_public_key", "controller_public_key"],
+      "properties": {
+        "installation_uuid": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+        "enrolled_ipv4": {"type": "string", "pattern": "^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$"},
+        "admission_root_public_key": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "recovery_host_public_key": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "controller_public_key": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

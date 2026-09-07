@@ -1,0 +1,27 @@
+# Immutable managed recovery sshd policy. The enrolled address is substituted
+# only by the offline image builder; there is no production address default.
+Port 22222
+ListenAddress __ENROLLED_IPV4__
+Protocol 2
+UsePAM no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+PermitRootLogin no
+PermitTTY no
+PermitUserEnvironment no
+AllowAgentForwarding no
+AllowTcpForwarding no
+GatewayPorts no
+PermitTunnel no
+X11Forwarding no
+DisableForwarding yes
+UseDNS no
+StrictModes yes
+LogLevel VERBOSE
+AuthorizedKeysFile /etc/ssh/recovery_authorized_keys
+HostKey /etc/ssh/recovery_host_ed25519_key
+ForceCommand /usr/libexec/swooshz-recovery/dispatcher
+Subsystem sftp internal-sftp

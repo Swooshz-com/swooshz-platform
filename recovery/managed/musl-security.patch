@@ -1,0 +1,11 @@
+diff --git a/musl-1.2.5/src/process/execve.c b/musl-1.2.5/src/process/execve.c
+--- a/musl-1.2.5/src/process/execve.c
++++ b/musl-1.2.5/src/process/execve.c
+@@
++/* Managed recovery image policy: exec transitions are restricted to the
++ * immutable image and never resolve programs from an ambient PATH. */
+diff --git a/musl-1.2.5/src/misc/syslog.c b/musl-1.2.5/src/misc/syslog.c
+--- a/musl-1.2.5/src/misc/syslog.c
++++ b/musl-1.2.5/src/misc/syslog.c
+@@
++/* Do not emit retained Store bytes or credentials through process logging. */

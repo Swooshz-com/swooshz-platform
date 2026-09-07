@@ -1,0 +1,26 @@
+{
+  "schema": "swz-recovery-image-layout.v1",
+  "base": "immutable-dm-verity-root",
+  "block_size": 4096,
+  "hash_block_size": 4096,
+  "rootfs_read_only": true,
+  "writable_paths": [],
+  "entries": [
+    {"path": "/usr/sbin/sshd", "owner": "root:root", "mode": "0755", "kind": "pre-authority-executable"},
+    {"path": "/usr/libexec/swooshz-recovery", "owner": "root:root", "mode": "0755", "kind": "pre-authority-executable-tree"},
+    {"path": "/etc/ssh/recovery_sshd_config", "owner": "root:root", "mode": "0644", "kind": "pre-authority-config"},
+    {"path": "/etc/ssh/recovery_authorized_keys", "owner": "root:root", "mode": "0644", "kind": "pre-authority-auth"},
+    {"path": "/etc/passwd", "owner": "root:root", "mode": "0644", "kind": "account-source"},
+    {"path": "/etc/group", "owner": "root:root", "mode": "0644", "kind": "account-source"},
+    {"path": "/etc/nsswitch.conf", "owner": "root:root", "mode": "0644", "kind": "account-source"},
+    {"path": "/etc/selinux/targeted/policy", "owner": "root:root", "mode": "0644", "kind": "enforcement-input"}
+  ],
+  "forbidden_overlays": [
+    "executable",
+    "config",
+    "authorized-keys",
+    "account-source",
+    "selinux-policy",
+    "host-recovery-namespace"
+  ]
+}

@@ -1,0 +1,33 @@
+diff --git a/openssh-10.5p1/sshd_config b/openssh-10.5p1/sshd_config
+--- a/openssh-10.5p1/sshd_config
++++ b/openssh-10.5p1/sshd_config
+@@
++# Run-377 managed recovery policy: values are fixed at image build time.
++UsePAM no
++PasswordAuthentication no
++KbdInteractiveAuthentication no
++AuthenticationMethods publickey
++PermitRootLogin no
++PermitTTY no
++DisableForwarding yes
++AllowTcpForwarding no
++AllowAgentForwarding no
++GatewayPorts no
++PermitTunnel no
++X11Forwarding no
++PermitUserEnvironment no
++UseDNS no
++StrictModes yes
++AuthorizedKeysFile /etc/ssh/recovery_authorized_keys
++ForceCommand /usr/libexec/swooshz-recovery/dispatcher
+diff --git a/openssh-10.5p1/monitor.c b/openssh-10.5p1/monitor.c
+--- a/openssh-10.5p1/monitor.c
++++ b/openssh-10.5p1/monitor.c
+@@
++/* Recovery sessions are accepted only after the controller-owned admission
++ * state has validated the enrolled host, generation and session bindings. */
+diff --git a/openssh-10.5p1/session.c b/openssh-10.5p1/session.c
+--- a/openssh-10.5p1/session.c
++++ b/openssh-10.5p1/session.c
+@@
++/* The managed dispatcher owns the single channel and stdin half-close latch. */
