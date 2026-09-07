@@ -84,9 +84,12 @@ static int identity_golden(void) {
     actual_parts[2] = (swz_bytes){(const uint8_t *)"\0\0\0\0\0\0\0\7", 8U};
     actual_parts[3] = (swz_bytes){(const uint8_t *)"\0\0\0\0\0\0\0\13", 8U};
     if (swz_managed_hash("endpoint-actual.v1", actual_parts, 4U, endpoint_actual) != 0) return -1;
-    if (swz_hex_lower(installation, 32U, text, sizeof(text)) != 0) return -1; puts(text);
-    if (swz_hex_lower(endpoint_template, 32U, text, sizeof(text)) != 0) return -1; puts(text);
-    if (swz_hex_lower(endpoint_actual, 32U, text, sizeof(text)) != 0) return -1; puts(text);
+    if (swz_hex_lower(installation, 32U, text, sizeof(text)) != 0) return -1;
+    puts(text);
+    if (swz_hex_lower(endpoint_template, 32U, text, sizeof(text)) != 0) return -1;
+    puts(text);
+    if (swz_hex_lower(endpoint_actual, 32U, text, sizeof(text)) != 0) return -1;
+    puts(text);
     return 0;
 }
 
