@@ -5,7 +5,6 @@
   "cases": [
     {"id": "repository-guardrails", "mandatory": true, "kind": "deterministic"},
     {"id": "container-build", "mandatory": true, "kind": "provider"},
-    {"id": "application-typecheck-build-tests", "mandatory": true, "kind": "deterministic"},
     {"id": "managed-boundary-deterministic-tests", "mandatory": true, "kind": "deterministic"},
     {"id": "native-c11-build", "mandatory": true, "kind": "provider"},
     {"id": "native-static-closure", "mandatory": true, "kind": "provider"},

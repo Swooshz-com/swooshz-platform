@@ -9,7 +9,7 @@ diff --git a/version.h b/version.h
 diff --git a/sshd.c b/sshd.c
 --- a/sshd.c
 +++ b/sshd.c
-@@ -605,9 +605,36 @@ drop_connection(int sock, int startups, int notify_pipe)
+@@ -637,10 +637,37 @@
  	return 1;
  }
  
@@ -47,13 +47,16 @@ diff --git a/sshd.c b/sshd.c
 +	fprintf(stderr, "%s, %s, swz-baseline=%s\n", SSH_RELEASE, SSH_OPENSSL_VERSION, SWZ_MANAGED_OPENSSH_BASELINE);
  	fprintf(stderr,
  "usage: sshd [-46DdeGiqTtV] [-C connection_spec] [-c host_cert_file]\n"
-@@ -1380,4 +1407,4 @@ main(int ac, char **av)
- 	case 'V':
--		fprintf(stderr, "%s, %s\n",
-+		fprintf(stderr, "%s, %s, swz-baseline=%s\n",
- 			SSH_RELEASE, SSH_OPENSSL_VERSION, SWZ_MANAGED_OPENSSH_BASELINE);
- 		exit(0);
-@@ -1385,7 +1412,9 @@ main(int ac, char **av)
+ "            [-E log_file] [-f config_file] [-g login_grace_time]\n"
+@@ -1443,14 +1470,16 @@
+ 			free(line);
+ 			break;
+ 		case 'V':
+-			fprintf(stderr, "%s, %s\n",
+-			    SSH_RELEASE, SSH_OPENSSL_VERSION);
++			fprintf(stderr, "%s, %s, swz-baseline=%s\n",
++			    SSH_RELEASE, SSH_OPENSSL_VERSION, SWZ_MANAGED_OPENSSH_BASELINE);
+ 			exit(0);
  		default:
  			usage();
  			break;

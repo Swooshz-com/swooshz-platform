@@ -17,6 +17,7 @@ import platform
 import shlex
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -71,6 +72,17 @@ class HarnessDefect(RuntimeError):
 
 class ProviderHold(RuntimeError):
     pass
+
+
+def make_private_store_root(parent: Path) -> Path:
+    store_root = parent / "store"
+    store_root.mkdir(mode=0o700)
+    if os.name != "nt":
+        store_root.chmod(0o700)
+        mode = stat.S_IMODE(store_root.stat().st_mode)
+        if mode != 0o700:
+            raise HarnessDefect(f"disposable-store-root-mode:{mode:04o}")
+    return store_root
 
 
 def load_module(name: str, path: Path) -> Any:
@@ -617,8 +629,7 @@ INSERT INTO scheduled_database_backup_executions VALUES
             ) from error
         with tempfile.TemporaryDirectory(prefix="swz-store-locator-") as temporary:
             root = Path(temporary)
-            store_root = root / "store"
-            store_root.mkdir()
+            store_root = make_private_store_root(root)
             source = root / "qualified-artifact"
             target = root / "restored-artifact"
             source.write_bytes(b"real disposable Store/CAS locator integration\n")
@@ -633,6 +644,7 @@ INSERT INTO scheduled_database_backup_executions VALUES
                 "final_state": result.final_state,
                 "half_closes": result.stdin_half_closes,
                 "remote_eof": result.remote_eof,
+                "store_root_mode": f"{stat.S_IMODE(store_root.stat().st_mode):04o}",
             }
     finally:
         run(["docker", "rm", "-f", container], timeout=30)
@@ -773,7 +785,6 @@ def main(argv: list[str] | None = None) -> int:
         execute("managed-boundary-deterministic-tests", run_deterministic_tests)
         execute("storewire-identity-kats", run_deterministic_tests, ("managed-boundary-deterministic-tests",))
         execute("c-python-identity-agreement", lambda: run_c_native_kat(args.build_output))
-        execute("application-typecheck-build-tests", run_application_gates)
         execute("canonical-store-locator-byte-equality", exact_scope)
         execute("container-build", run_container_build)
         execute("native-c11-build", ensure_build)

@@ -1,6 +1,7 @@
 import importlib.util
 import os
 import pathlib
+import stat
 import subprocess
 import sys
 import tempfile
@@ -42,13 +43,15 @@ class ControllerIntegrationTests(unittest.TestCase):
             root = pathlib.Path(temporary)
             source = root / "qualified-artifact"
             target = root / "restore-target"
-            (root / "store").mkdir()
+            store_root = QUALIFY.make_private_store_root(root)
+            if os.name != "nt":
+                self.assertEqual(stat.S_IMODE(store_root.stat().st_mode), 0o700)
             source.write_bytes(b"disposable-qualified-artifact\n")
             controller = CONTROLLER.ManagedController(self.context())
             if os.name == "nt":
                 with self.assertRaises(CONTROLLER.STORE.FilesystemSafetyError):
                     controller.run(
-                        store_root=root / "store",
+                        store_root=store_root,
                         artifact_source=source,
                         artifact_target=target,
                         agent_binary=root / "missing-swz-agent",
@@ -56,7 +59,7 @@ class ControllerIntegrationTests(unittest.TestCase):
                 return
             with self.assertRaises(CONTROLLER.QualificationProviderHold):
                 controller.run(
-                    store_root=root / "store",
+                    store_root=store_root,
                     artifact_source=source,
                     artifact_target=target,
                     agent_binary=root / "missing-swz-agent",
