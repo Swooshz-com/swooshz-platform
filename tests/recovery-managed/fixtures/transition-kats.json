@@ -1,0 +1,23 @@
+{
+  "schema": "swz-managed-transition-kats.v1",
+  "identity": {
+    "installation": "e8a0ef6f2c154a38e9b514b1d1c1692c9ff4128e0e73916003833c2377fd597f",
+    "endpoint_template": "198d57f1638a38bb74fcb7e6c0800a44263cf2eea4afbf6fa5e2f1ebd921af3a",
+    "endpoint_actual": "d7b07ef7b4a95aea2f1914496733af29f5073ac6e6d52bcb0c5fd3675d9566fb"
+  },
+  "domains": [
+    "admission-root.v1", "host-public-key.v1", "target-policy.v1", "dependency-closure.v1",
+    "invocation-policy.v1", "execution-inventory.v1", "build-record.v1", "fd-inventory.v1",
+    "runtime-argv.v1", "runtime-limits.v1", "policy.v1", "auth-account-config.v1", "n-local.v1",
+    "installation.v1", "endpoint-template.v1", "endpoint-actual.v1", "launch-base.v1",
+    "openssh-closure.v1", "component-supervisor.v1", "component-custodian.v1", "component-dispatcher.v1",
+    "component-bootstrap.v1", "component-broker.v1", "component-agent.v1", "dm-verity.v1",
+    "qualification-subject.v1", "build-qualification.v1", "generation.v1", "generation-manifest.v1",
+    "generation-approval.v1", "activation.v1", "connection.v1", "request-context.v1",
+    "authority-context.v1", "challenge.v1", "runtime.v1", "evidence.v1", "accept.v1",
+    "accepted-session.v1", "accepted-receipt.v1", "discovery.v1", "proceed.v1", "result.v1"
+  ],
+  "endpoint": {"ipv4": "192.0.2.10", "port": 22222, "hex": "01010002c000020a56ce"},
+  "negative": ["uuid-nil", "uuid-v3", "endpoint-hostname", "endpoint-zero", "filename-slash", "filename-dotdot", "frame-duplicate-key", "store-nested-object"]
+}
+

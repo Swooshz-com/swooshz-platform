@@ -1,0 +1,14 @@
+diff --git a/src/env/__libc_start_main.c b/src/env/__libc_start_main.c
+--- a/src/env/__libc_start_main.c
++++ b/src/env/__libc_start_main.c
+@@ -35,6 +35,9 @@
+ 	if (!pn) pn = "";
+ 	__progname = __progname_full = pn;
+ 	for (i=0; pn[i]; i++) if (pn[i]=='/') __progname = pn+i+1;
++
++	/* A managed static generation must never start without kernel entropy. */
++	if (aux[AT_RANDOM] == 0) a_crash();
+ 
+ 	__init_tls(aux);
+ 	__init_ssp((void *)aux[AT_RANDOM]);
+
