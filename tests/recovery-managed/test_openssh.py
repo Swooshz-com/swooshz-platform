@@ -51,6 +51,8 @@ class OpenSSHBoundaryTests(unittest.TestCase):
         self.assertIn('staged_privsep = install_root / "run" / "sshd"', build)
         self.assertIn('staged_prefix = install_root / prefix.relative_to(prefix.anchor)', build)
         self.assertIn('staged_binary = staged_prefix / "sbin" / "sshd"', build)
+        self.assertIn('staged_session = staged_libexec / "sshd-session"', build)
+        self.assertIn('staged_auth = staged_libexec / "sshd-auth"', build)
         self.assertIn("version = capture_version(staged_binary)", build)
         self.assertIn("shutil.copy2(staged_binary, installed)", build)
         self.assertNotIn("sudo", build)

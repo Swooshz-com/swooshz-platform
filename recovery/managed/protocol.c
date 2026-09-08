@@ -411,13 +411,6 @@ static int json_u64_text_exact(struct json_cursor *cursor, const char *expected)
            length == strlen(expected) && memcmp(value, expected, length) == 0 ? 0 : -1;
 }
 
-static int json_u32_number(struct json_cursor *cursor)
-{
-    uint64_t value;
-
-    return json_integer(cursor, &value) == 0 && value <= UINT32_MAX ? 0 : -1;
-}
-
 static int json_bool_true(struct json_cursor *cursor)
 {
     if ((size_t)(cursor->end - cursor->current) >= 4U &&
@@ -743,8 +736,8 @@ int swz_managed_payload_predecessor(const unsigned char *payload, size_t length,
         unsigned char high = encoded[index * 2U];
         unsigned char low = encoded[index * 2U + 1U];
 
-        high = (unsigned char)(high <= '9' ? high - '0' : high - 'a' + 10U);
-        low = (unsigned char)(low <= '9' ? low - '0' : low - 'a' + 10U);
+        high = (unsigned char)(high <= '9' ? high - '0' : high - 'a' + 10);
+        low = (unsigned char)(low <= '9' ? low - '0' : low - 'a' + 10);
         out[index] = (unsigned char)((high << 4) | low);
     }
     return 0;

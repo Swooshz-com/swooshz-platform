@@ -156,7 +156,7 @@ static int serve_agent(int client_fd, EVP_PKEY *key, const unsigned char public_
     unsigned char length_bytes[4];
     unsigned char request[SWZ_AGENT_MAX_REQUEST];
     unsigned char signature[64];
-    unsigned char response[4U + 1U + 4U + 11U + 64U];
+    unsigned char response[4U + 1U + 4U + 4U + 11U + 4U + 64U];
     unsigned char key_blob[51];
     uint32_t request_length;
     uint32_t key_length;
@@ -219,13 +219,16 @@ static int serve_agent(int client_fd, EVP_PKEY *key, const unsigned char public_
         return send_rejection(client_fd);
     }
     EVP_MD_CTX_free(context);
-    write_u32(response, 1U + 4U + (uint32_t)sizeof(algorithm) - 1U + 64U);
+    write_u32(response, 1U + 4U + 4U + (uint32_t)sizeof(algorithm) - 1U +
+                       4U + 64U);
     response[4] = SWZ_AGENT_RESPONSE;
-    write_u32(response + 5U, (uint32_t)sizeof(algorithm) - 1U + 64U);
-    memcpy(response + 9U, algorithm, sizeof(algorithm) - 1U);
-    memcpy(response + 9U + sizeof(algorithm) - 1U, signature, sizeof(signature));
+    write_u32(response + 5U, 4U + (uint32_t)sizeof(algorithm) - 1U + 4U + 64U);
+    write_u32(response + 9U, (uint32_t)sizeof(algorithm) - 1U);
+    memcpy(response + 13U, algorithm, sizeof(algorithm) - 1U);
+    write_u32(response + 24U, 64U);
+    memcpy(response + 28U, signature, sizeof(signature));
     return swz_write_full(client_fd, response,
-                          9U + sizeof(algorithm) - 1U + sizeof(signature));
+                          28U + sizeof(signature));
 }
 
 static int run_custodian(void)

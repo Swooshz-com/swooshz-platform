@@ -46,6 +46,7 @@
   (allow init_t swz_launch_base_exec_t (file (getattr open read execute map entrypoint)))
   (allow init_t swz_guest_controller_exec_t (file (getattr open read execute map entrypoint)))
   (allow swz_guest_controller_t swz_openssh_exec_t (file (getattr open read execute map execute_no_trans)))
+  (allow swz_sshd_t swz_openssh_exec_t (file (getattr open read execute map execute_no_trans)))
   (allow swz_launch_base_t swz_supervisor_exec_t (file (getattr open read execute map entrypoint)))
   (allow swz_supervisor_t swz_custodian_exec_t (file (getattr open read execute map entrypoint)))
   (allow swz_supervisor_t swz_sshd_exec_t (file (getattr open read execute map entrypoint)))

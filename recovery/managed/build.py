@@ -149,6 +149,11 @@ def build_openssh(lock: dict[str, Any], output: Path, cache: Path) -> dict[str, 
     staged_keygen = staged_prefix / "bin" / "ssh-keygen"
     if not staged_client.is_file() or not staged_keygen.is_file():
         raise BuildError("openssh-staged-client-missing")
+    staged_libexec = staged_prefix / "libexec"
+    staged_session = staged_libexec / "sshd-session"
+    staged_auth = staged_libexec / "sshd-auth"
+    if not staged_session.is_file() or not staged_auth.is_file():
+        raise BuildError("openssh-staged-privsep-helper-missing")
     version = capture_version(staged_binary)
     installed = output / "openssh" / "sbin" / "sshd"
     installed.parent.mkdir(parents=True, exist_ok=True)
@@ -159,7 +164,11 @@ def build_openssh(lock: dict[str, Any], output: Path, cache: Path) -> dict[str, 
     client_installed.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(staged_client, client_installed)
     shutil.copy2(staged_keygen, keygen_installed)
-    return {"version": version, "archive_sha256": entry["sha256"], "patch_sha256": sha256_file(HERE / entry["patch"]), "binary_sha256": sha256_file(installed), "client_sha256": sha256_file(client_installed), "keygen_sha256": sha256_file(keygen_installed), "prefix": str(prefix), "prefix_absolute": str(prefix.is_absolute())}
+    libexec_installed = output / "openssh" / "libexec"
+    libexec_installed.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(staged_session, libexec_installed / "sshd-session")
+    shutil.copy2(staged_auth, libexec_installed / "sshd-auth")
+    return {"version": version, "archive_sha256": entry["sha256"], "patch_sha256": sha256_file(HERE / entry["patch"]), "binary_sha256": sha256_file(installed), "client_sha256": sha256_file(client_installed), "keygen_sha256": sha256_file(keygen_installed), "session_sha256": sha256_file(libexec_installed / "sshd-session"), "auth_sha256": sha256_file(libexec_installed / "sshd-auth"), "prefix": str(prefix), "prefix_absolute": str(prefix.is_absolute())}
 
 
 def build_musl(lock: dict[str, Any], output: Path, cache: Path) -> dict[str, str]:

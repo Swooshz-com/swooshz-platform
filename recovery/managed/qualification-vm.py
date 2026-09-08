@@ -109,6 +109,9 @@ def stage_candidate(build_output: Path, root: Path) -> None:
     stage_file(build_output / "openssh" / "sbin" / "sshd", root / "opt/swz/openssh/sbin/sshd", executable=True)
     stage_file(build_output / "openssh" / "bin" / "ssh", root / "opt/swz/openssh/bin/ssh", executable=True)
     stage_file(build_output / "openssh" / "bin" / "ssh-keygen", root / "opt/swz/openssh/bin/ssh-keygen", executable=True)
+    for name in ("sshd-session", "sshd-auth"):
+        stage_file(build_output / "openssh" / "libexec" / name,
+                   root / "opt/swz/openssh/libexec" / name, executable=True)
     stage_file(HERE / "sshd_config", root / "etc/ssh/recovery_sshd_config")
     stage_file(HERE / "selinux.cil", root / "etc/selinux/swz/swz-managed.cil")
     stage_file(HERE / "file_contexts", root / "etc/selinux/swz/file_contexts")
@@ -653,7 +656,12 @@ if [ ! -x /newroot/usr/sbin/load_policy ] || ! chroot /newroot /usr/sbin/load_po
   echo SWZ_GUEST_SELINUX=POLICY_LOAD_FAILED
   exit 74
 fi
-if [ ! -x /newroot/sbin/restorecon ] || ! chroot /newroot /sbin/restorecon -RF /run; then
+setfiles=/newroot/usr/sbin/setfiles
+if [ ! -x "$setfiles" ]; then
+  setfiles=/newroot/sbin/setfiles
+fi
+policy=$(ls /newroot/etc/selinux/targeted/policy/policy.* 2>/dev/null | tail -n 1)
+if [ ! -x "$setfiles" ] || [ -z "$policy" ] || ! chroot /newroot "${{setfiles#/newroot}}" -F -c "${{policy#/newroot}}" /etc/selinux/swz/file_contexts /run; then
   echo SWZ_GUEST_SELINUX=RUNTIME_LABEL_FAILED
   exit 77
 fi
