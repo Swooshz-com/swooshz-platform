@@ -1,6 +1,6 @@
 CC ?= cc
 BUILD ?= build
-CFLAGS ?= -std=c11 -O2 -Wall -Wextra -Werror -Wpedantic -D_GNU_SOURCE
+CFLAGS ?= -std=c11 -O2 -Wall -Wextra -Werror -Wpedantic
 CPPFLAGS ?= -I.
 LDLIBS ?= -lcrypto
 

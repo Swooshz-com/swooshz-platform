@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
+#include <arpa/inet.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <signal.h>
