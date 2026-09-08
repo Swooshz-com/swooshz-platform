@@ -10,7 +10,9 @@ class OpenSSHBoundaryTests(unittest.TestCase):
     def test_pinned_sources_and_exact_runtime_paths(self):
         lock = json.loads((MANAGED / "build.lock.json").read_text(encoding="utf-8"))
         self.assertEqual(lock["openssh"]["version"], "10.5p1")
+        self.assertEqual(lock["openssh"]["patch"], "openssh-managed.patch")
         self.assertEqual(lock["musl"]["version"], "1.2.5")
+        self.assertEqual(lock["musl"]["patch"], "musl-security.patch")
         config = (MANAGED / "sshd_config").read_text(encoding="ascii")
         self.assertIn("HostKey /etc/ssh/recovery_host_ed25519_key.pub", config)
         self.assertIn("HostKeyAgent /run/swz/recovery-hostkey-agent.sock", config)
@@ -39,4 +41,3 @@ class OpenSSHBoundaryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

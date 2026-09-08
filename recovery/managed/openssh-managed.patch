@@ -1,4 +1,5 @@
 diff --git a/version.h b/version.h
+index cbfa3f53e8f017b89cdadab3a0f09a6acf3ed600..821242a287313f87821b4f0b36d47c51cd798995 100644
 --- a/version.h
 +++ b/version.h
 @@ -4,3 +4,4 @@
@@ -7,12 +8,10 @@ diff --git a/version.h b/version.h
  #define SSH_RELEASE	SSH_VERSION SSH_PORTABLE
 +#define SWZ_MANAGED_OPENSSH_BASELINE "openssh-10.5p1"
 diff --git a/sshd.c b/sshd.c
+index 7d1466d97e12a4cbb50c64b75bde4e92f5d10b9e..9948e4a03fd9ca18f48986f8958c4c991a8f711d 100644
 --- a/sshd.c
 +++ b/sshd.c
-@@ -637,10 +637,10 @@
- 	return 1;
- }
- 
+@@ -640,7 +640,7 @@ drop_connection(int sock, int startups, int notify_pipe)
  static void
  usage(void)
  {
@@ -21,7 +20,7 @@ diff --git a/sshd.c b/sshd.c
  	fprintf(stderr,
  "usage: sshd [-46DdeGiqTtV] [-C connection_spec] [-c host_cert_file]\n"
  "            [-E log_file] [-f config_file] [-g login_grace_time]\n"
-@@ -1443,6 +1443,6 @@
+@@ -1443,8 +1443,8 @@ main(int ac, char **av)
  			free(line);
  			break;
  		case 'V':
@@ -30,7 +29,11 @@ diff --git a/sshd.c b/sshd.c
 +			fprintf(stderr, "%s, %s, swz-baseline=%s\n",
 +			    SSH_RELEASE, SSH_OPENSSL_VERSION, SWZ_MANAGED_OPENSSH_BASELINE);
  			exit(0);
-@@ -1576,10 +1576,7 @@
+ 		default:
+ 			usage();
+@@ -1574,10 +1574,7 @@ main(int ac, char **av)
+ 	    sizeof(struct sshkey *));
+ 
  	if (options.host_key_agent) {
 -		if (strcmp(options.host_key_agent, SSH_AUTHSOCKET_ENV_NAME))
 -			setenv(SSH_AUTHSOCKET_ENV_NAME,
@@ -40,12 +43,13 @@ diff --git a/sshd.c b/sshd.c
  			have_agent = 1;
  		else
  			error_r(r, "Could not connect to agent \"%s\"",
- 			    options.host_key_agent);
- 	}
 diff --git a/sshd-auth.c b/sshd-auth.c
+index 4888c8e6242a38dbec5652fccbd4f0c60efd7813..13108e32c61fd62ef02a88848aeb46b35bfc6863 100644
 --- a/sshd-auth.c
 +++ b/sshd-auth.c
-@@ -646,10 +646,7 @@
+@@ -644,10 +644,7 @@ main(int ac, char **av)
+ #endif
+ 
  	if (options.host_key_agent) {
 -		if (strcmp(options.host_key_agent, SSH_AUTHSOCKET_ENV_NAME))
 -			setenv(SSH_AUTHSOCKET_ENV_NAME,
@@ -55,19 +59,22 @@ diff --git a/sshd-auth.c b/sshd-auth.c
  			have_agent = 1;
  		else
  			error_r(r, "Could not connect to agent \"%s\"",
- 			    options.host_key_agent);
- 	}
 diff --git a/sshd-session.c b/sshd-session.c
+index 06a72daaf28864194ae3d9b8366356f58bbb75c3..d4564ca872034e5732eca291e8f55e366a02e71b 100644
 --- a/sshd-session.c
 +++ b/sshd-session.c
-@@ -318,5 +318,5 @@
+@@ -317,7 +317,7 @@ privsep_preauth(struct ssh *ssh)
+ 
  		pmonitor->m_pid = pid;
  		if (have_agent) {
 -			r = ssh_get_authentication_socket(&auth_sock);
 +			r = ssh_get_authentication_socket_path(options.host_key_agent, &auth_sock);
  			if (r != 0) {
  				error_r(r, "Could not get agent socket");
-@@ -1064,10 +1064,7 @@
+ 				have_agent = 0;
+@@ -1062,10 +1062,7 @@ main(int ac, char **av)
+ #endif
+ 
  	if (options.host_key_agent) {
 -		if (strcmp(options.host_key_agent, SSH_AUTHSOCKET_ENV_NAME))
 -			setenv(SSH_AUTHSOCKET_ENV_NAME,
@@ -77,6 +84,3 @@ diff --git a/sshd-session.c b/sshd-session.c
  			have_agent = 1;
  		else
  			error_r(r, "Could not connect to agent \"%s\"",
- 			    options.host_key_agent);
- 	}
-

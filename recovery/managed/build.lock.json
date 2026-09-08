@@ -13,7 +13,8 @@
     "name": "musl",
     "version": "1.2.5",
     "url": "https://musl.libc.org/releases/musl-1.2.5.tar.gz",
-    "sha256": "a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4"
+    "sha256": "a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4",
+    "patch": "musl-security.patch"
   },
   "postgres_qualification_image": {
     "image": "postgres:17.11-trixie@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675",
@@ -26,4 +27,3 @@
     "forbidden": ["PAM", "Docker socket", "host bind mounts", "writable executable overlay"]
   }
 }
-
