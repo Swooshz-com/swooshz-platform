@@ -1,0 +1,15 @@
+{
+  "schema": "swz-managed-accounts.v1",
+  "accounts": [
+    {
+      "name": "swz-recovery",
+      "uid": 2001,
+      "gid": 2001,
+      "home": "/var/empty",
+      "shell": "/usr/sbin/nologin",
+      "authorized_keys": "/etc/ssh/recovery_authorized_keys",
+      "service": "recovery",
+      "interactive": false
+    }
+  ]
+}

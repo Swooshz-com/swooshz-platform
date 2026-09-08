@@ -1,0 +1,17 @@
+/usr/local/libexec/swz-supervisor    system_u:object_r:swz_managed.swz_supervisor_exec_t:s0
+/usr/local/libexec/swz-custodian     system_u:object_r:swz_managed.swz_custodian_exec_t:s0
+/usr/local/libexec/swz-dispatcher    system_u:object_r:swz_managed.swz_dispatcher_exec_t:s0
+/usr/local/libexec/swz-bootstrap     system_u:object_r:swz_managed.swz_bootstrap_exec_t:s0
+/usr/local/libexec/swz-broker        system_u:object_r:swz_managed.swz_broker_exec_t:s0
+/usr/local/libexec/swz-agent         system_u:object_r:swz_managed.swz_agent_exec_t:s0
+/usr/local/libexec/swz-launch-base   system_u:object_r:swz_managed.swz_supervisor_exec_t:s0
+/opt/swz/openssh/sbin/sshd           system_u:object_r:swz_managed.swz_sshd_exec_t:s0
+/opt/swz/openssh/bin(/.*)?           system_u:object_r:bin_t:s0
+/etc/ssh/recovery_authorized_keys    system_u:object_r:swz_managed.swz_authorized_key_t:s0
+/run/sshd(/.*)?                       system_u:object_r:swz_managed.swz_private_t:s0
+/var/lib/swooshz-recovery/host-key/ed25519\.seed system_u:object_r:swz_managed.swz_custody_key_t:s0
+/etc/ssh/recovery_host_ed25519_key\.pub          system_u:object_r:swz_managed.swz_host_public_key_t:s0
+/run/swz/recovery-hostkey-agent\.sock             system_u:object_r:swz_managed.swz_private_t:s0
+/run/swz/recovery-session-control\.sock           system_u:object_r:swz_managed.swz_private_t:s0
+/run/swz(/.*)?                        system_u:object_r:swz_managed.swz_private_t:s0
+/var/lib/swz/store(/.*)?              system_u:object_r:swz_managed.swz_store_t:s0

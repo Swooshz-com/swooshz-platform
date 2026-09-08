@@ -1,0 +1,49 @@
+{
+  "schema": "swz-recovery-store-wire-kat.v2",
+  "frozen_run376": {
+    "store_transition_bytes": 1056,
+    "store_transition_commitment": "sha256:v1:2b146d8166469005820fb3e5c237d527e70366a54ad1e72c808bdeeac1e8abfa",
+    "retained_transition_id": "restore-v2-de8a7496849ffc69141b08a94c97400158758ba521634672",
+    "sorted_variant_transition_id": "restore-v2-c3a1e17e7d885a82d954c68742fc25e5cd138339bffea6af",
+    "sorted_variant_acceptance": "REJECT_SCHEMA_ORDER",
+    "evidence_store_bytes": 1082,
+    "evidence_store_commitment": "sha256:v1:e36f615877e06d68fb45c131989a440df8700fdf29f26d641604d24479ff2163",
+    "restore_begin_payload_bytes": 2611,
+    "restore_begin_payload_sha256": "c3de513cf5c3783af3d3624d303e5eb07a6ea9a5dad8f155440544f1ac9c00ef"
+  },
+  "profiles": [
+    {
+      "schema_id": "restore-ledger-transition-data.v2",
+      "store_text": "{\"schema\":\"restore-ledger-transition-data.v2\",\"version\":2,\"epoch_ref\":\"epoch-001\",\"authority_ref\":\"authority-001\",\"barrier_utc\":\"2026-09-07T00:00:00Z\",\"barrier_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"runner_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"bundle_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"image_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"target_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"isolation_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"artifact_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"artifact_stream_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"pre_cas_ledger_digest\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}\n",
+      "store_bytes": 1043,
+      "store_commitment": "sha256:v1:79c48e88f735b5e1f61e2a28243aa98c54c2aa1ad883710c2095a1d0b92a8da8",
+      "transition_id": "restore-v2-e45971a995c45c3043ac69606ade00ee874c5f965ae225d8",
+      "wire_payload_sha256": "7f0b4947c02ab0d06a05a88d37f01688b8f0436c81e19b6e2d287db637b4020e"
+    },
+    {
+      "schema_id": "restore-begin-evidence.v2",
+      "store_text": "{\"schema\":\"restore-begin-evidence.v2\",\"epoch_ref\":\"epoch-001\",\"transition_id\":\"restore-v2-e45971a995c45c3043ac69606ade00ee874c5f965ae225d8\",\"transition_data_commitment\":\"sha256:v1:79c48e88f735b5e1f61e2a28243aa98c54c2aa1ad883710c2095a1d0b92a8da8\",\"artifact_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"artifact_stream_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ledger_state\":\"CONSUMED\",\"record_state\":\"ACTIVE\",\"spool_previous_stage\":\"RUNNER_STARTED\",\"frame_sequence\":3,\"previous_frame_hash\":\"sha256:v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"frame_hash\":\"sha256:v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"spool_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ledger_after_digest\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"durability\":{\"file_flush_verified\":true,\"readback_verified\":true,\"atomic_authority_transition\":true,\"directory_flush_verified\":true}}\n",
+      "store_bytes": 1079,
+      "store_commitment": "sha256:v1:0ab4c06a73d0c5de2b804021e49373d28f1c39610dd9b414198547411e3e74fb",
+      "wire_payload_sha256": "4b1484026941b62de69d85577733856bf9ae2c7de29e5950f6464ad59547e52a"
+    },
+    {
+      "schema_id": "swz-recovery-result.v2",
+      "commitment_domain": "swz-recovery-result",
+      "store_text": "{\"schema\":\"swz-recovery-result.v2\",\"classification\":\"SUCCESS\",\"stage\":\"RESTORE\",\"epoch_ref\":\"epoch-001\",\"authority_ref\":\"authority-001\",\"barrier_utc\":\"2026-09-07T00:00:00Z\",\"ssh_endpoint_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"epoch_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"authority_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"barrier_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"runner_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"bundle_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"launcher_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"agent_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"image_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"target_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"isolation_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"artifact_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"artifact_stream_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"transition_id\":\"restore-v2-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"pre_cas_ledger_digest\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"transition_data_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"consumed_record_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"restore_begin_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"process_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"restore_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"cleanup_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"stdout_capture_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"stderr_capture_commitment\":\"sha256:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"result_code\":0,\"restore_count\":1,\"exit_status\":0,\"stdin_eof\":true,\"stdout_eof\":true,\"stderr_eof\":true,\"trailing_unframed_bytes\":false,\"terminal_input_eof\":true,\"terminal_input_trailing_bytes\":false,\"cleanup_state\":\"CLEAN\"}\n",
+      "store_bytes": 2680,
+      "store_commitment": "sha256:v1:49bcace9b31cffc38c242ce91c9a04d9524f02d6426924401ec4a4502100ad4a",
+      "wire_payload_sha256": "bfc52c4b85870fb87210c988f89226239a8351eaf7023d40e56dc46c18c2b498"
+    }
+  ],
+  "negative_cases": [
+    "nested-object-instead-of-store-wire",
+    "base64-store-wire",
+    "bare-store-digest-in-managed-position",
+    "missing-final-lf",
+    "double-final-lf",
+    "sorted-store-object",
+    "duplicate-store-member",
+    "unicode-normalized-store-text"
+  ]
+}

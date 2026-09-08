@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://swooshz.com/schemas/recovery-managed-build-manifest.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "candidate_sha", "openssh", "musl", "native", "source_files"],
+  "properties": {
+    "schema": {"const": "swz-managed-build-manifest.v1"},
+    "candidate_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "openssh": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "archive_sha256", "patch_sha256", "binary_sha256", "ssh_sha256", "ssh_keygen_sha256", "ssh_agent_sha256", "ssh_add_sha256", "sshd_version", "host_key", "host_key_agent", "session_control"],
+      "properties": {
+        "version": {"const": "OpenSSH_10.5p1"},
+        "archive_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "patch_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "binary_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "ssh_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "ssh_keygen_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "ssh_agent_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "ssh_add_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "sshd_version": {"const": "OpenSSH_10.5p1"},
+        "host_key": {"const": "/etc/ssh/recovery_host_ed25519_key.pub"},
+        "host_key_agent": {"const": "/run/swz/recovery-hostkey-agent.sock"},
+        "session_control": {"const": "/run/swz/recovery-session-control.sock"}
+      }
+    },
+    "musl": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "archive_sha256", "patch_sha256", "libc_sha256"],
+      "properties": {
+        "version": {"const": "1.2.5"},
+        "archive_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "patch_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "libc_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "native": {
+      "type": "object",
+      "minProperties": 7,
+      "additionalProperties": false,
+      "required": ["swz-supervisor", "swz-custodian", "swz-dispatcher", "swz-bootstrap", "swz-broker", "swz-agent", "swz-launch-base"],
+      "patternProperties": {"^[a-z0-9._/-]+$": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+    },
+    "source_files": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 5,
+      "patternProperties": {"^[a-z0-9._/-]+$": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+    }
+  }
+}
