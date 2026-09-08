@@ -270,7 +270,9 @@ def _source_boundary_check() -> dict[str, str]:
     sources = {name: (HERE / name).read_text(encoding="utf-8") for name in ("supervisor.c", "custodian.c", "dispatcher.c", "bootstrap.c", "broker.c", "agent.c", "launch-base.c", "platform.c", "protocol.c")}
     if "send_registration(" not in sources["supervisor.c"] or not (sources["supervisor.c"].index("send_registration(") < sources["supervisor.c"].index("SWZ_EXEC_GATE_BYTE") < sources["supervisor.c"].index("execl(SWZ_SSHD_PATH")):
         raise CandidateDefect("registration-gate-order")
-    if any(token in sources["bootstrap.c"] for token in ("getenv(", "getopt(")) or "SWZCTX01" not in sources["bootstrap.c"]:
+    bootstrap = sources["bootstrap.c"]
+    required_context_boundary = ("SWZ_SESSION_CONTROL_SOCKET_PATH", "SOCK_SEQPACKET", "connect(", "recvmsg(", "MSG_TRUNC", "SWZ_CONTEXT_MAGIC", "SWZ_CONTEXT_BYTES")
+    if any(token in bootstrap for token in ("getenv(", "getopt(")) or any(token not in bootstrap for token in required_context_boundary):
         raise CandidateDefect("bootstrap-context-boundary")
     if "SSH_ORIGINAL_COMMAND" not in sources["dispatcher.c"] or "execl(SWZ_BOOTSTRAP_PATH" not in sources["dispatcher.c"]:
         raise CandidateDefect("dispatcher-boundary")

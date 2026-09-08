@@ -402,6 +402,15 @@ static int json_u64_text(struct json_cursor *cursor)
     return 0;
 }
 
+static int json_u64_text_exact(struct json_cursor *cursor, const char *expected)
+{
+    const unsigned char *value;
+    size_t length;
+
+    return expected != NULL && json_plain_string(cursor, &value, &length) == 0 &&
+           length == strlen(expected) && memcmp(value, expected, length) == 0 ? 0 : -1;
+}
+
 static int json_u32_number(struct json_cursor *cursor)
 {
     uint64_t value;
@@ -504,7 +513,7 @@ static int json_runtime_record(struct json_cursor *cursor)
     if (json_comma(cursor) != 0 || json_bool_true(cursor) != 0 ||
         json_comma(cursor) != 0 || json_bool_true(cursor) != 0 ||
         json_comma(cursor) != 0 || json_exact_integer(cursor, 0U) != 0 ||
-        json_comma(cursor) != 0 || json_u64_text(cursor) != 0 ||
+        json_comma(cursor) != 0 || json_u64_text_exact(cursor, "0") != 0 ||
         json_comma(cursor) != 0 || json_bool_true(cursor) != 0) {
         return -1;
     }
