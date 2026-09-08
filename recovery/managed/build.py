@@ -135,14 +135,21 @@ def build_openssh(lock: dict[str, Any], output: Path, cache: Path) -> dict[str, 
     configure = ["./configure", f"--prefix={prefix}", *entry["configure"]]
     run(configure, cwd=source, stage="openssh-configure", timeout=300)
     run(["make", "-j2"], cwd=source, stage="openssh-build", timeout=1200)
-    run(["make", "install-nokeys"], cwd=source, stage="openssh-install", timeout=600)
-    binary = source / "sshd"
-    if not binary.is_file():
-        raise BuildError("openssh-binary-missing")
+    install_root = (output / "openssh-install-root").resolve()
+    install_root.mkdir(parents=True, exist_ok=True)
+    run(["make", "install-nokeys", f"DESTDIR={install_root}"], cwd=source, stage="openssh-install", timeout=600)
+    staged_privsep = install_root / "run" / "sshd"
+    if not staged_privsep.is_dir():
+        raise BuildError("openssh-staged-privsep-missing")
+    staged_prefix = install_root / prefix.relative_to(prefix.anchor)
+    staged_binary = staged_prefix / "sbin" / "sshd"
+    if not staged_binary.is_file():
+        raise BuildError("openssh-staged-binary-missing")
+    version = capture_version(staged_binary)
     installed = output / "openssh" / "sbin" / "sshd"
     installed.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(binary, installed)
-    version = capture_version(installed)
+    shutil.copy2(staged_binary, installed)
+    capture_version(installed)
     return {"version": version, "archive_sha256": entry["sha256"], "patch_sha256": sha256_file(HERE / entry["patch"]), "binary_sha256": sha256_file(installed), "prefix": str(prefix), "prefix_absolute": str(prefix.is_absolute())}
 
 

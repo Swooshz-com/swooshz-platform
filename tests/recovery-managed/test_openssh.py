@@ -38,6 +38,20 @@ class OpenSSHBoundaryTests(unittest.TestCase):
         self.assertNotIn("getopt(", bootstrap)
         self.assertIn("SSH_ORIGINAL_COMMAND", dispatcher)
 
+    def test_openssh_install_is_unprivileged_destdir_staged(self):
+        lock = json.loads((MANAGED / "build.lock.json").read_text(encoding="utf-8"))
+        build = (MANAGED / "build.py").read_text(encoding="utf-8")
+        self.assertIn("--with-privsep-path=/run/sshd", lock["openssh"]["configure"])
+        self.assertIn('install_root = (output / "openssh-install-root").resolve()', build)
+        self.assertIn('run(["make", "install-nokeys", f"DESTDIR={install_root}"],', build)
+        self.assertIn('staged_privsep = install_root / "run" / "sshd"', build)
+        self.assertIn('staged_prefix = install_root / prefix.relative_to(prefix.anchor)', build)
+        self.assertIn('staged_binary = staged_prefix / "sbin" / "sshd"', build)
+        self.assertIn("version = capture_version(staged_binary)", build)
+        self.assertIn("shutil.copy2(staged_binary, installed)", build)
+        self.assertNotIn("sudo", build)
+        self.assertNotIn("mkdir -p -m 0755 /run/sshd", build)
+
 
 if __name__ == "__main__":
     unittest.main()
