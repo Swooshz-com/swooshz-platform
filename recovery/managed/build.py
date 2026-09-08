@@ -299,6 +299,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check-source", action="store_true")
     parser.add_argument("--native-only", action="store_true")
     args = parser.parse_args(argv)
+    args.output = args.output.resolve()
     try:
         lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
         args.output.mkdir(parents=True, exist_ok=True)

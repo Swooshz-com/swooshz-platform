@@ -309,11 +309,6 @@ static int serve(struct custody_state *state, EVP_PKEY *key, const uint8_t key_b
 	}
 }
 
-static void usage(const char *program)
-{
-	fprintf(stderr, "usage: %s --seed-fd FD --agent-listener-fd FD --control-fd FD\n", program);
-}
-
 int main(int argc, char **argv)
 {
 	int seed_fd = -1;
