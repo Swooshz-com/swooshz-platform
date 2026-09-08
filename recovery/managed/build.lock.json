@@ -1,0 +1,29 @@
+{
+  "schema": "swz-managed-build-lock.v1",
+  "openssh": {
+    "name": "openssh-portable",
+    "version": "10.5p1",
+    "url": "https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-10.5p1.tar.gz",
+    "sha256": "d44d28a839ea9daf969cc69150fde59910b2b39361dad81a3bd6cbd19218db11",
+    "release_sha256_base64": "1E0oqDnqna+WnMaRUP3lmRCys5Nh2tgaO9bL0ZIY2xE=",
+    "patch": "openssh-managed.patch",
+    "configure": ["--without-pam", "--without-libedit", "--disable-strip", "--with-privsep-path=/run/sshd"]
+  },
+  "musl": {
+    "name": "musl",
+    "version": "1.2.5",
+    "url": "https://musl.libc.org/releases/musl-1.2.5.tar.gz",
+    "sha256": "a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4"
+  },
+  "postgres_qualification_image": {
+    "image": "postgres:17.11-trixie@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675",
+    "platform": "linux/amd64",
+    "sha256": "67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675"
+  },
+  "toolchain": {
+    "c_standard": "c11",
+    "native_link_policy": "dynamic-system-libraries-only",
+    "forbidden": ["PAM", "Docker socket", "host bind mounts", "writable executable overlay"]
+  }
+}
+

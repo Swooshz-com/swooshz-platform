@@ -1,0 +1,11 @@
+/etc/ssh/recovery_sshd_config                    gen_context(system_u:object_r:swz_recovery_runtime_t,s0)
+/etc/ssh/recovery_host_ed25519_key\.pub         gen_context(system_u:object_r:swz_recovery_public_key_t,s0)
+/var/lib/swooshz-recovery/host-key(/.*)?         gen_context(system_u:object_r:swz_recovery_seed_t,s0)
+/run/swz(/.*)?                                  gen_context(system_u:object_r:swz_recovery_socket_t,s0)
+/usr/local/libexec/swz-supervisor               gen_context(system_u:object_r:swz_supervisor_t,s0)
+/usr/local/libexec/swz-custodian                gen_context(system_u:object_r:swz_custodian_t,s0)
+/usr/local/libexec/swz-dispatcher               gen_context(system_u:object_r:swz_dispatcher_t,s0)
+/usr/local/libexec/swz-bootstrap                gen_context(system_u:object_r:swz_bootstrap_t,s0)
+/usr/local/libexec/swz-broker                   gen_context(system_u:object_r:swz_broker_t,s0)
+/usr/local/libexec/swz-agent                    gen_context(system_u:object_r:swz_agent_t,s0)
+

@@ -1,0 +1,82 @@
+diff --git a/version.h b/version.h
+--- a/version.h
++++ b/version.h
+@@ -4,3 +4,4 @@
+ 
+ #define SSH_PORTABLE	"p1"
+ #define SSH_RELEASE	SSH_VERSION SSH_PORTABLE
++#define SWZ_MANAGED_OPENSSH_BASELINE "openssh-10.5p1"
+diff --git a/sshd.c b/sshd.c
+--- a/sshd.c
++++ b/sshd.c
+@@ -637,10 +637,10 @@
+ 	return 1;
+ }
+ 
+ static void
+ usage(void)
+ {
+-	fprintf(stderr, "%s, %s\n", SSH_RELEASE, SSH_OPENSSL_VERSION);
++	fprintf(stderr, "%s, %s, swz-baseline=%s\n", SSH_RELEASE, SSH_OPENSSL_VERSION, SWZ_MANAGED_OPENSSH_BASELINE);
+ 	fprintf(stderr,
+ "usage: sshd [-46DdeGiqTtV] [-C connection_spec] [-c host_cert_file]\n"
+ "            [-E log_file] [-f config_file] [-g login_grace_time]\n"
+@@ -1443,6 +1443,6 @@
+ 			free(line);
+ 			break;
+ 		case 'V':
+-			fprintf(stderr, "%s, %s\n",
+-			    SSH_RELEASE, SSH_OPENSSL_VERSION);
++			fprintf(stderr, "%s, %s, swz-baseline=%s\n",
++			    SSH_RELEASE, SSH_OPENSSL_VERSION, SWZ_MANAGED_OPENSSH_BASELINE);
+ 			exit(0);
+@@ -1576,10 +1576,7 @@
+ 	if (options.host_key_agent) {
+-		if (strcmp(options.host_key_agent, SSH_AUTHSOCKET_ENV_NAME))
+-			setenv(SSH_AUTHSOCKET_ENV_NAME,
+-			    options.host_key_agent, 1);
+-		if ((r = ssh_get_authentication_socket(NULL)) == 0)
++		if ((r = ssh_get_authentication_socket_path(options.host_key_agent, NULL)) == 0)
+ 			have_agent = 1;
+ 		else
+ 			error_r(r, "Could not connect to agent \"%s\"",
+ 			    options.host_key_agent);
+ 	}
+diff --git a/sshd-auth.c b/sshd-auth.c
+--- a/sshd-auth.c
++++ b/sshd-auth.c
+@@ -646,10 +646,7 @@
+ 	if (options.host_key_agent) {
+-		if (strcmp(options.host_key_agent, SSH_AUTHSOCKET_ENV_NAME))
+-			setenv(SSH_AUTHSOCKET_ENV_NAME,
+-			    options.host_key_agent, 1);
+-		if ((r = ssh_get_authentication_socket(NULL)) == 0)
++		if ((r = ssh_get_authentication_socket_path(options.host_key_agent, NULL)) == 0)
+ 			have_agent = 1;
+ 		else
+ 			error_r(r, "Could not connect to agent \"%s\"",
+ 			    options.host_key_agent);
+ 	}
+diff --git a/sshd-session.c b/sshd-session.c
+--- a/sshd-session.c
++++ b/sshd-session.c
+@@ -318,5 +318,5 @@
+ 		pmonitor->m_pid = pid;
+ 		if (have_agent) {
+-			r = ssh_get_authentication_socket(&auth_sock);
++			r = ssh_get_authentication_socket_path(options.host_key_agent, &auth_sock);
+ 			if (r != 0) {
+ 				error_r(r, "Could not get agent socket");
+@@ -1064,10 +1064,7 @@
+ 	if (options.host_key_agent) {
+-		if (strcmp(options.host_key_agent, SSH_AUTHSOCKET_ENV_NAME))
+-			setenv(SSH_AUTHSOCKET_ENV_NAME,
+-			    options.host_key_agent, 1);
+-		if ((r = ssh_get_authentication_socket(NULL)) == 0)
++		if ((r = ssh_get_authentication_socket_path(options.host_key_agent, NULL)) == 0)
+ 			have_agent = 1;
+ 		else
+ 			error_r(r, "Could not connect to agent \"%s\"",
+ 			    options.host_key_agent);
+ 	}
+
