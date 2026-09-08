@@ -170,7 +170,7 @@ static int registration_kat(void)
 	if (swz_validate_registration_record(record) == 0)
 		return -1;
 	record[0] ^= 1U;
-	record[8] = 0;
+	memset(record + 8, 0, 32);
 	if (swz_validate_registration_record(record) == 0)
 		return -1;
 	if (swz_build_registration_record(record, zero, connection, cookie) == 0 ||
@@ -185,7 +185,7 @@ static int registration_kat(void)
 		memcmp(context + 72, connection, 32) != 0 ||
 		memcmp(context + 104, cookie, 32) != 0)
 		return -1;
-	context[104] = 0;
+	memset(context + 104, 0, 32);
 	if (swz_validate_context_record(context) == 0)
 		return -1;
 	return 0;
