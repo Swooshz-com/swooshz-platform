@@ -1,0 +1,23 @@
+[
+  {"name":"repository-guardrails","mandatory":true,"skip":false},
+  {"name":"container-build","mandatory":true,"skip":false},
+  {"name":"managed-boundary-deterministic-tests","mandatory":true,"skip":false},
+  {"name":"native-c11-build","mandatory":true,"skip":false},
+  {"name":"native-static-closure","mandatory":true,"skip":false},
+  {"name":"storewire-identity-kats","mandatory":true,"skip":false},
+  {"name":"c-python-identity-agreement","mandatory":true,"skip":false},
+  {"name":"canonical-store-locator-byte-equality","mandatory":true,"skip":false},
+  {"name":"disposable-store-cas-locator-integration","mandatory":true,"skip":false},
+  {"name":"pinned-openssh-build","mandatory":true,"skip":false},
+  {"name":"live-openssh-inetd-session","mandatory":true,"skip":false},
+  {"name":"host-key-custody-positive","mandatory":true,"skip":false},
+  {"name":"host-key-custody-negative","mandatory":true,"skip":false},
+  {"name":"native-lifecycle-listener-boundary","mandatory":true,"skip":false},
+  {"name":"socket-confinement","mandatory":true,"skip":false},
+  {"name":"dm-verity-booted-guest","mandatory":true,"skip":false},
+  {"name":"selinux-enforcing-guest","mandatory":true,"skip":false},
+  {"name":"selinux-denial-tests","mandatory":true,"skip":false},
+  {"name":"process-finality-generation-retirement","mandatory":true,"skip":false},
+  {"name":"publication-scope-provenance","mandatory":true,"skip":false}
+]
+

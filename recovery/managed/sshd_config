@@ -1,0 +1,27 @@
+Port 22222
+AddressFamily inet
+ListenAddress 10.0.2.15
+HostKey /etc/ssh/recovery_host_ed25519_key.pub
+HostKeyAgent /run/swz/recovery-hostkey-agent.sock
+AuthorizedKeysFile /etc/ssh/recovery_authorized_keys
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+AllowUsers swz-recovery
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+UsePAM no
+PermitUserEnvironment no
+PermitUserRC no
+PermitEmptyPasswords no
+PermitTunnel no
+AllowAgentForwarding no
+AllowTcpForwarding no
+X11Forwarding no
+GatewayPorts no
+PermitTTY no
+ForceCommand /usr/local/libexec/swz-dispatcher
+Subsystem sftp internal-sftp
+LogLevel VERBOSE
+
