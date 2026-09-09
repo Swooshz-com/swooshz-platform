@@ -338,6 +338,55 @@ test("production host ownership rejects unknown malformed and ported hosts", asy
   }
 });
 
+test("configured alpha origin serves only its exact Host and ignores forwarded Host", async () => {
+  const fixture = createAdapterFixture();
+  fixture.dependencies.originConfig = {
+    allowedOrigins: ["https://platform-alpha.swooshz.com"],
+    publicBaseUrl: "https://platform-alpha.swooshz.com",
+  };
+
+  const exact = await rawRequest({
+    method: "GET",
+    url: "/healthz",
+    headers: {
+      host: "platform-alpha.swooshz.com",
+      "x-forwarded-host": "swooshz.com",
+    },
+    dependencies: fixture.dependencies,
+  });
+  assert.equal(exact.response.statusCode, 200);
+  assert.deepEqual(JSON.parse(exact.response.body), {
+    outcome: "ok",
+    service: "swooshz-platform",
+  });
+
+  for (const host of [
+    "swooshz.com",
+    "www.swooshz.com",
+    "platform-alpha.swooshz.com:443",
+    "platform-alpha.swooshz.com:8443",
+    "platform-alpha.swooshz.com.evil",
+    "evil.platform-alpha.swooshz.com",
+    "*.swooshz.com",
+    "localhost",
+    "127.0.0.1",
+    "[::1]",
+    "",
+  ]) {
+    const { response } = await rawRequest({
+      method: "GET",
+      url: "/healthz",
+      headers: { host },
+      dependencies: fixture.dependencies,
+    });
+
+    assert.equal(response.statusCode, 421, host || "missing host");
+    assert.equal(response.headers["set-cookie"], undefined);
+    assertNoStoreHeaders(response.headers);
+    assertResponseIsPrivacySafe(response);
+  }
+});
+
 test("wrong method for a known route returns safe 405 JSON", async () => {
   const { response, body } = await request({
     method: "POST",

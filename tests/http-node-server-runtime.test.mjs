@@ -15,6 +15,7 @@ const now = "2026-06-27T00:00:00.000Z";
 const publicBaseUrl = "https://platform.example.test/app";
 const allowedOrigin = "https://platform.example.test";
 const productionBaseUrl = "https://swooshz.com";
+const alphaBaseUrl = "https://platform-alpha.swooshz.com";
 const alternateAllowedOrigin = "https://admin.example.test";
 const syntheticPrivateUrl =
   "https://private.example.test/path?token=raw-session-token&db=postgresql://private-host";
@@ -128,12 +129,40 @@ test("production rejects public base URL query or fragment", () => {
   );
 });
 
-test("production requires the exact canonical apex public base URL", () => {
+test("production accepts only the exact canonical apex or alpha public base URL", () => {
+  for (const baseUrl of [productionBaseUrl, alphaBaseUrl]) {
+    const config = readNodePlatformRuntimeConfig({
+      NODE_ENV: "production",
+      PLATFORM_PUBLIC_BASE_URL: `${baseUrl}/`,
+      PLATFORM_ALLOWED_ORIGINS: baseUrl,
+      PLATFORM_COOKIE_SECURE: "true",
+    });
+
+    assert.equal(config.publicBaseUrl, baseUrl);
+    assert.deepEqual(config.originConfig, {
+      allowedOrigins: [baseUrl],
+      publicBaseUrl: baseUrl,
+    });
+    assert.deepEqual(config.cookie, { secure: true });
+  }
+});
+
+test("production rejects non-canonical public base URLs", () => {
   for (const candidate of [
     "https://www.swooshz.com",
     "https://swooshz.com:8443",
+    "https://swooshz.com:443",
     "https://swooshz.com/platform",
     "https://user:password@swooshz.com",
+    "https://platform-alpha.swooshz.com:8443",
+    "https://platform-alpha.swooshz.com:443",
+    "https://platform-alpha.swooshz.com/platform",
+    "https://platform-alpha.swooshz.com.evil",
+    "https://evil.platform-alpha.swooshz.com",
+    "https://*.swooshz.com",
+    "https://localhost",
+    "https://127.0.0.1",
+    "https://[::1]",
   ]) {
     assertConfigError(
       () => readNodePlatformRuntimeConfig({
@@ -143,6 +172,34 @@ test("production requires the exact canonical apex public base URL", () => {
         PLATFORM_COOKIE_SECURE: "true",
       }),
       "invalid_public_base_url",
+    );
+  }
+});
+
+test("production requires one origin-only allowed origin equal to the public base", () => {
+  for (const allowedOrigins of [
+    `${alphaBaseUrl},${productionBaseUrl}`,
+    productionBaseUrl,
+    `${alphaBaseUrl}/`,
+    `${alphaBaseUrl}/path`,
+    `${alphaBaseUrl}?debug=1`,
+    `${alphaBaseUrl}#fragment`,
+    `${alphaBaseUrl}:8443`,
+    "https://*.swooshz.com",
+    "https://platform-alpha.swooshz.com.evil",
+    "https://localhost",
+    "https://127.0.0.1",
+    "https://[::1]",
+    "http://platform-alpha.swooshz.com",
+  ]) {
+    assertConfigError(
+      () => readNodePlatformRuntimeConfig({
+        NODE_ENV: "production",
+        PLATFORM_PUBLIC_BASE_URL: alphaBaseUrl,
+        PLATFORM_ALLOWED_ORIGINS: allowedOrigins,
+        PLATFORM_COOKIE_SECURE: "true",
+      }),
+      "invalid_allowed_origin",
     );
   }
 });

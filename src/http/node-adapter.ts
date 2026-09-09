@@ -122,12 +122,22 @@ export async function handleNodePlatformHttpRequest(
 
   const earlyHeaders = normalizeHeaders(request.headers);
   const requestHost = (readHeader(earlyHeaders, "host") ?? "").toLowerCase();
-  if (requestHost === "www.swooshz.com") {
-    const apexOrigin = readApexRedirectOrigin(dependencies.originConfig.publicBaseUrl);
-    return { statusCode: 308, headers: { location: `${apexOrigin}${parsedUrl.pathname}${safeRedirectQuery(parsedUrl)}`, ...noStoreHeaders() }, body: "" };
-  }
-  if (isCanonicalProductionOrigin(dependencies.originConfig.publicBaseUrl) && requestHost !== "swooshz.com") {
+  const configuredPublicBaseUrl = dependencies.originConfig.publicBaseUrl;
+  const configuredHost = readConfiguredRequestHost(configuredPublicBaseUrl);
+
+  if (configuredPublicBaseUrl !== undefined && !configuredHost) {
     return jsonResponse(421, { outcome: "error", message: "Request host is not served." }, noStoreHeaders());
+  }
+
+  if (configuredHost) {
+    if (requestHost === "www.swooshz.com" && isConfiguredApexOrigin(configuredPublicBaseUrl)) {
+      const apexOrigin = readApexRedirectOrigin(configuredPublicBaseUrl);
+      return { statusCode: 308, headers: { location: `${apexOrigin}${parsedUrl.pathname}${safeRedirectQuery(parsedUrl)}`, ...noStoreHeaders() }, body: "" };
+    }
+
+    if (requestHost !== configuredHost) {
+      return jsonResponse(421, { outcome: "error", message: "Request host is not served." }, noStoreHeaders());
+    }
   }
 
   const method = normalizeMethod(request.method);
@@ -1319,13 +1329,36 @@ function noStoreHeaders(): Record<string, string> {
 function readApexRedirectOrigin(configured: string | undefined): string {
   try {
     const parsed = new URL(configured ?? "");
-    if (parsed.protocol === "https:" && parsed.hostname === "swooshz.com" && !parsed.port) return parsed.origin;
+    if (isConfiguredApexOrigin(configured)) return parsed.origin;
   } catch { /* use the canonical fail-closed target */ }
   return "https://swooshz.com";
 }
 
-function isCanonicalProductionOrigin(configured: string | undefined): boolean {
-  try { return new URL(configured ?? "").origin === "https://swooshz.com"; } catch { return false; }
+function readConfiguredRequestHost(configured: string | undefined): string | null {
+  if (configured === undefined) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(configured);
+
+    if (
+      (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+      !parsed.hostname ||
+      parsed.username ||
+      parsed.password
+    ) {
+      return null;
+    }
+
+    return parsed.host.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+function isConfiguredApexOrigin(configured: string | undefined): boolean {
+  return configured === "https://swooshz.com" || configured === "https://swooshz.com/";
 }
 
 function safeRedirectQuery(url: URL): string {

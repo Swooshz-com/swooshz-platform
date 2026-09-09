@@ -320,6 +320,59 @@ test("production bootstrap requires the exact canonical auth callback before DB 
   assert.equal(fixture.calls.listen, 0);
 });
 
+test("production bootstrap requires the callback to match the configured alpha origin", async () => {
+  for (const callback of [
+    "https://swooshz.com/api/platform/auth/callback",
+    "https://platform-alpha.swooshz.com/api/platform/auth/callback/",
+    "https://platform-alpha.swooshz.com:8443/api/platform/auth/callback",
+    "https://platform-alpha.swooshz.com/api/platform/auth/callback?code=raw-secret",
+    "https://platform-alpha.swooshz.com/api/platform/auth/callback#fragment",
+    "https://user:password@platform-alpha.swooshz.com/api/platform/auth/callback",
+  ]) {
+    const fixture = createBootstrapFixture({
+      withGenericAuth: true,
+      env: {
+        PLATFORM_PUBLIC_BASE_URL: "https://platform-alpha.swooshz.com",
+        PLATFORM_ALLOWED_ORIGINS: "https://platform-alpha.swooshz.com",
+        AUTH_REDIRECT_URI: callback,
+      },
+    });
+    const bootstrap = createPlatformNodeBootstrap(fixture.input);
+
+    await assert.rejects(
+      () => bootstrap.start(),
+      assertPrivacySafeBootstrapError("invalid_config"),
+    );
+    assert.equal(fixture.calls.databaseClientFactory, 0);
+    assert.equal(fixture.calls.serverFactory, 0);
+    assert.equal(fixture.calls.listen, 0);
+  }
+});
+
+test("production bootstrap accepts the exact alpha origin and callback before listening", async () => {
+  const fixture = createBootstrapFixture({
+    withGenericAuth: true,
+    env: {
+      PLATFORM_PUBLIC_BASE_URL: "https://platform-alpha.swooshz.com",
+      PLATFORM_ALLOWED_ORIGINS: "https://platform-alpha.swooshz.com",
+      AUTH_REDIRECT_URI: "https://platform-alpha.swooshz.com/api/platform/auth/callback",
+    },
+  });
+  const bootstrap = createPlatformNodeBootstrap(fixture.input);
+
+  await bootstrap.start();
+
+  assert.equal(fixture.calls.databaseClientFactory, 1);
+  assert.equal(fixture.calls.serverFactory, 1);
+  assert.equal(fixture.calls.listen, 1);
+  assert.deepEqual(fixture.calls.serverDependencies[0].originConfig, {
+    allowedOrigins: ["https://platform-alpha.swooshz.com"],
+    publicBaseUrl: "https://platform-alpha.swooshz.com",
+  });
+
+  await bootstrap.stop();
+});
+
 test("production bootstrap rejects non-Auth0 provider authority before DB or listen", async () => {
   const fixture = createBootstrapFixture({
     withGenericAuth: true,

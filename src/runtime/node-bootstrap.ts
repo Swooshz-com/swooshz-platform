@@ -156,6 +156,7 @@ export function createPlatformNodeBootstrap(
       assertProductionHostedUrlConfig({
         runtimeConfig,
         authConfig,
+        authRedirectUri: input.env.AUTH_REDIRECT_URI,
         sqagBrowserLaunchBaseUrl: input.sqagBrowserLaunch?.baseUrl,
       });
       assertGenericOidcRuntimeInput(input, authProviderMode);
@@ -360,6 +361,7 @@ function assertGenericOidcRuntimeInput(
 function assertProductionHostedUrlConfig(input: {
   runtimeConfig: NodePlatformRuntimeConfig;
   authConfig: AuthConfig | null;
+  authRedirectUri?: string;
   sqagBrowserLaunchBaseUrl?: string;
 }): void {
   if (input.runtimeConfig.nodeEnv !== "production") {
@@ -378,7 +380,10 @@ function assertProductionHostedUrlConfig(input: {
     assertHttpsUrl(authConfig.issuerUrl);
     assertHttpsUrl(authConfig.jwksUrl);
     assertHttpsUrl(authConfig.userinfoUrl);
-    assertHostedAuthRedirectUri(authConfig.redirectUri);
+    assertHostedAuthRedirectUri(
+      input.authRedirectUri ?? authConfig.redirectUri,
+      input.runtimeConfig.publicBaseUrl,
+    );
   }
 
   assertHostedSqagBaseUrl(input.sqagBrowserLaunchBaseUrl);
@@ -398,12 +403,17 @@ function assertHttpsUrl(value: string | null | undefined): void {
   }
 }
 
-function assertHostedAuthRedirectUri(value: string): void {
+function assertHostedAuthRedirectUri(value: string, publicBaseUrl: string): void {
   try {
-    const parsed = new URL(value);
+    const publicBase = new URL(publicBaseUrl);
+    const redirectUri = value.trim();
+    const parsed = new URL(redirectUri);
+    const expectedRedirectUri =
+      `${publicBase.origin}/api/platform/auth/callback`;
 
     if (
-      parsed.origin !== "https://swooshz.com" ||
+      redirectUri !== expectedRedirectUri ||
+      parsed.origin !== publicBase.origin ||
       parsed.pathname !== "/api/platform/auth/callback" ||
       parsed.username ||
       parsed.password ||

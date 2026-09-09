@@ -70,6 +70,8 @@ test("Dockerfile defines a production-safe runtime image and healthcheck", async
     assert.match(dockerfile, new RegExp(escapeRegExp(phrase), "i"));
   }
 
+  assert.match(dockerfile, /new URL\(process\.env\.PLATFORM_PUBLIC_BASE_URL\)\.host/i);
+  assert.match(dockerfile, /headers:\s*\{\s*host\s*\}/i);
   assert.doesNotMatch(dockerfile, /DATABASE_URL=|SESSION_SECRET=|OIDC_CLIENT_SECRET=|COPY \. \./);
   assert.doesNotMatch(dockerfile, /db:migrate|platform:seed-internal-access|platform:sqag-smoke-readiness/);
 });
