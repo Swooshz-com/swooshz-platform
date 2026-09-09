@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   handleNodePlatformHttpRequest,
+  writeNodePlatformHttpResponse,
 } from "../dist/index.js";
 import { AuthCallbackError, readAuthConfig } from "../dist/auth/index.js";
 import { createInMemoryPlatformRepositories } from "./helpers/in-memory-platform-repositories.mjs";
@@ -316,13 +317,13 @@ test("unknown route returns safe 404 JSON", async () => {
 test("www is redirect-only before UI auth and internal service routing", async () => {
   const fixture = createAdapterFixture();
   fixture.dependencies.originConfig.publicBaseUrl = "https://swooshz.com";
-  const callback = await rawRequest({ method: "GET", url: "/api/platform/auth/callback?utm_source=test&code=private-code&next=https://evil.test", headers: { host: "www.swooshz.com" }, dependencies: fixture.dependencies });
+  const callback = await boundaryRequest({ method: "GET", url: "/api/platform/auth/callback?utm_source=test&code=private-code&next=https://evil.test", headers: { host: "www.swooshz.com" }, dependencies: fixture.dependencies });
   assert.equal(callback.response.statusCode, 308);
   assert.equal(callback.response.headers.location, "https://swooshz.com/api/platform/auth/callback?utm_source=test");
   assert.equal(callback.response.headers["set-cookie"], undefined);
   assert.equal(callback.response.body, "");
   assert.equal(fixture.calls.authStateConsume, 0);
-  const internal = await rawRequest({ method: "POST", url: "/api/internal/sqag/access/validate?ref=uat", headers: { host: "www.swooshz.com", "x-sqag-service-authorization": "not-used" }, dependencies: fixture.dependencies });
+  const internal = await boundaryRequest({ method: "POST", url: "/api/internal/sqag/access/validate?ref=uat", headers: { host: "www.swooshz.com", "x-sqag-service-authorization": "not-used" }, dependencies: fixture.dependencies });
   assert.equal(internal.response.statusCode, 308);
   assert.equal(internal.response.headers.location, "https://swooshz.com/api/internal/sqag/access/validate?ref=uat");
   assert.equal(internal.response.headers["set-cookie"], undefined);
@@ -332,7 +333,7 @@ test("production host ownership rejects unknown malformed and ported hosts", asy
   for (const host of ["evil.example", "www.swooshz.com:443", "swooshz.com:443", ""]) {
     const fixture = createAdapterFixture();
     fixture.dependencies.originConfig.publicBaseUrl = "https://swooshz.com";
-    const { response } = await rawRequest({ method: "GET", url: "/", headers: { host }, dependencies: fixture.dependencies });
+    const { response } = await boundaryRequest({ method: "GET", url: "/", headers: { host }, dependencies: fixture.dependencies });
     assert.equal(response.statusCode, 421);
     assert.equal(response.headers["set-cookie"], undefined);
   }
@@ -345,7 +346,7 @@ test("configured alpha origin serves only its exact Host and ignores forwarded H
     publicBaseUrl: "https://platform-alpha.swooshz.com",
   };
 
-  const exact = await rawRequest({
+  const exact = await boundaryRequest({
     method: "GET",
     url: "/healthz",
     headers: {
@@ -373,7 +374,7 @@ test("configured alpha origin serves only its exact Host and ignores forwarded H
     "[::1]",
     "",
   ]) {
-    const { response } = await rawRequest({
+    const { response } = await boundaryRequest({
       method: "GET",
       url: "/healthz",
       headers: { host },
@@ -1722,6 +1723,41 @@ async function rawRequest({
   });
 
   return { response };
+}
+
+async function boundaryRequest({
+  method,
+  url,
+  headers = {},
+  dependencies = createAdapterFixture().dependencies,
+}) {
+  const responseHeaders = {};
+  let responseBody = "";
+  const response = {
+    headersSent: false,
+    statusCode: 0,
+    setHeader(name, value) {
+      responseHeaders[name] = value;
+    },
+    end(body = "") {
+      responseBody = body;
+      this.headersSent = true;
+    },
+  };
+
+  await writeNodePlatformHttpResponse(dependencies, {
+    method,
+    url,
+    headers,
+  }, response);
+
+  return {
+    response: {
+      statusCode: response.statusCode,
+      headers: responseHeaders,
+      body: responseBody,
+    },
+  };
 }
 
 function createAdapterFixture(overrides = {}) {

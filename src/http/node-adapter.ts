@@ -120,26 +120,6 @@ export async function handleNodePlatformHttpRequest(
     });
   }
 
-  const earlyHeaders = normalizeHeaders(request.headers);
-  const requestHost = (readHeader(earlyHeaders, "host") ?? "").toLowerCase();
-  const configuredPublicBaseUrl = dependencies.originConfig.publicBaseUrl;
-  const configuredHost = readConfiguredRequestHost(configuredPublicBaseUrl);
-
-  if (configuredPublicBaseUrl !== undefined && !configuredHost) {
-    return jsonResponse(421, { outcome: "error", message: "Request host is not served." }, noStoreHeaders());
-  }
-
-  if (configuredHost) {
-    if (requestHost === "www.swooshz.com" && isConfiguredApexOrigin(configuredPublicBaseUrl)) {
-      const apexOrigin = readApexRedirectOrigin(configuredPublicBaseUrl);
-      return { statusCode: 308, headers: { location: `${apexOrigin}${parsedUrl.pathname}${safeRedirectQuery(parsedUrl)}`, ...noStoreHeaders() }, body: "" };
-    }
-
-    if (requestHost !== configuredHost) {
-      return jsonResponse(421, { outcome: "error", message: "Request host is not served." }, noStoreHeaders());
-    }
-  }
-
   const method = normalizeMethod(request.method);
 
   if (isKnownPublicSiteAsset(parsedUrl.pathname)) {
@@ -857,7 +837,8 @@ export async function writeNodePlatformHttpResponse(
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<void> {
-  const adapterResponse = await handleNodePlatformHttpRequest(dependencies, {
+  const hostResponse = validateNodeRequestHost(dependencies, request.url, request.headers);
+  const adapterResponse = hostResponse ?? await handleNodePlatformHttpRequest(dependencies, {
     method: request.method,
     url: request.url,
     body: await readNodeRequestBody(request),
@@ -871,6 +852,40 @@ export async function writeNodePlatformHttpResponse(
   }
 
   response.end(adapterResponse.body);
+}
+
+function validateNodeRequestHost(
+  dependencies: NodePlatformHttpAdapterDependencies,
+  url: string | undefined,
+  headers: IncomingHttpHeaders,
+): NodePlatformHttpResponse | null {
+  const parsedUrl = parseRequestUrl(url);
+
+  if (!parsedUrl) {
+    return null;
+  }
+
+  const normalizedHeaders = normalizeHeaders(headers);
+  const requestHost = (readHeader(normalizedHeaders, "host") ?? "").toLowerCase();
+  const configuredPublicBaseUrl = dependencies.originConfig.publicBaseUrl;
+  const configuredHost = readConfiguredRequestHost(configuredPublicBaseUrl);
+
+  if (configuredPublicBaseUrl !== undefined && !configuredHost) {
+    return jsonResponse(421, { outcome: "error", message: "Request host is not served." }, noStoreHeaders());
+  }
+
+  if (configuredHost) {
+    if (requestHost === "www.swooshz.com" && isConfiguredApexOrigin(configuredPublicBaseUrl)) {
+      const apexOrigin = readApexRedirectOrigin(configuredPublicBaseUrl);
+      return { statusCode: 308, headers: { location: `${apexOrigin}${parsedUrl.pathname}${safeRedirectQuery(parsedUrl)}`, ...noStoreHeaders() }, body: "" };
+    }
+
+    if (requestHost !== configuredHost) {
+      return jsonResponse(421, { outcome: "error", message: "Request host is not served." }, noStoreHeaders());
+    }
+  }
+
+  return null;
 }
 
 function parseRequestUrl(url: string | undefined): URL | null {
