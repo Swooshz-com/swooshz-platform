@@ -32,6 +32,7 @@
 #define SWZ_RESOLVE_BENEATH 0x08ULL
 #define SWZ_TRANSITION_ID_BYTES 59U
 #define SWZ_STORE_DOCUMENT_MAX_BYTES SWZ_MAX_CONTROL_PAYLOAD_BYTES
+#define SWZ_STORE_WIRE_MARKER "store-json.v1"
 #define SWZ_BIND_COMMITMENTS 17U
 
 struct swz_open_how_local {
@@ -1229,7 +1230,7 @@ static int build_bind(const struct restore_material *restore, int source_fd,
         context_generation == 0U ||
         fstat(source_fd, &output->source_stat) != 0 ||
         fstat(restore_write_fd, &output->target_pipe_stat) != 0 ||
-        restore->transition_id[0] == '\0') {
+        restore->transition.transition_id[0] == '\0') {
         return -1;
     }
     if (swz_store_commitment("ssh-endpoint",
