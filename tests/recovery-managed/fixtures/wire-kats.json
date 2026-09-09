@@ -1,0 +1,16 @@
+{
+  "schema": "swz-managed-wire-kats.v1",
+  "profiles": ["restore-ledger-transition-data.v2", "restore-begin-evidence.v2", "swz-recovery-result.v2"],
+  "frozen_run376": {
+    "store_transition_bytes": 1056,
+    "store_transition_commitment": "sha256:v1:2b146d8166469005820fb3e5c237d527e70366a54ad1e72c808bdeeac1e8abfa",
+    "retained_transition_id": "restore-v2-de8a7496849ffc69141b08a94c97400158758ba521634672",
+    "sorted_variant_transition_id": "restore-v2-c3a1e17e7d885a82d954c68742fc25e5cd138339bffea6af",
+    "sorted_variant_acceptance": "REJECT_SCHEMA_ORDER",
+    "evidence_store_bytes": 1082,
+    "evidence_store_commitment": "sha256:v1:e36f615877e06d68fb45c131989a440df8700fdf29f26d641604d24479ff2163",
+    "restore_begin_payload_bytes": 2611,
+    "restore_begin_payload_sha256": "c3de513cf5c3783af3d3624d303e5eb07a6ea9a5dad8f155440544f1ac9c00ef"
+  }
+}
+

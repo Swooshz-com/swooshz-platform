@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://swooshz.com/recovery-managed/generation-manifest.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "epoch_ref", "generation_ref", "installation", "endpoint_actual", "components", "security"],
+  "properties": {
+    "schema": {"const": "swz-generation-manifest.v1"},
+    "epoch_ref": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+    "generation_ref": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+    "installation": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "endpoint_actual": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "components": {"type": "object", "minProperties": 7},
+    "security": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selinux", "dm_verity", "no_new_privs", "network_namespace"],
+      "properties": {
+        "selinux": {"const": "enforcing"},
+        "dm_verity": {"const": true},
+        "no_new_privs": {"const": true},
+        "network_namespace": {"const": true}
+      }
+    }
+  }
+}
+
