@@ -1,3 +1,4 @@
+import json
 import importlib.util
 import inspect
 import os
@@ -7,6 +8,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import ExitStack
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -61,6 +64,166 @@ class ControllerIntegrationTests(unittest.TestCase):
             self.assertEqual(controller.store.read_restore_ledger("epoch-qualified-001")["state"], "CONSUMED")
             self.assertEqual(controller.store.ledger_safety_classification("epoch-qualified-001"), "CONSUMED")
             self.assertFalse(target.exists())
+
+    def test_qualification_defers_exact_native_boundary_after_durable_store_proof(self):
+        class FakeProviderHold(RuntimeError):
+            pass
+
+        class FakeFilesystemSafetyError(RuntimeError):
+            pass
+
+        class FakeStore:
+            def read_restore_ledger(self, epoch_ref):
+                self.ledger_epoch_ref = epoch_ref
+                return {"state": "CONSUMED"}
+
+            def load_epoch(self, epoch_ref):
+                self.loaded_epoch_ref = epoch_ref
+                return SimpleNamespace(
+                    ledger={"state": "CONSUMED"},
+                    record={
+                        "state": "ACTIVE",
+                        "durability": {
+                            "file_flush_verified": True,
+                            "readback_verified": True,
+                            "atomic_authority_transition": True,
+                            "directory_flush_verified": True,
+                        },
+                    },
+                    spool={"state": "OPEN", "last_stage": "RESTORE_BEGIN"},
+                )
+
+        context = SimpleNamespace(
+            session_hex="99" * 32,
+            generation_hex="aa" * 32,
+            accepted_connection_hex="bb" * 32,
+        )
+
+        class FakeBackend:
+            @staticmethod
+            def wire_kat_frames(*args, **kwargs):
+                return [object()]
+
+        class FakeManagedController:
+            def __init__(self, admitted_context):
+                self.context = admitted_context
+                self.n_local = bytes(32)
+                self.store = None
+
+            def accept(self, frame):
+                self.accepted_frame = frame
+
+            def run(self, **kwargs):
+                self.store = FakeStore()
+                raise FakeProviderHold("supervisor-provider-required")
+
+        fake_controller = SimpleNamespace(
+            QualificationProviderHold=FakeProviderHold,
+            STORE=SimpleNamespace(FilesystemSafetyError=FakeFilesystemSafetyError),
+            BACKEND=FakeBackend(),
+            make_admitted_context=lambda *args, **kwargs: context,
+            ManagedController=FakeManagedController,
+        )
+        with tempfile.TemporaryDirectory(prefix="swz-qualification-test-") as temporary:
+            with mock.patch.object(QUALIFY, "load_module", return_value=fake_controller):
+                result = QUALIFY.run_store_cas_locator_integration(pathlib.Path(temporary) / "build")
+        self.assertEqual(result["status"], "DEFERRED_TO_GUEST")
+        self.assertNotEqual(result["status"], "PASS")
+        self.assertEqual(result["reason"], "supervisor-provider-required")
+        self.assertEqual(result["ledger_state"], "CONSUMED")
+        self.assertEqual(result["record_state"], "ACTIVE")
+        self.assertEqual(result["spool_state"], "OPEN")
+        self.assertEqual(result["spool_stage"], "RESTORE_BEGIN")
+        self.assertTrue(all(result["durability"].values()))
+
+    def test_preflight_deferral_never_synthesizes_security_success(self):
+        candidate_sha = "a" * 40
+        results = {
+            "exact_scope": {"tracked_paths": [], "tracked_count": 41, "path_ceiling": 41, "untracked_output": []},
+            "canonical_store_locator_equality": {"files": [], "byte_equal": True},
+            "run_result_ownership_static": {"status": "PASS", "PYTHON_FABRICATED_RESULT": "ABSENT"},
+            "run_host_boundary_static": {"status": "PASS"},
+            "run_deterministic_tests": {"status": "PASS"},
+            "run_native_c11_build": {"status": "PASS"},
+            "run_native_static_closure": {"status": "PASS"},
+            "run_c_native_kat": {"status": "PASS"},
+            "run_python_identity_agreement": {"status": "PASS"},
+            "run_store_cas_locator_integration": {
+                "status": "DEFERRED_TO_GUEST",
+                "ledger_state": "CONSUMED",
+                "record_state": "ACTIVE",
+                "spool_state": "OPEN",
+                "spool_stage": "RESTORE_BEGIN",
+            },
+            "run_application_gates": {"status": "DELEGATED_TO_CI"},
+            "run_container_build": {"status": "DELEGATED_TO_CI"},
+        }
+
+        def fake_run(command, **kwargs):
+            self.assertEqual(command, ["git", "rev-parse", "HEAD"])
+            return subprocess.CompletedProcess(command, 0, candidate_sha + "\n", "")
+
+        with tempfile.TemporaryDirectory(prefix="swz-preflight-test-") as temporary:
+            output = pathlib.Path(temporary) / "preflight.json"
+            build_output = pathlib.Path(temporary) / "build"
+            with ExitStack() as stack:
+                stack.enter_context(mock.patch.object(QUALIFY, "run", side_effect=fake_run))
+                stack.enter_context(mock.patch.dict(os.environ, {}, clear=False))
+                for name, value in results.items():
+                    stack.enter_context(mock.patch.object(QUALIFY, name, return_value=value))
+                status = QUALIFY.main([
+                    "--phase", "preflight", "--expected-sha", candidate_sha,
+                    "--output", str(output), "--build-output", str(build_output),
+                ])
+            evidence = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(status, 0)
+        self.assertEqual(evidence["store_cas_locator"]["status"], "DEFERRED_TO_GUEST")
+        self.assertEqual(evidence["mandatory_security_skips"], "NOT_YET_PROVEN")
+        self.assertNotIn("guest", evidence)
+        self.assertEqual(evidence["guest_deferred"], list(QUALIFY.GUEST_PROOF_CASES))
+
+    def test_guest_phase_rejects_missing_security_proof_after_preflight_deferral(self):
+        candidate_sha = "b" * 40
+        results = {
+            "exact_scope": {"tracked_paths": [], "tracked_count": 41, "path_ceiling": 41, "untracked_output": []},
+            "canonical_store_locator_equality": {"files": [], "byte_equal": True},
+            "run_result_ownership_static": {"status": "PASS", "PYTHON_FABRICATED_RESULT": "ABSENT"},
+            "run_host_boundary_static": {"status": "PASS"},
+            "run_deterministic_tests": {"status": "PASS"},
+            "run_native_c11_build": {"status": "PASS"},
+            "run_native_static_closure": {"status": "PASS"},
+            "run_c_native_kat": {"status": "PASS"},
+            "run_python_identity_agreement": {"status": "PASS"},
+            "run_store_cas_locator_integration": {"status": "DEFERRED_TO_GUEST"},
+            "run_build": {"status": "PASS"},
+            "run_locator_integration": {"status": "PASS"},
+            "run_guest": {"mandatory_security_skips": 1},
+        }
+
+        def fake_run(command, **kwargs):
+            self.assertEqual(command, ["git", "rev-parse", "HEAD"])
+            return subprocess.CompletedProcess(command, 0, candidate_sha + "\n", "")
+
+        with tempfile.TemporaryDirectory(prefix="swz-guest-gate-test-") as temporary:
+            output = pathlib.Path(temporary) / "qualification.json"
+            resume = pathlib.Path(temporary) / "preflight.json"
+            resume.write_text("{}\n", encoding="utf-8")
+            build_output = pathlib.Path(temporary) / "build"
+            with ExitStack() as stack:
+                stack.enter_context(mock.patch.object(QUALIFY, "run", side_effect=fake_run))
+                stack.enter_context(mock.patch.dict(os.environ, {}, clear=False))
+                for name, value in results.items():
+                    stack.enter_context(mock.patch.object(QUALIFY, name, return_value=value))
+                status = QUALIFY.main([
+                    "--phase", "guest", "--expected-sha", candidate_sha,
+                    "--output", str(output), "--resume", str(resume),
+                    "--build-output", str(build_output),
+                ])
+            evidence = json.loads(output.read_text(encoding="utf-8"))
+        self.assertEqual(status, 1)
+        self.assertEqual(evidence["guest"]["mandatory_security_skips"], 1)
+        self.assertEqual(evidence["mandatory_security_skips"], "NOT_YET_PROVEN")
+        self.assertIn("mandatory-security-skips", evidence["failures"])
 
     def test_disposable_inputs_are_explicitly_qualified(self):
         inputs = CONTROLLER.disposable_inputs()

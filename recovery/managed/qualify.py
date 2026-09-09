@@ -411,7 +411,31 @@ def run_store_cas_locator_integration(build_output: Path) -> dict[str, Any]:
             if (runner.store is None or
                     runner.store.read_restore_ledger("epoch-qualified-001")["state"] != "CONSUMED"):
                 raise CandidateDefect("cas-consumption-not-proven") from error
-            raise ProviderHold("LOCAL_CAPABILITY_UNAVAILABLE:native-managed-boundary") from error
+            if str(error) != "supervisor-provider-required":
+                raise ProviderHold("LOCAL_CAPABILITY_UNAVAILABLE:native-managed-boundary") from error
+            snapshot = runner.store.load_epoch("epoch-qualified-001")
+            durability = snapshot.record.get("durability")
+            expected_durability = {
+                "file_flush_verified", "readback_verified",
+                "atomic_authority_transition", "directory_flush_verified",
+            }
+            if (snapshot.ledger["state"] != "CONSUMED" or
+                    snapshot.record["state"] != "ACTIVE" or
+                    snapshot.spool["state"] != "OPEN" or
+                    snapshot.spool["last_stage"] != "RESTORE_BEGIN" or
+                    not isinstance(durability, dict) or
+                    set(durability) != expected_durability or
+                    any(value is not True for value in durability.values())):
+                raise CandidateDefect("durable-restore-begin-not-proven") from error
+            return {
+                "status": "DEFERRED_TO_GUEST",
+                "reason": str(error),
+                "ledger_state": snapshot.ledger["state"],
+                "record_state": snapshot.record["state"],
+                "spool_state": snapshot.spool["state"],
+                "spool_stage": snapshot.spool["last_stage"],
+                "durability": dict(durability),
+            }
         except controller.STORE.FilesystemSafetyError as error:
             if str(error) != "SECURITY_PROOF_FAILED":
                 raise
