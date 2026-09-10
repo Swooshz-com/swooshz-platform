@@ -49,6 +49,17 @@ test("readiness check passes for complete hosted internal-alpha env without prin
   assertNoPrivateMaterial(lines.join("\n"));
 });
 
+test("readiness check accepts the exact alpha public origin and callback", () => {
+  const report = reportWithOverride({
+    PLATFORM_PUBLIC_BASE_URL: "https://platform-alpha.swooshz.com",
+    PLATFORM_ALLOWED_ORIGINS: "https://platform-alpha.swooshz.com",
+    AUTH_REDIRECT_URI: "https://platform-alpha.swooshz.com/api/platform/auth/callback",
+  });
+
+  assert.equal(report.ok, true);
+  assert.equal(report.invalid.length, 0);
+});
+
 test("hosted readiness rejects a non-Auth0 provider authority", () => {
   const report = reportWithOverride({ AUTH_PROVIDER_KEY: "other-oidc" });
 
@@ -67,6 +78,55 @@ test("readiness check rejects alternate and ported Platform origins", () => {
 
   assert.equal(result.ok, false);
   assertInvalid(result, "PLATFORM_ALLOWED_ORIGINS", "must_be_canonical_platform_apex");
+});
+
+test("readiness rejects non-canonical alpha hosts and ports", () => {
+  for (const value of [
+    "https://www.swooshz.com",
+    "https://platform-alpha.swooshz.com:443",
+    "https://platform-alpha.swooshz.com:8443",
+    "https://platform-alpha.swooshz.com/path",
+    "https://platform-alpha.swooshz.com.evil",
+    "https://evil.platform-alpha.swooshz.com",
+    "https://*.swooshz.com",
+    "https://localhost",
+    "https://127.0.0.1",
+    "https://[::1]",
+  ]) {
+    const report = reportWithOverride({ PLATFORM_PUBLIC_BASE_URL: value });
+
+    assert.equal(report.ok, false);
+    assertInvalid(report, "PLATFORM_PUBLIC_BASE_URL", "must_be_canonical_platform_apex");
+  }
+});
+
+test("readiness requires one exact alpha origin and matching callback", () => {
+  const alpha = {
+    PLATFORM_PUBLIC_BASE_URL: "https://platform-alpha.swooshz.com",
+    PLATFORM_ALLOWED_ORIGINS: "https://platform-alpha.swooshz.com",
+    AUTH_REDIRECT_URI: "https://platform-alpha.swooshz.com/api/platform/auth/callback",
+  };
+
+  for (const [name, value, reason] of [
+    ["PLATFORM_ALLOWED_ORIGINS", "https://swooshz.com", "must_be_canonical_platform_apex"],
+    ["PLATFORM_ALLOWED_ORIGINS", "https://platform-alpha.swooshz.com/", "must_be_origin"],
+    ["PLATFORM_ALLOWED_ORIGINS", "https://platform-alpha.swooshz.com:8443", "must_be_canonical_platform_apex"],
+    ["PLATFORM_ALLOWED_ORIGINS", "https://platform-alpha.swooshz.com,https://swooshz.com", "must_be_canonical_platform_apex"],
+    ["PLATFORM_ALLOWED_ORIGINS", "https://platform-alpha.swooshz.com.evil", "must_be_canonical_platform_apex"],
+    ["PLATFORM_ALLOWED_ORIGINS", "https://*.swooshz.com", "must_be_canonical_platform_apex"],
+    ["AUTH_REDIRECT_URI", "https://swooshz.com/api/platform/auth/callback", "must_end_with_platform_auth_callback"],
+    ["AUTH_REDIRECT_URI", "https://platform-alpha.swooshz.com:8443/api/platform/auth/callback", "must_end_with_platform_auth_callback"],
+    ["AUTH_REDIRECT_URI", "https://platform-alpha.swooshz.com/api/platform/auth/callback/", "must_end_with_platform_auth_callback"],
+  ]) {
+    const report = createPlatformReadinessReport({
+      ...completeEnv(),
+      ...alpha,
+      [name]: value,
+    });
+
+    assert.equal(report.ok, false);
+    assertInvalid(report, name, reason);
+  }
 });
 
 test("readiness check fails with safe missing and invalid env names only", () => {

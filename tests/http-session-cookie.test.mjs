@@ -61,6 +61,20 @@ test("builds a session Set-Cookie header with secure browser defaults", () => {
   assert.match(header, /Max-Age=3600/);
 });
 
+test("alpha session cookies stay secure host-only cookies without Domain", () => {
+  const header = buildBrowserSessionSetCookie(rawSessionReference, {
+    secure: true,
+    sameSite: "Lax",
+    path: "/api/platform",
+  });
+
+  assert.match(header, /HttpOnly/);
+  assert.match(header, /SameSite=Lax/);
+  assert.match(header, /Secure/);
+  assert.match(header, /Path=\/api\/platform/);
+  assert.doesNotMatch(header, /Domain=/i);
+});
+
 test("clearing cookie expires and removes the browser session reference safely", () => {
   const header = buildBrowserSessionClearCookie({ secure: true });
 

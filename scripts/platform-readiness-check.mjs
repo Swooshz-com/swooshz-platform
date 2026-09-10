@@ -217,7 +217,13 @@ function validateHostedBaseUrl(value) {
 function validatePlatformBaseUrl(value) {
   const result = validateHostedBaseUrl(value);
   if (!result.ok) return result;
-  return new URL(value).origin === "https://swooshz.com" && new URL(value).pathname === "/"
+
+  const parsed = new URL(value);
+  const canonicalValue = value === parsed.origin || value === `${parsed.origin}/`;
+
+  return canonicalValue &&
+    parsed.pathname === "/" &&
+    ["https://swooshz.com", "https://platform-alpha.swooshz.com"].includes(parsed.origin)
     ? ok()
     : invalid("must_be_canonical_platform_apex");
 }
@@ -231,37 +237,58 @@ function validateSqagBaseUrl(value) {
     : invalid("must_be_canonical_sqag_origin");
 }
 
-function validateHostedAuthRedirectUri(value) {
+function validateHostedAuthRedirectUri(value, env) {
   const result = validateHostedBaseUrl(value);
   if (!result.ok) {
     return result;
   }
 
+  const publicBaseUrl = readEnv(env, "PLATFORM_PUBLIC_BASE_URL");
+  const publicBaseValidation = validatePlatformBaseUrl(publicBaseUrl);
+  if (!publicBaseValidation.ok) {
+    return invalid("must_match_public_base_url");
+  }
+
   const parsed = new URL(value);
-  return parsed.origin === "https://swooshz.com" && parsed.pathname === "/api/platform/auth/callback"
+  const expectedRedirectUri =
+    `${new URL(publicBaseUrl).origin}/api/platform/auth/callback`;
+
+  return value === expectedRedirectUri &&
+    parsed.origin === new URL(publicBaseUrl).origin &&
+    parsed.pathname === "/api/platform/auth/callback"
     ? ok()
     : invalid("must_end_with_platform_auth_callback");
 }
 
-function validateAllowedOrigins(value) {
-  const origins = value.split(",").map((item) => item.trim()).filter(Boolean);
+function validateAllowedOrigins(value, env) {
+  const origins = value.split(",").map((item) => item.trim());
 
-  if (origins.length === 0) {
-    return invalid("missing");
+  if (origins.length !== 1 || !origins[0]) {
+    return invalid("must_be_canonical_platform_apex");
   }
 
-  for (const origin of origins) {
-    const result = parseHttpsUrl(origin);
-    if (!result.ok) {
-      return result;
-    }
-
-    if (!isOriginShape(origin) || result.parsed.username || result.parsed.password) {
-      return invalid("must_be_origin");
-    }
+  const origin = origins[0];
+  const result = parseHttpsUrl(origin);
+  if (!result.ok) {
+    return result;
   }
 
-  return origins.length === 1 && origins[0] === "https://swooshz.com"
+  if (
+    !isOriginShape(origin) ||
+    result.parsed.username ||
+    result.parsed.password ||
+    origin !== result.parsed.origin
+  ) {
+    return invalid("must_be_origin");
+  }
+
+  const publicBaseUrl = readEnv(env, "PLATFORM_PUBLIC_BASE_URL");
+  const publicBaseValidation = validatePlatformBaseUrl(publicBaseUrl);
+  if (!publicBaseValidation.ok) {
+    return invalid("must_be_canonical_platform_apex");
+  }
+
+  return result.parsed.origin === new URL(publicBaseUrl).origin
     ? ok()
     : invalid("must_be_canonical_platform_apex");
 }

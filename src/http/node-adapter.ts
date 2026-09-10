@@ -120,16 +120,6 @@ export async function handleNodePlatformHttpRequest(
     });
   }
 
-  const earlyHeaders = normalizeHeaders(request.headers);
-  const requestHost = (readHeader(earlyHeaders, "host") ?? "").toLowerCase();
-  if (requestHost === "www.swooshz.com") {
-    const apexOrigin = readApexRedirectOrigin(dependencies.originConfig.publicBaseUrl);
-    return { statusCode: 308, headers: { location: `${apexOrigin}${parsedUrl.pathname}${safeRedirectQuery(parsedUrl)}`, ...noStoreHeaders() }, body: "" };
-  }
-  if (isCanonicalProductionOrigin(dependencies.originConfig.publicBaseUrl) && requestHost !== "swooshz.com") {
-    return jsonResponse(421, { outcome: "error", message: "Request host is not served." }, noStoreHeaders());
-  }
-
   const method = normalizeMethod(request.method);
 
   if (isKnownPublicSiteAsset(parsedUrl.pathname)) {
@@ -847,7 +837,8 @@ export async function writeNodePlatformHttpResponse(
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<void> {
-  const adapterResponse = await handleNodePlatformHttpRequest(dependencies, {
+  const hostResponse = validateNodeRequestHost(dependencies, request.url, request.headers);
+  const adapterResponse = hostResponse ?? await handleNodePlatformHttpRequest(dependencies, {
     method: request.method,
     url: request.url,
     body: await readNodeRequestBody(request),
@@ -861,6 +852,40 @@ export async function writeNodePlatformHttpResponse(
   }
 
   response.end(adapterResponse.body);
+}
+
+function validateNodeRequestHost(
+  dependencies: NodePlatformHttpAdapterDependencies,
+  url: string | undefined,
+  headers: IncomingHttpHeaders,
+): NodePlatformHttpResponse | null {
+  const parsedUrl = parseRequestUrl(url);
+
+  if (!parsedUrl) {
+    return null;
+  }
+
+  const normalizedHeaders = normalizeHeaders(headers);
+  const requestHost = (readHeader(normalizedHeaders, "host") ?? "").toLowerCase();
+  const configuredPublicBaseUrl = dependencies.originConfig.publicBaseUrl;
+  const configuredHost = readConfiguredRequestHost(configuredPublicBaseUrl);
+
+  if (configuredPublicBaseUrl !== undefined && !configuredHost) {
+    return jsonResponse(421, { outcome: "error", message: "Request host is not served." }, noStoreHeaders());
+  }
+
+  if (configuredHost) {
+    if (requestHost === "www.swooshz.com" && isConfiguredApexOrigin(configuredPublicBaseUrl)) {
+      const apexOrigin = readApexRedirectOrigin(configuredPublicBaseUrl);
+      return { statusCode: 308, headers: { location: `${apexOrigin}${parsedUrl.pathname}${safeRedirectQuery(parsedUrl)}`, ...noStoreHeaders() }, body: "" };
+    }
+
+    if (requestHost !== configuredHost) {
+      return jsonResponse(421, { outcome: "error", message: "Request host is not served." }, noStoreHeaders());
+    }
+  }
+
+  return null;
 }
 
 function parseRequestUrl(url: string | undefined): URL | null {
@@ -1319,13 +1344,36 @@ function noStoreHeaders(): Record<string, string> {
 function readApexRedirectOrigin(configured: string | undefined): string {
   try {
     const parsed = new URL(configured ?? "");
-    if (parsed.protocol === "https:" && parsed.hostname === "swooshz.com" && !parsed.port) return parsed.origin;
+    if (isConfiguredApexOrigin(configured)) return parsed.origin;
   } catch { /* use the canonical fail-closed target */ }
   return "https://swooshz.com";
 }
 
-function isCanonicalProductionOrigin(configured: string | undefined): boolean {
-  try { return new URL(configured ?? "").origin === "https://swooshz.com"; } catch { return false; }
+function readConfiguredRequestHost(configured: string | undefined): string | null {
+  if (configured === undefined) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(configured);
+
+    if (
+      (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+      !parsed.hostname ||
+      parsed.username ||
+      parsed.password
+    ) {
+      return null;
+    }
+
+    return parsed.host.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+function isConfiguredApexOrigin(configured: string | undefined): boolean {
+  return configured === "https://swooshz.com" || configured === "https://swooshz.com/";
 }
 
 function safeRedirectQuery(url: URL): string {

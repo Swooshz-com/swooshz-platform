@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import test from "node:test";
 
 const workflowPath = ".github/workflows/ci.yml";
@@ -70,8 +72,69 @@ test("Dockerfile defines a production-safe runtime image and healthcheck", async
     assert.match(dockerfile, new RegExp(escapeRegExp(phrase), "i"));
   }
 
+  assert.match(dockerfile, /new URL\(process\.env\.PLATFORM_PUBLIC_BASE_URL\)\.host/i);
+  assert.match(dockerfile, /require\(['"]node:http['"]\)/i);
+  assert.match(dockerfile, /http\.get\(/i);
+  assert.match(dockerfile, /hostname:\s*['"]127\.0\.0\.1['"]/i);
+  assert.match(dockerfile, /path:\s*['"]\/healthz['"]/i);
+  assert.match(dockerfile, /headers:\s*\{\s*Host:\s*host\s*\}/i);
+  assert.match(dockerfile, /response\.statusCode\s*<\s*200|response\.statusCode\s*>=\s*300/i);
+  assert.doesNotMatch(dockerfile, /fetch\s*\(/i);
   assert.doesNotMatch(dockerfile, /DATABASE_URL=|SESSION_SECRET=|OIDC_CLIENT_SECRET=|COPY \. \./);
   assert.doesNotMatch(dockerfile, /db:migrate|platform:seed-internal-access|platform:sqag-smoke-readiness/);
+});
+
+test("Docker healthcheck preserves the configured public Host over loopback node:http transport", async () => {
+  const dockerfile = await readFile(dockerfilePath, "utf8");
+  const healthcheckScript = extractHealthcheckScript(dockerfile);
+  const observedHosts = [];
+  let responseStatusCode = 204;
+  const server = createServer((request, response) => {
+    observedHosts.push(request.headers.host);
+    response.writeHead(responseStatusCode);
+    response.end();
+  });
+  const port = await listenOnLoopback(server);
+
+  try {
+    const environment = {
+      PLATFORM_PUBLIC_BASE_URL: "https://platform-alpha.swooshz.com",
+      PLATFORM_HTTP_PORT: String(port),
+    };
+    const success = await runHealthcheck(healthcheckScript, environment);
+
+    assert.equal(success.code, 0);
+    assert.equal(success.signal, null);
+    assert.deepEqual(observedHosts, ["platform-alpha.swooshz.com"]);
+
+    responseStatusCode = 503;
+    const failure = await runHealthcheck(healthcheckScript, environment);
+
+    assert.notEqual(failure.code, 0);
+    assert.equal(failure.signal, null);
+    assert.deepEqual(observedHosts, [
+      "platform-alpha.swooshz.com",
+      "platform-alpha.swooshz.com",
+    ]);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("Docker healthcheck fails when loopback transport is refused", async () => {
+  const dockerfile = await readFile(dockerfilePath, "utf8");
+  const healthcheckScript = extractHealthcheckScript(dockerfile);
+  const server = createServer();
+  const port = await listenOnLoopback(server);
+  await closeServer(server);
+
+  const failure = await runHealthcheck(healthcheckScript, {
+    PLATFORM_PUBLIC_BASE_URL: "https://platform-alpha.swooshz.com",
+    PLATFORM_HTTP_PORT: String(port),
+  });
+
+  assert.notEqual(failure.code, 0);
+  assert.equal(failure.signal, null);
 });
 
 test(".dockerignore excludes secrets local files logs caches and private design exports", async () => {
@@ -196,6 +259,46 @@ function assertSecretNamesOnly(value, options = {}) {
     : value;
   assert.doesNotMatch(valueWithoutApprovedOrigins, /https?:\/\/(?!<)[^\s>)]+/i);
   assert.doesNotMatch(value, /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+}
+
+function extractHealthcheckScript(dockerfile) {
+  const match = dockerfile.match(/^HEALTHCHECK .* CMD node -e "([^"]+)"$/m);
+  assert.ok(match, "Dockerfile healthcheck must expose an executable node -e script");
+  return match[1];
+}
+
+function listenOnLoopback(server) {
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      assert.ok(address && typeof address === "object");
+      resolve(address.port);
+    });
+  });
+}
+
+function closeServer(server) {
+  return new Promise((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+function runHealthcheck(script, env) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["-e", script], {
+      env,
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    child.once("error", reject);
+    child.once("close", (code, signal) => resolve({ code, signal }));
+  });
 }
 
 function escapeRegExp(value) {

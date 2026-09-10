@@ -37,6 +37,10 @@ export interface NodePlatformRuntimeConfig {
 
 const localDefaultHost = "127.0.0.1";
 const localDefaultPort = 3000;
+const hostedPlatformOrigins = new Set([
+  "https://swooshz.com",
+  "https://platform-alpha.swooshz.com",
+]);
 
 export function readNodePlatformRuntimeConfig(
   env: NodePlatformRuntimeConfigEnv,
@@ -114,23 +118,35 @@ function readPublicBaseUrl(
     throw new NodePlatformRuntimeConfigError("invalid_public_base_url");
   }
 
-  if (options.production && !isHttpsUrlWithoutQueryOrFragment(raw)) {
-    throw new NodePlatformRuntimeConfigError("invalid_public_base_url");
-  }
-
   if (options.production) {
-    const parsed = new URL(raw);
-    if (
-      parsed.origin !== "https://swooshz.com" ||
-      parsed.pathname !== "/" ||
-      parsed.username ||
-      parsed.password
-    ) {
-      throw new NodePlatformRuntimeConfigError("invalid_public_base_url");
-    }
+    return readHostedPublicBaseUrl(raw);
   }
 
   return raw;
+}
+
+function readHostedPublicBaseUrl(value: string): string {
+  try {
+    const parsed = new URL(value);
+
+    if (
+      parsed.protocol !== "https:" ||
+      parsed.pathname !== "/" ||
+      parsed.search ||
+      parsed.hash ||
+      parsed.username ||
+      parsed.password ||
+      parsed.port ||
+      !hostedPlatformOrigins.has(parsed.origin) ||
+      (value !== parsed.origin && value !== `${parsed.origin}/`)
+    ) {
+      throw new Error("Hosted public base URL is invalid.");
+    }
+
+    return parsed.origin;
+  } catch {
+    throw new NodePlatformRuntimeConfigError("invalid_public_base_url");
+  }
 }
 
 function readCookieSecure(value: string | undefined, production: boolean): boolean {
@@ -165,6 +181,21 @@ function readAllowedOrigins(
     return [toOrigin(options.publicBaseUrl, "invalid_public_base_url")];
   }
 
+  if (options.production) {
+    const origins = raw.split(",").map((candidate) => candidate.trim());
+
+    if (origins.length !== 1 || !origins[0]) {
+      throw new NodePlatformRuntimeConfigError("invalid_allowed_origin");
+    }
+
+    const normalized = normalizeAllowedOrigin(origins[0], true);
+    if (normalized !== toOrigin(options.publicBaseUrl, "invalid_public_base_url")) {
+      throw new NodePlatformRuntimeConfigError("invalid_allowed_origin");
+    }
+
+    return [normalized];
+  }
+
   const origins = raw
     .split(",")
     .map((candidate) => candidate.trim())
@@ -177,9 +208,6 @@ function readAllowedOrigins(
   const normalized = origins.map((origin) =>
     normalizeAllowedOrigin(origin, options.production),
   );
-  if (options.production && (normalized.length !== 1 || normalized[0] !== "https://swooshz.com")) {
-    throw new NodePlatformRuntimeConfigError("invalid_allowed_origin");
-  }
   return normalized;
 }
 
@@ -187,7 +215,7 @@ function normalizeAllowedOrigin(value: string, production: boolean): string {
   const origin = toOrigin(value, "invalid_allowed_origin");
   const withoutTrailingSlash = value.endsWith("/") ? value.slice(0, -1) : value;
 
-  if (withoutTrailingSlash !== origin) {
+  if (withoutTrailingSlash !== origin || (production && value !== origin)) {
     throw new NodePlatformRuntimeConfigError("invalid_allowed_origin");
   }
 
@@ -227,15 +255,6 @@ function isSafeHttpUrl(value: string): boolean {
 function isHttpsUrl(value: string): boolean {
   try {
     return new URL(value).protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
-function isHttpsUrlWithoutQueryOrFragment(value: string): boolean {
-  try {
-    const parsed = new URL(value);
-    return parsed.protocol === "https:" && !parsed.search && !parsed.hash;
   } catch {
     return false;
   }
