@@ -121,6 +121,22 @@ test("Docker healthcheck preserves the configured public Host over loopback node
   }
 });
 
+test("Docker healthcheck fails when loopback transport is refused", async () => {
+  const dockerfile = await readFile(dockerfilePath, "utf8");
+  const healthcheckScript = extractHealthcheckScript(dockerfile);
+  const server = createServer();
+  const port = await listenOnLoopback(server);
+  await closeServer(server);
+
+  const failure = await runHealthcheck(healthcheckScript, {
+    PLATFORM_PUBLIC_BASE_URL: "https://platform-alpha.swooshz.com",
+    PLATFORM_HTTP_PORT: String(port),
+  });
+
+  assert.notEqual(failure.code, 0);
+  assert.equal(failure.signal, null);
+});
+
 test(".dockerignore excludes secrets local files logs caches and private design exports", async () => {
   const dockerignore = await readFile(dockerignorePath, "utf8");
 
