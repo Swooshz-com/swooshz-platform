@@ -314,6 +314,24 @@ test("runtime posture models hard-wired, global replacement, and per-schema addi
   assert.match(postureSql, /grantee_oid = 0/);
   assert.match(postureSql, /is_grantable/);
   assert.match(postureSql, /default_creator\.role_oid/);
+  assert.match(
+    postureSql,
+    /platform_application_creator_roles[\s\S]*?rolname in \('platform_app', 'platform_migrator'\)/,
+  );
+  assert.match(
+    postureSql,
+    /platform_application_schemas[\s\S]*?nspname in \('public', 'drizzle'\)/,
+  );
+  assert.match(
+    postureSql,
+    /has_schema_privilege\(\s*creator\.role_oid,[\s\S]*?application_schema\.schema_oid,[\s\S]*?'CREATE'/,
+  );
+  const defaultCreatorSql = postureSql.match(
+    /default_acl_creators(?:\([^)]*\))? as \(([\s\S]*?)\n\),\ndefault_acl_context/,
+  )?.[1];
+  assert.equal(typeof defaultCreatorSql, "string");
+  assert.doesNotMatch(defaultCreatorSql, /non_system_schemas/);
+  assert.doesNotMatch(defaultCreatorSql, /union/);
 });
 
 test("operator-side dormant authority inspection reuses the exact recursive posture query", async () => {

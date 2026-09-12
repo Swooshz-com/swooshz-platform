@@ -1,0 +1,2 @@
+# Keep migration source bytes deterministic across platforms.
+drizzle/migrations/*.sql text eol=lf
