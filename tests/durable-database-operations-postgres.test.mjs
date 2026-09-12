@@ -45,6 +45,7 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
     const migratorPool = new Pool({ ...connectionA, user: "platform_migrator" });
     const appPool = new Pool({ ...connectionA, user: "platform_app" });
     const secondAdminPool = new Pool({ ...connectionB, user: "cloud_admin" });
+    const secondAppPool = new Pool({ ...connectionB, user: "platform_app" });
     const secondMigratorPool = new Pool({ ...connectionB, user: "platform_migrator" });
 
     try {
@@ -53,6 +54,8 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
       await cloudAdminPool.query("select 1");
       const migration = await provisionCanonicalFixture(cloudAdminPool);
       const secondMigration = await provisionCanonicalFixture(secondAdminPool);
+      await prepareRetainedOperatorRoutine(appPool);
+      await prepareRetainedOperatorRoutine(secondAppPool);
       assert.equal(migration.after.length, 10);
       assert.equal(migration.applied_entries.length, 10);
       assert.equal(migration.applied_entries.at(-1).tag, "0010_admin_operator_viewer_role_collapse");
@@ -909,6 +912,7 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
     } finally {
       await Promise.all([
         appPool.end(),
+        secondAppPool.end(),
         migratorPool.end(),
         cloudAdminPool.end(),
         adminPool.end(),
@@ -1015,6 +1019,31 @@ async function provisionCanonicalFixture(cloudAdminPool) {
     await cloudAdminPool.query(`grant ${record.privilege} on table ${quoteIdentifier(record.schema)}.${quoteIdentifier(record.objectName)} to ${runtime}`);
   }
   return migration;
+}
+
+async function prepareRetainedOperatorRoutine(appPool) {
+  const existingRoutine = await appPool.query(
+    `
+      select exists (
+        select 1
+          from pg_proc routine_record
+          join pg_namespace routine_schema
+            on routine_schema.oid = routine_record.pronamespace
+         where routine_schema.nspname = 'public'
+           and routine_record.proname = 'show_db_tree'
+           and routine_record.pronargs = 0
+      ) as present
+    `,
+  );
+  if (!existingRoutine.rows[0]?.present) {
+    // Synthetic fixture body only; production definition identity is not asserted here.
+    await appPool.query(
+      "create function public.show_db_tree() returns integer language sql immutable as 'select 1'",
+    );
+  }
+  await appPool.query(
+    "revoke execute on function public.show_db_tree() from public",
+  );
 }
 
 function roleAttributes(role) {
