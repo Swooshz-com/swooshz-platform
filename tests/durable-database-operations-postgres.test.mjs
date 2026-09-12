@@ -125,6 +125,40 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
       assert.deepEqual(baseline.prestate.unknown_non_extension_drift.routines, []);
 
       await cloudAdminPool.query(
+        `drop function "public"."show_db_tree"()`,
+      );
+      try {
+        await assert.rejects(
+          () => captureNormalizedPrestate(binding, journal),
+          (error) => error?.semanticCode === "UNKNOWN_DRIFT",
+        );
+      } finally {
+        await prepareRetainedOperatorRoutine(appPool);
+      }
+
+      await cloudAdminPool.query(
+        `alter table "public"."users" owner to "platform_app"`,
+      );
+      try {
+        const unrelatedReadinessDefect = await captureNormalizedPrestate(binding, journal);
+        assert.equal(
+          unrelatedReadinessDefect.prestate.canonical_checks.readiness_checks.migratorPosture,
+          "failed",
+        );
+        assert.equal(
+          unrelatedReadinessDefect.prestate.ownership.canonical_relations.find(
+            ({ qualified_name }) => qualified_name === "public.users",
+          )?.owner,
+          "platform_app",
+        );
+        assert.deepEqual(unrelatedReadinessDefect.prestate.unknown_non_extension_drift.routines, []);
+      } finally {
+        await cloudAdminPool.query(
+          `alter table "public"."users" owner to "platform_migrator"`,
+        );
+      }
+
+      await cloudAdminPool.query(
         `grant execute on function "public"."show_db_tree"() to public`,
       );
       try {

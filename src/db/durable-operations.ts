@@ -1319,6 +1319,9 @@ async function normalizeObservedPrestate(
   const readiness = (await read("readiness_state")).rows[0] as unknown as CanonicalDatabaseVerification;
   const runtimePosture = (await read("runtime_posture_state")).rows[0] as unknown as RuntimeDatabaseRoleAuthorityPostureReport;
   const unknownDrift = (await read("unknown_drift_state")).rows[0];
+  if (readiness?.canonical_posture_fields?.retained_operator_routine_exact !== true) {
+    fail("UNKNOWN_DRIFT");
+  }
   const appliedRows = migrationRows.map((row) => ({
     when: decimalStringValue(row.when, "MIGRATION_IDENTITY_MISMATCH"),
     sql_sha256: hex(row.sql_sha256, 64, "MIGRATION_IDENTITY_MISMATCH"),

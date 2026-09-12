@@ -208,7 +208,7 @@ test("durable database operations are exact operator-only source authority", asy
   const sourcePath = "src/db/durable-operations.ts";
   const source = await readFile(sourcePath, "utf8");
   const expectedSourceShapeDigest =
-    "7df9de6caf692241e60d61c9fb52a788b29fe573683d287e769e93c36237db3e";
+    "d50ea7abbf51a954390aa3526a7d3911381dc24b1ac90184d50e179700d326ce";
 
   assert.equal(sourceShapeDigest(source), expectedSourceShapeDigest);
   assert.match(
