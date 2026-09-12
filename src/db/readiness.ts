@@ -37,6 +37,12 @@ export const CANONICAL_PLATFORM_ENUM_TYPES = [
 ] as const;
 
 export const CANONICAL_PLATFORM_ROUTINES = [] as const;
+export const RETAINED_OPERATOR_ROUTINE = {
+  schema: "public",
+  name: "show_db_tree",
+  argumentCount: 0,
+  owner: "platform_app",
+} as const;
 export type DatabaseReadinessStatus =
   | "db_config_missing"
   | "db_config_invalid"
@@ -118,7 +124,7 @@ migrator_role as (
 app_role as (
   select oid
   from pg_roles
-  where rolname = 'platform_app'
+  where rolname = '${RETAINED_OPERATOR_ROUTINE.owner}'
 ),
 runtime_role as (
   select oid
@@ -434,6 +440,47 @@ application_routines as (
         and extension_record.objid = routine_record.oid
     )
 ),
+retained_operator_routines as (
+  select
+    routine_record.oid,
+    routine_record.prokind,
+    routine_record.pronargs,
+    routine_record.proowner,
+    routine_record.prosecdef,
+    routine_record.proacl
+  from pg_proc routine_record
+  join pg_namespace routine_schema
+    on routine_schema.oid = routine_record.pronamespace
+  where routine_schema.nspname = '${RETAINED_OPERATOR_ROUTINE.schema}'
+    and routine_record.proname = '${RETAINED_OPERATOR_ROUTINE.name}'
+),
+accepted_retained_operator_routines as (
+  select routine_record.oid
+  from retained_operator_routines routine_record
+  cross join app_role
+  where (select count(*) from retained_operator_routines) = 1
+    and routine_record.prokind = 'f'
+    and routine_record.pronargs = ${RETAINED_OPERATOR_ROUTINE.argumentCount}
+    and routine_record.proowner = app_role.oid
+    and not routine_record.prosecdef
+    and not exists (
+      select 1
+      from extension_dependency_objects extension_record
+      where extension_record.classid = 'pg_proc'::regclass
+        and extension_record.objid = routine_record.oid
+    )
+    and not exists (
+      select 1
+      from aclexplode(
+        coalesce(
+          routine_record.proacl,
+          acldefault('f'::"char", routine_record.proowner)
+        )
+      ) acl_record
+      where acl_record.grantee = 0
+        and acl_record.privilege_type = 'EXECUTE'
+    )
+),
 unknown_application_relations as (
   select relation_record.oid
   from pg_class relation_record
@@ -504,6 +551,11 @@ unknown_application_routines as (
       select 1
       from application_routines application_record
       where application_record.oid = routine_record.oid
+    )
+    and not exists (
+      select 1
+      from accepted_retained_operator_routines retained_record
+      where retained_record.oid = routine_record.oid
     )
 ),
 migrator_memberships as (
@@ -680,6 +732,10 @@ select
     )
     from migrator_role
   ), false) as application_routine_owner_exact,
+  exists (
+    select 1
+    from accepted_retained_operator_routines
+  ) as retained_operator_routine_exact,
   coalesce((
     select not exists (
       select 1
@@ -1037,6 +1093,7 @@ export const MIGRATOR_READINESS_FIELDS = [
   "canonical_enum_presence_exact",
   "application_type_owner_exact",
   "application_routine_owner_exact",
+  "retained_operator_routine_exact",
   "canonical_drizzle_ledger_relation_exact",
   "canonical_dependent_relation_extension_membership_absent",
   "unknown_application_relation_drift_absent",

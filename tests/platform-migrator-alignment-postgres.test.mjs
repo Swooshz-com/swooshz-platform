@@ -1059,6 +1059,125 @@ test(
           assert.equal(readinessReport.status, "ready");
           assert.equal(readinessReport.checks.migratorPosture, "passed");
 
+          try {
+            await primary.appPool.query(
+              "create function public.show_db_tree() returns integer language sql immutable as 'select 1'",
+            );
+            await primary.appPool.query(
+              "revoke execute on function public.show_db_tree() from public",
+            );
+            const retainedRoutineReport = await createDatabaseReadinessReport(
+              readinessInput,
+            );
+            assert.equal(retainedRoutineReport.status, "ready");
+            assert.equal(
+              retainedRoutineReport.checks.migratorPosture,
+              "passed",
+            );
+
+            await primary.appPool.query(
+              "create function public.show_db_tree(text) returns integer language sql immutable as 'select 1'",
+            );
+            const overloadReport = await createDatabaseReadinessReport(
+              readinessInput,
+            );
+            assert.equal(overloadReport.status, "schema_not_ready");
+            assert.equal(overloadReport.checks.migratorPosture, "failed");
+            await primary.providerPool.query(
+              "drop function public.show_db_tree(text)",
+            );
+
+            await primary.providerPool.query(
+              "drop function public.show_db_tree()",
+            );
+            const missingReport = await createDatabaseReadinessReport(
+              readinessInput,
+            );
+            assert.equal(missingReport.status, "schema_not_ready");
+            assert.equal(missingReport.checks.migratorPosture, "failed");
+            await primary.appPool.query(
+              "create function public.show_db_tree() returns integer language sql immutable as 'select 1'",
+            );
+            await primary.appPool.query(
+              "revoke execute on function public.show_db_tree() from public",
+            );
+
+            await primary.providerPool.query(
+              "alter function public.show_db_tree() owner to platform_migrator",
+            );
+            const wrongOwnerReport = await createDatabaseReadinessReport(
+              readinessInput,
+            );
+            assert.equal(wrongOwnerReport.status, "schema_not_ready");
+            assert.equal(wrongOwnerReport.checks.migratorPosture, "failed");
+            await primary.providerPool.query(
+              "alter function public.show_db_tree() owner to platform_app",
+            );
+
+            await primary.providerPool.query(
+              "alter function public.show_db_tree() security definer",
+            );
+            const securityDefinerReport = await createDatabaseReadinessReport(
+              readinessInput,
+            );
+            assert.equal(securityDefinerReport.status, "schema_not_ready");
+            assert.equal(
+              securityDefinerReport.checks.migratorPosture,
+              "failed",
+            );
+            await primary.providerPool.query(
+              "alter function public.show_db_tree() security invoker",
+            );
+
+            await primary.providerPool.query(
+              "grant execute on function public.show_db_tree() to public",
+            );
+            const publicExecuteReport = await createDatabaseReadinessReport(
+              readinessInput,
+            );
+            assert.equal(publicExecuteReport.status, "schema_not_ready");
+            assert.equal(
+              publicExecuteReport.checks.migratorPosture,
+              "failed",
+            );
+            await primary.providerPool.query(
+              "revoke execute on function public.show_db_tree() from public",
+            );
+
+            await primary.appPool.query(
+              "create function public.__run479_unexpected_routine() returns integer language sql immutable as 'select 1'",
+            );
+            const unexpectedRoutineReport = await createDatabaseReadinessReport(
+              readinessInput,
+            );
+            assert.equal(unexpectedRoutineReport.status, "schema_not_ready");
+            assert.equal(
+              unexpectedRoutineReport.checks.migratorPosture,
+              "failed",
+            );
+            await primary.providerPool.query(
+              "drop function public.__run479_unexpected_routine()",
+            );
+
+            const restoredRetainedRoutineReport =
+              await createDatabaseReadinessReport(readinessInput);
+            assert.equal(restoredRetainedRoutineReport.status, "ready");
+            assert.equal(
+              restoredRetainedRoutineReport.checks.migratorPosture,
+              "passed",
+            );
+          } finally {
+            await primary.providerPool.query(
+              "drop function if exists public.__run479_unexpected_routine()",
+            ).catch(() => {});
+            await primary.providerPool.query(
+              "drop function if exists public.show_db_tree(text)",
+            ).catch(() => {});
+            await primary.providerPool.query(
+              "drop function if exists public.show_db_tree()",
+            ).catch(() => {});
+          }
+
           const extensionClient = await primary.providerPool.connect();
           const tddRedFailures = [];
           const ledgerSequenceName = "__run178_drizzle_migrations_id_seq";
