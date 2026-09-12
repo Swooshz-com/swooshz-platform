@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { access, copyFile, cp, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -29,11 +30,13 @@ import {
   createDurableInverse,
   createDurablePlan,
   createMutationSession,
+  loadCanonicalMigrationJournal,
   mapFailureCode,
   normalizePrestate,
   parseCanonicalJson,
   projectReceipt,
   requireRestoreCapability,
+  runCanonicalMigrationPrimitive,
   serializeReceipt,
   validateReceipt,
   verifyRestoration,
@@ -924,6 +927,96 @@ test("one-way migration plans require restore authority before mutation", () => 
     (error) => error.semanticCode === "RESTORE_CAPABILITY_REQUIRED",
   );
 });
+
+test("migration admission accepts only exact historical CRLF aliases", async () => {
+  const journal = await loadCanonicalMigrationJournal(repositoryRoot);
+  const historicalTags = new Set([
+    "0000_overconfident_onslaught",
+    "0001_lovely_famine",
+    "0002_futuristic_aaron_stack",
+    "0003_worthless_scourge",
+    "0004_illegal_william_stryker",
+    "0005_sqag_app_key_migration",
+    "0007_remove_legacy_kqag_tables",
+    "0009_wonderful_star_brand",
+  ]);
+  const crlfHash = async (tag) => {
+    const contents = await readFile(
+      join(repositoryRoot, "drizzle", "migrations", `${tag}.sql`),
+    );
+    const crlfBytes = [];
+    for (const byte of contents) {
+      if (byte === 0x0a) crlfBytes.push(0x0d);
+      crlfBytes.push(byte);
+    }
+    return createHash("sha256").update(Buffer.from(crlfBytes)).digest("hex");
+  };
+  const canonicalRows = journal.entries.map((entry) => ({
+    when: entry.when,
+    sql_sha256: entry.sql_sha256,
+  }));
+  const historicalRows = [];
+  for (const entry of journal.entries) {
+    historicalRows.push({
+      when: entry.when,
+      sql_sha256: historicalTags.has(entry.tag)
+        ? await crlfHash(entry.tag)
+        : entry.sql_sha256,
+    });
+  }
+
+  const canonicalResult = await runCanonicalMigrationPrimitive({
+    pool: migrationLedgerPool(canonicalRows),
+    migrationsFolder: join(repositoryRoot, "drizzle", "migrations"),
+  });
+  assert.equal(canonicalResult.mutation_started, false);
+  assert.deepEqual(canonicalResult.before, canonicalRows);
+
+  const historicalResult = await runCanonicalMigrationPrimitive({
+    pool: migrationLedgerPool(historicalRows),
+    migrationsFolder: join(repositoryRoot, "drizzle", "migrations"),
+  });
+  assert.equal(historicalResult.mutation_started, false);
+  assert.deepEqual(historicalResult.before, historicalRows);
+
+  const arbitraryRows = historicalRows.map((row) => ({ ...row }));
+  arbitraryRows[0].sql_sha256 = "0".repeat(64);
+  await assert.rejects(
+    () => runCanonicalMigrationPrimitive({
+      pool: migrationLedgerPool(arbitraryRows),
+      migrationsFolder: join(repositoryRoot, "drizzle", "migrations"),
+    }),
+    (error) => error?.semanticCode === "MIGRATION_IDENTITY_MISMATCH",
+  );
+
+  const futureAliasRows = historicalRows.map((row) => ({ ...row }));
+  futureAliasRows[9].sql_sha256 = await crlfHash(
+    "0010_admin_operator_viewer_role_collapse",
+  );
+  await assert.rejects(
+    () => runCanonicalMigrationPrimitive({
+      pool: migrationLedgerPool(futureAliasRows),
+      migrationsFolder: join(repositoryRoot, "drizzle", "migrations"),
+    }),
+    (error) => error?.semanticCode === "MIGRATION_IDENTITY_MISMATCH",
+  );
+});
+
+function migrationLedgerPool(rows) {
+  return {
+    async connect() {
+      return {
+        async query(text) {
+          if (text.includes("select exists")) {
+            return { rows: [{ ledger_present: true }] };
+          }
+          return { rows };
+        },
+        release() {},
+      };
+    },
+  };
+}
 
 test("mutation boundary is set before first send and remains true on indeterminate send", async () => {
   let attempts = 0;

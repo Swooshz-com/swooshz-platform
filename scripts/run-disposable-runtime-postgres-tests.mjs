@@ -26,6 +26,7 @@ const secondaryDatabaseName = "runtime_posture_test_secondary";
 const ownedContainerName = "codex-platform127-pg17";
 const maxChildOutputBytes = 64 * 1024;
 const maxChildDurationMs = 120_000;
+const maxChildDiagnosticBytes = 4_000;
 const expectedPostgresTestCount = 53;
 const safeIdentifier = /^[a-z_][a-z0-9_$]{0,62}$/u;
 const loopbackHosts = new Set(["127.0.0.1", "::1"]);
@@ -323,6 +324,101 @@ export function formatDisposableRuntimeFailureReceipt(resources = {}) {
     absenceVerified: resources.absenceVerified === true,
   };
   return `Disposable fixture failure receipt: ${JSON.stringify(receipt)}`;
+}
+
+export function formatDisposableRuntimeChildDiagnostics({
+  stdout = "",
+  stderr = "",
+  outputOverflow = false,
+} = {}) {
+  const prefix = "Disposable child test diagnostics (sanitized):\n";
+  const truncationMarker = "\n[diagnostic_output_truncated]";
+  const budget = Math.max(
+    0,
+    maxChildDiagnosticBytes -
+      Buffer.byteLength(prefix, "utf8") -
+      (outputOverflow ? Buffer.byteLength(truncationMarker, "utf8") : 0),
+  );
+  const diagnostic = sanitizeDisposableRuntimeChildDiagnostics({ stdout, stderr });
+  const boundedDiagnostic = truncateUtf8(diagnostic, budget);
+  if (!boundedDiagnostic.value && !outputOverflow) return "";
+  const truncated = boundedDiagnostic.truncated || outputOverflow;
+  return `${prefix}${boundedDiagnostic.value}${truncated ? truncationMarker : ""}`;
+}
+
+export function sanitizeDisposableRuntimeChildDiagnostics({
+  stdout = "",
+  stderr = "",
+} = {}) {
+  const source = [stdout, stderr]
+    .filter((value) => typeof value === "string" && value.length > 0)
+    .join("\n");
+  if (source.length === 0) return "";
+
+  const lines = redactDisposableRuntimeDiagnosticText(source)
+    .replace(/\r\n?/gu, "\n")
+    .split("\n");
+  const selected = [];
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (
+      /^TAP version \d+$/u.test(trimmed) ||
+      /^# Subtest:\s*\S.*$/u.test(trimmed) ||
+      /^not ok \d+(?:\s+-\s*\S.*)?$/u.test(trimmed) ||
+      /^1\.\.\d+$/u.test(trimmed) ||
+      /^# (?:tests|suites|pass|fail|cancelled|skipped|todo|duration_ms)\b.*$/u.test(trimmed) ||
+      /^(?:failureType|error|code|name|operator|expected|actual|location|stack|message):(?:\s.*)?$/u.test(trimmed) ||
+      /^(?:AssertionError|Error|TypeError|RangeError|SyntaxError)(?:\b|\s|:)/u.test(trimmed) ||
+      /^at\s+\S.*$/u.test(trimmed)
+    ) {
+      selected.push(sanitizeDisposableRuntimeDiagnosticLine(line));
+    }
+  }
+  return selected.join("\n");
+}
+
+function redactDisposableRuntimeDiagnosticText(value) {
+  return value
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "")
+    .replace(/\b(?:postgres(?:ql)?|mysql|mssql):\/\/[^\s'"]+/giu, "<redacted-url>")
+    .replace(/\bhttps?:\/\/[^\s'"]+/giu, "<redacted-url>")
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+)\b/gu, "<redacted-token>")
+    .replace(/\b(Bearer|Basic)\s+[^\s'"]+/giu, "$1 <redacted-token>")
+    .replace(
+      /\b(?:DATABASE_URL|DATABASE_OPERATOR_URL|RUNTIME_POSTURE_TEST_[A-Z_]+|PGPASSWORD|PGPASSFILE|PASSWORD|PASSWD|TOKEN|SECRET|API_KEY|API_TOKEN|ACCESS_TOKEN|REFRESH_TOKEN|AUTHORIZATION|DSN)\b\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;)]*)/giu,
+      (match) => `${match.slice(0, match.search(/[:=]/u) + 1)}<redacted>`,
+    )
+    .replace(/[?&][A-Za-z0-9_-]+=[^&\s'"]*/gu, (match) => `${match.slice(0, match.indexOf("=") + 1)}<redacted>`);
+}
+
+function sanitizeDisposableRuntimeDiagnosticLine(line) {
+  const match = line.match(/^(\s*)(expected|actual):\s*(.*)$/iu);
+  if (!match) return line;
+  return `${match[1]}${match[2]}: ${summarizeDisposableRuntimeDiagnosticValue(match[3])}`;
+}
+
+function summarizeDisposableRuntimeDiagnosticValue(value) {
+  const trimmed = value.trim();
+  if (/^(?:null|undefined|true|false|-?(?:0|[1-9]\d*)(?:\.\d+)?)$/u.test(trimmed)) {
+    return trimmed;
+  }
+  if (trimmed.startsWith("[")) return "<array>";
+  if (trimmed.startsWith("{")) return "<object>";
+  if (/^'(?:[A-Za-z0-9_.:/ -]{0,80})'$|^"(?:[A-Za-z0-9_.:/ -]{0,80})"$/u.test(trimmed)) {
+    return trimmed;
+  }
+  return "<value>";
+}
+
+function truncateUtf8(value, maxBytes) {
+  const buffer = Buffer.from(value, "utf8");
+  if (buffer.length <= maxBytes) return { truncated: false, value };
+  return {
+    truncated: true,
+    value: buffer.subarray(0, maxBytes).toString("utf8"),
+  };
 }
 
 export function parseDisposableRuntimeTestSummary(output) {
@@ -629,8 +725,12 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
   };
   await new Promise((resolvePromise, reject) => {
     const output = [];
+    const diagnosticStdout = [];
+    const diagnosticStderr = [];
     let outputLength = 0;
     let outputOverflow = false;
+    let diagnosticStdoutLength = 0;
+    let diagnosticStderrLength = 0;
     let child;
     try {
       child = spawnImpl(
@@ -657,8 +757,30 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
       } else {
         outputOverflow = true;
       }
+      diagnosticStdoutLength = appendBoundedDiagnosticChunk(
+        diagnosticStdout,
+        chunk,
+        diagnosticStdoutLength,
+      );
     });
-    child.stderr?.resume();
+    child.stderr?.on("data", (chunk) => {
+      diagnosticStderrLength = appendBoundedDiagnosticChunk(
+        diagnosticStderr,
+        chunk,
+        diagnosticStderrLength,
+      );
+    });
+    const emitChildDiagnostics = () => {
+      const diagnostic = formatDisposableRuntimeChildDiagnostics({
+        stdout: Buffer.concat(diagnosticStdout).toString("utf8"),
+        stderr: Buffer.concat(diagnosticStderr).toString("utf8"),
+        outputOverflow:
+          outputOverflow ||
+          diagnosticStdoutLength > maxChildOutputBytes ||
+          diagnosticStderrLength > maxChildOutputBytes,
+      });
+      if (diagnostic) process.stderr.write(`${diagnostic}\n`);
+    };
     child.once("error", (error) => {
       markChildFailure(resources, "child_test_spawn");
       reject(error);
@@ -668,17 +790,20 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
       resources.childExitCode = Number.isInteger(code) ? code : null;
       resources.childSignal = signal !== null;
       if (resources.childSignal) {
+        emitChildDiagnostics();
         markChildFailure(resources, "child_signal");
         reject(new Error());
         return;
       }
       if (outputOverflow) {
+        emitChildDiagnostics();
         resources.childOutputOverflow = true;
         markChildFailure(resources, "child_output_overflow");
         reject(new Error());
         return;
       }
       if (code !== 0) {
+        emitChildDiagnostics();
         markChildFailure(resources, "child_test_failure");
         reject(new Error());
         return;
@@ -688,6 +813,7 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
           Buffer.concat(output).toString("utf8"),
         );
         if (!summary) {
+          emitChildDiagnostics();
           markChildFailure(resources, "child_summary_parse");
           reject(new Error());
           return;
@@ -701,6 +827,14 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
     });
   });
   void admission;
+}
+
+function appendBoundedDiagnosticChunk(chunks, chunk, currentLength) {
+  const buffer = Buffer.from(chunk);
+  const combined = Buffer.concat([...chunks, buffer]);
+  chunks.length = 0;
+  chunks.push(combined.subarray(Math.max(0, combined.length - maxChildOutputBytes)));
+  return Math.min(maxChildOutputBytes + 1, currentLength + buffer.length);
 }
 
 function markChildFailure(resources, category) {

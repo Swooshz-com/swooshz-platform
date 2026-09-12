@@ -1199,30 +1199,47 @@ test(
       const defaultAclCases = [
         [
           "owner global default SELECT to runtime",
-          `alter default privileges grant select on tables to ${identifier(roleName)}`,
+          [
+            "grant create on schema public to platform_app",
+            `alter default privileges for role platform_app grant select on tables to ${identifier(roleName)}`,
+          ],
         ],
         [
           "owner global default UPDATE to runtime",
-          `alter default privileges grant update on tables to ${identifier(roleName)}`,
+          [
+            "grant create on schema public to platform_app",
+            `alter default privileges for role platform_app grant update on tables to ${identifier(roleName)}`,
+          ],
         ],
         [
           "default relation privilege with grant option",
-          `alter default privileges grant select on tables to ${identifier(roleName)} with grant option`,
+          [
+            "grant create on schema public to platform_app",
+            `alter default privileges for role platform_app grant select on tables to ${identifier(roleName)} with grant option`,
+          ],
         ],
         [
           "global default relation privilege to PUBLIC",
-          "alter default privileges grant select on tables to public",
+          [
+            "grant create on schema public to platform_app",
+            "alter default privileges for role platform_app grant select on tables to public",
+          ],
         ],
         [
           "schema-specific default ACL",
-          `alter default privileges in schema public grant select on tables to ${identifier(roleName)}`,
+          [
+            "grant create on schema public to platform_app",
+            `alter default privileges for role platform_app in schema public grant select on tables to ${identifier(roleName)}`,
+          ],
         ],
       ];
 
-      for (const [name, statement] of defaultAclCases) {
+      for (const [name, statements] of defaultAclCases) {
         await context.test(name, async () => {
           await withRolledBackAuthorityMutation(adminPool, async () => {
-            await adminPool.query(statement);
+            for (const statement of statements) {
+              await adminPool.query(statement);
+            }
             await assertAuthorityCategoryFails(
               adminPool,
               roleName,
@@ -1233,12 +1250,18 @@ test(
       }
 
       await context.test(
-        "unrelated default ACL to a non-member role does not falsely fail",
+        "provider/system/control-plane defaults outside the application creator path do not falsely fail",
         async () => {
           await withRolledBackAuthorityMutation(adminPool, async () => {
             await createRole(adminPool, unrelatedRole);
             await adminPool.query(
-              `alter default privileges grant select on tables to ${identifier(unrelatedRole)}`,
+              "alter default privileges for role postgres grant select on tables to public with grant option",
+            );
+            await adminPool.query(
+              "alter default privileges for role pg_database_owner grant execute on functions to public",
+            );
+            await adminPool.query(
+              `alter default privileges for role postgres grant select on tables to ${identifier(unrelatedRole)} with grant option`,
             );
             await assertCompleteDormantPreflight(adminPool, target);
           });

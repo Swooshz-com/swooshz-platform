@@ -1326,7 +1326,7 @@ async function normalizeObservedPrestate(
     when: decimalStringValue(row.when, "MIGRATION_IDENTITY_MISMATCH"),
     sql_sha256: hex(row.sql_sha256, 64, "MIGRATION_IDENTITY_MISMATCH"),
   }));
-  assertAppliedPrefix(appliedRows, journal.entries);
+  assertAppliedPrefix(appliedRows, journal);
   const prestate = normalizePrestate({
     version: PRESTATE_VERSION,
     target: {
@@ -1952,7 +1952,7 @@ export interface DurablePlanV1 {
   plan_digest: string;
 }
 
-const CANONICAL_MIGRATION_TAGS = new Set([
+const CANONICAL_MIGRATION_TAG_LIST = Object.freeze([
   "0000_overconfident_onslaught",
   "0001_lovely_famine",
   "0002_futuristic_aaron_stack",
@@ -1964,6 +1964,7 @@ const CANONICAL_MIGRATION_TAGS = new Set([
   "0009_wonderful_star_brand",
   "0010_admin_operator_viewer_role_collapse",
 ]);
+const CANONICAL_MIGRATION_TAGS = new Set(CANONICAL_MIGRATION_TAG_LIST);
 
 export function createDurablePlan(input: {
   expected_git_sha: string;
@@ -3190,6 +3191,30 @@ export interface CanonicalMigrationJournalV1 {
   entries: MigrationSourceEntryV1[];
 }
 
+const HISTORICAL_CRLF_MIGRATION_SHA256: Readonly<Record<string, string>> = Object.freeze({
+  "0000_overconfident_onslaught": "a4636f7af908cae22e8b15ed59103251b2f865f65a37b496b0ac4e38bc68d09b",
+  "0001_lovely_famine": "f32a717626f2ab3d009a457b81664ba2666a2318129a3383a45146b0ea6634cd",
+  "0002_futuristic_aaron_stack": "b8f3c2d5ac88d9cba57368695219325b025f9c953ce1e7ac59f2882ec1592321",
+  "0003_worthless_scourge": "41a3648d3443e63031277734e805b8826e8f6f34b6f6fdb9db8ed63f5fcdeb1f",
+  "0004_illegal_william_stryker": "5be34c50c70b76f167da4722920946f9272fd8b3aafd405718e3c76dfcea2b3d",
+  "0005_sqag_app_key_migration": "b47e5a1575abc53c523fada3266e32556f3e3b267c7d6878719c5aee30876a3e",
+  "0007_remove_legacy_kqag_tables": "1a74bbfbe23b11693dd1d1571bf6eb6d4340832124143134afe89e2c9337d0b3",
+  "0009_wonderful_star_brand": "b1f9291edfb018633add360eb4e81520f9be9690c38bb1c2dede9de29a2fe25b",
+});
+const historicalCrLfAliasesByJournal = new WeakMap<
+  CanonicalMigrationJournalV1,
+  ReadonlyMap<number, string>
+>();
+
+function historicalCrLfDigest(contents: Buffer): string {
+  const crlfBytes: number[] = [];
+  for (const byte of contents) {
+    if (byte === 0x0a) crlfBytes.push(0x0d);
+    crlfBytes.push(byte);
+  }
+  return createHash("sha256").update(Buffer.from(crlfBytes)).digest("hex");
+}
+
 export async function loadCanonicalMigrationJournal(rootDir: string): Promise<CanonicalMigrationJournalV1> {
   const migrationDirectory = resolve(rootDir, "drizzle", "migrations");
   let parsed: unknown;
@@ -3216,7 +3241,37 @@ export async function loadCanonicalMigrationJournal(rootDir: string): Promise<Ca
       sql_sha256: hex(files[index].hash, 64, "MIGRATION_IDENTITY_MISMATCH"),
     };
   });
-  return { version: stringValue(parsed.version, "MIGRATION_IDENTITY_MISMATCH"), dialect: stringValue(parsed.dialect, "MIGRATION_IDENTITY_MISMATCH"), entries };
+  if (
+    entries.length !== CANONICAL_MIGRATION_TAG_LIST.length ||
+    entries.some((entry, index) => entry.idx !== index || entry.tag !== CANONICAL_MIGRATION_TAG_LIST[index])
+  ) {
+    fail("MIGRATION_IDENTITY_MISMATCH");
+  }
+  const historicalCrLfAliases = new Map<number, string>();
+  for (const [index, entry] of entries.entries()) {
+    const expectedAlias = HISTORICAL_CRLF_MIGRATION_SHA256[entry.tag];
+    if (!expectedAlias) continue;
+    let canonicalBytes: Buffer;
+    try {
+      canonicalBytes = await readFile(join(migrationDirectory, `${entry.tag}.sql`));
+    } catch {
+      fail("MIGRATION_IDENTITY_MISMATCH");
+    }
+    if (historicalCrLfDigest(canonicalBytes) !== expectedAlias) {
+      fail("MIGRATION_IDENTITY_MISMATCH");
+    }
+    historicalCrLfAliases.set(index, expectedAlias);
+  }
+  if (historicalCrLfAliases.size !== Object.keys(HISTORICAL_CRLF_MIGRATION_SHA256).length) {
+    fail("MIGRATION_IDENTITY_MISMATCH");
+  }
+  const journal = deepFreeze({
+    version: stringValue(parsed.version, "MIGRATION_IDENTITY_MISMATCH"),
+    dialect: stringValue(parsed.dialect, "MIGRATION_IDENTITY_MISMATCH"),
+    entries,
+  });
+  historicalCrLfAliasesByJournal.set(journal, historicalCrLfAliases);
+  return journal;
 }
 
 const CONTRACT_SOURCE_PATHS = [
@@ -3333,7 +3388,7 @@ export async function runCanonicalMigrationPrimitive(input: {
   const files = readMigrationFiles({ migrationsFolder: resolve(input.migrationsFolder) }) as Array<{ hash: string; folderMillis: number }>;
   if (files.length !== journal.entries.length) fail("MIGRATION_IDENTITY_MISMATCH");
   const before = await readAppliedMigrationRows(input.pool);
-  assertAppliedPrefix(before, journal.entries);
+  assertAppliedPrefix(before, journal);
   const pending = journal.entries.slice(before.length);
   const expectedOperations = input.expectedOperations
     ? input.expectedOperations.map((operation) => normalizeMigrationOperation(operation as unknown as Record<string, unknown>))
@@ -3386,7 +3441,7 @@ export async function runCanonicalMigrationPrimitive(input: {
     throw error;
   }
   try {
-    assertAppliedPrefix(after, journal.entries);
+    assertAppliedPrefix(after, journal);
     if (after.length !== journal.entries.length) fail("MIGRATION_IDENTITY_MISMATCH");
     if (canonicalDigest(JOURNAL_PREFIX_DOMAIN_SEPARATOR, after) !== expectedOperations[expectedOperations.length - 1].expected_post_journal_digest) fail("MIGRATION_IDENTITY_MISMATCH");
   } catch (error) {
@@ -3414,7 +3469,12 @@ async function readAppliedMigrationRows(pool: DurablePool): Promise<MigrationApp
   }
 }
 
-function assertAppliedPrefix(rows: readonly MigrationAppliedRowV1[], entries: readonly MigrationSourceEntryV1[]): void {
+function assertAppliedPrefix(
+  rows: readonly MigrationAppliedRowV1[],
+  journal: CanonicalMigrationJournalV1,
+): void {
+  const entries = journal.entries;
+  const historicalCrLfAliases = historicalCrLfAliasesByJournal.get(journal);
   if (rows.length > entries.length) fail("MIGRATION_IDENTITY_MISMATCH");
   const entrySeen = new Set<string>();
   entries.forEach((entry, index) => {
@@ -3426,7 +3486,11 @@ function assertAppliedPrefix(rows: readonly MigrationAppliedRowV1[], entries: re
   rows.forEach((row, index) => {
     const entry = entries[index];
     const identity = `${row.when}|${row.sql_sha256}`;
-    if (!entry || row.when !== entry.when || row.sql_sha256 !== entry.sql_sha256 || seen.has(identity)) fail("MIGRATION_IDENTITY_MISMATCH");
+    const hashMatches = entry && (
+      row.sql_sha256 === entry.sql_sha256 ||
+      row.sql_sha256 === historicalCrLfAliases?.get(index)
+    );
+    if (!entry || row.when !== entry.when || !hashMatches || seen.has(identity)) fail("MIGRATION_IDENTITY_MISMATCH");
     seen.add(identity);
   });
 }
@@ -3626,11 +3690,16 @@ function freezeTargetBinding(binding: DurableTargetBinding): DurableTargetBindin
 
 function freezeJournal(journal: CanonicalMigrationJournalV1 | undefined): CanonicalMigrationJournalV1 {
   if (!journal) fail("MIGRATION_IDENTITY_MISMATCH");
-  return deepFreeze({
+  const frozen = deepFreeze({
     version: journal.version,
     dialect: journal.dialect,
     entries: journal.entries.map((entry) => ({ ...entry })),
   });
+  const historicalCrLfAliases = historicalCrLfAliasesByJournal.get(journal);
+  if (historicalCrLfAliases) {
+    historicalCrLfAliasesByJournal.set(frozen, new Map(historicalCrLfAliases));
+  }
+  return frozen;
 }
 
 function freezeRestoreCapability(capability: RestoreCapabilityV1 | undefined): RestoreCapabilityV1 | undefined {

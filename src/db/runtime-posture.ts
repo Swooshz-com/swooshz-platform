@@ -226,46 +226,36 @@ public_column_grants as (
 default_acl_object_types(object_type) as (
   values ('r'::"char"), ('S'::"char"), ('f'::"char")
 ),
-default_acl_creators(role_oid) as (
+platform_application_creator_roles(role_oid) as (
   select role_record.oid
   from pg_roles role_record
-  cross join non_system_schemas schema_record
-  where has_schema_privilege(
-    role_record.oid,
+  where role_record.rolname in ('platform_app', 'platform_migrator')
+),
+platform_application_schemas(schema_oid, schema_name) as (
+  select
     schema_record.oid,
-    'CREATE'
-  )
-
-  union
-
-  select nspowner from non_system_schemas
-
-  union
-
-  select relation_record.relowner
-  from pg_class relation_record
-  join non_system_schemas schema_record
-    on schema_record.oid = relation_record.relnamespace
-  where relation_record.relkind in ('r', 'p', 'v', 'm', 'f', 'S')
-
-  union
-
-  select routine_record.proowner
-  from pg_proc routine_record
-  join non_system_schemas schema_record
-    on schema_record.oid = routine_record.pronamespace
-
-  union
-
-  select default_acl.defaclrole
-  from pg_default_acl default_acl
-  where default_acl.defaclobjtype in ('r', 'S', 'f')
+    schema_record.nspname::text
+  from pg_namespace schema_record
+  where schema_record.nspname in ('public', 'drizzle')
+),
+default_acl_creators(role_oid, schema_oid, schema_name) as (
+  select
+    creator.role_oid,
+    application_schema.schema_oid,
+    application_schema.schema_name
+  from platform_application_creator_roles creator
+  join platform_application_schemas application_schema
+    on has_schema_privilege(
+      creator.role_oid,
+      application_schema.schema_oid,
+      'CREATE'
+    )
 ),
 default_acl_context as (
   select
     default_creator.role_oid as creator_oid,
-    schema_record.oid as schema_oid,
-    schema_record.nspname::text as schema_name,
+    default_creator.schema_oid,
+    default_creator.schema_name,
     object_type.object_type,
     coalesce(
       global_default.defaclacl,
@@ -275,7 +265,6 @@ default_acl_context as (
       '{}'::aclitem[]
     ) as effective_acl
   from default_acl_creators default_creator
-  cross join non_system_schemas schema_record
   cross join default_acl_object_types object_type
   left join pg_default_acl global_default
     on global_default.defaclrole = default_creator.role_oid
@@ -284,7 +273,7 @@ default_acl_context as (
     and global_default.defaclobjtype = object_type.object_type
   left join pg_default_acl schema_default
     on schema_default.defaclrole = default_creator.role_oid
-    and schema_default.defaclnamespace = schema_record.oid
+    and schema_default.defaclnamespace = default_creator.schema_oid
     and schema_default.defaclobjtype in ('r', 'S', 'f')
     and schema_default.defaclobjtype = object_type.object_type
 ),
@@ -654,13 +643,13 @@ select
   ) as runtime_default_relation_authority_absent,
   not exists (
     select 1
-    from default_acl_grants default_grant
+    from prohibited_default_acl_grants default_grant
     where default_grant.object_type = 'r'
       and default_grant.is_grantable
   ) as runtime_default_relation_grant_option_absent,
   not exists (
     select 1
-    from default_acl_grants
+    from prohibited_default_acl_grants
     where object_type = 'r'
       and grantee_oid = 0
   ) as public_default_relation_authority_absent,
@@ -671,7 +660,7 @@ select
   ) as runtime_default_sequence_authority_absent,
   not exists (
     select 1
-    from default_acl_grants
+    from prohibited_default_acl_grants
     where object_type = 'S'
       and grantee_oid = 0
   ) as public_default_sequence_authority_absent,
@@ -682,13 +671,13 @@ select
   ) as runtime_default_routine_authority_absent,
   not exists (
     select 1
-    from default_acl_grants
+    from prohibited_default_acl_grants
     where object_type = 'f'
       and grantee_oid = 0
   ) as public_default_routine_authority_absent,
   not exists (
     select 1
-    from default_acl_grants
+    from prohibited_default_acl_grants
     where is_grantable
   ) as default_acl_grant_option_absent,
   not exists (

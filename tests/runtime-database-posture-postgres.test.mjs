@@ -379,12 +379,14 @@ test(
         async () => {
           const runtime = role("inherited_default_runtime");
           const grantee = role("inherited_default_grantee");
-          const creator = role("inherited_default_creator");
+          const creator = "platform_app";
           await createRole(adminPool, runtime);
           await createRole(adminPool, grantee);
-          await createRole(adminPool, creator);
           await adminPool.query(`alter role ${identifier(runtime)} inherit`);
           await grantRole(adminPool, grantee, runtime, false, true);
+          await adminPool.query(
+            `grant create on schema public to ${identifier(creator)}`,
+          );
           await adminPool.query(
             `alter default privileges for role ${identifier(creator)} grant select on tables to ${identifier(grantee)}`,
           );
@@ -396,6 +398,9 @@ test(
           await adminPool.query(
             `alter default privileges for role ${identifier(creator)} revoke select on tables from ${identifier(grantee)}`,
           );
+          await adminPool.query(
+            `revoke create on schema public from ${identifier(creator)}`,
+          );
         },
       );
 
@@ -405,11 +410,13 @@ test(
         async () => {
           const runtime = role("set_default_runtime");
           const grantee = role("set_default_grantee");
-          const creator = role("set_default_creator");
+          const creator = "platform_app";
           await createRole(adminPool, runtime);
           await createRole(adminPool, grantee);
-          await createRole(adminPool, creator);
           await grantRole(adminPool, grantee, runtime, true, false);
+          await adminPool.query(
+            `grant create on schema public to ${identifier(creator)}`,
+          );
           await adminPool.query(
             `alter default privileges for role ${identifier(creator)} grant usage on sequences to ${identifier(grantee)}`,
           );
@@ -421,15 +428,20 @@ test(
           await adminPool.query(
             `alter default privileges for role ${identifier(creator)} revoke usage on sequences from ${identifier(grantee)}`,
           );
+          await adminPool.query(
+            `revoke create on schema public from ${identifier(creator)}`,
+          );
         },
       );
 
       markPostgresMatrixCategory(executedCategories, "public_relation_defaults");
       await context.test("PUBLIC relation defaults are denied", async () => {
         const runtime = role("public_relation_default_runtime");
-        const creator = role("public_relation_default_creator");
+        const creator = "platform_app";
         await createRole(adminPool, runtime);
-        await createRole(adminPool, creator);
+        await adminPool.query(
+          `grant create on schema public to ${identifier(creator)}`,
+        );
         await adminPool.query(
           `alter default privileges for role ${identifier(creator)} grant select on tables to public`,
         );
@@ -441,14 +453,19 @@ test(
         await adminPool.query(
           `alter default privileges for role ${identifier(creator)} revoke select on tables from public`,
         );
+        await adminPool.query(
+          `revoke create on schema public from ${identifier(creator)}`,
+        );
       });
 
       markPostgresMatrixCategory(executedCategories, "public_sequence_defaults");
       await context.test("PUBLIC sequence defaults are denied", async () => {
         const runtime = role("public_sequence_default_runtime");
-        const creator = role("public_sequence_default_creator");
+        const creator = "platform_app";
         await createRole(adminPool, runtime);
-        await createRole(adminPool, creator);
+        await adminPool.query(
+          `grant create on schema public to ${identifier(creator)}`,
+        );
         await adminPool.query(
           `alter default privileges for role ${identifier(creator)} grant usage on sequences to public`,
         );
@@ -460,14 +477,19 @@ test(
         await adminPool.query(
           `alter default privileges for role ${identifier(creator)} revoke usage on sequences from public`,
         );
+        await adminPool.query(
+          `revoke create on schema public from ${identifier(creator)}`,
+        );
       });
 
       markPostgresMatrixCategory(executedCategories, "public_routine_defaults");
       await context.test("PUBLIC routine defaults are denied", async () => {
         const runtime = role("public_routine_default_runtime");
-        const creator = role("public_routine_default_creator");
+        const creator = "platform_app";
         await createRole(adminPool, runtime);
-        await createRole(adminPool, creator);
+        await adminPool.query(
+          `grant create on schema public to ${identifier(creator)}`,
+        );
         await adminPool.query(
           `alter default privileges for role ${identifier(creator)} grant execute on functions to public`,
         );
@@ -478,6 +500,9 @@ test(
         );
         await adminPool.query(
           `alter default privileges for role ${identifier(creator)} revoke execute on functions from public`,
+        );
+        await adminPool.query(
+          `revoke create on schema public from ${identifier(creator)}`,
         );
       });
 
@@ -532,9 +557,11 @@ test(
       markPostgresMatrixCategory(executedCategories, "global_default_replacement");
       await context.test("global default replacement is enforced", async () => {
         const runtime = role("global_default_runtime");
-        const creator = role("global_default_creator");
+        const creator = "platform_app";
         await createRole(adminPool, runtime);
-        await createRole(adminPool, creator);
+        await adminPool.query(
+          `grant create on schema public to ${identifier(creator)}`,
+        );
         await adminPool.query(
           `alter default privileges for role ${identifier(creator)} revoke select on tables from public`,
         );
@@ -549,14 +576,19 @@ test(
         await adminPool.query(
           `alter default privileges for role ${identifier(creator)} revoke select on tables from ${identifier(runtime)}`,
         );
+        await adminPool.query(
+          `revoke create on schema public from ${identifier(creator)}`,
+        );
       });
 
       markPostgresMatrixCategory(executedCategories, "per_schema_additive_defaults");
       await context.test("per-schema default additions are enforced", async () => {
         const runtime = role("schema_default_runtime");
-        const creator = role("schema_default_creator");
+        const creator = "platform_app";
         await createRole(adminPool, runtime);
-        await createRole(adminPool, creator);
+        await adminPool.query(
+          `grant create on schema drizzle to ${identifier(creator)}`,
+        );
         await adminPool.query(
           `alter default privileges for role ${identifier(creator)} in schema drizzle grant select on tables to ${identifier(runtime)}`,
         );
@@ -568,30 +600,110 @@ test(
         await adminPool.query(
           `alter default privileges for role ${identifier(creator)} in schema drizzle revoke select on tables from ${identifier(runtime)}`,
         );
+        await adminPool.query(
+          `revoke create on schema drizzle from ${identifier(creator)}`,
+        );
       });
 
       markPostgresMatrixCategory(executedCategories, "hard_wired_defaults");
-      await context.test("hard-wired default behavior is enforced", async () => {
-        const runtime = role("hardwired_runtime");
-        const creator = role("hardwired_creator");
-        const targetSchema = schema("hardwired_schema");
-        await createRole(adminPool, runtime);
-        await createRole(adminPool, creator);
-        await adminPool.query(
-          `create schema ${identifier(targetSchema)} authorization postgres`,
-        );
-        await adminPool.query(
-          `grant create on schema ${identifier(targetSchema)} to ${identifier(creator)}`,
-        );
-        await assertPostureFails(
-          adminPool,
-          runtime,
-          "runtimeRoutineAuthorityAbsent",
-        );
-        await adminPool.query(
-          `revoke create on schema ${identifier(targetSchema)} from ${identifier(creator)}`,
-        );
-      });
+      await context.test(
+        "safe creator defaults pass while platform_migrator unsafe defaults fail closed",
+        async () => {
+          const runtime = "platform_runtime";
+          const creator = "platform_migrator";
+          await createRole(adminPool, creator);
+          roles.push(creator);
+          await adminPool.query(
+            `grant create on schema public to ${identifier(creator)}`,
+          );
+          await adminPool.query(
+            `alter default privileges for role ${identifier(creator)} revoke all privileges on tables from public`,
+          );
+          await adminPool.query(
+            `alter default privileges for role ${identifier(creator)} revoke all privileges on sequences from public`,
+          );
+          await adminPool.query(
+            `alter default privileges for role ${identifier(creator)} revoke execute on functions from public`,
+          );
+          const unrelatedProviderGrantee = role(
+            "unrelated_provider_grant_option",
+          );
+          await createRole(adminPool, unrelatedProviderGrantee);
+          providerControlRoleRenamed = await ensureProviderControlRole(
+            adminPool,
+            operatorUrl,
+          );
+          try {
+            await installAcceptedCreatorEdge(rawAdminPool, operatorUrl);
+            await assertAcceptedCreatorEdge(rawAdminPool);
+            await rawAdminPool.query(
+              "alter default privileges for role cloud_admin grant execute on functions to public",
+            );
+            await rawAdminPool.query(
+              `alter default privileges for role cloud_admin grant select on tables to ${identifier(unrelatedProviderGrantee)} with grant option`,
+            );
+            await assertAcceptedCreatorEdge(rawAdminPool);
+            await assertPosturePasses(rawAdminPool, runtime);
+            await rawAdminPool.query(
+              `alter default privileges for role ${identifier(creator)} grant select on tables to ${identifier(runtime)}`,
+            );
+            await assertPostureFails(
+              rawAdminPool,
+              runtime,
+              "runtimeDefaultRelationAuthorityAbsent",
+            );
+            await rawAdminPool.query(
+              `alter default privileges for role ${identifier(creator)} revoke select on tables from ${identifier(runtime)}`,
+            );
+            await rawAdminPool.query(
+              `alter default privileges for role ${identifier(creator)} grant usage on sequences to ${identifier(runtime)}`,
+            );
+            await assertPostureFails(
+              rawAdminPool,
+              runtime,
+              "runtimeSequenceAuthorityAbsent",
+            );
+            await rawAdminPool.query(
+              `alter default privileges for role ${identifier(creator)} revoke usage on sequences from ${identifier(runtime)}`,
+            );
+            await rawAdminPool.query(
+              `alter default privileges for role ${identifier(creator)} grant execute on functions to public`,
+            );
+            await assertPostureFails(
+              rawAdminPool,
+              runtime,
+              "runtimeRoutineAuthorityAbsent",
+            );
+          } finally {
+            await rawAdminPool.query(
+              `alter default privileges for role ${identifier(creator)} revoke execute on functions from public`,
+            );
+            await rawAdminPool.query(
+              `alter default privileges for role ${identifier(creator)} revoke usage on sequences from ${identifier(runtime)}`,
+            );
+            await rawAdminPool.query(
+              `alter default privileges for role ${identifier(creator)} revoke select on tables from ${identifier(runtime)}`,
+            );
+            await rawAdminPool.query(
+              `revoke create on schema public from ${identifier(creator)}`,
+            );
+            await rawAdminPool.query(
+              "alter default privileges for role cloud_admin revoke execute on functions from public",
+            );
+            await rawAdminPool.query(
+              `alter default privileges for role cloud_admin revoke select on tables from ${identifier(unrelatedProviderGrantee)}`,
+            );
+            await rawAdminPool.query(
+              `drop role if exists ${identifier(unrelatedProviderGrantee)}`,
+            );
+            await restoreProviderControlRole(operatorUrl);
+            providerControlRoleRenamed = false;
+            await adminPool.query("select 1");
+            await adminPool.query("drop owned by provider_admin");
+            await adminPool.query("drop role if exists provider_admin");
+          }
+        },
+      );
 
       await context.test(
         "direct, PUBLIC, inherited, SET-role, and owner CREATE fail for every non-system schema",
@@ -683,9 +795,14 @@ test(
         "global and per-schema relation defaults reject runtime and PUBLIC authority",
         async () => {
           const runtime = role("default_relation_runtime");
-          const creator = role("default_relation_creator");
+          const creator = "platform_app";
           await createRole(adminPool, runtime);
-          await createRole(adminPool, creator);
+          await adminPool.query(
+            `grant create on schema public to ${identifier(creator)}`,
+          );
+          await adminPool.query(
+            `grant create on schema drizzle to ${identifier(creator)}`,
+          );
 
           await adminPool.query(
             `alter default privileges for role ${identifier(creator)} grant select on tables to ${identifier(runtime)}`,
@@ -722,6 +839,12 @@ test(
           await adminPool.query(
             `alter default privileges for role ${identifier(creator)} revoke select on tables from public`,
           );
+          await adminPool.query(
+            `revoke create on schema public from ${identifier(creator)}`,
+          );
+          await adminPool.query(
+            `revoke create on schema drizzle from ${identifier(creator)}`,
+          );
         },
       );
 
@@ -729,9 +852,11 @@ test(
         "sequence, routine, and grant-option defaults are rejected",
         async () => {
           const runtime = role("default_object_runtime");
-          const creator = role("default_object_creator");
+          const creator = "platform_app";
           await createRole(adminPool, runtime);
-          await createRole(adminPool, creator);
+          await adminPool.query(
+            `grant create on schema public to ${identifier(creator)}`,
+          );
 
           await adminPool.query(
             `alter default privileges for role ${identifier(creator)} grant usage on sequences to ${identifier(runtime)}`,
@@ -767,6 +892,9 @@ test(
           );
           await adminPool.query(
             `alter default privileges for role ${identifier(creator)} revoke select on tables from ${identifier(runtime)}`,
+          );
+          await adminPool.query(
+            `revoke create on schema public from ${identifier(creator)}`,
           );
         },
       );
