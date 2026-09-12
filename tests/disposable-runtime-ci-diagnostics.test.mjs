@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  formatDisposableRuntimeChildDiagnostics,
   formatDisposableRuntimeFailureReceipt,
   parseDisposableRuntimeTestSummary,
 } from "../scripts/run-disposable-runtime-postgres-tests.mjs";
@@ -137,17 +138,42 @@ test("failure receipt ignores untrusted diagnostic values", () => {
   assert.doesNotMatch(receipt, /untrusted|database error|postgres(?:ql)?:\/\//i);
 });
 
-test("child stderr remains consumed and diagnostic output is not child output", async () => {
+test("child failure diagnostics expose bounded redacted TAP and stack evidence", async () => {
   const source = await readFile(
     "scripts/run-disposable-runtime-postgres-tests.mjs",
     "utf8",
   );
 
-  assert.match(source, /child\.stderr\?\.resume\(\)/);
-  assert.doesNotMatch(source, /child\.stderr\?\.(?:on|pipe)\(/);
+  assert.match(source, /child\.stderr\?\.on\("data"/);
+  assert.doesNotMatch(source, /child\.stderr\?\.(?:resume|pipe)\(/);
+
+  const diagnostics = formatDisposableRuntimeChildDiagnostics({
+    stdout: [
+      "TAP version 13",
+      "# Subtest: unsafe default ACL is rejected",
+      "not ok 7 - unsafe default ACL is rejected",
+      "  ---",
+      "  failureType: 'testCodeFailure'",
+      "  error: |-",
+      "    AssertionError [ERR_ASSERTION]: runtimeDefaultRelationAuthorityAbsent",
+      "    at TestContext.<anonymous> (file:///workspace/tests/runtime-database-posture-postgres.test.mjs:640:13)",
+      "  location: 'file:///workspace/tests/runtime-database-posture-postgres.test.mjs:640:13'",
+      "  actual: 'postgresql://user:secret@db.example/app?sslmode=require'",
+      "  expected: 'passed'",
+      "  operator: 'equal'",
+      "  ...",
+    ].join("\n"),
+    stderr: "password=supersecret https://example.test/callback?signature=secret",
+  });
+
+  assert.ok(Buffer.byteLength(diagnostics, "utf8") <= 4_000);
+  assert.match(diagnostics, /# Subtest: unsafe default ACL is rejected/);
+  assert.match(diagnostics, /not ok 7 - unsafe default ACL is rejected/);
+  assert.match(diagnostics, /AssertionError \[ERR_ASSERTION\]: runtimeDefaultRelationAuthorityAbsent/);
+  assert.match(diagnostics, /runtime-database-posture-postgres\.test\.mjs:640:13/);
   assert.doesNotMatch(
-    formatDisposableRuntimeFailureReceipt({ childOutput: "sensitive-output" }),
-    /postgres(?:ql)?:\/\/|secret[=:]/i,
+    diagnostics,
+    /postgres(?:ql)?:\/\/|https?:\/\/|password=supersecret|secret@|\?sslmode=|\?signature=/i,
   );
 });
 
