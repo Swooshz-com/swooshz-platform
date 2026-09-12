@@ -626,13 +626,17 @@ test(
           await adminPool.query(
             `alter default privileges for role ${identifier(creator)} revoke execute on functions from public`,
           );
-          await adminPool.query(
-            "alter default privileges for role postgres grant execute on functions to public",
+          const unrelatedProviderGrantee = role(
+            "unrelated_provider_grant_option",
           );
-          await adminPool.query(
-            "alter default privileges for role postgres grant select on tables to public with grant option",
-          );
+          await createRole(adminPool, unrelatedProviderGrantee);
           try {
+            await adminPool.query(
+              "alter default privileges for role postgres grant execute on functions to public",
+            );
+            await adminPool.query(
+              `alter default privileges for role postgres grant select on tables to ${identifier(unrelatedProviderGrantee)} with grant option`,
+            );
             await assertPosturePasses(adminPool, runtime);
             await adminPool.query(
               `alter default privileges for role ${identifier(creator)} grant select on tables to ${identifier(runtime)}`,
@@ -681,7 +685,7 @@ test(
               "alter default privileges for role postgres revoke execute on functions from public",
             );
             await adminPool.query(
-              "alter default privileges for role postgres revoke select on tables from public",
+              `alter default privileges for role postgres revoke select on tables from ${identifier(unrelatedProviderGrantee)}`,
             );
           }
         },
