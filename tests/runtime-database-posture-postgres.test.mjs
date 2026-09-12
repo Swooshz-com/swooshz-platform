@@ -636,70 +636,71 @@ test(
           try {
             await installAcceptedCreatorEdge(rawAdminPool, operatorUrl);
             await assertAcceptedCreatorEdge(rawAdminPool);
-            await adminPool.query(
+            await rawAdminPool.query(
               "alter default privileges for role cloud_admin grant execute on functions to public",
             );
-            await adminPool.query(
+            await rawAdminPool.query(
               `alter default privileges for role cloud_admin grant select on tables to ${identifier(unrelatedProviderGrantee)} with grant option`,
             );
             await assertAcceptedCreatorEdge(rawAdminPool);
-            await assertPosturePasses(adminPool, runtime);
-            await adminPool.query(
+            await assertPosturePasses(rawAdminPool, runtime);
+            await rawAdminPool.query(
               `alter default privileges for role ${identifier(creator)} grant select on tables to ${identifier(runtime)}`,
             );
             await assertPostureFails(
-              adminPool,
+              rawAdminPool,
               runtime,
               "runtimeDefaultRelationAuthorityAbsent",
             );
-            await adminPool.query(
+            await rawAdminPool.query(
               `alter default privileges for role ${identifier(creator)} revoke select on tables from ${identifier(runtime)}`,
             );
-            await adminPool.query(
+            await rawAdminPool.query(
               `alter default privileges for role ${identifier(creator)} grant usage on sequences to ${identifier(runtime)}`,
             );
             await assertPostureFails(
-              adminPool,
+              rawAdminPool,
               runtime,
               "runtimeSequenceAuthorityAbsent",
             );
-            await adminPool.query(
+            await rawAdminPool.query(
               `alter default privileges for role ${identifier(creator)} revoke usage on sequences from ${identifier(runtime)}`,
             );
-            await adminPool.query(
+            await rawAdminPool.query(
               `alter default privileges for role ${identifier(creator)} grant execute on functions to public`,
             );
             await assertPostureFails(
-              adminPool,
+              rawAdminPool,
               runtime,
               "runtimeRoutineAuthorityAbsent",
             );
           } finally {
-            await adminPool.query(
+            await rawAdminPool.query(
               `alter default privileges for role ${identifier(creator)} revoke execute on functions from public`,
             );
-            await adminPool.query(
+            await rawAdminPool.query(
               `alter default privileges for role ${identifier(creator)} revoke usage on sequences from ${identifier(runtime)}`,
             );
-            await adminPool.query(
+            await rawAdminPool.query(
               `alter default privileges for role ${identifier(creator)} revoke select on tables from ${identifier(runtime)}`,
             );
-            await adminPool.query(
+            await rawAdminPool.query(
               `revoke create on schema public from ${identifier(creator)}`,
             );
-            await adminPool.query(
+            await rawAdminPool.query(
               "alter default privileges for role cloud_admin revoke execute on functions from public",
             );
-            await adminPool.query(
+            await rawAdminPool.query(
               `alter default privileges for role cloud_admin revoke select on tables from ${identifier(unrelatedProviderGrantee)}`,
             );
-            await restoreProviderControlRole(operatorUrl);
-            await adminPool.query("drop owned by provider_admin");
-            await adminPool.query("drop role if exists provider_admin");
-            await adminPool.query(
+            await rawAdminPool.query(
               `drop role if exists ${identifier(unrelatedProviderGrantee)}`,
             );
+            await restoreProviderControlRole(operatorUrl);
             providerControlRoleRenamed = false;
+            await adminPool.query("select 1");
+            await adminPool.query("drop owned by provider_admin");
+            await adminPool.query("drop role if exists provider_admin");
           }
         },
       );
