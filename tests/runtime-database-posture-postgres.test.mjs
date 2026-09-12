@@ -615,7 +615,7 @@ test(
             "alter default privileges for role postgres grant execute on functions to public",
           );
           await adminPool.query(
-            "alter default privileges for role pg_database_owner grant select on tables to public with grant option",
+            "alter default privileges for role postgres grant select on tables to public with grant option",
           );
           try {
             await assertPosturePasses(adminPool, runtime);
@@ -624,7 +624,7 @@ test(
               "alter default privileges for role postgres revoke execute on functions from public",
             );
             await adminPool.query(
-              "alter default privileges for role pg_database_owner revoke select on tables from public",
+              "alter default privileges for role postgres revoke select on tables from public",
             );
           }
         },
