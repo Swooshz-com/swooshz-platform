@@ -121,6 +121,22 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
         canonicalDigest(JOURNAL_PREFIX_DOMAIN_SEPARATOR, baseline.prestate.migration_journal.applied_rows),
       );
       assertCanonicalReadiness(baseline.prestate);
+      assert.equal(baseline.prestate.ownership.canonical_routines.length, 0);
+      assert.deepEqual(baseline.prestate.unknown_non_extension_drift.routines, []);
+
+      await cloudAdminPool.query(
+        `grant execute on function "public"."show_db_tree"() to public`,
+      );
+      try {
+        await assert.rejects(
+          () => captureNormalizedPrestate(binding, journal),
+          (error) => error?.semanticCode === "UNKNOWN_DRIFT",
+        );
+      } finally {
+        await cloudAdminPool.query(
+          `revoke execute on function "public"."show_db_tree"() from public`,
+        );
+      }
 
       const nonMigrationPlan = makePlan(binding, baseline, [{
         kind: "privilege",

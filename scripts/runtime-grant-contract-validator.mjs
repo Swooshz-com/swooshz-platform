@@ -70,7 +70,7 @@ const productionDependencyLockDigest =
 const databaseSourceShapeAuthority = new Map([
   [
     "src/db/durable-operations.ts",
-    "5ce50d50bf598da3f77ee07f69f8deb76e5263ea087282dfd220a98d7cd1f04c",
+    "7df9de6caf692241e60d61c9fb52a788b29fe573683d287e769e93c36237db3e",
   ],  [
     "src/db/access-validation-grant-repository.ts",
     "5f9434df56a9f5bc67468ed8c17ea9fbf60c765c0fa6a88d6902a22d7b9a4271",
