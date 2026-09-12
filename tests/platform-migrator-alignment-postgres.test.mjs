@@ -1060,12 +1060,6 @@ test(
           assert.equal(readinessReport.checks.migratorPosture, "passed");
 
           try {
-            await primary.appPool.query(
-              "create function public.show_db_tree() returns integer language sql immutable as 'select 1'",
-            );
-            await primary.appPool.query(
-              "revoke execute on function public.show_db_tree() from public",
-            );
             const retainedRoutineReport = await createDatabaseReadinessReport(
               readinessInput,
             );
@@ -1172,9 +1166,6 @@ test(
             ).catch(() => {});
             await primary.providerPool.query(
               "drop function if exists public.show_db_tree(text)",
-            ).catch(() => {});
-            await primary.providerPool.query(
-              "drop function if exists public.show_db_tree()",
             ).catch(() => {});
           }
 
@@ -2503,6 +2494,7 @@ async function openFixtures() {
     connectionString: roleUrl("platform_app", primaryDatabaseName),
     max: 2,
   });
+  await prepareRetainedOperatorRoutine(primaryApp);
   const primaryMigratorNoPassword = new Pool({
     connectionString: roleUrl("platform_migrator", primaryDatabaseName),
     max: 2,
@@ -2587,6 +2579,31 @@ async function openFixtures() {
       migratorWrongPasswordPool: secondaryMigratorWrongPassword,
     },
   };
+}
+
+async function prepareRetainedOperatorRoutine(appPool) {
+  const existingRoutine = await appPool.query(
+    `
+      select exists (
+        select 1
+          from pg_proc routine_record
+          join pg_namespace routine_schema
+            on routine_schema.oid = routine_record.pronamespace
+         where routine_schema.nspname = 'public'
+           and routine_record.proname = 'show_db_tree'
+           and routine_record.pronargs = 0
+      ) as present
+    `,
+  );
+  if (!existingRoutine.rows[0]?.present) {
+    // Synthetic fixture body only; production definition identity is not asserted here.
+    await appPool.query(
+      "create function public.show_db_tree() returns integer language sql immutable as 'select 1'",
+    );
+  }
+  await appPool.query(
+    "revoke execute on function public.show_db_tree() from public",
+  );
 }
 
 async function closeFixtures(fixture) {
