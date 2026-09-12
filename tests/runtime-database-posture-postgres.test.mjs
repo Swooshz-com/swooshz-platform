@@ -629,13 +629,20 @@ test(
             "unrelated_provider_grant_option",
           );
           await createRole(adminPool, unrelatedProviderGrantee);
+          providerControlRoleRenamed = await ensureProviderControlRole(
+            adminPool,
+            operatorUrl,
+          );
           try {
+            await installAcceptedCreatorEdge(rawAdminPool, operatorUrl);
+            await assertAcceptedCreatorEdge(rawAdminPool);
             await adminPool.query(
-              "alter default privileges for role postgres grant execute on functions to public",
+              "alter default privileges for role cloud_admin grant execute on functions to public",
             );
             await adminPool.query(
-              `alter default privileges for role postgres grant select on tables to ${identifier(unrelatedProviderGrantee)} with grant option`,
+              `alter default privileges for role cloud_admin grant select on tables to ${identifier(unrelatedProviderGrantee)} with grant option`,
             );
+            await assertAcceptedCreatorEdge(rawAdminPool);
             await assertPosturePasses(adminPool, runtime);
             await adminPool.query(
               `alter default privileges for role ${identifier(creator)} grant select on tables to ${identifier(runtime)}`,
@@ -681,11 +688,18 @@ test(
               `revoke create on schema public from ${identifier(creator)}`,
             );
             await adminPool.query(
-              "alter default privileges for role postgres revoke execute on functions from public",
+              "alter default privileges for role cloud_admin revoke execute on functions from public",
             );
             await adminPool.query(
-              `alter default privileges for role postgres revoke select on tables from ${identifier(unrelatedProviderGrantee)}`,
+              `alter default privileges for role cloud_admin revoke select on tables from ${identifier(unrelatedProviderGrantee)}`,
             );
+            await restoreProviderControlRole(operatorUrl);
+            await adminPool.query("drop owned by provider_admin");
+            await adminPool.query("drop role if exists provider_admin");
+            await adminPool.query(
+              `drop role if exists ${identifier(unrelatedProviderGrantee)}`,
+            );
+            providerControlRoleRenamed = false;
           }
         },
       );
