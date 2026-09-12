@@ -609,9 +609,8 @@ test(
       await context.test(
         "safe creator defaults pass while platform_migrator unsafe defaults fail closed",
         async () => {
-          const runtime = role("hardwired_runtime");
+          const runtime = "platform_runtime";
           const creator = "platform_migrator";
-          await createRole(adminPool, runtime);
           await createRole(adminPool, creator);
           roles.push(creator);
           await adminPool.query(
