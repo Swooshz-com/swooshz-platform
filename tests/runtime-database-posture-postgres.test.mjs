@@ -607,10 +607,25 @@ test(
 
       markPostgresMatrixCategory(executedCategories, "hard_wired_defaults");
       await context.test(
-        "provider/system/control-plane defaults outside the application creator path do not fail",
+        "safe creator defaults pass while platform_migrator unsafe defaults fail closed",
         async () => {
           const runtime = role("hardwired_runtime");
+          const creator = "platform_migrator";
           await createRole(adminPool, runtime);
+          await createRole(adminPool, creator);
+          roles.push(creator);
+          await adminPool.query(
+            `grant create on schema public to ${identifier(creator)}`,
+          );
+          await adminPool.query(
+            `alter default privileges for role ${identifier(creator)} revoke all privileges on tables from public`,
+          );
+          await adminPool.query(
+            `alter default privileges for role ${identifier(creator)} revoke all privileges on sequences from public`,
+          );
+          await adminPool.query(
+            `alter default privileges for role ${identifier(creator)} revoke execute on functions from public`,
+          );
           await adminPool.query(
             "alter default privileges for role postgres grant execute on functions to public",
           );
@@ -619,7 +634,49 @@ test(
           );
           try {
             await assertPosturePasses(adminPool, runtime);
+            await adminPool.query(
+              `alter default privileges for role ${identifier(creator)} grant select on tables to ${identifier(runtime)}`,
+            );
+            await assertPostureFails(
+              adminPool,
+              runtime,
+              "runtimeDefaultRelationAuthorityAbsent",
+            );
+            await adminPool.query(
+              `alter default privileges for role ${identifier(creator)} revoke select on tables from ${identifier(runtime)}`,
+            );
+            await adminPool.query(
+              `alter default privileges for role ${identifier(creator)} grant usage on sequences to ${identifier(runtime)}`,
+            );
+            await assertPostureFails(
+              adminPool,
+              runtime,
+              "runtimeSequenceAuthorityAbsent",
+            );
+            await adminPool.query(
+              `alter default privileges for role ${identifier(creator)} revoke usage on sequences from ${identifier(runtime)}`,
+            );
+            await adminPool.query(
+              `alter default privileges for role ${identifier(creator)} grant execute on functions to public`,
+            );
+            await assertPostureFails(
+              adminPool,
+              runtime,
+              "runtimeRoutineAuthorityAbsent",
+            );
           } finally {
+            await adminPool.query(
+              `alter default privileges for role ${identifier(creator)} revoke execute on functions from public`,
+            );
+            await adminPool.query(
+              `alter default privileges for role ${identifier(creator)} revoke usage on sequences from ${identifier(runtime)}`,
+            );
+            await adminPool.query(
+              `alter default privileges for role ${identifier(creator)} revoke select on tables from ${identifier(runtime)}`,
+            );
+            await adminPool.query(
+              `revoke create on schema public from ${identifier(creator)}`,
+            );
             await adminPool.query(
               "alter default privileges for role postgres revoke execute on functions from public",
             );
