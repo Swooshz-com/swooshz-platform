@@ -62,6 +62,18 @@ objects. `platform_migrator` receives only the schema/database privileges
 needed for reviewed migrations; it is not made database owner and does not
 receive `CREATEDB`. `platform_runtime` has effective database `CONNECT=true`,
 `CREATE=false`, and `TEMPORARY=false`.
+
+`public.show_db_tree()` is a retained operator routine, separate from
+migrator-owned canonical application routines. Readiness accepts only one
+zero-argument function with that exact public identity when it remains owned by
+`platform_app`, invoker-security, without `PUBLIC EXECUTE`, and outside
+extension ownership. It is excluded from unknown-routine drift only in that
+exact posture; it is not included in `CANONICAL_PLATFORM_ROUTINES`, migrator
+ownership checks or migrator grant-option requirements. Missing, overloaded,
+misidentified, re-owned, SECURITY DEFINER, publicly executable or
+extension-owned forms fail closed, as do other unexpected public/drizzle
+routines.
+
 Synthetic `appdata` objects used by the disposable migrator-alignment
 fixture are fixture-only and are not a live production namespace or readiness
 requirement.

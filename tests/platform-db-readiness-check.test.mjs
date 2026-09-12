@@ -3,7 +3,9 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  CANONICAL_PLATFORM_ROUTINES,
   REQUIRED_PLATFORM_TABLES,
+  RETAINED_OPERATOR_ROUTINE,
   createDatabaseReadinessReport,
   formatDatabaseReadinessReport,
 } from "../dist/db/readiness.js";
@@ -333,6 +335,57 @@ test("unknown non-extension routine drift remains fail closed", async () => {
   assert.equal(report.checks.migratorPosture, "failed");
 });
 
+test("retained operator routine is separate from migrator-owned application routines", async () => {
+  const fixture = createFakeReadinessClient();
+  const report = await createDatabaseReadinessReport({
+    env: { DATABASE_OPERATOR_URL: privateDatabaseUrl },
+    expectedMigrationState,
+    clientFactory() {
+      return fixture.client;
+    },
+  });
+  const postureQuery = getMigratorPostureQuery(fixture);
+
+  assert.equal(report.ok, true);
+  assert.deepEqual([...CANONICAL_PLATFORM_ROUTINES], []);
+  assert.deepEqual(RETAINED_OPERATOR_ROUTINE, {
+    schema: "public",
+    name: "show_db_tree",
+    argumentCount: 0,
+    owner: "platform_app",
+  });
+  assert.match(postureQuery, /retained_operator_routines/u);
+  assert.match(postureQuery, /accepted_retained_operator_routines/u);
+  assert.match(postureQuery, /show_db_tree/u);
+  assert.match(postureQuery, /pronargs/u);
+  assert.match(postureQuery, /prosecdef/u);
+  assert.match(postureQuery, /aclexplode/u);
+  assert.match(postureQuery, /extension_dependency_objects/u);
+  const postureCall = fixture.calls.queries.find(({ sql }) =>
+    /migrator_identity_exact/i.test(sql),
+  );
+  assert.deepEqual(postureCall.params[3], []);
+});
+
+test("retained operator routine posture fails closed", async () => {
+  const fixture = createFakeReadinessClient({
+    migratorPosture: {
+      retained_operator_routine_exact: false,
+    },
+  });
+  const report = await createDatabaseReadinessReport({
+    env: { DATABASE_OPERATOR_URL: privateDatabaseUrl },
+    expectedMigrationState,
+    clientFactory() {
+      return fixture.client;
+    },
+  });
+
+  assert.equal(report.ok, false);
+  assert.equal(report.status, "schema_not_ready");
+  assert.equal(report.checks.migratorPosture, "failed");
+});
+
 test("readiness classification explicitly separates extension, system, and dependency objects", async () => {
   const fixture = createFakeReadinessClient();
   const report = await createDatabaseReadinessReport({
@@ -436,6 +489,7 @@ function createFakeReadinessClient(options = {}) {
     canonical_enum_presence_exact: true,
     application_type_owner_exact: true,
     application_routine_owner_exact: true,
+    retained_operator_routine_exact: true,
     unknown_application_relation_drift_absent: true,
     unknown_application_type_drift_absent: true,
     unknown_application_routine_drift_absent: true,
