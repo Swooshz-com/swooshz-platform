@@ -6,17 +6,27 @@ import { PassThrough } from "node:stream";
 
 import {
   ACTIVATION_RUNNER_FAILURE_CONTRACT,
+  ACTIVATION_TOPOLOGY_EVIDENCE_CONTRACT,
+  ACTIVATION_TOPOLOGY_SAMPLE_TIMES_MS,
   activationRunnerFailure,
   assertActivationMigrationEntries,
   assertContainersAbsent,
   assertExactDockerResourcesAbsent,
   assertNetworksAbsent,
   assertNoCallerSuppliedActivationInputs,
+  assertOwnedDockerTopology,
   classifyActivationTestSummary,
   classifyCommandOutcome,
+  classifyEnginePosture,
+  classifyOperationalBinding,
+  classifyPortQuery,
+  classifyRequestBinding,
+  collectActivationTopologyEvidence,
   createActivationMigrationPrefix,
   executeActivationCleanupActions,
   formatActivationRunnerFailure,
+  formatActivationTopologyEvidence,
+  isUnsafeInitialOperationalBinding,
   ownedContainerDockerArguments,
   ownedNetworkCreateArguments,
   parseActivationTestSummary,
@@ -163,6 +173,277 @@ test("activation command outcomes have deterministic closed categories", () => {
   for (const [outcome, expected] of cases) {
     assert.equal(classifyCommandOutcome(outcome), expected);
   }
+});
+
+test("activation topology classifiers cover the closed engine, binding, and query states", () => {
+  const commandCategories = [
+    "COMMAND_SPAWN_FAILED", "COMMAND_NONZERO", "SIGNAL", "TIMEOUT",
+    "OUTPUT_OVERFLOW",
+  ];
+  assert.deepEqual(classifyEnginePosture({ stdout: "28.0.4\n" }), {
+    category: "GE_28",
+  });
+  assert.deepEqual(classifyEnginePosture({ stdout: "27.5.1" }), {
+    category: "LT_28",
+  });
+  assert.deepEqual(classifyEnginePosture({ stdout: "unknown" }), {
+    category: "UNPARSEABLE",
+  });
+  for (const category of commandCategories) {
+    for (const classify of [
+      classifyEnginePosture,
+      classifyRequestBinding,
+      classifyOperationalBinding,
+      classifyPortQuery,
+    ]) {
+      assert.deepEqual(classify({ commandCategory: category }), { category });
+    }
+  }
+
+  const binding = (HostIp, HostPort) => ({
+    stdout: JSON.stringify({ "5432/tcp": [{ HostIp, HostPort }] }),
+  });
+  assert.deepEqual(classifyRequestBinding(binding("127.0.0.1", "")), {
+    category: "EXACT_DYNAMIC",
+  });
+  for (const port of ["1", "65535"]) {
+    assert.deepEqual(classifyRequestBinding(binding("127.0.0.1", port)), {
+      category: "EXACT_ASSIGNED", port: Number(port),
+    });
+    assert.deepEqual(classifyOperationalBinding(binding("127.0.0.1", port)), {
+      category: "EXACT", port: Number(port),
+    });
+  }
+
+  const sharedCases = [
+    [{ stdout: "" }, "MISSING"],
+    [{ stdout: "null" }, "MISSING"],
+    [{ stdout: "{" }, "MALFORMED"],
+    [{ stdout: "[]" }, "MALFORMED"],
+    [{ stdout: "{}" }, "EXPECTED_PORT_MISSING"],
+    [{ stdout: JSON.stringify({ "5433/tcp": [] }) }, "UNEXPECTED_PORT_PRESENT"],
+    [{ stdout: JSON.stringify({ "5432/tcp": [], "5433/tcp": [] }) }, "UNEXPECTED_PORT_PRESENT"],
+    [{ stdout: JSON.stringify({ "5432/tcp": null }) }, "BINDING_SHAPE_INVALID"],
+    [{ stdout: JSON.stringify({ "5432/tcp": [] }) }, "BINDING_MISSING"],
+    [{ stdout: JSON.stringify({ "5432/tcp": [{}, {}] }) }, "BINDING_MULTIPLE"],
+    [{ stdout: JSON.stringify({ "5432/tcp": ["invalid"] }) }, "BINDING_SHAPE_INVALID"],
+  ];
+  for (const [observation, category] of sharedCases) {
+    assert.equal(classifyRequestBinding(observation).category, category);
+    assert.equal(classifyOperationalBinding(observation).category, category);
+  }
+  for (const host of [undefined, "", "0.0.0.0", "::"]) {
+    assert.equal(
+      classifyOperationalBinding(binding(host, "54321")).category,
+      "HOST_WILDCARD_OR_MISSING",
+    );
+  }
+  assert.equal(
+    classifyOperationalBinding(binding("192.0.2.1", "54321")).category,
+    "HOST_NONLOOPBACK",
+  );
+  for (const host of ["127.0.0.2", "::1"]) {
+    assert.equal(
+      classifyOperationalBinding(binding(host, "54321")).category,
+      "HOST_LOOPBACK_MISMATCH",
+    );
+  }
+  for (const HostPort of [undefined, ""]) {
+    assert.equal(
+      classifyOperationalBinding(binding("127.0.0.1", HostPort)).category,
+      "HOST_PORT_MISSING",
+    );
+  }
+  for (const HostPort of [null, 54321, "not-decimal"]) {
+    assert.equal(
+      classifyOperationalBinding(binding("127.0.0.1", HostPort)).category,
+      "HOST_PORT_NONDECIMAL",
+    );
+  }
+  for (const HostPort of ["0", "65536"]) {
+    assert.equal(
+      classifyOperationalBinding(binding("127.0.0.1", HostPort)).category,
+      "PORT_OUT_OF_RANGE",
+    );
+    assert.equal(
+      classifyRequestBinding(binding("127.0.0.1", HostPort)).category,
+      "PORT_INVALID",
+    );
+  }
+
+  const queryCases = [
+    ["127.0.0.1:1\n", "EXACT", 1],
+    ["127.0.0.1:65535\n", "EXACT", 65535],
+    ["", "MISSING"],
+    ["invalid", "MALFORMED"],
+    ["127.0.0.1:1\n127.0.0.1:2\n", "MULTIPLE"],
+    ["0.0.0.0:1", "HOST_WILDCARD_OR_MISSING"],
+    ["[::]:1", "HOST_WILDCARD_OR_MISSING"],
+    ["192.0.2.1:1", "HOST_NONLOOPBACK"],
+    ["127.0.0.2:1", "HOST_LOOPBACK_MISMATCH"],
+    ["[::1]:1", "HOST_LOOPBACK_MISMATCH"],
+    ["127.0.0.1:not-decimal", "PORT_INVALID"],
+    ["127.0.0.1:0", "PORT_INVALID"],
+    ["127.0.0.1:65536", "PORT_INVALID"],
+  ];
+  for (const [stdout, category, port] of queryCases) {
+    assert.deepEqual(
+      classifyPortQuery({ stdout }),
+      port ? { category, port } : { category },
+    );
+  }
+});
+
+test("activation topology sampling is bounded and never accepts a rejected first observation", async () => {
+  assert.deepEqual(ACTIVATION_TOPOLOGY_SAMPLE_TIMES_MS, [0, 250, 500, 750, 1000]);
+  const base = {
+    observeEngine: async () => ({ category: "GE_28" }),
+    observeRequest: async () => ({ category: "EXACT_DYNAMIC" }),
+    observePortQuery: async () => ({ category: "EXACT", port: 41001 }),
+  };
+  const collect = async (samples, target = "PRIMARY") => {
+    const delays = [];
+    let index = 1;
+    const evidence = await collectActivationTopologyEvidence({
+      ...base,
+      target,
+      firstOperational: samples[0],
+      observeOperational: async () => samples[index++],
+      delayImpl: async (milliseconds) => delays.push(milliseconds),
+    });
+    return { evidence, delays, observations: index };
+  };
+
+  const stable = await collect(Array.from({ length: 5 }, () => ({
+    category: "MISSING",
+  })));
+  assert.equal(stable.evidence.TEMPORAL, "STABLE");
+  assert.equal(stable.evidence.OPERATIONAL_TERMINAL, "MISSING");
+  assert.deepEqual(stable.delays, [250, 250, 250, 250]);
+  assert.equal(stable.observations, 5);
+
+  const converged = await collect([
+    { category: "MISSING" },
+    { category: "MISSING" },
+    { category: "EXACT", port: 41001 },
+    { category: "EXACT", port: 41001 },
+    { category: "EXACT", port: 41001 },
+  ]);
+  assert.equal(converged.evidence.TEMPORAL, "CONVERGED_TO_EXACT");
+  assert.equal(converged.evidence.PORT_MATCH, "YES");
+
+  const changed = await collect([
+    { category: "MISSING" },
+    { category: "MALFORMED" },
+    { category: "BINDING_MISSING" },
+    { category: "MISSING" },
+    { category: "MALFORMED" },
+  ], "SECONDARY");
+  assert.equal(changed.evidence.TEMPORAL, "CHANGED_NONEXACT");
+  assert.equal(changed.evidence.TARGET, "SECONDARY");
+
+  const unsafeCategories = [
+    "UNEXPECTED_PORT_PRESENT", "BINDING_SHAPE_INVALID", "BINDING_MULTIPLE",
+    "HOST_WILDCARD_OR_MISSING", "HOST_NONLOOPBACK",
+    "HOST_PORT_NONDECIMAL", "PORT_OUT_OF_RANGE",
+  ];
+  for (const category of unsafeCategories) {
+    assert.equal(isUnsafeInitialOperationalBinding({ category }), true);
+    const unsafe = await collect([{ category }]);
+    assert.equal(unsafe.evidence.TEMPORAL, "NOT_SAMPLED");
+    assert.deepEqual(unsafe.delays, []);
+    assert.equal(unsafe.observations, 1);
+  }
+});
+
+test("activation topology evidence is categorical, body-first, target-bound, and secret-safe", () => {
+  const evidence = {
+    ENGINE: "GE_28",
+    REQUEST: "EXACT_DYNAMIC",
+    OPERATIONAL_FIRST: "MISSING",
+    OPERATIONAL_TERMINAL: "EXACT",
+    PORT_QUERY: "EXACT",
+    TEMPORAL: "CONVERGED_TO_EXACT",
+    PORT_MATCH: "YES",
+    TARGET: "PRIMARY",
+    raw: "private-docker-output 127.0.0.1:41001 container-id secret",
+  };
+  const receipt = formatActivationRunnerFailure(activationRunnerFailure(
+    "TOPOLOGY_PORT_VERIFY", "BINDING_INVALID", "PRIMARY", "", evidence,
+  ));
+  const lines = receipt.split("\n");
+  assert.equal(
+    lines[0],
+    "ACTIVATION_RUNNER_FAILURE phase=TOPOLOGY_PORT_VERIFY category=BINDING_INVALID target=PRIMARY",
+  );
+  assert.equal(lines[1], formatActivationTopologyEvidence(evidence));
+  assert.match(lines[1], /^ACTIVATION_TOPOLOGY_EVIDENCE ENGINE=GE_28 /u);
+  assert.doesNotMatch(
+    receipt,
+    /private-docker-output|41001|container-id|secret|127\.0\.0\.1/u,
+  );
+  assert.throws(() => formatActivationTopologyEvidence({
+    ...evidence,
+    TEMPORAL: "ACCEPTED_AFTER_RETRY",
+  }));
+  assert.deepEqual(
+    Object.keys(ACTIVATION_TOPOLOGY_EVIDENCE_CONTRACT),
+    [
+      "ENGINE", "REQUEST", "OPERATIONAL_FIRST", "OPERATIONAL_TERMINAL",
+      "PORT_QUERY", "TEMPORAL", "PORT_MATCH", "TARGET",
+    ],
+  );
+});
+
+test("activation topology wiring keeps converged-to-exact evidence on the failure path", async () => {
+  let operationalReads = 0;
+  const delays = [];
+  const spawnImpl = fakeCommandSpawn((_command, args) => {
+    const format = args[args.indexOf("--format") + 1];
+    if (args[0] === "version") return "28.0.4\n";
+    if (args[0] === "network") return "bridge true\n";
+    if (args[0] === "port") return "127.0.0.1:41001\n";
+    if (format === "{{.Config.Image}}") return "postgres:17\n";
+    if (format === "{{json .NetworkSettings.Networks}}") {
+      return `${JSON.stringify({
+        [primaryNetwork]: { Aliases: [networkAlias] },
+      })}\n`;
+    }
+    if (format === "{{json .HostConfig.PortBindings}}") {
+      return `${JSON.stringify({
+        "5432/tcp": [{ HostIp: "127.0.0.1", HostPort: "" }],
+      })}\n`;
+    }
+    if (format === "{{json .NetworkSettings.Ports}}") {
+      operationalReads += 1;
+      return operationalReads === 1
+        ? "null\n"
+        : `${JSON.stringify({
+          "5432/tcp": [{ HostIp: "127.0.0.1", HostPort: "41001" }],
+        })}\n`;
+    }
+    throw new Error("unexpected diagnostic command");
+  });
+  await assert.rejects(
+    () => assertOwnedDockerTopology(
+      spawnImpl,
+      primaryContainer,
+      primaryNetwork,
+      "PRIMARY",
+      { delayImpl: async (milliseconds) => delays.push(milliseconds) },
+    ),
+    (error) => {
+      const receipt = formatActivationRunnerFailure(error);
+      assert.match(receipt, /OPERATIONAL_FIRST=MISSING/u);
+      assert.match(receipt, /OPERATIONAL_TERMINAL=EXACT/u);
+      assert.match(receipt, /TEMPORAL=CONVERGED_TO_EXACT/u);
+      assert.match(receipt, /PORT_MATCH=YES/u);
+      assert.doesNotMatch(receipt, /41001|127\.0\.0\.1/u);
+      return true;
+    },
+  );
+  assert.equal(operationalReads, 5);
+  assert.deepEqual(delays, [250, 250, 250, 250]);
 });
 
 test("activation summary failures distinguish missing malformed duplicate and count mismatch", () => {
@@ -475,6 +756,30 @@ function fakeSpawn({
       child.stdout.end();
       child.stderr.end();
       child.emit("close", code, signal);
+    });
+    return child;
+  };
+}
+
+function fakeCommandSpawn(handler) {
+  return (command, args) => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = (signal) => {
+      queueMicrotask(() => child.emit("close", null, signal));
+      return true;
+    };
+    queueMicrotask(() => {
+      try {
+        const stdout = handler(command, args);
+        if (stdout) child.stdout.write(stdout);
+        child.stdout.end();
+        child.stderr.end();
+        child.emit("close", 0, null);
+      } catch (error) {
+        child.emit("error", error);
+      }
     });
     return child;
   };

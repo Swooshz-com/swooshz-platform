@@ -62,6 +62,50 @@ const maxChildOutputBytes = 64 * 1024;
 const maxDiagnosticBytes = 4_000;
 const maxChildDurationMs = 180_000;
 
+export const ACTIVATION_TOPOLOGY_SAMPLE_TIMES_MS = Object.freeze([
+  0, 250, 500, 750, 1_000,
+]);
+const topologyCommandCategories = Object.freeze([
+  "COMMAND_SPAWN_FAILED", "COMMAND_NONZERO", "SIGNAL", "TIMEOUT",
+  "OUTPUT_OVERFLOW",
+]);
+export const ACTIVATION_TOPOLOGY_EVIDENCE_CONTRACT = Object.freeze({
+  ENGINE: Object.freeze([
+    "GE_28", "LT_28", "UNPARSEABLE", ...topologyCommandCategories,
+  ]),
+  REQUEST: Object.freeze([
+    "EXACT_DYNAMIC", "EXACT_ASSIGNED", "MISSING", "MALFORMED",
+    "EXPECTED_PORT_MISSING", "UNEXPECTED_PORT_PRESENT",
+    "BINDING_SHAPE_INVALID", "BINDING_MISSING", "BINDING_MULTIPLE",
+    "HOST_WILDCARD_OR_MISSING", "HOST_NONLOOPBACK",
+    "HOST_LOOPBACK_MISMATCH", "PORT_INVALID", ...topologyCommandCategories,
+  ]),
+  OPERATIONAL_FIRST: Object.freeze([
+    "EXACT", "MISSING", "MALFORMED", "EXPECTED_PORT_MISSING",
+    "UNEXPECTED_PORT_PRESENT", "BINDING_SHAPE_INVALID", "BINDING_MISSING",
+    "BINDING_MULTIPLE", "HOST_WILDCARD_OR_MISSING", "HOST_NONLOOPBACK",
+    "HOST_LOOPBACK_MISMATCH", "HOST_PORT_MISSING",
+    "HOST_PORT_NONDECIMAL", "PORT_OUT_OF_RANGE", ...topologyCommandCategories,
+  ]),
+  OPERATIONAL_TERMINAL: Object.freeze([
+    "EXACT", "MISSING", "MALFORMED", "EXPECTED_PORT_MISSING",
+    "UNEXPECTED_PORT_PRESENT", "BINDING_SHAPE_INVALID", "BINDING_MISSING",
+    "BINDING_MULTIPLE", "HOST_WILDCARD_OR_MISSING", "HOST_NONLOOPBACK",
+    "HOST_LOOPBACK_MISMATCH", "HOST_PORT_MISSING",
+    "HOST_PORT_NONDECIMAL", "PORT_OUT_OF_RANGE", ...topologyCommandCategories,
+  ]),
+  PORT_QUERY: Object.freeze([
+    "EXACT", "MISSING", "MALFORMED", "MULTIPLE",
+    "HOST_WILDCARD_OR_MISSING", "HOST_NONLOOPBACK",
+    "HOST_LOOPBACK_MISMATCH", "PORT_INVALID", ...topologyCommandCategories,
+  ]),
+  TEMPORAL: Object.freeze([
+    "NOT_SAMPLED", "STABLE", "CONVERGED_TO_EXACT", "CHANGED_NONEXACT",
+  ]),
+  PORT_MATCH: Object.freeze(["YES", "NO", "UNPROVABLE"]),
+  TARGET: Object.freeze(["PRIMARY", "SECONDARY"]),
+});
+
 export const ACTIVATION_RUNNER_FAILURE_CONTRACT = Object.freeze({
   BOOTSTRAP_PREFLIGHT: Object.freeze([
     "CALLER_INPUT_REJECTED",
@@ -118,6 +162,7 @@ export function activationRunnerFailure(
   category,
   target = "NONE",
   childDiagnostics = "",
+  activationTopologyEvidence = null,
 ) {
   if (
     !Object.hasOwn(ACTIVATION_RUNNER_FAILURE_CONTRACT, phase) ||
@@ -132,6 +177,7 @@ export function activationRunnerFailure(
   error.category = category;
   error.target = target;
   error.childDiagnostics = boundedChildDiagnostics(childDiagnostics);
+  error.activationTopologyEvidence = activationTopologyEvidence;
   error.diagnostics = formatActivationRunnerFailure(error);
   return error;
 }
@@ -141,9 +187,14 @@ export function formatActivationRunnerFailure(error) {
   return receipts.map((failure) => {
     const receipt = `ACTIVATION_RUNNER_FAILURE phase=${failure.phase} ` +
       `category=${failure.category} target=${failure.target}`;
-    return failure.childDiagnostics
+    const failureReceipt = failure.childDiagnostics
       ? `${receipt}\n${failure.childDiagnostics}`
       : receipt;
+    return failure.activationTopologyEvidence
+      ? `${failureReceipt}\n${formatActivationTopologyEvidence(
+        failure.activationTopologyEvidence,
+      )}`
+      : failureReceipt;
   }).join("\n");
 }
 
@@ -303,6 +354,7 @@ export async function run({
           ownedContainers[index],
           ownedNetworks[index],
           targetForIndex(index),
+          { delayImpl: implementations.topologyDelay ?? delay },
         ),
       );
     }
@@ -986,11 +1038,12 @@ async function assertFixtureIdentity(connectionString, operatorPassword, target)
   }
 }
 
-async function assertOwnedDockerTopology(
+export async function assertOwnedDockerTopology(
   spawnImpl,
   containerName,
   networkName,
   target,
+  { delayImpl = delay } = {},
 ) {
   const image = await topologyCommand(
     spawnImpl,
@@ -1044,41 +1097,278 @@ async function assertOwnedDockerTopology(
       "TOPOLOGY_PORT_VERIFY", "ALIAS_INVALID", target,
     );
   }
-  const binding = await topologyCommand(
-    spawnImpl,
-    [
-      "inspect", "--format", "{{json .NetworkSettings.Ports}}",
-      containerName,
-    ],
-    "BINDING_INVALID",
-    target,
+  const operationalArguments = [
+    "inspect", "--format", "{{json .NetworkSettings.Ports}}", containerName,
+  ];
+  const firstOperational = classifyOperationalBinding(
+    await topologyEvidenceCommand(spawnImpl, operationalArguments),
   );
-  let parsed;
-  try {
-    parsed = JSON.parse(binding.stdout);
-  } catch {
-    throw activationRunnerFailure(
-      "TOPOLOGY_PORT_VERIFY", "BINDING_INVALID", target,
-    );
+  if (firstOperational.category === "EXACT") return firstOperational.port;
+
+  const evidence = await collectActivationTopologyEvidence({
+    target,
+    firstOperational,
+    delayImpl,
+    observeEngine: async () => classifyEnginePosture(
+      await topologyEvidenceCommand(
+        spawnImpl,
+        ["version", "--format", "{{.Server.Version}}"],
+      ),
+    ),
+    observeRequest: async () => classifyRequestBinding(
+      await topologyEvidenceCommand(spawnImpl, [
+        "inspect", "--format", "{{json .HostConfig.PortBindings}}",
+        containerName,
+      ]),
+    ),
+    observeOperational: async () => classifyOperationalBinding(
+      await topologyEvidenceCommand(spawnImpl, operationalArguments),
+    ),
+    observePortQuery: async () => classifyPortQuery(
+      await topologyEvidenceCommand(
+        spawnImpl,
+        ["port", containerName, "5432/tcp"],
+      ),
+    ),
+  });
+  throw activationRunnerFailure(
+    "TOPOLOGY_PORT_VERIFY", "BINDING_INVALID", target, "", evidence,
+  );
+}
+
+export function classifyEnginePosture(observation) {
+  if (observation?.commandCategory) {
+    return { category: requireTopologyCommandCategory(observation.commandCategory) };
+  }
+  const value = typeof observation?.stdout === "string"
+    ? observation.stdout.trim()
+    : "";
+  const match = value.match(/^(\d+)\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?$/u);
+  if (!match) return { category: "UNPARSEABLE" };
+  return { category: Number(match[1]) >= 28 ? "GE_28" : "LT_28" };
+}
+
+export function classifyRequestBinding(observation) {
+  if (observation?.commandCategory) {
+    return { category: requireTopologyCommandCategory(observation.commandCategory) };
+  }
+  const parsed = parseTopologyJson(observation?.stdout);
+  if (parsed.category) return parsed;
+  const selected = classifyPortMap(parsed.value, { request: true });
+  if (selected.category) return selected;
+  if (selected.binding.HostPort === "") return { category: "EXACT_DYNAMIC" };
+  if (!isValidPortText(selected.binding.HostPort)) return { category: "PORT_INVALID" };
+  return { category: "EXACT_ASSIGNED", port: Number(selected.binding.HostPort) };
+}
+
+export function classifyOperationalBinding(observation) {
+  if (observation?.commandCategory) {
+    return { category: requireTopologyCommandCategory(observation.commandCategory) };
+  }
+  const parsed = parseTopologyJson(observation?.stdout);
+  if (parsed.category) return parsed;
+  const selected = classifyPortMap(parsed.value, { request: false });
+  if (selected.category) return selected;
+  if (!Object.hasOwn(selected.binding, "HostPort") || selected.binding.HostPort === "") {
+    return { category: "HOST_PORT_MISSING" };
   }
   if (
-    Object.keys(parsed).length !== 1 ||
-    !Array.isArray(parsed["5432/tcp"]) ||
-    parsed["5432/tcp"].length !== 1 ||
-    parsed["5432/tcp"][0].HostIp !== "127.0.0.1" ||
-    !/^[0-9]+$/u.test(parsed["5432/tcp"][0].HostPort)
+    typeof selected.binding.HostPort !== "string" ||
+    !/^[0-9]+$/u.test(selected.binding.HostPort)
   ) {
-    throw activationRunnerFailure(
-      "TOPOLOGY_PORT_VERIFY", "BINDING_INVALID", target,
-    );
+    return { category: "HOST_PORT_NONDECIMAL" };
   }
-  const port = Number(parsed["5432/tcp"][0].HostPort);
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-    throw activationRunnerFailure(
-      "TOPOLOGY_PORT_VERIFY", "PORT_INVALID", target,
-    );
+  if (!isValidPortText(selected.binding.HostPort)) {
+    return { category: "PORT_OUT_OF_RANGE" };
   }
-  return port;
+  return { category: "EXACT", port: Number(selected.binding.HostPort) };
+}
+
+export function classifyPortQuery(observation) {
+  if (observation?.commandCategory) {
+    return { category: requireTopologyCommandCategory(observation.commandCategory) };
+  }
+  if (typeof observation?.stdout !== "string" || !observation.stdout.trim()) {
+    return { category: "MISSING" };
+  }
+  const lines = observation.stdout.replace(/\r\n?/gu, "\n")
+    .split("\n").map((line) => line.trim()).filter(Boolean);
+  if (lines.length > 1) return { category: "MULTIPLE" };
+  const match = lines[0].match(/^(.*):([^:]*)$/u);
+  if (!match) return { category: "MALFORMED" };
+  const host = match[1].replace(/^\[(.*)\]$/u, "$1");
+  const hostCategory = classifyTopologyHost(host);
+  if (hostCategory) return { category: hostCategory };
+  if (!isValidPortText(match[2])) return { category: "PORT_INVALID" };
+  return { category: "EXACT", port: Number(match[2]) };
+}
+
+export function isUnsafeInitialOperationalBinding(classification) {
+  return [
+    "UNEXPECTED_PORT_PRESENT",
+    "BINDING_SHAPE_INVALID",
+    "BINDING_MULTIPLE",
+    "HOST_WILDCARD_OR_MISSING",
+    "HOST_NONLOOPBACK",
+    "HOST_PORT_NONDECIMAL",
+    "PORT_OUT_OF_RANGE",
+  ].includes(classification?.category);
+}
+
+export async function collectActivationTopologyEvidence({
+  target,
+  firstOperational,
+  observeEngine,
+  observeRequest,
+  observeOperational,
+  observePortQuery,
+  delayImpl = delay,
+}) {
+  if (!ACTIVATION_TOPOLOGY_EVIDENCE_CONTRACT.TARGET.includes(target)) {
+    throw new TypeError("Invalid activation topology target");
+  }
+  const [engine, request] = await Promise.all([
+    safeTopologyObservation(observeEngine, "UNPARSEABLE"),
+    safeTopologyObservation(observeRequest, "MALFORMED"),
+  ]);
+  const operational = [firstOperational];
+  if (!isUnsafeInitialOperationalBinding(firstOperational)) {
+    for (let index = 1; index < ACTIVATION_TOPOLOGY_SAMPLE_TIMES_MS.length; index += 1) {
+      await delayImpl(
+        ACTIVATION_TOPOLOGY_SAMPLE_TIMES_MS[index] -
+          ACTIVATION_TOPOLOGY_SAMPLE_TIMES_MS[index - 1],
+      );
+      operational.push(await safeTopologyObservation(
+        observeOperational,
+        "MALFORMED",
+      ));
+    }
+  }
+  const terminalOperational = operational.at(-1);
+  const portQuery = await safeTopologyObservation(observePortQuery, "MALFORMED");
+  const temporal = operational.length === 1
+    ? "NOT_SAMPLED"
+    : terminalOperational.category === "EXACT"
+      ? "CONVERGED_TO_EXACT"
+      : operational.every((value) =>
+        value.category === operational[0].category &&
+        value.port === operational[0].port)
+        ? "STABLE"
+        : "CHANGED_NONEXACT";
+  const portMatch = terminalOperational.category === "EXACT" &&
+      portQuery.category === "EXACT"
+    ? terminalOperational.port === portQuery.port ? "YES" : "NO"
+    : "UNPROVABLE";
+  return {
+    ENGINE: engine.category,
+    REQUEST: request.category,
+    OPERATIONAL_FIRST: firstOperational.category,
+    OPERATIONAL_TERMINAL: terminalOperational.category,
+    PORT_QUERY: portQuery.category,
+    TEMPORAL: temporal,
+    PORT_MATCH: portMatch,
+    TARGET: target,
+  };
+}
+
+export function formatActivationTopologyEvidence(evidence) {
+  for (const [field, allowed] of Object.entries(
+    ACTIVATION_TOPOLOGY_EVIDENCE_CONTRACT,
+  )) {
+    if (!allowed.includes(evidence?.[field])) {
+      throw new TypeError("Invalid activation topology evidence receipt");
+    }
+  }
+  return "ACTIVATION_TOPOLOGY_EVIDENCE " + Object.keys(
+    ACTIVATION_TOPOLOGY_EVIDENCE_CONTRACT,
+  ).map((field) => `${field}=${evidence[field]}`).join(" ");
+}
+
+function parseTopologyJson(stdout) {
+  if (typeof stdout !== "string" || !stdout.trim() || stdout.trim() === "null") {
+    return { category: "MISSING" };
+  }
+  try {
+    const value = JSON.parse(stdout);
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { category: "MALFORMED" };
+    }
+    return { value };
+  } catch {
+    return { category: "MALFORMED" };
+  }
+}
+
+function classifyPortMap(value, { request }) {
+  const keys = Object.keys(value);
+  if (keys.some((key) => key !== "5432/tcp")) {
+    return { category: "UNEXPECTED_PORT_PRESENT" };
+  }
+  if (!Object.hasOwn(value, "5432/tcp")) {
+    return { category: "EXPECTED_PORT_MISSING" };
+  }
+  const bindings = value["5432/tcp"];
+  if (!Array.isArray(bindings)) return { category: "BINDING_SHAPE_INVALID" };
+  if (bindings.length === 0) return { category: "BINDING_MISSING" };
+  if (bindings.length > 1) return { category: "BINDING_MULTIPLE" };
+  const binding = bindings[0];
+  if (!binding || typeof binding !== "object" || Array.isArray(binding)) {
+    return { category: "BINDING_SHAPE_INVALID" };
+  }
+  const hostCategory = classifyTopologyHost(binding.HostIp);
+  if (hostCategory) return { category: hostCategory };
+  if (request && !Object.hasOwn(binding, "HostPort")) {
+    return { category: "PORT_INVALID" };
+  }
+  return { binding };
+}
+
+function classifyTopologyHost(host) {
+  if (
+    typeof host !== "string" || !host || host === "0.0.0.0" || host === "::"
+  ) {
+    return "HOST_WILDCARD_OR_MISSING";
+  }
+  if (host === "127.0.0.1") return null;
+  if (/^127(?:\.\d{1,3}){3}$/u.test(host) || host === "::1") {
+    return "HOST_LOOPBACK_MISMATCH";
+  }
+  return "HOST_NONLOOPBACK";
+}
+
+function isValidPortText(value) {
+  if (typeof value !== "string" || !/^[0-9]+$/u.test(value)) return false;
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 1 && port <= 65_535;
+}
+
+function requireTopologyCommandCategory(category) {
+  if (!topologyCommandCategories.includes(category)) {
+    throw new TypeError("Invalid topology command category");
+  }
+  return category;
+}
+
+async function safeTopologyObservation(observe, fallbackCategory) {
+  try {
+    return await observe();
+  } catch {
+    return { category: fallbackCategory };
+  }
+}
+
+async function topologyEvidenceCommand(spawnImpl, args) {
+  let result;
+  try {
+    result = await runCommand("docker", args, { spawnImpl });
+  } catch {
+    return { commandCategory: "COMMAND_SPAWN_FAILED", stdout: "" };
+  }
+  const category = classifyCommandOutcome(result);
+  return {
+    commandCategory: category,
+    stdout: category ? "" : result.stdout,
+  };
 }
 
 async function topologyCommand(spawnImpl, args, category, target) {
