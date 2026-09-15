@@ -1443,7 +1443,7 @@ function hardWiredDefaultsCleanupActions(
 ) {
   return [
     () => pool.query(
-      `alter default privileges for role ${identifier(creator)} revoke execute on functions from public`,
+      `alter default privileges for role ${identifier(creator)} grant execute on functions to public`,
     ),
     () => pool.query(
       `alter default privileges for role ${identifier(creator)} revoke usage on sequences from ${identifier(runtime)}`,
@@ -1472,6 +1472,12 @@ async function assertHardWiredDefaultsResidueAbsent(
       not exists (
         select 1
         from pg_default_acl defaults
+        join pg_roles owner on owner.oid = defaults.defaclrole
+        where owner.rolname = $1
+      ) as creator_default_acl_absent,
+      not exists (
+        select 1
+        from pg_default_acl defaults
         cross join lateral aclexplode(defaults.defaclacl) expanded
         left join pg_roles grantee on grantee.oid = expanded.grantee
         where defaults.defaclrole in (
@@ -1485,6 +1491,7 @@ async function assertHardWiredDefaultsResidueAbsent(
   `, [creator, unrelatedProviderGrantee]);
   assert.deepEqual(result.rows, [{
     creator_create_absent: true,
+    creator_default_acl_absent: true,
     scoped_defaults_absent: true,
   }]);
 }
