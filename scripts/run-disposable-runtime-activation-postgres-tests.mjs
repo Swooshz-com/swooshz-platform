@@ -127,8 +127,8 @@ export const ACTIVATION_RUNNER_FAILURE_CONTRACT = Object.freeze({
     "CONTAINER_ID_MISSING",
   ]),
   TOPOLOGY_PORT_VERIFY: Object.freeze([
-    "IMAGE_INVALID", "NETWORK_INVALID", "ALIAS_INVALID", "BINDING_INVALID",
-    "PORT_INVALID", "PORTS_NOT_DISTINCT",
+    "ENGINE_INVALID", "IMAGE_INVALID", "NETWORK_INVALID", "ALIAS_INVALID",
+    "BINDING_INVALID", "PORT_INVALID", "PORTS_NOT_DISTINCT",
   ]),
   POSTGRES_READINESS: Object.freeze(["READINESS_TIMEOUT"]),
   FIXTURE_PROVISION: Object.freeze([
@@ -550,7 +550,7 @@ export function assertNoCallerSuppliedActivationInputs(env) {
 
 export function ownedNetworkCreateArguments(networkName) {
   if (!ownedNetworks.includes(networkName)) throw new Error();
-  return ["network", "create", "--driver", "bridge", "--internal", networkName];
+  return ["network", "create", "--driver", "bridge", networkName];
 }
 
 export function ownedContainerDockerArguments(containerName, networkName) {
@@ -1045,6 +1045,17 @@ export async function assertOwnedDockerTopology(
   target,
   { delayImpl = delay } = {},
 ) {
+  const engine = classifyEnginePosture(await topologyCommand(
+    spawnImpl,
+    ["version", "--format", "{{.Server.Version}}"],
+    "ENGINE_INVALID",
+    target,
+  ));
+  if (engine.category !== "GE_28") {
+    throw activationRunnerFailure(
+      "TOPOLOGY_PORT_VERIFY", "ENGINE_INVALID", target,
+    );
+  }
   const image = await topologyCommand(
     spawnImpl,
     ["inspect", "--format", "{{.Config.Image}}", containerName],
@@ -1059,13 +1070,22 @@ export async function assertOwnedDockerTopology(
   const network = await topologyCommand(
     spawnImpl,
     [
-      "network", "inspect", "--format", "{{.Driver}} {{.Internal}}",
+      "network", "inspect", "--format", "{{json .}}",
       networkName,
     ],
     "NETWORK_INVALID",
     target,
   );
-  if (network.stdout.trim() !== "bridge true") {
+  const networkPosture = parseTopologyJson(network.stdout);
+  if (
+    networkPosture.category ||
+    networkPosture.value.Driver !== "bridge" ||
+    networkPosture.value.Internal !== false ||
+    !networkPosture.value.Options ||
+    typeof networkPosture.value.Options !== "object" ||
+    Array.isArray(networkPosture.value.Options) ||
+    Object.keys(networkPosture.value.Options).length !== 0
+  ) {
     throw activationRunnerFailure(
       "TOPOLOGY_PORT_VERIFY", "NETWORK_INVALID", target,
     );
@@ -1097,30 +1117,48 @@ export async function assertOwnedDockerTopology(
       "TOPOLOGY_PORT_VERIFY", "ALIAS_INVALID", target,
     );
   }
+  const request = classifyRequestBinding(await topologyCommand(
+    spawnImpl,
+    [
+      "inspect", "--format", "{{json .HostConfig.PortBindings}}",
+      containerName,
+    ],
+    "BINDING_INVALID",
+    target,
+  ));
+  if (request.category !== "EXACT_DYNAMIC") {
+    throw activationRunnerFailure(
+      "TOPOLOGY_PORT_VERIFY", "BINDING_INVALID", target,
+    );
+  }
   const operationalArguments = [
     "inspect", "--format", "{{json .NetworkSettings.Ports}}", containerName,
   ];
   const firstOperational = classifyOperationalBinding(
     await topologyEvidenceCommand(spawnImpl, operationalArguments),
   );
-  if (firstOperational.category === "EXACT") return firstOperational.port;
+  if (firstOperational.category === "EXACT") {
+    const portQuery = classifyPortQuery(await topologyEvidenceCommand(
+      spawnImpl,
+      ["port", containerName, "5432/tcp"],
+    ));
+    if (
+      portQuery.category !== "EXACT" ||
+      portQuery.port !== firstOperational.port
+    ) {
+      throw activationRunnerFailure(
+        "TOPOLOGY_PORT_VERIFY", "PORT_INVALID", target,
+      );
+    }
+    return firstOperational.port;
+  }
 
   const evidence = await collectActivationTopologyEvidence({
     target,
     firstOperational,
     delayImpl,
-    observeEngine: async () => classifyEnginePosture(
-      await topologyEvidenceCommand(
-        spawnImpl,
-        ["version", "--format", "{{.Server.Version}}"],
-      ),
-    ),
-    observeRequest: async () => classifyRequestBinding(
-      await topologyEvidenceCommand(spawnImpl, [
-        "inspect", "--format", "{{json .HostConfig.PortBindings}}",
-        containerName,
-      ]),
-    ),
+    observeEngine: async () => engine,
+    observeRequest: async () => request,
     observeOperational: async () => classifyOperationalBinding(
       await topologyEvidenceCommand(spawnImpl, operationalArguments),
     ),

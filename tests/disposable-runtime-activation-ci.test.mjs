@@ -59,12 +59,12 @@ test("activation runner rejects every caller-owned activation input", () => {
   }
 });
 
-test("activation runner owns exactly two internal networks and two password-safe PostgreSQL 17 containers", () => {
+test("activation runner owns exactly two ordinary bridges and two password-safe PostgreSQL 17 containers", () => {
   assert.deepEqual(ownedNetworkCreateArguments(primaryNetwork), [
-    "network", "create", "--driver", "bridge", "--internal", primaryNetwork,
+    "network", "create", "--driver", "bridge", primaryNetwork,
   ]);
   assert.deepEqual(ownedNetworkCreateArguments(secondaryNetwork), [
-    "network", "create", "--driver", "bridge", "--internal", secondaryNetwork,
+    "network", "create", "--driver", "bridge", secondaryNetwork,
   ]);
 
   const primary = ownedContainerDockerArguments(
@@ -294,6 +294,73 @@ test("activation topology classifiers cover the closed engine, binding, and quer
   }
 });
 
+test("activation topology accepts only GE_28 ordinary bridges and exact first loopback ports", async () => {
+  const primaryCalls = [];
+  const primaryPort = await assertOwnedDockerTopology(
+    activationTopologySpawn({
+      networkName: primaryNetwork,
+      assignedPort: 41001,
+      onCommand: (args) => primaryCalls.push(args),
+    }),
+    primaryContainer,
+    primaryNetwork,
+    "PRIMARY",
+  );
+  const secondaryPort = await assertOwnedDockerTopology(
+    activationTopologySpawn({
+      networkName: secondaryNetwork,
+      assignedPort: 41002,
+    }),
+    secondaryContainer,
+    secondaryNetwork,
+    "SECONDARY",
+  );
+  assert.equal(primaryPort, 41001);
+  assert.equal(secondaryPort, 41002);
+  assert.notEqual(primaryPort, secondaryPort);
+  assert.equal(
+    primaryCalls.filter((args) =>
+      args.includes("{{json .NetworkSettings.Ports}}")).length,
+    1,
+  );
+  assert.equal(
+    primaryCalls.filter((args) => args[0] === "port").length,
+    1,
+  );
+});
+
+test("activation topology rejects unproved engine, bridge, request, and port state", async () => {
+  const cases = [
+    ["ENGINE_INVALID", { version: "27.5.1" }],
+    ["ENGINE_INVALID", { version: "unknown" }],
+    ["NETWORK_INVALID", { network: { Driver: "bridge", Internal: true, Options: {} } }],
+    ["NETWORK_INVALID", { network: { Driver: "overlay", Internal: false, Options: {} } }],
+    ["NETWORK_INVALID", {
+      network: {
+        Driver: "bridge",
+        Internal: false,
+        Options: { "com.docker.network.bridge.gateway_mode_ipv4": "routed" },
+      },
+    }],
+    ["NETWORK_INVALID", { network: { Driver: "bridge", Internal: false } }],
+    ["NETWORK_INVALID", { networkOutput: "{" }],
+    ["BINDING_INVALID", { requestPort: "41001" }],
+    ["PORT_INVALID", { assignedPort: 41001, queriedPort: 41002 }],
+  ];
+  for (const [category, options] of cases) {
+    await assert.rejects(
+      () => assertOwnedDockerTopology(
+        activationTopologySpawn(options),
+        primaryContainer,
+        primaryNetwork,
+        "PRIMARY",
+      ),
+      (error) => error.phase === "TOPOLOGY_PORT_VERIFY" &&
+        error.category === category && error.target === "PRIMARY",
+    );
+  }
+});
+
 test("activation topology sampling is bounded and never accepts a rejected first observation", async () => {
   assert.deepEqual(ACTIVATION_TOPOLOGY_SAMPLE_TIMES_MS, [0, 250, 500, 750, 1000]);
   const base = {
@@ -401,7 +468,11 @@ test("activation topology wiring keeps converged-to-exact evidence on the failur
   const spawnImpl = fakeCommandSpawn((_command, args) => {
     const format = args[args.indexOf("--format") + 1];
     if (args[0] === "version") return "28.0.4\n";
-    if (args[0] === "network") return "bridge true\n";
+    if (args[0] === "network") {
+      return `${JSON.stringify({
+        Driver: "bridge", Internal: false, Options: {},
+      })}\n`;
+    }
     if (args[0] === "port") return "127.0.0.1:41001\n";
     if (format === "{{.Config.Image}}") return "postgres:17\n";
     if (format === "{{json .NetworkSettings.Networks}}") {
@@ -783,4 +854,45 @@ function fakeCommandSpawn(handler) {
     });
     return child;
   };
+}
+
+function activationTopologySpawn({
+  version = "28.0.4",
+  network = { Driver: "bridge", Internal: false, Options: {} },
+  networkOutput,
+  networkName = primaryNetwork,
+  assignedPort = 41001,
+  queriedPort = assignedPort,
+  requestPort = "",
+  onCommand = () => {},
+} = {}) {
+  return fakeCommandSpawn((_command, args) => {
+    onCommand(args);
+    const formatIndex = args.indexOf("--format");
+    const format = formatIndex >= 0 ? args[formatIndex + 1] : null;
+    if (args[0] === "version") return `${version}\n`;
+    if (args[0] === "network") {
+      return `${networkOutput ?? JSON.stringify(network)}\n`;
+    }
+    if (args[0] === "port") return `127.0.0.1:${queriedPort}\n`;
+    if (format === "{{.Config.Image}}") return "postgres:17\n";
+    if (format === "{{json .NetworkSettings.Networks}}") {
+      return `${JSON.stringify({
+        [networkName]: { Aliases: [networkAlias] },
+      })}\n`;
+    }
+    if (format === "{{json .HostConfig.PortBindings}}") {
+      return `${JSON.stringify({
+        "5432/tcp": [{ HostIp: "127.0.0.1", HostPort: requestPort }],
+      })}\n`;
+    }
+    if (format === "{{json .NetworkSettings.Ports}}") {
+      return `${JSON.stringify({
+        "5432/tcp": [{
+          HostIp: "127.0.0.1", HostPort: String(assignedPort),
+        }],
+      })}\n`;
+    }
+    throw new Error("unexpected topology command");
+  });
 }
