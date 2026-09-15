@@ -61,6 +61,37 @@ const expectedTestCount = 45;
 const maxChildOutputBytes = 64 * 1024;
 const maxDiagnosticBytes = 4_000;
 const maxChildDurationMs = 180_000;
+export const ACTIVATION_READINESS_MAX_ATTEMPTS = 240;
+export const ACTIVATION_READINESS_CONNECTION_TIMEOUT_MS = 1_000;
+export const ACTIVATION_READINESS_ERROR_BACKOFF_MS = 500;
+
+const readinessProbeCategories = Object.freeze([
+  "CONNECTION_REFUSED",
+  "CONNECTION_TIMEOUT",
+  "NETWORK_UNREACHABLE",
+  "AUTH_REJECTED",
+  "SERVER_STARTING",
+  "PROTOCOL_OR_SERVER_ERROR",
+  "QUERY_FAILED",
+  "IDENTITY_OR_VERSION_MISMATCH",
+  "UNKNOWN",
+]);
+export const ACTIVATION_READINESS_EVIDENCE_CONTRACT = Object.freeze({
+  OUTCOME: Object.freeze(["READY", "TIMEOUT"]),
+  AGGREGATE_PROBE: readinessProbeCategories,
+  LAST_PROBE: readinessProbeCategories,
+  CONTAINER_STATE: Object.freeze([
+    "RUNNING", "RESTARTING", "EXITED", "DEAD", "OOM_KILLED", "UNKNOWN",
+  ]),
+  INTERNAL_PG_ISREADY: Object.freeze([
+    "ACCEPTING", "REJECTING", "NO_RESPONSE", "COMMAND_FAILED",
+  ]),
+  HOST_TCP: Object.freeze([
+    "CONNECTED", "REFUSED", "TIMEOUT", "NETWORK_ERROR",
+  ]),
+  TOPOLOGY_BINDING: Object.freeze(["EXACT", "CHANGED", "UNPROVEN"]),
+  TARGET: Object.freeze(["PRIMARY", "SECONDARY"]),
+});
 
 export const ACTIVATION_TOPOLOGY_SAMPLE_TIMES_MS = Object.freeze([
   0, 250, 500, 750, 1_000,
@@ -163,11 +194,14 @@ export function activationRunnerFailure(
   target = "NONE",
   childDiagnostics = "",
   activationTopologyEvidence = null,
+  activationReadinessEvidence = [],
 ) {
   if (
     !Object.hasOwn(ACTIVATION_RUNNER_FAILURE_CONTRACT, phase) ||
     !ACTIVATION_RUNNER_FAILURE_CONTRACT[phase].includes(category) ||
-    !activationTargets.includes(target)
+    !activationTargets.includes(target) ||
+    !Array.isArray(activationReadinessEvidence) ||
+    activationReadinessEvidence.length > 2
   ) {
     throw new TypeError("Invalid activation runner failure receipt");
   }
@@ -178,6 +212,7 @@ export function activationRunnerFailure(
   error.target = target;
   error.childDiagnostics = boundedChildDiagnostics(childDiagnostics);
   error.activationTopologyEvidence = activationTopologyEvidence;
+  error.activationReadinessEvidence = activationReadinessEvidence;
   error.diagnostics = formatActivationRunnerFailure(error);
   return error;
 }
@@ -190,11 +225,16 @@ export function formatActivationRunnerFailure(error) {
     const failureReceipt = failure.childDiagnostics
       ? `${receipt}\n${failure.childDiagnostics}`
       : receipt;
-    return failure.activationTopologyEvidence
+    const topologyReceipt = failure.activationTopologyEvidence
       ? `${failureReceipt}\n${formatActivationTopologyEvidence(
         failure.activationTopologyEvidence,
       )}`
       : failureReceipt;
+    return failure.activationReadinessEvidence.length > 0
+      ? `${topologyReceipt}\n${failure.activationReadinessEvidence.map(
+        formatActivationReadinessEvidence,
+      ).join("\n")}`
+      : topologyReceipt;
   }).join("\n");
 }
 
@@ -366,12 +406,17 @@ export async function run({
 
     const operatorUrls = resources.ports.map((port) =>
       buildLoopbackUrl("platform_app", port));
-    await Promise.all(operatorUrls.map((url, index) => withActivationFailure(
-      "POSTGRES_READINESS", "READINESS_TIMEOUT", targetForIndex(index),
-      () => (implementations.waitForPostgres ?? waitForPostgres)(
-        url, resources.operatorPassword,
-      ),
-    )));
+    await executeActivationReadinessChecks({
+      operatorUrls,
+      operatorPassword: resources.operatorPassword,
+      ports: resources.ports,
+      spawnImpl,
+      waitForPostgresImpl:
+        implementations.waitForPostgres ?? waitForPostgresReadiness,
+      collectTerminalEvidenceImpl:
+        implementations.collectReadinessEvidence ??
+          collectActivationReadinessEvidence,
+    });
     await Promise.all(operatorUrls.map((url, index) => withActivationFailure(
       "FIXTURE_PROVISION", "GRANT_CONTRACT_FAILED", targetForIndex(index),
       () => (implementations.provisionFixture ?? provisionFixture)(
@@ -1426,26 +1471,340 @@ async function topologyCommand(spawnImpl, args, category, target) {
   }
 }
 
-async function waitForPostgres(connectionString, operatorPassword) {
-  for (let attempt = 0; attempt < 240; attempt += 1) {
-    const pool = new Pool({
+export async function waitForPostgresReadiness(
+  connectionString,
+  operatorPassword,
+  { PoolImpl = Pool, delayImpl = delay } = {},
+) {
+  const probeCategories = [];
+  for (
+    let attempt = 0;
+    attempt < ACTIVATION_READINESS_MAX_ATTEMPTS;
+    attempt += 1
+  ) {
+    const pool = new PoolImpl({
       connectionString,
       password: operatorPassword,
-      connectionTimeoutMillis: 1_000,
+      connectionTimeoutMillis: ACTIVATION_READINESS_CONNECTION_TIMEOUT_MS,
       max: 1,
     });
+    let poolEndFailed = false;
+    let ready = false;
     try {
       const result = await pool.query(
         "select current_user = 'platform_app' as admitted, current_setting('server_version_num')::integer / 10000 = 17 as postgres17",
       );
-      if (result.rows[0]?.admitted && result.rows[0]?.postgres17) return;
-    } catch {
-      await delay(500);
+      ready = Boolean(
+        result.rows[0]?.admitted && result.rows[0]?.postgres17,
+      );
+      if (!ready) probeCategories.push("IDENTITY_OR_VERSION_MISMATCH");
+    } catch (error) {
+      probeCategories.push(classifyReadinessProbeError(error));
+      await delayImpl(ACTIVATION_READINESS_ERROR_BACKOFF_MS);
     } finally {
-      await pool.end();
+      try {
+        await pool.end();
+      } catch {
+        poolEndFailed = true;
+      }
+    }
+    if (poolEndFailed) {
+      probeCategories.push("UNKNOWN");
+      return readinessProbeResult("TIMEOUT", attempt + 1, probeCategories);
+    }
+    if (ready) {
+      return readinessProbeResult("READY", attempt + 1, probeCategories);
     }
   }
-  throw new Error();
+  return readinessProbeResult(
+    "TIMEOUT",
+    ACTIVATION_READINESS_MAX_ATTEMPTS,
+    probeCategories,
+  );
+}
+
+function readinessProbeResult(outcome, attempts, categories) {
+  return {
+    outcome,
+    attempts,
+    aggregateProbe: aggregateReadinessProbeCategory(categories),
+    lastProbe: categories.at(-1) ?? "UNKNOWN",
+  };
+}
+
+export function classifyReadinessProbeError(error) {
+  if (error?.message === "Connection terminated due to connection timeout") {
+    return "CONNECTION_TIMEOUT";
+  }
+  const code = typeof error?.code === "string" ? error.code.toUpperCase() : "";
+  if (code === "ECONNREFUSED") return "CONNECTION_REFUSED";
+  if (["ETIMEDOUT", "ETIME"].includes(code)) return "CONNECTION_TIMEOUT";
+  if (["ENETUNREACH", "EHOSTUNREACH", "EAI_AGAIN"].includes(code)) {
+    return "NETWORK_UNREACHABLE";
+  }
+  if (["28P01", "28000"].includes(code)) return "AUTH_REJECTED";
+  if (code === "57P03") return "SERVER_STARTING";
+  if (
+    code.startsWith("08") ||
+    ["ECONNRESET", "EPIPE", "57P01", "57P02"].includes(code)
+  ) {
+    return "PROTOCOL_OR_SERVER_ERROR";
+  }
+  if (/^[0-9A-Z]{5}$/u.test(code)) return "QUERY_FAILED";
+  return "UNKNOWN";
+}
+
+export function aggregateReadinessProbeCategory(categories) {
+  const counts = new Map(readinessProbeCategories.map((category) => [category, 0]));
+  for (const category of categories) {
+    if (counts.has(category)) counts.set(category, counts.get(category) + 1);
+    else counts.set("UNKNOWN", counts.get("UNKNOWN") + 1);
+  }
+  let selected = "UNKNOWN";
+  let selectedCount = 0;
+  for (const category of readinessProbeCategories) {
+    if (counts.get(category) > selectedCount) {
+      selected = category;
+      selectedCount = counts.get(category);
+    }
+  }
+  return selected;
+}
+
+export async function executeActivationReadinessChecks({
+  operatorUrls,
+  operatorPassword,
+  ports,
+  spawnImpl,
+  waitForPostgresImpl = waitForPostgresReadiness,
+  collectTerminalEvidenceImpl = collectActivationReadinessEvidence,
+}) {
+  const settled = await Promise.allSettled(operatorUrls.map((url) =>
+    waitForPostgresImpl(url, operatorPassword)));
+  const probeResults = settled.map((result) => {
+    if (result.status === "fulfilled") {
+      const value = result.value;
+      if (
+        ["READY", "TIMEOUT"].includes(value?.outcome) &&
+        Number.isInteger(value?.attempts) &&
+        value.attempts >= 1 &&
+        value.attempts <= ACTIVATION_READINESS_MAX_ATTEMPTS &&
+        readinessProbeCategories.includes(value.aggregateProbe) &&
+        readinessProbeCategories.includes(value.lastProbe)
+      ) {
+        return value;
+      }
+    }
+    return readinessProbeResult("TIMEOUT", 1, ["UNKNOWN"]);
+  });
+  const timedOutIndexes = probeResults.flatMap((result, index) =>
+    result.outcome === "TIMEOUT" ? [index] : []);
+  if (timedOutIndexes.length === 0) return probeResults;
+
+  const evidence = await Promise.all(probeResults.map(async (probe, index) => {
+    try {
+      return await collectTerminalEvidenceImpl({
+        probe,
+        target: targetForIndex(index),
+        containerName: ownedContainers[index],
+        port: ports[index],
+        spawnImpl,
+      });
+    } catch {
+      return readinessEvidenceWithTerminalState(probe, targetForIndex(index), {
+        containerState: "UNKNOWN",
+        internalPgIsReady: "COMMAND_FAILED",
+        hostTcp: "NETWORK_ERROR",
+        topologyBinding: "UNPROVEN",
+      });
+    }
+  }));
+  const failureTarget = timedOutIndexes.length === 2
+    ? "BOTH"
+    : targetForIndex(timedOutIndexes[0]);
+  throw activationRunnerFailure(
+    "POSTGRES_READINESS",
+    "READINESS_TIMEOUT",
+    failureTarget,
+    "",
+    null,
+    evidence,
+  );
+}
+
+export async function collectActivationReadinessEvidence({
+  probe,
+  target,
+  containerName,
+  port,
+  spawnImpl,
+}) {
+  const [containerState, internalPgIsReady, hostTcp, topologyBinding] =
+    await Promise.all([
+      observeReadinessContainerState(spawnImpl, containerName),
+      observeInternalPgIsReady(spawnImpl, containerName),
+      observeHostTcp(port),
+      observeTerminalTopologyBinding(spawnImpl, containerName, port),
+    ]);
+  return readinessEvidenceWithTerminalState(probe, target, {
+    containerState,
+    internalPgIsReady,
+    hostTcp,
+    topologyBinding,
+  });
+}
+
+function readinessEvidenceWithTerminalState(probe, target, terminal) {
+  return {
+    OUTCOME: probe.outcome,
+    ATTEMPTS: probe.attempts,
+    AGGREGATE_PROBE: probe.aggregateProbe,
+    LAST_PROBE: probe.lastProbe,
+    CONTAINER_STATE: terminal.containerState,
+    INTERNAL_PG_ISREADY: terminal.internalPgIsReady,
+    HOST_TCP: terminal.hostTcp,
+    TOPOLOGY_BINDING: terminal.topologyBinding,
+    TARGET: target,
+  };
+}
+
+export function formatActivationReadinessEvidence(evidence) {
+  if (
+    !Number.isInteger(evidence?.ATTEMPTS) ||
+    evidence.ATTEMPTS < 1 ||
+    evidence.ATTEMPTS > ACTIVATION_READINESS_MAX_ATTEMPTS
+  ) {
+    throw new TypeError("Invalid activation readiness evidence receipt");
+  }
+  for (const [field, allowed] of Object.entries(
+    ACTIVATION_READINESS_EVIDENCE_CONTRACT,
+  )) {
+    if (!allowed.includes(evidence?.[field])) {
+      throw new TypeError("Invalid activation readiness evidence receipt");
+    }
+  }
+  const fields = [
+    "OUTCOME", "ATTEMPTS", "AGGREGATE_PROBE", "LAST_PROBE",
+    "CONTAINER_STATE", "INTERNAL_PG_ISREADY", "HOST_TCP",
+    "TOPOLOGY_BINDING", "TARGET",
+  ];
+  return "ACTIVATION_READINESS_EVIDENCE " + fields.map(
+    (field) => `${field}=${evidence[field]}`,
+  ).join(" ");
+}
+
+async function observeReadinessContainerState(spawnImpl, containerName) {
+  const observation = await topologyEvidenceCommand(spawnImpl, [
+    "inspect", "--format", "{{json .State}}", containerName,
+  ]);
+  if (observation.commandCategory) return "UNKNOWN";
+  try {
+    return classifyReadinessContainerState(JSON.parse(observation.stdout));
+  } catch {
+    return "UNKNOWN";
+  }
+}
+
+export function classifyReadinessContainerState(state) {
+  if (!state || typeof state !== "object" || Array.isArray(state)) return "UNKNOWN";
+  if (state.OOMKilled === true) return "OOM_KILLED";
+  const status = typeof state.Status === "string" ? state.Status.toLowerCase() : "";
+  if (status === "running") return "RUNNING";
+  if (status === "restarting") return "RESTARTING";
+  if (status === "exited") return "EXITED";
+  if (status === "dead") return "DEAD";
+  return "UNKNOWN";
+}
+
+async function observeInternalPgIsReady(spawnImpl, containerName) {
+  let result;
+  try {
+    result = await runCommand("docker", [
+      "exec", containerName, "pg_isready", "-U", "platform_app",
+      "-d", databaseName, "-t", "1",
+    ], { spawnImpl, timeoutMs: 5_000 });
+  } catch {
+    return "COMMAND_FAILED";
+  }
+  return classifyInternalPgIsReady(result);
+}
+
+export function classifyInternalPgIsReady(result) {
+  if (result?.timedOut || result?.outputOverflow || result?.signal) {
+    return "COMMAND_FAILED";
+  }
+  if (result?.code === 0) return "ACCEPTING";
+  if (result?.code === 1) return "REJECTING";
+  if (result?.code === 2) return "NO_RESPONSE";
+  return "COMMAND_FAILED";
+}
+
+async function observeHostTcp(port) {
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    return "NETWORK_ERROR";
+  }
+  return new Promise((resolvePromise) => {
+    const socket = net.createConnection({ host: "127.0.0.1", port });
+    let settled = false;
+    const finish = (category) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolvePromise(category);
+    };
+    socket.setTimeout(ACTIVATION_READINESS_CONNECTION_TIMEOUT_MS, () =>
+      finish("TIMEOUT"));
+    socket.once("connect", () => finish("CONNECTED"));
+    socket.once("error", (error) => finish(classifyHostTcpError(error)));
+  });
+}
+
+export function classifyHostTcpError(error) {
+  if (error?.code === "ECONNREFUSED") return "REFUSED";
+  if (error?.code === "ETIMEDOUT") return "TIMEOUT";
+  return "NETWORK_ERROR";
+}
+
+async function observeTerminalTopologyBinding(spawnImpl, containerName, port) {
+  const [request, operational, portQuery] = await Promise.all([
+    topologyEvidenceCommand(spawnImpl, [
+      "inspect", "--format", "{{json .HostConfig.PortBindings}}", containerName,
+    ]).then(classifyRequestBinding),
+    topologyEvidenceCommand(spawnImpl, [
+      "inspect", "--format", "{{json .NetworkSettings.Ports}}", containerName,
+    ]).then(classifyOperationalBinding),
+    topologyEvidenceCommand(spawnImpl, [
+      "port", containerName, "5432/tcp",
+    ]).then(classifyPortQuery),
+  ]);
+  return classifyTerminalTopologyBinding({
+    request,
+    operational,
+    portQuery,
+    expectedPort: port,
+  });
+}
+
+export function classifyTerminalTopologyBinding({
+  request,
+  operational,
+  portQuery,
+  expectedPort,
+}) {
+  if (
+    request?.category === "EXACT_DYNAMIC" &&
+    operational?.category === "EXACT" &&
+    portQuery?.category === "EXACT" &&
+    operational.port === expectedPort &&
+    portQuery.port === expectedPort
+  ) {
+    return "EXACT";
+  }
+  const unproven = [request, operational, portQuery].some((value) =>
+    !value?.category ||
+    topologyCommandCategories.includes(value.category) ||
+    ["MISSING", "MALFORMED"].includes(value.category));
+  return unproven ? "UNPROVEN" : "CHANGED";
 }
 
 export async function runActivationChild(

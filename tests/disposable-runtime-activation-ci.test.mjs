@@ -5,6 +5,10 @@ import test from "node:test";
 import { PassThrough } from "node:stream";
 
 import {
+  ACTIVATION_READINESS_CONNECTION_TIMEOUT_MS,
+  ACTIVATION_READINESS_ERROR_BACKOFF_MS,
+  ACTIVATION_READINESS_EVIDENCE_CONTRACT,
+  ACTIVATION_READINESS_MAX_ATTEMPTS,
   ACTIVATION_RUNNER_FAILURE_CONTRACT,
   ACTIVATION_TOPOLOGY_EVIDENCE_CONTRACT,
   ACTIVATION_TOPOLOGY_SAMPLE_TIMES_MS,
@@ -15,15 +19,23 @@ import {
   assertNetworksAbsent,
   assertNoCallerSuppliedActivationInputs,
   assertOwnedDockerTopology,
+  aggregateReadinessProbeCategory,
   classifyActivationTestSummary,
   classifyCommandOutcome,
   classifyEnginePosture,
   classifyOperationalBinding,
   classifyPortQuery,
+  classifyHostTcpError,
+  classifyInternalPgIsReady,
+  classifyReadinessContainerState,
+  classifyReadinessProbeError,
   classifyRequestBinding,
+  classifyTerminalTopologyBinding,
   collectActivationTopologyEvidence,
   createActivationMigrationPrefix,
   executeActivationCleanupActions,
+  executeActivationReadinessChecks,
+  formatActivationReadinessEvidence,
   formatActivationRunnerFailure,
   formatActivationTopologyEvidence,
   isUnsafeInitialOperationalBinding,
@@ -32,6 +44,7 @@ import {
   parseActivationTestSummary,
   runActivationChild,
   sanitizeActivationChildDiagnostics,
+  waitForPostgresReadiness,
 } from "../scripts/run-disposable-runtime-activation-postgres-tests.mjs";
 import {
   executeDisposableCleanupActions,
@@ -160,6 +173,262 @@ test("activation failure contract emits every closed phase and category for ever
   assert.throws(() => activationRunnerFailure(
     "NETWORK_CREATE", "COMMAND_NONZERO", "DYNAMIC_TARGET",
   ));
+  assert.throws(() => activationRunnerFailure(
+    "POSTGRES_READINESS",
+    "READINESS_TIMEOUT",
+    "BOTH",
+    "",
+    null,
+    [{}, {}, {}],
+  ));
+});
+
+test("activation readiness evidence binds every closed category without raw fields", () => {
+  const base = {
+    OUTCOME: "TIMEOUT",
+    ATTEMPTS: ACTIVATION_READINESS_MAX_ATTEMPTS,
+    AGGREGATE_PROBE: "CONNECTION_REFUSED",
+    LAST_PROBE: "CONNECTION_REFUSED",
+    CONTAINER_STATE: "RUNNING",
+    INTERNAL_PG_ISREADY: "ACCEPTING",
+    HOST_TCP: "CONNECTED",
+    TOPOLOGY_BINDING: "EXACT",
+    TARGET: "PRIMARY",
+  };
+  for (const [field, categories] of Object.entries(
+    ACTIVATION_READINESS_EVIDENCE_CONTRACT,
+  )) {
+    for (const category of categories) {
+      const receipt = formatActivationReadinessEvidence({
+        ...base,
+        [field]: category,
+        raw: "postgresql://private@127.0.0.1:54321/private container-id",
+      });
+      assert.match(receipt, new RegExp(`${field}=${category}(?: |$)`, "u"));
+      assert.doesNotMatch(
+        receipt,
+        /postgresql:\/\/|127\.0\.0\.1|54321|private|container-id/u,
+      );
+      assert.ok(Buffer.byteLength(receipt, "utf8") < 512);
+    }
+  }
+  assert.throws(() => formatActivationReadinessEvidence({
+    ...base,
+    ATTEMPTS: ACTIVATION_READINESS_MAX_ATTEMPTS + 1,
+  }));
+  assert.throws(() => formatActivationReadinessEvidence({
+    ...base,
+    HOST_TCP: "RAW_NETWORK_ERROR",
+  }));
+});
+
+test("activation readiness classifiers cover every causal evidence category", () => {
+  const errorCases = [
+    ["ECONNREFUSED", "CONNECTION_REFUSED"],
+    ["ETIMEDOUT", "CONNECTION_TIMEOUT"],
+    [undefined, "CONNECTION_TIMEOUT", "Connection terminated due to connection timeout"],
+    ["ENETUNREACH", "NETWORK_UNREACHABLE"],
+    ["28P01", "AUTH_REJECTED"],
+    ["57P03", "SERVER_STARTING"],
+    ["08006", "PROTOCOL_OR_SERVER_ERROR"],
+    ["42P01", "QUERY_FAILED"],
+    ["not-a-code", "UNKNOWN"],
+  ];
+  for (const [code, category, message] of errorCases) {
+    assert.equal(classifyReadinessProbeError({ code, message }), category);
+  }
+  assert.equal(
+    aggregateReadinessProbeCategory([
+      "CONNECTION_REFUSED", "AUTH_REJECTED", "AUTH_REJECTED",
+    ]),
+    "AUTH_REJECTED",
+  );
+  assert.equal(aggregateReadinessProbeCategory([]), "UNKNOWN");
+
+  const containerCases = [
+    [{ Status: "running" }, "RUNNING"],
+    [{ Status: "restarting" }, "RESTARTING"],
+    [{ Status: "exited" }, "EXITED"],
+    [{ Status: "dead" }, "DEAD"],
+    [{ Status: "exited", OOMKilled: true }, "OOM_KILLED"],
+    [{ Status: "paused" }, "UNKNOWN"],
+  ];
+  for (const [state, category] of containerCases) {
+    assert.equal(classifyReadinessContainerState(state), category);
+  }
+  assert.equal(classifyInternalPgIsReady({ code: 0 }), "ACCEPTING");
+  assert.equal(classifyInternalPgIsReady({ code: 1 }), "REJECTING");
+  assert.equal(classifyInternalPgIsReady({ code: 2 }), "NO_RESPONSE");
+  assert.equal(classifyInternalPgIsReady({ code: 3 }), "COMMAND_FAILED");
+  assert.equal(classifyHostTcpError({ code: "ECONNREFUSED" }), "REFUSED");
+  assert.equal(classifyHostTcpError({ code: "ETIMEDOUT" }), "TIMEOUT");
+  assert.equal(classifyHostTcpError({ code: "ENETUNREACH" }), "NETWORK_ERROR");
+
+  const exact = {
+    request: { category: "EXACT_DYNAMIC" },
+    operational: { category: "EXACT", port: 41001 },
+    portQuery: { category: "EXACT", port: 41001 },
+    expectedPort: 41001,
+  };
+  assert.equal(classifyTerminalTopologyBinding(exact), "EXACT");
+  assert.equal(classifyTerminalTopologyBinding({
+    ...exact,
+    operational: { category: "EXACT", port: 41002 },
+  }), "CHANGED");
+  assert.equal(classifyTerminalTopologyBinding({
+    ...exact,
+    operational: { category: "COMMAND_NONZERO" },
+  }), "UNPROVEN");
+});
+
+test("activation readiness keeps the exact predicate and fixed retry budget", async () => {
+  assert.equal(ACTIVATION_READINESS_MAX_ATTEMPTS, 240);
+  assert.equal(ACTIVATION_READINESS_CONNECTION_TIMEOUT_MS, 1_000);
+  assert.equal(ACTIVATION_READINESS_ERROR_BACKOFF_MS, 500);
+
+  const poolOptions = [];
+  class MismatchPool {
+    constructor(options) { poolOptions.push(options); }
+    async query() { return { rows: [{ admitted: true, postgres17: false }] }; }
+    async end() {}
+  }
+  const mismatch = await waitForPostgresReadiness(
+    "private-connection-string",
+    "private-password",
+    { PoolImpl: MismatchPool, delayImpl: async () => assert.fail("no delay") },
+  );
+  assert.deepEqual(mismatch, {
+    outcome: "TIMEOUT",
+    attempts: 240,
+    aggregateProbe: "IDENTITY_OR_VERSION_MISMATCH",
+    lastProbe: "IDENTITY_OR_VERSION_MISMATCH",
+  });
+  assert.equal(poolOptions.length, 240);
+  assert.equal(
+    poolOptions.every((options) =>
+      options.connectionTimeoutMillis === 1_000 &&
+      options.max === 1 &&
+      options.password === "private-password"),
+    true,
+  );
+
+  const readyQueries = [];
+  class ReadyPool {
+    async query(statement) {
+      readyQueries.push(statement);
+      return { rows: [{ admitted: true, postgres17: true }] };
+    }
+    async end() {}
+  }
+  assert.deepEqual(await waitForPostgresReadiness("private", "private", {
+    PoolImpl: ReadyPool,
+  }), {
+    outcome: "READY",
+    attempts: 1,
+    aggregateProbe: "UNKNOWN",
+    lastProbe: "UNKNOWN",
+  });
+  assert.deepEqual(readyQueries, [
+    "select current_user = 'platform_app' as admitted, current_setting('server_version_num')::integer / 10000 = 17 as postgres17",
+  ]);
+
+  class ReadyWithEndFailurePool extends ReadyPool {
+    async end() { throw new Error("private pool end failure"); }
+  }
+  assert.deepEqual(await waitForPostgresReadiness("private", "private", {
+    PoolImpl: ReadyWithEndFailurePool,
+  }), {
+    outcome: "TIMEOUT",
+    attempts: 1,
+    aggregateProbe: "UNKNOWN",
+    lastProbe: "UNKNOWN",
+  });
+
+  const delays = [];
+  class RefusedPool {
+    async query() { throw Object.assign(new Error(), { code: "ECONNREFUSED" }); }
+    async end() {}
+  }
+  const refused = await waitForPostgresReadiness("private", "private", {
+    PoolImpl: RefusedPool,
+    delayImpl: async (milliseconds) => delays.push(milliseconds),
+  });
+  assert.equal(refused.attempts, 240);
+  assert.equal(refused.aggregateProbe, "CONNECTION_REFUSED");
+  assert.equal(delays.length, 240);
+  assert.equal(delays.every((milliseconds) => milliseconds === 500), true);
+});
+
+test("activation readiness settles both targets once and attributes terminal evidence independently", async () => {
+  const waits = [];
+  const collections = [];
+  const evidenceFor = ({ probe, target }) => ({
+    OUTCOME: probe.outcome,
+    ATTEMPTS: probe.attempts,
+    AGGREGATE_PROBE: probe.aggregateProbe,
+    LAST_PROBE: probe.lastProbe,
+    CONTAINER_STATE: target === "PRIMARY" ? "EXITED" : "RUNNING",
+    INTERNAL_PG_ISREADY: target === "PRIMARY" ? "NO_RESPONSE" : "ACCEPTING",
+    HOST_TCP: target === "PRIMARY" ? "REFUSED" : "CONNECTED",
+    TOPOLOGY_BINDING: target === "PRIMARY" ? "UNPROVEN" : "EXACT",
+    TARGET: target,
+  });
+  await assert.rejects(
+    () => executeActivationReadinessChecks({
+      operatorUrls: ["primary-private", "secondary-private"],
+      operatorPassword: "private-password",
+      ports: [41001, 41002],
+      spawnImpl: () => assert.fail("not used"),
+      waitForPostgresImpl: async (url) => {
+        waits.push(url);
+        if (url.startsWith("primary")) throw new Error("private primary error");
+        await Promise.resolve();
+        return {
+          outcome: "READY",
+          attempts: 3,
+          aggregateProbe: "SERVER_STARTING",
+          lastProbe: "SERVER_STARTING",
+        };
+      },
+      collectTerminalEvidenceImpl: async (input) => {
+        collections.push(input.target);
+        return evidenceFor(input);
+      },
+    }),
+    (error) => {
+      const receipt = formatActivationRunnerFailure(error);
+      assert.match(receipt, /category=READINESS_TIMEOUT target=PRIMARY/u);
+      assert.match(receipt, /OUTCOME=TIMEOUT ATTEMPTS=1 .*TARGET=PRIMARY/u);
+      assert.match(receipt, /OUTCOME=READY ATTEMPTS=3 .*TARGET=SECONDARY/u);
+      assert.doesNotMatch(
+        receipt,
+        /private|primary-private|secondary-private|41001|41002/u,
+      );
+      return true;
+    },
+  );
+  assert.deepEqual(waits.sort(), ["primary-private", "secondary-private"]);
+  assert.deepEqual(collections, ["PRIMARY", "SECONDARY"]);
+
+  let acceptanceCollections = 0;
+  const accepted = await executeActivationReadinessChecks({
+    operatorUrls: ["primary-private", "secondary-private"],
+    operatorPassword: "private-password",
+    ports: [41001, 41002],
+    spawnImpl: () => assert.fail("not used"),
+    waitForPostgresImpl: async () => ({
+      outcome: "READY",
+      attempts: 1,
+      aggregateProbe: "UNKNOWN",
+      lastProbe: "UNKNOWN",
+    }),
+    collectTerminalEvidenceImpl: async () => {
+      acceptanceCollections += 1;
+      return null;
+    },
+  });
+  assert.equal(accepted.length, 2);
+  assert.equal(acceptanceCollections, 0);
 });
 
 test("activation command outcomes have deterministic closed categories", () => {
@@ -771,6 +1040,13 @@ test("activation runner source launches only the contracted child and clears cre
   assert.match(source, /RUNTIME_ACTIVATION_TEST_RUNTIME_PASSWORD/u);
   assert.match(source, /clearCredentialState/u);
   assert.match(source, /assertExactDockerResourcesAbsent/u);
+  assert.match(source, /await executeActivationReadinessChecks\(\{/u);
+  assert.match(source, /Promise\.allSettled\(operatorUrls\.map/u);
+  assert.equal(
+    source.match(/await executeActivationReadinessChecks\(\{/gu)?.length,
+    1,
+  );
+  assert.doesNotMatch(source, /ACCEPTED_AFTER_RETRY|acceptanceRetry/iu);
   assert.doesNotMatch(source, /docker push|deploy|DROP OWNED|REASSIGN OWNED|CASCADE/iu);
 });
 
