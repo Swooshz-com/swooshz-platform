@@ -3,10 +3,101 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  cleanupRoleNames,
+  executeDisposableCleanupActions,
   formatDisposableRuntimeChildDiagnostics,
   formatDisposableRuntimeFailureReceipt,
+  ownedContainerDockerArguments,
   parseDisposableRuntimeTestSummary,
 } from "../scripts/run-disposable-runtime-postgres-tests.mjs";
+
+test("owned PostgreSQL 17 construction fixes distinct bootstrap identities", async () => {
+  const args = ownedContainerDockerArguments();
+  const mount = args.at(-2);
+  assert.deepEqual(args, [
+    "run",
+    "--detach",
+    "--name",
+    "codex-platform127-pg17",
+    "--publish",
+    "127.0.0.1::5432",
+    "--env",
+    "POSTGRES_USER=cloud_admin",
+    "--env",
+    "POSTGRES_DB=runtime_posture_test",
+    "--env",
+    "POSTGRES_HOST_AUTH_METHOD=trust",
+    "--mount",
+    mount,
+    "postgres:17",
+  ]);
+  assert.equal(args.filter((value) => value === "--mount").length, 1);
+  assert.match(
+    mount,
+    /^type=bind,source=.+runtime-postgres-identities\.sql,target=\/docker-entrypoint-initdb\.d\/runtime-postgres-identities\.sql,readonly$/u,
+  );
+  assert.doesNotMatch(args.join(" "), /provider_admin|password|postgresql?:\/\//iu);
+
+  const initSql = await readFile(
+    "tests/support/runtime-postgres-identities.sql",
+    "utf8",
+  );
+  assert.match(
+    initSql,
+    /^CREATE ROLE postgres WITH SUPERUSER LOGIN NOINHERIT;\r?\n?$/u,
+  );
+  assert.equal(initSql.trimEnd(), "CREATE ROLE postgres WITH SUPERUSER LOGIN NOINHERIT;");
+});
+
+test("cleanup role selection excludes bootstrap identities and sorts deterministically", () => {
+  assert.deepEqual(
+    cleanupRoleNames(
+      new Set(["platform_runtime", "cloud_admin", "platform_app"]),
+      ["postgres", "rt_z", "platform_app", "rt_a"],
+      new Set(["postgres", "cloud_admin"]),
+    ),
+    ["platform_app", "platform_runtime", "rt_a", "rt_z"],
+  );
+});
+
+test("cleanup continues and preserves body/error ordering", async () => {
+  const bodyError = new Error("body");
+  const firstCleanupError = new Error("cleanup-one");
+  const secondCleanupError = new Error("cleanup-two");
+  const events = [];
+  await assert.rejects(
+    () => executeDisposableCleanupActions([
+      async () => {
+        events.push("first");
+        throw firstCleanupError;
+      },
+      async () => events.push("second"),
+      async () => {
+        events.push("third");
+        throw secondCleanupError;
+      },
+    ], bodyError),
+    (error) => {
+      assert.equal(error instanceof AggregateError, true);
+      assert.deepEqual(error.errors, [
+        bodyError,
+        firstCleanupError,
+        secondCleanupError,
+      ]);
+      return true;
+    },
+  );
+  assert.deepEqual(events, ["first", "second", "third"]);
+
+  await assert.rejects(
+    () => executeDisposableCleanupActions([async () => {}], bodyError),
+    (error) => error === bodyError,
+  );
+  await assert.rejects(
+    () => executeDisposableCleanupActions([async () => { throw firstCleanupError; }]),
+    (error) => error === firstCleanupError,
+  );
+});
 
 test("summary parser accepts Node 22 TAP and Node 24 spec markers", () => {
   const expected = {

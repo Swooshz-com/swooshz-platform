@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { constants } from "node:fs";
+import { access } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -24,6 +26,9 @@ import { runDisposableRuntimeLifecycle } from "./disposable-runtime-lifecycle.mj
 const databaseName = "runtime_posture_test";
 const secondaryDatabaseName = "runtime_posture_test_secondary";
 const ownedContainerName = "codex-platform127-pg17";
+const runtimePostgresIdentitiesSql = fileURLToPath(
+  new URL("../tests/support/runtime-postgres-identities.sql", import.meta.url),
+);
 const maxChildOutputBytes = 64 * 1024;
 const maxChildDurationMs = 120_000;
 const maxChildDiagnosticBytes = 4_000;
@@ -113,6 +118,7 @@ export async function run({
         databaseUrls: new Map(),
         ownedDatabases: new Set(),
         ownedRoles: new Set(["platform_app", "platform_runtime"]),
+        bootstrapRoles: new Set(["postgres", "cloud_admin"]),
         ownedSchemas: new Set(["drizzle"]),
         ownedObjects: new Set([
           "drizzle.__drizzle_migrations",
@@ -845,41 +851,26 @@ function markChildFailure(resources, category) {
 }
 
 async function cleanupRunnerResources(resources, spawnImpl) {
-  let firstError = null;
-  try {
-    if (resources.constructionAuthority) {
-      invalidateDisposablePostgresConstructionAdmission(
-        resources.constructionAuthority,
-      );
-    }
-  } catch {
-    firstError ??= new Error();
-  }
-  try {
-    if (resources.configuredAdmission) {
-      invalidateDisposablePostgresAdmission(resources.configuredAdmission);
-    }
-  } catch {
-    firstError ??= new Error();
-  }
-  try {
-    await terminateOwnedChild(resources);
-  } catch {
-    firstError ??= new Error();
-  }
-  try {
-    await cleanupFixtureDatabases(resources);
-  } catch {
-    firstError ??= new Error();
-  }
+  const actions = [
+    async () => {
+      if (resources.constructionAuthority) {
+        invalidateDisposablePostgresConstructionAdmission(
+          resources.constructionAuthority,
+        );
+      }
+    },
+    async () => {
+      if (resources.configuredAdmission) {
+        invalidateDisposablePostgresAdmission(resources.configuredAdmission);
+      }
+    },
+    () => terminateOwnedChild(resources),
+    () => cleanupFixtureDatabases(resources),
+  ];
   if (resources.containerStartAttempted) {
-    try {
-      await reconcileOwnedContainerRemoval(spawnImpl, resources);
-    } catch {
-      firstError ??= new Error();
-    }
+    actions.push(() => reconcileOwnedContainerRemoval(spawnImpl, resources));
   }
-  if (firstError) throw firstError;
+  await executeDisposableCleanupActions(actions);
 }
 
 async function cleanupFixtureDatabases(resources) {
@@ -887,44 +878,115 @@ async function cleanupFixtureDatabases(resources) {
     return;
   }
   const rootUrl = buildUrl("postgres", "postgres", resources.observedPort);
+  const cleanupActions = [];
   for (const database of resources.ownedDatabases) {
     const pool = new Pool({
       connectionString: buildUrl("postgres", database, resources.observedPort),
       max: 1,
     });
-    try {
-      for (const tableName of ["users", ...contractTableNames()]) {
+    let admitted = false;
+    cleanupActions.push(async () => {
+      await assertFreshPostgresIdentity(
+        pool,
+        database,
+        resources.bootstrapRoles,
+        false,
+      );
+      admitted = true;
+    });
+    for (const tableName of ["users", ...contractTableNames()]) {
+      cleanupActions.push(async () => {
+        if (!admitted) throw new Error();
         await pool.query(
           `drop table if exists public.${quoteIdentifier(tableName)} cascade`,
         );
-      }
-      await pool.query("drop schema if exists drizzle cascade");
-    } finally {
-      await pool.end();
+      });
     }
+    cleanupActions.push(async () => {
+      if (!admitted) throw new Error();
+      await pool.query("drop schema if exists drizzle cascade");
+    });
+    cleanupActions.push(() => pool.end());
   }
   const rootPool = new Pool({ connectionString: rootUrl, max: 1 });
-  try {
-    for (const database of resources.ownedDatabases) {
+  let rootAdmitted = false;
+  let roleNames = [];
+  cleanupActions.push(async () => {
+    await assertFreshPostgresIdentity(
+      rootPool,
+      "postgres",
+      resources.bootstrapRoles,
+      false,
+    );
+    rootAdmitted = true;
+  });
+  for (const database of resources.ownedDatabases) {
+    cleanupActions.push(async () => {
+      if (!rootAdmitted) throw new Error();
       await rootPool.query(
         `drop database if exists ${quoteIdentifier(database)} with (force)`,
       );
-    }
+    });
+  }
+  cleanupActions.push(async () => {
+    if (!rootAdmitted) throw new Error();
     const roleResult = await rootPool.query(
-      "select rolname from pg_roles where rolname <> 'postgres' and rolname not like 'pg_%'",
+      "select rolname from pg_roles where rolname not like 'pg_%' order by rolname",
     );
-    const roleNames = new Set(resources.ownedRoles);
-    for (const row of roleResult.rows) {
-      if (typeof row.rolname !== "string" || !safeIdentifier.test(row.rolname)) {
-        throw new Error();
-      }
-      roleNames.add(row.rolname);
+    roleNames = cleanupRoleNames(
+      resources.ownedRoles,
+      roleResult.rows.map((row) => row.rolname),
+      resources.bootstrapRoles,
+    );
+    await executeDisposableCleanupActions(
+      roleNames.map((roleName) => () =>
+        rootPool.query(`drop role if exists ${quoteIdentifier(roleName)}`)),
+    );
+  });
+  cleanupActions.push(() => rootPool.end());
+  await executeDisposableCleanupActions(cleanupActions);
+}
+
+export function cleanupRoleNames(
+  ownedRoles,
+  discoveredRoles,
+  bootstrapRoles = new Set(["postgres", "cloud_admin"]),
+) {
+  if (!(bootstrapRoles instanceof Set)) throw new Error();
+  const names = new Set([...ownedRoles, ...discoveredRoles]);
+  if (bootstrapRoles.size !== 2) throw new Error();
+  for (const bootstrapRole of ["postgres", "cloud_admin"]) {
+    if (!bootstrapRoles.has(bootstrapRole)) throw new Error();
+  }
+  const result = [];
+  for (const roleName of names) {
+    if (typeof roleName !== "string" || !safeIdentifier.test(roleName)) {
+      throw new Error();
     }
-    for (const roleName of roleNames) {
-      await rootPool.query(`drop role if exists ${quoteIdentifier(roleName)}`);
+    if (!bootstrapRoles.has(roleName)) result.push(roleName);
+  }
+  return result.sort();
+}
+
+export async function executeDisposableCleanupActions(actions, bodyError = null) {
+  if (!Array.isArray(actions) || actions.some((action) => typeof action !== "function")) {
+    throw new Error();
+  }
+  const cleanupErrors = [];
+  for (const action of actions) {
+    try {
+      await action();
+    } catch (error) {
+      cleanupErrors.push(error);
     }
-  } finally {
-    await rootPool.end();
+  }
+  if (bodyError && cleanupErrors.length === 0) throw bodyError;
+  if (!bodyError && cleanupErrors.length === 1) throw cleanupErrors[0];
+  if (bodyError || cleanupErrors.length > 0) {
+    throw new AggregateError(
+      [...(bodyError ? [bodyError] : []), ...cleanupErrors],
+      "Disposable cleanup failed.",
+    );
   }
 }
 
@@ -989,7 +1051,12 @@ async function terminateOwnedChild(resources) {
 }
 
 async function startOwnedContainer(spawnImpl) {
-  await runCommand(spawnImpl, "docker", [
+  await access(runtimePostgresIdentitiesSql, constants.R_OK);
+  await runCommand(spawnImpl, "docker", ownedContainerDockerArguments());
+}
+
+export function ownedContainerDockerArguments() {
+  return [
     "run",
     "--detach",
     "--name",
@@ -997,11 +1064,15 @@ async function startOwnedContainer(spawnImpl) {
     "--publish",
     "127.0.0.1::5432",
     "--env",
+    "POSTGRES_USER=cloud_admin",
+    "--env",
     "POSTGRES_DB=runtime_posture_test",
     "--env",
     "POSTGRES_HOST_AUTH_METHOD=trust",
+    "--mount",
+    `type=bind,source=${runtimePostgresIdentitiesSql},target=/docker-entrypoint-initdb.d/runtime-postgres-identities.sql,readonly`,
     "postgres:17",
-  ]);
+  ];
 }
 
 export function parsePublishedBinding(output) {
@@ -1123,7 +1194,12 @@ async function waitForPostgres(connectionString) {
   for (let attempt = 0; attempt < 240; attempt += 1) {
     const pool = new Pool({ connectionString, max: 1, connectionTimeoutMillis: 1_000 });
     try {
-      await pool.query("select 1");
+      await assertFreshPostgresIdentity(
+        pool,
+        databaseName,
+        new Set(["postgres", "cloud_admin"]),
+        true,
+      );
       return;
     } catch {
       await delay(500);
@@ -1132,6 +1208,56 @@ async function waitForPostgres(connectionString) {
     }
   }
   throw new Error();
+}
+
+async function assertFreshPostgresIdentity(
+  pool,
+  expectedDatabase,
+  bootstrapRoles,
+  requireBootstrapOwner,
+) {
+  const client = await pool.connect();
+  try {
+    const result = await client.query(`
+      select
+        current_database() = $1 as database_matches,
+        session_user = 'postgres' as session_user_matches,
+        current_user = 'postgres' as current_user_matches,
+        current_setting('server_version_num')::integer / 10000 = 17 as postgres17,
+        (select rolsuper and rolcanlogin and not rolinherit
+           from pg_roles where rolname = 'postgres') as postgres_identity_matches,
+        (select rolsuper and rolcanlogin
+           from pg_roles where rolname = 'cloud_admin') as cloud_admin_identity_matches,
+        (select p.oid <> c.oid
+           from pg_roles p cross join pg_roles c
+          where p.rolname = 'postgres' and c.rolname = 'cloud_admin') as identities_are_distinct,
+        case when not $2 or $1 = 'postgres' then true else
+          (select owner.rolname = 'cloud_admin'
+             from pg_database database
+             join pg_roles owner on owner.oid = database.datdba
+            where database.datname = $1)
+        end as bootstrap_owner_matches
+    `, [expectedDatabase, requireBootstrapOwner]);
+    if (!bootstrapRoles.has("postgres") || !bootstrapRoles.has("cloud_admin")) {
+      throw new Error();
+    }
+    const [row] = result.rows;
+    if (
+      !row ||
+      !row.database_matches ||
+      !row.session_user_matches ||
+      !row.current_user_matches ||
+      !row.postgres17 ||
+      !row.postgres_identity_matches ||
+      !row.cloud_admin_identity_matches ||
+      !row.identities_are_distinct ||
+      !row.bootstrap_owner_matches
+    ) {
+      throw new Error();
+    }
+  } finally {
+    client.release(true);
+  }
 }
 
 async function assertExactContainerAbsent(spawnImpl) {
