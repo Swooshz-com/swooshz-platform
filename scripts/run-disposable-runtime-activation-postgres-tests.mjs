@@ -29,10 +29,6 @@ import {
   admitDisposablePostgresFixtures,
   invalidateDisposablePostgresAdmission,
 } from "../tests/support/disposable-postgres-fixture.mjs";
-import {
-  executeDisposableCleanupActions,
-} from "./run-disposable-runtime-postgres-tests.mjs";
-
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const databaseName = "runtime_posture_test";
 const networkAlias =
@@ -66,15 +62,139 @@ const maxChildOutputBytes = 64 * 1024;
 const maxDiagnosticBytes = 4_000;
 const maxChildDurationMs = 180_000;
 
+export const ACTIVATION_RUNNER_FAILURE_CONTRACT = Object.freeze({
+  BOOTSTRAP_PREFLIGHT: Object.freeze([
+    "CALLER_INPUT_REJECTED",
+    "IDENTITY_SOURCE_UNAVAILABLE",
+    "OWNED_RESOURCE_PREEXISTS",
+  ]),
+  MIGRATION_PREFIX: Object.freeze([
+    "TEMP_ROOT_CREATE_FAILED",
+    "JOURNAL_READ_OR_PARSE_FAILED",
+    "PREFIX_SET_INVALID",
+    "MIGRATION_COPY_OR_WRITE_FAILED",
+    "PREFIX_VERIFY_FAILED",
+  ]),
+  NETWORK_CREATE: Object.freeze([
+    "SPAWN_FAILED", "COMMAND_NONZERO", "SIGNAL", "TIMEOUT", "OUTPUT_OVERFLOW",
+  ]),
+  CONTAINER_START: Object.freeze([
+    "SPAWN_FAILED", "COMMAND_NONZERO", "SIGNAL", "TIMEOUT", "OUTPUT_OVERFLOW",
+    "CONTAINER_ID_MISSING",
+  ]),
+  TOPOLOGY_PORT_VERIFY: Object.freeze([
+    "IMAGE_INVALID", "NETWORK_INVALID", "ALIAS_INVALID", "BINDING_INVALID",
+    "PORT_INVALID", "PORTS_NOT_DISTINCT",
+  ]),
+  POSTGRES_READINESS: Object.freeze(["READINESS_TIMEOUT"]),
+  FIXTURE_PROVISION: Object.freeze([
+    "MIGRATION_FAILED", "ROLE_SETUP_FAILED", "CREATOR_EDGE_FAILED",
+    "GRANT_CONTRACT_FAILED",
+  ]),
+  FIXTURE_IDENTITY: Object.freeze([
+    "QUERY_FAILED", "IDENTITY_INVALID", "SYSTEM_IDENTIFIER_INVALID",
+    "SYSTEM_IDENTIFIERS_NOT_DISTINCT",
+  ]),
+  DISPOSABLE_ADMISSION: Object.freeze(["ADMISSION_FAILED"]),
+  ACTIVATION_CHILD: Object.freeze([
+    "SPAWN_FAILED", "EXIT_NONZERO", "SIGNAL", "TIMEOUT", "STDOUT_OVERFLOW",
+    "STDERR_OVERFLOW", "SUMMARY_MISSING", "SUMMARY_MALFORMED",
+    "SUMMARY_DUPLICATE", "SUMMARY_COUNT_MISMATCH",
+  ]),
+  CLEANUP: Object.freeze([
+    "CHILD_TERMINATION_FAILED", "ADMISSION_INVALIDATION_FAILED",
+    "CONTAINER_REMOVAL_FAILED", "NETWORK_REMOVAL_FAILED",
+    "MIGRATION_PREFIX_REMOVAL_FAILED", "CREDENTIAL_CLEAR_FAILED",
+  ]),
+  FINAL_ABSENCE: Object.freeze([
+    "CONTAINER_PRESENT_OR_UNPROVEN", "NETWORK_PRESENT_OR_UNPROVEN",
+    "TEMP_PATH_PRESENT_OR_UNPROVEN", "PORT_OPEN_OR_UNPROVEN",
+  ]),
+});
+const activationTargets = Object.freeze(["NONE", "PRIMARY", "SECONDARY", "BOTH"]);
+
+export function activationRunnerFailure(
+  phase,
+  category,
+  target = "NONE",
+  childDiagnostics = "",
+) {
+  if (
+    !Object.hasOwn(ACTIVATION_RUNNER_FAILURE_CONTRACT, phase) ||
+    !ACTIVATION_RUNNER_FAILURE_CONTRACT[phase].includes(category) ||
+    !activationTargets.includes(target)
+  ) {
+    throw new TypeError("Invalid activation runner failure receipt");
+  }
+  const error = new Error();
+  error.activationRunnerFailure = true;
+  error.phase = phase;
+  error.category = category;
+  error.target = target;
+  error.childDiagnostics = boundedChildDiagnostics(childDiagnostics);
+  error.diagnostics = formatActivationRunnerFailure(error);
+  return error;
+}
+
+export function formatActivationRunnerFailure(error) {
+  const receipts = flattenActivationFailures(error);
+  return receipts.map((failure) => {
+    const receipt = `ACTIVATION_RUNNER_FAILURE phase=${failure.phase} ` +
+      `category=${failure.category} target=${failure.target}`;
+    return failure.childDiagnostics
+      ? `${receipt}\n${failure.childDiagnostics}`
+      : receipt;
+  }).join("\n");
+}
+
+export async function executeActivationCleanupActions(actions, bodyError = null) {
+  const failures = bodyError ? flattenActivationFailures(bodyError) : [];
+  for (const action of actions) {
+    try {
+      await action.run();
+    } catch {
+      failures.push(activationRunnerFailure(
+        action.phase,
+        action.category,
+        action.target ?? "NONE",
+      ));
+    }
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures);
+}
+
+function flattenActivationFailures(error) {
+  if (error instanceof AggregateError) {
+    return error.errors.flatMap((value) => flattenActivationFailures(value));
+  }
+  if (error?.activationRunnerFailure === true) return [error];
+  return [activationRunnerFailure("BOOTSTRAP_PREFLIGHT", "IDENTITY_SOURCE_UNAVAILABLE")];
+}
+
+function boundedChildDiagnostics(value) {
+  if (typeof value !== "string" || value.length === 0) return "";
+  return Buffer.from(value, "utf8")
+    .subarray(0, maxDiagnosticBytes)
+    .toString("utf8");
+}
+
+async function withActivationFailure(phase, category, target, operation) {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error?.activationRunnerFailure === true) throw error;
+    throw activationRunnerFailure(phase, category, target);
+  }
+}
+
 if (
   process.argv[1] &&
   resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
   run().catch((error) => {
     process.stderr.write("Disposable activation PostgreSQL 17 runner failed.\n");
-    const diagnostics = typeof error?.diagnostics === "string"
-      ? error.diagnostics
-      : "";
+    const diagnostics = formatActivationRunnerFailure(error);
     if (diagnostics) process.stderr.write(`${diagnostics}\n`);
     process.exitCode = 1;
   });
@@ -84,9 +204,21 @@ export async function run({
   env = process.env,
   spawnImpl = spawn,
   assertPortAbsentImpl = assertPortAbsent,
+  implementations = {},
 } = {}) {
-  assertNoCallerSuppliedActivationInputs(env);
-  await access(identitiesSql);
+  try {
+    assertNoCallerSuppliedActivationInputs(env);
+  } catch {
+    throw activationRunnerFailure(
+      "BOOTSTRAP_PREFLIGHT", "CALLER_INPUT_REJECTED", "NONE",
+    );
+  }
+  await withActivationFailure(
+    "BOOTSTRAP_PREFLIGHT",
+    "IDENTITY_SOURCE_UNAVAILABLE",
+    "NONE",
+    () => (implementations.access ?? access)(identitiesSql),
+  );
 
   const operatorPasswordBuffer = randomBytes(32);
   const runtimePasswordBuffer = randomBytes(32);
@@ -108,14 +240,28 @@ export async function run({
   let summary = null;
 
   try {
-    await assertExactDockerResourcesAbsent();
-    resources.migrationPrefix = await createActivationMigrationPrefix();
+    try {
+      await (implementations.assertInitialAbsence ?? assertExactDockerResourcesAbsent)();
+    } catch {
+      throw activationRunnerFailure(
+        "BOOTSTRAP_PREFLIGHT", "OWNED_RESOURCE_PREEXISTS", "BOTH",
+      );
+    }
+    resources.migrationPrefix = await withActivationFailure(
+      "MIGRATION_PREFIX", "PREFIX_VERIFY_FAILED", "NONE",
+      () => (
+        implementations.createMigrationPrefix ?? createActivationMigrationPrefix
+      )(),
+    );
 
     for (const networkName of ownedNetworks) {
       await requireSuccessfulCommand(
         spawnImpl,
         "docker",
         ownedNetworkCreateArguments(networkName),
+        {},
+        "NETWORK_CREATE",
+        targetForIndex(ownedNetworks.indexOf(networkName)),
       );
       resources.networksCreated.add(networkName);
     }
@@ -136,38 +282,70 @@ export async function run({
             ownedNetworks[index],
           ),
           { env: childEnvironment },
+          "CONTAINER_START",
+          targetForIndex(index),
         );
       } finally {
         delete childEnvironment.POSTGRES_PASSWORD;
       }
-      if (!result.stdout.trim()) throw new Error();
+      if (!result.stdout.trim()) {
+        throw activationRunnerFailure(
+          "CONTAINER_START", "CONTAINER_ID_MISSING", targetForIndex(index),
+        );
+      }
     }
 
     for (let index = 0; index < ownedContainers.length; index += 1) {
-      resources.ports[index] = await assertOwnedDockerTopology(
-        spawnImpl,
-        ownedContainers[index],
-        ownedNetworks[index],
+      resources.ports[index] = await withActivationFailure(
+        "TOPOLOGY_PORT_VERIFY", "BINDING_INVALID", targetForIndex(index),
+        () => (implementations.assertTopology ?? assertOwnedDockerTopology)(
+          spawnImpl,
+          ownedContainers[index],
+          ownedNetworks[index],
+          targetForIndex(index),
+        ),
       );
     }
-    if (resources.ports[0] === resources.ports[1]) throw new Error();
+    if (resources.ports[0] === resources.ports[1]) {
+      throw activationRunnerFailure(
+        "TOPOLOGY_PORT_VERIFY", "PORTS_NOT_DISTINCT", "BOTH",
+      );
+    }
 
     const operatorUrls = resources.ports.map((port) =>
       buildLoopbackUrl("platform_app", port));
-    await Promise.all(operatorUrls.map((url) =>
-      waitForPostgres(url, resources.operatorPassword)));
-    await Promise.all(operatorUrls.map((url) => provisionFixture(
-      url,
-      resources.operatorPassword,
-      resources.migrationPrefix.migrationsFolder,
+    await Promise.all(operatorUrls.map((url, index) => withActivationFailure(
+      "POSTGRES_READINESS", "READINESS_TIMEOUT", targetForIndex(index),
+      () => (implementations.waitForPostgres ?? waitForPostgres)(
+        url, resources.operatorPassword,
+      ),
+    )));
+    await Promise.all(operatorUrls.map((url, index) => withActivationFailure(
+      "FIXTURE_PROVISION", "GRANT_CONTRACT_FAILED", targetForIndex(index),
+      () => (implementations.provisionFixture ?? provisionFixture)(
+        url,
+        resources.operatorPassword,
+        resources.migrationPrefix.migrationsFolder,
+        targetForIndex(index),
+      ),
     )));
     const systemIdentifiers = await Promise.all(
-      operatorUrls.map((url) =>
-        assertFixtureIdentity(url, resources.operatorPassword)),
+      operatorUrls.map((url, index) => withActivationFailure(
+        "FIXTURE_IDENTITY", "QUERY_FAILED", targetForIndex(index),
+        () => (implementations.assertFixtureIdentity ?? assertFixtureIdentity)(
+          url, resources.operatorPassword, targetForIndex(index),
+        ),
+      )),
     );
-    if (systemIdentifiers[0] === systemIdentifiers[1]) throw new Error();
+    if (systemIdentifiers[0] === systemIdentifiers[1]) {
+      throw activationRunnerFailure(
+        "FIXTURE_IDENTITY", "SYSTEM_IDENTIFIERS_NOT_DISTINCT", "BOTH",
+      );
+    }
 
-    resources.admission = await admitDisposablePostgresFixtures(
+    resources.admission = await withActivationFailure(
+      "DISPOSABLE_ADMISSION", "ADMISSION_FAILED", "BOTH",
+      () => (implementations.admitFixtures ?? admitDisposablePostgresFixtures)(
       operatorUrls.map((connectionString, index) => ({
         name: index === 0 ? "primary" : "secondary",
         connectionString,
@@ -198,36 +376,53 @@ export async function run({
           };
         },
       },
+      ),
     );
 
-    summary = await runActivationChild(
-      spawnImpl,
-      resources,
-      operatorUrls,
+    summary = await withActivationFailure(
+      "ACTIVATION_CHILD", "SPAWN_FAILED", "BOTH",
+      () => (implementations.runActivationChild ?? runActivationChild)(
+        spawnImpl,
+        resources,
+        operatorUrls,
+      ),
     );
   } catch (error) {
-    bodyError = error instanceof Error ? error : new Error();
+    bodyError = error?.activationRunnerFailure === true || error instanceof AggregateError
+      ? error
+      : activationRunnerFailure(
+        "BOOTSTRAP_PREFLIGHT", "IDENTITY_SOURCE_UNAVAILABLE", "NONE",
+      );
   }
 
-  await executeDisposableCleanupActions([
-    () => terminateChild(resources),
-    async () => {
+  await executeActivationCleanupActions([
+    cleanupAction("CLEANUP", "CHILD_TERMINATION_FAILED", "NONE", () =>
+      (implementations.terminateChild ?? terminateChild)(resources)),
+    cleanupAction("CLEANUP", "ADMISSION_INVALIDATION_FAILED", "BOTH", async () => {
       if (resources.admission) {
-        invalidateDisposablePostgresAdmission(resources.admission);
+        (implementations.invalidateAdmission ?? invalidateDisposablePostgresAdmission)(
+          resources.admission,
+        );
         resources.admission = null;
       }
-    },
-    ...ownedContainers.map((containerName) => async () => {
+    }),
+    ...ownedContainers.map((containerName, index) => cleanupAction(
+      "CLEANUP", "CONTAINER_REMOVAL_FAILED", targetForIndex(index), async () => {
       if (resources.containerStartAttempted.has(containerName)) {
-        await removeOwnedContainer(spawnImpl, containerName);
+        await (implementations.removeContainer ?? removeOwnedContainer)(
+          spawnImpl, containerName,
+        );
       }
-    }),
-    ...ownedNetworks.map((networkName) => async () => {
+    })),
+    ...ownedNetworks.map((networkName, index) => cleanupAction(
+      "CLEANUP", "NETWORK_REMOVAL_FAILED", targetForIndex(index), async () => {
       if (resources.networksCreated.has(networkName)) {
-        await removeOwnedNetwork(spawnImpl, networkName);
+        await (implementations.removeNetwork ?? removeOwnedNetwork)(
+          spawnImpl, networkName,
+        );
       }
-    }),
-    async () => {
+    })),
+    cleanupAction("CLEANUP", "MIGRATION_PREFIX_REMOVAL_FAILED", "NONE", async () => {
       if (resources.migrationPrefix?.temporaryRoot) {
         const temporaryRoot = resources.migrationPrefix.temporaryRoot;
         await rm(temporaryRoot, {
@@ -237,15 +432,43 @@ export async function run({
         await assertPathAbsent(temporaryRoot);
         resources.migrationPrefix = null;
       }
-    },
-    async () => clearCredentialState(resources),
-    () => assertExactDockerResourcesAbsent(),
-    ...resources.ports.map((port) => async () => {
-      if (Number.isInteger(port)) await assertPortAbsentImpl(port);
     }),
+    cleanupAction("CLEANUP", "CREDENTIAL_CLEAR_FAILED", "NONE", () =>
+      (implementations.clearCredentials ?? clearCredentialState)(resources)),
+    ...ownedContainers.map((containerName, index) => cleanupAction(
+      "FINAL_ABSENCE",
+      "CONTAINER_PRESENT_OR_UNPROVEN",
+      targetForIndex(index),
+      () => (implementations.assertFinalContainerAbsent ?? assertContainerAbsent)(
+        containerName,
+      ),
+    )),
+    ...ownedNetworks.map((networkName, index) => cleanupAction(
+      "FINAL_ABSENCE",
+      "NETWORK_PRESENT_OR_UNPROVEN",
+      targetForIndex(index),
+      () => (implementations.assertFinalNetworkAbsent ?? assertNetworkAbsent)(
+        networkName,
+      ),
+    )),
+    cleanupAction(
+      "FINAL_ABSENCE", "TEMP_PATH_PRESENT_OR_UNPROVEN", "NONE", async () => {
+        if (resources.migrationPrefix?.temporaryRoot) {
+          await assertPathAbsent(resources.migrationPrefix.temporaryRoot);
+        }
+      },
+    ),
+    ...resources.ports.map((port, index) => cleanupAction(
+      "FINAL_ABSENCE", "PORT_OPEN_OR_UNPROVEN", targetForIndex(index), async () => {
+      if (Number.isInteger(port)) await assertPortAbsentImpl(port);
+    })),
   ], bodyError);
 
-  if (!summary) throw new Error();
+  if (!summary) {
+    throw activationRunnerFailure(
+      "ACTIVATION_CHILD", "SUMMARY_MISSING", "BOTH",
+    );
+  }
   process.stdout.write(
     `Activation PostgreSQL 17 tests: ${summary.total} total / ` +
       `${summary.passed} passed / ${summary.failed} failed / ` +
@@ -253,6 +476,14 @@ export async function run({
       `${summary.todo} todo.\n`,
   );
   return summary;
+}
+
+function targetForIndex(index) {
+  return index === 0 ? "PRIMARY" : "SECONDARY";
+}
+
+function cleanupAction(phase, category, target, run) {
+  return { phase, category, target, run };
 }
 
 export function assertNoCallerSuppliedActivationInputs(env) {
@@ -300,54 +531,90 @@ export async function createActivationMigrationPrefix({
   sourceRoot = rootDir,
   temporaryBase = tmpdir(),
 } = {}) {
-  const temporaryRoot = await mkdtemp(
-    join(temporaryBase, "swooshz-activation-0009-"),
-  );
+  let temporaryRoot;
   try {
+    temporaryRoot = await withActivationFailure(
+      "MIGRATION_PREFIX", "TEMP_ROOT_CREATE_FAILED", "NONE",
+      () => mkdtemp(join(temporaryBase, "swooshz-activation-0009-")),
+    );
     const sourceMigrations = join(sourceRoot, "drizzle", "migrations");
     const migrationsFolder = join(temporaryRoot, "drizzle", "migrations");
-    await mkdir(join(migrationsFolder, "meta"), { recursive: true });
-    const journal = JSON.parse(
-      await readFile(join(sourceMigrations, "meta", "_journal.json"), "utf8"),
+    await withActivationFailure(
+      "MIGRATION_PREFIX", "MIGRATION_COPY_OR_WRITE_FAILED", "NONE",
+      () => mkdir(join(migrationsFolder, "meta"), { recursive: true }),
     );
-    if (!Array.isArray(journal.entries)) throw new Error();
-    const entries = journal.entries.filter((entry) => entry.idx <= 8);
-    assertActivationMigrationEntries(entries);
-    if (!journal.entries.some((entry) => entry.tag === excludedMigrationTag)) {
-      throw new Error();
-    }
-    for (const entry of entries) {
-      await copyFile(
-        join(sourceMigrations, `${entry.tag}.sql`),
-        join(migrationsFolder, `${entry.tag}.sql`),
+    const journal = await withActivationFailure(
+      "MIGRATION_PREFIX", "JOURNAL_READ_OR_PARSE_FAILED", "NONE",
+      async () => JSON.parse(
+        await readFile(join(sourceMigrations, "meta", "_journal.json"), "utf8"),
+      ),
+    );
+    if (!Array.isArray(journal.entries)) {
+      throw activationRunnerFailure(
+        "MIGRATION_PREFIX", "PREFIX_SET_INVALID", "NONE",
       );
     }
-    await writeFile(
-      join(migrationsFolder, "meta", "_journal.json"),
-      `${JSON.stringify({
-        version: journal.version,
-        dialect: journal.dialect,
-        entries,
-      }, null, 2)}\n`,
-      "utf8",
+    const entries = journal.entries.filter((entry) => entry.idx <= 8);
+    try {
+      assertActivationMigrationEntries(entries);
+    } catch {
+      throw activationRunnerFailure(
+        "MIGRATION_PREFIX", "PREFIX_SET_INVALID", "NONE",
+      );
+    }
+    if (!journal.entries.some((entry) => entry.tag === excludedMigrationTag)) {
+      throw activationRunnerFailure(
+        "MIGRATION_PREFIX", "PREFIX_SET_INVALID", "NONE",
+      );
+    }
+    await withActivationFailure(
+      "MIGRATION_PREFIX", "MIGRATION_COPY_OR_WRITE_FAILED", "NONE", async () => {
+        for (const entry of entries) {
+          await copyFile(
+            join(sourceMigrations, `${entry.tag}.sql`),
+            join(migrationsFolder, `${entry.tag}.sql`),
+          );
+        }
+        await writeFile(
+          join(migrationsFolder, "meta", "_journal.json"),
+          `${JSON.stringify({
+            version: journal.version,
+            dialect: journal.dialect,
+            entries,
+          }, null, 2)}\n`,
+          "utf8",
+        );
+      },
     );
-    const copiedFiles = (await readdir(migrationsFolder, {
-      withFileTypes: true,
-    }))
-      .filter((entry) => entry.isFile())
-      .map((entry) => entry.name)
-      .sort();
+    const copiedFiles = await withActivationFailure(
+      "MIGRATION_PREFIX", "PREFIX_VERIFY_FAILED", "NONE", async () => (
+        await readdir(migrationsFolder, { withFileTypes: true })
+      ).filter((entry) => entry.isFile()).map((entry) => entry.name).sort(),
+    );
     if (
       copiedFiles.length !== 9 ||
       copiedFiles.some((name, index) =>
         name !== `${expectedMigrationTags[index]}.sql`) ||
       copiedFiles.includes(`${excludedMigrationTag}.sql`)
     ) {
-      throw new Error();
+      throw activationRunnerFailure(
+        "MIGRATION_PREFIX", "PREFIX_VERIFY_FAILED", "NONE",
+      );
     }
     return { entries, migrationsFolder, temporaryRoot };
   } catch (error) {
-    await rm(temporaryRoot, { recursive: true, force: true });
+    if (temporaryRoot) {
+      try {
+        await rm(temporaryRoot, { recursive: true, force: true });
+      } catch {
+        throw new AggregateError([
+          ...flattenActivationFailures(error),
+          activationRunnerFailure(
+            "CLEANUP", "MIGRATION_PREFIX_REMOVAL_FAILED", "NONE",
+          ),
+        ]);
+      }
+    }
     throw error;
   }
 }
@@ -446,6 +713,31 @@ export function parseActivationTestSummary(output) {
   };
 }
 
+export function classifyActivationTestSummary(output) {
+  if (typeof output !== "string") return { category: "SUMMARY_MALFORMED" };
+  const normalized = output
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "")
+    .replace(/\r\n?/gu, "\n");
+  const starts = normalized.split("\n")
+    .filter((line) => /^\s*([#ℹ])\s+tests\s+/u.test(line)).length;
+  if (starts === 0) return { category: "SUMMARY_MISSING" };
+  if (starts > 1) return { category: "SUMMARY_DUPLICATE" };
+  const summary = parseActivationTestSummary(output);
+  if (summary) return { summary };
+  const countFields = new Map();
+  for (const line of normalized.split("\n")) {
+    const match = line.match(
+      /^\s*([#ℹ])\s+(tests|pass|fail|cancelled|skipped|todo)\s+([^\s]+)\s*$/u,
+    );
+    if (match && /^(?:0|[1-9]\d*)$/u.test(match[3])) {
+      countFields.set(match[2], Number(match[3]));
+    }
+  }
+  return countFields.size === 6
+    ? { category: "SUMMARY_COUNT_MISMATCH" }
+    : { category: "SUMMARY_MALFORMED" };
+}
+
 export function sanitizeActivationChildDiagnostics({
   stdout = "",
   stderr = "",
@@ -485,31 +777,65 @@ export function sanitizeActivationChildDiagnostics({
 export async function assertExactDockerResourcesAbsent(
   commandImpl = runCommand,
 ) {
+  await assertContainersAbsent(commandImpl);
+  await assertNetworksAbsent(commandImpl);
+}
+
+export async function assertContainersAbsent(commandImpl = runCommand) {
   for (const containerName of ownedContainers) {
-    const result = await commandImpl("docker", [
-      "ps",
-      "--all",
-      "--filter",
-      `name=^/${containerName}$`,
-      "--format",
-      "{{.Names}}",
-    ]);
-    if (result.code !== 0 || result.signal || result.stdout.trim()) {
-      throw new Error();
-    }
+    await assertContainerAbsent(containerName, commandImpl);
   }
+}
+
+export async function assertContainerAbsent(
+  containerName,
+  commandImpl = runCommand,
+) {
+  const target = targetForIndex(ownedContainers.indexOf(containerName));
+  const result = await commandImpl("docker", [
+    "ps",
+    "--all",
+    "--filter",
+    `name=^/${containerName}$`,
+    "--format",
+    "{{.Names}}",
+  ]);
+  if (
+    result.code !== 0 || result.signal || result.timedOut ||
+    result.outputOverflow || result.stdout.trim()
+  ) {
+    throw activationRunnerFailure(
+      "FINAL_ABSENCE", "CONTAINER_PRESENT_OR_UNPROVEN", target,
+    );
+  }
+}
+
+export async function assertNetworksAbsent(commandImpl = runCommand) {
   for (const networkName of ownedNetworks) {
-    const result = await commandImpl("docker", [
-      "network",
-      "ls",
-      "--filter",
-      `name=^${networkName}$`,
-      "--format",
-      "{{.Name}}",
-    ]);
-    if (result.code !== 0 || result.signal || result.stdout.trim()) {
-      throw new Error();
-    }
+    await assertNetworkAbsent(networkName, commandImpl);
+  }
+}
+
+export async function assertNetworkAbsent(
+  networkName,
+  commandImpl = runCommand,
+) {
+  const target = targetForIndex(ownedNetworks.indexOf(networkName));
+  const result = await commandImpl("docker", [
+    "network",
+    "ls",
+    "--filter",
+    `name=^${networkName}$`,
+    "--format",
+    "{{.Name}}",
+  ]);
+  if (
+    result.code !== 0 || result.signal || result.timedOut ||
+    result.outputOverflow || result.stdout.trim()
+  ) {
+    throw activationRunnerFailure(
+      "FINAL_ABSENCE", "NETWORK_PRESENT_OR_UNPROVEN", target,
+    );
   }
 }
 
@@ -517,6 +843,7 @@ async function provisionFixture(
   connectionString,
   operatorPassword,
   migrationsFolder,
+  target,
 ) {
   const pool = new Pool({
     connectionString,
@@ -524,8 +851,13 @@ async function provisionFixture(
     max: 1,
   });
   try {
-    await migrate(drizzle(pool), { migrationsFolder });
-    await pool.query(`
+    await withActivationFailure(
+      "FIXTURE_PROVISION", "MIGRATION_FAILED", target,
+      () => migrate(drizzle(pool), { migrationsFolder }),
+    );
+    await withActivationFailure(
+      "FIXTURE_PROVISION", "ROLE_SETUP_FAILED", target, async () => {
+        await pool.query(`
       do $fixture$
       begin
         if exists (
@@ -540,10 +872,15 @@ async function provisionFixture(
           nocreaterole noreplication nobypassrls;
       end
       $fixture$
-    `);
-    await pool.query("revoke platform_runtime from platform_app");
-    await pool.query("revoke platform_app from platform_runtime");
-    const creatorEdgeClient = await pool.connect();
+        `);
+        await pool.query("revoke platform_runtime from platform_app");
+        await pool.query("revoke platform_app from platform_runtime");
+      },
+    );
+    const creatorEdgeClient = await withActivationFailure(
+      "FIXTURE_PROVISION", "CREATOR_EDGE_FAILED", target,
+      () => pool.connect(),
+    );
     let creatorEdgeError = null;
     try {
       await creatorEdgeClient.query("set session authorization cloud_admin");
@@ -551,16 +888,23 @@ async function provisionFixture(
         "grant platform_runtime to platform_app with admin true, set false, inherit false granted by cloud_admin",
       );
     } catch (error) {
-      creatorEdgeError = error;
+      creatorEdgeError = activationRunnerFailure(
+        "FIXTURE_PROVISION", "CREATOR_EDGE_FAILED", target,
+      );
     } finally {
       try {
-        await executeDisposableCleanupActions([
-          () => creatorEdgeClient.query("reset session authorization"),
+        await executeActivationCleanupActions([
+          cleanupAction(
+            "FIXTURE_PROVISION", "CREATOR_EDGE_FAILED", target,
+            () => creatorEdgeClient.query("reset session authorization"),
+          ),
         ], creatorEdgeError);
       } finally {
         creatorEdgeClient.release(true);
       }
     }
+    await withActivationFailure(
+      "FIXTURE_PROVISION", "GRANT_CONTRACT_FAILED", target, async () => {
     await pool.query(
       `revoke create on database ${quoteIdentifier(databaseName)} from public`,
     );
@@ -583,19 +927,22 @@ async function provisionFixture(
     await pool.query(
       "revoke all privileges on all functions in schema public from platform_runtime",
     );
+      },
+    );
   } finally {
     await pool.end();
   }
 }
 
-async function assertFixtureIdentity(connectionString, operatorPassword) {
+async function assertFixtureIdentity(connectionString, operatorPassword, target) {
   const pool = new Pool({
     connectionString,
     password: operatorPassword,
     max: 1,
   });
   try {
-    const result = await pool.query(`
+    const result = await withActivationFailure(
+      "FIXTURE_IDENTITY", "QUERY_FAILED", target, () => pool.query(`
       select
         current_database() = 'runtime_posture_test' as database_matches,
         current_user = 'platform_app' as current_user_matches,
@@ -611,7 +958,8 @@ async function assertFixtureIdentity(connectionString, operatorPassword) {
           from pg_roles where rolname = 'platform_runtime') as runtime_matches,
         (select system_identifier::text from pg_control_system())
           as system_identifier
-    `);
+      `),
+    );
     const [row] = result.rows;
     if (
       !row?.database_matches ||
@@ -621,10 +969,16 @@ async function assertFixtureIdentity(connectionString, operatorPassword) {
       !row.operator_matches ||
       !row.postgres_matches ||
       !row.cloud_admin_matches ||
-      !row.runtime_matches ||
-      !/^[0-9]+$/u.test(row.system_identifier)
+      !row.runtime_matches
     ) {
-      throw new Error();
+      throw activationRunnerFailure(
+        "FIXTURE_IDENTITY", "IDENTITY_INVALID", target,
+      );
+    }
+    if (!/^[0-9]+$/u.test(row.system_identifier)) {
+      throw activationRunnerFailure(
+        "FIXTURE_IDENTITY", "SYSTEM_IDENTIFIER_INVALID", target,
+      );
     }
     return row.system_identifier;
   } finally {
@@ -636,44 +990,77 @@ async function assertOwnedDockerTopology(
   spawnImpl,
   containerName,
   networkName,
+  target,
 ) {
-  const image = await requireSuccessfulCommand(spawnImpl, "docker", [
-    "inspect",
-    "--format",
-    "{{.Config.Image}}",
-    containerName,
-  ]);
-  if (image.stdout.trim() !== "postgres:17") throw new Error();
-  const network = await requireSuccessfulCommand(spawnImpl, "docker", [
-    "network",
-    "inspect",
-    "--format",
-    "{{.Driver}} {{.Internal}}",
-    networkName,
-  ]);
-  if (network.stdout.trim() !== "bridge true") throw new Error();
-  const networks = await requireSuccessfulCommand(spawnImpl, "docker", [
-    "inspect",
-    "--format",
-    "{{json .NetworkSettings.Networks}}",
-    containerName,
-  ]);
-  const networkMap = JSON.parse(networks.stdout);
+  const image = await topologyCommand(
+    spawnImpl,
+    ["inspect", "--format", "{{.Config.Image}}", containerName],
+    "IMAGE_INVALID",
+    target,
+  );
+  if (image.stdout.trim() !== "postgres:17") {
+    throw activationRunnerFailure(
+      "TOPOLOGY_PORT_VERIFY", "IMAGE_INVALID", target,
+    );
+  }
+  const network = await topologyCommand(
+    spawnImpl,
+    [
+      "network", "inspect", "--format", "{{.Driver}} {{.Internal}}",
+      networkName,
+    ],
+    "NETWORK_INVALID",
+    target,
+  );
+  if (network.stdout.trim() !== "bridge true") {
+    throw activationRunnerFailure(
+      "TOPOLOGY_PORT_VERIFY", "NETWORK_INVALID", target,
+    );
+  }
+  const networks = await topologyCommand(
+    spawnImpl,
+    [
+      "inspect", "--format", "{{json .NetworkSettings.Networks}}",
+      containerName,
+    ],
+    "ALIAS_INVALID",
+    target,
+  );
+  let networkMap;
+  try {
+    networkMap = JSON.parse(networks.stdout);
+  } catch {
+    throw activationRunnerFailure(
+      "TOPOLOGY_PORT_VERIFY", "ALIAS_INVALID", target,
+    );
+  }
   if (
     Object.keys(networkMap).length !== 1 ||
     !networkMap[networkName] ||
     !Array.isArray(networkMap[networkName].Aliases) ||
     !networkMap[networkName].Aliases.includes(networkAlias)
   ) {
-    throw new Error();
+    throw activationRunnerFailure(
+      "TOPOLOGY_PORT_VERIFY", "ALIAS_INVALID", target,
+    );
   }
-  const binding = await requireSuccessfulCommand(spawnImpl, "docker", [
-    "inspect",
-    "--format",
-    "{{json .NetworkSettings.Ports}}",
-    containerName,
-  ]);
-  const parsed = JSON.parse(binding.stdout);
+  const binding = await topologyCommand(
+    spawnImpl,
+    [
+      "inspect", "--format", "{{json .NetworkSettings.Ports}}",
+      containerName,
+    ],
+    "BINDING_INVALID",
+    target,
+  );
+  let parsed;
+  try {
+    parsed = JSON.parse(binding.stdout);
+  } catch {
+    throw activationRunnerFailure(
+      "TOPOLOGY_PORT_VERIFY", "BINDING_INVALID", target,
+    );
+  }
   if (
     Object.keys(parsed).length !== 1 ||
     !Array.isArray(parsed["5432/tcp"]) ||
@@ -681,11 +1068,34 @@ async function assertOwnedDockerTopology(
     parsed["5432/tcp"][0].HostIp !== "127.0.0.1" ||
     !/^[0-9]+$/u.test(parsed["5432/tcp"][0].HostPort)
   ) {
-    throw new Error();
+    throw activationRunnerFailure(
+      "TOPOLOGY_PORT_VERIFY", "BINDING_INVALID", target,
+    );
   }
   const port = Number(parsed["5432/tcp"][0].HostPort);
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error();
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw activationRunnerFailure(
+      "TOPOLOGY_PORT_VERIFY", "PORT_INVALID", target,
+    );
+  }
   return port;
+}
+
+async function topologyCommand(spawnImpl, args, category, target) {
+  try {
+    const result = await runCommand("docker", args, { spawnImpl });
+    if (
+      result.code !== 0 || result.signal !== null || result.timedOut ||
+      result.outputOverflow
+    ) {
+      throw new Error();
+    }
+    return result;
+  } catch {
+    throw activationRunnerFailure(
+      "TOPOLOGY_PORT_VERIFY", category, target,
+    );
+  }
 }
 
 async function waitForPostgres(connectionString, operatorPassword) {
@@ -710,7 +1120,12 @@ async function waitForPostgres(connectionString, operatorPassword) {
   throw new Error();
 }
 
-async function runActivationChild(spawnImpl, resources, operatorUrls) {
+export async function runActivationChild(
+  spawnImpl,
+  resources,
+  operatorUrls,
+  { timeoutMs = maxChildDurationMs } = {},
+) {
   const childEnvironment = { ...process.env };
   for (const name of Object.keys(childEnvironment)) {
     if (name.startsWith("RUNTIME_ACTIVATION_TEST_")) {
@@ -733,21 +1148,33 @@ async function runActivationChild(spawnImpl, resources, operatorUrls) {
     let stdoutLength = 0;
     let stderrLength = 0;
     let settled = false;
-    const child = spawnImpl(
-      process.execPath,
-      ["--test", "tests/platform-runtime-activation-postgres.test.mjs"],
-      {
-        cwd: rootDir,
-        env: childEnvironment,
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-      },
-    );
+    let timedOut = false;
+    let child;
+    try {
+      child = spawnImpl(
+        process.execPath,
+        ["--test", "tests/platform-runtime-activation-postgres.test.mjs"],
+        {
+          cwd: rootDir,
+          env: childEnvironment,
+          stdio: ["ignore", "pipe", "pipe"],
+          windowsHide: true,
+        },
+      );
+    } catch {
+      reject(activationRunnerFailure(
+        "ACTIVATION_CHILD", "SPAWN_FAILED", "BOTH",
+      ));
+      return;
+    }
     resources.child = child;
     resources.childExited = false;
     const timer = setTimeout(() => {
-      if (!settled) child.kill("SIGTERM");
-    }, maxChildDurationMs);
+      if (!settled) {
+        timedOut = true;
+        child.kill("SIGTERM");
+      }
+    }, timeoutMs);
     const finish = (value, error) => {
       if (settled) return;
       settled = true;
@@ -755,7 +1182,9 @@ async function runActivationChild(spawnImpl, resources, operatorUrls) {
       if (error) reject(error);
       else resolvePromise(value);
     };
-    child.once("error", () => finish(null, new Error()));
+    child.once("error", () => finish(null, activationRunnerFailure(
+      "ACTIVATION_CHILD", "SPAWN_FAILED", "BOTH",
+    )));
     child.stdout?.on("data", (chunk) => {
       stdoutLength += chunk.length;
       if (stdoutLength <= maxChildOutputBytes) stdout.push(Buffer.from(chunk));
@@ -769,43 +1198,50 @@ async function runActivationChild(spawnImpl, resources, operatorUrls) {
       const stdoutText = Buffer.concat(stdout).toString("utf8");
       const stderrText = Buffer.concat(stderr).toString("utf8");
       for (const chunk of [...stdout, ...stderr]) chunk.fill(0);
-      const overflow =
-        stdoutLength > maxChildOutputBytes ||
-        stderrLength > maxChildOutputBytes;
-      if (code !== 0 || signal !== null || overflow) {
-        const error = new Error();
-        error.diagnostics = sanitizeActivationChildDiagnostics({
+      let category = null;
+      if (timedOut) category = "TIMEOUT";
+      else if (stdoutLength > maxChildOutputBytes) category = "STDOUT_OVERFLOW";
+      else if (stderrLength > maxChildOutputBytes) category = "STDERR_OVERFLOW";
+      else if (signal !== null) category = "SIGNAL";
+      else if (code !== 0) category = "EXIT_NONZERO";
+      if (category) {
+        const childDiagnostics = sanitizeActivationChildDiagnostics({
           stdout: stdoutText,
           stderr: stderrText,
           secretValues: [
             resources.operatorPassword,
             resources.runtimePassword,
             ...operatorUrls,
+            ...Object.values(childEnvironment),
           ],
         });
-        finish(null, error);
+        finish(null, activationRunnerFailure(
+          "ACTIVATION_CHILD", category, "BOTH", childDiagnostics,
+        ));
         return;
       }
       finish({ stdout: stdoutText, stderr: stderrText });
     });
   });
-  const summary = parseActivationTestSummary(result.stdout);
-  if (!summary) {
-    const error = new Error();
-    error.diagnostics = sanitizeActivationChildDiagnostics({
+  const classified = classifyActivationTestSummary(result.stdout);
+  if (!classified.summary) {
+    const childDiagnostics = sanitizeActivationChildDiagnostics({
       stdout: result.stdout,
       stderr: result.stderr,
       secretValues: [
         resources.operatorPassword,
         resources.runtimePassword,
         ...operatorUrls,
+        ...Object.values(childEnvironment),
       ],
     });
-    throw error;
+    throw activationRunnerFailure(
+      "ACTIVATION_CHILD", classified.category, "BOTH", childDiagnostics,
+    );
   }
   result.stdout = "";
   result.stderr = "";
-  return summary;
+  return classified.summary;
 }
 
 async function terminateChild(resources) {
@@ -907,17 +1343,26 @@ async function requireSuccessfulCommand(
   command,
   args,
   options = {},
+  phase,
+  target,
 ) {
-  const result = await runCommand(command, args, { ...options, spawnImpl });
-  if (
-    result.code !== 0 ||
-    result.signal !== null ||
-    result.timedOut ||
-    result.outputOverflow
-  ) {
-    throw new Error();
+  let result;
+  try {
+    result = await runCommand(command, args, { ...options, spawnImpl });
+  } catch {
+    throw activationRunnerFailure(phase, "SPAWN_FAILED", target);
   }
+  const category = classifyCommandOutcome(result);
+  if (category) throw activationRunnerFailure(phase, category, target);
   return result;
+}
+
+export function classifyCommandOutcome(result) {
+  if (result?.timedOut) return "TIMEOUT";
+  if (result?.outputOverflow) return "OUTPUT_OVERFLOW";
+  if (result?.signal !== null && result?.signal !== undefined) return "SIGNAL";
+  if (result?.code !== 0) return "COMMAND_NONZERO";
+  return null;
 }
 
 async function runCommand(command, args, {
