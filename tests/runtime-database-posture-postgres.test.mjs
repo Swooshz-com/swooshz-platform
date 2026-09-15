@@ -1356,18 +1356,50 @@ async function runHardWiredDefaultsProof(
     `alter default privileges for role cloud_admin grant select on tables to ${identifier(unrelatedProviderGrantee)} with grant option`,
   );
   const providerEvidence = await pool.query(`
+    with provider_role as (
+      select oid
+      from pg_roles
+      where rolname = 'cloud_admin'
+    ), effective_defaults as (
+      select
+        'f'::"char" as object_type,
+        coalesce(
+          (
+            select defaults.defaclacl
+            from pg_default_acl defaults
+            where defaults.defaclrole = provider_role.oid
+              and defaults.defaclnamespace = 0
+              and defaults.defaclobjtype = 'f'
+          ),
+          acldefault('f', provider_role.oid)
+        ) as acl
+      from provider_role
+      union all
+      select
+        'r'::"char" as object_type,
+        coalesce(
+          (
+            select defaults.defaclacl
+            from pg_default_acl defaults
+            where defaults.defaclrole = provider_role.oid
+              and defaults.defaclnamespace = 0
+              and defaults.defaclobjtype = 'r'
+          ),
+          acldefault('r', provider_role.oid)
+        ) as acl
+      from provider_role
+    )
     select
       bool_or(expanded.grantee = 0 and expanded.privilege_type = 'EXECUTE')
-        filter (where defaults.defaclobjtype = 'f') as public_routine_default,
+        filter (where defaults.object_type = 'f') as public_routine_default,
       bool_or(
         grantee.rolname = $1
         and expanded.privilege_type = 'SELECT'
         and expanded.is_grantable
-      ) filter (where defaults.defaclobjtype = 'r') as relation_grant_option
-    from pg_default_acl defaults
-    cross join lateral aclexplode(defaults.defaclacl) expanded
+      ) filter (where defaults.object_type = 'r') as relation_grant_option
+    from effective_defaults defaults
+    cross join lateral aclexplode(defaults.acl) expanded
     left join pg_roles grantee on grantee.oid = expanded.grantee
-    where defaults.defaclrole = (select oid from pg_roles where rolname = 'cloud_admin')
   `, [unrelatedProviderGrantee]);
   assert.deepEqual(providerEvidence.rows, [{
     public_routine_default: true,
