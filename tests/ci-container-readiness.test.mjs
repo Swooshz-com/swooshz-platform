@@ -6,6 +6,7 @@ import test from "node:test";
 
 const workflowPath = ".github/workflows/ci.yml";
 const roleCollapseRunnerPath = "scripts/run-disposable-role-collapse-postgres-tests.mjs";
+const activationRunnerPath = "scripts/run-disposable-runtime-activation-postgres-tests.mjs";
 const dockerfilePath = "Dockerfile";
 const dockerignorePath = ".dockerignore";
 const coolifyDocPath = "docs/coolify-deployment-readiness.md";
@@ -15,6 +16,7 @@ const roadmapPath = "docs/production-readiness-roadmap.md";
 test("CI workflow runs guardrails, install, typecheck, build, test, and container build without deploy", async () => {
   const workflow = await readFile(workflowPath, "utf8");
   const roleCollapseRunner = await readFile(roleCollapseRunnerPath, "utf8");
+  const activationRunner = await readFile(activationRunnerPath, "utf8");
 
   const requiredPhrases = [
     "workflow_dispatch:",
@@ -27,6 +29,7 @@ test("CI workflow runs guardrails, install, typecheck, build, test, and containe
     "npm run build",
     "npm test",
     "npm run test:disposable-runtime-postgres",
+    "npm run test:disposable-runtime-activation-postgres",
     "npm run test:disposable-role-collapse-postgres",
     "codex-platform127-pg17",
     "POSTGRES_HOST_AUTH_METHOD=trust",
@@ -38,6 +41,29 @@ test("CI workflow runs guardrails, install, typecheck, build, test, and containe
   assert.match(roleCollapseRunner, /codex-platform153-role-collapse-pg17/i);
   assert.match(roleCollapseRunner, /postgres:17/i);
   assert.match(roleCollapseRunner, /POSTGRES_HOST_AUTH_METHOD=trust/i);
+
+  const activationPhrases = [
+    "codex-platform169-activation-primary-pg17",
+    "codex-platform169-activation-secondary-pg17",
+    "codex-platform169-activation-primary-net",
+    "codex-platform169-activation-secondary-net",
+    "postgres:17",
+    "127.0.0.1::5432",
+    "POSTGRES_PASSWORD",
+    "RUNTIME_ACTIVATION_TEST_RUNTIME_PASSWORD",
+    "tests/platform-runtime-activation-postgres.test.mjs",
+  ];
+  for (const phrase of activationPhrases) {
+    assert.match(activationRunner, new RegExp(escapeRegExp(phrase), "i"));
+  }
+  assert.doesNotMatch(
+    activationRunner,
+    /docker push|deploy|kubectl|coolify.*webhook|ssh |scp |rsync /i,
+  );
+  assert.doesNotMatch(
+    activationRunner,
+    /POSTGRES_PASSWORD=[^"'\s]+|RUNTIME_ACTIVATION_TEST_RUNTIME_PASSWORD=[^"'\s]+/i,
+  );
 
   for (const phrase of requiredPhrases) {
     assert.match(workflow, new RegExp(escapeRegExp(phrase), "i"));

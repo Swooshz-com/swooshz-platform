@@ -65,6 +65,10 @@ jobs:
         # Its disposable container uses POSTGRES_HOST_AUTH_METHOD=trust only locally.
         run: npm run test:disposable-runtime-postgres
 
+      - name: PostgreSQL 17 disposable runtime activation tests
+        # The runner owns two internal networks, two password-authenticated fixtures, and loopback listeners.
+        run: npm run test:disposable-runtime-activation-postgres
+
       - name: PostgreSQL 17 disposable role-collapse migration and concurrency proofs
         run: npm run test:disposable-role-collapse-postgres
 

@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 
-import { Pool } from "pg";
+import { Client, Pool } from "pg";
 
 import {
   PlatformRuntimeActivationError,
@@ -32,6 +32,9 @@ import {
   admitDisposablePostgresFixtures,
   createAdmittedMutationPool,
 } from "./support/disposable-postgres-fixture.mjs";
+import {
+  executeDisposableCleanupActions,
+} from "../scripts/run-disposable-runtime-postgres-tests.mjs";
 
 const operatorUrl = process.env.RUNTIME_ACTIVATION_TEST_OPERATOR_URL;
 const secondOperatorUrl =
@@ -42,6 +45,11 @@ const secondDockerNetwork =
   process.env.RUNTIME_ACTIVATION_TEST_SECOND_DOCKER_NETWORK;
 const disposableConfirmed =
   process.env.RUNTIME_ACTIVATION_TEST_CONFIRM === "disposable-only";
+const runtimePassword =
+  process.env.RUNTIME_ACTIVATION_TEST_RUNTIME_PASSWORD;
+const fixtureOperatorPassword = process.env.PGPASSWORD ||
+  (operatorUrl ? new URL(operatorUrl).password : "") ||
+  "synthetic";
 const loopbackFixtureHosts = new Set(["127.0.0.1", "::1"]);
 const approvedAdmissionFixtureUrls = [
   operatorUrl,
@@ -52,6 +60,8 @@ const skipReason =
   secondOperatorUrl &&
   dockerNetwork &&
   secondDockerNetwork &&
+  runtimePassword &&
+  fixtureOperatorPassword !== "synthetic" &&
   disposableConfirmed &&
   approvedAdmissionFixtureUrls.length >= 2 &&
   approvedAdmissionFixtureUrls.every(isApprovedFixtureUrl)
@@ -65,8 +75,6 @@ const twoClusterSkipReason =
 const primaryDockerSpawn = dockerSpawnOnNetwork(dockerNetwork);
 const secondaryDockerSpawn = dockerSpawnOnNetwork(secondDockerNetwork);
 let disposableFixtureAdmission = null;
-const syntheticRuntimePassword =
-  "SyntheticRuntime_2026!éΩ漢字_ExtraLength";
 const providerNow = Date.now();
 const disposableEndpointId = "ep-disposable-primary-001";
 const disposableProxyHost = "us-east-2.aws.neon.tech";
@@ -76,9 +84,9 @@ const disposableDirectHost =
 const disposablePooledHost =
   `${disposableEndpointId}-pooler.${disposableProxyHost}`;
 const boundDirectOperatorUrl =
-  `postgresql://platform_app:synthetic@${disposableDirectHost}/runtime_posture_test`;
+  `postgresql://platform_app:${encodeURIComponent(fixtureOperatorPassword)}@${disposableDirectHost}/runtime_posture_test`;
 const boundDockerOperatorUrl =
-  `postgresql://platform_app:synthetic@${disposablePooledHost}/runtime_posture_test`;
+  `postgresql://platform_app:${encodeURIComponent(fixtureOperatorPassword)}@${disposablePooledHost}/runtime_posture_test`;
 const planningAttestation = createNeonProviderAttestation(
   {
     branchId: "br-disposable-local-001",
@@ -190,6 +198,13 @@ test.before(async () => {
         connectionString,
       ),
     ),
+    {
+      clientFactory: (fixture) =>
+        createPasswordAuthenticatedProbeClient(
+          fixture.connectionString,
+          fixtureOperatorPassword,
+        ),
+    },
   );
   const primaryPool = new Pool({ connectionString: operatorUrl, max: 1 });
   try {
@@ -266,7 +281,7 @@ test(
           operatorUrl: boundDockerOperatorUrl,
           spawnImpl: primaryDockerSpawn,
           target,
-          runtimePassword: syntheticRuntimePassword,
+          runtimePassword,
           expectedFixtureIdentity: directIdentity,
           phasePermit: passwordPermit,
           now: providerNow,
@@ -305,7 +320,7 @@ test(
           buildRuntimeDatabaseUrl(
             boundDirectOperatorUrl,
             target,
-            syntheticRuntimePassword,
+            runtimePassword,
             { now: providerNow },
           ),
         PlatformRuntimeActivationError,
@@ -313,7 +328,7 @@ test(
       const runtimeUrl = buildRuntimeDatabaseUrl(
         boundDockerOperatorUrl,
         target,
-        syntheticRuntimePassword,
+        runtimePassword,
         { now: providerNow },
       );
       const providerShapedRuntimeUrl = new URL(runtimeUrl);
@@ -451,7 +466,7 @@ test(
           operatorUrl: boundDockerOperatorUrl,
           spawnImpl: primaryDockerSpawn,
           target,
-          runtimePassword: syntheticRuntimePassword,
+          runtimePassword,
           expectedFixtureIdentity: directIdentity,
           phasePermit: passwordPermit,
           now: providerNow,
@@ -479,7 +494,7 @@ test(
       const runtimeUrl = buildRuntimeDatabaseUrl(
         boundDockerOperatorUrl,
         target,
-        syntheticRuntimePassword,
+        runtimePassword,
         { now: providerNow },
       );
       assert.equal(new URL(runtimeUrl).hostname, disposablePooledHost);
@@ -1250,21 +1265,76 @@ test(
       }
 
       await context.test(
-        "provider/system/control-plane defaults outside the application creator path do not falsely fail",
+        "provider PUBLIC defaults outside the application creator path do not falsely fail",
         async () => {
-          await withRolledBackAuthorityMutation(adminPool, async () => {
-            await createRole(adminPool, unrelatedRole);
+          let grantInstalled = false;
+          let bodyError = null;
+          try {
             await adminPool.query(
-              "alter default privileges for role postgres grant select on tables to public with grant option",
+              "alter default privileges for role postgres grant select on tables to public",
             );
-            await adminPool.query(
-              "alter default privileges for role pg_database_owner grant execute on functions to public",
-            );
-            await adminPool.query(
-              `alter default privileges for role postgres grant select on tables to ${identifier(unrelatedRole)} with grant option`,
-            );
+            grantInstalled = true;
             await assertCompleteDormantPreflight(adminPool, target);
-          });
+          } catch (error) {
+            bodyError = error;
+          }
+          await executeDisposableCleanupActions([
+            async () => {
+              if (grantInstalled) {
+                await adminPool.query(
+                  "alter default privileges for role postgres revoke select on tables from public",
+                );
+              }
+            },
+            () => assertProviderDefaultSelectAbsent(adminPool, 0),
+          ], bodyError);
+          await assertCompleteDormantPreflight(adminPool, target);
+        },
+      );
+
+      await context.test(
+        "provider unrelated-role defaults with grant option outside the application creator path do not falsely fail",
+        async () => {
+          const providerDefaultRole =
+            `rt_provider_default_${randomUUID()}`;
+          let roleCreated = false;
+          let grantInstalled = false;
+          let bodyError = null;
+          try {
+            await createRole(adminPool, providerDefaultRole);
+            roleCreated = true;
+            await adminPool.query(
+              `alter default privileges for role postgres grant select on tables to ${identifier(providerDefaultRole)} with grant option`,
+            );
+            grantInstalled = true;
+            await assertCompleteDormantPreflight(adminPool, target);
+          } catch (error) {
+            bodyError = error;
+          }
+          await executeDisposableCleanupActions([
+            async () => {
+              if (grantInstalled) {
+                await adminPool.query(
+                  `alter default privileges for role postgres revoke select on tables from ${identifier(providerDefaultRole)}`,
+                );
+              }
+            },
+            async () => {
+              if (roleCreated) {
+                await assertProviderDefaultSelectAbsent(
+                  adminPool,
+                  providerDefaultRole,
+                );
+              }
+            },
+            async () => {
+              if (roleCreated) {
+                await dropRole(adminPool, providerDefaultRole);
+              }
+            },
+            () => assertRoleAbsent(adminPool, providerDefaultRole),
+          ], bodyError);
+          await assertCompleteDormantPreflight(adminPool, target);
         },
       );
 
@@ -1737,6 +1807,55 @@ async function grantRole(
 
 async function dropRole(pool, roleName) {
   await pool.query(`drop role if exists ${identifier(roleName)}`);
+}
+
+async function assertProviderDefaultSelectAbsent(pool, grantee) {
+  let granteeOid = grantee;
+  if (typeof grantee === "string") {
+    const role = await pool.query(
+      "select oid::int as oid from pg_roles where rolname = $1",
+      [grantee],
+    );
+    assert.equal(role.rows.length, 1);
+    granteeOid = role.rows[0].oid;
+  }
+  const result = await pool.query(
+    `
+      select not exists (
+        select 1
+        from pg_default_acl default_acl
+        cross join lateral aclexplode(default_acl.defaclacl) grant_record
+        join pg_roles owner_role on owner_role.oid = default_acl.defaclrole
+        where owner_role.rolname = 'postgres'
+          and default_acl.defaclnamespace = 0
+          and default_acl.defaclobjtype = 'r'
+          and grant_record.grantee = $1
+          and grant_record.privilege_type = 'SELECT'
+      ) as provider_default_select_absent
+    `,
+    [granteeOid],
+  );
+  assert.deepEqual(result.rows, [{ provider_default_select_absent: true }]);
+}
+
+async function assertRoleAbsent(pool, roleName) {
+  const result = await pool.query(
+    "select not exists (select 1 from pg_roles where rolname = $1) as role_absent",
+    [roleName],
+  );
+  assert.deepEqual(result.rows, [{ role_absent: true }]);
+}
+
+async function createPasswordAuthenticatedProbeClient(
+  connectionString,
+  password,
+) {
+  const client = new Client({ connectionString, password });
+  await client.connect();
+  return {
+    query: (...args) => client.query(...args),
+    end: () => client.end(),
+  };
 }
 
 function activationFixtureDefinition(name, connectionString) {
