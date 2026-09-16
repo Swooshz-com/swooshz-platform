@@ -1150,7 +1150,7 @@ test("activation summary failures distinguish missing malformed duplicate and co
   });
 });
 
-test("activation diagnostics redact runner values, URLs, tokens, and activation environment values", () => {
+test("activation diagnostics redact runner values, URLs, tokens, and activation environment values", async () => {
   const operatorPassword = "Operator_A1!private-value";
   const runtimePassword = "Runtime_A1!private-value";
   const operatorUrl =
@@ -1210,6 +1210,38 @@ test("activation diagnostics redact runner values, URLs, tokens, and activation 
   assert.doesNotMatch(
     diagnostic,
     /TERTIARY|ARBITRARY|raw-hostile-text|target=primary|stage=connect/u,
+  );
+  const childSource = await readFile(
+    "tests/platform-runtime-activation-postgres.test.mjs",
+    "utf8",
+  );
+  const admissionBoundary = childSource.match(
+    /  try \{\s*disposableFixtureAdmission = await admitDisposablePostgresFixtures\([\s\S]*?\n  \} catch \(error\) \{[\s\S]*?\n  \}\n  const primaryPool/u,
+  )?.[0];
+  assert.ok(admissionBoundary);
+  assert.match(
+    admissionBoundary,
+    /error instanceof DisposablePostgresFixtureAdmissionError/u,
+  );
+  assert.match(
+    admissionBoundary,
+    /\["PRIMARY", "SECONDARY"\]\.includes\(error\.target\)/u,
+  );
+  for (const stage of stages) {
+    assert.match(admissionBoundary, new RegExp(`"${stage}"`, "u"));
+  }
+  assert.match(
+    admissionBoundary,
+    /process\.stderr\.write\(`target=\$\{error\.target\}\\nstage=\$\{error\.stage\}\\n`\)/u,
+  );
+  assert.equal(
+    admissionBoundary.match(/process\.stderr\.write\(/gu)?.length,
+    1,
+  );
+  assert.match(admissionBoundary, /\n    throw error;\n/u);
+  assert.doesNotMatch(
+    admissionBoundary,
+    /error\.(?:message|cause|stack)|console\.(?:error|warn|log)/u,
   );
 });
 

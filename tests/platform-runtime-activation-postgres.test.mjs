@@ -29,6 +29,7 @@ import {
   RUNTIME_TABLE_GRANT_CONTRACT,
 } from "../dist/db/runtime-grant-contract.js";
 import {
+  DisposablePostgresFixtureAdmissionError,
   admitDisposablePostgresFixtures,
   createAdmittedMutationPool,
 } from "./support/disposable-postgres-fixture.mjs";
@@ -191,21 +192,40 @@ test.before(async () => {
   if (skipReason) {
     return;
   }
-  disposableFixtureAdmission = await admitDisposablePostgresFixtures(
-    approvedAdmissionFixtureUrls.map((connectionString, index) =>
-      activationFixtureDefinition(
-        index === 0 ? "primary" : "secondary",
-        connectionString,
-      ),
-    ),
-    {
-      clientFactory: (fixture) =>
-        createPasswordAuthenticatedProbeClient(
-          fixture.connectionString,
-          fixtureOperatorPassword,
+  try {
+    disposableFixtureAdmission = await admitDisposablePostgresFixtures(
+      approvedAdmissionFixtureUrls.map((connectionString, index) =>
+        activationFixtureDefinition(
+          index === 0 ? "primary" : "secondary",
+          connectionString,
         ),
-    },
-  );
+      ),
+      {
+        clientFactory: (fixture) =>
+          createPasswordAuthenticatedProbeClient(
+            fixture.connectionString,
+            fixtureOperatorPassword,
+          ),
+      },
+    );
+  } catch (error) {
+    if (
+      error instanceof DisposablePostgresFixtureAdmissionError &&
+      ["PRIMARY", "SECONDARY"].includes(error.target) &&
+      [
+        "CONNECT",
+        "BINDING",
+        "READONLY",
+        "IDENTITY",
+        "POSTURE",
+        "OWNERSHIP",
+        "EXPECTED_OBJECTS",
+      ].includes(error.stage)
+    ) {
+      process.stderr.write(`target=${error.target}\nstage=${error.stage}\n`);
+    }
+    throw error;
+  }
   const primaryPool = new Pool(operatorPostgresClientConfig(operatorUrl, 1));
   try {
     await configureContractDerivedGrantFixture(
