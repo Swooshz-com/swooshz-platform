@@ -201,12 +201,29 @@ export async function admitDisposablePostgresConstructionTargets(
     const locatorIdentities = new Set();
     const normalizedTargets = [];
     for (const target of targets) {
-      const normalized = normalizeConstructionTarget(target);
+      let normalized;
+      try {
+        normalized = normalizeConstructionTarget(target);
+      } catch (error) {
+        throw admissionErrorFor(
+          error instanceof DisposablePostgresFixtureAdmissionStageError
+            ? error
+            : new DisposablePostgresFixtureAdmissionStageError("BINDING"),
+          target?.name,
+        );
+      }
       if (names.has(normalized.name)) {
         throw new Error();
       }
       names.add(normalized.name);
-      assertDistinctCanonicalTargetLocator(locatorIdentities, normalized);
+      try {
+        assertDistinctCanonicalTargetLocator(locatorIdentities, normalized);
+      } catch {
+        throw admissionErrorFor(
+          new DisposablePostgresFixtureAdmissionStageError("BINDING"),
+          normalized.name,
+        );
+      }
       normalizedTargets.push(normalized);
     }
 
@@ -219,7 +236,14 @@ export async function admitDisposablePostgresConstructionTargets(
         builtInProbe: !readOnlyProbe,
         clientFactory,
       });
-      assertDistinctObservedPhysicalIdentity(physicalIdentities, evidence);
+      try {
+        assertDistinctObservedPhysicalIdentity(physicalIdentities, evidence);
+      } catch {
+        throw admissionErrorFor(
+          new DisposablePostgresFixtureAdmissionStageError("IDENTITY"),
+          target.name,
+        );
+      }
       admittedTargets.set(
         target.name,
         Object.freeze({
@@ -420,7 +444,17 @@ export async function admitDisposablePostgresFixture(
   } = {},
 ) {
   try {
-    const normalized = normalizeFixture(fixture);
+    let normalized;
+    try {
+      normalized = normalizeFixture(fixture);
+    } catch (error) {
+      throw admissionErrorFor(
+        error instanceof DisposablePostgresFixtureAdmissionStageError
+          ? error
+          : new DisposablePostgresFixtureAdmissionStageError("BINDING"),
+        fixture?.name,
+      );
+    }
     const evidence = await probeTarget({
       target: normalized,
       readOnlyProbe: readOnlyProbe ?? ((args) =>
@@ -459,14 +493,31 @@ export async function admitDisposablePostgresFixtures(
     const normalizedFixtures = [];
     let phase;
     for (const fixture of fixtures) {
-      const normalized = normalizeFixture(fixture);
+      let normalized;
+      try {
+        normalized = normalizeFixture(fixture);
+      } catch (error) {
+        throw admissionErrorFor(
+          error instanceof DisposablePostgresFixtureAdmissionStageError
+            ? error
+            : new DisposablePostgresFixtureAdmissionStageError("BINDING"),
+          fixture?.name,
+        );
+      }
       if (names.has(normalized.name)) {
         throw new Error();
       }
       names.add(normalized.name);
-      assertDistinctCanonicalTargetLocator(locatorIdentities, normalized);
-      if (phase && normalized.phase !== phase) {
-        throw new Error();
+      try {
+        assertDistinctCanonicalTargetLocator(locatorIdentities, normalized);
+        if (phase && normalized.phase !== phase) {
+          throw new Error();
+        }
+      } catch {
+        throw admissionErrorFor(
+          new DisposablePostgresFixtureAdmissionStageError("BINDING"),
+          normalized.name,
+        );
       }
       phase ??= normalized.phase;
       normalizedFixtures.push(normalized);
@@ -932,63 +983,63 @@ async function probeTarget({
   builtInProbe = false,
   clientFactory,
 }) {
+  let client = target.client;
+  let ownedPool = null;
+  let ownedClient = false;
+  let evidence;
+  let admissionFailure;
   try {
-    const parsedUrl = parsedUrlValues.get(target.parsedUrl);
-    if (!parsedUrl) {
-      throw new DisposablePostgresFixtureAdmissionStageError("BINDING");
-    }
-    const customProbe = readOnlyProbe ?? target.readOnlyProbe;
-    let client = target.client;
-    let ownedPool = null;
-    let ownedClient = false;
-    if (!client) {
-      await withAdmissionStage("CONNECT", async () => {
-        if (clientFactory) {
-          client = await clientFactory(target);
-          ownedClient = true;
-        } else {
-          ownedPool = new Pool({
-            connectionString: target.probeConnectionString ?? target.connectionString,
-            max: 1,
-          });
-          client = await ownedPool.connect();
-          ownedClient = true;
-        }
-      });
-    }
-    if (!client || typeof client.query !== "function") {
-      throw new DisposablePostgresFixtureAdmissionStageError("BINDING");
-    }
-    const bindingMode =
-      target.mode === "construction" && target.databaseMayBeAbsent
-        ? "creation"
-        : "probe";
-    if (
-      client.connectionParameters &&
-      !clientConnectionMatchesTarget(client, { target }, bindingMode)
-    ) {
-      throw new DisposablePostgresFixtureAdmissionStageError("BINDING");
-    }
     try {
-      const probeFixture = createReadOnlyProbeFixture(target);
-      const result = await withAdmissionStage(
-        "READONLY",
-        () => withReadOnlyProbeTransaction(
-          client,
-          probeFixture,
-          async (probeClient) => {
-            const probeResult = await customProbe({
-              client: probeClient,
-              fixture: probeFixture,
-              parsedUrl,
-              postureInspector: target.postureInspector,
+      const parsedUrl = parsedUrlValues.get(target.parsedUrl);
+      if (!parsedUrl) {
+        throw new DisposablePostgresFixtureAdmissionStageError("BINDING");
+      }
+      const customProbe = readOnlyProbe ?? target.readOnlyProbe;
+      if (!client) {
+        await withAdmissionStage("CONNECT", async () => {
+          if (clientFactory) {
+            client = await clientFactory(target);
+            ownedClient = true;
+          } else {
+            ownedPool = new Pool({
+              connectionString:
+                target.probeConnectionString ?? target.connectionString,
+              max: 1,
             });
-            assertProbeResult(probeResult, target.mode === "construction", target);
-            return probeResult;
-          },
-        ),
+            client = await ownedPool.connect();
+            ownedClient = true;
+          }
+        });
+      }
+      if (!client || typeof client.query !== "function") {
+        throw new DisposablePostgresFixtureAdmissionStageError("BINDING");
+      }
+      const bindingMode =
+        target.mode === "construction" && target.databaseMayBeAbsent
+          ? "creation"
+          : "probe";
+      if (
+        client.connectionParameters &&
+        !clientConnectionMatchesTarget(client, { target }, bindingMode)
+      ) {
+        throw new DisposablePostgresFixtureAdmissionStageError("BINDING");
+      }
+      const probeFixture = createReadOnlyProbeFixture(target);
+      const result = await withReadOnlyProbeTransaction(
+        client,
+        probeFixture,
+        async (probeClient) => {
+          const probeResult = await customProbe({
+            client: probeClient,
+            fixture: probeFixture,
+            parsedUrl,
+            postureInspector: target.postureInspector,
+          });
+          assertProbeResult(probeResult, target.mode === "construction", target);
+          return probeResult;
+        },
       );
-      return Object.freeze({
+      evidence = Object.freeze({
         catalogFingerprint: result.catalogFingerprint,
         databaseMatches: true,
         lifecycleFingerprint: result.lifecycleFingerprint,
@@ -996,17 +1047,38 @@ async function probeTarget({
         postgres17: true,
         userMatches: true,
       });
-    } finally {
-      if (ownedPool) {
+    } catch (error) {
+      admissionFailure = error;
+    }
+
+    let cleanupFailure;
+    if (ownedPool) {
+      if (ownedClient) {
         try {
-          await client.release();
-        } finally {
-          await ownedPool.end();
+          await releaseProbeClient(client);
+        } catch {
+          cleanupFailure ??=
+            new DisposablePostgresFixtureAdmissionStageError("CONNECT");
         }
-      } else if (ownedClient) {
+      }
+      try {
+        await ownedPool.end();
+      } catch {
+        cleanupFailure ??=
+          new DisposablePostgresFixtureAdmissionStageError("CONNECT");
+      }
+    } else if (ownedClient) {
+      try {
         await releaseProbeClient(client);
+      } catch {
+        cleanupFailure =
+          new DisposablePostgresFixtureAdmissionStageError("CONNECT");
       }
     }
+
+    if (admissionFailure) throw admissionFailure;
+    if (cleanupFailure) throw cleanupFailure;
+    return evidence;
   } catch (error) {
     if (error instanceof DisposablePostgresFixtureAdmissionError) {
       throw error;
@@ -1017,26 +1089,37 @@ async function probeTarget({
 
 async function withReadOnlyProbeTransaction(client, fixture, callback) {
   let transactionStarted = false;
+  let result;
+  let admissionFailure;
   try {
-    await client.query("begin");
+    await withAdmissionStage("READONLY", () => client.query("begin"));
     transactionStarted = true;
-    await client.query("set transaction read only");
-    const verification = await client.query("show transaction_read_only");
-    if (
-      !verification ||
-      !Array.isArray(verification.rows) ||
-      verification.rows.length !== 1 ||
-      String(verification.rows[0]?.transaction_read_only ?? "").toLowerCase() !==
-        "on"
-    ) {
-      throw new Error();
-    }
-    return await callback(readOnlyClient(client, fixture));
-  } finally {
-    if (transactionStarted) {
-      await client.query("rollback");
+    await withAdmissionStage("READONLY", async () => {
+      await client.query("set transaction read only");
+      const verification = await client.query("show transaction_read_only");
+      if (
+        !verification ||
+        !Array.isArray(verification.rows) ||
+        verification.rows.length !== 1 ||
+        String(verification.rows[0]?.transaction_read_only ?? "").toLowerCase() !==
+          "on"
+      ) {
+        throw new Error();
+      }
+    });
+    result = await callback(readOnlyClient(client, fixture));
+  } catch (error) {
+    admissionFailure = error;
+  }
+  if (transactionStarted) {
+    try {
+      await withAdmissionStage("READONLY", () => client.query("rollback"));
+    } catch (error) {
+      admissionFailure ??= error;
     }
   }
+  if (admissionFailure) throw admissionFailure;
+  return result;
 }
 
 async function releaseProbeClient(client) {
@@ -1626,7 +1709,10 @@ async function withAdmissionStage(stage, operation) {
   try {
     return await operation();
   } catch (error) {
-    if (error instanceof DisposablePostgresFixtureAdmissionStageError) {
+    if (
+      error instanceof DisposablePostgresFixtureAdmissionStageError ||
+      error instanceof DisposablePostgresFixtureAdmissionError
+    ) {
       throw error;
     }
     throw new DisposablePostgresFixtureAdmissionStageError(stage);
