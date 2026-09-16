@@ -369,11 +369,34 @@ async function assertObservedPhysicalIdentityCollision() {
           clientFactory: createProbeClient,
         },
       ),
-    safeAdmissionError,
+    admissionEvidence("SECONDARY", "IDENTITY"),
   );
 
   assert.equal(probeCalls, 2);
   assert.equal(mutationCalls, 0);
+
+  const unclassified = {
+    ...secondary,
+    name: "tertiary",
+    connectionString:
+      "postgres://platform_app@127.0.0.1:5434/runtime_posture_test",
+  };
+  await assert.rejects(
+    () => admitDisposablePostgresFixtures([baseFixture, unclassified], {
+      readOnlyProbe: async () => ({
+        ...(await passingProbe()),
+        catalogFingerprint: "run45-cluster-1",
+        lifecycleFingerprint: "run45-database-1",
+      }),
+      clientFactory: createProbeClient,
+    }),
+    (error) => {
+      safeAdmissionError(error);
+      assert.equal("target" in error, false);
+      assert.equal("stage" in error, false);
+      return true;
+    },
+  );
 }
 
 async function assertSeparateAggregateTargets() {

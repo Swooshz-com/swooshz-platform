@@ -483,7 +483,14 @@ export async function admitDisposablePostgresFixtures(
         builtInProbe: !options.readOnlyProbe,
         clientFactory: options.clientFactory,
       });
-      assertDistinctObservedPhysicalIdentity(physicalIdentities, evidence);
+      try {
+        assertDistinctObservedPhysicalIdentity(physicalIdentities, evidence);
+      } catch {
+        throw new DisposablePostgresFixtureAdmissionError({
+          target: normalized.name.toUpperCase(),
+          stage: "IDENTITY",
+        });
+      }
       targets.set(
         normalized.name,
         Object.freeze({ evidence, target: normalized }),
