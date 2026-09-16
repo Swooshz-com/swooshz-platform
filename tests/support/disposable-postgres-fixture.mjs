@@ -67,11 +67,33 @@ const transactionControlKeyword =
   /\b(?:begin|start\s+transaction|commit|rollback|savepoint|release\s+savepoint|rollback\s+to(?:\s+savepoint)?|prepare\s+transaction|discard)\b/iu;
 const sessionAuthorityKeyword =
   /\b(?:set|reset|load)\b|set_config\s*\(/iu;
+const admissionTargets = new Set(["PRIMARY", "SECONDARY"]);
+const admissionStages = new Set([
+  "CONNECT",
+  "BINDING",
+  "READONLY",
+  "IDENTITY",
+  "POSTURE",
+  "OWNERSHIP",
+  "EXPECTED_OBJECTS",
+]);
+
+class DisposablePostgresFixtureAdmissionStageError extends Error {
+  constructor(stage) {
+    super();
+    this.stage = stage;
+  }
+}
+
 export class DisposablePostgresFixtureAdmissionError extends Error {
-  constructor() {
+  constructor({ target, stage } = {}) {
     super("Disposable fixture admission failed.");
     this.name = "DisposablePostgresFixtureAdmissionError";
     this.code = "disposable_fixture_admission_failed";
+    if (admissionTargets.has(target) && admissionStages.has(stage)) {
+      this.target = target;
+      this.stage = stage;
+    }
   }
 }
 
@@ -905,25 +927,31 @@ async function probeTarget({
 }) {
   try {
     const parsedUrl = parsedUrlValues.get(target.parsedUrl);
-    if (!parsedUrl) throw new Error();
+    if (!parsedUrl) {
+      throw new DisposablePostgresFixtureAdmissionStageError("BINDING");
+    }
     const customProbe = readOnlyProbe ?? target.readOnlyProbe;
     let client = target.client;
     let ownedPool = null;
     let ownedClient = false;
     if (!client) {
-      if (clientFactory) {
-        client = await clientFactory(target);
-        ownedClient = true;
-      } else {
-        ownedPool = new Pool({
-          connectionString: target.probeConnectionString ?? target.connectionString,
-          max: 1,
-        });
-        client = await ownedPool.connect();
-        ownedClient = true;
-      }
+      await withAdmissionStage("CONNECT", async () => {
+        if (clientFactory) {
+          client = await clientFactory(target);
+          ownedClient = true;
+        } else {
+          ownedPool = new Pool({
+            connectionString: target.probeConnectionString ?? target.connectionString,
+            max: 1,
+          });
+          client = await ownedPool.connect();
+          ownedClient = true;
+        }
+      });
     }
-    if (!client || typeof client.query !== "function") throw new Error();
+    if (!client || typeof client.query !== "function") {
+      throw new DisposablePostgresFixtureAdmissionStageError("BINDING");
+    }
     const bindingMode =
       target.mode === "construction" && target.databaseMayBeAbsent
         ? "creation"
@@ -932,23 +960,26 @@ async function probeTarget({
       client.connectionParameters &&
       !clientConnectionMatchesTarget(client, { target }, bindingMode)
     ) {
-      throw new Error();
+      throw new DisposablePostgresFixtureAdmissionStageError("BINDING");
     }
     try {
       const probeFixture = createReadOnlyProbeFixture(target);
-      const result = await withReadOnlyProbeTransaction(
-        client,
-        probeFixture,
-        async (probeClient) => {
-          const probeResult = await customProbe({
-            client: probeClient,
-            fixture: probeFixture,
-            parsedUrl,
-            postureInspector: target.postureInspector,
-          });
-          assertProbeResult(probeResult, target.mode === "construction", target);
-          return probeResult;
-        },
+      const result = await withAdmissionStage(
+        "READONLY",
+        () => withReadOnlyProbeTransaction(
+          client,
+          probeFixture,
+          async (probeClient) => {
+            const probeResult = await customProbe({
+              client: probeClient,
+              fixture: probeFixture,
+              parsedUrl,
+              postureInspector: target.postureInspector,
+            });
+            assertProbeResult(probeResult, target.mode === "construction", target);
+            return probeResult;
+          },
+        ),
       );
       return Object.freeze({
         catalogFingerprint: result.catalogFingerprint,
@@ -973,7 +1004,7 @@ async function probeTarget({
     if (error instanceof DisposablePostgresFixtureAdmissionError) {
       throw error;
     }
-    throw new DisposablePostgresFixtureAdmissionError();
+    throw admissionErrorFor(error, target?.name);
   }
 }
 
@@ -1047,15 +1078,18 @@ async function defaultConstructionProbe({ client, fixture }) {
 }
 
 async function defaultConfiguredProbe({ client, fixture, postureInspector }) {
-  if (!postureInspector) throw new Error();
-  const identity = await readIdentity(client, fixture);
-  const posture = await postureInspector(client, fixture.expectedRuntimeRole);
-  if (posture?.runtimeRoleAuthorityPosture !== "passed") {
-    throw new Error();
+  if (!postureInspector) {
+    throw new DisposablePostgresFixtureAdmissionStageError("POSTURE");
   }
+  const identity = await readIdentity(client, fixture);
+  await withAdmissionStage("POSTURE", async () => {
+    const posture = await postureInspector(client, fixture.expectedRuntimeRole);
+    if (posture?.runtimeRoleAuthorityPosture !== "passed") throw new Error();
+  });
 
-  const ownershipResult = await client.query(
-    `
+  await withAdmissionStage("OWNERSHIP", async () => {
+    const ownershipResult = await client.query(
+      `
       select not exists (
         select 1
         from pg_roles runtime_role
@@ -1068,14 +1102,16 @@ async function defaultConfiguredProbe({ client, fixture, postureInspector }) {
             or exists (select 1 from pg_type where typowner = runtime_role.oid)
           )
       ) as ownership_absent
-    `,
-    [fixture.expectedRuntimeRole],
-  );
-  requireTrue(oneRow(ownershipResult), ["ownership_absent"]);
+      `,
+      [fixture.expectedRuntimeRole],
+    );
+    requireTrue(oneRow(ownershipResult), ["ownership_absent"]);
+  });
 
   const objects = normalizeExpectedObjects(fixture.expectedObjects);
-  const objectResult = await client.query(
-    `
+  await withAdmissionStage("EXPECTED_OBJECTS", async () => {
+    const objectResult = await client.query(
+      `
       with expected_schemas as (
         select value as schema_name
         from jsonb_array_elements_text($1::jsonb)
@@ -1134,20 +1170,21 @@ async function defaultConfiguredProbe({ client, fixture, postureInspector }) {
              and routine_record.proname = expected.object_name
              and (expected.object_kind = '*' or
                routine_record.prokind::text = expected.object_kind)) as routines_present
-    `,
-    [
-      JSON.stringify(objects.schemas),
-      JSON.stringify(objects.relations),
-      JSON.stringify(objects.sequences),
-      JSON.stringify(objects.routines),
-    ],
-  );
-  requireTrue(oneRow(objectResult), [
-    "schemas_present",
-    "relations_present",
-    "sequences_present",
-    "routines_present",
-  ]);
+      `,
+      [
+        JSON.stringify(objects.schemas),
+        JSON.stringify(objects.relations),
+        JSON.stringify(objects.sequences),
+        JSON.stringify(objects.routines),
+      ],
+    );
+    requireTrue(oneRow(objectResult), [
+      "schemas_present",
+      "relations_present",
+      "sequences_present",
+      "routines_present",
+    ]);
+  });
 
   return {
     ...identity,
@@ -1164,20 +1201,22 @@ async function defaultConfiguredProbe({ client, fixture, postureInspector }) {
 }
 
 async function readIdentity(client, fixture) {
-  const result = await client.query(identitySql, [
-    fixture.expectedDatabase,
-    fixture.expectedUser,
-  ]);
-  const row = oneRow(result);
-  requireTrue(row, [
-    "database_matches",
-    "user_matches",
-    "postgres17",
-    "non_recovery",
-  ]);
-  const catalogFingerprint = requireFingerprint(row.catalog_fingerprint);
-  const lifecycleFingerprint = requireFingerprint(row.lifecycle_fingerprint);
-  return { catalogFingerprint, lifecycleFingerprint };
+  return await withAdmissionStage("IDENTITY", async () => {
+    const result = await client.query(identitySql, [
+      fixture.expectedDatabase,
+      fixture.expectedUser,
+    ]);
+    const row = oneRow(result);
+    requireTrue(row, ["database_matches", "user_matches"]);
+    try {
+      requireTrue(row, ["postgres17", "non_recovery"]);
+    } catch {
+      throw new DisposablePostgresFixtureAdmissionStageError("POSTURE");
+    }
+    const catalogFingerprint = requireFingerprint(row.catalog_fingerprint);
+    const lifecycleFingerprint = requireFingerprint(row.lifecycle_fingerprint);
+    return { catalogFingerprint, lifecycleFingerprint };
+  });
 }
 
 async function readCreationIdentity(client, fixture) {
@@ -1536,26 +1575,70 @@ function assertReadOnlySql(text) {
 }
 
 function assertProbeResult(result, construction, target) {
-  if (!result || typeof result !== "object") throw new Error();
-  requireTrue(result, [
+  if (!result || typeof result !== "object") {
+    throw new DisposablePostgresFixtureAdmissionStageError("IDENTITY");
+  }
+  requireProbeFields(result, [
     "databaseMatches",
     "userMatches",
-    "postgres17",
-    "nonRecovery",
     "catalogIdentityPresent",
     "lifecycleIdentityPresent",
+  ], "IDENTITY");
+  requireProbeFields(result, [
+    "postgres17",
+    "nonRecovery",
     "runtimePosturePassed",
-    "ownershipAbsent",
-    "expectedObjectsPresent",
-  ]);
+  ], "POSTURE");
+  requireProbeFields(result, ["ownershipAbsent"], "OWNERSHIP");
+  requireProbeFields(result, ["expectedObjectsPresent"], "EXPECTED_OBJECTS");
   if (construction) {
-    if (typeof result.targetDatabasePresent !== "boolean") throw new Error();
+    if (typeof result.targetDatabasePresent !== "boolean") {
+      throw new DisposablePostgresFixtureAdmissionStageError("IDENTITY");
+    }
     if (!result.targetDatabasePresent && !target?.allowDatabaseCreation) {
-      throw new Error();
+      throw new DisposablePostgresFixtureAdmissionStageError("IDENTITY");
     }
   }
-  requireFingerprint(result.catalogFingerprint);
-  requireFingerprint(result.lifecycleFingerprint);
+  try {
+    requireFingerprint(result.catalogFingerprint);
+    requireFingerprint(result.lifecycleFingerprint);
+  } catch {
+    throw new DisposablePostgresFixtureAdmissionStageError("IDENTITY");
+  }
+}
+
+function requireProbeFields(result, fields, stage) {
+  try {
+    requireTrue(result, fields);
+  } catch {
+    throw new DisposablePostgresFixtureAdmissionStageError(stage);
+  }
+}
+
+async function withAdmissionStage(stage, operation) {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof DisposablePostgresFixtureAdmissionStageError) {
+      throw error;
+    }
+    throw new DisposablePostgresFixtureAdmissionStageError(stage);
+  }
+}
+
+function admissionErrorFor(error, targetName) {
+  const target = String(targetName ?? "").toUpperCase();
+  if (
+    error instanceof DisposablePostgresFixtureAdmissionStageError &&
+    admissionTargets.has(target) &&
+    admissionStages.has(error.stage)
+  ) {
+    return new DisposablePostgresFixtureAdmissionError({
+      target,
+      stage: error.stage,
+    });
+  }
+  return new DisposablePostgresFixtureAdmissionError();
 }
 
 function requireConstructionAggregate(token) {

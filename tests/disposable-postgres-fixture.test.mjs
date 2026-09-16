@@ -208,6 +208,7 @@ test("every target is admitted before mutation and a secondary failure permits z
 
   assert.deepEqual(admitted, ["primary", "secondary"]);
   assert.equal(mutationCalls, 0);
+  await assertClosedAdmissionEvidence();
   await assertCanonicalLocatorCollisions();
   await assertObservedPhysicalIdentityCollision();
   await assertSeparateAggregateTargets();
@@ -246,6 +247,97 @@ async function assertCanonicalLocatorCollisions() {
     );
     assert.deepEqual(probed, []);
   }
+}
+
+async function assertClosedAdmissionEvidence() {
+  const secondary = {
+    ...baseFixture,
+    name: "secondary",
+    connectionString:
+      "postgres://platform_app@127.0.0.1:5433/runtime_posture_test",
+  };
+  const stageCases = [
+    ["IDENTITY", { databaseMatches: false }],
+    ["POSTURE", { runtimePosturePassed: false }],
+    ["OWNERSHIP", { ownershipAbsent: false }],
+    ["EXPECTED_OBJECTS", { expectedObjectsPresent: false }],
+  ];
+
+  for (const [stage, override] of stageCases) {
+    await assert.rejects(
+      () => admitDisposablePostgresFixture(baseFixture, {
+        readOnlyProbe: async ({ fixture }) => ({
+          ...(await passingProbe({ fixture })),
+          ...override,
+        }),
+        clientFactory: createProbeClient,
+      }),
+      admissionEvidence("PRIMARY", stage),
+    );
+  }
+
+  await assert.rejects(
+    () => admitDisposablePostgresFixture(baseFixture, {
+      readOnlyProbe: passingProbe,
+      clientFactory: () => {
+        throw new Error("unsafe-internal-detail");
+      },
+    }),
+    admissionEvidence("PRIMARY", "CONNECT"),
+  );
+  await assert.rejects(
+    () => admitDisposablePostgresFixture(baseFixture, {
+      readOnlyProbe: passingProbe,
+      clientFactory: () => ({
+        connectionParameters: {
+          database: baseFixture.expectedDatabase,
+          host: "127.0.0.1",
+          port: "5433",
+          user: baseFixture.expectedUser,
+        },
+        async query() {
+          return { rows: [] };
+        },
+        release() {},
+      }),
+    }),
+    admissionEvidence("PRIMARY", "BINDING"),
+  );
+  await assert.rejects(
+    () => admitDisposablePostgresFixture(baseFixture, {
+      readOnlyProbe: passingProbe,
+      clientFactory: () => createBoundaryClient({
+        rejectQuery: "set transaction read only",
+      }),
+    }),
+    admissionEvidence("PRIMARY", "READONLY"),
+  );
+  await assert.rejects(
+    () => admitDisposablePostgresFixtures([baseFixture, secondary], {
+      readOnlyProbe: async ({ fixture }) => ({
+        ...(await passingProbe({ fixture })),
+        expectedObjectsPresent: fixture.name !== "secondary",
+      }),
+      clientFactory: createProbeClient,
+    }),
+    admissionEvidence("SECONDARY", "EXPECTED_OBJECTS"),
+  );
+
+  await assert.rejects(
+    () => admitDisposablePostgresFixtures(
+      [baseFixture, { ...baseFixture, name: "secondary" }],
+      {
+        readOnlyProbe: passingProbe,
+        clientFactory: createProbeClient,
+      },
+    ),
+    (error) => {
+      safeAdmissionError(error);
+      assert.equal("target" in error, false);
+      assert.equal("stage" in error, false);
+      return true;
+    },
+  );
 }
 
 async function assertObservedPhysicalIdentityCollision() {
@@ -812,6 +904,30 @@ function safeAdmissionError(error) {
   );
   assert.doesNotMatch(error.message, /postgres|platform_|runtime_|127|5432|localhost/i);
   return true;
+}
+
+function admissionEvidence(target, stage) {
+  return (error) => {
+    safeAdmissionError(error);
+    assert.equal(error.target, target);
+    assert.equal(error.stage, stage);
+    assert.match(error.target, /^(?:PRIMARY|SECONDARY)$/u);
+    assert.match(
+      error.stage,
+      /^(?:CONNECT|BINDING|READONLY|IDENTITY|POSTURE|OWNERSHIP|EXPECTED_OBJECTS)$/u,
+    );
+    const publicError = JSON.stringify(error);
+    assert.doesNotMatch(
+      publicError,
+      /unsafe|internal|detail|password|token|postgres(?:ql)?:|127\.0\.0\.1|5432|select|runtime_posture_test/iu,
+    );
+    assert.doesNotMatch(
+      String(error.stack),
+      /unsafe-internal-detail|password|token|postgres(?:ql)?:/iu,
+    );
+    assert.equal("cause" in error, false);
+    return true;
+  };
 }
 
 function constructionTarget(name, database) {
