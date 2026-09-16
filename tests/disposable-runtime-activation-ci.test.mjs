@@ -1165,6 +1165,26 @@ test("activation diagnostics redact runner values, URLs, tokens, and activation 
     "OWNERSHIP",
     "EXPECTED_OBJECTS",
   ];
+  const hostileTapLines = [
+    "## target=PRIMARY",
+    "# target=PRIMARY ",
+    "#target=PRIMARY",
+    "# target=PRIMARY\t",
+    "# target=primary",
+    "# target=TERTIARY",
+    "# target=PRIMARY suffix",
+    "# prefix target=PRIMARY",
+    "# target=PRIMARY;anything",
+    "# # target=PRIMARY",
+    "# target=PRIMARY\\nstage=CONNECT",
+    "# stage=connect",
+    "# stage=ARBITRARY",
+    "# stage=CONNECT suffix",
+    "# stage=CONNECT;anything",
+    "# # stage=CONNECT",
+    "# stage=CONNECT\\ntarget=PRIMARY",
+    "# arbitrary commented text",
+  ];
   const diagnostic = sanitizeActivationChildDiagnostics({
     stdout: [
       "TAP version 13",
@@ -1175,6 +1195,8 @@ test("activation diagnostics redact runner values, URLs, tokens, and activation 
       "stack: Bearer ghp_abcdefghijklmnopqrstuvwxyz",
       ...targets.map((target) => `target=${target}`),
       ...stages.map((stage) => `stage=${stage}`),
+      ...targets.map((target) => `# target=${target}`),
+      ...stages.map((stage) => `# stage=${stage}`),
       "  target: 'PRIMARY'",
       "  stage: 'EXPECTED_OBJECTS'",
       "target=TERTIARY",
@@ -1189,6 +1211,7 @@ test("activation diagnostics redact runner values, URLs, tokens, and activation 
       "target : 'PRIMARY' raw-hostile-text",
       "target: 'PRIMARY' injected raw-hostile-text",
       "stage: 'CONNECT' injected raw-hostile-text",
+      ...hostileTapLines,
     ].join("\n"),
     secretValues: [operatorPassword, runtimePassword, operatorUrl],
   });
@@ -1200,10 +1223,20 @@ test("activation diagnostics redact runner values, URLs, tokens, and activation 
   assert.match(diagnostic, /<redacted-url>/u);
   assert.match(diagnostic, /<redacted-token>/u);
   for (const target of targets) {
-    assert.match(diagnostic, new RegExp(`^target=${target}$`, "mu"));
+    assert.equal(
+      diagnostic.match(new RegExp(`^target=${target}$`, "gmu"))?.length,
+      2,
+    );
   }
   for (const stage of stages) {
-    assert.match(diagnostic, new RegExp(`^stage=${stage}$`, "mu"));
+    assert.equal(
+      diagnostic.match(new RegExp(`^stage=${stage}$`, "gmu"))?.length,
+      2,
+    );
+  }
+  assert.doesNotMatch(diagnostic, /^# (?:target|stage)=/mu);
+  for (const hostileTapLine of hostileTapLines) {
+    assert.equal(diagnostic.includes(hostileTapLine), false);
   }
   assert.match(diagnostic, /^  target: 'PRIMARY'$/mu);
   assert.match(diagnostic, /^  stage: 'EXPECTED_OBJECTS'$/mu);

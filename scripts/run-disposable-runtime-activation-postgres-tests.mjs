@@ -1039,6 +1039,10 @@ export function sanitizeActivationChildDiagnostics({
   const selected = source
     .replace(/\r\n?/gu, "\n")
     .split("\n")
+    .map((line) =>
+      /^(?:# target=(?:PRIMARY|SECONDARY)|# stage=(?:CONNECT|BINDING|READONLY|IDENTITY|POSTURE|OWNERSHIP|EXPECTED_OBJECTS))$/u.test(line)
+        ? line.slice(2)
+        : line)
     .filter((line) => {
       const value = line.trim();
       return /^(?:target(?:=(?:PRIMARY|SECONDARY)|: '(?:PRIMARY|SECONDARY)')|stage(?:=(?:CONNECT|BINDING|READONLY|IDENTITY|POSTURE|OWNERSHIP|EXPECTED_OBJECTS)|: '(?:CONNECT|BINDING|READONLY|IDENTITY|POSTURE|OWNERSHIP|EXPECTED_OBJECTS)'))$/u.test(value) ||
