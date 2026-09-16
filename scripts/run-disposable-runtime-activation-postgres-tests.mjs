@@ -570,7 +570,7 @@ export async function run({
     }
 
     const operatorUrls = resources.ports.map((port) =>
-      buildLoopbackUrl("platform_app", port));
+      buildLoopbackUrl("cloud_admin", port));
     await executeActivationReadinessChecks({
       operatorUrls,
       operatorPassword: resources.operatorPassword,
@@ -623,7 +623,7 @@ export async function run({
         name: index === 0 ? "primary" : "secondary",
         connectionString,
         expectedDatabase: databaseName,
-        expectedUser: "platform_app",
+        expectedUser: "cloud_admin",
         expectedRuntimeRole: "platform_runtime",
         expectedObjects: {
           schemas: ["public", "drizzle"],
@@ -791,7 +791,7 @@ export function ownedContainerDockerArguments(containerName, networkName) {
     "--publish",
     "127.0.0.1::5432",
     "--env",
-    "POSTGRES_USER=platform_app",
+    "POSTGRES_USER=cloud_admin",
     "--env",
     `POSTGRES_DB=${databaseName}`,
     "--env",
@@ -1127,40 +1127,87 @@ async function provisionFixture(
   let creatorEdgeEvidence = null;
   try {
     await withActivationFailure(
-      "FIXTURE_PROVISION", "MIGRATION_FAILED", target,
-      () => migrate(drizzle(pool), { migrationsFolder }),
-    );
-    await withActivationFailure(
       "FIXTURE_PROVISION", "ROLE_SETUP_FAILED", target, async () => {
+        const identity = await pool.query(`
+          select
+            current_database() = 'runtime_posture_test' as database_matches,
+            current_user = 'cloud_admin' as current_user_matches,
+            session_user = 'cloud_admin' as session_user_matches,
+            current_setting('server_version_num')::integer / 10000 = 17
+              as postgres17,
+            (select rolsuper and rolcanlogin and not rolinherit
+              from pg_roles where rolname = 'postgres') as postgres_matches
+        `);
+        if (
+          identity.rows.length !== 1 ||
+          !identity.rows[0].database_matches ||
+          !identity.rows[0].current_user_matches ||
+          !identity.rows[0].session_user_matches ||
+          !identity.rows[0].postgres17 ||
+          !identity.rows[0].postgres_matches
+        ) {
+          throw new Error();
+        }
         await pool.query(`
       do $fixture$
       begin
         if exists (
           select 1 from pg_roles
-          where rolname in ('cloud_admin', 'platform_runtime')
+          where rolname in ('platform_app', 'platform_runtime', 'platform_migrator')
         ) then
           raise exception 'unexpected fixture role';
         end if;
-        create role cloud_admin nologin noinherit superuser nocreatedb
+        alter role cloud_admin login inherit superuser nocreatedb
           nocreaterole noreplication nobypassrls;
+        create role platform_app nologin noinherit nosuperuser nocreatedb
+          nocreaterole noreplication nobypassrls password null;
         create role platform_runtime nologin noinherit nosuperuser nocreatedb
-          nocreaterole noreplication nobypassrls;
+          nocreaterole noreplication nobypassrls password null;
       end
       $fixture$
         `);
+        await pool.query(
+          `alter database ${quoteIdentifier(databaseName)} owner to cloud_admin`,
+        );
+        await pool.query("alter schema public owner to cloud_admin");
+        await pool.query("create schema if not exists drizzle authorization cloud_admin");
         await pool.query("revoke platform_runtime from platform_app");
         await pool.query("revoke platform_app from platform_runtime");
+        await pool.query(
+          `revoke create, temporary on database ${quoteIdentifier(databaseName)} from public, platform_app, platform_runtime`,
+        );
+        await pool.query(
+          "revoke all privileges on schema public, drizzle from public, platform_app, platform_runtime",
+        );
+        await pool.query("grant connect on database runtime_posture_test to platform_runtime");
+        await pool.query("grant usage on schema public to platform_runtime");
+        for (const creator of ["cloud_admin", "platform_app"]) {
+          await pool.query(
+            `alter default privileges for role ${creator} revoke all on tables from public, platform_runtime`,
+          );
+          await pool.query(
+            `alter default privileges for role ${creator} revoke all on sequences from public, platform_runtime`,
+          );
+          await pool.query(
+            `alter default privileges for role ${creator} revoke all on functions from public, platform_runtime`,
+          );
+        }
       },
+    );
+    await withActivationFailure(
+      "FIXTURE_PROVISION", "MIGRATION_FAILED", target,
+      () => migrate(drizzle(pool), { migrationsFolder }),
     );
     creatorEdgeEvidence = await establishCreatorEdge(pool, target);
     await withActivationFailure(
       "FIXTURE_PROVISION", "GRANT_CONTRACT_FAILED", target, async () => {
     await pool.query(
-      `revoke create on database ${quoteIdentifier(databaseName)} from public`,
+      `revoke create, temporary on database ${quoteIdentifier(databaseName)} from public, platform_app, platform_runtime`,
     );
-    await pool.query("revoke create on schema public from public");
-    await pool.query("revoke usage on schema drizzle from public");
-    await pool.query("revoke create on schema drizzle from public");
+    await pool.query(
+      "revoke all privileges on schema public, drizzle from public, platform_app, platform_runtime",
+    );
+    await pool.query("grant connect on database runtime_posture_test to platform_runtime");
     await pool.query("grant usage on schema public to platform_runtime");
     await pool.query(
       "revoke all privileges on all tables in schema public from platform_runtime",
@@ -1177,6 +1224,71 @@ async function provisionFixture(
     await pool.query(
       "revoke all privileges on all functions in schema public from platform_runtime",
     );
+    const posture = await pool.query(`
+      select
+        current_user = 'cloud_admin' and session_user = 'cloud_admin'
+          as operator_matches,
+        (select datdba = 'cloud_admin'::regrole
+          from pg_database where datname = current_database())
+          as database_owner_matches,
+        (select nspowner = 'cloud_admin'::regrole
+          from pg_namespace where nspname = 'public')
+          as public_owner_matches,
+        (select nspowner = 'cloud_admin'::regrole
+          from pg_namespace where nspname = 'drizzle')
+          as drizzle_owner_matches,
+        not exists (
+          select 1
+          from pg_class relation_record
+          join pg_namespace schema_record
+            on schema_record.oid = relation_record.relnamespace
+          where schema_record.nspname in ('public', 'drizzle')
+            and relation_record.relowner <> 'cloud_admin'::regrole
+        ) as relation_owners_match,
+        not exists (
+          select 1
+          from pg_proc routine_record
+          join pg_namespace schema_record
+            on schema_record.oid = routine_record.pronamespace
+          where schema_record.nspname in ('public', 'drizzle')
+            and routine_record.proowner <> 'cloud_admin'::regrole
+        ) as routine_owners_match,
+        not exists (
+          select 1
+          from pg_type type_record
+          join pg_namespace schema_record
+            on schema_record.oid = type_record.typnamespace
+          where schema_record.nspname in ('public', 'drizzle')
+            and type_record.typowner <> 'cloud_admin'::regrole
+        ) as type_owners_match,
+        not exists (
+          select 1 from pg_database database_record
+          where database_record.datdba in ('platform_app'::regrole, 'platform_runtime'::regrole)
+        ) and not exists (
+          select 1 from pg_namespace schema_record
+          where schema_record.nspowner in ('platform_app'::regrole, 'platform_runtime'::regrole)
+        ) and not exists (
+          select 1 from pg_class relation_record
+          where relation_record.relowner in ('platform_app'::regrole, 'platform_runtime'::regrole)
+        ) and not exists (
+          select 1 from pg_proc routine_record
+          where routine_record.proowner in ('platform_app'::regrole, 'platform_runtime'::regrole)
+        ) and not exists (
+          select 1 from pg_type type_record
+          where type_record.typowner in ('platform_app'::regrole, 'platform_runtime'::regrole)
+        ) as application_roles_own_nothing,
+        not has_database_privilege('platform_app', current_database(), 'CREATE')
+          and not has_database_privilege('platform_app', current_database(), 'TEMPORARY')
+          and not has_schema_privilege('platform_app', 'public', 'CREATE')
+          and not has_schema_privilege('platform_app', 'drizzle', 'CREATE')
+          as platform_app_baseline_denied
+    `);
+    if (
+      posture.rows.length !== 1 ||
+      Object.values(posture.rows[0]).some((value) => value !== true)
+    ) {
+      throw new Error();
+    }
       },
     );
     return creatorEdgeEvidence;
@@ -1305,16 +1417,21 @@ async function assertFixtureIdentity(connectionString, operatorPassword, target)
       "FIXTURE_IDENTITY", "QUERY_FAILED", target, () => pool.query(`
       select
         current_database() = 'runtime_posture_test' as database_matches,
-        current_user = 'platform_app' as current_user_matches,
-        session_user = 'platform_app' as session_user_matches,
+        current_user = 'cloud_admin' as current_user_matches,
+        session_user = 'cloud_admin' as session_user_matches,
         current_setting('server_version_num')::integer / 10000 = 17 as postgres17,
-        (select rolsuper and rolcanlogin from pg_roles where rolname = 'platform_app')
+        (select rolsuper and rolcanlogin and rolinherit and not rolcreatedb
+          and not rolcreaterole and not rolreplication and not rolbypassrls
+          from pg_roles where rolname = 'cloud_admin')
           as operator_matches,
         (select rolsuper and rolcanlogin and not rolinherit from pg_roles where rolname = 'postgres')
           as postgres_matches,
-        (select rolsuper and not rolcanlogin and not rolinherit from pg_roles where rolname = 'cloud_admin')
-          as cloud_admin_matches,
+        (select not rolcanlogin and not rolinherit and not rolsuper
+          and not rolcreatedb and not rolcreaterole and not rolreplication
+          and not rolbypassrls and rolpassword is null
+          from pg_authid where rolname = 'platform_app') as platform_app_matches,
         (select not rolcanlogin and not rolinherit and not rolsuper and not rolcreaterole
+          and not rolcreatedb and not rolreplication and not rolbypassrls
           from pg_roles where rolname = 'platform_runtime') as runtime_matches,
         (select system_identifier::text from pg_control_system())
           as system_identifier
@@ -1328,7 +1445,7 @@ async function assertFixtureIdentity(connectionString, operatorPassword, target)
       !row.postgres17 ||
       !row.operator_matches ||
       !row.postgres_matches ||
-      !row.cloud_admin_matches ||
+      !row.platform_app_matches ||
       !row.runtime_matches
     ) {
       throw activationRunnerFailure(
@@ -1755,7 +1872,7 @@ export function parentPostgresClientConfig(connectionString, operatorPassword) {
   const port = Number(parsed.port);
   if (
     parsed.protocol !== "postgresql:" ||
-    parsed.username !== "platform_app" ||
+    parsed.username !== "cloud_admin" ||
     parsed.password !== "" ||
     parsed.hostname !== "127.0.0.1" ||
     !/^[1-9][0-9]{0,4}$/u.test(parsed.port) ||
@@ -1798,7 +1915,7 @@ export async function waitForPostgresReadiness(
     let ready = false;
     try {
       const result = await pool.query(
-        "select current_user = 'platform_app' as admitted, current_setting('server_version_num')::integer / 10000 = 17 as postgres17",
+        "select current_user = 'cloud_admin' and session_user = 'cloud_admin' as admitted, current_setting('server_version_num')::integer / 10000 = 17 as postgres17",
       );
       ready = Boolean(
         result.rows[0]?.admitted && result.rows[0]?.postgres17,
@@ -2026,7 +2143,7 @@ async function observeInternalPgIsReady(spawnImpl, containerName) {
   let result;
   try {
     result = await runCommand("docker", [
-      "exec", containerName, "pg_isready", "-U", "platform_app",
+      "exec", containerName, "pg_isready", "-U", "cloud_admin",
       "-d", databaseName, "-t", "1",
     ], { spawnImpl, timeoutMs: 5_000 });
   } catch {
@@ -2126,7 +2243,7 @@ export async function runActivationChild(
     }
   }
   Object.assign(childEnvironment, {
-    PGPASSWORD: resources.operatorPassword,
+    RUNTIME_ACTIVATION_TEST_OPERATOR_PASSWORD: resources.operatorPassword,
     RUNTIME_ACTIVATION_TEST_OPERATOR_URL: operatorUrls[0],
     RUNTIME_ACTIVATION_TEST_SECOND_OPERATOR_URL: operatorUrls[1],
     RUNTIME_ACTIVATION_TEST_DOCKER_NETWORK: ownedNetworks[0],

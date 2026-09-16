@@ -67,7 +67,7 @@ const secondaryNetwork =
 const networkAlias =
   "ep-disposable-primary-001-pooler.us-east-2.aws.neon.tech";
 const primaryOperatorUrl =
-  "postgresql://platform_app@127.0.0.1:41001/runtime_posture_test";
+  "postgresql://cloud_admin@127.0.0.1:41001/runtime_posture_test";
 
 test("activation runner rejects every caller-owned activation input", () => {
   assert.doesNotThrow(() =>
@@ -80,7 +80,7 @@ test("activation runner rejects every caller-owned activation input", () => {
   }
 });
 
-test("activation runner owns exactly two ordinary bridges and two password-safe PostgreSQL 17 containers", () => {
+test("activation runner owns exactly two ordinary bridges and two password-safe PostgreSQL 17 containers", async () => {
   assert.deepEqual(ownedNetworkCreateArguments(primaryNetwork), [
     "network", "create", "--driver", "bridge", primaryNetwork,
   ]);
@@ -107,11 +107,23 @@ test("activation runner owns exactly two ordinary bridges and two password-safe 
     assert.equal(args[args.indexOf("--publish") + 1], "127.0.0.1::5432");
     assert.equal(args.at(-1), "postgres:17");
     assert.ok(args.includes("POSTGRES_PASSWORD"));
+    assert.ok(args.includes("POSTGRES_USER=cloud_admin"));
+    assert.equal(args.includes("POSTGRES_USER=platform_app"), false);
+    const identityMount = args.find((value) =>
+      value.includes("runtime-postgres-identities.sql"));
+    assert.match(
+      identityMount.replaceAll("\\", "/"),
+      /type=bind,source=.*\/tests\/support\/runtime-postgres-identities\.sql,target=\/docker-entrypoint-initdb\.d\/runtime-postgres-identities\.sql,readonly$/u,
+    );
     assert.equal(args.some((value) => /Operator_A1|Runtime_A1/u.test(value)), false);
     assert.equal(args.some((value) => /POSTGRES_HOST_AUTH_METHOD=trust/u.test(value)), false);
   }
   assert.throws(() =>
     ownedContainerDockerArguments(primaryContainer, secondaryNetwork));
+  assert.equal(
+    await readFile("tests/support/runtime-postgres-identities.sql", "utf8"),
+    "CREATE ROLE postgres WITH SUPERUSER LOGIN NOINHERIT;\n",
+  );
 });
 
 test("activation migration prefix contains exactly journal entries and SQL 0000 through 0009", async () => {
@@ -529,7 +541,7 @@ test("activation readiness keeps the exact predicate and fixed retry budget", as
       options.connectionTimeoutMillis === 1_000 &&
       options.max === 1 &&
       options.password === "private-password" &&
-      options.user === "platform_app" &&
+      options.user === "cloud_admin" &&
       options.host === "127.0.0.1" &&
       options.port === 41001 &&
       options.database === "runtime_posture_test" &&
@@ -554,7 +566,7 @@ test("activation readiness keeps the exact predicate and fixed retry budget", as
     lastProbe: "UNKNOWN",
   });
   assert.deepEqual(readyQueries, [
-    "select current_user = 'platform_app' as admitted, current_setting('server_version_num')::integer / 10000 = 17 as postgres17",
+    "select current_user = 'cloud_admin' and session_user = 'cloud_admin' as admitted, current_setting('server_version_num')::integer / 10000 = 17 as postgres17",
   ]);
 
   class ReadyWithEndFailurePool extends ReadyPool {
@@ -598,7 +610,7 @@ test("parent PostgreSQL config keeps the generated password explicit without env
       generatedPassword,
     );
     assert.deepEqual(config, {
-      user: "platform_app",
+      user: "cloud_admin",
       host: "127.0.0.1",
       port: 41001,
       database: "runtime_posture_test",
@@ -617,18 +629,19 @@ test("parent PostgreSQL config fails closed without exposing credentials", () =>
   const generatedPassword = "Operator_A1!never-emit-this";
   const invalidInputs = [
     "not-a-uri",
-    "postgres://platform_app@127.0.0.1:41001/runtime_posture_test",
-    "postgresql://platform_app:uri-secret@127.0.0.1:41001/runtime_posture_test",
-    "postgresql://platform_app@localhost:41001/runtime_posture_test",
-    "postgresql://platform_app@127.0.0.2:41001/runtime_posture_test",
-    "postgresql://platform_app@127.0.0.1/runtime_posture_test",
-    "postgresql://platform_app@127.0.0.1:0/runtime_posture_test",
-    "postgresql://platform_app@127.0.0.1:65536/runtime_posture_test",
-    "postgresql://platform_app@127.0.0.1:041001/runtime_posture_test",
-    "postgresql://platform-app@127.0.0.1:41001/runtime_posture_test",
+    "postgres://cloud_admin@127.0.0.1:41001/runtime_posture_test",
+    "postgresql://cloud_admin:uri-secret@127.0.0.1:41001/runtime_posture_test",
+    "postgresql://cloud_admin@localhost:41001/runtime_posture_test",
+    "postgresql://cloud_admin@127.0.0.2:41001/runtime_posture_test",
+    "postgresql://cloud_admin@127.0.0.1/runtime_posture_test",
+    "postgresql://cloud_admin@127.0.0.1:0/runtime_posture_test",
+    "postgresql://cloud_admin@127.0.0.1:65536/runtime_posture_test",
+    "postgresql://cloud_admin@127.0.0.1:041001/runtime_posture_test",
+    "postgresql://platform_app@127.0.0.1:41001/runtime_posture_test",
     "postgresql://postgres@127.0.0.1:41001/runtime_posture_test",
-    "postgresql://platform_app@127.0.0.1:41001/runtime-posture-test",
-    "postgresql://platform_app@127.0.0.1:41001/other_database",
+    "postgresql://cloud-admin@127.0.0.1:41001/runtime_posture_test",
+    "postgresql://cloud_admin@127.0.0.1:41001/runtime-posture-test",
+    "postgresql://cloud_admin@127.0.0.1:41001/other_database",
     `${primaryOperatorUrl}?sslmode=disable`,
     `${primaryOperatorUrl}#fragment`,
   ];
@@ -1141,7 +1154,7 @@ test("activation diagnostics redact runner values, URLs, tokens, and activation 
   const operatorPassword = "Operator_A1!private-value";
   const runtimePassword = "Runtime_A1!private-value";
   const operatorUrl =
-    `postgresql://platform_app:${operatorPassword}@127.0.0.1:54321/runtime_posture_test`;
+    `postgresql://cloud_admin:${operatorPassword}@127.0.0.1:54321/runtime_posture_test`;
   const diagnostic = sanitizeActivationChildDiagnostics({
     stdout: [
       "TAP version 13",
@@ -1247,8 +1260,8 @@ test("activation child classifies injected spawn exit signal timeout overflow an
     runtimePassword: runtimeSecret,
   });
   const urls = [
-    "postgresql://platform_app@127.0.0.1:41001/runtime_posture_test",
-    "postgresql://platform_app@127.0.0.1:41002/runtime_posture_test",
+    "postgresql://cloud_admin@127.0.0.1:41001/runtime_posture_test",
+    "postgresql://cloud_admin@127.0.0.1:41002/runtime_posture_test",
   ];
   const cases = [
     ["SPAWN_FAILED", () => { throw new Error("raw spawn detail"); }],
@@ -1367,6 +1380,33 @@ test("activation runner source launches only the contracted child and clears cre
     /\["--test", "tests\/platform-runtime-activation-postgres\.test\.mjs"\]/u,
   );
   assert.match(source, /RUNTIME_ACTIVATION_TEST_RUNTIME_PASSWORD/u);
+  assert.match(source, /RUNTIME_ACTIVATION_TEST_OPERATOR_PASSWORD/u);
+  assert.doesNotMatch(source, /\bPGPASSWORD\s*:/u);
+  assert.doesNotMatch(source, /buildLoopbackUrl\("platform_app"/u);
+  assert.match(source, /buildLoopbackUrl\("cloud_admin"/u);
+  assert.match(source, /expectedUser: "cloud_admin"/u);
+  assert.match(source, /POSTGRES_USER=cloud_admin/u);
+  assert.doesNotMatch(source, /POSTGRES_USER=platform_app/u);
+  assert.match(
+    source,
+    /current_user = 'cloud_admin'[\s\S]*session_user = 'cloud_admin'/u,
+  );
+  assert.match(
+    source,
+    /alter role cloud_admin login inherit superuser nocreatedb[\s\S]*create role platform_app nologin noinherit nosuperuser nocreatedb[\s\S]*password null/u,
+  );
+  assert.match(
+    source,
+    /alter database \$\{quoteIdentifier\(databaseName\)\} owner to cloud_admin[\s\S]*alter schema public owner to cloud_admin[\s\S]*create schema if not exists drizzle authorization cloud_admin/u,
+  );
+  assert.match(
+    source,
+    /application_roles_own_nothing[\s\S]*platform_app_baseline_denied/u,
+  );
+  assert.match(
+    source,
+    /\(implementations\.provisionFixture \?\? provisionFixture\)[\s\S]*assertFixtureIdentity/u,
+  );
   assert.match(source, /clearCredentialState/u);
   assert.match(source, /assertExactDockerResourcesAbsent/u);
   assert.match(source, /await executeActivationReadinessChecks\(\{/u);
@@ -1390,6 +1430,45 @@ test("activation runner source launches only the contracted child and clears cre
   );
   assert.doesNotMatch(source, /ACCEPTED_AFTER_RETRY|acceptanceRetry/iu);
   assert.doesNotMatch(source, /docker push|deploy|DROP OWNED|REASSIGN OWNED|CASCADE/iu);
+  const childSource = await readFile(
+    "tests/platform-runtime-activation-postgres.test.mjs",
+    "utf8",
+  );
+  assert.match(
+    childSource,
+    /const fixtureOperatorPassword =\s*process\.env\.RUNTIME_ACTIVATION_TEST_OPERATOR_PASSWORD/u,
+  );
+  assert.doesNotMatch(childSource, /process\.env\.PGPASSWORD/u);
+  assert.doesNotMatch(
+    childSource,
+    /new (?:Client|Pool)\(\{\s*connectionString/u,
+  );
+  assert.match(childSource, /new Client\(\s*operatorPostgresClientConfig/u);
+  assert.match(childSource, /new Pool\(operatorPostgresClientConfig/u);
+  assert.match(
+    childSource,
+    /new Pool\(\s*loopbackRuntimeClientConfig\(runtimeUrl, operatorUrl, 1\)/u,
+  );
+  assert.match(
+    childSource,
+    /user: decodeURIComponent\(logical\.username\)[\s\S]*host: fixture\.hostname[\s\S]*password: decodeURIComponent\(logical\.password\)/u,
+  );
+  assert.match(
+    childSource,
+    /logical\.username !== "platform_runtime"[\s\S]*fixture\.username !== "cloud_admin"/u,
+  );
+  assert.match(
+    childSource,
+    /state\.operator, "cloud_admin"[\s\S]*state\.platform_app, \{[\s\S]*login: false[\s\S]*password_null: true/u,
+  );
+  assert.match(
+    childSource,
+    /state\.cloud_admin_owns_database, true[\s\S]*state\.creator_edges/u,
+  );
+  assert.match(
+    childSource,
+    /create role platform_migrator nologin[\s\S]*alter default privileges for role platform_migrator grant update/u,
+  );
 });
 
 function exactCreatorEdgeRow() {
