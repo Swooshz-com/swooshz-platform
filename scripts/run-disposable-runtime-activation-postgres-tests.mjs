@@ -463,8 +463,10 @@ export async function run({
       {
         clientFactory: async (target) => {
           const client = new Client({
-            connectionString: target.connectionString,
-            password: resources.operatorPassword,
+            ...parentPostgresClientConfig(
+              target.connectionString,
+              resources.operatorPassword,
+            ),
           });
           await client.connect();
           return {
@@ -943,8 +945,7 @@ async function provisionFixture(
   target,
 ) {
   const pool = new Pool({
-    connectionString,
-    password: operatorPassword,
+    ...parentPostgresClientConfig(connectionString, operatorPassword),
     max: 1,
   });
   try {
@@ -1033,8 +1034,7 @@ async function provisionFixture(
 
 async function assertFixtureIdentity(connectionString, operatorPassword, target) {
   const pool = new Pool({
-    connectionString,
-    password: operatorPassword,
+    ...parentPostgresClientConfig(connectionString, operatorPassword),
     max: 1,
   });
   try {
@@ -1471,6 +1471,50 @@ async function topologyCommand(spawnImpl, args, category, target) {
   }
 }
 
+export function parentPostgresClientConfig(connectionString, operatorPassword) {
+  const invalid = () => {
+    throw new TypeError("Invalid parent PostgreSQL client configuration");
+  };
+  if (
+    typeof connectionString !== "string" ||
+    typeof operatorPassword !== "string" ||
+    operatorPassword.length === 0
+  ) {
+    return invalid();
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(connectionString);
+  } catch {
+    return invalid();
+  }
+  const port = Number(parsed.port);
+  if (
+    parsed.protocol !== "postgresql:" ||
+    parsed.username !== "platform_app" ||
+    parsed.password !== "" ||
+    parsed.hostname !== "127.0.0.1" ||
+    !/^[1-9][0-9]{0,4}$/u.test(parsed.port) ||
+    !Number.isInteger(port) ||
+    port > 65_535 ||
+    parsed.pathname !== `/${databaseName}` ||
+    parsed.search !== "" ||
+    parsed.hash !== "" ||
+    parsed.href !== connectionString
+  ) {
+    return invalid();
+  }
+
+  return {
+    user: parsed.username,
+    host: parsed.hostname,
+    port,
+    database: databaseName,
+    password: operatorPassword,
+  };
+}
+
 export async function waitForPostgresReadiness(
   connectionString,
   operatorPassword,
@@ -1483,8 +1527,7 @@ export async function waitForPostgresReadiness(
     attempt += 1
   ) {
     const pool = new PoolImpl({
-      connectionString,
-      password: operatorPassword,
+      ...parentPostgresClientConfig(connectionString, operatorPassword),
       connectionTimeoutMillis: ACTIVATION_READINESS_CONNECTION_TIMEOUT_MS,
       max: 1,
     });

@@ -41,6 +41,7 @@ import {
   isUnsafeInitialOperationalBinding,
   ownedContainerDockerArguments,
   ownedNetworkCreateArguments,
+  parentPostgresClientConfig,
   parseActivationTestSummary,
   runActivationChild,
   sanitizeActivationChildDiagnostics,
@@ -60,6 +61,8 @@ const secondaryNetwork =
   "codex-platform169-activation-secondary-net";
 const networkAlias =
   "ep-disposable-primary-001-pooler.us-east-2.aws.neon.tech";
+const primaryOperatorUrl =
+  "postgresql://platform_app@127.0.0.1:41001/runtime_posture_test";
 
 test("activation runner rejects every caller-owned activation input", () => {
   assert.doesNotThrow(() =>
@@ -293,7 +296,7 @@ test("activation readiness keeps the exact predicate and fixed retry budget", as
     async end() {}
   }
   const mismatch = await waitForPostgresReadiness(
-    "private-connection-string",
+    primaryOperatorUrl,
     "private-password",
     { PoolImpl: MismatchPool, delayImpl: async () => assert.fail("no delay") },
   );
@@ -308,7 +311,12 @@ test("activation readiness keeps the exact predicate and fixed retry budget", as
     poolOptions.every((options) =>
       options.connectionTimeoutMillis === 1_000 &&
       options.max === 1 &&
-      options.password === "private-password"),
+      options.password === "private-password" &&
+      options.user === "platform_app" &&
+      options.host === "127.0.0.1" &&
+      options.port === 41001 &&
+      options.database === "runtime_posture_test" &&
+      !Object.hasOwn(options, "connectionString")),
     true,
   );
 
@@ -320,7 +328,7 @@ test("activation readiness keeps the exact predicate and fixed retry budget", as
     }
     async end() {}
   }
-  assert.deepEqual(await waitForPostgresReadiness("private", "private", {
+  assert.deepEqual(await waitForPostgresReadiness(primaryOperatorUrl, "private", {
     PoolImpl: ReadyPool,
   }), {
     outcome: "READY",
@@ -335,7 +343,7 @@ test("activation readiness keeps the exact predicate and fixed retry budget", as
   class ReadyWithEndFailurePool extends ReadyPool {
     async end() { throw new Error("private pool end failure"); }
   }
-  assert.deepEqual(await waitForPostgresReadiness("private", "private", {
+  assert.deepEqual(await waitForPostgresReadiness(primaryOperatorUrl, "private", {
     PoolImpl: ReadyWithEndFailurePool,
   }), {
     outcome: "TIMEOUT",
@@ -349,14 +357,118 @@ test("activation readiness keeps the exact predicate and fixed retry budget", as
     async query() { throw Object.assign(new Error(), { code: "ECONNREFUSED" }); }
     async end() {}
   }
-  const refused = await waitForPostgresReadiness("private", "private", {
+  const refused = await waitForPostgresReadiness(
+    primaryOperatorUrl,
+    "private",
+    {
     PoolImpl: RefusedPool,
     delayImpl: async (milliseconds) => delays.push(milliseconds),
-  });
+    },
+  );
   assert.equal(refused.attempts, 240);
   assert.equal(refused.aggregateProbe, "CONNECTION_REFUSED");
   assert.equal(delays.length, 240);
   assert.equal(delays.every((milliseconds) => milliseconds === 500), true);
+});
+
+test("parent PostgreSQL config keeps the generated password explicit without environment fallback", () => {
+  const previousPassword = process.env.PGPASSWORD;
+  delete process.env.PGPASSWORD;
+  try {
+    const generatedPassword = "Operator_A1!generated-private-value";
+    const config = parentPostgresClientConfig(
+      primaryOperatorUrl,
+      generatedPassword,
+    );
+    assert.deepEqual(config, {
+      user: "platform_app",
+      host: "127.0.0.1",
+      port: 41001,
+      database: "runtime_posture_test",
+      password: generatedPassword,
+    });
+    assert.equal(typeof config.password, "string");
+    assert.equal(Object.hasOwn(config, "connectionString"), false);
+    assert.equal(new URL(primaryOperatorUrl).password, "");
+  } finally {
+    if (previousPassword === undefined) delete process.env.PGPASSWORD;
+    else process.env.PGPASSWORD = previousPassword;
+  }
+});
+
+test("parent PostgreSQL config fails closed without exposing credentials", () => {
+  const generatedPassword = "Operator_A1!never-emit-this";
+  const invalidInputs = [
+    "not-a-uri",
+    "postgres://platform_app@127.0.0.1:41001/runtime_posture_test",
+    "postgresql://platform_app:uri-secret@127.0.0.1:41001/runtime_posture_test",
+    "postgresql://platform_app@localhost:41001/runtime_posture_test",
+    "postgresql://platform_app@127.0.0.2:41001/runtime_posture_test",
+    "postgresql://platform_app@127.0.0.1/runtime_posture_test",
+    "postgresql://platform_app@127.0.0.1:0/runtime_posture_test",
+    "postgresql://platform_app@127.0.0.1:65536/runtime_posture_test",
+    "postgresql://platform_app@127.0.0.1:041001/runtime_posture_test",
+    "postgresql://platform-app@127.0.0.1:41001/runtime_posture_test",
+    "postgresql://postgres@127.0.0.1:41001/runtime_posture_test",
+    "postgresql://platform_app@127.0.0.1:41001/runtime-posture-test",
+    "postgresql://platform_app@127.0.0.1:41001/other_database",
+    `${primaryOperatorUrl}?sslmode=disable`,
+    `${primaryOperatorUrl}#fragment`,
+  ];
+  for (const connectionString of invalidInputs) {
+    assert.throws(
+      () => parentPostgresClientConfig(connectionString, generatedPassword),
+      (error) => {
+        const diagnostic = String(error);
+        assert.equal(
+          diagnostic,
+          "TypeError: Invalid parent PostgreSQL client configuration",
+        );
+        assert.doesNotMatch(
+          diagnostic,
+          /never-emit-this|uri-secret|postgresql:\/\//u,
+        );
+        return true;
+      },
+    );
+  }
+  for (const password of [undefined, null, 42, ""]) {
+    assert.throws(
+      () => parentPostgresClientConfig(primaryOperatorUrl, password),
+      /Invalid parent PostgreSQL client configuration/u,
+    );
+  }
+});
+
+test("all four parent PostgreSQL construction surfaces use the explicit config helper", async () => {
+  const source = await readFile(
+    "scripts/run-disposable-runtime-activation-postgres-tests.mjs",
+    "utf8",
+  );
+  assert.equal(
+    source.match(/\.\.\.parentPostgresClientConfig\(/gu)?.length,
+    4,
+  );
+  assert.match(
+    source,
+    /clientFactory: async \(target\) => \{[\s\S]*?new Client\(\{[\s\S]*?\.\.\.parentPostgresClientConfig\(\s*target\.connectionString,\s*resources\.operatorPassword,/u,
+  );
+  assert.match(
+    source,
+    /async function provisionFixture\([\s\S]*?new Pool\(\{\s*\.\.\.parentPostgresClientConfig\(connectionString, operatorPassword\),/u,
+  );
+  assert.match(
+    source,
+    /async function assertFixtureIdentity\([\s\S]*?new Pool\(\{\s*\.\.\.parentPostgresClientConfig\(connectionString, operatorPassword\),/u,
+  );
+  assert.match(
+    source,
+    /export async function waitForPostgresReadiness\([\s\S]*?new PoolImpl\(\{\s*\.\.\.parentPostgresClientConfig\(connectionString, operatorPassword\),/u,
+  );
+  assert.doesNotMatch(
+    source,
+    /new (?:Client|Pool|PoolImpl)\(\{\s*connectionString,\s*password:/u,
+  );
 });
 
 test("activation readiness settles both targets once and attributes terminal evidence independently", async () => {
