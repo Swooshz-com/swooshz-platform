@@ -65,6 +65,26 @@ export const ACTIVATION_READINESS_MAX_ATTEMPTS = 240;
 export const ACTIVATION_READINESS_CONNECTION_TIMEOUT_MS = 1_000;
 export const ACTIVATION_READINESS_ERROR_BACKOFF_MS = 500;
 
+export const ACTIVATION_CREATOR_EDGE_EVIDENCE_CONTRACT = Object.freeze({
+  TARGET: Object.freeze(["PRIMARY", "SECONDARY"]),
+  SUBSTEP: Object.freeze([
+    "POOL_ACQUISITION",
+    "SESSION_AUTHORIZATION_SET",
+    "CREATOR_EDGE_GRANT",
+    "SESSION_AUTHORIZATION_RESET",
+    "CREATOR_EDGE_MEMBERSHIP_READBACK",
+    "NOT_REACHED",
+  ]),
+  RESULT: Object.freeze([
+    "FAILED",
+    "EXACT",
+    "ABSENT",
+    "MISMATCH",
+    "UNAVAILABLE",
+    "NOT_REACHED",
+  ]),
+});
+
 const readinessProbeCategories = Object.freeze([
   "CONNECTION_REFUSED",
   "CONNECTION_TIMEOUT",
@@ -236,6 +256,151 @@ export function formatActivationRunnerFailure(error) {
       ).join("\n")}`
       : topologyReceipt;
   }).join("\n");
+}
+
+export function formatActivationCreatorEdgeEvidence(evidence) {
+  assertActivationCreatorEdgeEvidence(evidence);
+  return "ACTIVATION_CREATOR_EDGE_EVIDENCE " +
+    `TARGET=${evidence.TARGET} SUBSTEP=${evidence.SUBSTEP} ` +
+    `RESULT=${evidence.RESULT}`;
+}
+
+export function classifyCreatorEdgeMembershipReadback(result, target) {
+  if (!ACTIVATION_CREATOR_EDGE_EVIDENCE_CONTRACT.TARGET.includes(target)) {
+    throw new TypeError("Invalid creator-edge evidence");
+  }
+  if (!result || !Array.isArray(result.rows)) {
+    return creatorEdgeEvidence(
+      target,
+      "CREATOR_EDGE_MEMBERSHIP_READBACK",
+      "UNAVAILABLE",
+    );
+  }
+  if (result.rows.length === 0) {
+    return creatorEdgeEvidence(
+      target,
+      "CREATOR_EDGE_MEMBERSHIP_READBACK",
+      "ABSENT",
+    );
+  }
+  const [row] = result.rows;
+  const exact = result.rows.length === 1 &&
+    row?.granted_role === "platform_runtime" &&
+    row.member === "platform_app" &&
+    row.grantor === "cloud_admin" &&
+    row.admin_option === true &&
+    row.inherit_option === false &&
+    row.set_option === false;
+  return creatorEdgeEvidence(
+    target,
+    "CREATOR_EDGE_MEMBERSHIP_READBACK",
+    exact ? "EXACT" : "MISMATCH",
+  );
+}
+
+export async function settleCreatorEdgeProvisioning(operations) {
+  if (
+    !Array.isArray(operations) ||
+    operations.length !== 2 ||
+    operations[0]?.target !== "PRIMARY" ||
+    operations[1]?.target !== "SECONDARY" ||
+    operations.some((entry) => typeof entry?.operation !== "function")
+  ) {
+    throw new TypeError("Invalid creator-edge provisioning operations");
+  }
+
+  const settled = await Promise.allSettled(
+    operations.map((entry) => entry.operation()),
+  );
+  const evidence = [];
+  const failures = [];
+  for (let index = 0; index < settled.length; index += 1) {
+    const target = operations[index].target;
+    const outcome = settled[index];
+    if (outcome.status === "fulfilled") {
+      if (isActivationCreatorEdgeEvidence(outcome.value)) {
+        evidence.push(outcome.value);
+      } else {
+        evidence.push(creatorEdgeEvidence(target, "NOT_REACHED", "NOT_REACHED"));
+      }
+      continue;
+    }
+
+    const failure = outcome.reason?.activationRunnerFailure === true ||
+      outcome.reason instanceof AggregateError
+      ? outcome.reason
+      : activationRunnerFailure(
+        "FIXTURE_PROVISION",
+        "GRANT_CONTRACT_FAILED",
+        target,
+      );
+    failures.push(failure);
+    const failureEvidence = creatorEdgeEvidenceForError(failure);
+    if (failureEvidence.length > 0) {
+      evidence.push(...failureEvidence);
+    } else {
+      evidence.push(creatorEdgeEvidence(target, "NOT_REACHED", "NOT_REACHED"));
+    }
+  }
+
+  return Object.freeze({
+    evidence: Object.freeze(evidence),
+    error: failures.length === 0
+      ? null
+      : failures.length === 1
+        ? failures[0]
+        : new AggregateError(failures),
+  });
+}
+
+function creatorEdgeFailure(target, substep, result) {
+  const error = activationRunnerFailure(
+    "FIXTURE_PROVISION",
+    "CREATOR_EDGE_FAILED",
+    target,
+  );
+  error.activationCreatorEdgeEvidence = Object.freeze([
+    creatorEdgeEvidence(target, substep, result),
+  ]);
+  return error;
+}
+
+function creatorEdgeEvidence(target, substep, result) {
+  const evidence = Object.freeze({ TARGET: target, SUBSTEP: substep, RESULT: result });
+  assertActivationCreatorEdgeEvidence(evidence);
+  return evidence;
+}
+
+function creatorEdgeEvidenceForError(error) {
+  if (error instanceof AggregateError) {
+    return error.errors.flatMap((value) => creatorEdgeEvidenceForError(value));
+  }
+  const evidence = error?.activationCreatorEdgeEvidence;
+  if (!Array.isArray(evidence)) return [];
+  evidence.forEach(assertActivationCreatorEdgeEvidence);
+  return evidence;
+}
+
+function isActivationCreatorEdgeEvidence(evidence) {
+  try {
+    assertActivationCreatorEdgeEvidence(evidence);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function assertActivationCreatorEdgeEvidence(evidence) {
+  if (
+    !evidence ||
+    typeof evidence !== "object" ||
+    Object.keys(evidence).sort().join(",") !== "RESULT,SUBSTEP,TARGET" ||
+    !ACTIVATION_CREATOR_EDGE_EVIDENCE_CONTRACT.TARGET.includes(evidence.TARGET) ||
+    !ACTIVATION_CREATOR_EDGE_EVIDENCE_CONTRACT.SUBSTEP.includes(evidence.SUBSTEP) ||
+    !ACTIVATION_CREATOR_EDGE_EVIDENCE_CONTRACT.RESULT.includes(evidence.RESULT)
+  ) {
+    throw new TypeError("Invalid creator-edge evidence");
+  }
 }
 
 export async function executeActivationCleanupActions(actions, bodyError = null) {
@@ -417,15 +582,26 @@ export async function run({
         implementations.collectReadinessEvidence ??
           collectActivationReadinessEvidence,
     });
-    await Promise.all(operatorUrls.map((url, index) => withActivationFailure(
-      "FIXTURE_PROVISION", "GRANT_CONTRACT_FAILED", targetForIndex(index),
-      () => (implementations.provisionFixture ?? provisionFixture)(
-        url,
-        resources.operatorPassword,
-        resources.migrationPrefix.migrationsFolder,
-        targetForIndex(index),
-      ),
-    )));
+    const provisioning = await settleCreatorEdgeProvisioning(
+      operatorUrls.map((url, index) => ({
+        target: targetForIndex(index),
+        operation: () => withActivationFailure(
+          "FIXTURE_PROVISION", "GRANT_CONTRACT_FAILED", targetForIndex(index),
+          () => (implementations.provisionFixture ?? provisionFixture)(
+            url,
+            resources.operatorPassword,
+            resources.migrationPrefix.migrationsFolder,
+            targetForIndex(index),
+          ),
+        ),
+      })),
+    );
+    process.stdout.write(
+      `${provisioning.evidence.map(
+        formatActivationCreatorEdgeEvidence,
+      ).join("\n")}\n`,
+    );
+    if (provisioning.error) throw provisioning.error;
     const systemIdentifiers = await Promise.all(
       operatorUrls.map((url, index) => withActivationFailure(
         "FIXTURE_IDENTITY", "QUERY_FAILED", targetForIndex(index),
@@ -948,6 +1124,7 @@ async function provisionFixture(
     ...parentPostgresClientConfig(connectionString, operatorPassword),
     max: 1,
   });
+  let creatorEdgeEvidence = null;
   try {
     await withActivationFailure(
       "FIXTURE_PROVISION", "MIGRATION_FAILED", target,
@@ -975,32 +1152,7 @@ async function provisionFixture(
         await pool.query("revoke platform_app from platform_runtime");
       },
     );
-    const creatorEdgeClient = await withActivationFailure(
-      "FIXTURE_PROVISION", "CREATOR_EDGE_FAILED", target,
-      () => pool.connect(),
-    );
-    let creatorEdgeError = null;
-    try {
-      await creatorEdgeClient.query("set session authorization cloud_admin");
-      await creatorEdgeClient.query(
-        "grant platform_runtime to platform_app with admin true, set false, inherit false granted by cloud_admin",
-      );
-    } catch (error) {
-      creatorEdgeError = activationRunnerFailure(
-        "FIXTURE_PROVISION", "CREATOR_EDGE_FAILED", target,
-      );
-    } finally {
-      try {
-        await executeActivationCleanupActions([
-          cleanupAction(
-            "FIXTURE_PROVISION", "CREATOR_EDGE_FAILED", target,
-            () => creatorEdgeClient.query("reset session authorization"),
-          ),
-        ], creatorEdgeError);
-      } finally {
-        creatorEdgeClient.release(true);
-      }
-    }
+    creatorEdgeEvidence = await establishCreatorEdge(pool, target);
     await withActivationFailure(
       "FIXTURE_PROVISION", "GRANT_CONTRACT_FAILED", target, async () => {
     await pool.query(
@@ -1027,9 +1179,120 @@ async function provisionFixture(
     );
       },
     );
+    return creatorEdgeEvidence;
+  } catch (error) {
+    if (
+      creatorEdgeEvidence &&
+      creatorEdgeEvidenceForError(error).length === 0
+    ) {
+      error.activationCreatorEdgeEvidence = Object.freeze([
+        creatorEdgeEvidence,
+      ]);
+    }
+    throw error;
   } finally {
     await pool.end();
   }
+}
+
+export async function establishCreatorEdge(pool, target) {
+  let creatorEdgeClient;
+  try {
+    creatorEdgeClient = await pool.connect();
+  } catch {
+    throw creatorEdgeFailure(target, "POOL_ACQUISITION", "FAILED");
+  }
+
+  let bodyError = null;
+  let resetError = null;
+  try {
+    try {
+      await creatorEdgeClient.query("set session authorization cloud_admin");
+    } catch {
+      bodyError = creatorEdgeFailure(
+        target,
+        "SESSION_AUTHORIZATION_SET",
+        "FAILED",
+      );
+    }
+    if (!bodyError) {
+      try {
+        await creatorEdgeClient.query(
+          "grant platform_runtime to platform_app with admin true, set false, inherit false granted by cloud_admin",
+        );
+      } catch {
+        bodyError = creatorEdgeFailure(
+          target,
+          "CREATOR_EDGE_GRANT",
+          "FAILED",
+        );
+      }
+    }
+  } finally {
+    try {
+      await creatorEdgeClient.query("reset session authorization");
+    } catch {
+      resetError = creatorEdgeFailure(
+        target,
+        "SESSION_AUTHORIZATION_RESET",
+        "FAILED",
+      );
+    } finally {
+      creatorEdgeClient.release(true);
+    }
+  }
+
+  if (bodyError && resetError) {
+    const failure = activationRunnerFailure(
+      "FIXTURE_PROVISION",
+      "CREATOR_EDGE_FAILED",
+      target,
+    );
+    failure.activationCreatorEdgeEvidence = Object.freeze([
+      ...bodyError.activationCreatorEdgeEvidence,
+      ...resetError.activationCreatorEdgeEvidence,
+    ]);
+    throw failure;
+  }
+  if (bodyError) throw bodyError;
+  if (resetError) throw resetError;
+
+  let result;
+  try {
+    result = await pool.query(`
+      select
+        granted_role.rolname as granted_role,
+        member_role.rolname as member,
+        grantor_role.rolname as grantor,
+        membership.admin_option,
+        membership.inherit_option,
+        membership.set_option
+      from pg_auth_members membership
+      join pg_roles granted_role on granted_role.oid = membership.roleid
+      join pg_roles member_role on member_role.oid = membership.member
+      join pg_roles grantor_role on grantor_role.oid = membership.grantor
+      where granted_role.rolname = 'platform_runtime'
+         or member_role.rolname = 'platform_runtime'
+         or grantor_role.rolname = 'platform_runtime'
+      order by granted_role.rolname, member_role.rolname, grantor_role.rolname
+    `);
+  } catch {
+    throw creatorEdgeFailure(
+      target,
+      "CREATOR_EDGE_MEMBERSHIP_READBACK",
+      "UNAVAILABLE",
+    );
+  }
+
+  const evidence = classifyCreatorEdgeMembershipReadback(result, target);
+  if (evidence.RESULT !== "EXACT") {
+    throw creatorEdgeFailure(
+      target,
+      "CREATOR_EDGE_MEMBERSHIP_READBACK",
+      evidence.RESULT,
+    );
+  }
+  return evidence;
 }
 
 async function assertFixtureIdentity(connectionString, operatorPassword, target) {

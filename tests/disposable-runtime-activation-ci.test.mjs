@@ -5,6 +5,7 @@ import test from "node:test";
 import { PassThrough } from "node:stream";
 
 import {
+  ACTIVATION_CREATOR_EDGE_EVIDENCE_CONTRACT,
   ACTIVATION_READINESS_CONNECTION_TIMEOUT_MS,
   ACTIVATION_READINESS_ERROR_BACKOFF_MS,
   ACTIVATION_READINESS_EVIDENCE_CONTRACT,
@@ -22,6 +23,7 @@ import {
   aggregateReadinessProbeCategory,
   classifyActivationTestSummary,
   classifyCommandOutcome,
+  classifyCreatorEdgeMembershipReadback,
   classifyEnginePosture,
   classifyOperationalBinding,
   classifyPortQuery,
@@ -35,6 +37,8 @@ import {
   createActivationMigrationPrefix,
   executeActivationCleanupActions,
   executeActivationReadinessChecks,
+  establishCreatorEdge,
+  formatActivationCreatorEdgeEvidence,
   formatActivationReadinessEvidence,
   formatActivationRunnerFailure,
   formatActivationTopologyEvidence,
@@ -45,6 +49,7 @@ import {
   parseActivationTestSummary,
   runActivationChild,
   sanitizeActivationChildDiagnostics,
+  settleCreatorEdgeProvisioning,
   waitForPostgresReadiness,
 } from "../scripts/run-disposable-runtime-activation-postgres-tests.mjs";
 import {
@@ -184,6 +189,218 @@ test("activation failure contract emits every closed phase and category for ever
     null,
     [{}, {}, {}],
   ));
+});
+
+test("creator-edge diagnostics classify every substep without leaking raw failures", async () => {
+  const cases = [
+    ["POOL_ACQUISITION", ["POOL_ACQUISITION"], "FAILED"],
+    ["SESSION_AUTHORIZATION_SET", ["SESSION_AUTHORIZATION_SET"], "FAILED"],
+    ["CREATOR_EDGE_GRANT", ["CREATOR_EDGE_GRANT"], "FAILED"],
+    ["SESSION_AUTHORIZATION_RESET", ["SESSION_AUTHORIZATION_RESET"], "FAILED"],
+    ["CREATOR_EDGE_MEMBERSHIP_READBACK", ["CREATOR_EDGE_MEMBERSHIP_READBACK"], "UNAVAILABLE"],
+  ];
+  for (const [expectedSubstep, failures, expectedResult] of cases) {
+    const fixture = diagnosticCreatorEdgePool({ failures });
+    await assert.rejects(
+      () => establishCreatorEdge(fixture.pool, "SECONDARY"),
+      (error) => {
+        assert.equal(
+          formatActivationRunnerFailure(error),
+          "ACTIVATION_RUNNER_FAILURE phase=FIXTURE_PROVISION " +
+            "category=CREATOR_EDGE_FAILED target=SECONDARY",
+        );
+        const [evidence] = error.activationCreatorEdgeEvidence;
+        assert.deepEqual(evidence, {
+          TARGET: "SECONDARY",
+          SUBSTEP: expectedSubstep,
+          RESULT: expectedResult,
+        });
+        const receipt = formatActivationCreatorEdgeEvidence(evidence);
+        assert.equal(
+          receipt,
+          `ACTIVATION_CREATOR_EDGE_EVIDENCE TARGET=SECONDARY ` +
+            `SUBSTEP=${expectedSubstep} RESULT=${expectedResult}`,
+        );
+        assert.doesNotMatch(
+          `${receipt}\n${formatActivationRunnerFailure(error)}`,
+          /private-password|postgresql:\/\/|raw-cause|raw-stack/u,
+        );
+        assert.equal(error.message, "");
+        assert.equal(error.cause, undefined);
+        return true;
+      },
+    );
+  }
+});
+
+test("creator-edge membership readback preserves the exact accepted edge", async () => {
+  const exact = diagnosticCreatorEdgePool();
+  assert.deepEqual(await establishCreatorEdge(exact.pool, "PRIMARY"), {
+    TARGET: "PRIMARY",
+    SUBSTEP: "CREATOR_EDGE_MEMBERSHIP_READBACK",
+    RESULT: "EXACT",
+  });
+  assert.deepEqual(exact.calls.map(classifyCreatorEdgeCall), [
+    "POOL_ACQUISITION",
+    "SESSION_AUTHORIZATION_SET",
+    "CREATOR_EDGE_GRANT",
+    "SESSION_AUTHORIZATION_RESET",
+    "CLIENT_RELEASE_DESTROY",
+    "CREATOR_EDGE_MEMBERSHIP_READBACK",
+  ]);
+
+  for (const [rows, result] of [
+    [[], "ABSENT"],
+    [[{ ...exactCreatorEdgeRow(), grantor: "platform_app" }], "MISMATCH"],
+    [[exactCreatorEdgeRow(), exactCreatorEdgeRow()], "MISMATCH"],
+  ]) {
+    const fixture = diagnosticCreatorEdgePool({ rows });
+    await assert.rejects(
+      () => establishCreatorEdge(fixture.pool, "PRIMARY"),
+      (error) => {
+        assert.deepEqual(error.activationCreatorEdgeEvidence, [{
+          TARGET: "PRIMARY",
+          SUBSTEP: "CREATOR_EDGE_MEMBERSHIP_READBACK",
+          RESULT: result,
+        }]);
+        return true;
+      },
+    );
+  }
+  assert.deepEqual(
+    classifyCreatorEdgeMembershipReadback({}, "PRIMARY"),
+    {
+      TARGET: "PRIMARY",
+      SUBSTEP: "CREATOR_EDGE_MEMBERSHIP_READBACK",
+      RESULT: "UNAVAILABLE",
+    },
+  );
+});
+
+test("creator-edge provisioning settles both targets before ordered evidence", async () => {
+  let releasePrimary;
+  let settlementFinished = false;
+  const primaryGate = new Promise((resolve) => { releasePrimary = resolve; });
+  const secondaryFailure = diagnosticCreatorEdgePool({
+    failures: ["SESSION_AUTHORIZATION_SET"],
+  });
+  const settlementPromise = settleCreatorEdgeProvisioning([
+    {
+      target: "PRIMARY",
+      operation: async () => {
+        await primaryGate;
+        return classifyCreatorEdgeMembershipReadback(
+          { rows: [exactCreatorEdgeRow()] },
+          "PRIMARY",
+        );
+      },
+    },
+    {
+      target: "SECONDARY",
+      operation: () => establishCreatorEdge(
+        secondaryFailure.pool,
+        "SECONDARY",
+      ),
+    },
+  ]).then((value) => {
+    settlementFinished = true;
+    return value;
+  });
+  await Promise.resolve();
+  assert.equal(settlementFinished, false);
+  releasePrimary();
+  const settlement = await settlementPromise;
+  assert.deepEqual(settlement.evidence, [
+    {
+      TARGET: "PRIMARY",
+      SUBSTEP: "CREATOR_EDGE_MEMBERSHIP_READBACK",
+      RESULT: "EXACT",
+    },
+    {
+      TARGET: "SECONDARY",
+      SUBSTEP: "SESSION_AUTHORIZATION_SET",
+      RESULT: "FAILED",
+    },
+  ]);
+  assert.equal(formatActivationRunnerFailure(settlement.error),
+    "ACTIVATION_RUNNER_FAILURE phase=FIXTURE_PROVISION " +
+      "category=CREATOR_EDGE_FAILED target=SECONDARY");
+});
+
+test("creator-edge provisioning retains both failures in target order", async () => {
+  let releasePrimary;
+  const primaryGate = new Promise((resolve) => { releasePrimary = resolve; });
+  const primaryFailure = diagnosticCreatorEdgePool({
+    failures: ["CREATOR_EDGE_GRANT"],
+  });
+  const secondaryFailure = diagnosticCreatorEdgePool({
+    failures: ["SESSION_AUTHORIZATION_RESET"],
+  });
+  const settlementPromise = settleCreatorEdgeProvisioning([
+    {
+      target: "PRIMARY",
+      operation: async () => {
+        await primaryGate;
+        return establishCreatorEdge(primaryFailure.pool, "PRIMARY");
+      },
+    },
+    {
+      target: "SECONDARY",
+      operation: () => establishCreatorEdge(
+        secondaryFailure.pool,
+        "SECONDARY",
+      ),
+    },
+  ]);
+  await Promise.resolve();
+  releasePrimary();
+  const settlement = await settlementPromise;
+  assert.deepEqual(settlement.evidence, [
+    {
+      TARGET: "PRIMARY",
+      SUBSTEP: "CREATOR_EDGE_GRANT",
+      RESULT: "FAILED",
+    },
+    {
+      TARGET: "SECONDARY",
+      SUBSTEP: "SESSION_AUTHORIZATION_RESET",
+      RESULT: "FAILED",
+    },
+  ]);
+  assert.deepEqual(
+    formatActivationRunnerFailure(settlement.error).split("\n"),
+    [
+      "ACTIVATION_RUNNER_FAILURE phase=FIXTURE_PROVISION " +
+        "category=CREATOR_EDGE_FAILED target=PRIMARY",
+      "ACTIVATION_RUNNER_FAILURE phase=FIXTURE_PROVISION " +
+        "category=CREATOR_EDGE_FAILED target=SECONDARY",
+    ],
+  );
+});
+
+test("creator-edge evidence is closed and bounded", () => {
+  assert.deepEqual(Object.keys(ACTIVATION_CREATOR_EDGE_EVIDENCE_CONTRACT), [
+    "TARGET", "SUBSTEP", "RESULT",
+  ]);
+  for (const target of ACTIVATION_CREATOR_EDGE_EVIDENCE_CONTRACT.TARGET) {
+    for (const substep of ACTIVATION_CREATOR_EDGE_EVIDENCE_CONTRACT.SUBSTEP) {
+      for (const result of ACTIVATION_CREATOR_EDGE_EVIDENCE_CONTRACT.RESULT) {
+        const receipt = formatActivationCreatorEdgeEvidence({
+          TARGET: target,
+          SUBSTEP: substep,
+          RESULT: result,
+        });
+        assert.ok(Buffer.byteLength(receipt, "utf8") < 192);
+        assert.match(receipt, /^ACTIVATION_CREATOR_EDGE_EVIDENCE [A-Z_= ]+$/u);
+      }
+    }
+  }
+  assert.throws(() => formatActivationCreatorEdgeEvidence({
+    TARGET: "PRIMARY",
+    SUBSTEP: "CREATOR_EDGE_GRANT",
+    RESULT: "FAILED",
+    raw: "postgresql://private-password@127.0.0.1:54321/private",
+  }));
 });
 
 test("activation readiness evidence binds every closed category without raw fields", () => {
@@ -1154,6 +1371,19 @@ test("activation runner source launches only the contracted child and clears cre
   assert.match(source, /assertExactDockerResourcesAbsent/u);
   assert.match(source, /await executeActivationReadinessChecks\(\{/u);
   assert.match(source, /Promise\.allSettled\(operatorUrls\.map/u);
+  assert.match(source, /Promise\.allSettled\(\s*operations\.map/u);
+  assert.match(
+    source,
+    /grant platform_runtime to platform_app with admin true, set false, inherit false granted by cloud_admin/u,
+  );
+  assert.match(
+    source,
+    /granted_role\.rolname = 'platform_runtime'[\s\S]*member_role\.rolname = 'platform_runtime'[\s\S]*grantor_role\.rolname = 'platform_runtime'/u,
+  );
+  assert.match(
+    source,
+    /row\?\.granted_role === "platform_runtime"[\s\S]*row\.member === "platform_app"[\s\S]*row\.grantor === "cloud_admin"[\s\S]*row\.admin_option === true[\s\S]*row\.inherit_option === false[\s\S]*row\.set_option === false/u,
+  );
   assert.equal(
     source.match(/await executeActivationReadinessChecks\(\{/gu)?.length,
     1,
@@ -1161,6 +1391,91 @@ test("activation runner source launches only the contracted child and clears cre
   assert.doesNotMatch(source, /ACCEPTED_AFTER_RETRY|acceptanceRetry/iu);
   assert.doesNotMatch(source, /docker push|deploy|DROP OWNED|REASSIGN OWNED|CASCADE/iu);
 });
+
+function exactCreatorEdgeRow() {
+  return {
+    granted_role: "platform_runtime",
+    member: "platform_app",
+    grantor: "cloud_admin",
+    admin_option: true,
+    inherit_option: false,
+    set_option: false,
+  };
+}
+
+function diagnosticCreatorEdgePool({ failures = [], rows } = {}) {
+  const failedSubsteps = new Set(failures);
+  const calls = [];
+  const rawFailure = () => Object.assign(
+    new Error("postgresql://private-password@127.0.0.1:54321/private"),
+    {
+      cause: new Error("raw-cause private-password"),
+      stack: "raw-stack private-password",
+    },
+  );
+  const client = {
+    async query(statement) {
+      calls.push(statement);
+      if (
+        statement === "set session authorization cloud_admin" &&
+        failedSubsteps.has("SESSION_AUTHORIZATION_SET")
+      ) {
+        throw rawFailure();
+      }
+      if (
+        statement.startsWith("grant platform_runtime to platform_app") &&
+        failedSubsteps.has("CREATOR_EDGE_GRANT")
+      ) {
+        throw rawFailure();
+      }
+      if (
+        statement === "reset session authorization" &&
+        failedSubsteps.has("SESSION_AUTHORIZATION_RESET")
+      ) {
+        throw rawFailure();
+      }
+      return { rows: [] };
+    },
+    release(destroy) {
+      calls.push(`release:${destroy}`);
+    },
+  };
+  return {
+    calls,
+    pool: {
+      async connect() {
+        calls.push("pool.connect");
+        if (failedSubsteps.has("POOL_ACQUISITION")) throw rawFailure();
+        return client;
+      },
+      async query(statement) {
+        calls.push(statement);
+        if (failedSubsteps.has("CREATOR_EDGE_MEMBERSHIP_READBACK")) {
+          throw rawFailure();
+        }
+        return { rows: rows ?? [exactCreatorEdgeRow()] };
+      },
+    },
+  };
+}
+
+function classifyCreatorEdgeCall(call) {
+  if (call === "pool.connect") return "POOL_ACQUISITION";
+  if (call === "set session authorization cloud_admin") {
+    return "SESSION_AUTHORIZATION_SET";
+  }
+  if (call.startsWith("grant platform_runtime to platform_app")) {
+    return "CREATOR_EDGE_GRANT";
+  }
+  if (call === "reset session authorization") {
+    return "SESSION_AUTHORIZATION_RESET";
+  }
+  if (call === "release:true") return "CLIENT_RELEASE_DESTROY";
+  if (call.includes("from pg_auth_members membership")) {
+    return "CREATOR_EDGE_MEMBERSHIP_READBACK";
+  }
+  throw new Error("Unexpected creator-edge test call");
+}
 
 function activationSummary(overrides = {}) {
   const values = {
