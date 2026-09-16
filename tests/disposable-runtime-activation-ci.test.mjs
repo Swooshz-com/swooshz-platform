@@ -1155,6 +1155,16 @@ test("activation diagnostics redact runner values, URLs, tokens, and activation 
   const runtimePassword = "Runtime_A1!private-value";
   const operatorUrl =
     `postgresql://cloud_admin:${operatorPassword}@127.0.0.1:54321/runtime_posture_test`;
+  const targets = ["PRIMARY", "SECONDARY"];
+  const stages = [
+    "CONNECT",
+    "BINDING",
+    "READONLY",
+    "IDENTITY",
+    "POSTURE",
+    "OWNERSHIP",
+    "EXPECTED_OBJECTS",
+  ];
   const diagnostic = sanitizeActivationChildDiagnostics({
     stdout: [
       "TAP version 13",
@@ -1163,6 +1173,22 @@ test("activation diagnostics redact runner values, URLs, tokens, and activation 
       `error: ${operatorUrl}`,
       "actual: RUNTIME_ACTIVATION_TEST_RUNTIME_PASSWORD=private-value",
       "stack: Bearer ghp_abcdefghijklmnopqrstuvwxyz",
+      ...targets.map((target) => `target=${target}`),
+      ...stages.map((stage) => `stage=${stage}`),
+      "  target: 'PRIMARY'",
+      "  stage: 'EXPECTED_OBJECTS'",
+      "target=TERTIARY",
+      "stage=ARBITRARY",
+      "target=TERTIARY raw-hostile-text",
+      "stage=CONNECT;raw-hostile-text",
+      "prefix target=PRIMARY raw-hostile-text",
+      "target=PRIMARY suffix raw-hostile-text",
+      "target=primary raw-hostile-text",
+      "stage=connect raw-hostile-text",
+      'target: "PRIMARY" raw-hostile-text',
+      "target : 'PRIMARY' raw-hostile-text",
+      "target: 'PRIMARY' injected raw-hostile-text",
+      "stage: 'CONNECT' injected raw-hostile-text",
     ].join("\n"),
     secretValues: [operatorPassword, runtimePassword, operatorUrl],
   });
@@ -1173,6 +1199,18 @@ test("activation diagnostics redact runner values, URLs, tokens, and activation 
   assert.match(diagnostic, /<redacted>/u);
   assert.match(diagnostic, /<redacted-url>/u);
   assert.match(diagnostic, /<redacted-token>/u);
+  for (const target of targets) {
+    assert.match(diagnostic, new RegExp(`^target=${target}$`, "mu"));
+  }
+  for (const stage of stages) {
+    assert.match(diagnostic, new RegExp(`^stage=${stage}$`, "mu"));
+  }
+  assert.match(diagnostic, /^  target: 'PRIMARY'$/mu);
+  assert.match(diagnostic, /^  stage: 'EXPECTED_OBJECTS'$/mu);
+  assert.doesNotMatch(
+    diagnostic,
+    /TERTIARY|ARBITRARY|raw-hostile-text|target=primary|stage=connect/u,
+  );
 });
 
 test("activation cleanup attempts every owned action and preserves body and cleanup failures", async () => {

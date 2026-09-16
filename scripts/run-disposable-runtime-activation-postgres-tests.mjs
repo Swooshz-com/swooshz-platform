@@ -1041,7 +1041,8 @@ export function sanitizeActivationChildDiagnostics({
     .split("\n")
     .filter((line) => {
       const value = line.trim();
-      return /^(?:TAP version|# Subtest:|not ok |1\.\.|# (?:tests|suites|pass|fail|cancelled|skipped|todo|duration_ms)|(?:Assertion)?Error|(?:failureType|error|code|name|operator|expected|actual|location|stack|message):|at\s)/u.test(value);
+      return /^(?:target(?:=(?:PRIMARY|SECONDARY)|: '(?:PRIMARY|SECONDARY)')|stage(?:=(?:CONNECT|BINDING|READONLY|IDENTITY|POSTURE|OWNERSHIP|EXPECTED_OBJECTS)|: '(?:CONNECT|BINDING|READONLY|IDENTITY|POSTURE|OWNERSHIP|EXPECTED_OBJECTS)'))$/u.test(value) ||
+        /^(?:TAP version|# Subtest:|not ok |1\.\.|# (?:tests|suites|pass|fail|cancelled|skipped|todo|duration_ms)|(?:Assertion)?Error|(?:failureType|error|code|name|operator|expected|actual|location|stack|message):|at\s)/u.test(value);
     })
     .join("\n");
   return Buffer.from(selected, "utf8")
