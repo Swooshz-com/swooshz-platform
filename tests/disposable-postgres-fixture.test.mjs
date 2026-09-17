@@ -80,6 +80,47 @@ function createProbeClient(target) {
   };
 }
 
+function createRealPasswordlessProbeClient(target) {
+  const parsed = new URL(target.probeConnectionString ?? target.connectionString);
+  const client = new Client({
+    database: decodeURIComponent(parsed.pathname.slice(1)),
+    host: parsed.hostname,
+    port: Number(parsed.port || "5432"),
+    user: decodeURIComponent(parsed.username),
+  });
+  const passwordDescriptor = Object.getOwnPropertyDescriptor(
+    client.connectionParameters,
+    "password",
+  );
+  assert.ok(passwordDescriptor);
+  assert.equal(passwordDescriptor.enumerable, false);
+  Object.defineProperty(client.connectionParameters, "password", {
+    ...passwordDescriptor,
+    value: null,
+  });
+  client.query = async (text) => {
+    const normalized = String(text).trim().toLowerCase();
+    if (normalized === "show transaction_read_only") {
+      return { rows: [{ transaction_read_only: "on" }] };
+    }
+    if (normalized.includes("current_database()")) {
+      return {
+        rows: [{
+          catalog_fingerprint: target.connectionString,
+          database_matches: true,
+          lifecycle_fingerprint: target.connectionString,
+          non_recovery: true,
+          postgres17: true,
+          user_matches: true,
+        }],
+      };
+    }
+    return { rows: [] };
+  };
+  client.release = () => {};
+  return client;
+}
+
 function createBoundaryClient({
   cleanupMethod = "release",
   readOnlyValue = "on",
@@ -1195,6 +1236,79 @@ test("pool binding matcher closes real pg, supported-shape, and matcher-reuse fa
     createAuthorizedProvisioningPool(provisioningPool, provisioningAuthority),
   );
   await provisioningPool.end();
+});
+
+test("real passwordless pg clients preserve binding across aggregate admission paths", async () => {
+  const secondaryConstruction = {
+    ...constructionTarget("secondary", "runtime_posture_test_secondary"),
+    allowDatabaseCreation: true,
+    creationConnectionString: "postgres://postgres@127.0.0.1:5432/postgres",
+    creationExpectedDatabase: "postgres",
+    databaseMayBeAbsent: true,
+  };
+  await assert.doesNotReject(() =>
+    admitDisposablePostgresConstructionTargets(
+      [constructionTarget("primary", "runtime_posture_test"), secondaryConstruction],
+      {
+        readOnlyProbe: async ({ fixture }) => ({
+          ...await passingProbe({ fixture }),
+          lifecycleFingerprint: fixture.name === "secondary"
+            ? "absent:runtime_posture_test_secondary"
+            : fixture.connectionString,
+          targetDatabasePresent: fixture.name !== "secondary",
+        }),
+        clientFactory: createRealPasswordlessProbeClient,
+      },
+    ),
+  );
+
+  const secondaryConfigured = {
+    ...baseFixture,
+    name: "secondary",
+    connectionString:
+      "postgres://platform_app@127.0.0.1:5433/runtime_posture_test_secondary",
+    expectedDatabase: "runtime_posture_test_secondary",
+  };
+  let configuredAdmission;
+  await assert.doesNotReject(async () => {
+    configuredAdmission = await admitDisposablePostgresFixtures(
+      [baseFixture, secondaryConfigured],
+      {
+        readOnlyProbe: passingProbe,
+        clientFactory: createRealPasswordlessProbeClient,
+      },
+    );
+  });
+
+  const passwordlessPool = {
+    options: { connectionString: baseFixture.connectionString },
+    connect: async () => createRealPasswordlessProbeClient(baseFixture),
+    async end() {},
+  };
+  const admittedPasswordlessPool = createAdmittedMutationPool(
+    passwordlessPool,
+    configuredAdmission,
+    "primary",
+  );
+  await assert.doesNotReject(() => admittedPasswordlessPool.query("select 1"));
+
+  const ambiguousClient = createProbeClient(baseFixture);
+  Object.defineProperty(ambiguousClient.connectionParameters, "password", {
+    configurable: true,
+    enumerable: false,
+    value: null,
+    writable: true,
+  });
+  await assert.rejects(
+    () => admitDisposablePostgresFixtures(
+      [baseFixture, secondaryConfigured],
+      {
+        readOnlyProbe: passingProbe,
+        clientFactory: () => ambiguousClient,
+      },
+    ),
+    admissionEvidence("PRIMARY", "BINDING"),
+  );
 });
 
 test("managed transport and non-vacuous fingerprints cannot be caller-spoofed", async () => {

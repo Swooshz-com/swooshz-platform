@@ -939,16 +939,26 @@ function clientConnectionMatchesTarget(
         parameters,
         "password",
       );
+      const passwordlessRealClient =
+        expectedPassword === undefined &&
+        hasPassword &&
+        client instanceof Client &&
+        passwordDescriptor?.enumerable === false &&
+        passwordDescriptor.value === null;
       if (
         !(client instanceof Client) ||
         (hasPassword &&
+          !passwordlessRealClient &&
           (!passwordDescriptor ||
             passwordDescriptor.enumerable ||
             typeof passwordDescriptor.value !== "string"))
       ) {
         return null;
       }
-      if (!hasPassword || passwordDescriptor.value !== expectedPassword) {
+      if (
+        !passwordlessRealClient &&
+        (!hasPassword || passwordDescriptor.value !== expectedPassword)
+      ) {
         return false;
       }
     }
