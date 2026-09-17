@@ -31,6 +31,17 @@ import {
   assertRuntimeTableGrantSet,
   type ObservedRuntimeTableGrantRecord,
 } from "./runtime-grant-contract.js";
+import {
+  canonicalSerializeBrokerBundle,
+  compileBrokerMutationBundle,
+  normalizeBrokerObservationEvidence,
+  validateBrokerMutationResult,
+  type BrokerMutationBundleV1,
+  type BrokerMutationResultV1,
+  type BrokerObservationBundleV1,
+  type MigrationAttemptStoreV1,
+  type ProductionDatabaseBrokerV1,
+} from "./brokered-migration.js";
 
 export const PRESTATE_VERSION = "platform-db-prestate-v1" as const;
 export const PLAN_VERSION = "platform-db-plan-v1" as const;
@@ -1578,7 +1589,7 @@ function normalizeRoles(value: unknown): NormalizedPrestateV1["roles"] {
 const FIXED_ROLE_POSTURES: Readonly<Record<string, Readonly<Record<string, boolean>>>> = Object.freeze({
   platform_runtime: Object.freeze({ rolcanlogin: false, rolinherit: false, rolsuper: false, rolcreatedb: false, rolcreaterole: false, rolreplication: false, rolbypassrls: false }),
   platform_app: Object.freeze({ rolcanlogin: true, rolinherit: false, rolsuper: false, rolcreatedb: false, rolcreaterole: false, rolreplication: false, rolbypassrls: false }),
-  platform_migrator: Object.freeze({ rolcanlogin: true, rolinherit: false, rolsuper: false, rolcreatedb: false, rolcreaterole: false, rolreplication: false, rolbypassrls: false }),
+  platform_migrator: Object.freeze({ rolcanlogin: false, rolinherit: false, rolsuper: false, rolcreatedb: false, rolcreaterole: false, rolreplication: false, rolbypassrls: false }),
 });
 
 function assertFixedRolePosture(prestate: NormalizedPrestateV1, code: SemanticCode = "PRESTATE_INVALID"): void {
@@ -1596,8 +1607,23 @@ function assertFixedRolePosture(prestate: NormalizedPrestateV1, code: SemanticCo
     prestate.ownership.canonical_types,
   );
   if (runtime.some((record) => record.owner === "platform_runtime")) fail(code);
-  if (prestate.memberships.granted_role.some((role, index) =>
-    role === "platform_runtime" || prestate.memberships.member[index] === "platform_runtime" || prestate.memberships.grantor[index] === "platform_runtime")) fail(code);
+  let runtimeCreatorTupleCount = 0;
+  for (let index = 0; index < prestate.memberships.granted_role.length; index += 1) {
+    const grantedRole = prestate.memberships.granted_role[index];
+    const member = prestate.memberships.member[index];
+    const grantor = prestate.memberships.grantor[index];
+    if (grantedRole === "platform_migrator" || member === "platform_migrator" || grantor === "platform_migrator") fail(code);
+    if (grantedRole === "platform_runtime" || member === "platform_runtime" || grantor === "platform_runtime") {
+      if (
+        grantedRole !== "platform_runtime" || member !== "platform_app" || grantor !== "cloud_admin" ||
+        prestate.memberships.admin_option[index] !== true ||
+        prestate.memberships.inherit_option[index] !== false ||
+        prestate.memberships.set_option[index] !== false
+      ) fail(code);
+      runtimeCreatorTupleCount += 1;
+    }
+  }
+  if (runtimeCreatorTupleCount !== 1) fail(code);
 }
 
 function normalizeMemberships(value: unknown): NormalizedPrestateV1["memberships"] {
@@ -3282,7 +3308,11 @@ const CONTRACT_SOURCE_PATHS = [
   "src/db/readiness.ts",
   "src/db/runtime-posture.ts",
   "src/db/runtime-grant-contract.ts",
+  "src/db/brokered-migration.ts",
   "src/db/durable-operations.ts",
+  "scripts/platform-db-operation.mjs",
+  "scripts/platform-db-readiness-check.mjs",
+  "scripts/platform-db-operation-build.mjs",
   "scripts/db-migrate.mjs",
   "package.json",
   "package-lock.json",
@@ -4120,4 +4150,174 @@ function makeReceipt(input: {
       external_restore_verified: fallbackVerified && input.externalRestoreAttempted && input.externalRestoreVerified,
     });
   }
+}
+
+export interface BrokeredMigrationReceiptV2 {
+  readonly receipt_version: 2;
+  readonly outcome: "PASS" | "BLOCKED" | "FAIL";
+  readonly phase: "OBSERVATION" | "ATTEMPT_RESERVATION" | "BROKER_DISPATCH" | "SESSION_CLEANUP" | "FINAL_OBSERVATION";
+  readonly semantic_code: "SUCCESS" | "BROKER_ADAPTER_UNAVAILABLE" | "BROKER_OBSERVATION_REJECTED" | "ATTEMPT_ALREADY_CONSUMED" | "BROKER_DISPATCH_INDETERMINATE" | "BROKER_RESULT_REJECTED" | "FINAL_OBSERVATION_FAILED";
+  readonly target_binding_digest: string;
+  readonly observation_evidence_digest: string | null;
+  readonly plan_digest: string;
+  readonly mutation_bundle_digest: string | null;
+  readonly reservation_digest: string | null;
+  readonly attempts_used: 0 | 1;
+  readonly dispatch_state: "NOT_DISPATCHED" | "DISPATCHED" | "INDETERMINATE";
+  readonly commit_state: "NOT_COMMITTED" | "COMMITTED" | "INDETERMINATE";
+  readonly cleanup_state: "NOT_RUN" | "DISCARDED" | "FAILED" | "INDETERMINATE";
+  readonly mutation_started: boolean;
+  readonly final_observation_state: "NOT_RUN" | "PASS" | "FAIL";
+  readonly migration_tag: "0010_admin_operator_viewer_role_collapse";
+  readonly migration_sql_sha256: "452829e49a5571a8b4e14a2cbf155e671fe81ef8ee2fa3583935b7cc2ffd996b";
+}
+
+function brokeredReceipt(input: Omit<BrokeredMigrationReceiptV2, "receipt_version" | "migration_tag" | "migration_sql_sha256">): BrokeredMigrationReceiptV2 {
+  return deepFreeze({
+    receipt_version: 2,
+    ...input,
+    migration_tag: "0010_admin_operator_viewer_role_collapse",
+    migration_sql_sha256: "452829e49a5571a8b4e14a2cbf155e671fe81ef8ee2fa3583935b7cc2ffd996b",
+  });
+}
+
+export async function executeBrokeredMigrationPlan(input: {
+  observationBundle: BrokerObservationBundleV1;
+  prestateDigest: string;
+  planDigest: string;
+  migrationSql: string;
+  broker?: ProductionDatabaseBrokerV1;
+  attemptStore?: MigrationAttemptStoreV1;
+}): Promise<BrokeredMigrationReceiptV2> {
+  const targetDigest = input.observationBundle.target_binding_digest;
+  const base = {
+    target_binding_digest: targetDigest,
+    observation_evidence_digest: null,
+    plan_digest: input.planDigest,
+    mutation_bundle_digest: null,
+    reservation_digest: null,
+    attempts_used: 0 as const,
+    dispatch_state: "NOT_DISPATCHED" as const,
+    commit_state: "NOT_COMMITTED" as const,
+    cleanup_state: "NOT_RUN" as const,
+    mutation_started: false,
+    final_observation_state: "NOT_RUN" as const,
+  };
+  if (!input.broker || !input.attemptStore) {
+    return brokeredReceipt({ ...base, outcome: "BLOCKED", phase: "OBSERVATION", semantic_code: "BROKER_ADAPTER_UNAVAILABLE" });
+  }
+  let evidence: ReturnType<typeof normalizeBrokerObservationEvidence>;
+  let mutationBundle: BrokerMutationBundleV1;
+  try {
+    const observed = await input.broker.observe(
+      canonicalSerializeBrokerBundle(input.observationBundle),
+      input.observationBundle.bundle_digest,
+    );
+    evidence = normalizeBrokerObservationEvidence(observed, input.observationBundle);
+    mutationBundle = compileBrokerMutationBundle({
+      observation_bundle: input.observationBundle,
+      observation_evidence: evidence,
+      prestate_digest: input.prestateDigest,
+      plan_digest: input.planDigest,
+      migration_sql: input.migrationSql,
+    });
+  } catch {
+    return brokeredReceipt({ ...base, outcome: "BLOCKED", phase: "OBSERVATION", semantic_code: "BROKER_OBSERVATION_REJECTED" });
+  }
+  const compiled = {
+    ...base,
+    observation_evidence_digest: evidence.evidence_digest,
+    mutation_bundle_digest: mutationBundle.bundle_digest,
+  };
+  let reservation;
+  try {
+    reservation = await input.attemptStore.reserveOnce({
+      run: mutationBundle.run,
+      lock: mutationBundle.lock,
+      target_binding_digest: mutationBundle.target_binding_digest,
+      plan_digest: mutationBundle.plan_digest,
+      mutation_bundle_digest: mutationBundle.bundle_digest,
+    });
+  } catch {
+    return brokeredReceipt({ ...compiled, outcome: "BLOCKED", phase: "ATTEMPT_RESERVATION", semantic_code: "ATTEMPT_ALREADY_CONSUMED" });
+  }
+  const reserved = {
+    ...compiled,
+    reservation_digest: reservation.reservation_digest,
+    attempts_used: 1 as const,
+  };
+  let result: BrokerMutationResultV1;
+  try {
+    const rawResult = await input.broker.dispatchMutation(
+      canonicalSerializeBrokerBundle(mutationBundle),
+      mutationBundle.bundle_digest,
+      reservation,
+    );
+    result = validateBrokerMutationResult(rawResult, mutationBundle, reservation);
+  } catch {
+    return brokeredReceipt({
+      ...reserved,
+      outcome: "FAIL",
+      phase: "BROKER_DISPATCH",
+      semantic_code: "BROKER_DISPATCH_INDETERMINATE",
+      dispatch_state: "INDETERMINATE",
+      commit_state: "INDETERMINATE",
+      cleanup_state: "INDETERMINATE",
+      mutation_started: true,
+    });
+  }
+  if (result.dispatch_state !== "DISPATCHED" || result.commit_state !== "COMMITTED") {
+    return brokeredReceipt({
+      ...reserved,
+      outcome: "FAIL",
+      phase: "BROKER_DISPATCH",
+      semantic_code: "BROKER_RESULT_REJECTED",
+      dispatch_state: result.dispatch_state,
+      commit_state: result.commit_state,
+      cleanup_state: result.cleanup_state,
+      mutation_started: result.dispatch_state !== "NOT_DISPATCHED",
+    });
+  }
+  if (result.cleanup_state !== "DISCARDED") {
+    return brokeredReceipt({
+      ...reserved,
+      outcome: "FAIL",
+      phase: "SESSION_CLEANUP",
+      semantic_code: "BROKER_RESULT_REJECTED",
+      dispatch_state: result.dispatch_state,
+      commit_state: result.commit_state,
+      cleanup_state: result.cleanup_state,
+      mutation_started: true,
+    });
+  }
+  try {
+    const finalObservation = await input.broker.observe(
+      canonicalSerializeBrokerBundle(input.observationBundle),
+      input.observationBundle.bundle_digest,
+    );
+    normalizeBrokerObservationEvidence(finalObservation, input.observationBundle);
+  } catch {
+    return brokeredReceipt({
+      ...reserved,
+      outcome: "FAIL",
+      phase: "FINAL_OBSERVATION",
+      semantic_code: "FINAL_OBSERVATION_FAILED",
+      dispatch_state: "DISPATCHED",
+      commit_state: "COMMITTED",
+      cleanup_state: "DISCARDED",
+      mutation_started: true,
+      final_observation_state: "FAIL",
+    });
+  }
+  return brokeredReceipt({
+    ...reserved,
+    outcome: "PASS",
+    phase: "FINAL_OBSERVATION",
+    semantic_code: "SUCCESS",
+    dispatch_state: "DISPATCHED",
+    commit_state: "COMMITTED",
+    cleanup_state: "DISCARDED",
+    mutation_started: true,
+    final_observation_state: "PASS",
+  });
 }

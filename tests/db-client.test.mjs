@@ -5,10 +5,10 @@ import test from "node:test";
 import {
   DatabaseConfigError,
   DATABASE_MIGRATIONS_CONFIRM_VALUE,
-  assertMigrationExecutionAllowed,
+  assertRunnerOwnedFixtureMigrationExecutionAllowed,
   createDatabasePool,
   readDatabaseConfig,
-  readOperatorDatabaseConfig,
+  readRunnerOwnedFixtureDatabaseConfig,
 } from "../dist/db/client.js";
 
 const syntheticDatabaseUrl =
@@ -82,108 +82,62 @@ test("readDatabaseConfig rejects unsupported SSL modes without leaking the URL",
   );
 });
 
-test("migration confirmation guard requires the documented exact value", () => {
-  assert.throws(
-    () => assertMigrationExecutionAllowed({ DATABASE_OPERATOR_URL: syntheticDatabaseUrl }),
-    /DATABASE_MIGRATIONS_CONFIRM/,
-  );
-  assert.throws(
-    () =>
-      assertMigrationExecutionAllowed({
-        DATABASE_OPERATOR_URL: syntheticDatabaseUrl,
-        DATABASE_MIGRATIONS_CONFIRM: "local",
-      }),
-    /DATABASE_MIGRATIONS_CONFIRM/,
-  );
+const runnerOwnedFixture = {
+  version: "runner-owned-database-fixture-v1",
+  owner: "disposable-postgres-runner",
+  databaseUrl: "postgres://fixture_user:fixture_pass@127.0.0.1:55432/swooshz_fixture",
+};
+const runnerEnvironment = {
+  NODE_ENV: "test",
+  RUNNER_OWNED_DATABASE_FIXTURE: "disposable-postgres-runner",
+};
 
+test("production direct operator credentials are rejected without parsing or leaking them", () => {
   assert.throws(
-    () =>
-      assertMigrationExecutionAllowed({
-        DATABASE_URL: syntheticDatabaseUrl,
-        DATABASE_MIGRATIONS_CONFIRM: DATABASE_MIGRATIONS_CONFIRM_VALUE,
-      }),
+    () => readRunnerOwnedFixtureDatabaseConfig({ ...runnerEnvironment, DATABASE_OPERATOR_URL: syntheticDatabaseUrl }, runnerOwnedFixture),
     (error) => {
       assert.equal(error instanceof DatabaseConfigError, true);
-      assert.equal(error.code, "missing_database_operator_url");
-      return true;
-    },
-  );
-
-  assert.doesNotThrow(() =>
-    assertMigrationExecutionAllowed({
-      DATABASE_OPERATOR_URL:
-        "postgres://operator_user:operator_pass@operator.example.invalid:5432/swooshz_platform",
-      DATABASE_MIGRATIONS_CONFIRM: DATABASE_MIGRATIONS_CONFIRM_VALUE,
-    }),
-  );
-});
-
-test("production operator connections require DATABASE_OPERATOR_URL", () => {
-  assert.throws(
-    () =>
-      readOperatorDatabaseConfig({
-        NODE_ENV: "production",
-        DATABASE_URL: syntheticDatabaseUrl,
-      }),
-    (error) => {
-      assert.equal(error instanceof DatabaseConfigError, true);
-      assert.equal(error.code, "missing_database_operator_url");
+      assert.equal(error.code, "direct_database_credential_prohibited");
       assert.doesNotMatch(error.message, /example_pass|db\.example\.invalid/);
       return true;
     },
   );
 });
 
-test("operator connections always require an explicit operator URL", () => {
-  const operatorUrl =
-    "postgres://operator_user:operator_pass@operator.example.invalid:5432/swooshz_platform";
-  const production = readOperatorDatabaseConfig({
-    NODE_ENV: "production",
-    DATABASE_URL: syntheticDatabaseUrl,
-    DATABASE_OPERATOR_URL: operatorUrl,
-  });
+test("runner-owned direct execution requires test mode, runner proof, and loopback target", () => {
   assert.throws(
-    () =>
-      readOperatorDatabaseConfig({
-        NODE_ENV: "development",
-        DATABASE_URL: syntheticDatabaseUrl,
-      }),
+    () => readRunnerOwnedFixtureDatabaseConfig({ NODE_ENV: "production" }, runnerOwnedFixture),
     (error) => {
       assert.equal(error instanceof DatabaseConfigError, true);
-      assert.equal(error.code, "missing_database_operator_url");
+      assert.equal(error.code, "runner_owned_fixture_required");
       return true;
     },
   );
-
-  assert.equal(production.databaseUrl, operatorUrl);
+  assert.throws(
+    () => readRunnerOwnedFixtureDatabaseConfig(runnerEnvironment, { ...runnerOwnedFixture, databaseUrl: syntheticDatabaseUrl }),
+    (error) => {
+      assert.equal(error instanceof DatabaseConfigError, true);
+      assert.equal(error.code, "runner_owned_fixture_required");
+      return true;
+    },
+  );
   assert.equal(
-    readOperatorDatabaseConfig({
-      NODE_ENV: "development",
-      DATABASE_URL: syntheticDatabaseUrl,
-      DATABASE_OPERATOR_URL: operatorUrl,
-    }).databaseUrl,
-    operatorUrl,
+    readRunnerOwnedFixtureDatabaseConfig(runnerEnvironment, runnerOwnedFixture).databaseUrl,
+    runnerOwnedFixture.databaseUrl,
   );
 });
 
-test("migration confirmation remains mandatory with operator URL", () => {
-  const operatorUrl =
-    "postgres://operator_user:operator_pass@operator.example.invalid:5432/swooshz_platform";
+test("runner-owned migration confirmation remains mandatory", () => {
   assert.throws(
-    () =>
-      assertMigrationExecutionAllowed({
-        NODE_ENV: "production",
-        DATABASE_OPERATOR_URL: operatorUrl,
-      }),
+    () => assertRunnerOwnedFixtureMigrationExecutionAllowed(runnerEnvironment, runnerOwnedFixture),
     /DATABASE_MIGRATIONS_CONFIRM/,
   );
   assert.equal(
-    assertMigrationExecutionAllowed({
-      NODE_ENV: "production",
-      DATABASE_OPERATOR_URL: operatorUrl,
+    assertRunnerOwnedFixtureMigrationExecutionAllowed({
+      ...runnerEnvironment,
       DATABASE_MIGRATIONS_CONFIRM: DATABASE_MIGRATIONS_CONFIRM_VALUE,
-    }).databaseUrl,
-    operatorUrl,
+    }, runnerOwnedFixture).databaseUrl,
+    runnerOwnedFixture.databaseUrl,
   );
 });
 test("DB client module does not connect during import or pool creation", async () => {
@@ -220,11 +174,12 @@ test("DB client preserves explicit SSL-mode construction semantics", async () =>
   }
 });
 
-test("migration command is explicit and delegates to guarded config", async () => {
+test("migration command fails closed without a provider broker and has no direct pg path", async () => {
   const script = await readFile("scripts/db-migrate.mjs", "utf8");
 
-  assert.match(script, /assertMigrationExecutionAllowed/);
-  assert.match(script, /migrate\(/);
+  assert.match(script, /provider broker adapter/);
+  assert.match(script, /DATABASE_OPERATOR_URL/);
+  assert.doesNotMatch(script, /createDatabaseClient|new Pool|migrate\(/);
   assert.doesNotMatch(script, /postinstall|prestart|npm test/);
   assert.doesNotMatch(script, /console\.log\(.*DATABASE_URL/);
 });

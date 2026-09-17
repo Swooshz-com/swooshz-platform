@@ -34,6 +34,7 @@ const databaseAccessInventory = new Map([
     "runtime_data_adapter",
   ]),
   ["src/db/client.ts", "operational_control_plane"],
+  ["src/db/brokered-migration.ts", "operator_only_database_authority"],
   ["src/db/readiness.ts", "operational_control_plane"],
   ["src/db/runtime-posture.ts", "operational_control_plane"],
   ["src/db/durable-operations.ts", "operator_only_database_authority"],
@@ -69,8 +70,12 @@ const productionDependencyLockDigest =
 // SHA-256 over TypeScript tokens (comments and formatting are ignored).
 const databaseSourceShapeAuthority = new Map([
   [
+    "src/db/brokered-migration.ts",
+    "127013856e7213ef7b71a37fa67e723fbf61e510dc54bd811e49ff4f9428ab81",
+  ],
+  [
     "src/db/durable-operations.ts",
-    "647c47d6fecc3028b54c21153746a381f0833e252d0b55241d2026742277a589",
+    "aabbdf5d77c1de0a01b766216d0d6341393634cb0e4891b9755c2ef0465392a0",
   ],  [
     "src/db/access-validation-grant-repository.ts",
     "5f9434df56a9f5bc67468ed8c17ea9fbf60c765c0fa6a88d6902a22d7b9a4271",
@@ -85,7 +90,7 @@ const databaseSourceShapeAuthority = new Map([
   ],
   [
     "src/db/client.ts",
-    "8f2cf8e5890a54dbe9a73dbf91e4ffd48df4731831473fdcc11cff83b8c43b65",
+    "0c780c29084b3ff9c11565bc194dab79e46c1485a706c4b287ade11370de5d74",
   ],
   [
     "src/db/csrf-token-repository.ts",
@@ -93,7 +98,7 @@ const databaseSourceShapeAuthority = new Map([
   ],
   [
     "src/db/readiness.ts",
-    "e24da056b711884ea1839c6fa02ebfd4d8d2fffcbaf76f23360e3eb93417b92e",
+    "600431d07fa84b270ecc6817ae806d058600477743bbeb943f42fd9fb1eeb2fe",
   ],
   [
     "src/db/repositories.ts",
@@ -126,6 +131,14 @@ const builtInCapabilityClassifications = new Set([
 ]);
 
 const builtInImportAuthorityRecords = [
+  builtInImportAuthorityRecord({
+    sourcePath: "src/db/brokered-migration.ts",
+    moduleName: "node:crypto",
+    capability: "non_network_cryptographic",
+    bindings: [
+      namedBuiltInBinding("createHash"),
+    ],
+  }),
   builtInImportAuthorityRecord({
     sourcePath: "src/auth/auth-state-crypto.ts",
     moduleName: "node:crypto",
@@ -431,6 +444,7 @@ const internalDatabaseImportAuthority = new Set(
     [
       "src/db/durable-operations.ts",
       [
+        "src/db/brokered-migration.ts",
         "src/db/readiness.ts",
         "src/db/runtime-grant-contract.ts",
         "src/db/runtime-posture.ts",

@@ -1,9 +1,10 @@
 import {
   createDatabasePool,
   DatabaseConfigError,
-  readOperatorDatabaseConfig,
+  readRunnerOwnedFixtureDatabaseConfig,
   type DatabaseConfig,
   type DatabaseEnvironment,
+  type RunnerOwnedDatabaseFixtureV1,
 } from "./client.js";
 
 export const REQUIRED_PLATFORM_TABLES = [
@@ -95,6 +96,7 @@ export interface DatabaseReadinessClient {
 
 export interface DatabaseReadinessInput {
   env: DatabaseEnvironment;
+  runnerOwnedFixture?: RunnerOwnedDatabaseFixtureV1;
   expectedMigrationState?: ExpectedMigrationState;
   requiredTables?: readonly string[];
   clientFactory?: (
@@ -119,6 +121,11 @@ migrator_role as (
   select oid, rolcanlogin, rolinherit, rolsuper, rolcreatedb, rolcreaterole,
     rolreplication, rolbypassrls
   from pg_roles
+  where rolname = 'platform_migrator'
+),
+migrator_auth as (
+  select oid, (rolpassword is null) as password_is_null
+  from pg_catalog.pg_authid
   where rolname = 'platform_migrator'
 ),
 app_role as (
@@ -579,13 +586,13 @@ migrator_memberships as (
     on grantor_role.oid = membership.grantor
 )
 select
-  current_user = 'platform_migrator'
-    and session_user = 'platform_migrator' as migrator_identity_exact,
+  current_user = session_user
+    and current_user not in ('platform_app', 'platform_runtime')
+    as provider_identity_exact,
   current_setting('server_version_num')::integer between 170000 and 179999
     as postgres_major_17,
   coalesce((
-    select rolcanlogin
-      and not rolinherit
+    select not rolinherit
       and not rolsuper
       and not rolcreatedb
       and not rolcreaterole
@@ -593,19 +600,29 @@ select
       and not rolbypassrls
     from migrator_role
   ), false) as migrator_role_attributes_exact,
+  coalesce((select password_is_null from migrator_auth), false)
+    or coalesce((select rolcanlogin from migrator_role), false)
+    as migrator_password_null,
+  coalesce((select pg_catalog.pg_has_role(session_user, oid, 'SET') from migrator_role), false)
+    as provider_set_capability,
   coalesce((
-    select count(*) = 1
-      and bool_and(
+    select not exists (
+      select 1
+      from migrator_memberships membership
+      where membership.roleid = migrator_role.oid
+        and membership.member_name in ('platform_app', 'platform_runtime')
+    ) or (
+      select count(*) = 1 and bool_and(
         membership.roleid = migrator_role.oid
         and membership.member_name = 'platform_app'
         and membership.grantor_name = 'cloud_admin'
         and membership.admin_option
         and not membership.inherit_option
         and not membership.set_option
-      )
-    from migrator_memberships membership
-    cross join migrator_role
-  ), false) as migrator_creator_admin_edge_exact,
+      ) from migrator_memberships membership
+    )
+    from migrator_role
+  ), false) as application_migrator_authority_absent,
   coalesce((
     select has_database_privilege(
       migrator_role.oid,
@@ -899,7 +916,14 @@ export async function createDatabaseReadinessReport(
   let client: DatabaseReadinessClient | null = null;
 
   try {
-    config = readOperatorDatabaseConfig(input.env);
+    if (!input.runnerOwnedFixture) {
+      throw new DatabaseConfigError(
+        input.env.DATABASE_OPERATOR_URL?.trim()
+          ? "direct_database_credential_prohibited"
+          : "runner_owned_fixture_required",
+      );
+    }
+    config = readRunnerOwnedFixtureDatabaseConfig(input.env, input.runnerOwnedFixture);
     checks.config = "present";
   } catch (error) {
     checks.config = readConfigFailureState(error);
@@ -1075,10 +1099,12 @@ async function readMissingRequiredTables(
 }
 
 export const MIGRATOR_READINESS_FIELDS = [
-  "migrator_identity_exact",
+  "provider_identity_exact",
   "postgres_major_17",
   "migrator_role_attributes_exact",
-  "migrator_creator_admin_edge_exact",
+  "migrator_password_null",
+  "provider_set_capability",
+  "application_migrator_authority_absent",
   "migrator_database_connect_exact",
   "migrator_database_create_absent",
   "migrator_database_temporary_absent",
@@ -1214,15 +1240,15 @@ async function readMigrationReadiness(
   return (
     Number.isFinite(appliedCount) &&
     Number.isFinite(latestCreatedAt) &&
-    appliedCount >= expectedMigrationState.migrationCount &&
-    latestCreatedAt >= expectedMigrationState.latestCreatedAt
+    appliedCount === expectedMigrationState.migrationCount &&
+    latestCreatedAt === expectedMigrationState.latestCreatedAt
   );
 }
 
 function readConfigFailureState(error: unknown): "missing" | "invalid" {
   if (
     error instanceof DatabaseConfigError &&
-    ["missing_database_url", "missing_database_operator_url"].includes(error.code)
+    ["missing_database_url", "runner_owned_fixture_required"].includes(error.code)
   ) {
     return "missing";
   }
