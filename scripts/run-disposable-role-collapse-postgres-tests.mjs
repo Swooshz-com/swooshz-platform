@@ -164,6 +164,143 @@ async function createDatabases(port) {
   }
 }
 
+export function parseRoleCollapseTestSummary(output) {
+  if (
+    typeof output !== "string" ||
+    Buffer.byteLength(output, "utf8") > maxChildOutputBytes
+  ) {
+    return null;
+  }
+  const normalised = output
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "")
+    .replace(/\r\n?/gu, "\n");
+  const lines = normalised.split("\n");
+  while (lines.at(-1) === "") lines.pop();
+  if (lines.length === 0) return null;
+
+  const fieldPattern =
+    /^\s*([#ℹ])\s+(tests|suites|pass|fail|cancelled|skipped|todo|duration_ms)(?:\s+([^\s].*?))?\s*$/u;
+  const summaryStarts = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = lines[index].match(fieldPattern);
+    if (match?.[2] === "tests") summaryStarts.push(index);
+  }
+  if (summaryStarts.length !== 1) return null;
+
+  const start = summaryStarts[0];
+  const fields = new Map();
+  const expectedFields = [
+    "tests",
+    "suites",
+    "pass",
+    "fail",
+    "cancelled",
+    "skipped",
+    "todo",
+    "duration_ms",
+  ];
+  let marker = null;
+  let expectedIndex = 0;
+  for (let index = start; index < lines.length; index += 1) {
+    const match = lines[index].match(fieldPattern);
+    if (!match || (marker !== null && match[1] !== marker)) return null;
+    marker ??= match[1];
+    if (match[2] !== expectedFields[expectedIndex] || fields.has(match[2])) {
+      return null;
+    }
+    if (typeof match[3] !== "string" || match[3].length === 0) return null;
+    fields.set(match[2], match[3]);
+    expectedIndex += 1;
+    if (match[2] === "duration_ms") {
+      if (index !== lines.length - 1) return null;
+      break;
+    }
+  }
+  if (expectedIndex !== expectedFields.length) return null;
+  for (const line of lines.slice(0, start)) {
+    if (fieldPattern.test(line)) return null;
+  }
+
+  const counts = {};
+  for (const field of [
+    "tests",
+    "suites",
+    "pass",
+    "fail",
+    "cancelled",
+    "skipped",
+    "todo",
+  ]) {
+    const value = fields.get(field);
+    if (!/^(?:0|[1-9]\d*)$/u.test(value)) return null;
+    const count = Number(value);
+    if (!Number.isSafeInteger(count)) return null;
+    counts[field] = count;
+  }
+  if (
+    counts.tests <= 0 ||
+    counts.pass !== counts.tests ||
+    counts.fail !== 0 ||
+    counts.skipped !== 0 ||
+    counts.cancelled !== 0 ||
+    counts.todo !== 0 ||
+    counts.pass +
+      counts.fail +
+      counts.skipped +
+      counts.cancelled +
+      counts.todo !==
+      counts.tests
+  ) {
+    return null;
+  }
+
+  const durationText = fields.get("duration_ms");
+  if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(durationText)) return null;
+  const durationMs = Number(durationText);
+  if (
+    !Number.isFinite(durationMs) ||
+    durationMs < 0 ||
+    durationMs > childTimeoutMs ||
+    String(durationMs) !== durationText
+  ) {
+    return null;
+  }
+  return {
+    cancelled: counts.cancelled,
+    failed: counts.fail,
+    passed: counts.pass,
+    skipped: counts.skipped,
+    suites: counts.suites,
+    todo: counts.todo,
+    total: counts.tests,
+    durationMs,
+  };
+}
+
+export function validateRoleCollapseChildResult(result) {
+  if (
+    result?.code !== 0 ||
+    result.signal !== null ||
+    result.timedOut !== false ||
+    result.outputOverflow !== false
+  ) {
+    return null;
+  }
+  return parseRoleCollapseTestSummary(result.stdout);
+}
+
+export function formatRoleCollapseSuccess(summary) {
+  return (
+    "Disposable PostgreSQL 17 role-collapse proofs: " +
+    summary.passed +
+    " passed, " +
+    summary.failed +
+    " failed, " +
+    summary.skipped +
+    " skipped.\n"
+  );
+}
+
 async function runFocusedChild(spawnImpl, port) {
   const childEnv = { ...process.env };
   delete childEnv.DATABASE_URL;
@@ -188,13 +325,8 @@ async function runFocusedChild(spawnImpl, port) {
     rootDir,
     { env: childEnv, timeoutMs: childTimeoutMs },
   );
-  if (
-    result.code !== 0 ||
-    result.timedOut ||
-    !/(?:#|\u2139)\s+pass 2\b/u.test(result.stdout) ||
-    !/(?:#|\u2139)\s+fail 0\b/u.test(result.stdout) ||
-    !/(?:#|\u2139)\s+skipped 0\b/u.test(result.stdout)
-  ) {
+  const summary = validateRoleCollapseChildResult(result);
+  if (!summary) {
     if (result.stdout) {
       process.stderr.write(result.stdout.slice(-8_000));
     }
@@ -203,9 +335,7 @@ async function runFocusedChild(spawnImpl, port) {
     }
     throw new Error();
   }
-  process.stdout.write(
-    "Disposable PostgreSQL 17 role-collapse proofs: 2 passed, 0 failed, 0 skipped.\n",
-  );
+  process.stdout.write(formatRoleCollapseSuccess(summary));
 }
 
 async function cleanupOwnedResources(spawnImpl, port, containerStarted) {
