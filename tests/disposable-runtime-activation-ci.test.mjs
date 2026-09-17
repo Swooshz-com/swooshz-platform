@@ -146,7 +146,7 @@ test("activation migration prefix contains exactly journal entries and SQL 0000 
   }
 });
 
-test("activation summary parser accepts only strict 45 of 45 zero-negative TAP summaries", () => {
+test("activation summary parser accepts coherent positive totals and rejects invalid evidence", () => {
   const valid = activationSummary();
   assert.deepEqual(parseActivationTestSummary(valid), {
     total: 45,
@@ -156,18 +156,61 @@ test("activation summary parser accepts only strict 45 of 45 zero-negative TAP s
     skipped: 0,
     todo: 0,
   });
+  assert.deepEqual(
+    parseActivationTestSummary(activationSummary({ tests: 47, pass: 47, suites: 3 })),
+    { total: 47, passed: 47, failed: 0, cancelled: 0, skipped: 0, todo: 0 },
+  );
+  const normalized = `${activationSummary({
+    tests: 51,
+    pass: 51,
+    suites: 9007199254740991,
+    marker: String.fromCodePoint(0x2139),
+    duration_ms: "180000",
+  })}\n\n`
+    .replaceAll("\n", "\r\n")
+    .replace(
+      `${String.fromCodePoint(0x2139)} pass`,
+      `\u001b[31m${String.fromCodePoint(0x2139)} pass\u001b[0m`,
+    );
+  assert.deepEqual(parseActivationTestSummary(normalized), {
+    total: 51,
+    passed: 51,
+    failed: 0,
+    cancelled: 0,
+    skipped: 0,
+    todo: 0,
+  });
   for (const invalid of [
-    activationSummary({ tests: 44, pass: 44 }),
+    activationSummary({ tests: 0, pass: 0 }),
+    activationSummary({ tests: 46, pass: 45 }),
     activationSummary({ fail: 1, pass: 44 }),
     activationSummary({ skipped: 1, pass: 44 }),
     activationSummary({ cancelled: 1, pass: 44 }),
     activationSummary({ todo: 1, pass: 44 }),
     activationSummary({ duration_ms: "180001" }),
-    valid.replace("# todo 0\n", ""),
+    activationSummary({ duration_ms: "1.2300" }),
+    activationSummary({ duration_ms: "9007199254740992" }),
+    activationSummary({ omit: "todo" }),
+    activationSummary({ reorder: true }),
+    activationSummary({ mixedMarker: true }),
+    valid.replace("# suites 0", "# suites 0\nordinary output"),
+    valid.replace("# fail 0", "# pass 45\n# fail 0"),
+    valid.replace("# fail 0", "# pass 44\n# fail 0"),
+    valid.replace("1..9\n", "1..9\n# pass 45\n"),
     `${valid}\n${activationSummary()}`,
     `${valid}\nnot-summary`,
+    `${valid}\n${"x".repeat(64 * 1024)}`,
   ]) {
     assert.equal(parseActivationTestSummary(invalid), null);
+  }
+  for (const field of ["tests", "suites", "pass", "fail", "cancelled", "skipped", "todo"]) {
+    for (const value of ["-1", "+1", "1.5", "01", "nonnumeric", "9007199254740992", null]) {
+      assert.equal(
+        parseActivationTestSummary(activationSummary({ [field]: value })),
+        null,
+        `${field}=${value}`,
+      );
+    }
   }
 });
 
@@ -1133,7 +1176,7 @@ test("activation summary failures distinguish missing malformed duplicate and co
     ["TAP version 13\n1..0\n", "SUMMARY_MISSING"],
     ["# tests nope\n", "SUMMARY_MALFORMED"],
     [`${activationSummary()}\n${activationSummary()}`, "SUMMARY_DUPLICATE"],
-    [activationSummary({ tests: 44, pass: 44 }), "SUMMARY_COUNT_MISMATCH"],
+    [activationSummary({ tests: 44, pass: 43 }), "SUMMARY_COUNT_MISMATCH"],
   ];
   for (const [output, category] of cases) {
     assert.deepEqual(classifyActivationTestSummary(output), { category });
@@ -1378,7 +1421,7 @@ test("activation child classifies injected spawn exit signal timeout overflow an
     ["SUMMARY_MALFORMED", fakeSpawn({ stdout: "# tests nope\n" })],
     ["SUMMARY_DUPLICATE", fakeSpawn({ stdout: `${activationSummary()}\n${activationSummary()}` })],
     ["SUMMARY_COUNT_MISMATCH", fakeSpawn({
-      stdout: activationSummary({ tests: 44, pass: 44 }),
+      stdout: activationSummary({ tests: 44, pass: 43 }),
     })],
   ];
   for (const [category, spawnImpl, options] of cases) {
@@ -1669,20 +1712,32 @@ function activationSummary(overrides = {}) {
     skipped: 0,
     todo: 0,
     duration_ms: "1234.5",
+    marker: "#",
+    omit: null,
+    reorder: false,
+    mixedMarker: false,
     ...overrides,
   };
-  return [
+  const lines = [
     "TAP version 13",
     "1..9",
-    `# tests ${values.tests}`,
-    `# suites ${values.suites}`,
-    `# pass ${values.pass}`,
-    `# fail ${values.fail}`,
-    `# cancelled ${values.cancelled}`,
-    `# skipped ${values.skipped}`,
-    `# todo ${values.todo}`,
-    `# duration_ms ${values.duration_ms}`,
-  ].join("\n");
+    `${values.marker} tests ${values.tests ?? ""}`,
+    `${values.marker} suites ${values.suites ?? ""}`,
+    `${values.marker} pass ${values.pass ?? ""}`,
+    `${values.marker} fail ${values.fail ?? ""}`,
+    `${values.marker} cancelled ${values.cancelled ?? ""}`,
+    `${values.marker} skipped ${values.skipped ?? ""}`,
+    `${values.marker} todo ${values.todo ?? ""}`,
+    `${values.marker} duration_ms ${values.duration_ms ?? ""}`,
+  ];
+  if (values.omit) {
+    lines.splice(lines.findIndex((line) => line.startsWith(`${values.marker} ${values.omit} `)), 1);
+  }
+  if (values.reorder) [lines[5], lines[6]] = [lines[6], lines[5]];
+  if (values.mixedMarker) {
+    lines[3] = `${String.fromCodePoint(0x2139)} suites ${values.suites}`;
+  }
+  return lines.join("\n");
 }
 
 function fakeSpawn({

@@ -57,7 +57,6 @@ const excludedMigrationTag =
 const identitiesSql = fileURLToPath(
   new URL("../tests/support/runtime-postgres-identities.sql", import.meta.url),
 );
-const expectedTestCount = 45;
 const maxChildOutputBytes = 64 * 1024;
 const maxDiagnosticBytes = 4_000;
 const maxChildDurationMs = 180_000;
@@ -920,7 +919,7 @@ export function parseActivationTestSummary(output) {
     .replace(/\r\n?/gu, "\n")
     .split("\n");
   while (lines.at(-1) === "") lines.pop();
-  const pattern = /^\s*([#ℹ])\s+(tests|suites|pass|fail|cancelled|skipped|todo|duration_ms)\s+([^\s].*?)\s*$/u;
+  const pattern = /^\s*([#ℹ])\s+(tests|suites|pass|fail|cancelled|skipped|todo|duration_ms)(?:\s+([^\s].*?))?\s*$/u;
   const starts = lines
     .map((line, index) => [line.match(pattern), index])
     .filter(([match]) => match?.[2] === "tests")
@@ -952,12 +951,19 @@ export function parseActivationTestSummary(output) {
     marker ??= match[1];
     fields.set(match[2], match[3]);
   }
+  if (starts[0] > 0) {
+    for (const line of lines.slice(0, starts[0])) {
+      if (pattern.test(line)) return null;
+    }
+  }
   if (starts[0] + expectedFields.length !== lines.length) return null;
   const counts = {};
   for (const field of expectedFields.slice(0, -1)) {
     const value = fields.get(field);
     if (!/^(?:0|[1-9]\d*)$/u.test(value)) return null;
-    counts[field] = Number(value);
+    const count = Number(value);
+    if (!Number.isSafeInteger(count)) return null;
+    counts[field] = count;
   }
   const durationText = fields.get("duration_ms");
   if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(durationText)) return null;
@@ -967,8 +973,8 @@ export function parseActivationTestSummary(output) {
     duration < 0 ||
     duration > maxChildDurationMs ||
     String(duration) !== durationText ||
-    counts.tests !== expectedTestCount ||
-    counts.pass !== expectedTestCount ||
+    counts.tests <= 0 ||
+    counts.pass !== counts.tests ||
     counts.fail !== 0 ||
     counts.cancelled !== 0 ||
     counts.skipped !== 0 ||

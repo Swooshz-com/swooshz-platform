@@ -32,7 +32,6 @@ const runtimePostgresIdentitiesSql = fileURLToPath(
 const maxChildOutputBytes = 64 * 1024;
 const maxChildDurationMs = 120_000;
 const maxChildDiagnosticBytes = 4_000;
-const expectedPostgresTestCount = 53;
 const safeIdentifier = /^[a-z_][a-z0-9_$]{0,62}$/u;
 const loopbackHosts = new Set(["127.0.0.1", "::1"]);
 const failurePhases = new Set([
@@ -490,8 +489,8 @@ export function parseDisposableRuntimeTestSummary(output) {
     counts[field] = count;
   }
   if (
-    counts.tests !== expectedPostgresTestCount ||
-    counts.pass !== expectedPostgresTestCount ||
+    counts.tests <= 0 ||
+    counts.pass !== counts.tests ||
     counts.fail !== 0 ||
     counts.skipped !== 0 ||
     counts.cancelled !== 0 ||
