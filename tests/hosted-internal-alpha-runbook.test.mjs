@@ -4431,6 +4431,20 @@ test("Run-15 actual focused child receives a runner-owned empty passfile seam un
     delete runnerEnvironment[key];
   }
 
+  const childSource = [
+    'import assert from "node:assert/strict";',
+    'import { readFileSync } from "node:fs";',
+    'import { join } from "node:path";',
+    'import test from "node:test";',
+    'const pgKeys = Object.keys(process.env).filter((key) => key.toUpperCase().startsWith("PG") || key.toUpperCase() === "NODE_PG_FORCE_NATIVE");',
+    'test("inherited password is absent", () => assert.equal(Object.hasOwn(process.env, "PGPASSWORD"), false));',
+    'test("only the controlled passfile selector remains", () => assert.deepEqual(pgKeys, ["PGPASSFILE"]));',
+    'test("controlled passfile path is present", () => assert.equal(typeof process.env.PGPASSFILE === "string" && process.env.PGPASSFILE.length > 0, true));',
+    'test("HOME default passfile is not selected", () => assert.notEqual(process.env.PGPASSFILE, join(process.env.HOME, ".pgpass")));',
+    'test("APPDATA default passfile is not selected", () => assert.notEqual(process.env.PGPASSFILE, join(process.env.APPDATA, "postgresql", "pgpass.conf")));',
+    'test("controlled passfile is empty", () => assert.equal(readFileSync(process.env.PGPASSFILE).byteLength, 0));',
+    'test("focused runner context is complete", () => assert.equal(Boolean(process.env.PLATFORM_MIGRATOR_FAILURE_RECEIPT_FILE && process.env.PLATFORM_MIGRATOR_FAILURE_PROGRESS_FILE && process.env.MIGRATOR_ALIGNMENT_TEST_CONFIRM === "disposable-only"), true));',
+  ].join("\n");
   const spawnImpl = (command, args, options = {}) => {
     if (
       command === process.execPath &&
@@ -4438,10 +4452,10 @@ test("Run-15 actual focused child receives a runner-owned empty passfile seam un
     ) {
       const childEnv = { ...(options.env ?? {}) };
       delete childEnv.NODE_TEST_CONTEXT;
-      const childArgs = [args[0], "--test-reporter=spec", ...args.slice(1)];
+      const childArgs = ["--input-type=module", "--eval", childSource];
       const child = spawn(command, childArgs, { ...options, env: childEnv });
       const record = {
-        args: childArgs,
+        requestedArgs: [...args],
         childEnv,
         controlledPassfilePath: childEnv.PGPASSFILE,
         exitCode: null,
@@ -4457,10 +4471,21 @@ test("Run-15 actual focused child receives a runner-owned empty passfile seam un
     return spawn(command, args, options);
   };
 
-  const resources = await runner.run({
-    env: runnerEnvironment,
+  const resources = createA8SidecarResources();
+  await runner.runFocusedTests({
+    admission: {},
+    urls: {
+      primaryTargetUrl: "postgresql://synthetic/primary",
+      primaryOperatorUrl: "postgresql://synthetic/primary-operator",
+      secondaryTargetUrl: "postgresql://synthetic/secondary",
+      secondaryOperatorUrl: "postgresql://synthetic/secondary-operator",
+    },
     spawnImpl,
-    externalCommandExecutionDeadlineMs: 60_000,
+    resources,
+    parentEnv: runnerEnvironment,
+    childDurationMs: 10_000,
+    terminationGraceMs: 1_000,
+    terminationEscalationMs: 1_000,
   });
 
   assert.equal(focusedChildRuns.length, 1);
@@ -4486,6 +4511,23 @@ test("Run-15 actual focused child receives a runner-owned empty passfile seam un
     false,
     "focused child PGPASSFILE must replace the inherited value",
   );
+  assert.equal(
+    focusedChild.controlledPassfilePath ===
+      join(focusedChild.childEnv.HOME, ".pgpass"),
+    false,
+    "focused child PGPASSFILE must replace the inherited HOME default",
+  );
+  assert.equal(
+    focusedChild.controlledPassfilePath ===
+      join(focusedChild.childEnv.APPDATA, "postgresql", "pgpass.conf"),
+    false,
+    "focused child PGPASSFILE must replace the inherited APPDATA default",
+  );
+  assert.equal(
+    (await readFile(focusedChild.controlledPassfilePath)).byteLength,
+    0,
+    "runner-owned focused-child PGPASSFILE must be empty",
+  );
   assert.equal(Object.hasOwn(focusedChild.childEnv, "HOME"), true);
   assert.equal(Object.hasOwn(focusedChild.childEnv, "APPDATA"), true);
   const childHostileKeys = Object.keys(focusedChild.childEnv).filter((key) => {
@@ -4507,44 +4549,12 @@ test("Run-15 actual focused child receives a runner-owned empty passfile seam un
     ),
     true,
   );
-  assert.equal(focusedChild.args.includes("--test"), true);
+  assert.equal(focusedChild.requestedArgs.includes("--test"), true);
   assert.equal(
-    focusedChild.args.includes(
+    focusedChild.requestedArgs.includes(
       "tests/platform-migrator-alignment-postgres.test.mjs",
     ),
     true,
-  );
-  assert.ok(
-    isRunnerFixtureUrl(
-      focusedChild.childEnv.MIGRATOR_ALIGNMENT_TEST_DATABASE_URL,
-      "platform_app",
-      "migrator_alignment_test",
-    ),
-    "primary target fixture URL must come from the runner",
-  );
-  assert.ok(
-    isRunnerFixtureUrl(
-      focusedChild.childEnv.MIGRATOR_ALIGNMENT_TEST_OPERATOR_URL,
-      "postgres",
-      "migrator_alignment_test",
-    ),
-    "primary operator fixture URL must come from the runner",
-  );
-  assert.ok(
-    isRunnerFixtureUrl(
-      focusedChild.childEnv.MIGRATOR_ALIGNMENT_TEST_SECONDARY_DATABASE_URL,
-      "platform_app",
-      "migrator_alignment_test_secondary",
-    ),
-    "secondary target fixture URL must come from the runner",
-  );
-  assert.ok(
-    isRunnerFixtureUrl(
-      focusedChild.childEnv.MIGRATOR_ALIGNMENT_TEST_SECONDARY_OPERATOR_URL,
-      "postgres",
-      "migrator_alignment_test_secondary",
-    ),
-    "secondary operator fixture URL must come from the runner",
   );
   assert.equal(
     focusedChild.childEnv.MIGRATOR_ALIGNMENT_TEST_CONFIRM,
@@ -4555,18 +4565,27 @@ test("Run-15 actual focused child receives a runner-owned empty passfile seam un
 
   assert.equal(resources.focusedCredentialIsolationPreSanitization, true);
   assert.equal(resources.focusedCredentialChildBoundary, true);
-  assert.equal(resources.focusedCredentialIsolationCleaned, true);
-  assert.equal(resources.focusedCredentialIsolationAbsent, true);
   assert.equal(resources.childTestsStarted, true);
   assert.equal(resources.childExited, true);
   assert.equal(resources.childExitCode, 0);
   assert.equal(resources.childSignal, false);
   assert.equal(resources.childSummaryParsed, true);
+  assert.equal(resources.containerStartAttempted, false);
+  assert.equal(resources.volumeCreateAttempted, false);
+  assert.equal(resources.ownedContainer, false);
+  assert.equal(resources.ownedDatabases.size, 0);
+
+  await runner.cleanupRunnerResources(resources, spawnImpl);
+  resources.cleanupComplete = true;
+  await runner.verifyRunnerAbsence(resources, spawnImpl, async () => {});
+  resources.absenceVerified = true;
+
+  assert.equal(resources.focusedCredentialIsolationCleaned, true);
+  assert.equal(resources.focusedCredentialIsolationAbsent, true);
   assert.equal(resources.cleanupComplete, true);
   assert.equal(resources.absenceVerified, true);
-  assert.equal(resources.containerRemoved, true);
-  assert.equal(resources.volumeRemoved, true);
-  assert.equal(resources.volumeAbsenceVerified, true);
+  assert.equal(resources.structuredFailureSidecarCleanupProvenComplete, true);
+  assert.equal(resources.structuredFailureSidecarAbsenceVerified, true);
 
   await assert.rejects(
     () => access(focusedChild.controlledPassfilePath),
@@ -4591,24 +4610,6 @@ test("Run-15 actual focused child receives a runner-owned empty passfile seam un
     /swooshz-platform-pgpass-isolation-|hostile-inherited|synthetic-hostile|controlled-empty-pgpass|hostile-explicit-pgpass|synthetic-migrator-password/i,
   );
 });
-function isRunnerFixtureUrl(value, expectedUser, expectedDatabase) {
-  if (typeof value !== "string") return false;
-  try {
-    const parsed = new URL(value);
-    return (
-      (parsed.protocol === "postgres:" || parsed.protocol === "postgresql:") &&
-      parsed.username === expectedUser &&
-      parsed.password === "" &&
-      parsed.hostname === "127.0.0.1" &&
-      parsed.port === "56432" &&
-      parsed.pathname === "/" + expectedDatabase &&
-      parsed.search === "" &&
-      parsed.hash === ""
-    );
-  } catch {
-    return false;
-  }
-}
 
 function whitespaceTolerant(value) {
   return escapeRegExp(value).replaceAll(" ", "\\s+");
