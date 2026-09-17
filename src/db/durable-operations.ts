@@ -36,27 +36,33 @@ import {
   compileBrokerMutationBundle,
   normalizeBrokerObservationEvidence,
   validateBrokerMutationResult,
+  BROKER_RESULT_VERSION,
+  type BrokerAttemptReservationV1,
   type BrokerMutationBundleV1,
   type BrokerMutationResultV1,
   type BrokerObservationBundleV1,
+  type BrokerObservationEvidenceV1,
+  type BrokerTargetBindingV2,
   type MigrationAttemptStoreV1,
   type ProductionDatabaseBrokerV1,
 } from "./brokered-migration.js";
 
-export const PRESTATE_VERSION = "platform-db-prestate-v1" as const;
-export const PLAN_VERSION = "platform-db-plan-v1" as const;
-export const INVERSE_VERSION = "platform-db-inverse-v1" as const;
-export const RESTORE_CAPABILITY_VERSION = "restore-capability-v1" as const;
+export const PRESTATE_VERSION = "platform-db-prestate-v2" as const;
+export const PLAN_VERSION = "platform-db-plan-v2" as const;
+export const INVERSE_VERSION = "platform-db-inverse-v2" as const;
+export const RESTORE_CAPABILITY_VERSION = "restore-capability-v2" as const;
 
 export const PRESTATE_DOMAIN_SEPARATOR =
-  "swooshz-platform:platform-db-prestate-v1\0" as const;
+  "swooshz-platform:platform-db-prestate-v2\0" as const;
 export const PLAN_DOMAIN_SEPARATOR =
-  "Swooshz-platform:platform-db-plan-v1\0" as const;
+  "Swooshz-platform:platform-db-plan-v2\0" as const;
 export const CONTRACT_DOMAIN_SEPARATOR =
-  "Swooshz-platform:platform-db-contract-v1\0" as const;
-const INVERSE_DOMAIN_SEPARATOR = "Swooshz-platform:platform-db-inverse-v1\0";
+  "Swooshz-platform:platform-db-contract-v2\0" as const;
+const INVERSE_DOMAIN_SEPARATOR = "Swooshz-platform:platform-db-inverse-v2\0";
 export const POST_FORWARD_DOMAIN_SEPARATOR =
-  "Swooshz-platform:platform-db-post-forward-v1\0" as const;
+  "Swooshz-platform:platform-db-post-forward-v2\0" as const;
+export const AUTHORITY_GRAPH_DOMAIN_SEPARATOR =
+  "Swooshz-platform:platform-db-authority-graph-v2\0" as const;
 export const JOURNAL_PREFIX_DOMAIN_SEPARATOR =
   "Swooshz-platform:platform-db-journal-prefix-v1\0";
 
@@ -375,6 +381,7 @@ export function canonicalDigest(domainSeparator: string, value: unknown): string
       CONTRACT_DOMAIN_SEPARATOR,
       INVERSE_DOMAIN_SEPARATOR,
       POST_FORWARD_DOMAIN_SEPARATOR,
+      AUTHORITY_GRAPH_DOMAIN_SEPARATOR,
       JOURNAL_PREFIX_DOMAIN_SEPARATOR,
     ].includes(domainSeparator as never)
   ) {
@@ -528,7 +535,7 @@ export interface DurablePool {
 }
 
 export interface DurableTargetBinding {
-  readonly version: "target-binding-v1";
+  readonly version: "target-binding-v2";
   readonly logicalDatabaseName: string;
   readonly expectedClusterSystemIdentifier: string;
   readonly expectedDatabaseOid: string;
@@ -814,7 +821,7 @@ function assertObservationBinding(binding: DurableTargetBinding): void {
     "expectedPostgresMajor",
     "connect",
   ]);
-  if (binding.version !== "target-binding-v1") fail("TARGET_MISMATCH");
+  if (binding.version !== "target-binding-v2") fail("TARGET_MISMATCH");
   safeIdentifier(binding.logicalDatabaseName, "TARGET_MISMATCH");
   targetNumericIdentifier(binding.expectedClusterSystemIdentifier, "TARGET_MISMATCH");
   targetNumericIdentifier(binding.expectedDatabaseOid, "TARGET_MISMATCH");
@@ -2813,7 +2820,7 @@ export function requireRestoreCapability(
 ): RestoreCapabilityV1 {
   if (!capability || typeof capability !== "object" || typeof capability.execute !== "function") fail("RESTORE_CAPABILITY_REQUIRED");
   if (
-    capability.version !== "restore-capability-v1" ||
+    capability.version !== RESTORE_CAPABILITY_VERSION ||
     capability.target_binding_digest !== targetBindingDigest ||
     capability.prestate_digest !== plan.prestate_digest ||
     capability.plan_digest !== plan.plan_digest
@@ -3033,7 +3040,7 @@ export interface DurableCounts {
 }
 
 export interface DurableReceiptV1 {
-  receipt_version: 1;
+  receipt_version: 2;
   phase: ReceiptPhase;
   outcome: "PASS" | "FAIL" | "BLOCKED";
   semantic_code: SemanticCode;
@@ -3067,7 +3074,7 @@ export function projectReceipt(value: Record<string, unknown>): DurableReceiptV1
         ? rollbackAttempted ? "NOT_COMMITTED" : "INDETERMINATE"
         : "NOT_STARTED";
   const result: DurableReceiptV1 = {
-    receipt_version: 1,
+    receipt_version: 2,
     phase: value.phase as ReceiptPhase,
     outcome: value.outcome as DurableReceiptV1["outcome"],
     semantic_code: value.semantic_code as SemanticCode,
@@ -3104,7 +3111,7 @@ export function validateReceipt(value: unknown): asserts value is DurableReceipt
   ];
   if ("migration_tag" in value) keys.push("migration_tag");
   assertExactKeys(value, keys, "RECEIPT_REJECTED");
-  if (value.receipt_version !== 1 || !RECEIPT_PHASES.includes(value.phase as ReceiptPhase) || !["PASS", "FAIL", "BLOCKED"].includes(value.outcome as string) || !SEMANTIC_CODES.includes(value.semantic_code as SemanticCode) || !OPERATION_KINDS.includes(value.operation_kind as OperationKind)) fail("RECEIPT_REJECTED");
+  if (value.receipt_version !== 2 || !RECEIPT_PHASES.includes(value.phase as ReceiptPhase) || !["PASS", "FAIL", "BLOCKED"].includes(value.outcome as string) || !SEMANTIC_CODES.includes(value.semantic_code as SemanticCode) || !OPERATION_KINDS.includes(value.operation_kind as OperationKind)) fail("RECEIPT_REJECTED");
   hex(value.git_sha, 40, "RECEIPT_REJECTED");
   hex(value.contract_digest, 64, "RECEIPT_REJECTED");
   if (!COMMIT_STATES.includes(value.commit_state as CommitState)) fail("RECEIPT_REJECTED");
@@ -4108,7 +4115,7 @@ function makeReceipt(input: {
     inverse_steps: input.inverseSteps,
   };
   const projected = {
-    receipt_version: 1,
+    receipt_version: 2,
     phase: input.phase,
     outcome: input.outcome,
     semantic_code: input.semanticCode,
@@ -4152,12 +4159,262 @@ function makeReceipt(input: {
   }
 }
 
-export interface BrokeredMigrationReceiptV2 {
+export interface RoleStateV2 {
+  readonly role_name: string;
+  readonly role_oid: string;
+  readonly authority_class: "APPLICATION" | "RUNTIME" | "MIGRATOR" | "PROVIDER_CONTROL" | "RUNTIME_CREATOR_TUPLE";
+  readonly rolsuper: boolean;
+  readonly rolcreaterole: boolean;
+}
+
+export interface DurableTargetBindingV2 {
+  readonly version: "platform-db-durable-target-v2";
+  readonly run: string;
+  readonly lock: string;
+  readonly git_sha: string;
+  readonly git_tree: string;
+  readonly contract_digest: string;
+  readonly source_manifest_digest: string;
+  readonly build_manifest_digest: string;
+  readonly broker_target: BrokerTargetBindingV2;
+  readonly target_binding_digest: string;
+}
+
+export interface NormalizedPrestateV2 {
+  readonly version: typeof PRESTATE_VERSION;
+  readonly git_sha: string;
+  readonly git_tree: string;
+  readonly contract_digest: string;
+  readonly source_manifest_digest: string;
+  readonly build_manifest_digest: string;
+  readonly target_binding_digest: string;
+  readonly observation_bundle_digest: string;
+  readonly observation_evidence_digest: string;
+  readonly authority_classification_digest: string;
+  readonly authority_graph_digest: string;
+  readonly provider: {
+    readonly role_name: string;
+    readonly role_oid: string;
+    readonly rolsuper: boolean;
+  };
+  readonly migrator: {
+    readonly role_name: "platform_migrator";
+    readonly role_oid: string;
+    readonly rolcanlogin: false;
+    readonly rolinherit: false;
+    readonly rolsuper: false;
+    readonly rolcreatedb: false;
+    readonly rolcreaterole: false;
+    readonly rolreplication: false;
+    readonly rolbypassrls: false;
+    readonly password_is_null: true;
+    readonly provider_has_set: true;
+  };
+  readonly authority_graph: {
+    readonly nodes: readonly RoleStateV2[];
+    readonly edges: BrokerObservationEvidenceV1["authority_graph"]["edges"];
+    readonly closure_complete: true;
+    readonly application_authority_absent: true;
+  };
+  readonly ledger: BrokerObservationEvidenceV1["ledger"];
+  readonly canonical_posture_digest: string;
+  readonly prestate_digest: string;
+}
+
+export interface MigrationOperationV2 {
+  readonly kind: "migration";
+  readonly tag: "0010_admin_operator_viewer_role_collapse";
+  readonly journal_index: 9;
+  readonly when: "1787479999088";
+  readonly sql_sha256: "452829e49a5571a8b4e14a2cbf155e671fe81ef8ee2fa3583935b7cc2ffd996b";
+}
+
+export interface DurablePlanV2 {
+  readonly version: typeof PLAN_VERSION;
+  readonly git_sha: string;
+  readonly git_tree: string;
+  readonly contract_digest: string;
+  readonly source_manifest_digest: string;
+  readonly build_manifest_digest: string;
+  readonly target_binding_digest: string;
+  readonly authority_classification_digest: string;
+  readonly observation_bundle_digest: string;
+  readonly observation_evidence_digest: string;
+  readonly authority_graph_digest: string;
+  readonly prestate_digest: string;
+  readonly broker_bundle_digest: string;
+  readonly operation: MigrationOperationV2;
+  readonly plan_digest: string;
+}
+
+export interface DurableInverseV2 {
+  readonly version: typeof INVERSE_VERSION;
+  readonly target_binding_digest: string;
+  readonly prestate_digest: string;
+  readonly plan_digest: string;
+  readonly authority_graph_digest: string;
+  readonly broker_bundle_digest: string;
+  readonly reservation_digest: string;
+  readonly external_restore_required: true;
+  readonly inverse_digest: string;
+}
+
+export interface RestoreRequestV2 {
+  readonly target_binding_digest: string;
+  readonly prestate_digest: string;
+  readonly plan_digest: string;
+  readonly authority_graph_digest: string;
+  readonly broker_bundle_digest: string;
+  readonly reservation_digest: string;
+  readonly reason: "broker_dispatch_indeterminate" | "commit_indeterminate" | "final_observation_failed";
+}
+
+export interface RestoreCapabilityV2 extends Omit<RestoreRequestV2, "reason"> {
+  readonly version: typeof RESTORE_CAPABILITY_VERSION;
+  execute(request: RestoreRequestV2): Promise<void>;
+}
+
+function brokerGraphDigest(evidence: BrokerObservationEvidenceV1): string {
+  return canonicalDigest(AUTHORITY_GRAPH_DOMAIN_SEPARATOR, evidence.authority_graph);
+}
+
+export function normalizeBrokeredPrestateV2(
+  observationBundle: BrokerObservationBundleV1,
+  rawEvidence: unknown,
+): NormalizedPrestateV2 {
+  const evidence = normalizeBrokerObservationEvidence(rawEvidence, observationBundle);
+  const classes = new Map(observationBundle.authority_classification.nodes.map((node) => [node.role_oid, node.authority_class]));
+  const nodes = evidence.authority_graph.nodes.map((node) => ({
+    role_name: node.role_name,
+    role_oid: node.role_oid,
+    authority_class: classes.get(node.role_oid)!,
+    rolsuper: node.rolsuper,
+    rolcreaterole: node.rolcreaterole,
+  }));
+  if (nodes.some((node) => node.authority_class === undefined)) fail("PRESTATE_INVALID");
+  const payload = {
+    version: PRESTATE_VERSION,
+    git_sha: observationBundle.git_sha,
+    git_tree: observationBundle.git_tree,
+    contract_digest: observationBundle.contract_digest,
+    source_manifest_digest: observationBundle.source_manifest_digest,
+    build_manifest_digest: observationBundle.build_manifest_digest,
+    target_binding_digest: observationBundle.target_binding_digest,
+    observation_bundle_digest: observationBundle.bundle_digest,
+    observation_evidence_digest: evidence.evidence_digest,
+    authority_classification_digest: observationBundle.authority_classification_digest,
+    authority_graph_digest: brokerGraphDigest(evidence),
+    provider: {
+      role_name: evidence.provider.current_user,
+      role_oid: evidence.provider.role_oid,
+      rolsuper: evidence.provider.rolsuper,
+    },
+    migrator: { ...evidence.migrator },
+    authority_graph: {
+      nodes,
+      edges: evidence.authority_graph.edges,
+      closure_complete: true as const,
+      application_authority_absent: true as const,
+    },
+    ledger: { ...evidence.ledger },
+    canonical_posture_digest: evidence.canonical_posture_digest,
+  };
+  return deepFreeze({ ...payload, prestate_digest: canonicalDigest(PRESTATE_DOMAIN_SEPARATOR, payload) });
+}
+
+const BROKERED_MIGRATION_OPERATION: MigrationOperationV2 = Object.freeze({
+  kind: "migration",
+  tag: "0010_admin_operator_viewer_role_collapse",
+  journal_index: 9,
+  when: "1787479999088",
+  sql_sha256: "452829e49a5571a8b4e14a2cbf155e671fe81ef8ee2fa3583935b7cc2ffd996b",
+});
+
+function brokeredPlanPayload(prestate: Pick<NormalizedPrestateV2,
+  "git_sha" | "git_tree" | "contract_digest" | "source_manifest_digest" |
+  "build_manifest_digest" | "target_binding_digest" | "authority_classification_digest" |
+  "observation_bundle_digest" | "observation_evidence_digest" | "authority_graph_digest" |
+  "prestate_digest"
+>) {
+  return {
+    version: PLAN_VERSION,
+    git_sha: hex(prestate.git_sha, 40),
+    git_tree: hex(prestate.git_tree, 40),
+    contract_digest: hex(prestate.contract_digest, 64),
+    source_manifest_digest: hex(prestate.source_manifest_digest, 64),
+    build_manifest_digest: hex(prestate.build_manifest_digest, 64),
+    target_binding_digest: hex(prestate.target_binding_digest, 64),
+    authority_classification_digest: hex(prestate.authority_classification_digest, 64),
+    observation_bundle_digest: hex(prestate.observation_bundle_digest, 64),
+    observation_evidence_digest: hex(prestate.observation_evidence_digest, 64),
+    authority_graph_digest: hex(prestate.authority_graph_digest, 64),
+    prestate_digest: hex(prestate.prestate_digest, 64),
+    operation: BROKERED_MIGRATION_OPERATION,
+  };
+}
+
+export function createBrokeredDurablePlanV2(
+  prestate: NormalizedPrestateV2,
+  brokerBundleDigest = "0".repeat(64),
+): DurablePlanV2 {
+  const payload = brokeredPlanPayload(prestate);
+  return deepFreeze({
+    ...payload,
+    broker_bundle_digest: hex(brokerBundleDigest, 64),
+    plan_digest: canonicalDigest(PLAN_DOMAIN_SEPARATOR, payload),
+  });
+}
+
+export function bindDurablePlanV2ToBrokerBundle(plan: DurablePlanV2, bundle: BrokerMutationBundleV1): DurablePlanV2 {
+  const payload = brokeredPlanPayload(plan);
+  const expectedPlanDigest = canonicalDigest(PLAN_DOMAIN_SEPARATOR, payload);
+  if (expectedPlanDigest !== plan.plan_digest || bundle.plan_digest !== plan.plan_digest) fail("PREWRITE_DRIFT");
+  return deepFreeze({ ...payload, broker_bundle_digest: bundle.bundle_digest, plan_digest: expectedPlanDigest });
+}
+
+export function createDurableInverseV2(
+  plan: DurablePlanV2,
+  reservation: BrokerAttemptReservationV1,
+): DurableInverseV2 {
+  if (reservation.plan_digest !== plan.plan_digest || reservation.mutation_bundle_digest !== plan.broker_bundle_digest) fail("INVERSE_INCOMPLETE");
+  const payload = {
+    version: INVERSE_VERSION,
+    target_binding_digest: plan.target_binding_digest,
+    prestate_digest: plan.prestate_digest,
+    plan_digest: plan.plan_digest,
+    authority_graph_digest: plan.authority_graph_digest,
+    broker_bundle_digest: plan.broker_bundle_digest,
+    reservation_digest: reservation.reservation_digest,
+    external_restore_required: true as const,
+  };
+  return deepFreeze({ ...payload, inverse_digest: canonicalDigest(INVERSE_DOMAIN_SEPARATOR, payload) });
+}
+
+export function requireRestoreCapabilityV2(
+  capability: RestoreCapabilityV2 | undefined,
+  inverse: DurableInverseV2,
+): RestoreCapabilityV2 {
+  if (!capability || capability.version !== RESTORE_CAPABILITY_VERSION || typeof capability.execute !== "function") fail("RESTORE_CAPABILITY_REQUIRED");
+  for (const key of ["target_binding_digest", "prestate_digest", "plan_digest", "authority_graph_digest", "broker_bundle_digest", "reservation_digest"] as const) {
+    if (capability[key] !== inverse[key]) fail("RESTORE_CAPABILITY_REQUIRED");
+  }
+  return capability;
+}
+
+export interface DurableReceiptV2 {
   readonly receipt_version: 2;
   readonly outcome: "PASS" | "BLOCKED" | "FAIL";
   readonly phase: "OBSERVATION" | "ATTEMPT_RESERVATION" | "BROKER_DISPATCH" | "SESSION_CLEANUP" | "FINAL_OBSERVATION";
   readonly semantic_code: "SUCCESS" | "BROKER_ADAPTER_UNAVAILABLE" | "BROKER_OBSERVATION_REJECTED" | "ATTEMPT_ALREADY_CONSUMED" | "BROKER_DISPATCH_INDETERMINATE" | "BROKER_RESULT_REJECTED" | "FINAL_OBSERVATION_FAILED";
   readonly target_binding_digest: string;
+  readonly git_sha: string;
+  readonly git_tree: string;
+  readonly contract_digest: string;
+  readonly source_manifest_digest: string;
+  readonly build_manifest_digest: string;
+  readonly authority_classification_digest: string;
+  readonly authority_graph_digest: string;
+  readonly prestate_digest: string;
   readonly observation_evidence_digest: string | null;
   readonly plan_digest: string;
   readonly mutation_bundle_digest: string | null;
@@ -4166,25 +4423,36 @@ export interface BrokeredMigrationReceiptV2 {
   readonly dispatch_state: "NOT_DISPATCHED" | "DISPATCHED" | "INDETERMINATE";
   readonly commit_state: "NOT_COMMITTED" | "COMMITTED" | "INDETERMINATE";
   readonly cleanup_state: "NOT_RUN" | "DISCARDED" | "FAILED" | "INDETERMINATE";
+  readonly provider_role_name: string;
+  readonly provider_role_oid: string;
+  readonly migrator_role_name: "platform_migrator";
+  readonly migrator_role_oid: string;
   readonly mutation_started: boolean;
+  readonly rollback_state: "NOT_REQUIRED" | "NOT_RUN" | "VERIFIED" | "FAILED" | "INDETERMINATE";
+  readonly recovery_state: "NOT_REQUIRED" | "AVAILABLE" | "REQUIRED" | "INDETERMINATE";
   readonly final_observation_state: "NOT_RUN" | "PASS" | "FAIL";
+  readonly final_readiness_state: "NOT_RUN" | "PASS" | "FAIL";
   readonly migration_tag: "0010_admin_operator_viewer_role_collapse";
+  readonly migration_created_at: 1787479999088;
   readonly migration_sql_sha256: "452829e49a5571a8b4e14a2cbf155e671fe81ef8ee2fa3583935b7cc2ffd996b";
 }
 
-function brokeredReceipt(input: Omit<BrokeredMigrationReceiptV2, "receipt_version" | "migration_tag" | "migration_sql_sha256">): BrokeredMigrationReceiptV2 {
+export type BrokeredMigrationReceiptV2 = DurableReceiptV2;
+
+function brokeredReceipt(input: Omit<DurableReceiptV2, "receipt_version" | "migration_tag" | "migration_created_at" | "migration_sql_sha256">): DurableReceiptV2 {
   return deepFreeze({
     receipt_version: 2,
     ...input,
     migration_tag: "0010_admin_operator_viewer_role_collapse",
+    migration_created_at: 1787479999088,
     migration_sql_sha256: "452829e49a5571a8b4e14a2cbf155e671fe81ef8ee2fa3583935b7cc2ffd996b",
   });
 }
 
 export async function executeBrokeredMigrationPlan(input: {
   observationBundle: BrokerObservationBundleV1;
-  prestateDigest: string;
-  planDigest: string;
+  prestate: NormalizedPrestateV2;
+  plan: DurablePlanV2;
   migrationSql: string;
   broker?: ProductionDatabaseBrokerV1;
   attemptStore?: MigrationAttemptStoreV1;
@@ -4192,16 +4460,31 @@ export async function executeBrokeredMigrationPlan(input: {
   const targetDigest = input.observationBundle.target_binding_digest;
   const base = {
     target_binding_digest: targetDigest,
+    git_sha: input.plan.git_sha,
+    git_tree: input.plan.git_tree,
+    contract_digest: input.plan.contract_digest,
+    source_manifest_digest: input.plan.source_manifest_digest,
+    build_manifest_digest: input.plan.build_manifest_digest,
+    authority_classification_digest: input.plan.authority_classification_digest,
+    authority_graph_digest: input.plan.authority_graph_digest,
+    prestate_digest: input.plan.prestate_digest,
     observation_evidence_digest: null,
-    plan_digest: input.planDigest,
+    plan_digest: input.plan.plan_digest,
     mutation_bundle_digest: null,
     reservation_digest: null,
     attempts_used: 0 as const,
     dispatch_state: "NOT_DISPATCHED" as const,
     commit_state: "NOT_COMMITTED" as const,
     cleanup_state: "NOT_RUN" as const,
+    provider_role_name: input.prestate.provider.role_name,
+    provider_role_oid: input.prestate.provider.role_oid,
+    migrator_role_name: "platform_migrator" as const,
+    migrator_role_oid: input.prestate.migrator.role_oid,
     mutation_started: false,
+    rollback_state: "NOT_REQUIRED" as const,
+    recovery_state: "NOT_REQUIRED" as const,
     final_observation_state: "NOT_RUN" as const,
+    final_readiness_state: "NOT_RUN" as const,
   };
   if (!input.broker || !input.attemptStore) {
     return brokeredReceipt({ ...base, outcome: "BLOCKED", phase: "OBSERVATION", semantic_code: "BROKER_ADAPTER_UNAVAILABLE" });
@@ -4214,13 +4497,17 @@ export async function executeBrokeredMigrationPlan(input: {
       input.observationBundle.bundle_digest,
     );
     evidence = normalizeBrokerObservationEvidence(observed, input.observationBundle);
+    const observedPrestate = normalizeBrokeredPrestateV2(input.observationBundle, evidence);
+    if (canonicalSerialize(observedPrestate) !== canonicalSerialize(input.prestate)) fail("PRESTATE_MISMATCH");
     mutationBundle = compileBrokerMutationBundle({
       observation_bundle: input.observationBundle,
       observation_evidence: evidence,
-      prestate_digest: input.prestateDigest,
-      plan_digest: input.planDigest,
+      prestate_digest: input.prestate.prestate_digest,
+      plan_digest: input.plan.plan_digest,
       migration_sql: input.migrationSql,
     });
+    const boundPlan = bindDurablePlanV2ToBrokerBundle(input.plan, mutationBundle);
+    if (canonicalSerialize(boundPlan) !== canonicalSerialize(input.plan)) fail("PREWRITE_DRIFT");
   } catch {
     return brokeredReceipt({ ...base, outcome: "BLOCKED", phase: "OBSERVATION", semantic_code: "BROKER_OBSERVATION_REJECTED" });
   }
@@ -4264,6 +4551,8 @@ export async function executeBrokeredMigrationPlan(input: {
       commit_state: "INDETERMINATE",
       cleanup_state: "INDETERMINATE",
       mutation_started: true,
+      rollback_state: "INDETERMINATE",
+      recovery_state: "INDETERMINATE",
     });
   }
   if (result.dispatch_state !== "DISPATCHED" || result.commit_state !== "COMMITTED") {
@@ -4276,6 +4565,8 @@ export async function executeBrokeredMigrationPlan(input: {
       commit_state: result.commit_state,
       cleanup_state: result.cleanup_state,
       mutation_started: result.dispatch_state !== "NOT_DISPATCHED",
+      rollback_state: result.commit_state === "NOT_COMMITTED" ? "NOT_RUN" : "INDETERMINATE",
+      recovery_state: result.commit_state === "COMMITTED" ? "REQUIRED" : "INDETERMINATE",
     });
   }
   if (result.cleanup_state !== "DISCARDED") {
@@ -4288,6 +4579,8 @@ export async function executeBrokeredMigrationPlan(input: {
       commit_state: result.commit_state,
       cleanup_state: result.cleanup_state,
       mutation_started: true,
+      rollback_state: "NOT_REQUIRED",
+      recovery_state: "REQUIRED",
     });
   }
   try {
@@ -4295,7 +4588,7 @@ export async function executeBrokeredMigrationPlan(input: {
       canonicalSerializeBrokerBundle(input.observationBundle),
       input.observationBundle.bundle_digest,
     );
-    normalizeBrokerObservationEvidence(finalObservation, input.observationBundle);
+    normalizeBrokerObservationEvidence(finalObservation, input.observationBundle, "FINAL");
   } catch {
     return brokeredReceipt({
       ...reserved,
@@ -4306,7 +4599,10 @@ export async function executeBrokeredMigrationPlan(input: {
       commit_state: "COMMITTED",
       cleanup_state: "DISCARDED",
       mutation_started: true,
+      rollback_state: "NOT_REQUIRED",
+      recovery_state: "REQUIRED",
       final_observation_state: "FAIL",
+      final_readiness_state: "FAIL",
     });
   }
   return brokeredReceipt({
@@ -4318,6 +4614,9 @@ export async function executeBrokeredMigrationPlan(input: {
     commit_state: "COMMITTED",
     cleanup_state: "DISCARDED",
     mutation_started: true,
+    rollback_state: "NOT_REQUIRED",
+    recovery_state: "AVAILABLE",
     final_observation_state: "PASS",
+    final_readiness_state: "PASS",
   });
 }

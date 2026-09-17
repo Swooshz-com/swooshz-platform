@@ -928,7 +928,8 @@ test(
       await forwardTransferInOneTransaction(primary);
 
       await assertMigratorRoleAttribute(primary.adminPool, "rolcreatedb", false);
-      await assertMigratorFinalAttributes(primary.adminPool);
+      await assertMigratorRoleAttribute(primary.adminPool, "rolcanlogin", true);
+      await assertMigratorPasswordInstalled(primary.adminPool, true);
 
       await primary.appPool.query(
         `revoke platform_migrator from platform_app granted by platform_app`,
@@ -1041,6 +1042,14 @@ test(
           );
           createdCanonicalEnums.push(enumName);
         }
+
+        // The legacy credential is used only to prove the historical starting
+        // posture above. Canonical alignment converges it to the accepted
+        // production posture before readiness, closes every direct-credential
+        // pool, and repeats the convergence to prove idempotence.
+        await convergeMigratorToDormantPosture(primary);
+        await convergeMigratorToDormantPosture(primary);
+
         await withProviderBootstrapNamed(primary, async () => {
           const readinessInput = {
             env: {
@@ -1054,7 +1063,7 @@ test(
             },
             requiredTables: [],
             clientFactory: async () => ({
-              query: (...args) => primary.migratorPasswordPool.query(...args),
+              query: (...args) => primary.providerPool.query(...args),
               end: async () => {},
             }),
           };
@@ -1181,17 +1190,17 @@ test(
           let createdHstoreExtension = false;
           let ledgerAttachedToExtension = false;
           try {
-            await primary.migratorPasswordPool.query(
+            await queryAsMigrator(primary.providerAdminPool,
               "create sequence drizzle.__run178_drizzle_migrations_id_seq",
             );
             ledgerShapePrepared = true;
-            await primary.migratorPasswordPool.query(
+            await queryAsMigrator(primary.providerAdminPool,
               "alter sequence drizzle.__run178_drizzle_migrations_id_seq owned by drizzle.__drizzle_migrations.id",
             );
-            await primary.migratorPasswordPool.query(
+            await queryAsMigrator(primary.providerAdminPool,
               "alter table drizzle.__drizzle_migrations alter column id set default nextval('drizzle.__run178_drizzle_migrations_id_seq'::regclass)",
             );
-            await primary.migratorPasswordPool.query(
+            await queryAsMigrator(primary.providerAdminPool,
               "alter table drizzle.__drizzle_migrations add column created_at bigint not null default 0",
             );
             const extensionState = await extensionClient.query(
@@ -1455,19 +1464,19 @@ test(
             }
             extensionClient.release();
             if (ledgerShapePrepared) {
-              await primary.migratorPasswordPool.query(
+              await queryAsMigrator(primary.providerAdminPool,
                 "alter table drizzle.__drizzle_migrations alter column id drop default",
               ).catch(() => {});
-              await primary.migratorPasswordPool.query(
+              await queryAsMigrator(primary.providerAdminPool,
                 "alter table drizzle.__drizzle_migrations drop column created_at",
               ).catch(() => {});
-              await primary.migratorPasswordPool.query(
+              await queryAsMigrator(primary.providerAdminPool,
                 "drop sequence if exists drizzle.__run178_drizzle_migrations_id_seq",
               ).catch(() => {});
             }
           }
 
-          const readinessClient = await primary.migratorPasswordPool.connect();
+          const readinessClient = await primary.providerPool.connect();
           assert.deepEqual(tddRedFailures, [], tddRedFailures.join("; "));
 
           const transactionalReadinessInput = {
@@ -1510,7 +1519,7 @@ test(
           }
 
 
-          await primary.migratorPasswordPool.query(
+          await queryAsMigrator(primary.providerAdminPool,
             "create type public.__run176_unrelated_type as enum ('fixture')",
           );
           try {
@@ -1523,12 +1532,12 @@ test(
               "failed",
             );
           } finally {
-            await primary.migratorPasswordPool.query(
+            await queryAsMigrator(primary.providerAdminPool,
               "drop type public.__run176_unrelated_type",
             );
           }
 
-          await primary.migratorPasswordPool.query(
+          await queryAsMigrator(primary.providerAdminPool,
             "create table public.__run173_unknown_relation (id integer)",
           );
           try {
@@ -1538,12 +1547,12 @@ test(
             assert.equal(relationDriftReport.status, "schema_not_ready");
             assert.equal(relationDriftReport.checks.migratorPosture, "failed");
           } finally {
-            await primary.migratorPasswordPool.query(
+            await queryAsMigrator(primary.providerAdminPool,
               "drop table public.__run173_unknown_relation",
             );
           }
 
-          await primary.migratorPasswordPool.query(
+          await queryAsMigrator(primary.providerAdminPool,
             "create function public.__run173_unknown_routine() returns integer language sql immutable as 'select 1'",
           );
           try {
@@ -1553,7 +1562,7 @@ test(
             assert.equal(routineDriftReport.status, "schema_not_ready");
             assert.equal(routineDriftReport.checks.migratorPosture, "failed");
           } finally {
-            await primary.migratorPasswordPool.query(
+            await queryAsMigrator(primary.providerAdminPool,
               "drop function public.__run173_unknown_routine()",
             );
           }
@@ -1629,12 +1638,13 @@ test(
       assert.equal(finalFingerprint.memberships.length, 1);
 
       await assertMigratorFinalAttributes(primary.adminPool);
+      await assertMigratorPasswordInstalled(primary.adminPool, false);
       assert.equal(
         await schemaOwner(primary.adminPool, primary.databaseName, "public"),
         "pg_database_owner",
       );
-      await assertCanCreateInPublic(
-        primary.migratorPasswordPool,
+      await assertCanCreateInPublicAsRole(
+        primary.providerAdminPool,
         "platform_migrator",
         true,
       );
@@ -1674,8 +1684,8 @@ test(
         "pg_database_owner",
       );
       await assertExactProtectedEdge(primary.adminPool);
-      await assertCanCreateInPublic(
-        primary.migratorPasswordPool,
+      await assertCanCreateInPublicAsRole(
+        primary.providerAdminPool,
         "platform_migrator",
         true,
       );
@@ -2255,6 +2265,39 @@ async function assertMigratorPasswordInstalled(adminPool, installed) {
   );
 }
 
+async function convergeMigratorToDormantPosture(primary) {
+  await primary.adminPool.query(
+    "alter role platform_migrator nologin password null",
+  );
+  await Promise.all([
+    primary.migratorNoPasswordPool.end().catch(() => {}),
+    primary.migratorPasswordPool.end().catch(() => {}),
+    primary.migratorWrongPasswordPool.end().catch(() => {}),
+  ]);
+  await assertMigratorFinalAttributes(primary.adminPool);
+  await assertMigratorPasswordInstalled(primary.adminPool, false);
+  await assertFreshMigratorLoginRejected(
+    primary.databaseName,
+    syntheticMigratorPassword,
+  );
+  await assertFreshMigratorLoginRejected(primary.databaseName);
+}
+
+async function assertFreshMigratorLoginRejected(databaseName, password) {
+  const pool = new Pool({
+    connectionString: roleUrl("platform_migrator", databaseName, password),
+    max: 1,
+  });
+  try {
+    await assert.rejects(
+      () => pool.query("select 1"),
+      /client password must be a string|no password supplied|not permitted to log in|password authentication failed/i,
+    );
+  } finally {
+    await pool.end().catch(() => {});
+  }
+}
+
 async function assertMigratorFinalAttributes(adminPool) {
   const result = await adminPool.query(
     `
@@ -2279,7 +2322,7 @@ async function assertMigratorFinalAttributes(adminPool) {
       bypassrls: false,
       createdb: false,
       createrole: false,
-      login: true,
+      login: false,
       replication: false,
       super: false,
     },
@@ -2359,6 +2402,60 @@ async function assertCanCreateInPublic(pool, expectedUser, canCreate) {
     }
     await client.query("rollback");
   } finally {
+    client.release();
+  }
+}
+
+async function queryAsMigrator(providerPool, sql, values = []) {
+  const client = await providerPool.connect();
+  try {
+    await client.query("begin");
+    await client.query("set local role platform_migrator");
+    const identity = await client.query(
+      "select current_user::text as cu, session_user::text as su",
+    );
+    assert.equal(identity.rows[0].cu, "platform_migrator");
+    assert.notEqual(identity.rows[0].su, "platform_migrator");
+    const result = await client.query(sql, values);
+    await client.query("commit");
+    return result;
+  } catch (error) {
+    await client.query("rollback").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function assertCanCreateInPublicAsRole(
+  providerPool,
+  expectedRole,
+  canCreate,
+) {
+  const client = await providerPool.connect();
+  try {
+    await client.query("begin");
+    await client.query(`set local role ${identifier(expectedRole)}`);
+    const identity = await client.query(
+      "select current_user::text as cu, session_user::text as su",
+    );
+    assert.equal(identity.rows[0].cu, expectedRole);
+    assert.notEqual(identity.rows[0].su, expectedRole);
+    if (canCreate) {
+      await client.query(
+        `create table public.${identifier(publicAuthorityProbeTable)} (id integer primary key)`,
+      );
+    } else {
+      await assert.rejects(
+        () => client.query(
+          `create table public.${identifier(publicAuthorityProbeTable)} (id integer primary key)`,
+        ),
+        /permission denied for schema public/i,
+      );
+    }
+    await client.query("rollback");
+  } finally {
+    await client.query("rollback").catch(() => {});
     client.release();
   }
 }

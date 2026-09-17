@@ -42,8 +42,8 @@ export async function runPlatformDbOperation(input) {
   const migrationSql = await readFile(path.join(rootDir, "drizzle", "migrations", "0010_admin_operator_viewer_role_collapse.sql"), "utf8");
   return durable.executeBrokeredMigrationPlan({
     observationBundle,
-    prestateDigest: input.prestateDigest,
-    planDigest: input.planDigest,
+    prestate: input.prestate,
+    plan: input.plan,
     migrationSql,
     broker: input.broker,
     attemptStore: input.attemptStore,

@@ -137,8 +137,8 @@ export interface BrokerObservationEvidenceV1 {
   };
   readonly ledger: {
     readonly first_nine_identity_digest: string;
-    readonly row_count: 9;
-    readonly migration_0010_absent: true;
+    readonly row_count: 9 | 10;
+    readonly migration_0010_absent: boolean;
   };
   readonly canonical_posture_digest: string;
   readonly evidence_digest: string;
@@ -410,7 +410,11 @@ function validateAuthorityGraph(
   }
 }
 
-export function normalizeBrokerObservationEvidence(input: unknown, bundle: BrokerObservationBundleV1): BrokerObservationEvidenceV1 {
+export function normalizeBrokerObservationEvidence(
+  input: unknown,
+  bundle: BrokerObservationBundleV1,
+  phase: "PREWRITE" | "FINAL" = "PREWRITE",
+): BrokerObservationEvidenceV1 {
   if (!isRecord(input)) reject("BROKER_OBSERVATION_EVIDENCE_INVALID");
   exactKeys(input, ["version", "observation_bundle_digest", "target_binding_digest", "authority_classification_digest", "provider", "target", "migrator", "authority_graph", "ledger", "canonical_posture_digest", "evidence_digest"]);
   if (input.version !== BROKER_OBSERVATION_EVIDENCE_VERSION || input.observation_bundle_digest !== bundle.bundle_digest || input.target_binding_digest !== bundle.target_binding_digest || input.authority_classification_digest !== bundle.authority_classification_digest) reject("BROKER_OBSERVATION_EVIDENCE_INVALID");
@@ -431,7 +435,8 @@ export function normalizeBrokerObservationEvidence(input: unknown, bundle: Broke
   if (migrator.role_name !== "platform_migrator" || !POSITIVE_INTEGER.test(String(migrator.role_oid)) || migrator.rolcanlogin !== false || migrator.rolinherit !== false || migrator.rolsuper !== false || migrator.rolcreatedb !== false || migrator.rolcreaterole !== false || migrator.rolreplication !== false || migrator.rolbypassrls !== false || migrator.password_is_null !== true || migrator.provider_has_set !== true) reject("BROKER_MIGRATOR_DORMANCY_REJECTED");
   if (!Array.isArray(graph.nodes) || !Array.isArray(graph.edges) || graph.closure_complete !== true || graph.application_authority_absent !== true) reject("BROKER_AUTHORITY_GRAPH_REJECTED");
   validateAuthorityGraph(graph, bundle.authority_classification, provider, migrator);
-  if (ledger.row_count !== 9 || ledger.migration_0010_absent !== true) reject("BROKER_MIGRATION_IDENTITY_REJECTED");
+  if (phase === "PREWRITE" && (ledger.row_count !== 9 || ledger.migration_0010_absent !== true)) reject("BROKER_MIGRATION_IDENTITY_REJECTED");
+  if (phase === "FINAL" && (ledger.row_count !== 10 || ledger.migration_0010_absent !== false)) reject("BROKER_MIGRATION_IDENTITY_REJECTED");
   digest(ledger.first_nine_identity_digest); digest(input.canonical_posture_digest);
   const claimed = digest(input.evidence_digest);
   const computed = computeBrokerBundleDigest(BROKER_OBSERVATION_EVIDENCE_DOMAIN_SEPARATOR, withoutDigest(input, "evidence_digest"));

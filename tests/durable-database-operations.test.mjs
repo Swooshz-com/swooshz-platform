@@ -41,6 +41,12 @@ import {
   validateReceipt,
   verifyRestoration,
   executeBrokeredMigrationPlan,
+  bindDurablePlanV2ToBrokerBundle,
+  createBrokeredDurablePlanV2,
+  normalizeBrokeredPrestateV2,
+  createDurableInverseV2,
+  requireRestoreCapabilityV2,
+  RESTORE_CAPABILITY_VERSION,
 } from "../dist/db/durable-operations.js";
 import {
   BROKER_ATTEMPT_RESERVATION_DOMAIN_SEPARATOR,
@@ -136,7 +142,32 @@ function brokerFixture() {
     ...evidencePayload,
     evidence_digest: computeBrokerBundleDigest(BROKER_OBSERVATION_EVIDENCE_DOMAIN_SEPARATOR, evidencePayload),
   };
-  return { observationBundle, evidence };
+  const finalPayload = {
+    ...evidencePayload,
+    ledger: { ...evidencePayload.ledger, row_count: 10, migration_0010_absent: false },
+  };
+  const finalEvidence = {
+    ...finalPayload,
+    evidence_digest: computeBrokerBundleDigest(BROKER_OBSERVATION_EVIDENCE_DOMAIN_SEPARATOR, finalPayload),
+  };
+  return { observationBundle, evidence, finalEvidence };
+}
+
+function durableV2Artifacts(observationBundle, evidence, migrationSql) {
+  const prestate = normalizeBrokeredPrestateV2(observationBundle, evidence);
+  const preliminaryPlan = createBrokeredDurablePlanV2(prestate);
+  const bundle = compileBrokerMutationBundle({
+    observation_bundle: observationBundle,
+    observation_evidence: evidence,
+    prestate_digest: prestate.prestate_digest,
+    plan_digest: preliminaryPlan.plan_digest,
+    migration_sql: migrationSql,
+  });
+  return {
+    prestate,
+    plan: bindDurablePlanV2ToBrokerBundle(preliminaryPlan, bundle),
+    bundle,
+  };
 }
 
 function reservationFor(bundle) {
@@ -206,8 +237,9 @@ test("broker evidence rejects target, dormancy, graph, and application authority
 });
 
 test("broker execution reserves once before dispatch, validates the result, and performs a fresh observation", async () => {
-  const { observationBundle, evidence } = brokerFixture();
+  const { observationBundle, evidence, finalEvidence } = brokerFixture();
   const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  const { prestate, plan } = durableV2Artifacts(observationBundle, evidence, migrationSql);
   let observes = 0;
   let dispatches = 0;
   let reservations = 0;
@@ -219,7 +251,7 @@ test("broker execution reserves once before dispatch, validates the result, and 
     },
   };
   const broker = {
-    async observe() { observes += 1; return evidence; },
+    async observe() { observes += 1; return observes === 1 ? evidence : finalEvidence; },
     async dispatchMutation(serialized, digest, reservation) {
       dispatches += 1;
       const parsed = JSON.parse(serialized);
@@ -227,7 +259,7 @@ test("broker execution reserves once before dispatch, validates the result, and 
       return resultFor(parsed, reservation);
     },
   };
-  const receipt = await executeBrokeredMigrationPlan({ observationBundle, prestateDigest: "9".repeat(64), planDigest: "a".repeat(64), migrationSql, broker, attemptStore });
+  const receipt = await executeBrokeredMigrationPlan({ observationBundle, prestate, plan, migrationSql, broker, attemptStore });
   assert.equal(receipt.outcome, "PASS");
   assert.equal(receipt.attempts_used, 1);
   assert.equal(receipt.cleanup_state, "DISCARDED");
@@ -239,12 +271,13 @@ test("broker execution reserves once before dispatch, validates the result, and 
 test("pre-dispatch rejection consumes no attempt and an indeterminate dispatch is never retried", async () => {
   const { observationBundle, evidence } = brokerFixture();
   const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  const { prestate, plan } = durableV2Artifacts(observationBundle, evidence, migrationSql);
   let reservations = 0;
   let dispatches = 0;
   const rejected = await executeBrokeredMigrationPlan({
     observationBundle,
-    prestateDigest: "9".repeat(64),
-    planDigest: "a".repeat(64),
+    prestate,
+    plan,
     migrationSql,
     broker: { async observe() { return { ...evidence, target: { ...evidence.target, database_oid: "99" } }; }, async dispatchMutation() { dispatches += 1; } },
     attemptStore: { async reserveOnce() { reservations += 1; throw new Error("must not run"); } },
@@ -255,8 +288,8 @@ test("pre-dispatch rejection consumes no attempt and an indeterminate dispatch i
 
   const failed = await executeBrokeredMigrationPlan({
     observationBundle,
-    prestateDigest: "9".repeat(64),
-    planDigest: "a".repeat(64),
+    prestate,
+    plan,
     migrationSql,
     broker: { async observe() { return evidence; }, async dispatchMutation() { dispatches += 1; throw new Error("transport lost"); } },
     attemptStore: {
@@ -271,6 +304,50 @@ test("pre-dispatch rejection consumes no attempt and an indeterminate dispatch i
   assert.equal(failed.dispatch_state, "INDETERMINATE");
   assert.equal(dispatches, 1);
   assert.equal(reservations, 1);
+});
+
+test("v2 durable broker artifacts reject legacy and tampered evidence before reservation", async () => {
+  const { observationBundle, evidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  const { prestate, plan } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+  let reservations = 0;
+  const attemptStore = { async reserveOnce() { reservations += 1; throw new Error("must not reserve"); } };
+  const broker = { async observe() { return evidence; }, async dispatchMutation() { throw new Error("must not dispatch"); } };
+  for (const changed of [
+    { prestate: { ...prestate, version: "platform-db-prestate-v1" }, plan },
+    { prestate, plan: { ...plan, version: "platform-db-plan-v1" } },
+    { prestate, plan: { ...plan, authority_graph_digest: "f".repeat(64) } },
+    { prestate, plan: { ...plan, source_manifest_digest: "e".repeat(64) } },
+    { prestate, plan: { ...plan, broker_bundle_digest: "d".repeat(64) } },
+  ]) {
+    const receipt = await executeBrokeredMigrationPlan({ observationBundle, ...changed, migrationSql, broker, attemptStore });
+    assert.equal(receipt.outcome, "BLOCKED");
+    assert.equal(receipt.attempts_used, 0);
+  }
+  assert.equal(reservations, 0);
+});
+
+test("v2 inverse and restoration capability bind target graph bundle and reservation", async () => {
+  const { observationBundle, evidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  const { plan, bundle } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+  const reservation = reservationFor(bundle);
+  const inverse = createDurableInverseV2(plan, reservation);
+  const capability = {
+    version: RESTORE_CAPABILITY_VERSION,
+    target_binding_digest: inverse.target_binding_digest,
+    prestate_digest: inverse.prestate_digest,
+    plan_digest: inverse.plan_digest,
+    authority_graph_digest: inverse.authority_graph_digest,
+    broker_bundle_digest: inverse.broker_bundle_digest,
+    reservation_digest: inverse.reservation_digest,
+    async execute() {},
+  };
+  assert.equal(requireRestoreCapabilityV2(capability, inverse), capability);
+  assert.throws(
+    () => requireRestoreCapabilityV2({ ...capability, reservation_digest: "0".repeat(64) }, inverse),
+    (error) => error?.semanticCode === "RESTORE_CAPABILITY_REQUIRED",
+  );
 });
 
 async function currentRepositoryRevision() {
@@ -362,7 +439,7 @@ function targetBinding({ transactionReadOnly = "on" } = {}) {
   };
   return {
     binding: {
-      version: "target-binding-v1",
+      version: "target-binding-v2",
       logicalDatabaseName: "fixture",
       expectedClusterSystemIdentifier: "7000000000000001",
       expectedDatabaseOid: "16384",
@@ -409,7 +486,7 @@ function independentTargetBinding({
   };
   return {
     binding: {
-      version: "target-binding-v1",
+      version: "target-binding-v2",
       logicalDatabaseName: "fixture",
       expectedClusterSystemIdentifier: clusterSystemIdentifier ?? "7000000000000001",
       expectedDatabaseOid: databaseOid,
@@ -424,7 +501,7 @@ function independentTargetBinding({
 
 function legacyPrestate() {
   return {
-    version: "platform-db-prestate-v1",
+    version: "platform-db-prestate-v2",
     target: {
       logical_database_name: "fixture",
       current_user: "cloud_admin",
@@ -565,7 +642,7 @@ function planForOperation(operation, prestate = completePrestateFixture()) {
 
 function receiptFixture(overrides = {}) {
   return {
-    receipt_version: 1,
+    receipt_version: 2,
     phase: "FINAL_VERIFY",
     outcome: "PASS",
     semantic_code: "SUCCESS",
@@ -609,8 +686,8 @@ function assertReceiptRejected(overrides) {
 }
 
 test("locked domain separators and query ids are exact", () => {
-  assert.equal(PRESTATE_DOMAIN_SEPARATOR, "swooshz-platform:platform-db-prestate-v1\0");
-  assert.equal(PLAN_DOMAIN_SEPARATOR, "Swooshz-platform:platform-db-plan-v1\0");
+  assert.equal(PRESTATE_DOMAIN_SEPARATOR, "swooshz-platform:platform-db-prestate-v2\0");
+  assert.equal(PLAN_DOMAIN_SEPARATOR, "Swooshz-platform:platform-db-plan-v2\0");
   assert.deepEqual(OBSERVATION_QUERY_IDS, [
     "target_identity",
     "role_state",
@@ -637,8 +714,8 @@ test("locked domain separators and query ids are exact", () => {
 test("canonical serialization sorts UTF-16 object keys and digest deterministically", () => {
   assert.equal(canonicalSerialize({ z: 1, a: [true, null, "x"] }), '{"a":[true,null,"x"],"z":1}');
   assert.equal(
-    canonicalDigest("swooshz-platform:platform-db-prestate-v1\0", { b: 2, a: 1 }),
-    canonicalDigest("swooshz-platform:platform-db-prestate-v1\0", { a: 1, b: 2 }),
+    canonicalDigest("swooshz-platform:platform-db-prestate-v2\0", { b: 2, a: 1 }),
+    canonicalDigest("swooshz-platform:platform-db-prestate-v2\0", { a: 1, b: 2 }),
   );
   assert.throws(() => canonicalSerialize({ value: undefined }), /unsupported/i);
   assert.throws(() => canonicalSerialize({ value: 1.5 }), /floating/i);
@@ -1068,7 +1145,7 @@ test("Run-192 receipt state machine accepts only the closed outcome/phase/recove
 
 test("malformed prestates and unknown drift are rejected", () => {
   assert.throws(
-    () => normalizePrestate({ version: "platform-db-prestate-v1" }),
+    () => normalizePrestate({ version: "platform-db-prestate-v2" }),
     (error) => error.semanticCode === "PRESTATE_INVALID",
   );
   assert.throws(
@@ -1333,7 +1410,7 @@ test("inverse vectors cover every admitted reversible operation kind", () => {
   for (const operation of operations) {
     const plan = planForOperation(operation, prestate);
     const inverse = createDurableInverse(plan, prestate);
-    assert.equal(inverse.version, "platform-db-inverse-v1");
+    assert.equal(inverse.version, "platform-db-inverse-v2");
     assert.equal(inverse.source_plan_digest, plan.plan_digest);
     assert.equal(inverse.steps.length, 1);
     assert.equal(inverse.steps[0].original_operation_index, 0);
@@ -1532,7 +1609,7 @@ test("semantic failures, prewrite drift, and revision binding remain fail-closed
     (error) => error.semanticCode === "SESSION_IDENTITY_MISMATCH",
   );
   const unavailableBinding = {
-    version: "target-binding-v1",
+    version: "target-binding-v2",
     logicalDatabaseName: "fixture",
     expectedClusterSystemIdentifier: "7000000000000001",
     expectedDatabaseOid: "16384",
@@ -1566,7 +1643,7 @@ test("restore authority and receipt invariants reject ambiguous recovery", () =>
   });
   assert.throws(
     () => requireRestoreCapability({
-      version: "restore-capability-v1",
+      version: "restore-capability-v2",
       target_binding_digest: HEX64,
       prestate_digest: HEX64,
       plan_digest: "b".repeat(64),
