@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Client, Pool } from "pg";
 
 import {
   DisposablePostgresFixtureAdmissionError,
@@ -962,6 +963,238 @@ test("target authority rejects wrong pool, connection substitution, replay, stal
     safeAdmissionError,
   );
   void authority;
+});
+
+test("pool binding matcher closes real pg, supported-shape, and matcher-reuse family", async () => {
+  const password = "fixture-password";
+  const secondary = {
+    ...baseFixture,
+    name: "secondary",
+    connectionString:
+      "postgres://platform_app@127.0.0.1:5433/runtime_posture_test",
+  };
+  const identity = {
+    database_matches: true,
+    user_matches: true,
+    postgres17: true,
+    non_recovery: true,
+    catalog_fingerprint: baseFixture.connectionString,
+    lifecycle_fingerprint: baseFixture.connectionString,
+  };
+  const matchingClient = ({ actual = false, clientPassword = password } = {}) => {
+    const parameters = {
+      user: baseFixture.expectedUser,
+      host: "127.0.0.1",
+      port: 5432,
+      database: baseFixture.expectedDatabase,
+      ...(actual ? { password: clientPassword } : {}),
+    };
+    const client = actual ? new Client(parameters) : { connectionParameters: parameters };
+    client.release = () => {};
+    client.query = async (text) =>
+      String(text).includes("current_database()")
+        ? { rows: [identity] }
+        : { rows: [] };
+    return client;
+  };
+  const admissionFor = () => admitDisposablePostgresFixtures(
+    [baseFixture, secondary],
+    { readOnlyProbe: passingProbe, clientFactory: createProbeClient },
+  );
+  const representationPools = [
+    ["flat pg-pool options", () => {
+      const pool = new Pool({
+        user: baseFixture.expectedUser,
+        host: "127.0.0.1",
+        port: 5432,
+        database: baseFixture.expectedDatabase,
+        password,
+        max: 1,
+      });
+      pool.connect = async () => matchingClient({ actual: true });
+      return pool;
+    }],
+    ["connection string", () => ({
+      options: { connectionString: baseFixture.connectionString },
+      connect: async () => matchingClient(),
+      async end() {},
+    })],
+    ["nested connection parameters", () => ({
+      options: {
+        connectionParameters: {
+          user: baseFixture.expectedUser,
+          host: "127.0.0.1",
+          port: 5432,
+          database: baseFixture.expectedDatabase,
+        },
+      },
+      connect: async () => matchingClient(),
+      async end() {},
+    })],
+  ];
+
+  for (const [name, createPool] of representationPools) {
+    const admission = await admissionFor();
+    const pool = createPool();
+    const authorized = createAdmittedMutationPool(pool, admission, "primary");
+    await assert.doesNotReject(() => authorized.query("select 1"), name);
+    await pool.end();
+  }
+
+  const wrongIdentityAdmission = await admissionFor();
+  const wrongIdentityPool = new Pool({
+    user: "alternate_app",
+    host: "127.0.0.1",
+    port: 5432,
+    database: baseFixture.expectedDatabase,
+    password,
+  });
+  assert.throws(
+    () => createAdmittedMutationPool(
+      wrongIdentityPool,
+      wrongIdentityAdmission,
+      "primary",
+    ),
+    admissionEvidence("PRIMARY", "BINDING"),
+  );
+  await wrongIdentityPool.end();
+
+  const wrongTransportAdmission = await admissionFor();
+  const wrongTransportPool = new Pool({
+    user: baseFixture.expectedUser,
+    host: "::1",
+    port: 5432,
+    database: baseFixture.expectedDatabase,
+    password,
+  });
+  assert.throws(
+    () => createAdmittedMutationPool(
+      wrongTransportPool,
+      wrongTransportAdmission,
+      "primary",
+    ),
+    admissionEvidence("PRIMARY", "BINDING"),
+  );
+  await wrongTransportPool.end();
+
+  const wrongTargetAdmission = await admissionFor();
+  assert.throws(
+    () => createAdmittedMutationPool(
+      {
+        options: { connectionString: secondary.connectionString },
+        async connect() {},
+      },
+      wrongTargetAdmission,
+      "primary",
+    ),
+    admissionEvidence("PRIMARY", "BINDING"),
+  );
+
+  const wrongPasswordAdmission = await admissionFor();
+  const wrongPasswordPool = new Pool({
+    user: baseFixture.expectedUser,
+    host: "127.0.0.1",
+    port: 5432,
+    database: baseFixture.expectedDatabase,
+    password,
+  });
+  wrongPasswordPool.connect = async () => matchingClient({
+    actual: true,
+    clientPassword: "different-fixture-password",
+  });
+  const wrongPasswordAuthorized = createAdmittedMutationPool(
+    wrongPasswordPool,
+    wrongPasswordAdmission,
+    "primary",
+  );
+  await assert.rejects(
+    () => wrongPasswordAuthorized.query("select 1"),
+    admissionEvidence("PRIMARY", "BINDING"),
+  );
+  await wrongPasswordPool.end();
+
+  for (const hostilePool of [
+    {
+      options: {
+        user: baseFixture.expectedUser,
+        host: "127.0.0.1",
+        port: 5432,
+        database: baseFixture.expectedDatabase,
+        password,
+      },
+      async connect() {},
+    },
+    {
+      options: {
+        connectionString:
+          "postgres://platform_app:incorrect@127.0.0.1:5432/runtime_posture_test",
+      },
+      async connect() {},
+    },
+  ]) {
+    const admission = await admissionFor();
+    assert.throws(
+      () => createAdmittedMutationPool(hostilePool, admission, "primary"),
+      (error) => {
+        safeAdmissionError(error);
+        assert.equal("target" in error, false);
+        assert.equal("stage" in error, false);
+        return true;
+      },
+    );
+  }
+
+  const creationSecondary = {
+    ...constructionTarget("secondary", "runtime_posture_test_secondary"),
+    creationConnectionString: "postgres://postgres@127.0.0.1:5432/postgres",
+    creationExpectedDatabase: "postgres",
+    databaseMayBeAbsent: true,
+    allowDatabaseCreation: true,
+  };
+  const construction = await admitDisposablePostgresConstructionTargets(
+    [constructionTarget("primary", "runtime_posture_test"), creationSecondary],
+    {
+      readOnlyProbe: ({ fixture }) => passingProbe({ fixture }).then((result) => ({
+        ...result,
+        targetDatabasePresent: fixture.databaseMayBeAbsent ? false : true,
+        lifecycleFingerprint: fixture.databaseMayBeAbsent
+          ? `absent:${fixture.expectedDatabase}`
+          : result.lifecycleFingerprint,
+      })),
+      clientFactory: createProbeClient,
+    },
+  );
+  const creationAuthority = deriveDisposablePostgresDatabaseCreationAuthority(
+    construction,
+    "secondary",
+  );
+  const creationPool = new Pool({
+    user: "postgres",
+    host: "127.0.0.1",
+    port: 5432,
+    database: "postgres",
+    password,
+  });
+  assert.doesNotThrow(() =>
+    createAuthorizedDatabaseCreationPool(creationPool, creationAuthority),
+  );
+  await creationPool.end();
+
+  const provisioningAuthority = deriveDisposablePostgresProvisioningAuthority(
+    construction,
+    "primary",
+  );
+  const provisioningPool = new Pool({
+    user: "postgres",
+    host: "127.0.0.1",
+    port: 5432,
+    database: "runtime_posture_test",
+    password,
+  });
+  assert.doesNotThrow(() =>
+    createAuthorizedProvisioningPool(provisioningPool, provisioningAuthority),
+  );
+  await provisioningPool.end();
 });
 
 test("managed transport and non-vacuous fingerprints cannot be caller-spoofed", async () => {

@@ -1,4 +1,4 @@
-import { Pool } from "pg";
+import { Client, Pool } from "pg";
 
 import {
   inspectRuntimeDatabaseRoleAuthorityPosture,
@@ -365,9 +365,22 @@ export function createAuthorizedDatabaseCreationPool(pool, authority) {
       value.consumed ||
       value.boundPool ||
       !pool ||
-      typeof pool.connect !== "function" ||
-      !poolConnectionMatchesTarget(pool, value.target, "creation")
+      typeof pool.connect !== "function"
     ) {
+      throw new Error();
+    }
+    const bindingMatches = poolConnectionMatchesTarget(
+      pool,
+      value.target,
+      "creation",
+    );
+    if (bindingMatches !== true) {
+      if (bindingMatches === false) {
+        throw admissionErrorFor(
+          new DisposablePostgresFixtureAdmissionStageError("BINDING"),
+          value.targetName,
+        );
+      }
       throw new Error();
     }
     value.consumed = true;
@@ -417,9 +430,18 @@ export function createAuthorizedProvisioningPool(pool, authority, options = {}) 
       value.consumed ||
       value.boundPool ||
       !pool ||
-      typeof pool.connect !== "function" ||
-      !poolConnectionMatchesTarget(pool, value.target)
+      typeof pool.connect !== "function"
     ) {
+      throw new Error();
+    }
+    const bindingMatches = poolConnectionMatchesTarget(pool, value.target);
+    if (bindingMatches !== true) {
+      if (bindingMatches === false) {
+        throw admissionErrorFor(
+          new DisposablePostgresFixtureAdmissionStageError("BINDING"),
+          value.targetName,
+        );
+      }
       throw new Error();
     }
     value.consumed = true;
@@ -613,7 +635,14 @@ export function deriveDisposablePostgresTargetAuthority(
     if (!target) {
       throw new Error();
     }
-    if (!poolConnectionMatchesTarget(pool, target)) {
+    const bindingMatches = poolConnectionMatchesTarget(pool, target);
+    if (bindingMatches !== true) {
+      if (bindingMatches === false) {
+        throw admissionErrorFor(
+          new DisposablePostgresFixtureAdmissionStageError("BINDING"),
+          targetName,
+        );
+      }
       throw new Error();
     }
     const authority = Object.freeze({});
@@ -645,9 +674,18 @@ export function createAdmittedMutationClient(client, authority) {
     if (
       value.boundClient ||
       !client ||
-      typeof client.query !== "function" ||
-      !clientConnectionMatchesTarget(client, value.target)
+      typeof client.query !== "function"
     ) {
+      throw new Error();
+    }
+    const bindingMatches = clientConnectionMatchesTarget(client, value.target);
+    if (bindingMatches !== true) {
+      if (bindingMatches === false) {
+        throw admissionErrorFor(
+          new DisposablePostgresFixtureAdmissionStageError("BINDING"),
+          value.targetName,
+        );
+      }
       throw new Error();
     }
     value.boundClient = client;
@@ -728,7 +766,14 @@ function createAuthorizedPoolWrapper(
         if (
           !authority.valid ||
           !authority.boundConnections.has(client) ||
-          !clientConnectionMatchesTarget(client, target, bindingMode)
+          !clientConnectionMatchesTarget(
+            client,
+            target,
+            bindingMode,
+            Object.hasOwn(pool.options, "password")
+              ? pool.options.password
+              : undefined,
+          )
         ) {
           throw new DisposablePostgresFixtureAdmissionError();
         }
@@ -753,7 +798,14 @@ function createAuthorizedPoolWrapper(
               !Array.isArray(values) ||
               !authority.valid ||
               !authority.boundConnections.has(client) ||
-              !clientConnectionMatchesTarget(client, target, bindingMode)
+              !clientConnectionMatchesTarget(
+                client,
+                target,
+                bindingMode,
+                Object.hasOwn(pool.options, "password")
+                  ? pool.options.password
+                  : undefined,
+              )
             ) {
               throw new Error();
             }
@@ -782,24 +834,53 @@ async function connectAndRevalidate(
     if (
       !authority.valid ||
       !pool ||
-      authority.boundPool !== pool ||
-      !poolConnectionMatchesTarget(pool, target, bindingMode)
+      authority.boundPool !== pool
     ) {
+      throw new Error();
+    }
+    const poolBindingMatches = poolConnectionMatchesTarget(
+      pool,
+      target,
+      bindingMode,
+    );
+    if (poolBindingMatches !== true) {
+      if (poolBindingMatches === false) {
+        throw admissionErrorFor(
+          new DisposablePostgresFixtureAdmissionStageError("BINDING"),
+          authority.targetName,
+        );
+      }
       throw new Error();
     }
     const client = await pool.connect();
     try {
-      if (!clientConnectionMatchesTarget(client, target, bindingMode)) {
+      const clientBindingMatches = clientConnectionMatchesTarget(
+        client,
+        target,
+        bindingMode,
+        Object.hasOwn(pool.options, "password")
+          ? pool.options.password
+          : undefined,
+      );
+      if (clientBindingMatches !== true) {
+        if (clientBindingMatches === false) {
+          throw admissionErrorFor(
+            new DisposablePostgresFixtureAdmissionStageError("BINDING"),
+            authority.targetName,
+          );
+        }
         throw new Error();
       }
       await revalidate({ client, target });
       authority.boundConnections.add(client);
       return client;
-    } catch {
+    } catch (error) {
       client.release(true);
+      if (error instanceof DisposablePostgresFixtureAdmissionError) throw error;
       throw new Error();
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof DisposablePostgresFixtureAdmissionError) throw error;
     throw new DisposablePostgresFixtureAdmissionError();
   }
 }
@@ -842,12 +923,35 @@ function createMutationRevalidator(options, authorityValue = null) {
   };
 }
 
-function clientConnectionMatchesTarget(client, targetRecord, bindingMode = "target") {
+function clientConnectionMatchesTarget(
+  client,
+  targetRecord,
+  bindingMode = "target",
+  expectedPassword,
+) {
   try {
     const binding = targetConnectionBinding(targetRecord, bindingMode);
-      const parameters = client?.connectionParameters;
-    if (!parameters || typeof parameters !== "object") return false;
-    if (parameters.password) return false;
+    const parameters = client?.connectionParameters;
+    if (!parameters || typeof parameters !== "object") return null;
+    const hasPassword = Object.hasOwn(parameters, "password");
+    if (hasPassword || expectedPassword !== undefined) {
+      const passwordDescriptor = Object.getOwnPropertyDescriptor(
+        parameters,
+        "password",
+      );
+      if (
+        !(client instanceof Client) ||
+        (hasPassword &&
+          (!passwordDescriptor ||
+            passwordDescriptor.enumerable ||
+            typeof passwordDescriptor.value !== "string"))
+      ) {
+        return null;
+      }
+      if (!hasPassword || passwordDescriptor.value !== expectedPassword) {
+        return false;
+      }
+    }
     const hostname = String(parameters.host ?? "").toLowerCase();
     const port = String(parameters.port ?? "5432");
     return (
@@ -879,7 +983,7 @@ function poolConnectionMatchesTarget(pool, targetRecord, bindingMode = "target")
         parsed.search ||
         parsed.hash
       ) {
-        return false;
+        return null;
       }
       const username = decodeURIComponent(parsed.username);
       const database = decodeURIComponent(parsed.pathname.slice(1));
@@ -900,13 +1004,49 @@ function poolConnectionMatchesTarget(pool, targetRecord, bindingMode = "target")
     }
 
     const parameters = pool?.options?.connectionParameters;
-    if (!parameters || typeof parameters !== "object") return false;
-    if (parameters.password) return false;
-    const hostname = String(parameters.host ?? "").toLowerCase();
-    const port = String(parameters.port ?? "5432");
+    if (parameters && typeof parameters === "object") {
+      if (parameters.password) return null;
+      const hostname = String(parameters.host ?? "").toLowerCase();
+      const port = String(parameters.port ?? "5432");
+      return (
+        String(parameters.user ?? "") === binding.expectedUser &&
+        String(parameters.database ?? "") === binding.expectedDatabase &&
+        hostname === binding.hostname &&
+        port === binding.port &&
+        binding.transportIdentity === transportIdentityFor(
+          targetRecord,
+          hostname,
+          port,
+          bindingMode,
+        )
+      );
+    }
+
+    const flatOptions = pool?.options;
+    const passwordDescriptor = Object.getOwnPropertyDescriptor(
+      flatOptions ?? {},
+      "password",
+    );
+    if (
+      !(pool instanceof Pool) ||
+      !flatOptions ||
+      typeof flatOptions !== "object" ||
+      !Object.hasOwn(flatOptions, "user") ||
+      !Object.hasOwn(flatOptions, "host") ||
+      !Object.hasOwn(flatOptions, "port") ||
+      !Object.hasOwn(flatOptions, "database") ||
+      !passwordDescriptor ||
+      passwordDescriptor.enumerable ||
+      typeof passwordDescriptor.value !== "string" ||
+      passwordDescriptor.value.length === 0
+    ) {
+      return null;
+    }
+    const hostname = String(flatOptions.host).toLowerCase();
+    const port = String(flatOptions.port);
     return (
-      String(parameters.user ?? "") === binding.expectedUser &&
-      String(parameters.database ?? "") === binding.expectedDatabase &&
+      String(flatOptions.user) === binding.expectedUser &&
+      String(flatOptions.database) === binding.expectedDatabase &&
       hostname === binding.hostname &&
       port === binding.port &&
       binding.transportIdentity === transportIdentityFor(
