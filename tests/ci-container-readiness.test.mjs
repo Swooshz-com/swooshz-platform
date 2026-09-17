@@ -3,12 +3,7 @@ import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import test from "node:test";
-
-import {
-  formatRoleCollapseSuccess,
-  parseRoleCollapseTestSummary,
-  validateRoleCollapseChildResult,
-} from "../scripts/run-disposable-role-collapse-postgres-tests.mjs";
+import vm from "node:vm";
 
 const workflowPath = ".github/workflows/ci.yml";
 const roleCollapseRunnerPath = "scripts/run-disposable-role-collapse-postgres-tests.mjs";
@@ -18,6 +13,47 @@ const dockerignorePath = ".dockerignore";
 const coolifyDocPath = "docs/coolify-deployment-readiness.md";
 const cicdStatusPath = "docs/ci-cd/CURRENT_CICD_STATUS.md";
 const roadmapPath = "docs/production-readiness-roadmap.md";
+
+async function loadRoleCollapseContract() {
+  const source = await readFile(roleCollapseRunnerPath, "utf8");
+  const parserStartMarker =
+    "export function parseRoleCollapseTestSummary(output) {";
+  const parserStart = source.indexOf(parserStartMarker);
+  const parserEnd = source.indexOf("\nasync function runFocusedChild(", parserStart);
+
+  assert.notEqual(parserStart, -1, "role-collapse summary parser must exist");
+  assert.ok(parserEnd > parserStart, "role-collapse contract boundary must exist");
+  assert.equal(
+    source.indexOf(parserStartMarker, parserStart + parserStartMarker.length),
+    -1,
+    "role-collapse summary parser must be unique",
+  );
+
+  const constantSource = ["maxChildOutputBytes", "childTimeoutMs"]
+    .map((name) => {
+      const match = source.match(new RegExp(`^const ${name} = [^;]+;$`, "mu"));
+      assert.ok(match, `${name} declaration must exist`);
+      return match[0];
+    })
+    .join("\n");
+  const implementation = source.slice(parserStart, parserEnd).replace(/^export /gmu, "");
+
+  assert.match(source, /const summary = validateRoleCollapseChildResult\(result\);/u);
+  assert.match(source, /process\.stdout\.write\(formatRoleCollapseSuccess\(summary\)\);/u);
+
+  const context = vm.createContext({ Buffer });
+  vm.runInContext(
+    `${constantSource}\n${implementation}\nglobalThis.roleCollapseContract = { parseRoleCollapseTestSummary, validateRoleCollapseChildResult, formatRoleCollapseSuccess };`,
+    context,
+    { filename: roleCollapseRunnerPath },
+  );
+
+  return context.roleCollapseContract;
+}
+
+function normalizeVmValue(value) {
+  return value === null ? null : JSON.parse(JSON.stringify(value));
+}
 
 test("CI workflow runs guardrails, install, typecheck, build, test, and container build without deploy", async () => {
   const workflow = await readFile(workflowPath, "utf8");
@@ -82,8 +118,13 @@ test("CI workflow runs guardrails, install, typecheck, build, test, and containe
 });
 
 test("role-collapse child summary accepts coherent inventory-independent evidence", async () => {
+  const {
+    formatRoleCollapseSuccess,
+    parseRoleCollapseTestSummary,
+    validateRoleCollapseChildResult,
+  } = await loadRoleCollapseContract();
   const retained = roleCollapseSummary();
-  assert.deepEqual(parseRoleCollapseTestSummary(retained), {
+  assert.deepEqual(normalizeVmValue(parseRoleCollapseTestSummary(retained)), {
     cancelled: 0,
     durationMs: 1,
     failed: 0,
@@ -98,7 +139,7 @@ test("role-collapse child summary accepts coherent inventory-independent evidenc
   const changedSummary = validateRoleCollapseChildResult(
     roleCollapseChildResult(changed),
   );
-  assert.deepEqual(changedSummary, {
+  assert.deepEqual(normalizeVmValue(changedSummary), {
     cancelled: 0,
     durationMs: 1,
     failed: 0,
@@ -125,7 +166,9 @@ test("role-collapse child summary accepts coherent inventory-independent evidenc
   assert.doesNotMatch(roleCollapseRunner, /proofs: 2 passed/u);
 });
 
-test("role-collapse child summary rejects failed, noncanonical, or nonterminal evidence", () => {
+test("role-collapse child summary rejects failed, noncanonical, or nonterminal evidence", async () => {
+  const { parseRoleCollapseTestSummary, validateRoleCollapseChildResult } =
+    await loadRoleCollapseContract();
   const valid = roleCollapseSummary();
   for (const processFailure of [
     { code: 1 },
