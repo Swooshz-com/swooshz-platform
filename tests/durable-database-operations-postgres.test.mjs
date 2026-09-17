@@ -65,7 +65,7 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
       assert.notDeepEqual(targetA, targetB);
 
       const binding = {
-        version: "target-binding-v1",
+        version: "target-binding-v2",
         logicalDatabaseName: databaseName,
         expectedClusterSystemIdentifier: targetA.cluster_system_identifier,
         expectedDatabaseOid: targetA.database_oid,

@@ -1,5 +1,9 @@
 # Internal Alpha Platform Contract Audit
 
+## Current database execution contract
+
+Production database authority is provider-brokered and credential-free to the application repository process. Exact provider/session and target OIDs are bound into versioned evidence; complete application/runtime authority closure and `platform_migrator NOLOGIN PASSWORD NULL` are mandatory. The only production migration bundle is canonical 0010 plus its ledger row in one transaction under `SET LOCAL ROLE platform_migrator`, with durable single-use reservation and no retry after possible dispatch. Direct operator URLs and migrator credentials are prohibited.
+
 This audit defines what Swooshz Platform must own before Koncept Images internal team rollout. It is a product-contract and architecture-readiness document only. It does not approve UI implementation, Google Stitch implementation, auth behavior changes, live deployment, SQAG repository changes, secrets, or real staff email addresses.
 
 ## Executive Summary

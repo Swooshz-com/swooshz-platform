@@ -1,5 +1,9 @@
 # Coolify Deployment Readiness
 
+## Production database separation
+
+Coolify must receive only the restricted runtime `DATABASE_URL`; it must never receive `DATABASE_OPERATOR_URL`, a migrator credential, provider-control authority, or a migration startup hook. Production readiness and migration are separate provider-broker operations using canonical digest-bound bundles. The migrator remains `NOLOGIN PASSWORD NULL`, is assumed only with transaction-local `SET LOCAL ROLE`, and is unreachable from application/runtime principals. Direct execution is restricted to runner-owned disposable fixtures.
+
 Production readiness is not approved. This document is repo-side deployment readiness only. It does not deploy Swooshz Platform, create a VPS, configure Coolify, configure DNS/TLS, configure OAuth, run hosted smoke, or approve production launch.
 
 The shared Hostinger/Coolify foundation is not created yet. That future VPS/Coolify foundation is shared across Swooshz Platform, Swooshz Quote Auto Generator, and SKR; it must not become Platform-only. Swooshz Quote Auto Generator remains a separate product app launched from Platform, not embedded in Platform. SKR remains a separate website/app. The SEO/GEO/Seozilla product direction is retired and must remain absent from customer-facing Platform surfaces.

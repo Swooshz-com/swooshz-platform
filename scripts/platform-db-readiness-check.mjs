@@ -8,6 +8,10 @@ import {
   createDatabaseReadinessReport,
   formatDatabaseReadinessReport,
 } from "../dist/db/readiness.js";
+import {
+  canonicalSerializeBrokerBundle,
+  normalizeBrokerObservationEvidence,
+} from "../dist/db/brokered-migration.js";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const defaultJournalPath = path.join(
@@ -38,9 +42,17 @@ export async function runPlatformDatabaseReadinessCheck({
   env = process.env,
   expectedMigrationState,
   clientFactory,
+  runnerOwnedFixture,
+  broker,
+  observationBundle,
   writeLine = console.log,
   writeError = console.error,
 } = {}) {
+  if (env.DATABASE_OPERATOR_URL?.trim()) {
+    writeError("Swooshz Platform database readiness_check=fail");
+    writeError("status=direct_database_credential_prohibited");
+    return { ok: false, status: "db_config_invalid", checks: { config: "invalid", reachability: "not_checked", schema: "not_checked", migrations: "not_checked", migratorPosture: "not_checked" }, requiredTables: [], missingTables: [] };
+  }
   let migrationState;
 
   try {
@@ -70,9 +82,27 @@ export async function runPlatformDatabaseReadinessCheck({
     return report;
   }
 
+  if (broker && observationBundle) {
+    try {
+      const rawEvidence = await broker.observe(
+        canonicalSerializeBrokerBundle(observationBundle),
+        observationBundle.bundle_digest,
+      );
+      normalizeBrokerObservationEvidence(rawEvidence, observationBundle);
+      const report = { ok: true, status: "ready", checks: { config: "present", reachability: "passed", schema: "passed", migrations: "passed", migratorPosture: "passed" }, requiredTables: [], missingTables: [], expectedMigrationState: migrationState };
+      for (const line of formatDatabaseReadinessReport(report)) writeLine(line);
+      return report;
+    } catch {
+      writeError("Swooshz Platform database readiness_check=fail");
+      writeError("status=broker_observation_rejected");
+      return { ok: false, status: "schema_not_ready", checks: { config: "present", reachability: "failed", schema: "not_checked", migrations: "not_checked", migratorPosture: "failed" }, requiredTables: [], missingTables: [], expectedMigrationState: migrationState };
+    }
+  }
+
   const report = await createDatabaseReadinessReport({
     env,
     expectedMigrationState: migrationState,
+    ...(runnerOwnedFixture ? { runnerOwnedFixture } : {}),
     ...(clientFactory ? { clientFactory } : {}),
   });
   const write = report.ok ? writeLine : writeError;
@@ -85,6 +115,11 @@ export async function runPlatformDatabaseReadinessCheck({
 }
 
 async function main() {
+  if (!process.env.DATABASE_OPERATOR_URL?.trim()) {
+    process.stderr.write("Swooshz Platform database readiness_check=fail\nstatus=broker_adapter_unavailable\n");
+    process.exitCode = 1;
+    return;
+  }
   const report = await runPlatformDatabaseReadinessCheck();
   process.exitCode = report.ok ? 0 : 1;
 }
