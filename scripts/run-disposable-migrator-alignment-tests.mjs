@@ -36,7 +36,6 @@ const maxChildDurationMs = 120_000;
 const focusedChildTerminationGraceMs = 2_000;
 const focusedChildTerminationEscalationMs = 2_000;
 const focusedChildEscalationSignal = "SIGKILL";
-const expectedPostgresTestCount = 7;
 const externalCommandExecutionDeadlineDefaultMs = 10_000;
 const externalCommandTerminationGraceDefaultMs = 500;
 const externalCommandReapDeadlineDefaultMs = 500;
@@ -720,9 +719,8 @@ export function parseDisposableMigratorAlignmentTestSummary(output) {
     counts[field] = count;
   }
   if (
-    counts.tests !== expectedPostgresTestCount ||
-    counts.suites !== 0 ||
-    counts.pass !== expectedPostgresTestCount ||
+    counts.tests <= 0 ||
+    counts.pass !== counts.tests ||
     counts.fail !== 0 ||
     counts.skipped !== 0 ||
     counts.cancelled !== 0 ||

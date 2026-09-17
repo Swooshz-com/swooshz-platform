@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Client, Pool } from "pg";
 
 import {
   DisposablePostgresFixtureAdmissionError,
@@ -79,10 +80,56 @@ function createProbeClient(target) {
   };
 }
 
-function createBoundaryClient({ readOnlyValue = "on", rejectQuery } = {}) {
+function createRealPasswordlessProbeClient(target) {
+  const parsed = new URL(target.probeConnectionString ?? target.connectionString);
+  const client = new Client({
+    database: decodeURIComponent(parsed.pathname.slice(1)),
+    host: parsed.hostname,
+    port: Number(parsed.port || "5432"),
+    user: decodeURIComponent(parsed.username),
+  });
+  const passwordDescriptor = Object.getOwnPropertyDescriptor(
+    client.connectionParameters,
+    "password",
+  );
+  assert.ok(passwordDescriptor);
+  assert.equal(passwordDescriptor.enumerable, false);
+  Object.defineProperty(client.connectionParameters, "password", {
+    ...passwordDescriptor,
+    value: null,
+  });
+  client.query = async (text) => {
+    const normalized = String(text).trim().toLowerCase();
+    if (normalized === "show transaction_read_only") {
+      return { rows: [{ transaction_read_only: "on" }] };
+    }
+    if (normalized.includes("current_database()")) {
+      return {
+        rows: [{
+          catalog_fingerprint: target.connectionString,
+          database_matches: true,
+          lifecycle_fingerprint: target.connectionString,
+          non_recovery: true,
+          postgres17: true,
+          user_matches: true,
+        }],
+      };
+    }
+    return { rows: [] };
+  };
+  client.release = () => {};
+  return client;
+}
+
+function createBoundaryClient({
+  cleanupMethod = "release",
+  readOnlyValue = "on",
+  rejectCleanup = false,
+  rejectQuery,
+} = {}) {
   const calls = [];
   let released = false;
-  return {
+  const client = {
     calls,
     async query(text) {
       const normalized = String(text).trim().toLowerCase();
@@ -93,13 +140,15 @@ function createBoundaryClient({ readOnlyValue = "on", rejectQuery } = {}) {
       }
       return { rows: [] };
     },
-    release() {
-      released = true;
-    },
     wasReleased() {
       return released;
     },
   };
+  client[cleanupMethod] = () => {
+    released = true;
+    if (rejectCleanup) throw new Error();
+  };
+  return client;
 }
 
 test("disposable fixture admission rejects ambiguous, remote, socket, and unattested targets", () => {
@@ -208,6 +257,7 @@ test("every target is admitted before mutation and a secondary failure permits z
 
   assert.deepEqual(admitted, ["primary", "secondary"]);
   assert.equal(mutationCalls, 0);
+  await assertClosedAdmissionEvidence();
   await assertCanonicalLocatorCollisions();
   await assertObservedPhysicalIdentityCollision();
   await assertSeparateAggregateTargets();
@@ -248,6 +298,112 @@ async function assertCanonicalLocatorCollisions() {
   }
 }
 
+async function assertClosedAdmissionEvidence() {
+  const secondary = {
+    ...baseFixture,
+    name: "secondary",
+    connectionString:
+      "postgres://platform_app@127.0.0.1:5433/runtime_posture_test",
+  };
+  const stageCases = [
+    ["IDENTITY", { databaseMatches: false }],
+    ["POSTURE", { runtimePosturePassed: false }],
+    ["OWNERSHIP", { ownershipAbsent: false }],
+    ["EXPECTED_OBJECTS", { expectedObjectsPresent: false }],
+  ];
+
+  for (const [stage, override] of stageCases) {
+    await assert.rejects(
+      () => admitDisposablePostgresFixture(baseFixture, {
+        readOnlyProbe: async ({ fixture }) => ({
+          ...(await passingProbe({ fixture })),
+          ...override,
+        }),
+        clientFactory: createProbeClient,
+      }),
+      admissionEvidence("PRIMARY", stage),
+    );
+  }
+
+  await assert.rejects(
+    () => admitDisposablePostgresFixture(baseFixture, {
+      readOnlyProbe: passingProbe,
+      clientFactory: () => {
+        throw new Error("unsafe-internal-detail");
+      },
+    }),
+    admissionEvidence("PRIMARY", "CONNECT"),
+  );
+  await assert.rejects(
+    () => admitDisposablePostgresFixture(baseFixture, {
+      readOnlyProbe: passingProbe,
+      clientFactory: () => ({
+        connectionParameters: {
+          database: baseFixture.expectedDatabase,
+          host: "127.0.0.1",
+          port: "5433",
+          user: baseFixture.expectedUser,
+        },
+        async query() {
+          return { rows: [] };
+        },
+        release() {},
+      }),
+    }),
+    admissionEvidence("PRIMARY", "BINDING"),
+  );
+  await assert.rejects(
+    () => admitDisposablePostgresFixture(baseFixture, {
+      readOnlyProbe: passingProbe,
+      clientFactory: () => createBoundaryClient({
+        rejectQuery: "set transaction read only",
+      }),
+    }),
+    admissionEvidence("PRIMARY", "READONLY"),
+  );
+  await assert.rejects(
+    () => admitDisposablePostgresFixture(
+      { ...baseFixture, expectedUser: "invalid-user" },
+      {
+        readOnlyProbe: passingProbe,
+        clientFactory: createProbeClient,
+      },
+    ),
+    admissionEvidence("PRIMARY", "BINDING"),
+  );
+  await assert.rejects(
+    () => admitDisposablePostgresConstructionTargets(
+      [
+        { ...constructionTarget("primary", "runtime_posture_test"), expectedUser: "invalid-user" },
+        constructionTarget("secondary", "runtime_posture_test_secondary"),
+      ],
+      { readOnlyProbe: passingProbe, clientFactory: createProbeClient },
+    ),
+    admissionEvidence("PRIMARY", "BINDING"),
+  );
+  await assert.rejects(
+    () => admitDisposablePostgresFixtures([baseFixture, secondary], {
+      readOnlyProbe: async ({ fixture }) => ({
+        ...(await passingProbe({ fixture })),
+        expectedObjectsPresent: fixture.name !== "secondary",
+      }),
+      clientFactory: createProbeClient,
+    }),
+    admissionEvidence("SECONDARY", "EXPECTED_OBJECTS"),
+  );
+
+  await assert.rejects(
+    () => admitDisposablePostgresFixtures(
+      [baseFixture, { ...baseFixture, name: "secondary" }],
+      {
+        readOnlyProbe: passingProbe,
+        clientFactory: createProbeClient,
+      },
+    ),
+    admissionEvidence("SECONDARY", "BINDING"),
+  );
+}
+
 async function assertObservedPhysicalIdentityCollision() {
   const secondary = {
     ...baseFixture,
@@ -277,11 +433,52 @@ async function assertObservedPhysicalIdentityCollision() {
           clientFactory: createProbeClient,
         },
       ),
-    safeAdmissionError,
+    admissionEvidence("SECONDARY", "IDENTITY"),
   );
 
   assert.equal(probeCalls, 2);
   assert.equal(mutationCalls, 0);
+
+  await assert.rejects(
+    () => admitDisposablePostgresConstructionTargets(
+      [
+        constructionTarget("primary", "runtime_posture_test"),
+        constructionTarget("secondary", "runtime_posture_test_secondary"),
+      ],
+      {
+        readOnlyProbe: async () => ({
+          ...(await passingProbe()),
+          catalogFingerprint: "construction-cluster-1",
+          lifecycleFingerprint: "construction-database-1",
+        }),
+        clientFactory: createProbeClient,
+      },
+    ),
+    admissionEvidence("SECONDARY", "IDENTITY"),
+  );
+
+  const unclassified = {
+    ...secondary,
+    name: "tertiary",
+    connectionString:
+      "postgres://platform_app@127.0.0.1:5434/runtime_posture_test",
+  };
+  await assert.rejects(
+    () => admitDisposablePostgresFixtures([baseFixture, unclassified], {
+      readOnlyProbe: async () => ({
+        ...(await passingProbe()),
+        catalogFingerprint: "run45-cluster-1",
+        lifecycleFingerprint: "run45-database-1",
+      }),
+      clientFactory: createProbeClient,
+    }),
+    (error) => {
+      safeAdmissionError(error);
+      assert.equal("target" in error, false);
+      assert.equal("stage" in error, false);
+      return true;
+    },
+  );
 }
 
 async function assertSeparateAggregateTargets() {
@@ -361,10 +558,72 @@ async function assertCustomProbeCleanup() {
     assert.equal(client.calls.at(-1), "rollback", name);
     assert.equal(client.wasReleased(), true, name);
   }
+
+  const genericThenCleanup = createBoundaryClient({
+    rejectCleanup: true,
+    rejectQuery: "rollback",
+  });
+  await assert.rejects(
+    () => admitDisposablePostgresFixture(baseFixture, {
+      readOnlyProbe: async () => {
+        throw new Error();
+      },
+      clientFactory: () => genericThenCleanup,
+    }),
+    (error) => {
+      safeAdmissionError(error);
+      assert.equal("target" in error, false);
+      assert.equal("stage" in error, false);
+      return true;
+    },
+  );
+  assert.equal(genericThenCleanup.wasReleased(), true);
+
+  const identityThenCleanup = createBoundaryClient({
+    rejectCleanup: true,
+    rejectQuery: "rollback",
+  });
+  await assert.rejects(
+    () => admitDisposablePostgresFixture(baseFixture, {
+      readOnlyProbe: async ({ fixture }) => ({
+        ...(await passingProbe({ fixture })),
+        databaseMatches: false,
+      }),
+      clientFactory: () => identityThenCleanup,
+    }),
+    admissionEvidence("PRIMARY", "IDENTITY"),
+  );
+  assert.equal(identityThenCleanup.wasReleased(), true);
+
+  for (const cleanupMethod of ["release", "end"]) {
+    const cleanupOnly = createBoundaryClient({
+      cleanupMethod,
+      rejectCleanup: true,
+    });
+    await assert.rejects(
+      () => admitDisposablePostgresFixture(baseFixture, {
+        readOnlyProbe: passingProbe,
+        clientFactory: () => cleanupOnly,
+      }),
+      admissionEvidence("PRIMARY", "CONNECT"),
+    );
+    assert.equal(cleanupOnly.wasReleased(), true, cleanupMethod);
+  }
+
+  const rollbackOnly = createBoundaryClient({ rejectQuery: "rollback" });
+  await assert.rejects(
+    () => admitDisposablePostgresFixture(baseFixture, {
+      readOnlyProbe: passingProbe,
+      clientFactory: () => rollbackOnly,
+    }),
+    admissionEvidence("PRIMARY", "READONLY"),
+  );
+  assert.equal(rollbackOnly.wasReleased(), true);
 }
 
 async function assertReadOnlyBoundaryFailures() {
   const cases = [
+    ["begin failure", createBoundaryClient({ rejectQuery: "begin" })],
     ["establishment failure", createBoundaryClient({ rejectQuery: "set transaction read only" })],
     ["verification failure", createBoundaryClient({ readOnlyValue: "off" })],
   ];
@@ -380,11 +639,15 @@ async function assertReadOnlyBoundaryFailures() {
           },
           clientFactory: () => client,
         }),
-      safeAdmissionError,
+      admissionEvidence("PRIMARY", "READONLY"),
       name,
     );
     assert.equal(callbackCalled, false, name);
-    assert.equal(client.calls.at(-1), "rollback", name);
+    assert.equal(
+      client.calls.at(-1),
+      name === "begin failure" ? "begin" : "rollback",
+      name,
+    );
     assert.equal(client.wasReleased(), true, name);
   }
 }
@@ -743,6 +1006,311 @@ test("target authority rejects wrong pool, connection substitution, replay, stal
   void authority;
 });
 
+test("pool binding matcher closes real pg, supported-shape, and matcher-reuse family", async () => {
+  const password = "fixture-password";
+  const secondary = {
+    ...baseFixture,
+    name: "secondary",
+    connectionString:
+      "postgres://platform_app@127.0.0.1:5433/runtime_posture_test",
+  };
+  const identity = {
+    database_matches: true,
+    user_matches: true,
+    postgres17: true,
+    non_recovery: true,
+    catalog_fingerprint: baseFixture.connectionString,
+    lifecycle_fingerprint: baseFixture.connectionString,
+  };
+  const matchingClient = ({ actual = false, clientPassword = password } = {}) => {
+    const parameters = {
+      user: baseFixture.expectedUser,
+      host: "127.0.0.1",
+      port: 5432,
+      database: baseFixture.expectedDatabase,
+      ...(actual ? { password: clientPassword } : {}),
+    };
+    const client = actual ? new Client(parameters) : { connectionParameters: parameters };
+    client.release = () => {};
+    client.query = async (text) =>
+      String(text).includes("current_database()")
+        ? { rows: [identity] }
+        : { rows: [] };
+    return client;
+  };
+  const admissionFor = () => admitDisposablePostgresFixtures(
+    [baseFixture, secondary],
+    { readOnlyProbe: passingProbe, clientFactory: createProbeClient },
+  );
+  const representationPools = [
+    ["flat pg-pool options", () => {
+      const pool = new Pool({
+        user: baseFixture.expectedUser,
+        host: "127.0.0.1",
+        port: 5432,
+        database: baseFixture.expectedDatabase,
+        password,
+        max: 1,
+      });
+      pool.connect = async () => matchingClient({ actual: true });
+      return pool;
+    }],
+    ["connection string", () => ({
+      options: { connectionString: baseFixture.connectionString },
+      connect: async () => matchingClient(),
+      async end() {},
+    })],
+    ["nested connection parameters", () => ({
+      options: {
+        connectionParameters: {
+          user: baseFixture.expectedUser,
+          host: "127.0.0.1",
+          port: 5432,
+          database: baseFixture.expectedDatabase,
+        },
+      },
+      connect: async () => matchingClient(),
+      async end() {},
+    })],
+  ];
+
+  for (const [name, createPool] of representationPools) {
+    const admission = await admissionFor();
+    const pool = createPool();
+    const authorized = createAdmittedMutationPool(pool, admission, "primary");
+    await assert.doesNotReject(() => authorized.query("select 1"), name);
+    await pool.end();
+  }
+
+  const wrongIdentityAdmission = await admissionFor();
+  const wrongIdentityPool = new Pool({
+    user: "alternate_app",
+    host: "127.0.0.1",
+    port: 5432,
+    database: baseFixture.expectedDatabase,
+    password,
+  });
+  assert.throws(
+    () => createAdmittedMutationPool(
+      wrongIdentityPool,
+      wrongIdentityAdmission,
+      "primary",
+    ),
+    admissionEvidence("PRIMARY", "BINDING"),
+  );
+  await wrongIdentityPool.end();
+
+  const wrongTransportAdmission = await admissionFor();
+  const wrongTransportPool = new Pool({
+    user: baseFixture.expectedUser,
+    host: "::1",
+    port: 5432,
+    database: baseFixture.expectedDatabase,
+    password,
+  });
+  assert.throws(
+    () => createAdmittedMutationPool(
+      wrongTransportPool,
+      wrongTransportAdmission,
+      "primary",
+    ),
+    admissionEvidence("PRIMARY", "BINDING"),
+  );
+  await wrongTransportPool.end();
+
+  const wrongTargetAdmission = await admissionFor();
+  assert.throws(
+    () => createAdmittedMutationPool(
+      {
+        options: { connectionString: secondary.connectionString },
+        async connect() {},
+      },
+      wrongTargetAdmission,
+      "primary",
+    ),
+    admissionEvidence("PRIMARY", "BINDING"),
+  );
+
+  const wrongPasswordAdmission = await admissionFor();
+  const wrongPasswordPool = new Pool({
+    user: baseFixture.expectedUser,
+    host: "127.0.0.1",
+    port: 5432,
+    database: baseFixture.expectedDatabase,
+    password,
+  });
+  wrongPasswordPool.connect = async () => matchingClient({
+    actual: true,
+    clientPassword: "different-fixture-password",
+  });
+  const wrongPasswordAuthorized = createAdmittedMutationPool(
+    wrongPasswordPool,
+    wrongPasswordAdmission,
+    "primary",
+  );
+  await assert.rejects(
+    () => wrongPasswordAuthorized.query("select 1"),
+    admissionEvidence("PRIMARY", "BINDING"),
+  );
+  await wrongPasswordPool.end();
+
+  for (const hostilePool of [
+    {
+      options: {
+        user: baseFixture.expectedUser,
+        host: "127.0.0.1",
+        port: 5432,
+        database: baseFixture.expectedDatabase,
+        password,
+      },
+      async connect() {},
+    },
+    {
+      options: {
+        connectionString:
+          "postgres://platform_app:incorrect@127.0.0.1:5432/runtime_posture_test",
+      },
+      async connect() {},
+    },
+  ]) {
+    const admission = await admissionFor();
+    assert.throws(
+      () => createAdmittedMutationPool(hostilePool, admission, "primary"),
+      (error) => {
+        safeAdmissionError(error);
+        assert.equal("target" in error, false);
+        assert.equal("stage" in error, false);
+        return true;
+      },
+    );
+  }
+
+  const creationSecondary = {
+    ...constructionTarget("secondary", "runtime_posture_test_secondary"),
+    creationConnectionString: "postgres://postgres@127.0.0.1:5432/postgres",
+    creationExpectedDatabase: "postgres",
+    databaseMayBeAbsent: true,
+    allowDatabaseCreation: true,
+  };
+  const construction = await admitDisposablePostgresConstructionTargets(
+    [constructionTarget("primary", "runtime_posture_test"), creationSecondary],
+    {
+      readOnlyProbe: ({ fixture }) => passingProbe({ fixture }).then((result) => ({
+        ...result,
+        targetDatabasePresent: fixture.databaseMayBeAbsent ? false : true,
+        lifecycleFingerprint: fixture.databaseMayBeAbsent
+          ? `absent:${fixture.expectedDatabase}`
+          : result.lifecycleFingerprint,
+      })),
+      clientFactory: createProbeClient,
+    },
+  );
+  const creationAuthority = deriveDisposablePostgresDatabaseCreationAuthority(
+    construction,
+    "secondary",
+  );
+  const creationPool = new Pool({
+    user: "postgres",
+    host: "127.0.0.1",
+    port: 5432,
+    database: "postgres",
+    password,
+  });
+  assert.doesNotThrow(() =>
+    createAuthorizedDatabaseCreationPool(creationPool, creationAuthority),
+  );
+  await creationPool.end();
+
+  const provisioningAuthority = deriveDisposablePostgresProvisioningAuthority(
+    construction,
+    "primary",
+  );
+  const provisioningPool = new Pool({
+    user: "postgres",
+    host: "127.0.0.1",
+    port: 5432,
+    database: "runtime_posture_test",
+    password,
+  });
+  assert.doesNotThrow(() =>
+    createAuthorizedProvisioningPool(provisioningPool, provisioningAuthority),
+  );
+  await provisioningPool.end();
+});
+
+test("real passwordless pg clients preserve binding across aggregate admission paths", async () => {
+  const secondaryConstruction = {
+    ...constructionTarget("secondary", "runtime_posture_test_secondary"),
+    allowDatabaseCreation: true,
+    creationConnectionString: "postgres://postgres@127.0.0.1:5432/postgres",
+    creationExpectedDatabase: "postgres",
+    databaseMayBeAbsent: true,
+  };
+  await assert.doesNotReject(() =>
+    admitDisposablePostgresConstructionTargets(
+      [constructionTarget("primary", "runtime_posture_test"), secondaryConstruction],
+      {
+        readOnlyProbe: async ({ fixture }) => ({
+          ...await passingProbe({ fixture }),
+          lifecycleFingerprint: fixture.name === "secondary"
+            ? "absent:runtime_posture_test_secondary"
+            : fixture.connectionString,
+          targetDatabasePresent: fixture.name !== "secondary",
+        }),
+        clientFactory: createRealPasswordlessProbeClient,
+      },
+    ),
+  );
+
+  const secondaryConfigured = {
+    ...baseFixture,
+    name: "secondary",
+    connectionString:
+      "postgres://platform_app@127.0.0.1:5433/runtime_posture_test_secondary",
+    expectedDatabase: "runtime_posture_test_secondary",
+  };
+  let configuredAdmission;
+  await assert.doesNotReject(async () => {
+    configuredAdmission = await admitDisposablePostgresFixtures(
+      [baseFixture, secondaryConfigured],
+      {
+        readOnlyProbe: passingProbe,
+        clientFactory: createRealPasswordlessProbeClient,
+      },
+    );
+  });
+
+  const passwordlessPool = {
+    options: { connectionString: baseFixture.connectionString },
+    connect: async () => createRealPasswordlessProbeClient(baseFixture),
+    async end() {},
+  };
+  const admittedPasswordlessPool = createAdmittedMutationPool(
+    passwordlessPool,
+    configuredAdmission,
+    "primary",
+  );
+  await assert.doesNotReject(() => admittedPasswordlessPool.query("select 1"));
+
+  const ambiguousClient = createProbeClient(baseFixture);
+  Object.defineProperty(ambiguousClient.connectionParameters, "password", {
+    configurable: true,
+    enumerable: false,
+    value: null,
+    writable: true,
+  });
+  await assert.rejects(
+    () => admitDisposablePostgresFixtures(
+      [baseFixture, secondaryConfigured],
+      {
+        readOnlyProbe: passingProbe,
+        clientFactory: () => ambiguousClient,
+      },
+    ),
+    admissionEvidence("PRIMARY", "BINDING"),
+  );
+});
+
 test("managed transport and non-vacuous fingerprints cannot be caller-spoofed", async () => {
   assert.throws(
     () =>
@@ -812,6 +1380,30 @@ function safeAdmissionError(error) {
   );
   assert.doesNotMatch(error.message, /postgres|platform_|runtime_|127|5432|localhost/i);
   return true;
+}
+
+function admissionEvidence(target, stage) {
+  return (error) => {
+    safeAdmissionError(error);
+    assert.equal(error.target, target);
+    assert.equal(error.stage, stage);
+    assert.match(error.target, /^(?:PRIMARY|SECONDARY)$/u);
+    assert.match(
+      error.stage,
+      /^(?:CONNECT|BINDING|READONLY|IDENTITY|POSTURE|OWNERSHIP|EXPECTED_OBJECTS)$/u,
+    );
+    const publicError = JSON.stringify(error);
+    assert.doesNotMatch(
+      publicError,
+      /unsafe|internal|detail|password|token|postgres(?:ql)?:|127\.0\.0\.1|5432|select|runtime_posture_test/iu,
+    );
+    assert.doesNotMatch(
+      String(error.stack),
+      /unsafe-internal-detail|password|token|postgres(?:ql)?:/iu,
+    );
+    assert.equal("cause" in error, false);
+    return true;
+  };
 }
 
 function constructionTarget(name, database) {

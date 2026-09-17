@@ -3,18 +3,62 @@ import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import test from "node:test";
+import vm from "node:vm";
 
 const workflowPath = ".github/workflows/ci.yml";
 const roleCollapseRunnerPath = "scripts/run-disposable-role-collapse-postgres-tests.mjs";
+const activationRunnerPath = "scripts/run-disposable-runtime-activation-postgres-tests.mjs";
 const dockerfilePath = "Dockerfile";
 const dockerignorePath = ".dockerignore";
 const coolifyDocPath = "docs/coolify-deployment-readiness.md";
 const cicdStatusPath = "docs/ci-cd/CURRENT_CICD_STATUS.md";
 const roadmapPath = "docs/production-readiness-roadmap.md";
 
+async function loadRoleCollapseContract() {
+  const source = await readFile(roleCollapseRunnerPath, "utf8");
+  const parserStartMarker =
+    "export function parseRoleCollapseTestSummary(output) {";
+  const parserStart = source.indexOf(parserStartMarker);
+  const parserEnd = source.indexOf("\nasync function runFocusedChild(", parserStart);
+
+  assert.notEqual(parserStart, -1, "role-collapse summary parser must exist");
+  assert.ok(parserEnd > parserStart, "role-collapse contract boundary must exist");
+  assert.equal(
+    source.indexOf(parserStartMarker, parserStart + parserStartMarker.length),
+    -1,
+    "role-collapse summary parser must be unique",
+  );
+
+  const constantSource = ["maxChildOutputBytes", "childTimeoutMs"]
+    .map((name) => {
+      const match = source.match(new RegExp(`^const ${name} = [^;]+;$`, "mu"));
+      assert.ok(match, `${name} declaration must exist`);
+      return match[0];
+    })
+    .join("\n");
+  const implementation = source.slice(parserStart, parserEnd).replace(/^export /gmu, "");
+
+  assert.match(source, /const summary = validateRoleCollapseChildResult\(result\);/u);
+  assert.match(source, /process\.stdout\.write\(formatRoleCollapseSuccess\(summary\)\);/u);
+
+  const context = vm.createContext({ Buffer });
+  vm.runInContext(
+    `${constantSource}\n${implementation}\nglobalThis.roleCollapseContract = { parseRoleCollapseTestSummary, validateRoleCollapseChildResult, formatRoleCollapseSuccess };`,
+    context,
+    { filename: roleCollapseRunnerPath },
+  );
+
+  return context.roleCollapseContract;
+}
+
+function normalizeVmValue(value) {
+  return value === null ? null : JSON.parse(JSON.stringify(value));
+}
+
 test("CI workflow runs guardrails, install, typecheck, build, test, and container build without deploy", async () => {
   const workflow = await readFile(workflowPath, "utf8");
   const roleCollapseRunner = await readFile(roleCollapseRunnerPath, "utf8");
+  const activationRunner = await readFile(activationRunnerPath, "utf8");
 
   const requiredPhrases = [
     "workflow_dispatch:",
@@ -27,6 +71,7 @@ test("CI workflow runs guardrails, install, typecheck, build, test, and containe
     "npm run build",
     "npm test",
     "npm run test:disposable-runtime-postgres",
+    "npm run test:disposable-runtime-activation-postgres",
     "npm run test:disposable-role-collapse-postgres",
     "codex-platform127-pg17",
     "POSTGRES_HOST_AUTH_METHOD=trust",
@@ -39,6 +84,29 @@ test("CI workflow runs guardrails, install, typecheck, build, test, and containe
   assert.match(roleCollapseRunner, /postgres:17/i);
   assert.match(roleCollapseRunner, /POSTGRES_HOST_AUTH_METHOD=trust/i);
 
+  const activationPhrases = [
+    "codex-platform169-activation-primary-pg17",
+    "codex-platform169-activation-secondary-pg17",
+    "codex-platform169-activation-primary-net",
+    "codex-platform169-activation-secondary-net",
+    "postgres:17",
+    "127.0.0.1::5432",
+    "POSTGRES_PASSWORD",
+    "RUNTIME_ACTIVATION_TEST_RUNTIME_PASSWORD",
+    "tests/platform-runtime-activation-postgres.test.mjs",
+  ];
+  for (const phrase of activationPhrases) {
+    assert.match(activationRunner, new RegExp(escapeRegExp(phrase), "i"));
+  }
+  assert.doesNotMatch(
+    activationRunner,
+    /docker push|deploy|kubectl|coolify.*webhook|ssh |scp |rsync /i,
+  );
+  assert.doesNotMatch(
+    activationRunner,
+    /POSTGRES_PASSWORD=[^"'\s]+|RUNTIME_ACTIVATION_TEST_RUNTIME_PASSWORD=[^"'\s]+/i,
+  );
+
   for (const phrase of requiredPhrases) {
     assert.match(workflow, new RegExp(escapeRegExp(phrase), "i"));
   }
@@ -47,6 +115,139 @@ test("CI workflow runs guardrails, install, typecheck, build, test, and containe
   assert.doesNotMatch(workflow, /deploy|kubectl|coolify.*webhook|ssh |scp |rsync |docker push|gh release/i);
   assert.doesNotMatch(workflow, /\$\{\{\s*secrets\.[A-Z0-9_]+\s*\}\}/i);
   assert.doesNotMatch(workflow, /gitleaks-action|GITLEAKS_LICENSE/i);
+});
+
+test("role-collapse child summary accepts coherent inventory-independent evidence", async () => {
+  const {
+    formatRoleCollapseSuccess,
+    parseRoleCollapseTestSummary,
+    validateRoleCollapseChildResult,
+  } = await loadRoleCollapseContract();
+  const retained = roleCollapseSummary();
+  assert.deepEqual(normalizeVmValue(parseRoleCollapseTestSummary(retained)), {
+    cancelled: 0,
+    durationMs: 1,
+    failed: 0,
+    passed: 2,
+    skipped: 0,
+    suites: 0,
+    todo: 0,
+    total: 2,
+  });
+
+  const changed = roleCollapseSummary({ tests: "3", suites: "4", pass: "3" });
+  const changedSummary = validateRoleCollapseChildResult(
+    roleCollapseChildResult(changed),
+  );
+  assert.deepEqual(normalizeVmValue(changedSummary), {
+    cancelled: 0,
+    durationMs: 1,
+    failed: 0,
+    passed: 3,
+    skipped: 0,
+    suites: 4,
+    todo: 0,
+    total: 3,
+  });
+  assert.equal(
+    formatRoleCollapseSuccess(changedSummary),
+    "Disposable PostgreSQL 17 role-collapse proofs: 3 passed, 0 failed, 0 skipped.\n",
+  );
+
+  const infoWithAnsiAndCrLf =
+    roleCollapseSummary({ marker: "ℹ", tests: "5", suites: "2", pass: "5" })
+      .split("\n")
+      .map((line) => `\u001b[32m${line}\u001b[0m`)
+      .join("\r\n") + "\r\n";
+  assert.equal(parseRoleCollapseTestSummary(infoWithAnsiAndCrLf)?.total, 5);
+
+  const roleCollapseRunner = await readFile(roleCollapseRunnerPath, "utf8");
+  assert.doesNotMatch(roleCollapseRunner, /pass 2\\b/u);
+  assert.doesNotMatch(roleCollapseRunner, /proofs: 2 passed/u);
+});
+
+test("role-collapse child summary rejects failed, noncanonical, or nonterminal evidence", async () => {
+  const { parseRoleCollapseTestSummary, validateRoleCollapseChildResult } =
+    await loadRoleCollapseContract();
+  const valid = roleCollapseSummary();
+  for (const processFailure of [
+    { code: 1 },
+    { signal: "SIGTERM" },
+    { timedOut: true },
+    { outputOverflow: true },
+  ]) {
+    assert.equal(
+      validateRoleCollapseChildResult(
+        roleCollapseChildResult(valid, processFailure),
+      ),
+      null,
+    );
+  }
+
+  const invalidOutcomes = [
+    roleCollapseSummary({ tests: "0", pass: "0" }),
+    roleCollapseSummary({ tests: "3", pass: "2" }),
+    roleCollapseSummary({ fail: "1" }),
+    roleCollapseSummary({ skipped: "1" }),
+    roleCollapseSummary({ cancelled: "1" }),
+    roleCollapseSummary({ todo: "1" }),
+  ];
+  for (const output of invalidOutcomes) {
+    assert.equal(parseRoleCollapseTestSummary(output), null);
+  }
+
+  for (const value of ["-1", "+1", "1.5", "01", "", "nope", "9007199254740992"]) {
+    assert.equal(
+      parseRoleCollapseTestSummary(
+        roleCollapseSummary({ tests: value, pass: value }),
+      ),
+      null,
+    );
+  }
+  assert.equal(
+    parseRoleCollapseTestSummary(
+      roleCollapseSummary({ suites: "9007199254740992" }),
+    ),
+    null,
+  );
+
+  for (const durationMs of [
+    "-1",
+    "+1",
+    "01",
+    "1.0",
+    "1.2300",
+    "nope",
+    "180001",
+    "9007199254740992",
+  ]) {
+    assert.equal(
+      parseRoleCollapseTestSummary(roleCollapseSummary({ durationMs })),
+      null,
+    );
+  }
+
+  const structuralFailures = [
+    roleCollapseSummary({ tests: null }),
+    roleCollapseSummary({ todo: null }),
+    valid.replace("# suites 0\n# pass 2", "# pass 2\n# suites 0"),
+    valid.replace("# pass 2", "ℹ pass 2"),
+    valid.replace("# fail 0", "# pass 2\n# fail 0"),
+    valid.replace("# fail 0", "# pass 1\n# fail 0"),
+    valid.replace("# suites 0", "# suites 0\nordinary output"),
+    `# pass 2\n${valid}`,
+    `${valid}\nordinary trailing output`,
+    `${valid}\n${valid}`,
+    valid.slice(0, valid.lastIndexOf("\n")),
+  ];
+  for (const output of structuralFailures) {
+    assert.equal(parseRoleCollapseTestSummary(output), null);
+  }
+
+  assert.equal(
+    parseRoleCollapseTestSummary(`${valid}\n${"x".repeat(64 * 1024)}`),
+    null,
+  );
 });
 
 test("Dockerfile defines a production-safe runtime image and healthcheck", async () => {
@@ -259,6 +460,47 @@ function assertSecretNamesOnly(value, options = {}) {
     : value;
   assert.doesNotMatch(valueWithoutApprovedOrigins, /https?:\/\/(?!<)[^\s>)]+/i);
   assert.doesNotMatch(value, /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+}
+
+function roleCollapseSummary(overrides = {}) {
+  const values = {
+    marker: "#",
+    tests: "2",
+    suites: "0",
+    pass: "2",
+    fail: "0",
+    cancelled: "0",
+    skipped: "0",
+    todo: "0",
+    durationMs: "1",
+    ...overrides,
+  };
+  const fields = [
+    ["tests", values.tests],
+    ["suites", values.suites],
+    ["pass", values.pass],
+    ["fail", values.fail],
+    ["cancelled", values.cancelled],
+    ["skipped", values.skipped],
+    ["todo", values.todo],
+    ["duration_ms", values.durationMs],
+  ];
+  return fields
+    .filter(([, value]) => value !== null)
+    .map(([field, value]) => `${values.marker} ${field} ${value}`)
+    .join("\n");
+}
+
+function roleCollapseChildResult(stdout, overrides = {}) {
+  return {
+    code: 0,
+    signal: null,
+    timedOut: false,
+    outputOverflow: false,
+    stdout,
+    stderr: "",
+    ...overrides,
+  };
 }
 
 function extractHealthcheckScript(dockerfile) {

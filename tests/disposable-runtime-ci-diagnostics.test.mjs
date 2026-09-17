@@ -3,24 +3,122 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  cleanupRoleNames,
+  executeDisposableCleanupActions,
+  formatDisposableRuntimeChildDiagnostics,
   formatDisposableRuntimeFailureReceipt,
+  ownedContainerDockerArguments,
   parseDisposableRuntimeTestSummary,
 } from "../scripts/run-disposable-runtime-postgres-tests.mjs";
 
-test("summary parser accepts Node 22 TAP and Node 24 spec markers", () => {
-  const expected = {
-    cancelled: 0,
-    failed: 0,
-    passed: 53,
-    skipped: 0,
-    todo: 0,
-    total: 53,
-  };
-  assert.deepEqual(parseDisposableRuntimeTestSummary(nativeSummary("#")), expected);
-  assert.deepEqual(
-    parseDisposableRuntimeTestSummary(nativeSummary(String.fromCodePoint(0x2139))),
-    expected,
+test("owned PostgreSQL 17 construction fixes distinct bootstrap identities", async () => {
+  const args = ownedContainerDockerArguments();
+  const mount = args.at(-2);
+  assert.deepEqual(args, [
+    "run",
+    "--detach",
+    "--name",
+    "codex-platform127-pg17",
+    "--publish",
+    "127.0.0.1::5432",
+    "--env",
+    "POSTGRES_USER=cloud_admin",
+    "--env",
+    "POSTGRES_DB=runtime_posture_test",
+    "--env",
+    "POSTGRES_HOST_AUTH_METHOD=trust",
+    "--mount",
+    mount,
+    "postgres:17",
+  ]);
+  assert.equal(args.filter((value) => value === "--mount").length, 1);
+  assert.match(
+    mount,
+    /^type=bind,source=.+runtime-postgres-identities\.sql,target=\/docker-entrypoint-initdb\.d\/runtime-postgres-identities\.sql,readonly$/u,
   );
+  assert.doesNotMatch(args.join(" "), /provider_admin|password|postgresql?:\/\//iu);
+
+  const initSql = await readFile(
+    "tests/support/runtime-postgres-identities.sql",
+    "utf8",
+  );
+  assert.match(
+    initSql,
+    /^CREATE ROLE postgres WITH SUPERUSER LOGIN NOINHERIT;\r?\n?$/u,
+  );
+  assert.equal(initSql.trimEnd(), "CREATE ROLE postgres WITH SUPERUSER LOGIN NOINHERIT;");
+});
+
+test("cleanup role selection excludes bootstrap identities and sorts deterministically", () => {
+  assert.deepEqual(
+    cleanupRoleNames(
+      new Set(["platform_runtime", "cloud_admin", "platform_app"]),
+      ["postgres", "rt_z", "platform_app", "rt_a"],
+      new Set(["postgres", "cloud_admin"]),
+    ),
+    ["platform_app", "platform_runtime", "rt_a", "rt_z"],
+  );
+});
+
+test("cleanup continues and preserves body/error ordering", async () => {
+  const bodyError = new Error("body");
+  const firstCleanupError = new Error("cleanup-one");
+  const secondCleanupError = new Error("cleanup-two");
+  const events = [];
+  await assert.rejects(
+    () => executeDisposableCleanupActions([
+      async () => {
+        events.push("first");
+        throw firstCleanupError;
+      },
+      async () => events.push("second"),
+      async () => {
+        events.push("third");
+        throw secondCleanupError;
+      },
+    ], bodyError),
+    (error) => {
+      assert.equal(error instanceof AggregateError, true);
+      assert.deepEqual(error.errors, [
+        bodyError,
+        firstCleanupError,
+        secondCleanupError,
+      ]);
+      return true;
+    },
+  );
+  assert.deepEqual(events, ["first", "second", "third"]);
+
+  await assert.rejects(
+    () => executeDisposableCleanupActions([async () => {}], bodyError),
+    (error) => error === bodyError,
+  );
+  await assert.rejects(
+    () => executeDisposableCleanupActions([async () => { throw firstCleanupError; }]),
+    (error) => error === firstCleanupError,
+  );
+});
+
+test("summary parser accepts coherent positive totals, suite counts, and retained normalization", () => {
+  for (const [marker, tests, suites] of [
+    ["#", 53, 0],
+    ["#", 55, 3],
+    [String.fromCodePoint(0x2139), 61, 9007199254740991],
+  ]) {
+    let output = `ordinary child output\n${nativeSummary(marker, { tests, suites, pass: tests })}\n\n`;
+    output = output.replaceAll("\n", "\r\n").replace(
+      `${marker} pass`,
+      `\u001b[31m${marker} pass\u001b[0m`,
+    );
+    assert.deepEqual(parseDisposableRuntimeTestSummary(output), {
+      cancelled: 0,
+      failed: 0,
+      passed: tests,
+      skipped: 0,
+      todo: 0,
+      total: tests,
+    });
+  }
 });
 
 test("summary parser bounds duration_ms as a canonical finite number", () => {
@@ -67,36 +165,39 @@ test("summary parser bounds duration_ms as a canonical finite number", () => {
   }
 });
 
-test("summary parser requires one exact coherent 53/53/0 terminal block", () => {
+test("summary parser rejects noncanonical, incoherent, or nonterminal evidence", () => {
   const rejected = [
+    nativeSummary("#", { tests: 0, pass: 0 }),
+    nativeSummary("#", { tests: 54, pass: 53 }),
     nativeSummary("#", { pass: 52, fail: 1 }),
     nativeSummary("#", { skipped: 1 }),
+    nativeSummary("#", { cancelled: 1 }),
+    nativeSummary("#", { todo: 1 }),
     nativeSummary("#", { pass: 52, skipped: 1, fail: 0 }),
-    nativeSummary("#", { tests: 52, pass: 52 }),
     nativeSummary("#", { fail: null }),
     nativeSummary("#", { skipped: null }),
     nativeSummary("#", { duplicate: "pass" }),
     nativeSummary("#", { conflict: "pass" }),
     nativeSummary("#", { interleaved: "ordinary output" }),
+    `${nativeSummary("#")}\n${nativeSummary("#")}`,
+    `# pass 53\n${nativeSummary("#")}`,
     `${nativeSummary("#")}\nordinary child output`,
-    nativeSummary("#", { tests: "+53" }),
-    nativeSummary("#", { tests: "53.0" }),
-    nativeSummary("#", { tests: "999999999999999999999999" }),
     nativeSummary("#", { marker: "mixed" }),
     nativeSummary("#", { omit: "skipped" }),
+    nativeSummary("#", { reorder: true }),
     "# tests 53\n# suites 1\n# pass 53\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 1",
   ];
   for (const output of rejected) assert.equal(parseDisposableRuntimeTestSummary(output), null);
 
-  const ansi = nativeSummary("#").replace("# pass", "\u001b[31m# pass\u001b[0m");
-  assert.deepEqual(parseDisposableRuntimeTestSummary(ansi), {
-    cancelled: 0,
-    failed: 0,
-    passed: 53,
-    skipped: 0,
-    todo: 0,
-    total: 53,
-  });
+  for (const field of ["tests", "suites", "pass", "fail", "cancelled", "skipped", "todo"]) {
+    for (const value of ["-1", "+1", "1.5", "01", "nonnumeric", "9007199254740992", null]) {
+      assert.equal(
+        parseDisposableRuntimeTestSummary(nativeSummary("#", { [field]: value })),
+        null,
+        `${field}=${value}`,
+      );
+    }
+  }
   assert.equal(parseDisposableRuntimeTestSummary(`${nativeSummary("#")}x`.repeat(1000)), null);
 });
 
@@ -137,17 +238,42 @@ test("failure receipt ignores untrusted diagnostic values", () => {
   assert.doesNotMatch(receipt, /untrusted|database error|postgres(?:ql)?:\/\//i);
 });
 
-test("child stderr remains consumed and diagnostic output is not child output", async () => {
+test("child failure diagnostics expose bounded redacted TAP and stack evidence", async () => {
   const source = await readFile(
     "scripts/run-disposable-runtime-postgres-tests.mjs",
     "utf8",
   );
 
-  assert.match(source, /child\.stderr\?\.resume\(\)/);
-  assert.doesNotMatch(source, /child\.stderr\?\.(?:on|pipe)\(/);
+  assert.match(source, /child\.stderr\?\.on\("data"/);
+  assert.doesNotMatch(source, /child\.stderr\?\.(?:resume|pipe)\(/);
+
+  const diagnostics = formatDisposableRuntimeChildDiagnostics({
+    stdout: [
+      "TAP version 13",
+      "# Subtest: unsafe default ACL is rejected",
+      "not ok 7 - unsafe default ACL is rejected",
+      "  ---",
+      "  failureType: 'testCodeFailure'",
+      "  error: |-",
+      "    AssertionError [ERR_ASSERTION]: runtimeDefaultRelationAuthorityAbsent",
+      "    at TestContext.<anonymous> (file:///workspace/tests/runtime-database-posture-postgres.test.mjs:640:13)",
+      "  location: 'file:///workspace/tests/runtime-database-posture-postgres.test.mjs:640:13'",
+      "  actual: 'postgresql://user:secret@db.example/app?sslmode=require'",
+      "  expected: 'passed'",
+      "  operator: 'equal'",
+      "  ...",
+    ].join("\n"),
+    stderr: "password=supersecret https://example.test/callback?signature=secret",
+  });
+
+  assert.ok(Buffer.byteLength(diagnostics, "utf8") <= 4_000);
+  assert.match(diagnostics, /# Subtest: unsafe default ACL is rejected/);
+  assert.match(diagnostics, /not ok 7 - unsafe default ACL is rejected/);
+  assert.match(diagnostics, /AssertionError \[ERR_ASSERTION\]: runtimeDefaultRelationAuthorityAbsent/);
+  assert.match(diagnostics, /runtime-database-posture-postgres\.test\.mjs:640:13/);
   assert.doesNotMatch(
-    formatDisposableRuntimeFailureReceipt({ childOutput: "sensitive-output" }),
-    /postgres(?:ql)?:\/\/|secret[=:]/i,
+    diagnostics,
+    /postgres(?:ql)?:\/\/|https?:\/\/|password=supersecret|secret@|\?sslmode=|\?signature=/i,
   );
 });
 
@@ -164,19 +290,20 @@ function nativeSummary(marker, overrides = {}) {
     ...overrides,
   };
   const lines = [
-    `${marker} tests ${values.tests}`,
-    `${marker} suites ${values.suites}`,
-    `${marker} pass ${values.pass}`,
+    `${marker} tests ${values.tests ?? ""}`,
+    `${marker} suites ${values.suites ?? ""}`,
+    `${marker} pass ${values.pass ?? ""}`,
     `${marker} fail ${values.fail ?? ""}`,
-    `${marker} cancelled ${values.cancelled}`,
+    `${marker} cancelled ${values.cancelled ?? ""}`,
     `${marker} skipped ${values.skipped ?? ""}`,
-    `${marker} todo ${values.todo}`,
+    `${marker} todo ${values.todo ?? ""}`,
     `${marker} duration_ms ${values.duration_ms}`,
   ];
-  if (values.duplicate) lines.splice(3, 0, `${marker} pass 53`);
+  if (values.duplicate) lines.splice(3, 0, `${marker} pass ${values.pass}`);
   if (values.conflict) lines.splice(4, 0, `${marker} pass 52`);
   if (values.interleaved) lines.splice(2, 0, values.interleaved);
-  if (values.omit) lines.splice(5, 1);
+  if (values.omit) lines.splice(lines.findIndex((line) => line.startsWith(`${marker} ${values.omit} `)), 1);
+  if (values.reorder) [lines[3], lines[4]] = [lines[4], lines[3]];
   if (values.marker === "mixed") {
     lines[1] = `${String.fromCodePoint(0x2139)} suites ${values.suites}`;
   }

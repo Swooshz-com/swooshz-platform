@@ -1,4 +1,4 @@
-import { Pool } from "pg";
+import { Client, Pool } from "pg";
 
 import {
   inspectRuntimeDatabaseRoleAuthorityPosture,
@@ -67,11 +67,33 @@ const transactionControlKeyword =
   /\b(?:begin|start\s+transaction|commit|rollback|savepoint|release\s+savepoint|rollback\s+to(?:\s+savepoint)?|prepare\s+transaction|discard)\b/iu;
 const sessionAuthorityKeyword =
   /\b(?:set|reset|load)\b|set_config\s*\(/iu;
+const admissionTargets = new Set(["PRIMARY", "SECONDARY"]);
+const admissionStages = new Set([
+  "CONNECT",
+  "BINDING",
+  "READONLY",
+  "IDENTITY",
+  "POSTURE",
+  "OWNERSHIP",
+  "EXPECTED_OBJECTS",
+]);
+
+class DisposablePostgresFixtureAdmissionStageError extends Error {
+  constructor(stage) {
+    super();
+    this.stage = stage;
+  }
+}
+
 export class DisposablePostgresFixtureAdmissionError extends Error {
-  constructor() {
+  constructor({ target, stage } = {}) {
     super("Disposable fixture admission failed.");
     this.name = "DisposablePostgresFixtureAdmissionError";
     this.code = "disposable_fixture_admission_failed";
+    if (admissionTargets.has(target) && admissionStages.has(stage)) {
+      this.target = target;
+      this.stage = stage;
+    }
   }
 }
 
@@ -179,12 +201,29 @@ export async function admitDisposablePostgresConstructionTargets(
     const locatorIdentities = new Set();
     const normalizedTargets = [];
     for (const target of targets) {
-      const normalized = normalizeConstructionTarget(target);
+      let normalized;
+      try {
+        normalized = normalizeConstructionTarget(target);
+      } catch (error) {
+        throw admissionErrorFor(
+          error instanceof DisposablePostgresFixtureAdmissionStageError
+            ? error
+            : new DisposablePostgresFixtureAdmissionStageError("BINDING"),
+          target?.name,
+        );
+      }
       if (names.has(normalized.name)) {
         throw new Error();
       }
       names.add(normalized.name);
-      assertDistinctCanonicalTargetLocator(locatorIdentities, normalized);
+      try {
+        assertDistinctCanonicalTargetLocator(locatorIdentities, normalized);
+      } catch {
+        throw admissionErrorFor(
+          new DisposablePostgresFixtureAdmissionStageError("BINDING"),
+          normalized.name,
+        );
+      }
       normalizedTargets.push(normalized);
     }
 
@@ -197,7 +236,14 @@ export async function admitDisposablePostgresConstructionTargets(
         builtInProbe: !readOnlyProbe,
         clientFactory,
       });
-      assertDistinctObservedPhysicalIdentity(physicalIdentities, evidence);
+      try {
+        assertDistinctObservedPhysicalIdentity(physicalIdentities, evidence);
+      } catch {
+        throw admissionErrorFor(
+          new DisposablePostgresFixtureAdmissionStageError("IDENTITY"),
+          target.name,
+        );
+      }
       admittedTargets.set(
         target.name,
         Object.freeze({
@@ -319,9 +365,22 @@ export function createAuthorizedDatabaseCreationPool(pool, authority) {
       value.consumed ||
       value.boundPool ||
       !pool ||
-      typeof pool.connect !== "function" ||
-      !poolConnectionMatchesTarget(pool, value.target, "creation")
+      typeof pool.connect !== "function"
     ) {
+      throw new Error();
+    }
+    const bindingMatches = poolConnectionMatchesTarget(
+      pool,
+      value.target,
+      "creation",
+    );
+    if (bindingMatches !== true) {
+      if (bindingMatches === false) {
+        throw admissionErrorFor(
+          new DisposablePostgresFixtureAdmissionStageError("BINDING"),
+          value.targetName,
+        );
+      }
       throw new Error();
     }
     value.consumed = true;
@@ -371,9 +430,18 @@ export function createAuthorizedProvisioningPool(pool, authority, options = {}) 
       value.consumed ||
       value.boundPool ||
       !pool ||
-      typeof pool.connect !== "function" ||
-      !poolConnectionMatchesTarget(pool, value.target)
+      typeof pool.connect !== "function"
     ) {
+      throw new Error();
+    }
+    const bindingMatches = poolConnectionMatchesTarget(pool, value.target);
+    if (bindingMatches !== true) {
+      if (bindingMatches === false) {
+        throw admissionErrorFor(
+          new DisposablePostgresFixtureAdmissionStageError("BINDING"),
+          value.targetName,
+        );
+      }
       throw new Error();
     }
     value.consumed = true;
@@ -398,7 +466,17 @@ export async function admitDisposablePostgresFixture(
   } = {},
 ) {
   try {
-    const normalized = normalizeFixture(fixture);
+    let normalized;
+    try {
+      normalized = normalizeFixture(fixture);
+    } catch (error) {
+      throw admissionErrorFor(
+        error instanceof DisposablePostgresFixtureAdmissionStageError
+          ? error
+          : new DisposablePostgresFixtureAdmissionStageError("BINDING"),
+        fixture?.name,
+      );
+    }
     const evidence = await probeTarget({
       target: normalized,
       readOnlyProbe: readOnlyProbe ?? ((args) =>
@@ -437,14 +515,31 @@ export async function admitDisposablePostgresFixtures(
     const normalizedFixtures = [];
     let phase;
     for (const fixture of fixtures) {
-      const normalized = normalizeFixture(fixture);
+      let normalized;
+      try {
+        normalized = normalizeFixture(fixture);
+      } catch (error) {
+        throw admissionErrorFor(
+          error instanceof DisposablePostgresFixtureAdmissionStageError
+            ? error
+            : new DisposablePostgresFixtureAdmissionStageError("BINDING"),
+          fixture?.name,
+        );
+      }
       if (names.has(normalized.name)) {
         throw new Error();
       }
       names.add(normalized.name);
-      assertDistinctCanonicalTargetLocator(locatorIdentities, normalized);
-      if (phase && normalized.phase !== phase) {
-        throw new Error();
+      try {
+        assertDistinctCanonicalTargetLocator(locatorIdentities, normalized);
+        if (phase && normalized.phase !== phase) {
+          throw new Error();
+        }
+      } catch {
+        throw admissionErrorFor(
+          new DisposablePostgresFixtureAdmissionStageError("BINDING"),
+          normalized.name,
+        );
       }
       phase ??= normalized.phase;
       normalizedFixtures.push(normalized);
@@ -461,7 +556,14 @@ export async function admitDisposablePostgresFixtures(
         builtInProbe: !options.readOnlyProbe,
         clientFactory: options.clientFactory,
       });
-      assertDistinctObservedPhysicalIdentity(physicalIdentities, evidence);
+      try {
+        assertDistinctObservedPhysicalIdentity(physicalIdentities, evidence);
+      } catch {
+        throw new DisposablePostgresFixtureAdmissionError({
+          target: normalized.name.toUpperCase(),
+          stage: "IDENTITY",
+        });
+      }
       targets.set(
         normalized.name,
         Object.freeze({ evidence, target: normalized }),
@@ -533,7 +635,14 @@ export function deriveDisposablePostgresTargetAuthority(
     if (!target) {
       throw new Error();
     }
-    if (!poolConnectionMatchesTarget(pool, target)) {
+    const bindingMatches = poolConnectionMatchesTarget(pool, target);
+    if (bindingMatches !== true) {
+      if (bindingMatches === false) {
+        throw admissionErrorFor(
+          new DisposablePostgresFixtureAdmissionStageError("BINDING"),
+          targetName,
+        );
+      }
       throw new Error();
     }
     const authority = Object.freeze({});
@@ -565,9 +674,18 @@ export function createAdmittedMutationClient(client, authority) {
     if (
       value.boundClient ||
       !client ||
-      typeof client.query !== "function" ||
-      !clientConnectionMatchesTarget(client, value.target)
+      typeof client.query !== "function"
     ) {
+      throw new Error();
+    }
+    const bindingMatches = clientConnectionMatchesTarget(client, value.target);
+    if (bindingMatches !== true) {
+      if (bindingMatches === false) {
+        throw admissionErrorFor(
+          new DisposablePostgresFixtureAdmissionStageError("BINDING"),
+          value.targetName,
+        );
+      }
       throw new Error();
     }
     value.boundClient = client;
@@ -648,7 +766,14 @@ function createAuthorizedPoolWrapper(
         if (
           !authority.valid ||
           !authority.boundConnections.has(client) ||
-          !clientConnectionMatchesTarget(client, target, bindingMode)
+          !clientConnectionMatchesTarget(
+            client,
+            target,
+            bindingMode,
+            Object.hasOwn(pool.options, "password")
+              ? pool.options.password
+              : undefined,
+          )
         ) {
           throw new DisposablePostgresFixtureAdmissionError();
         }
@@ -673,7 +798,14 @@ function createAuthorizedPoolWrapper(
               !Array.isArray(values) ||
               !authority.valid ||
               !authority.boundConnections.has(client) ||
-              !clientConnectionMatchesTarget(client, target, bindingMode)
+              !clientConnectionMatchesTarget(
+                client,
+                target,
+                bindingMode,
+                Object.hasOwn(pool.options, "password")
+                  ? pool.options.password
+                  : undefined,
+              )
             ) {
               throw new Error();
             }
@@ -702,24 +834,53 @@ async function connectAndRevalidate(
     if (
       !authority.valid ||
       !pool ||
-      authority.boundPool !== pool ||
-      !poolConnectionMatchesTarget(pool, target, bindingMode)
+      authority.boundPool !== pool
     ) {
+      throw new Error();
+    }
+    const poolBindingMatches = poolConnectionMatchesTarget(
+      pool,
+      target,
+      bindingMode,
+    );
+    if (poolBindingMatches !== true) {
+      if (poolBindingMatches === false) {
+        throw admissionErrorFor(
+          new DisposablePostgresFixtureAdmissionStageError("BINDING"),
+          authority.targetName,
+        );
+      }
       throw new Error();
     }
     const client = await pool.connect();
     try {
-      if (!clientConnectionMatchesTarget(client, target, bindingMode)) {
+      const clientBindingMatches = clientConnectionMatchesTarget(
+        client,
+        target,
+        bindingMode,
+        Object.hasOwn(pool.options, "password")
+          ? pool.options.password
+          : undefined,
+      );
+      if (clientBindingMatches !== true) {
+        if (clientBindingMatches === false) {
+          throw admissionErrorFor(
+            new DisposablePostgresFixtureAdmissionStageError("BINDING"),
+            authority.targetName,
+          );
+        }
         throw new Error();
       }
       await revalidate({ client, target });
       authority.boundConnections.add(client);
       return client;
-    } catch {
+    } catch (error) {
       client.release(true);
+      if (error instanceof DisposablePostgresFixtureAdmissionError) throw error;
       throw new Error();
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof DisposablePostgresFixtureAdmissionError) throw error;
     throw new DisposablePostgresFixtureAdmissionError();
   }
 }
@@ -762,12 +923,45 @@ function createMutationRevalidator(options, authorityValue = null) {
   };
 }
 
-function clientConnectionMatchesTarget(client, targetRecord, bindingMode = "target") {
+function clientConnectionMatchesTarget(
+  client,
+  targetRecord,
+  bindingMode = "target",
+  expectedPassword,
+) {
   try {
     const binding = targetConnectionBinding(targetRecord, bindingMode);
-      const parameters = client?.connectionParameters;
-    if (!parameters || typeof parameters !== "object") return false;
-    if (parameters.password) return false;
+    const parameters = client?.connectionParameters;
+    if (!parameters || typeof parameters !== "object") return null;
+    const hasPassword = Object.hasOwn(parameters, "password");
+    if (hasPassword || expectedPassword !== undefined) {
+      const passwordDescriptor = Object.getOwnPropertyDescriptor(
+        parameters,
+        "password",
+      );
+      const passwordlessRealClient =
+        expectedPassword === undefined &&
+        hasPassword &&
+        client instanceof Client &&
+        passwordDescriptor?.enumerable === false &&
+        passwordDescriptor.value === null;
+      if (
+        !(client instanceof Client) ||
+        (hasPassword &&
+          !passwordlessRealClient &&
+          (!passwordDescriptor ||
+            passwordDescriptor.enumerable ||
+            typeof passwordDescriptor.value !== "string"))
+      ) {
+        return null;
+      }
+      if (
+        !passwordlessRealClient &&
+        (!hasPassword || passwordDescriptor.value !== expectedPassword)
+      ) {
+        return false;
+      }
+    }
     const hostname = String(parameters.host ?? "").toLowerCase();
     const port = String(parameters.port ?? "5432");
     return (
@@ -799,7 +993,7 @@ function poolConnectionMatchesTarget(pool, targetRecord, bindingMode = "target")
         parsed.search ||
         parsed.hash
       ) {
-        return false;
+        return null;
       }
       const username = decodeURIComponent(parsed.username);
       const database = decodeURIComponent(parsed.pathname.slice(1));
@@ -820,13 +1014,49 @@ function poolConnectionMatchesTarget(pool, targetRecord, bindingMode = "target")
     }
 
     const parameters = pool?.options?.connectionParameters;
-    if (!parameters || typeof parameters !== "object") return false;
-    if (parameters.password) return false;
-    const hostname = String(parameters.host ?? "").toLowerCase();
-    const port = String(parameters.port ?? "5432");
+    if (parameters && typeof parameters === "object") {
+      if (parameters.password) return null;
+      const hostname = String(parameters.host ?? "").toLowerCase();
+      const port = String(parameters.port ?? "5432");
+      return (
+        String(parameters.user ?? "") === binding.expectedUser &&
+        String(parameters.database ?? "") === binding.expectedDatabase &&
+        hostname === binding.hostname &&
+        port === binding.port &&
+        binding.transportIdentity === transportIdentityFor(
+          targetRecord,
+          hostname,
+          port,
+          bindingMode,
+        )
+      );
+    }
+
+    const flatOptions = pool?.options;
+    const passwordDescriptor = Object.getOwnPropertyDescriptor(
+      flatOptions ?? {},
+      "password",
+    );
+    if (
+      !(pool instanceof Pool) ||
+      !flatOptions ||
+      typeof flatOptions !== "object" ||
+      !Object.hasOwn(flatOptions, "user") ||
+      !Object.hasOwn(flatOptions, "host") ||
+      !Object.hasOwn(flatOptions, "port") ||
+      !Object.hasOwn(flatOptions, "database") ||
+      !passwordDescriptor ||
+      passwordDescriptor.enumerable ||
+      typeof passwordDescriptor.value !== "string" ||
+      passwordDescriptor.value.length === 0
+    ) {
+      return null;
+    }
+    const hostname = String(flatOptions.host).toLowerCase();
+    const port = String(flatOptions.port);
     return (
-      String(parameters.user ?? "") === binding.expectedUser &&
-      String(parameters.database ?? "") === binding.expectedDatabase &&
+      String(flatOptions.user) === binding.expectedUser &&
+      String(flatOptions.database) === binding.expectedDatabase &&
       hostname === binding.hostname &&
       port === binding.port &&
       binding.transportIdentity === transportIdentityFor(
@@ -903,38 +1133,47 @@ async function probeTarget({
   builtInProbe = false,
   clientFactory,
 }) {
+  let client = target.client;
+  let ownedPool = null;
+  let ownedClient = false;
+  let evidence;
+  let admissionFailure;
   try {
-    const parsedUrl = parsedUrlValues.get(target.parsedUrl);
-    if (!parsedUrl) throw new Error();
-    const customProbe = readOnlyProbe ?? target.readOnlyProbe;
-    let client = target.client;
-    let ownedPool = null;
-    let ownedClient = false;
-    if (!client) {
-      if (clientFactory) {
-        client = await clientFactory(target);
-        ownedClient = true;
-      } else {
-        ownedPool = new Pool({
-          connectionString: target.probeConnectionString ?? target.connectionString,
-          max: 1,
-        });
-        client = await ownedPool.connect();
-        ownedClient = true;
-      }
-    }
-    if (!client || typeof client.query !== "function") throw new Error();
-    const bindingMode =
-      target.mode === "construction" && target.databaseMayBeAbsent
-        ? "creation"
-        : "probe";
-    if (
-      client.connectionParameters &&
-      !clientConnectionMatchesTarget(client, { target }, bindingMode)
-    ) {
-      throw new Error();
-    }
     try {
+      const parsedUrl = parsedUrlValues.get(target.parsedUrl);
+      if (!parsedUrl) {
+        throw new DisposablePostgresFixtureAdmissionStageError("BINDING");
+      }
+      const customProbe = readOnlyProbe ?? target.readOnlyProbe;
+      if (!client) {
+        await withAdmissionStage("CONNECT", async () => {
+          if (clientFactory) {
+            client = await clientFactory(target);
+            ownedClient = true;
+          } else {
+            ownedPool = new Pool({
+              connectionString:
+                target.probeConnectionString ?? target.connectionString,
+              max: 1,
+            });
+            client = await ownedPool.connect();
+            ownedClient = true;
+          }
+        });
+      }
+      if (!client || typeof client.query !== "function") {
+        throw new DisposablePostgresFixtureAdmissionStageError("BINDING");
+      }
+      const bindingMode =
+        target.mode === "construction" && target.databaseMayBeAbsent
+          ? "creation"
+          : "probe";
+      if (
+        client.connectionParameters &&
+        !clientConnectionMatchesTarget(client, { target }, bindingMode)
+      ) {
+        throw new DisposablePostgresFixtureAdmissionStageError("BINDING");
+      }
       const probeFixture = createReadOnlyProbeFixture(target);
       const result = await withReadOnlyProbeTransaction(
         client,
@@ -950,7 +1189,7 @@ async function probeTarget({
           return probeResult;
         },
       );
-      return Object.freeze({
+      evidence = Object.freeze({
         catalogFingerprint: result.catalogFingerprint,
         databaseMatches: true,
         lifecycleFingerprint: result.lifecycleFingerprint,
@@ -958,47 +1197,79 @@ async function probeTarget({
         postgres17: true,
         userMatches: true,
       });
-    } finally {
-      if (ownedPool) {
+    } catch (error) {
+      admissionFailure = error;
+    }
+
+    let cleanupFailure;
+    if (ownedPool) {
+      if (ownedClient) {
         try {
-          await client.release();
-        } finally {
-          await ownedPool.end();
+          await releaseProbeClient(client);
+        } catch {
+          cleanupFailure ??=
+            new DisposablePostgresFixtureAdmissionStageError("CONNECT");
         }
-      } else if (ownedClient) {
+      }
+      try {
+        await ownedPool.end();
+      } catch {
+        cleanupFailure ??=
+          new DisposablePostgresFixtureAdmissionStageError("CONNECT");
+      }
+    } else if (ownedClient) {
+      try {
         await releaseProbeClient(client);
+      } catch {
+        cleanupFailure =
+          new DisposablePostgresFixtureAdmissionStageError("CONNECT");
       }
     }
+
+    if (admissionFailure) throw admissionFailure;
+    if (cleanupFailure) throw cleanupFailure;
+    return evidence;
   } catch (error) {
     if (error instanceof DisposablePostgresFixtureAdmissionError) {
       throw error;
     }
-    throw new DisposablePostgresFixtureAdmissionError();
+    throw admissionErrorFor(error, target?.name);
   }
 }
 
 async function withReadOnlyProbeTransaction(client, fixture, callback) {
   let transactionStarted = false;
+  let result;
+  let admissionFailure;
   try {
-    await client.query("begin");
+    await withAdmissionStage("READONLY", () => client.query("begin"));
     transactionStarted = true;
-    await client.query("set transaction read only");
-    const verification = await client.query("show transaction_read_only");
-    if (
-      !verification ||
-      !Array.isArray(verification.rows) ||
-      verification.rows.length !== 1 ||
-      String(verification.rows[0]?.transaction_read_only ?? "").toLowerCase() !==
-        "on"
-    ) {
-      throw new Error();
-    }
-    return await callback(readOnlyClient(client, fixture));
-  } finally {
-    if (transactionStarted) {
-      await client.query("rollback");
+    await withAdmissionStage("READONLY", async () => {
+      await client.query("set transaction read only");
+      const verification = await client.query("show transaction_read_only");
+      if (
+        !verification ||
+        !Array.isArray(verification.rows) ||
+        verification.rows.length !== 1 ||
+        String(verification.rows[0]?.transaction_read_only ?? "").toLowerCase() !==
+          "on"
+      ) {
+        throw new Error();
+      }
+    });
+    result = await callback(readOnlyClient(client, fixture));
+  } catch (error) {
+    admissionFailure = error;
+  }
+  if (transactionStarted) {
+    try {
+      await withAdmissionStage("READONLY", () => client.query("rollback"));
+    } catch (error) {
+      admissionFailure ??= error;
     }
   }
+  if (admissionFailure) throw admissionFailure;
+  return result;
 }
 
 async function releaseProbeClient(client) {
@@ -1047,15 +1318,18 @@ async function defaultConstructionProbe({ client, fixture }) {
 }
 
 async function defaultConfiguredProbe({ client, fixture, postureInspector }) {
-  if (!postureInspector) throw new Error();
-  const identity = await readIdentity(client, fixture);
-  const posture = await postureInspector(client, fixture.expectedRuntimeRole);
-  if (posture?.runtimeRoleAuthorityPosture !== "passed") {
-    throw new Error();
+  if (!postureInspector) {
+    throw new DisposablePostgresFixtureAdmissionStageError("POSTURE");
   }
+  const identity = await readIdentity(client, fixture);
+  await withAdmissionStage("POSTURE", async () => {
+    const posture = await postureInspector(client, fixture.expectedRuntimeRole);
+    if (posture?.runtimeRoleAuthorityPosture !== "passed") throw new Error();
+  });
 
-  const ownershipResult = await client.query(
-    `
+  await withAdmissionStage("OWNERSHIP", async () => {
+    const ownershipResult = await client.query(
+      `
       select not exists (
         select 1
         from pg_roles runtime_role
@@ -1068,14 +1342,16 @@ async function defaultConfiguredProbe({ client, fixture, postureInspector }) {
             or exists (select 1 from pg_type where typowner = runtime_role.oid)
           )
       ) as ownership_absent
-    `,
-    [fixture.expectedRuntimeRole],
-  );
-  requireTrue(oneRow(ownershipResult), ["ownership_absent"]);
+      `,
+      [fixture.expectedRuntimeRole],
+    );
+    requireTrue(oneRow(ownershipResult), ["ownership_absent"]);
+  });
 
   const objects = normalizeExpectedObjects(fixture.expectedObjects);
-  const objectResult = await client.query(
-    `
+  await withAdmissionStage("EXPECTED_OBJECTS", async () => {
+    const objectResult = await client.query(
+      `
       with expected_schemas as (
         select value as schema_name
         from jsonb_array_elements_text($1::jsonb)
@@ -1134,20 +1410,21 @@ async function defaultConfiguredProbe({ client, fixture, postureInspector }) {
              and routine_record.proname = expected.object_name
              and (expected.object_kind = '*' or
                routine_record.prokind::text = expected.object_kind)) as routines_present
-    `,
-    [
-      JSON.stringify(objects.schemas),
-      JSON.stringify(objects.relations),
-      JSON.stringify(objects.sequences),
-      JSON.stringify(objects.routines),
-    ],
-  );
-  requireTrue(oneRow(objectResult), [
-    "schemas_present",
-    "relations_present",
-    "sequences_present",
-    "routines_present",
-  ]);
+      `,
+      [
+        JSON.stringify(objects.schemas),
+        JSON.stringify(objects.relations),
+        JSON.stringify(objects.sequences),
+        JSON.stringify(objects.routines),
+      ],
+    );
+    requireTrue(oneRow(objectResult), [
+      "schemas_present",
+      "relations_present",
+      "sequences_present",
+      "routines_present",
+    ]);
+  });
 
   return {
     ...identity,
@@ -1164,20 +1441,22 @@ async function defaultConfiguredProbe({ client, fixture, postureInspector }) {
 }
 
 async function readIdentity(client, fixture) {
-  const result = await client.query(identitySql, [
-    fixture.expectedDatabase,
-    fixture.expectedUser,
-  ]);
-  const row = oneRow(result);
-  requireTrue(row, [
-    "database_matches",
-    "user_matches",
-    "postgres17",
-    "non_recovery",
-  ]);
-  const catalogFingerprint = requireFingerprint(row.catalog_fingerprint);
-  const lifecycleFingerprint = requireFingerprint(row.lifecycle_fingerprint);
-  return { catalogFingerprint, lifecycleFingerprint };
+  return await withAdmissionStage("IDENTITY", async () => {
+    const result = await client.query(identitySql, [
+      fixture.expectedDatabase,
+      fixture.expectedUser,
+    ]);
+    const row = oneRow(result);
+    requireTrue(row, ["database_matches", "user_matches"]);
+    try {
+      requireTrue(row, ["postgres17", "non_recovery"]);
+    } catch {
+      throw new DisposablePostgresFixtureAdmissionStageError("POSTURE");
+    }
+    const catalogFingerprint = requireFingerprint(row.catalog_fingerprint);
+    const lifecycleFingerprint = requireFingerprint(row.lifecycle_fingerprint);
+    return { catalogFingerprint, lifecycleFingerprint };
+  });
 }
 
 async function readCreationIdentity(client, fixture) {
@@ -1536,26 +1815,73 @@ function assertReadOnlySql(text) {
 }
 
 function assertProbeResult(result, construction, target) {
-  if (!result || typeof result !== "object") throw new Error();
-  requireTrue(result, [
+  if (!result || typeof result !== "object") {
+    throw new DisposablePostgresFixtureAdmissionStageError("IDENTITY");
+  }
+  requireProbeFields(result, [
     "databaseMatches",
     "userMatches",
-    "postgres17",
-    "nonRecovery",
     "catalogIdentityPresent",
     "lifecycleIdentityPresent",
+  ], "IDENTITY");
+  requireProbeFields(result, [
+    "postgres17",
+    "nonRecovery",
     "runtimePosturePassed",
-    "ownershipAbsent",
-    "expectedObjectsPresent",
-  ]);
+  ], "POSTURE");
+  requireProbeFields(result, ["ownershipAbsent"], "OWNERSHIP");
+  requireProbeFields(result, ["expectedObjectsPresent"], "EXPECTED_OBJECTS");
   if (construction) {
-    if (typeof result.targetDatabasePresent !== "boolean") throw new Error();
+    if (typeof result.targetDatabasePresent !== "boolean") {
+      throw new DisposablePostgresFixtureAdmissionStageError("IDENTITY");
+    }
     if (!result.targetDatabasePresent && !target?.allowDatabaseCreation) {
-      throw new Error();
+      throw new DisposablePostgresFixtureAdmissionStageError("IDENTITY");
     }
   }
-  requireFingerprint(result.catalogFingerprint);
-  requireFingerprint(result.lifecycleFingerprint);
+  try {
+    requireFingerprint(result.catalogFingerprint);
+    requireFingerprint(result.lifecycleFingerprint);
+  } catch {
+    throw new DisposablePostgresFixtureAdmissionStageError("IDENTITY");
+  }
+}
+
+function requireProbeFields(result, fields, stage) {
+  try {
+    requireTrue(result, fields);
+  } catch {
+    throw new DisposablePostgresFixtureAdmissionStageError(stage);
+  }
+}
+
+async function withAdmissionStage(stage, operation) {
+  try {
+    return await operation();
+  } catch (error) {
+    if (
+      error instanceof DisposablePostgresFixtureAdmissionStageError ||
+      error instanceof DisposablePostgresFixtureAdmissionError
+    ) {
+      throw error;
+    }
+    throw new DisposablePostgresFixtureAdmissionStageError(stage);
+  }
+}
+
+function admissionErrorFor(error, targetName) {
+  const target = String(targetName ?? "").toUpperCase();
+  if (
+    error instanceof DisposablePostgresFixtureAdmissionStageError &&
+    admissionTargets.has(target) &&
+    admissionStages.has(error.stage)
+  ) {
+    return new DisposablePostgresFixtureAdmissionError({
+      target,
+      stage: error.stage,
+    });
+  }
+  return new DisposablePostgresFixtureAdmissionError();
 }
 
 function requireConstructionAggregate(token) {

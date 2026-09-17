@@ -1585,7 +1585,7 @@ test("zero child exit succeeds without a failure sidecar", async () => {
   assert.equal(result.directoryPresentAfterCleanup, false);
 });
 
-test("zero-exit migrator child summary validation fails closed except for the exact seven-test shape", async () => {
+test("zero-exit migrator child summary validation accepts coherent inventory and fails closed", async () => {
   const runner = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
   const summary = ({
     tests = 7,
@@ -1596,25 +1596,65 @@ test("zero-exit migrator child summary validation fails closed except for the ex
     skipped = 0,
     todo = 0,
     duration = "12.5",
+    marker = "#",
+    omit = null,
+    reorder = false,
+    mixedMarker = false,
   } = {}) =>
-    [
-      "# tests " + tests,
-      "# suites " + suites,
-      "# pass " + passed,
-      "# fail " + failed,
-      "# cancelled " + cancelled,
-      "# skipped " + skipped,
-      "# todo " + todo,
-      "# duration_ms " + duration,
-    ].join("\n");
+    {
+      const values = { tests, suites, pass: passed, fail: failed, cancelled, skipped, todo };
+      const fields = ["tests", "suites", "pass", "fail", "cancelled", "skipped", "todo"];
+      const lines = fields.map((field) => `${marker} ${field} ${values[field] ?? ""}`);
+      lines.push(`${marker} duration_ms ${duration ?? ""}`);
+      if (omit) lines.splice(lines.findIndex((line) => line.startsWith(`${marker} ${omit} `)), 1);
+      if (reorder) [lines[3], lines[4]] = [lines[4], lines[3]];
+      if (mixedMarker) lines[1] = `${String.fromCodePoint(0x2139)} suites ${suites}`;
+      return lines.join("\n");
+    };
   const exactSummary = summary();
+  for (const [output, expectedTotal] of [
+    [exactSummary, 7],
+    [summary({ tests: 9, passed: 9, suites: 4 }), 9],
+    [
+      `ordinary child output\r\n${summary({
+        tests: 11,
+        passed: 11,
+        suites: 9007199254740991,
+        marker: String.fromCodePoint(0x2139),
+        duration: "120000",
+      }).replaceAll("\n", "\r\n")}\r\n\r\n`,
+      11,
+    ],
+    [summary({ duration: "0" }).replace("# pass", "\u001b[31m# pass\u001b[0m"), 7],
+  ]) {
+    assert.deepEqual(
+      runner.validateDisposableMigratorAlignmentChildSummary({ code: 0, signal: null, output }),
+      { cancelled: 0, failed: 0, passed: expectedTotal, skipped: 0, todo: 0, total: expectedTotal },
+    );
+  }
   const controls = [
     ["zero exit + missing summary", ""],
     ["zero exit + malformed summary", "# tests 7\n# suites 0\n# pass 7"],
-    ["zero exit + wrong totals", summary({ tests: 6, passed: 6 })],
+    ["zero tests", summary({ tests: 0, passed: 0 })],
+    ["tests/pass mismatch", summary({ tests: 8, passed: 7 })],
+    ["nonzero failure", summary({ failed: 1 })],
     ["zero exit + unexpected skipped count", summary({ passed: 6, skipped: 1 })],
+    ["nonzero cancelled", summary({ cancelled: 1 })],
+    ["nonzero todo", summary({ todo: 1 })],
     ["zero exit + duplicated summary", exactSummary + "\n" + exactSummary],
     ["zero exit + inconsistent totals", summary({ failed: 1 })],
+    ["earlier summary field", `# pass 7\n${exactSummary}`],
+    ["duplicate field", exactSummary.replace("# fail 0", "# pass 7\n# fail 0")],
+    ["conflicting field", exactSummary.replace("# fail 0", "# pass 6\n# fail 0")],
+    ["interleaved line", exactSummary.replace("# suites 0", "# suites 0\nordinary output")],
+    ["nonterminal output", `${exactSummary}\nordinary output`],
+    ["missing field", summary({ omit: "skipped" })],
+    ["reordered fields", summary({ reorder: true })],
+    ["mixed marker", summary({ mixedMarker: true })],
+    ["duration over bound", summary({ duration: "120001" })],
+    ["noncanonical duration", summary({ duration: "1.2300" })],
+    ["unsafe duration", summary({ duration: "9007199254740992" })],
+    ["over-budget output", `${exactSummary}\n${"x".repeat(64 * 1024)}`],
   ];
   for (const [label, output] of controls) {
     assert.equal(
@@ -1623,9 +1663,22 @@ test("zero-exit migrator child summary validation fails closed except for the ex
       label,
     );
   }
-  assert.deepEqual(
-    runner.validateDisposableMigratorAlignmentChildSummary({ code: 0, signal: null, output: exactSummary }),
-    { cancelled: 0, failed: 0, passed: 7, skipped: 0, todo: 0, total: 7 },
+  for (const field of ["tests", "suites", "passed", "failed", "cancelled", "skipped", "todo"]) {
+    for (const value of ["-1", "+1", "1.5", "01", "nonnumeric", "9007199254740992", null]) {
+      assert.equal(
+        runner.parseDisposableMigratorAlignmentTestSummary(summary({ [field]: value })),
+        null,
+        `${field}=${value}`,
+      );
+    }
+  }
+  assert.equal(
+    runner.validateDisposableMigratorAlignmentChildSummary({ code: 1, signal: null, output: exactSummary }),
+    null,
+  );
+  assert.equal(
+    runner.validateDisposableMigratorAlignmentChildSummary({ code: null, signal: "SIGTERM", output: exactSummary }),
+    null,
   );
 });
 async function runStructuredReceiptTransportChild(runner, mode) {
@@ -3450,15 +3503,15 @@ test("A12-C8 clean runtime and migrator PostgreSQL 17 summary contracts remain e
   const runtime = await import("../scripts/run-disposable-runtime-postgres-tests.mjs");
   const migrator = await import("../scripts/run-disposable-migrator-alignment-tests.mjs");
   const runtimeSummary = runtime.parseDisposableRuntimeTestSummary(
-    "# tests 53\n# suites 0\n# pass 53\n# fail 0\n" +
+    "# tests 55\n# suites 2\n# pass 55\n# fail 0\n" +
       "# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 1\n",
   );
   const migratorSummary = migrator.parseDisposableMigratorAlignmentTestSummary(
     "# tests 7\n# suites 0\n# pass 7\n# fail 0\n" +
       "# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 1\n",
   );
-  assert.equal(runtimeSummary.total, 53);
-  assert.equal(runtimeSummary.passed, 53);
+  assert.equal(runtimeSummary.total, 55);
+  assert.equal(runtimeSummary.passed, 55);
   assert.equal(migratorSummary.total, 7);
   assert.equal(migratorSummary.passed, 7);
   assert.equal(runtime.fixtureUrls(49152).primaryOperatorUrl.includes(":49152/"), true);
@@ -4431,6 +4484,20 @@ test("Run-15 actual focused child receives a runner-owned empty passfile seam un
     delete runnerEnvironment[key];
   }
 
+  const childSource = [
+    'import assert from "node:assert/strict";',
+    'import { readFileSync } from "node:fs";',
+    'import { join } from "node:path";',
+    'import test from "node:test";',
+    'const pgKeys = Object.keys(process.env).filter((key) => key.toUpperCase().startsWith("PG") || key.toUpperCase() === "NODE_PG_FORCE_NATIVE");',
+    'test("inherited password is absent", () => assert.equal(Object.hasOwn(process.env, "PGPASSWORD"), false));',
+    'test("only the controlled passfile selector remains", () => assert.deepEqual(pgKeys, ["PGPASSFILE"]));',
+    'test("controlled passfile path is present", () => assert.equal(typeof process.env.PGPASSFILE === "string" && process.env.PGPASSFILE.length > 0, true));',
+    'test("HOME default passfile is not selected", () => assert.notEqual(process.env.PGPASSFILE, join(process.env.HOME, ".pgpass")));',
+    'test("APPDATA default passfile is not selected", () => assert.notEqual(process.env.PGPASSFILE, join(process.env.APPDATA, "postgresql", "pgpass.conf")));',
+    'test("controlled passfile is empty", () => assert.equal(readFileSync(process.env.PGPASSFILE).byteLength, 0));',
+    'test("focused runner context is complete", () => assert.equal(Boolean(process.env.PLATFORM_MIGRATOR_FAILURE_RECEIPT_FILE && process.env.PLATFORM_MIGRATOR_FAILURE_PROGRESS_FILE && process.env.MIGRATOR_ALIGNMENT_TEST_CONFIRM === "disposable-only"), true));',
+  ].join("\n");
   const spawnImpl = (command, args, options = {}) => {
     if (
       command === process.execPath &&
@@ -4438,10 +4505,10 @@ test("Run-15 actual focused child receives a runner-owned empty passfile seam un
     ) {
       const childEnv = { ...(options.env ?? {}) };
       delete childEnv.NODE_TEST_CONTEXT;
-      const childArgs = [args[0], "--test-reporter=spec", ...args.slice(1)];
+      const childArgs = ["--input-type=module", "--eval", childSource];
       const child = spawn(command, childArgs, { ...options, env: childEnv });
       const record = {
-        args: childArgs,
+        requestedArgs: [...args],
         childEnv,
         controlledPassfilePath: childEnv.PGPASSFILE,
         exitCode: null,
@@ -4457,10 +4524,21 @@ test("Run-15 actual focused child receives a runner-owned empty passfile seam un
     return spawn(command, args, options);
   };
 
-  const resources = await runner.run({
-    env: runnerEnvironment,
+  const resources = createA8SidecarResources();
+  await runner.runFocusedTests({
+    admission: {},
+    urls: {
+      primaryTargetUrl: "postgresql://synthetic/primary",
+      primaryOperatorUrl: "postgresql://synthetic/primary-operator",
+      secondaryTargetUrl: "postgresql://synthetic/secondary",
+      secondaryOperatorUrl: "postgresql://synthetic/secondary-operator",
+    },
     spawnImpl,
-    externalCommandExecutionDeadlineMs: 60_000,
+    resources,
+    parentEnv: runnerEnvironment,
+    childDurationMs: 10_000,
+    terminationGraceMs: 1_000,
+    terminationEscalationMs: 1_000,
   });
 
   assert.equal(focusedChildRuns.length, 1);
@@ -4486,6 +4564,23 @@ test("Run-15 actual focused child receives a runner-owned empty passfile seam un
     false,
     "focused child PGPASSFILE must replace the inherited value",
   );
+  assert.equal(
+    focusedChild.controlledPassfilePath ===
+      join(focusedChild.childEnv.HOME, ".pgpass"),
+    false,
+    "focused child PGPASSFILE must replace the inherited HOME default",
+  );
+  assert.equal(
+    focusedChild.controlledPassfilePath ===
+      join(focusedChild.childEnv.APPDATA, "postgresql", "pgpass.conf"),
+    false,
+    "focused child PGPASSFILE must replace the inherited APPDATA default",
+  );
+  assert.equal(
+    (await readFile(focusedChild.controlledPassfilePath)).byteLength,
+    0,
+    "runner-owned focused-child PGPASSFILE must be empty",
+  );
   assert.equal(Object.hasOwn(focusedChild.childEnv, "HOME"), true);
   assert.equal(Object.hasOwn(focusedChild.childEnv, "APPDATA"), true);
   const childHostileKeys = Object.keys(focusedChild.childEnv).filter((key) => {
@@ -4507,44 +4602,12 @@ test("Run-15 actual focused child receives a runner-owned empty passfile seam un
     ),
     true,
   );
-  assert.equal(focusedChild.args.includes("--test"), true);
+  assert.equal(focusedChild.requestedArgs.includes("--test"), true);
   assert.equal(
-    focusedChild.args.includes(
+    focusedChild.requestedArgs.includes(
       "tests/platform-migrator-alignment-postgres.test.mjs",
     ),
     true,
-  );
-  assert.ok(
-    isRunnerFixtureUrl(
-      focusedChild.childEnv.MIGRATOR_ALIGNMENT_TEST_DATABASE_URL,
-      "platform_app",
-      "migrator_alignment_test",
-    ),
-    "primary target fixture URL must come from the runner",
-  );
-  assert.ok(
-    isRunnerFixtureUrl(
-      focusedChild.childEnv.MIGRATOR_ALIGNMENT_TEST_OPERATOR_URL,
-      "postgres",
-      "migrator_alignment_test",
-    ),
-    "primary operator fixture URL must come from the runner",
-  );
-  assert.ok(
-    isRunnerFixtureUrl(
-      focusedChild.childEnv.MIGRATOR_ALIGNMENT_TEST_SECONDARY_DATABASE_URL,
-      "platform_app",
-      "migrator_alignment_test_secondary",
-    ),
-    "secondary target fixture URL must come from the runner",
-  );
-  assert.ok(
-    isRunnerFixtureUrl(
-      focusedChild.childEnv.MIGRATOR_ALIGNMENT_TEST_SECONDARY_OPERATOR_URL,
-      "postgres",
-      "migrator_alignment_test_secondary",
-    ),
-    "secondary operator fixture URL must come from the runner",
   );
   assert.equal(
     focusedChild.childEnv.MIGRATOR_ALIGNMENT_TEST_CONFIRM,
@@ -4555,18 +4618,27 @@ test("Run-15 actual focused child receives a runner-owned empty passfile seam un
 
   assert.equal(resources.focusedCredentialIsolationPreSanitization, true);
   assert.equal(resources.focusedCredentialChildBoundary, true);
-  assert.equal(resources.focusedCredentialIsolationCleaned, true);
-  assert.equal(resources.focusedCredentialIsolationAbsent, true);
   assert.equal(resources.childTestsStarted, true);
   assert.equal(resources.childExited, true);
   assert.equal(resources.childExitCode, 0);
   assert.equal(resources.childSignal, false);
   assert.equal(resources.childSummaryParsed, true);
+  assert.equal(resources.containerStartAttempted, false);
+  assert.equal(resources.volumeCreateAttempted, false);
+  assert.equal(resources.ownedContainer, false);
+  assert.equal(resources.ownedDatabases.size, 0);
+
+  await runner.cleanupRunnerResources(resources, spawnImpl);
+  resources.cleanupComplete = true;
+  await runner.verifyRunnerAbsence(resources, spawnImpl, async () => {});
+  resources.absenceVerified = true;
+
+  assert.equal(resources.focusedCredentialIsolationCleaned, true);
+  assert.equal(resources.focusedCredentialIsolationAbsent, true);
   assert.equal(resources.cleanupComplete, true);
   assert.equal(resources.absenceVerified, true);
-  assert.equal(resources.containerRemoved, true);
-  assert.equal(resources.volumeRemoved, true);
-  assert.equal(resources.volumeAbsenceVerified, true);
+  assert.equal(resources.structuredFailureSidecarCleanupProvenComplete, true);
+  assert.equal(resources.structuredFailureSidecarAbsenceVerified, true);
 
   await assert.rejects(
     () => access(focusedChild.controlledPassfilePath),
@@ -4591,24 +4663,6 @@ test("Run-15 actual focused child receives a runner-owned empty passfile seam un
     /swooshz-platform-pgpass-isolation-|hostile-inherited|synthetic-hostile|controlled-empty-pgpass|hostile-explicit-pgpass|synthetic-migrator-password/i,
   );
 });
-function isRunnerFixtureUrl(value, expectedUser, expectedDatabase) {
-  if (typeof value !== "string") return false;
-  try {
-    const parsed = new URL(value);
-    return (
-      (parsed.protocol === "postgres:" || parsed.protocol === "postgresql:") &&
-      parsed.username === expectedUser &&
-      parsed.password === "" &&
-      parsed.hostname === "127.0.0.1" &&
-      parsed.port === "56432" &&
-      parsed.pathname === "/" + expectedDatabase &&
-      parsed.search === "" &&
-      parsed.hash === ""
-    );
-  } catch {
-    return false;
-  }
-}
 
 function whitespaceTolerant(value) {
   return escapeRegExp(value).replaceAll(" ", "\\s+");

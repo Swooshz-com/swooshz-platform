@@ -499,13 +499,16 @@ The rehearsal covers two explicitly labelled variants:
   authority, that the effective authority over `public` changes accordingly
   (with runtime authority unchanged), and that complete reverse rollback
   restores the original database owner and the corresponding
-  `pg_database_owner` authority with no residue. The fixture also mirrors the
-  accepted live default-privilege posture: the `pg_database_owner` creator
-  role receives explicit default-privilege revokes (tables, sequences and
-  functions from `PUBLIC`) exactly like the other fixture creator roles, so
-  the runtime posture gate observes no `PUBLIC` default authority. This
-  variant is the live topology proof; it does not claim `public` stays
-  independently provider-controlled.
+  `pg_database_owner` authority with no residue. Runtime default-ACL posture is
+  evaluated by creator and namespace reachability: only accepted Platform
+  application creators (`platform_app` and `platform_migrator`) with `CREATE`
+  on the canonical `public` or `drizzle` application namespaces can contribute
+  future PUBLIC/effective-runtime default authority. Provider/system and other
+  control-plane defaults, including `pg_database_owner`, are outside that
+  application-creation path and are not independently rewritten to satisfy the
+  runtime gate. Existing application-object PUBLIC/runtime ACLs remain
+  fail-closed. This variant is the live topology proof; it does not claim
+  `public` stays independently provider-controlled.
 - **Explicitly labelled stable-provider-owner fixture (secondary fixture).**
   `public` is owned by the disposable `provider_owner` role and `platform_migrator`
   receives the exact reviewed `CREATE`/`USAGE` authority, including a real

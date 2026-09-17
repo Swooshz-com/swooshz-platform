@@ -74,7 +74,6 @@ test(
     const suffix = randomUUID().replaceAll("-", "").slice(0, 10);
     let sequence = 0;
     let neonSuperuserCreated = false;
-    let providerControlRoleRenamed = false;
 
     const role = (label) => {
       sequence += 1;
@@ -108,6 +107,7 @@ test(
       return value;
     };
 
+    let bodyError = null;
     try {
       const guard = await adminPool.query(`
         select
@@ -239,14 +239,11 @@ test(
           assert.equal(ordinarySelects, 4);
           assert.equal(mutationRejected, true);
       }
-      providerControlRoleRenamed = await ensureProviderControlRole(adminPool, operatorUrl);
-      await installAcceptedCreatorEdge(rawAdminPool, operatorUrl);
-      await assertAcceptedCreatorEdge(rawAdminPool);
-      await assertPosturePasses(rawAdminPool, "platform_runtime");
-      await restoreProviderControlRole(operatorUrl);
-      await adminPool.query("drop owned by provider_admin");
-      await adminPool.query("drop role if exists provider_admin");
-      providerControlRoleRenamed = false;
+      await assertBootstrapIdentities(adminPool);
+      await assertFreshPostgresIdentity(adminPool);
+      await installAcceptedCreatorEdge(adminPool);
+      await assertAcceptedCreatorEdge(adminPool);
+      await assertPosturePasses(adminPool, "platform_runtime");
 
       neonSuperuserCreated = await ensureRole(adminPool, "neon_superuser");
 
@@ -379,12 +376,14 @@ test(
         async () => {
           const runtime = role("inherited_default_runtime");
           const grantee = role("inherited_default_grantee");
-          const creator = role("inherited_default_creator");
+          const creator = "platform_app";
           await createRole(adminPool, runtime);
           await createRole(adminPool, grantee);
-          await createRole(adminPool, creator);
           await adminPool.query(`alter role ${identifier(runtime)} inherit`);
           await grantRole(adminPool, grantee, runtime, false, true);
+          await adminPool.query(
+            `grant create on schema public to ${identifier(creator)}`,
+          );
           await adminPool.query(
             `alter default privileges for role ${identifier(creator)} grant select on tables to ${identifier(grantee)}`,
           );
@@ -396,6 +395,9 @@ test(
           await adminPool.query(
             `alter default privileges for role ${identifier(creator)} revoke select on tables from ${identifier(grantee)}`,
           );
+          await adminPool.query(
+            `revoke create on schema public from ${identifier(creator)}`,
+          );
         },
       );
 
@@ -405,11 +407,13 @@ test(
         async () => {
           const runtime = role("set_default_runtime");
           const grantee = role("set_default_grantee");
-          const creator = role("set_default_creator");
+          const creator = "platform_app";
           await createRole(adminPool, runtime);
           await createRole(adminPool, grantee);
-          await createRole(adminPool, creator);
           await grantRole(adminPool, grantee, runtime, true, false);
+          await adminPool.query(
+            `grant create on schema public to ${identifier(creator)}`,
+          );
           await adminPool.query(
             `alter default privileges for role ${identifier(creator)} grant usage on sequences to ${identifier(grantee)}`,
           );
@@ -421,15 +425,20 @@ test(
           await adminPool.query(
             `alter default privileges for role ${identifier(creator)} revoke usage on sequences from ${identifier(grantee)}`,
           );
+          await adminPool.query(
+            `revoke create on schema public from ${identifier(creator)}`,
+          );
         },
       );
 
       markPostgresMatrixCategory(executedCategories, "public_relation_defaults");
       await context.test("PUBLIC relation defaults are denied", async () => {
         const runtime = role("public_relation_default_runtime");
-        const creator = role("public_relation_default_creator");
+        const creator = "platform_app";
         await createRole(adminPool, runtime);
-        await createRole(adminPool, creator);
+        await adminPool.query(
+          `grant create on schema public to ${identifier(creator)}`,
+        );
         await adminPool.query(
           `alter default privileges for role ${identifier(creator)} grant select on tables to public`,
         );
@@ -441,14 +450,19 @@ test(
         await adminPool.query(
           `alter default privileges for role ${identifier(creator)} revoke select on tables from public`,
         );
+        await adminPool.query(
+          `revoke create on schema public from ${identifier(creator)}`,
+        );
       });
 
       markPostgresMatrixCategory(executedCategories, "public_sequence_defaults");
       await context.test("PUBLIC sequence defaults are denied", async () => {
         const runtime = role("public_sequence_default_runtime");
-        const creator = role("public_sequence_default_creator");
+        const creator = "platform_app";
         await createRole(adminPool, runtime);
-        await createRole(adminPool, creator);
+        await adminPool.query(
+          `grant create on schema public to ${identifier(creator)}`,
+        );
         await adminPool.query(
           `alter default privileges for role ${identifier(creator)} grant usage on sequences to public`,
         );
@@ -460,14 +474,19 @@ test(
         await adminPool.query(
           `alter default privileges for role ${identifier(creator)} revoke usage on sequences from public`,
         );
+        await adminPool.query(
+          `revoke create on schema public from ${identifier(creator)}`,
+        );
       });
 
       markPostgresMatrixCategory(executedCategories, "public_routine_defaults");
       await context.test("PUBLIC routine defaults are denied", async () => {
         const runtime = role("public_routine_default_runtime");
-        const creator = role("public_routine_default_creator");
+        const creator = "platform_app";
         await createRole(adminPool, runtime);
-        await createRole(adminPool, creator);
+        await adminPool.query(
+          `grant create on schema public to ${identifier(creator)}`,
+        );
         await adminPool.query(
           `alter default privileges for role ${identifier(creator)} grant execute on functions to public`,
         );
@@ -478,6 +497,9 @@ test(
         );
         await adminPool.query(
           `alter default privileges for role ${identifier(creator)} revoke execute on functions from public`,
+        );
+        await adminPool.query(
+          `revoke create on schema public from ${identifier(creator)}`,
         );
       });
 
@@ -532,9 +554,11 @@ test(
       markPostgresMatrixCategory(executedCategories, "global_default_replacement");
       await context.test("global default replacement is enforced", async () => {
         const runtime = role("global_default_runtime");
-        const creator = role("global_default_creator");
+        const creator = "platform_app";
         await createRole(adminPool, runtime);
-        await createRole(adminPool, creator);
+        await adminPool.query(
+          `grant create on schema public to ${identifier(creator)}`,
+        );
         await adminPool.query(
           `alter default privileges for role ${identifier(creator)} revoke select on tables from public`,
         );
@@ -549,14 +573,19 @@ test(
         await adminPool.query(
           `alter default privileges for role ${identifier(creator)} revoke select on tables from ${identifier(runtime)}`,
         );
+        await adminPool.query(
+          `revoke create on schema public from ${identifier(creator)}`,
+        );
       });
 
       markPostgresMatrixCategory(executedCategories, "per_schema_additive_defaults");
       await context.test("per-schema default additions are enforced", async () => {
         const runtime = role("schema_default_runtime");
-        const creator = role("schema_default_creator");
+        const creator = "platform_app";
         await createRole(adminPool, runtime);
-        await createRole(adminPool, creator);
+        await adminPool.query(
+          `grant create on schema drizzle to ${identifier(creator)}`,
+        );
         await adminPool.query(
           `alter default privileges for role ${identifier(creator)} in schema drizzle grant select on tables to ${identifier(runtime)}`,
         );
@@ -568,34 +597,79 @@ test(
         await adminPool.query(
           `alter default privileges for role ${identifier(creator)} in schema drizzle revoke select on tables from ${identifier(runtime)}`,
         );
+        await adminPool.query(
+          `revoke create on schema drizzle from ${identifier(creator)}`,
+        );
       });
 
       markPostgresMatrixCategory(executedCategories, "hard_wired_defaults");
-      await context.test("hard-wired default behavior is enforced", async () => {
-        const runtime = role("hardwired_runtime");
-        const creator = role("hardwired_creator");
-        const targetSchema = schema("hardwired_schema");
-        await createRole(adminPool, runtime);
-        await createRole(adminPool, creator);
-        await adminPool.query(
-          `create schema ${identifier(targetSchema)} authorization postgres`,
-        );
-        await adminPool.query(
-          `grant create on schema ${identifier(targetSchema)} to ${identifier(creator)}`,
-        );
-        await assertPostureFails(
-          adminPool,
-          runtime,
-          "runtimeRoutineAuthorityAbsent",
-        );
-        await adminPool.query(
-          `revoke create on schema ${identifier(targetSchema)} from ${identifier(creator)}`,
-        );
-      });
+      await context.test(
+        "safe creator defaults pass while platform_migrator unsafe defaults fail closed",
+        async () => {
+          const runtime = "platform_runtime";
+          const creator = "platform_migrator";
+          await createRole(adminPool, creator);
+          roles.push(creator);
+          await adminPool.query(
+            `grant create on schema public to ${identifier(creator)}`,
+          );
+          await adminPool.query(
+            `alter default privileges for role ${identifier(creator)} revoke all privileges on tables from public`,
+          );
+          await adminPool.query(
+            `alter default privileges for role ${identifier(creator)} revoke all privileges on sequences from public`,
+          );
+          await adminPool.query(
+            `alter default privileges for role ${identifier(creator)} revoke execute on functions from public`,
+          );
+          const unrelatedProviderGrantee = role(
+            "unrelated_provider_grant_option",
+          );
+          await createRole(adminPool, unrelatedProviderGrantee);
+          const controlledError = new assert.AssertionError({
+            message: "controlled hard-wired-defaults cleanup proof",
+          });
+          await assert.rejects(
+            async () => {
+              let bodyError = null;
+              try {
+                await runHardWiredDefaultsProof(
+                  adminPool,
+                  runtime,
+                  creator,
+                  unrelatedProviderGrantee,
+                );
+                throw controlledError;
+              } catch (error) {
+                bodyError = error;
+              }
+              await executePostureCleanupActions(
+                hardWiredDefaultsCleanupActions(
+                  adminPool,
+                  runtime,
+                  creator,
+                  unrelatedProviderGrantee,
+                ),
+                bodyError,
+              );
+            },
+            (error) => error === controlledError,
+          );
+          await assertHardWiredDefaultsResidueAbsent(
+            adminPool,
+            creator,
+            unrelatedProviderGrantee,
+          );
+          await assertAcceptedCreatorEdge(adminPool);
+          await assertFreshPostgresIdentity(adminPool);
+          await assertPosturePasses(adminPool, runtime);
+        },
+      );
 
       await context.test(
         "direct, PUBLIC, inherited, SET-role, and owner CREATE fail for every non-system schema",
         async () => {
+          await assertFreshPostgresIdentity(adminPool);
           const directRuntime = role("schema_direct_runtime");
           const directSchema = schema("direct_create");
           await createRole(adminPool, directRuntime);
@@ -683,9 +757,14 @@ test(
         "global and per-schema relation defaults reject runtime and PUBLIC authority",
         async () => {
           const runtime = role("default_relation_runtime");
-          const creator = role("default_relation_creator");
+          const creator = "platform_app";
           await createRole(adminPool, runtime);
-          await createRole(adminPool, creator);
+          await adminPool.query(
+            `grant create on schema public to ${identifier(creator)}`,
+          );
+          await adminPool.query(
+            `grant create on schema drizzle to ${identifier(creator)}`,
+          );
 
           await adminPool.query(
             `alter default privileges for role ${identifier(creator)} grant select on tables to ${identifier(runtime)}`,
@@ -722,6 +801,12 @@ test(
           await adminPool.query(
             `alter default privileges for role ${identifier(creator)} revoke select on tables from public`,
           );
+          await adminPool.query(
+            `revoke create on schema public from ${identifier(creator)}`,
+          );
+          await adminPool.query(
+            `revoke create on schema drizzle from ${identifier(creator)}`,
+          );
         },
       );
 
@@ -729,9 +814,11 @@ test(
         "sequence, routine, and grant-option defaults are rejected",
         async () => {
           const runtime = role("default_object_runtime");
-          const creator = role("default_object_creator");
+          const creator = "platform_app";
           await createRole(adminPool, runtime);
-          await createRole(adminPool, creator);
+          await adminPool.query(
+            `grant create on schema public to ${identifier(creator)}`,
+          );
 
           await adminPool.query(
             `alter default privileges for role ${identifier(creator)} grant usage on sequences to ${identifier(runtime)}`,
@@ -767,6 +854,9 @@ test(
           );
           await adminPool.query(
             `alter default privileges for role ${identifier(creator)} revoke select on tables from ${identifier(runtime)}`,
+          );
+          await adminPool.query(
+            `revoke create on schema public from ${identifier(creator)}`,
           );
         },
       );
@@ -920,7 +1010,7 @@ test(
           `alter database runtime_posture_test owner to ${identifier(dangerous)}`,
         );
         await assertPostureFails(adminPool, runtime, "databaseAndSchemaOwnershipAbsent");
-        await adminPool.query("alter database runtime_posture_test owner to postgres");
+        await adminPool.query("alter database runtime_posture_test owner to cloud_admin");
       });
 
       await context.test("schema ownership through an assumable role fails", async () => {
@@ -1041,41 +1131,34 @@ test(
         [...executedCategories].sort(),
         [...requiredPostgresMatrixCategories].sort(),
       );
-    } finally {
-      await adminPool.query("alter database runtime_posture_test owner to postgres").catch(() => {});
-      await adminPool.query("alter schema drizzle owner to postgres").catch(() => {});
-      await adminPool.query("alter table public.users owner to postgres").catch(() => {});
-      for (const extension of extensions.reverse()) {
-        await adminPool.query(`drop extension if exists ${identifier(extension)} cascade`).catch(() => {});
-      }
-      for (const routineName of routines.reverse()) {
-        await adminPool.query(`drop function if exists public.${identifier(routineName)}() cascade`).catch(() => {});
-      }
-      for (const sequence of sequences.reverse()) {
-        await adminPool.query(`drop sequence if exists public.${identifier(sequence)} cascade`).catch(() => {});
-      }
-      for (const relationName of relations.reverse()) {
-        await adminPool.query(`drop table if exists public.${identifier(relationName)} cascade`).catch(() => {});
-      }
-      for (const schemaName of schemas.reverse()) {
-        await adminPool.query(`drop schema if exists ${identifier(schemaName)} cascade`).catch(() => {});
-      }
-      await adminPool.query("drop schema if exists drizzle cascade").catch(() => {});
-      await adminPool.query("revoke platform_runtime from platform_app").catch(() => {});
-      if (providerControlRoleRenamed) {
-        await restoreProviderControlRole(operatorUrl).catch(() => {});
-      }
-      await adminPool.query("drop owned by provider_admin").catch(() => {});
-      await adminPool.query("drop role if exists provider_admin").catch(() => {});
-      await adminPool.query("drop table if exists public.users cascade").catch(() => {});
-      for (const roleName of roles.reverse()) {
-        await adminPool.query(`drop role if exists ${identifier(roleName)}`).catch(() => {});
-      }
-      if (neonSuperuserCreated) {
-        await adminPool.query("drop role if exists neon_superuser").catch(() => {});
-      }
-      await rawAdminPool.end();
+    } catch (error) {
+      bodyError = error;
     }
+    const cleanupActions = [
+      () => adminPool.query("alter database runtime_posture_test owner to cloud_admin"),
+      () => adminPool.query("alter schema drizzle owner to postgres"),
+      () => adminPool.query("alter table public.users owner to postgres"),
+      ...extensions.reverse().map((extension) => () =>
+        adminPool.query(`drop extension if exists ${identifier(extension)} cascade`)),
+      ...routines.reverse().map((routineName) => () =>
+        adminPool.query(`drop function if exists public.${identifier(routineName)}() cascade`)),
+      ...sequences.reverse().map((sequenceName) => () =>
+        adminPool.query(`drop sequence if exists public.${identifier(sequenceName)} cascade`)),
+      ...relations.reverse().map((relationName) => () =>
+        adminPool.query(`drop table if exists public.${identifier(relationName)} cascade`)),
+      ...schemas.reverse().map((schemaName) => () =>
+        adminPool.query(`drop schema if exists ${identifier(schemaName)} cascade`)),
+      () => adminPool.query("drop schema if exists drizzle cascade"),
+      () => adminPool.query("revoke platform_runtime from platform_app"),
+      () => adminPool.query("drop table if exists public.users cascade"),
+      ...roles.reverse().map((roleName) => () =>
+        adminPool.query(`drop role if exists ${identifier(roleName)}`)),
+      ...(neonSuperuserCreated
+        ? [() => adminPool.query("drop role if exists neon_superuser")]
+        : []),
+      () => rawAdminPool.end(),
+    ];
+    await executePostureCleanupActions(cleanupActions, bodyError);
   },
 );
 
@@ -1131,70 +1214,102 @@ async function ensureRole(pool, roleName) {
   }
   return false;
 }
-async function ensureProviderControlRole(pool, operatorConnectionString) {
-  const result = await pool.query(
-    "select 1 from pg_roles where rolname = 'cloud_admin'",
-  );
-  if (result.rowCount !== 0) {
-    throw new Error();
-  }
-  await pool.query(
-    "create role provider_admin superuser login noinherit",
-  );
-  await pool.query(
-    "alter default privileges for role provider_admin revoke all on tables from public",
-  );
-  await pool.query(
-    "alter default privileges for role provider_admin revoke all on sequences from public",
-  );
-  await pool.query(
-    "alter default privileges for role provider_admin revoke all on functions from public",
-  );
-  const providerPool = new Pool({
-    connectionString: connectionStringForRole(operatorConnectionString, "provider_admin"),
-    max: 1,
-  });
-  try {
-    await providerPool.query("alter role postgres rename to cloud_admin");
-  } finally {
-    await providerPool.end();
-  }
-  return true;
+async function assertBootstrapIdentities(pool) {
+  const result = await pool.query(`
+    select
+      session_user as session_user_name,
+      current_user as current_user_name,
+      postgres.oid <> cloud_admin.oid as identities_are_distinct,
+      postgres.rolsuper as postgres_is_superuser,
+      postgres.rolcanlogin as postgres_can_login,
+      not postgres.rolinherit as postgres_is_noinherit,
+      cloud_admin.rolsuper as cloud_admin_is_superuser,
+      cloud_admin.rolcanlogin as cloud_admin_can_login,
+      owner.rolname as database_owner
+    from pg_roles postgres
+    cross join pg_roles cloud_admin
+    join pg_database database on database.datname = current_database()
+    join pg_roles owner on owner.oid = database.datdba
+    where postgres.rolname = 'postgres'
+      and cloud_admin.rolname = 'cloud_admin'
+  `);
+  assert.deepEqual(result.rows, [{
+    session_user_name: "postgres",
+    current_user_name: "postgres",
+    identities_are_distinct: true,
+    postgres_is_superuser: true,
+    postgres_can_login: true,
+    postgres_is_noinherit: true,
+    cloud_admin_is_superuser: true,
+    cloud_admin_can_login: true,
+    database_owner: "cloud_admin",
+  }]);
 }
 
-async function installAcceptedCreatorEdge(pool, operatorConnectionString) {
-  await pool.query("revoke platform_runtime from platform_app");
-  const providerPool = new Pool({
-    connectionString: connectionStringForRole(operatorConnectionString, "provider_admin"),
-    max: 1,
-  });
+async function assertFreshPostgresIdentity(pool) {
+  const client = await pool.connect();
   try {
-    await providerPool.query("set session authorization cloud_admin");
-    await providerPool.query(
+    const result = await client.query(`
+      select
+        session_user as session_user_name,
+        current_user as current_user_name,
+        current_setting('server_version_num')::integer / 10000 as postgres_major,
+        rolsuper,
+        rolcanlogin,
+        rolinherit
+      from pg_roles
+      where rolname = 'postgres'
+    `);
+    assert.deepEqual(result.rows, [{
+      session_user_name: "postgres",
+      current_user_name: "postgres",
+      postgres_major: 17,
+      rolsuper: true,
+      rolcanlogin: true,
+      rolinherit: false,
+    }]);
+  } finally {
+    client.release(true);
+  }
+}
+
+async function installAcceptedCreatorEdge(pool) {
+  await pool.query("revoke platform_runtime from platform_app");
+  const client = await pool.connect();
+  let bodyError = null;
+  let resetError = null;
+  try {
+    const before = await client.query("select session_user, current_user");
+    assert.deepEqual(before.rows, [
+      { session_user: "postgres", current_user: "postgres" },
+    ]);
+    await client.query("set session authorization cloud_admin");
+    const during = await client.query("select session_user, current_user");
+    assert.deepEqual(during.rows, [
+      { session_user: "cloud_admin", current_user: "cloud_admin" },
+    ]);
+    await client.query(
       "grant platform_runtime to platform_app with admin true, set false, inherit false granted by cloud_admin",
     );
-  } finally {
-    await providerPool.query("reset session authorization").catch(() => {});
-    await providerPool.end();
+  } catch (error) {
+    bodyError = error;
   }
-}
-
-function connectionStringForRole(connectionString, roleName) {
-  const url = new URL(connectionString);
-  url.username = roleName;
-  return url.toString();
-}
-
-async function restoreProviderControlRole(operatorConnectionString) {
-  const providerPool = new Pool({
-    connectionString: connectionStringForRole(operatorConnectionString, "provider_admin"),
-    max: 1,
-  });
   try {
-    await providerPool.query("alter role cloud_admin rename to postgres");
+    await client.query("reset session authorization");
+  } catch (error) {
+    resetError = error;
   } finally {
-    await providerPool.end();
+    client.release(true);
   }
+  if (bodyError && resetError) {
+    throw new AggregateError(
+      [bodyError, resetError],
+      "Creator-edge installation and reset failed.",
+    );
+  }
+  if (bodyError) throw bodyError;
+  if (resetError) throw resetError;
+  await assertFreshPostgresIdentity(pool);
 }
 
 async function assertAcceptedCreatorEdge(pool) {
@@ -1226,6 +1341,180 @@ async function assertAcceptedCreatorEdge(pool) {
     },
   ]);
 }
+
+async function runHardWiredDefaultsProof(
+  pool,
+  runtime,
+  creator,
+  unrelatedProviderGrantee,
+) {
+  await installAcceptedCreatorEdge(pool);
+  await pool.query(
+    "alter default privileges for role cloud_admin grant execute on functions to public",
+  );
+  await pool.query(
+    `alter default privileges for role cloud_admin grant select on tables to ${identifier(unrelatedProviderGrantee)} with grant option`,
+  );
+  const providerEvidence = await pool.query(`
+    with provider_role as (
+      select oid
+      from pg_roles
+      where rolname = 'cloud_admin'
+    ), effective_defaults as (
+      select
+        'f'::"char" as object_type,
+        coalesce(
+          (
+            select defaults.defaclacl
+            from pg_default_acl defaults
+            where defaults.defaclrole = provider_role.oid
+              and defaults.defaclnamespace = 0
+              and defaults.defaclobjtype = 'f'
+          ),
+          acldefault('f', provider_role.oid)
+        ) as acl
+      from provider_role
+      union all
+      select
+        'r'::"char" as object_type,
+        coalesce(
+          (
+            select defaults.defaclacl
+            from pg_default_acl defaults
+            where defaults.defaclrole = provider_role.oid
+              and defaults.defaclnamespace = 0
+              and defaults.defaclobjtype = 'r'
+          ),
+          acldefault('r', provider_role.oid)
+        ) as acl
+      from provider_role
+    )
+    select
+      bool_or(expanded.grantee = 0 and expanded.privilege_type = 'EXECUTE')
+        filter (where defaults.object_type = 'f') as public_routine_default,
+      bool_or(
+        grantee.rolname = $1
+        and expanded.privilege_type = 'SELECT'
+        and expanded.is_grantable
+      ) filter (where defaults.object_type = 'r') as relation_grant_option
+    from effective_defaults defaults
+    cross join lateral aclexplode(defaults.acl) expanded
+    left join pg_roles grantee on grantee.oid = expanded.grantee
+  `, [unrelatedProviderGrantee]);
+  assert.deepEqual(providerEvidence.rows, [{
+    public_routine_default: true,
+    relation_grant_option: true,
+  }]);
+  await assertAcceptedCreatorEdge(pool);
+  await assertPosturePasses(pool, runtime);
+
+  const unsafeDefaults = [
+    {
+      grant: `alter default privileges for role ${identifier(creator)} grant select on tables to ${identifier(runtime)}`,
+      revoke: `alter default privileges for role ${identifier(creator)} revoke select on tables from ${identifier(runtime)}`,
+      failedField: "runtimeDefaultRelationAuthorityAbsent",
+    },
+    {
+      grant: `alter default privileges for role ${identifier(creator)} grant usage on sequences to ${identifier(runtime)}`,
+      revoke: `alter default privileges for role ${identifier(creator)} revoke usage on sequences from ${identifier(runtime)}`,
+      failedField: "runtimeSequenceAuthorityAbsent",
+    },
+    {
+      grant: `alter default privileges for role ${identifier(creator)} grant execute on functions to public`,
+      revoke: `alter default privileges for role ${identifier(creator)} revoke execute on functions from public`,
+      failedField: "runtimeRoutineAuthorityAbsent",
+    },
+  ];
+  for (const proof of unsafeDefaults) {
+    await assertAcceptedCreatorEdge(pool);
+    await pool.query(proof.grant);
+    await assertPostureFails(pool, runtime, proof.failedField);
+    await pool.query(proof.revoke);
+    await assertAcceptedCreatorEdge(pool);
+    await assertPosturePasses(pool, runtime);
+  }
+}
+
+function hardWiredDefaultsCleanupActions(
+  pool,
+  runtime,
+  creator,
+  unrelatedProviderGrantee,
+) {
+  return [
+    () => pool.query(
+      `alter default privileges for role ${identifier(creator)} grant execute on functions to public`,
+    ),
+    () => pool.query(
+      `alter default privileges for role ${identifier(creator)} revoke usage on sequences from ${identifier(runtime)}`,
+    ),
+    () => pool.query(
+      `alter default privileges for role ${identifier(creator)} revoke select on tables from ${identifier(runtime)}`,
+    ),
+    () => pool.query(`revoke create on schema public from ${identifier(creator)}`),
+    () => pool.query(
+      "alter default privileges for role cloud_admin revoke execute on functions from public",
+    ),
+    () => pool.query(
+      `alter default privileges for role cloud_admin revoke select on tables from ${identifier(unrelatedProviderGrantee)}`,
+    ),
+  ];
+}
+
+async function assertHardWiredDefaultsResidueAbsent(
+  pool,
+  creator,
+  unrelatedProviderGrantee,
+) {
+  const result = await pool.query(`
+    select
+      not has_schema_privilege($1, 'public', 'CREATE') as creator_create_absent,
+      not exists (
+        select 1
+        from pg_default_acl defaults
+        join pg_roles owner on owner.oid = defaults.defaclrole
+        where owner.rolname = $1
+      ) as creator_default_acl_absent,
+      not exists (
+        select 1
+        from pg_default_acl defaults
+        cross join lateral aclexplode(defaults.defaclacl) expanded
+        left join pg_roles grantee on grantee.oid = expanded.grantee
+        where defaults.defaclrole in (
+          select oid from pg_roles where rolname in ('cloud_admin', $1)
+        )
+          and (
+            expanded.grantee = 0
+            or grantee.rolname in ('platform_runtime', $2)
+          )
+      ) as scoped_defaults_absent
+  `, [creator, unrelatedProviderGrantee]);
+  assert.deepEqual(result.rows, [{
+    creator_create_absent: true,
+    creator_default_acl_absent: true,
+    scoped_defaults_absent: true,
+  }]);
+}
+
+async function executePostureCleanupActions(actions, bodyError = null) {
+  const cleanupErrors = [];
+  for (const action of actions) {
+    try {
+      await action();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  if (bodyError && cleanupErrors.length === 0) throw bodyError;
+  if (!bodyError && cleanupErrors.length === 1) throw cleanupErrors[0];
+  if (bodyError || cleanupErrors.length > 0) {
+    throw new AggregateError(
+      [...(bodyError ? [bodyError] : []), ...cleanupErrors],
+      "PostgreSQL posture cleanup failed.",
+    );
+  }
+}
+
 async function grantRole(
   pool,
   grantedRole,

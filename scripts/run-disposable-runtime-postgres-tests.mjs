@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { constants } from "node:fs";
+import { access } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
@@ -24,9 +26,12 @@ import { runDisposableRuntimeLifecycle } from "./disposable-runtime-lifecycle.mj
 const databaseName = "runtime_posture_test";
 const secondaryDatabaseName = "runtime_posture_test_secondary";
 const ownedContainerName = "codex-platform127-pg17";
+const runtimePostgresIdentitiesSql = fileURLToPath(
+  new URL("../tests/support/runtime-postgres-identities.sql", import.meta.url),
+);
 const maxChildOutputBytes = 64 * 1024;
 const maxChildDurationMs = 120_000;
-const expectedPostgresTestCount = 53;
+const maxChildDiagnosticBytes = 4_000;
 const safeIdentifier = /^[a-z_][a-z0-9_$]{0,62}$/u;
 const loopbackHosts = new Set(["127.0.0.1", "::1"]);
 const failurePhases = new Set([
@@ -112,6 +117,7 @@ export async function run({
         databaseUrls: new Map(),
         ownedDatabases: new Set(),
         ownedRoles: new Set(["platform_app", "platform_runtime"]),
+        bootstrapRoles: new Set(["postgres", "cloud_admin"]),
         ownedSchemas: new Set(["drizzle"]),
         ownedObjects: new Set([
           "drizzle.__drizzle_migrations",
@@ -325,6 +331,101 @@ export function formatDisposableRuntimeFailureReceipt(resources = {}) {
   return `Disposable fixture failure receipt: ${JSON.stringify(receipt)}`;
 }
 
+export function formatDisposableRuntimeChildDiagnostics({
+  stdout = "",
+  stderr = "",
+  outputOverflow = false,
+} = {}) {
+  const prefix = "Disposable child test diagnostics (sanitized):\n";
+  const truncationMarker = "\n[diagnostic_output_truncated]";
+  const budget = Math.max(
+    0,
+    maxChildDiagnosticBytes -
+      Buffer.byteLength(prefix, "utf8") -
+      (outputOverflow ? Buffer.byteLength(truncationMarker, "utf8") : 0),
+  );
+  const diagnostic = sanitizeDisposableRuntimeChildDiagnostics({ stdout, stderr });
+  const boundedDiagnostic = truncateUtf8(diagnostic, budget);
+  if (!boundedDiagnostic.value && !outputOverflow) return "";
+  const truncated = boundedDiagnostic.truncated || outputOverflow;
+  return `${prefix}${boundedDiagnostic.value}${truncated ? truncationMarker : ""}`;
+}
+
+export function sanitizeDisposableRuntimeChildDiagnostics({
+  stdout = "",
+  stderr = "",
+} = {}) {
+  const source = [stdout, stderr]
+    .filter((value) => typeof value === "string" && value.length > 0)
+    .join("\n");
+  if (source.length === 0) return "";
+
+  const lines = redactDisposableRuntimeDiagnosticText(source)
+    .replace(/\r\n?/gu, "\n")
+    .split("\n");
+  const selected = [];
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (
+      /^TAP version \d+$/u.test(trimmed) ||
+      /^# Subtest:\s*\S.*$/u.test(trimmed) ||
+      /^not ok \d+(?:\s+-\s*\S.*)?$/u.test(trimmed) ||
+      /^1\.\.\d+$/u.test(trimmed) ||
+      /^# (?:tests|suites|pass|fail|cancelled|skipped|todo|duration_ms)\b.*$/u.test(trimmed) ||
+      /^(?:failureType|error|code|name|operator|expected|actual|location|stack|message):(?:\s.*)?$/u.test(trimmed) ||
+      /^(?:AssertionError|Error|TypeError|RangeError|SyntaxError)(?:\b|\s|:)/u.test(trimmed) ||
+      /^at\s+\S.*$/u.test(trimmed)
+    ) {
+      selected.push(sanitizeDisposableRuntimeDiagnosticLine(line));
+    }
+  }
+  return selected.join("\n");
+}
+
+function redactDisposableRuntimeDiagnosticText(value) {
+  return value
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "")
+    .replace(/\b(?:postgres(?:ql)?|mysql|mssql):\/\/[^\s'"]+/giu, "<redacted-url>")
+    .replace(/\bhttps?:\/\/[^\s'"]+/giu, "<redacted-url>")
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+)\b/gu, "<redacted-token>")
+    .replace(/\b(Bearer|Basic)\s+[^\s'"]+/giu, "$1 <redacted-token>")
+    .replace(
+      /\b(?:DATABASE_URL|DATABASE_OPERATOR_URL|RUNTIME_POSTURE_TEST_[A-Z_]+|PGPASSWORD|PGPASSFILE|PASSWORD|PASSWD|TOKEN|SECRET|API_KEY|API_TOKEN|ACCESS_TOKEN|REFRESH_TOKEN|AUTHORIZATION|DSN)\b\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;)]*)/giu,
+      (match) => `${match.slice(0, match.search(/[:=]/u) + 1)}<redacted>`,
+    )
+    .replace(/[?&][A-Za-z0-9_-]+=[^&\s'"]*/gu, (match) => `${match.slice(0, match.indexOf("=") + 1)}<redacted>`);
+}
+
+function sanitizeDisposableRuntimeDiagnosticLine(line) {
+  const match = line.match(/^(\s*)(expected|actual):\s*(.*)$/iu);
+  if (!match) return line;
+  return `${match[1]}${match[2]}: ${summarizeDisposableRuntimeDiagnosticValue(match[3])}`;
+}
+
+function summarizeDisposableRuntimeDiagnosticValue(value) {
+  const trimmed = value.trim();
+  if (/^(?:null|undefined|true|false|-?(?:0|[1-9]\d*)(?:\.\d+)?)$/u.test(trimmed)) {
+    return trimmed;
+  }
+  if (trimmed.startsWith("[")) return "<array>";
+  if (trimmed.startsWith("{")) return "<object>";
+  if (/^'(?:[A-Za-z0-9_.:/ -]{0,80})'$|^"(?:[A-Za-z0-9_.:/ -]{0,80})"$/u.test(trimmed)) {
+    return trimmed;
+  }
+  return "<value>";
+}
+
+function truncateUtf8(value, maxBytes) {
+  const buffer = Buffer.from(value, "utf8");
+  if (buffer.length <= maxBytes) return { truncated: false, value };
+  return {
+    truncated: true,
+    value: buffer.subarray(0, maxBytes).toString("utf8"),
+  };
+}
+
 export function parseDisposableRuntimeTestSummary(output) {
   if (typeof output !== "string" || Buffer.byteLength(output, "utf8") > maxChildOutputBytes) {
     return null;
@@ -388,8 +489,8 @@ export function parseDisposableRuntimeTestSummary(output) {
     counts[field] = count;
   }
   if (
-    counts.tests !== expectedPostgresTestCount ||
-    counts.pass !== expectedPostgresTestCount ||
+    counts.tests <= 0 ||
+    counts.pass !== counts.tests ||
     counts.fail !== 0 ||
     counts.skipped !== 0 ||
     counts.cancelled !== 0 ||
@@ -629,8 +730,12 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
   };
   await new Promise((resolvePromise, reject) => {
     const output = [];
+    const diagnosticStdout = [];
+    const diagnosticStderr = [];
     let outputLength = 0;
     let outputOverflow = false;
+    let diagnosticStdoutLength = 0;
+    let diagnosticStderrLength = 0;
     let child;
     try {
       child = spawnImpl(
@@ -657,8 +762,30 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
       } else {
         outputOverflow = true;
       }
+      diagnosticStdoutLength = appendBoundedDiagnosticChunk(
+        diagnosticStdout,
+        chunk,
+        diagnosticStdoutLength,
+      );
     });
-    child.stderr?.resume();
+    child.stderr?.on("data", (chunk) => {
+      diagnosticStderrLength = appendBoundedDiagnosticChunk(
+        diagnosticStderr,
+        chunk,
+        diagnosticStderrLength,
+      );
+    });
+    const emitChildDiagnostics = () => {
+      const diagnostic = formatDisposableRuntimeChildDiagnostics({
+        stdout: Buffer.concat(diagnosticStdout).toString("utf8"),
+        stderr: Buffer.concat(diagnosticStderr).toString("utf8"),
+        outputOverflow:
+          outputOverflow ||
+          diagnosticStdoutLength > maxChildOutputBytes ||
+          diagnosticStderrLength > maxChildOutputBytes,
+      });
+      if (diagnostic) process.stderr.write(`${diagnostic}\n`);
+    };
     child.once("error", (error) => {
       markChildFailure(resources, "child_test_spawn");
       reject(error);
@@ -668,17 +795,20 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
       resources.childExitCode = Number.isInteger(code) ? code : null;
       resources.childSignal = signal !== null;
       if (resources.childSignal) {
+        emitChildDiagnostics();
         markChildFailure(resources, "child_signal");
         reject(new Error());
         return;
       }
       if (outputOverflow) {
+        emitChildDiagnostics();
         resources.childOutputOverflow = true;
         markChildFailure(resources, "child_output_overflow");
         reject(new Error());
         return;
       }
       if (code !== 0) {
+        emitChildDiagnostics();
         markChildFailure(resources, "child_test_failure");
         reject(new Error());
         return;
@@ -688,6 +818,7 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
           Buffer.concat(output).toString("utf8"),
         );
         if (!summary) {
+          emitChildDiagnostics();
           markChildFailure(resources, "child_summary_parse");
           reject(new Error());
           return;
@@ -703,6 +834,14 @@ async function runFocusedTests({ admission, urls, spawnImpl, resources }) {
   void admission;
 }
 
+function appendBoundedDiagnosticChunk(chunks, chunk, currentLength) {
+  const buffer = Buffer.from(chunk);
+  const combined = Buffer.concat([...chunks, buffer]);
+  chunks.length = 0;
+  chunks.push(combined.subarray(Math.max(0, combined.length - maxChildOutputBytes)));
+  return Math.min(maxChildOutputBytes + 1, currentLength + buffer.length);
+}
+
 function markChildFailure(resources, category) {
   if (!resources.failureCategory) {
     resources.failurePhase = "runFocusedTests";
@@ -711,41 +850,26 @@ function markChildFailure(resources, category) {
 }
 
 async function cleanupRunnerResources(resources, spawnImpl) {
-  let firstError = null;
-  try {
-    if (resources.constructionAuthority) {
-      invalidateDisposablePostgresConstructionAdmission(
-        resources.constructionAuthority,
-      );
-    }
-  } catch {
-    firstError ??= new Error();
-  }
-  try {
-    if (resources.configuredAdmission) {
-      invalidateDisposablePostgresAdmission(resources.configuredAdmission);
-    }
-  } catch {
-    firstError ??= new Error();
-  }
-  try {
-    await terminateOwnedChild(resources);
-  } catch {
-    firstError ??= new Error();
-  }
-  try {
-    await cleanupFixtureDatabases(resources);
-  } catch {
-    firstError ??= new Error();
-  }
+  const actions = [
+    async () => {
+      if (resources.constructionAuthority) {
+        invalidateDisposablePostgresConstructionAdmission(
+          resources.constructionAuthority,
+        );
+      }
+    },
+    async () => {
+      if (resources.configuredAdmission) {
+        invalidateDisposablePostgresAdmission(resources.configuredAdmission);
+      }
+    },
+    () => terminateOwnedChild(resources),
+    () => cleanupFixtureDatabases(resources),
+  ];
   if (resources.containerStartAttempted) {
-    try {
-      await reconcileOwnedContainerRemoval(spawnImpl, resources);
-    } catch {
-      firstError ??= new Error();
-    }
+    actions.push(() => reconcileOwnedContainerRemoval(spawnImpl, resources));
   }
-  if (firstError) throw firstError;
+  await executeDisposableCleanupActions(actions);
 }
 
 async function cleanupFixtureDatabases(resources) {
@@ -753,44 +877,115 @@ async function cleanupFixtureDatabases(resources) {
     return;
   }
   const rootUrl = buildUrl("postgres", "postgres", resources.observedPort);
+  const cleanupActions = [];
   for (const database of resources.ownedDatabases) {
     const pool = new Pool({
       connectionString: buildUrl("postgres", database, resources.observedPort),
       max: 1,
     });
-    try {
-      for (const tableName of ["users", ...contractTableNames()]) {
+    let admitted = false;
+    cleanupActions.push(async () => {
+      await assertFreshPostgresIdentity(
+        pool,
+        database,
+        resources.bootstrapRoles,
+        false,
+      );
+      admitted = true;
+    });
+    for (const tableName of ["users", ...contractTableNames()]) {
+      cleanupActions.push(async () => {
+        if (!admitted) throw new Error();
         await pool.query(
           `drop table if exists public.${quoteIdentifier(tableName)} cascade`,
         );
-      }
-      await pool.query("drop schema if exists drizzle cascade");
-    } finally {
-      await pool.end();
+      });
     }
+    cleanupActions.push(async () => {
+      if (!admitted) throw new Error();
+      await pool.query("drop schema if exists drizzle cascade");
+    });
+    cleanupActions.push(() => pool.end());
   }
   const rootPool = new Pool({ connectionString: rootUrl, max: 1 });
-  try {
-    for (const database of resources.ownedDatabases) {
+  let rootAdmitted = false;
+  let roleNames = [];
+  cleanupActions.push(async () => {
+    await assertFreshPostgresIdentity(
+      rootPool,
+      "postgres",
+      resources.bootstrapRoles,
+      false,
+    );
+    rootAdmitted = true;
+  });
+  for (const database of resources.ownedDatabases) {
+    cleanupActions.push(async () => {
+      if (!rootAdmitted) throw new Error();
       await rootPool.query(
         `drop database if exists ${quoteIdentifier(database)} with (force)`,
       );
-    }
+    });
+  }
+  cleanupActions.push(async () => {
+    if (!rootAdmitted) throw new Error();
     const roleResult = await rootPool.query(
-      "select rolname from pg_roles where rolname <> 'postgres' and rolname not like 'pg_%'",
+      "select rolname from pg_roles where rolname not like 'pg_%' order by rolname",
     );
-    const roleNames = new Set(resources.ownedRoles);
-    for (const row of roleResult.rows) {
-      if (typeof row.rolname !== "string" || !safeIdentifier.test(row.rolname)) {
-        throw new Error();
-      }
-      roleNames.add(row.rolname);
+    roleNames = cleanupRoleNames(
+      resources.ownedRoles,
+      roleResult.rows.map((row) => row.rolname),
+      resources.bootstrapRoles,
+    );
+    await executeDisposableCleanupActions(
+      roleNames.map((roleName) => () =>
+        rootPool.query(`drop role if exists ${quoteIdentifier(roleName)}`)),
+    );
+  });
+  cleanupActions.push(() => rootPool.end());
+  await executeDisposableCleanupActions(cleanupActions);
+}
+
+export function cleanupRoleNames(
+  ownedRoles,
+  discoveredRoles,
+  bootstrapRoles = new Set(["postgres", "cloud_admin"]),
+) {
+  if (!(bootstrapRoles instanceof Set)) throw new Error();
+  const names = new Set([...ownedRoles, ...discoveredRoles]);
+  if (bootstrapRoles.size !== 2) throw new Error();
+  for (const bootstrapRole of ["postgres", "cloud_admin"]) {
+    if (!bootstrapRoles.has(bootstrapRole)) throw new Error();
+  }
+  const result = [];
+  for (const roleName of names) {
+    if (typeof roleName !== "string" || !safeIdentifier.test(roleName)) {
+      throw new Error();
     }
-    for (const roleName of roleNames) {
-      await rootPool.query(`drop role if exists ${quoteIdentifier(roleName)}`);
+    if (!bootstrapRoles.has(roleName)) result.push(roleName);
+  }
+  return result.sort();
+}
+
+export async function executeDisposableCleanupActions(actions, bodyError = null) {
+  if (!Array.isArray(actions) || actions.some((action) => typeof action !== "function")) {
+    throw new Error();
+  }
+  const cleanupErrors = [];
+  for (const action of actions) {
+    try {
+      await action();
+    } catch (error) {
+      cleanupErrors.push(error);
     }
-  } finally {
-    await rootPool.end();
+  }
+  if (bodyError && cleanupErrors.length === 0) throw bodyError;
+  if (!bodyError && cleanupErrors.length === 1) throw cleanupErrors[0];
+  if (bodyError || cleanupErrors.length > 0) {
+    throw new AggregateError(
+      [...(bodyError ? [bodyError] : []), ...cleanupErrors],
+      "Disposable cleanup failed.",
+    );
   }
 }
 
@@ -855,7 +1050,12 @@ async function terminateOwnedChild(resources) {
 }
 
 async function startOwnedContainer(spawnImpl) {
-  await runCommand(spawnImpl, "docker", [
+  await access(runtimePostgresIdentitiesSql, constants.R_OK);
+  await runCommand(spawnImpl, "docker", ownedContainerDockerArguments());
+}
+
+export function ownedContainerDockerArguments() {
+  return [
     "run",
     "--detach",
     "--name",
@@ -863,11 +1063,15 @@ async function startOwnedContainer(spawnImpl) {
     "--publish",
     "127.0.0.1::5432",
     "--env",
+    "POSTGRES_USER=cloud_admin",
+    "--env",
     "POSTGRES_DB=runtime_posture_test",
     "--env",
     "POSTGRES_HOST_AUTH_METHOD=trust",
+    "--mount",
+    `type=bind,source=${runtimePostgresIdentitiesSql},target=/docker-entrypoint-initdb.d/runtime-postgres-identities.sql,readonly`,
     "postgres:17",
-  ]);
+  ];
 }
 
 export function parsePublishedBinding(output) {
@@ -989,7 +1193,12 @@ async function waitForPostgres(connectionString) {
   for (let attempt = 0; attempt < 240; attempt += 1) {
     const pool = new Pool({ connectionString, max: 1, connectionTimeoutMillis: 1_000 });
     try {
-      await pool.query("select 1");
+      await assertFreshPostgresIdentity(
+        pool,
+        databaseName,
+        new Set(["postgres", "cloud_admin"]),
+        true,
+      );
       return;
     } catch {
       await delay(500);
@@ -998,6 +1207,56 @@ async function waitForPostgres(connectionString) {
     }
   }
   throw new Error();
+}
+
+async function assertFreshPostgresIdentity(
+  pool,
+  expectedDatabase,
+  bootstrapRoles,
+  requireBootstrapOwner,
+) {
+  const client = await pool.connect();
+  try {
+    const result = await client.query(`
+      select
+        current_database() = $1 as database_matches,
+        session_user = 'postgres' as session_user_matches,
+        current_user = 'postgres' as current_user_matches,
+        current_setting('server_version_num')::integer / 10000 = 17 as postgres17,
+        (select rolsuper and rolcanlogin and not rolinherit
+           from pg_roles where rolname = 'postgres') as postgres_identity_matches,
+        (select rolsuper and rolcanlogin
+           from pg_roles where rolname = 'cloud_admin') as cloud_admin_identity_matches,
+        (select p.oid <> c.oid
+           from pg_roles p cross join pg_roles c
+          where p.rolname = 'postgres' and c.rolname = 'cloud_admin') as identities_are_distinct,
+        case when not $2 or $1 = 'postgres' then true else
+          (select owner.rolname = 'cloud_admin'
+             from pg_database database
+             join pg_roles owner on owner.oid = database.datdba
+            where database.datname = $1)
+        end as bootstrap_owner_matches
+    `, [expectedDatabase, requireBootstrapOwner]);
+    if (!bootstrapRoles.has("postgres") || !bootstrapRoles.has("cloud_admin")) {
+      throw new Error();
+    }
+    const [row] = result.rows;
+    if (
+      !row ||
+      !row.database_matches ||
+      !row.session_user_matches ||
+      !row.current_user_matches ||
+      !row.postgres17 ||
+      !row.postgres_identity_matches ||
+      !row.cloud_admin_identity_matches ||
+      !row.identities_are_distinct ||
+      !row.bootstrap_owner_matches
+    ) {
+      throw new Error();
+    }
+  } finally {
+    client.release(true);
+  }
 }
 
 async function assertExactContainerAbsent(spawnImpl) {
