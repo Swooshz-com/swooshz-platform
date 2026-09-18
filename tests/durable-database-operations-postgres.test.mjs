@@ -123,6 +123,12 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
 
       const attemptsA = new SingleUseAttemptStore();
       const successReceipt = await executeBrokeredMigrationPlan({ observationBundle: contextA.observationBundle, prestate: artifactsA.prestate, plan: artifactsA.plan, migrationSql, broker: adapterA, attemptStore: attemptsA });
+      if (successReceipt.outcome !== "PASS") {
+        const diagnosticCode = adapterA.lastFailure?.code;
+        if (typeof diagnosticCode === "string" && /^BROKER_[A-Z0-9_]+$/u.test(diagnosticCode)) console.error(diagnosticCode);
+        else console.error("UNEXPECTED_FAILURE");
+        assert.equal(packFailureDiagnostic(adapterA.lastFailure), -1, "source drift assertion failed: code");
+      }
       assert.equal(successReceipt.outcome, "PASS");
       assert.equal(successReceipt.attempts_used, 1);
       assert.equal(successReceipt.commit_state, "COMMITTED");
@@ -295,6 +301,7 @@ class DisposableBrokerAdapter {
   lastPreEvidence = null;
   lockedPreEvidence = null;
   beforeDispatchUsed = false;
+  lastFailure = null;
 
   constructor(pool, context, options = {}) {
     this.pool = pool;
@@ -346,29 +353,39 @@ class DisposableBrokerAdapter {
     const lockedResultMap = {};
     let committed = false;
     let rolledBack = false;
+    let currentStatement = null;
+    let failureStage = 0;
     try {
       await client.query("begin isolation level serializable read write");
       for (const statement of bundle.statements.filter((entry) => entry.phase !== "CLEANUP")) {
+        currentStatement = statement;
         this.dispatchedOrdinals.push(statement.ordinal);
         this.dispatchedStatementDigests.push(statement.sha256);
+        failureStage = 1;
         if (sameInjection(this.options.failureInjection, statement.ordinal, "BEFORE")) throw injectedFailure(this.options.failureInjection);
+        failureStage = 2;
         const result = await client.query(statement.sql);
         const rows = this.options.resultOverride?.(statement, result.rows) ?? result.rows;
         if (statement.phase === "ASSUME_ROLE") this.roleAssumptionStatements.push(statement.id);
         if (statement.phase === "MIGRATION") this.migrationStatements.push(statement.id);
         const phase = statement.id.startsWith("final_") ? "FINAL" : "PREWRITE";
+        failureStage = 3;
         validateBrokerStatementResult(this.context.observationBundle, statement, rows, phase, statement.id === "locked_canonical_posture");
         if (statement.id.startsWith("locked_") && statement.id !== "locked_binding_assertion") {
           lockedResultMap[statement.id] = rows;
         }
         if (statement.id === "locked_role_data_invariants") {
+          failureStage = 4;
           this.lockedPreEvidence = validateLockedBrokerObservationResultSet(this.context.observationBundle, bundle, lockedResultMap);
         }
+        failureStage = 5;
         if (sameInjection(this.options.failureInjection, statement.ordinal, "AFTER")) throw injectedFailure(this.options.failureInjection);
       }
+      failureStage = 6;
       await client.query("commit");
       committed = true;
-    } catch {
+    } catch (error) {
+      this.lastFailure = { ordinal: currentStatement?.ordinal ?? -1, stage: failureStage, code: typeof error?.code === "string" ? error.code : error?.message ?? "NONE" };
       await client.query("rollback");
       rolledBack = true;
     }
@@ -396,6 +413,16 @@ function injectedFailure(injection) {
   const error = new Error(injection?.message ?? "INJECTED_BUNDLE_FAILURE");
   if (injection?.code) error.code = injection.code;
   return error;
+}
+
+const DIAGNOSTIC_CODE_BASE = 128 ** 6;
+
+function packFailureDiagnostic(failure) {
+  if (!failure) return -2;
+  const code = String(failure.code ?? "NONE").slice(0, 6);
+  let packedCode = 0;
+  for (let index = 0; index < 6; index += 1) packedCode = packedCode * 128 + (index < code.length ? code.charCodeAt(index) : 0);
+  return (((Number(failure.ordinal) + 1) * 8) + Number(failure.stage)) * DIAGNOSTIC_CODE_BASE + packedCode;
 }
 
 function delay(milliseconds) {
