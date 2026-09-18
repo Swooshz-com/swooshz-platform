@@ -43,6 +43,25 @@ const rootDir = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const migrationsFolder = resolve(rootDir, "drizzle", "migrations");
 const databaseName = "durable_operations_test";
 const migrationSha256 = "452829e49a5571a8b4e14a2cbf155e671fe81ef8ee2fa3583935b7cc2ffd996b";
+const expectedFirstNineLedger = Object.freeze([
+  { id: 1, hash: "d156026594b36870455ba6df7525310be1ce1838cda1d58725c6f3a07514c0a6", created_at: "1782546111134" },
+  { id: 2, hash: "861614ef57601aff17a15fe594becfc0206fa931f22052ba98217e300285666d", created_at: "1782571351615" },
+  { id: 3, hash: "76fd758786fa4583e18f3b89bf7fba0932bdb9c71de294f3291b19925bbd542b", created_at: "1782629131478" },
+  { id: 4, hash: "41567c07fcdb3b6e41da516d346d1a20d5e3aa4b0c5d3297e8b19091fa8f5f09", created_at: "1782651725342" },
+  { id: 5, hash: "01179c79b777732dc03dbef0471738e00dc85964082aa22764184362722ac5fe", created_at: "1783253616083" },
+  { id: 6, hash: "651eaa1668341fc8bdbc8d6f47ccfdd9ec1e2c80fef018de73ab0a79b9896bbe", created_at: "1783479304000" },
+  { id: 7, hash: "a8b5d90838c87ca3d74ada48295b92970c8a8476dacf5fc76b1a793995d7485b", created_at: "1783587520445" },
+  { id: 8, hash: "0e82a5892f22b71f8894f8776388341519ac48944a417552443d639d09cdcbc0", created_at: "1784354477743" },
+  { id: 9, hash: "bc54f927f5ab0a2ebc97a61ede57119f29e8673ab1b902a4e132191ac688820f", created_at: "1784620602227" },
+]);
+const expectedFinalLedger = Object.freeze([
+  ...expectedFirstNineLedger,
+  { id: 10, hash: migrationSha256, created_at: "1787479999088" },
+]);
+const expectedSequenceIdentity = "drizzle.__drizzle_migrations_id_seq";
+const expectedBaselineSequence = Object.freeze({ identity: expectedSequenceIdentity, last_value: 9, is_called: true, increment: 1, next_id: 10 });
+const expectedContaminatedSequence = Object.freeze({ identity: expectedSequenceIdentity, last_value: 10, is_called: true, increment: 1, next_id: 11 });
+const expectedPrewriteRoleLabels = Object.freeze(["owner", "admin", "member", "viewer"]);
 
 if (!testDatabaseUrlA || !testDatabaseUrlB) {
   test("durable PostgreSQL 17 proofs require the disposable runner", { skip: "runner-owned local fixture not supplied" }, () => {});
@@ -151,49 +170,49 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
       assert.ok(adapterA.protectedEvidence[1].ledger_lock_count >= 1);
       await assert.rejects(() => attemptsA.reserveOnce(attemptsA.lastRequest), /ATTEMPT_ALREADY_CONSUMED/u);
       const finalLedgerA = await readLedger(providerA);
-      assert.equal(finalLedgerA.length, 10);
-      assert.equal(finalLedgerA.at(-1).hash, migrationSha256);
-      assert.equal(finalLedgerA.at(-1).created_at, "1787479999088");
+      assert.deepEqual(finalLedgerA, expectedFinalLedger);
       assert.deepEqual(await roleLabels(providerA), ["admin", "operator", "viewer"]);
       await assertDormantMigrator(providerA);
 
-      const preAdapterB = new DisposableBrokerAdapter(providerB, contextB);
-      const preEvidenceB = await preAdapterB.observe(canonicalSerializeBrokerBundle(contextB.observationBundle), contextB.observationBundle.bundle_digest);
-      const artifactsB = brokerArtifacts(contextB.observationBundle, preEvidenceB, migrationSql);
+      const baselineB = await assertCompleteClusterBaseline(providerB, contextB, migrationSql, "cluster-B initial baseline");
+      const artifactsB = baselineB.artifacts;
       const lockStatementB = artifactsB.bundle.statements.find((entry) => entry.id === "target_advisory_lock");
       assert.ok(lockStatementB);
       await runUncontendedAdvisoryLockProof(providerB, contextB.observationBundle, lockStatementB);
       await runAdvisoryLockContentionProof(providerB, contextB.observationBundle, lockStatementB);
       await runAdvisoryLockFailureProof(providerB, contextB.observationBundle, lockStatementB);
 
+      const rejectedLockBaseline = await assertCompleteClusterBaseline(providerB, contextB, migrationSql, "rejected advisory lock: before");
       const rejectedLockAdapter = new DisposableBrokerAdapter(providerB, contextB, {
         resultOverride: (statement, rows) => statement.id === "target_advisory_lock" ? [{ lock_acquired: false }] : rows,
       });
-      const rejectedLockReceipt = await executeBrokeredMigrationPlan({ observationBundle: contextB.observationBundle, prestate: artifactsB.prestate, plan: artifactsB.plan, migrationSql, broker: rejectedLockAdapter, attemptStore: new SingleUseAttemptStore() });
+      const rejectedLockReceipt = await executeBrokeredMigrationPlan({ observationBundle: contextB.observationBundle, prestate: rejectedLockBaseline.artifacts.prestate, plan: rejectedLockBaseline.artifacts.plan, migrationSql, broker: rejectedLockAdapter, attemptStore: new SingleUseAttemptStore() });
       assert.equal(rejectedLockReceipt.outcome, "FAIL");
       assert.equal(rejectedLockReceipt.commit_state, "NOT_COMMITTED");
       assert.equal(rejectedLockReceipt.attempts_used, 1);
       assert.deepEqual(rejectedLockAdapter.dispatchedOrdinals, [lockStatementB.ordinal]);
       assert.deepEqual(rejectedLockAdapter.roleAssumptionStatements, []);
       assert.deepEqual(rejectedLockAdapter.migrationStatements, []);
-      assert.equal((await readLedger(providerB)).length, 9);
+      assert.deepEqual(await readLedger(providerB), expectedFirstNineLedger);
 
+      const deadlockBaseline = await assertCompleteClusterBaseline(providerB, contextB, migrationSql, "deadlock: before");
       const deadlockAdapter = new DisposableBrokerAdapter(providerB, contextB, {
         failureInjection: { ordinal: lockStatementB.ordinal, boundary: "AFTER", code: "40P01", message: "deadlock detected" },
       });
-      const deadlockReceipt = await executeBrokeredMigrationPlan({ observationBundle: contextB.observationBundle, prestate: artifactsB.prestate, plan: artifactsB.plan, migrationSql, broker: deadlockAdapter, attemptStore: new SingleUseAttemptStore() });
+      const deadlockReceipt = await executeBrokeredMigrationPlan({ observationBundle: contextB.observationBundle, prestate: deadlockBaseline.artifacts.prestate, plan: deadlockBaseline.artifacts.plan, migrationSql, broker: deadlockAdapter, attemptStore: new SingleUseAttemptStore() });
       assert.equal(deadlockReceipt.outcome, "FAIL");
       assert.equal(deadlockReceipt.commit_state, "NOT_COMMITTED");
       assert.equal(deadlockReceipt.attempts_used, 1);
       assert.deepEqual(deadlockAdapter.dispatchedOrdinals, [lockStatementB.ordinal]);
       assert.deepEqual(deadlockAdapter.roleAssumptionStatements, []);
       assert.deepEqual(deadlockAdapter.migrationStatements, []);
-      assert.equal((await readLedger(providerB)).length, 9);
+      assert.deepEqual(await readLedger(providerB), expectedFirstNineLedger);
 
-      const injectedOrdinal = artifactsB.bundle.statements.find((entry) => entry.id === "migration_0010_05")?.ordinal;
+      const rollbackBaseline = await assertCompleteClusterBaseline(providerB, contextB, migrationSql, "rollback before ledger insert: before");
+      const injectedOrdinal = rollbackBaseline.artifacts.bundle.statements.find((entry) => entry.id === "migration_0010_05")?.ordinal;
       assert.ok(Number.isInteger(injectedOrdinal));
       const rollbackAdapter = new DisposableBrokerAdapter(providerB, contextB, { failureInjection: { ordinal: injectedOrdinal, boundary: "AFTER" } });
-      const rollbackReceipt = await executeBrokeredMigrationPlan({ observationBundle: contextB.observationBundle, prestate: artifactsB.prestate, plan: artifactsB.plan, migrationSql, broker: rollbackAdapter, attemptStore: new SingleUseAttemptStore() });
+      const rollbackReceipt = await executeBrokeredMigrationPlan({ observationBundle: contextB.observationBundle, prestate: rollbackBaseline.artifacts.prestate, plan: rollbackBaseline.artifacts.plan, migrationSql, broker: rollbackAdapter, attemptStore: new SingleUseAttemptStore() });
       assert.equal(rollbackReceipt.outcome, "FAIL");
       assert.equal(rollbackReceipt.commit_state, "NOT_COMMITTED");
       assert.equal(rollbackReceipt.rollback_state, "VERIFIED");
@@ -201,32 +220,33 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
       assert.equal(rollbackReceipt.attempts_used, 1);
       assert.equal(rollbackAdapter.dispatchCount, 1);
       assert.equal(rollbackAdapter.cleanupProofs, 1);
-      assert.equal((await readLedger(providerB)).length, 9);
-      assert.deepEqual(await roleLabels(providerB), ["owner", "admin", "member", "viewer"]);
+      assert.deepEqual(await readLedger(providerB), expectedFirstNineLedger);
+      assert.deepEqual(await readLedgerSequence(providerB), expectedBaselineSequence);
+      assert.deepEqual(await roleLabels(providerB), expectedPrewriteRoleLabels);
       await assertDormantMigrator(providerB);
+      await assertCompleteClusterBaseline(providerB, contextB, migrationSql, "rollback before ledger insert: after");
 
       const driftContext = await compileContext(providerB, "drift");
+      const driftBaseline = await assertCompleteClusterBaseline(providerB, driftContext, migrationSql, "canonical posture drift: before");
       const driftAdapter = new DisposableBrokerAdapter(providerB, driftContext, { beforeDispatch: async () => providerB.query(`grant create on schema public to public`) });
-      const driftEvidence = await driftAdapter.observe(canonicalSerializeBrokerBundle(driftContext.observationBundle), driftContext.observationBundle.bundle_digest);
-      const driftArtifacts = brokerArtifacts(driftContext.observationBundle, driftEvidence, migrationSql);
       try {
-        const driftReceipt = await executeBrokeredMigrationPlan({ observationBundle: driftContext.observationBundle, prestate: driftArtifacts.prestate, plan: driftArtifacts.plan, migrationSql, broker: driftAdapter, attemptStore: new SingleUseAttemptStore() });
+        const driftReceipt = await executeBrokeredMigrationPlan({ observationBundle: driftContext.observationBundle, prestate: driftBaseline.artifacts.prestate, plan: driftBaseline.artifacts.plan, migrationSql, broker: driftAdapter, attemptStore: new SingleUseAttemptStore() });
         assert.equal(driftReceipt.outcome, "FAIL");
         assert.equal(driftReceipt.commit_state, "NOT_COMMITTED");
         assert.equal(driftReceipt.attempts_used, 1);
-        assert.equal((await readLedger(providerB)).length, 9);
+        assert.deepEqual(await readLedger(providerB), expectedFirstNineLedger);
       } finally {
         await providerB.query(`revoke create on schema public from public`);
       }
+      await assertCompleteClusterBaseline(providerB, contextB, migrationSql, "canonical posture drift: after");
 
       const lockedDirectContext = await compileContext(providerB, "locked-direct");
+      const lockedDirectBaseline = await assertCompleteClusterBaseline(providerB, lockedDirectContext, migrationSql, "direct authority edge: before");
       const lockedDirectAdapter = new DisposableBrokerAdapter(providerB, lockedDirectContext, {
         beforeDispatch: async () => providerB.query(`grant "platform_migrator" to "platform_app" with admin false, inherit false, set false`),
       });
-      const lockedDirectEvidence = await lockedDirectAdapter.observe(canonicalSerializeBrokerBundle(lockedDirectContext.observationBundle), lockedDirectContext.observationBundle.bundle_digest);
-      const lockedDirectArtifacts = brokerArtifacts(lockedDirectContext.observationBundle, lockedDirectEvidence, migrationSql);
       try {
-        const lockedDirectReceipt = await executeBrokeredMigrationPlan({ observationBundle: lockedDirectContext.observationBundle, prestate: lockedDirectArtifacts.prestate, plan: lockedDirectArtifacts.plan, migrationSql, broker: lockedDirectAdapter, attemptStore: new SingleUseAttemptStore() });
+        const lockedDirectReceipt = await executeBrokeredMigrationPlan({ observationBundle: lockedDirectContext.observationBundle, prestate: lockedDirectBaseline.artifacts.prestate, plan: lockedDirectBaseline.artifacts.plan, migrationSql, broker: lockedDirectAdapter, attemptStore: new SingleUseAttemptStore() });
         assert.equal(lockedDirectReceipt.outcome, "FAIL");
         assert.equal(lockedDirectReceipt.commit_state, "NOT_COMMITTED");
         assert.deepEqual(lockedDirectAdapter.roleAssumptionStatements, []);
@@ -234,8 +254,10 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
       } finally {
         await providerB.query(`revoke "platform_migrator" from "platform_app"`);
       }
+      await assertCompleteClusterBaseline(providerB, contextB, migrationSql, "direct authority edge: after");
 
       const lockedUnknownContext = await compileContext(providerB, "locked-unknown");
+      const lockedUnknownBaseline = await assertCompleteClusterBaseline(providerB, lockedUnknownContext, migrationSql, "unknown authority bridge: before");
       const lockedUnknownAdapter = new DisposableBrokerAdapter(providerB, lockedUnknownContext, {
         beforeDispatch: async () => {
           await providerB.query(`create role "run610_unknown_bridge" nologin noinherit nosuperuser nocreatedb nocreaterole noreplication nobypassrls`);
@@ -243,10 +265,8 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
           await providerB.query(`grant "run610_unknown_bridge" to "platform_app" with admin true, inherit false, set false`);
         },
       });
-      const lockedUnknownEvidence = await lockedUnknownAdapter.observe(canonicalSerializeBrokerBundle(lockedUnknownContext.observationBundle), lockedUnknownContext.observationBundle.bundle_digest);
-      const lockedUnknownArtifacts = brokerArtifacts(lockedUnknownContext.observationBundle, lockedUnknownEvidence, migrationSql);
       try {
-        const lockedUnknownReceipt = await executeBrokeredMigrationPlan({ observationBundle: lockedUnknownContext.observationBundle, prestate: lockedUnknownArtifacts.prestate, plan: lockedUnknownArtifacts.plan, migrationSql, broker: lockedUnknownAdapter, attemptStore: new SingleUseAttemptStore() });
+        const lockedUnknownReceipt = await executeBrokeredMigrationPlan({ observationBundle: lockedUnknownContext.observationBundle, prestate: lockedUnknownBaseline.artifacts.prestate, plan: lockedUnknownBaseline.artifacts.plan, migrationSql, broker: lockedUnknownAdapter, attemptStore: new SingleUseAttemptStore() });
         assert.equal(lockedUnknownReceipt.outcome, "FAIL");
         assert.equal(lockedUnknownReceipt.commit_state, "NOT_COMMITTED");
         assert.deepEqual(lockedUnknownAdapter.roleAssumptionStatements, []);
@@ -256,65 +276,81 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
         await providerB.query(`revoke "platform_migrator" from "run610_unknown_bridge"`);
         await providerB.query(`drop role "run610_unknown_bridge"`);
       }
+      await assertCompleteClusterBaseline(providerB, contextB, migrationSql, "unknown authority bridge: after");
 
       const statementByIdB = (id) => {
         const statement = artifactsB.bundle.statements.find((entry) => entry.id === id);
         assert.ok(statement);
         return statement;
       };
-      const runExpectedRollbackB = async (adapter) => {
-        const receipt = await executeBrokeredMigrationPlan({ observationBundle: contextB.observationBundle, prestate: artifactsB.prestate, plan: artifactsB.plan, migrationSql, broker: adapter, attemptStore: new SingleUseAttemptStore() });
+      assert.equal(statementByIdB("provider_final_target_identity").ordinal, 32);
+      assert.equal(statementByIdB("provider_final_migrator_dormancy").ordinal, 33);
+      const runExpectedRollbackB = async (name, options) => {
+        const baseline = await assertCompleteClusterBaseline(providerB, contextB, migrationSql, `${name}: before`);
+        const adapter = new DisposableBrokerAdapter(providerB, contextB, options);
+        const receipt = await executeBrokeredMigrationPlan({ observationBundle: contextB.observationBundle, prestate: baseline.artifacts.prestate, plan: baseline.artifacts.plan, migrationSql, broker: adapter, attemptStore: new SingleUseAttemptStore() });
         assert.equal(receipt.outcome, "FAIL");
         assert.equal(receipt.commit_state, "NOT_COMMITTED");
+        assert.equal(receipt.rollback_state, "VERIFIED");
+        assert.equal(receipt.final_observation_state, "PASS");
         assert.equal(receipt.attempts_used, 1);
         assert.equal(adapter.dispatchCount, 1);
-        assert.equal((await readLedger(providerB)).length, 9);
+        assert.equal(adapter.cleanupProofs, 1);
+        assert.deepEqual(normalizeLedgerRows(adapter.migratorFinalLedgerRows), expectedFinalLedger);
+        assert.deepEqual(await readLedger(providerB), expectedFirstNineLedger);
+        assert.deepEqual(await readLedgerSequence(providerB), expectedContaminatedSequence);
         await assertDormantMigrator(providerB);
-        return receipt;
+        await restoreDisposableLedgerSequence(providerB);
+        await assertCompleteClusterBaseline(providerB, contextB, migrationSql, `${name}: after restoration`);
+        return { receipt, adapter };
       };
-      const migratorFailureAdapter = new DisposableBrokerAdapter(providerB, contextB, { failureInjection: { ordinal: statementByIdB("migrator_final_ledger_assertion").ordinal, boundary: "AFTER" } });
-      await runExpectedRollbackB(migratorFailureAdapter);
+      const migratorFailure = await runExpectedRollbackB("migrator final failure", { failureInjection: { ordinal: statementByIdB("migrator_final_ledger_assertion").ordinal, boundary: "AFTER" } });
+      const migratorFailureAdapter = migratorFailure.adapter;
       assert.equal(migratorFailureAdapter.dispatchedOrdinals.some((ordinal) => ordinal >= statementByIdB("provider_final_target_identity").ordinal), false);
 
-      const restorationFailureAdapter = new DisposableBrokerAdapter(providerB, contextB, { failureInjection: { ordinal: statementByIdB("restore_provider_role").ordinal, boundary: "AFTER" } });
-      await runExpectedRollbackB(restorationFailureAdapter);
+      const restorationFailure = await runExpectedRollbackB("restoration failure", { failureInjection: { ordinal: statementByIdB("restore_provider_role").ordinal, boundary: "AFTER" } });
+      const restorationFailureAdapter = restorationFailure.adapter;
       assert.equal(restorationFailureAdapter.dispatchedOrdinals.some((ordinal) => ordinal >= statementByIdB("provider_final_target_identity").ordinal), false);
 
-      const postRestoreFailureAdapter = new DisposableBrokerAdapter(providerB, contextB, { failureInjection: { ordinal: statementByIdB("restored_provider_identity_assertion").ordinal, boundary: "AFTER" } });
-      await runExpectedRollbackB(postRestoreFailureAdapter);
+      const postRestoreFailure = await runExpectedRollbackB("post-restoration failure", { failureInjection: { ordinal: statementByIdB("restored_provider_identity_assertion").ordinal, boundary: "AFTER" } });
+      const postRestoreFailureAdapter = postRestoreFailure.adapter;
       assert.equal(postRestoreFailureAdapter.dispatchedOrdinals.some((ordinal) => ordinal >= statementByIdB("provider_final_target_identity").ordinal), false);
 
-      const wrongRestoredIdentityAdapter = new DisposableBrokerAdapter(providerB, contextB, {
+      const wrongRestoredIdentity = await runExpectedRollbackB("wrong restored provider identity", {
         resultOverride: (statement, rows) => statement.id === "restored_provider_identity_assertion" ? [{ ...rows[0], current_user: "platform_migrator" }] : rows,
       });
-      await runExpectedRollbackB(wrongRestoredIdentityAdapter);
+      const wrongRestoredIdentityAdapter = wrongRestoredIdentity.adapter;
       assert.equal(wrongRestoredIdentityAdapter.dispatchedOrdinals.includes(statementByIdB("provider_final_target_identity").ordinal), false);
 
-      const wrongRestoredOidAdapter = new DisposableBrokerAdapter(providerB, contextB, {
+      const wrongRestoredOid = await runExpectedRollbackB("wrong restored provider OID", {
         resultOverride: (statement, rows) => statement.id === "restored_provider_identity_assertion" ? [{ ...rows[0], current_role_oid: "999" }] : rows,
       });
-      await runExpectedRollbackB(wrongRestoredOidAdapter);
+      const wrongRestoredOidAdapter = wrongRestoredOid.adapter;
       assert.equal(wrongRestoredOidAdapter.dispatchedOrdinals.includes(statementByIdB("provider_final_target_identity").ordinal), false);
 
-      const providerIdentityFailureAdapter = new DisposableBrokerAdapter(providerB, contextB, {
+      const providerIdentityFailure = await runExpectedRollbackB("provider final target identity failure", {
         resultOverride: (statement, rows) => statement.id === "provider_final_target_identity" ? [{ ...rows[0], session_role_oid: "999" }] : rows,
       });
-      await runExpectedRollbackB(providerIdentityFailureAdapter);
+      const providerIdentityFailureAdapter = providerIdentityFailure.adapter;
       assert.equal(providerIdentityFailureAdapter.dispatchedOrdinals.includes(statementByIdB("provider_final_target_identity").ordinal), true);
 
-      const providerFinalFailureAdapter = new DisposableBrokerAdapter(providerB, contextB, {
+      const providerFinalFailure = await runExpectedRollbackB("provider final migrator dormancy failure", {
         resultOverride: (statement, rows) => statement.id === "provider_final_migrator_dormancy" ? [{ ...rows[0], password_is_null: false }] : rows,
       });
-      await runExpectedRollbackB(providerFinalFailureAdapter);
+      const providerFinalFailureAdapter = providerFinalFailure.adapter;
       assert.equal(providerFinalFailureAdapter.dispatchedOrdinals.includes(statementByIdB("provider_final_migrator_dormancy").ordinal), true);
 
+      await proveLedgerGapRejection(providerB, contextB);
+      await assertCompleteClusterBaseline(providerB, contextB, migrationSql, "ledger-gap rollback restoration");
+
+      const indeterminateBaseline = await assertCompleteClusterBaseline(providerB, contextB, migrationSql, "indeterminate dispatch: before");
       const indeterminateStore = new SingleUseAttemptStore();
       let indeterminateDispatches = 0;
       const indeterminateAdapter = new DisposableBrokerAdapter(providerB, contextB);
       const indeterminateReceipt = await executeBrokeredMigrationPlan({
         observationBundle: contextB.observationBundle,
-        prestate: artifactsB.prestate,
-        plan: artifactsB.plan,
+        prestate: indeterminateBaseline.artifacts.prestate,
+        plan: indeterminateBaseline.artifacts.plan,
         migrationSql,
         broker: {
           observe: (...args) => indeterminateAdapter.observe(...args),
@@ -325,8 +361,7 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
       assert.equal(indeterminateReceipt.dispatch_state, "INDETERMINATE");
       assert.equal(indeterminateReceipt.attempts_used, 1);
       assert.equal(indeterminateDispatches, 1);
-      assert.equal((await readLedger(providerB)).length, 9);
-      await assertDormantMigrator(providerB);
+      await assertCompleteClusterBaseline(providerB, contextB, migrationSql, "indeterminate dispatch: after");
     } finally {
       await Promise.all([appA.end(), appB.end(), providerA.end(), providerB.end()]);
     }
@@ -363,6 +398,7 @@ class DisposableBrokerAdapter {
   lastPreEvidence = null;
   lockedPreEvidence = null;
   providerFinalEvidence = null;
+  migratorFinalLedgerRows = null;
   protectedEvidence = [];
   backendPid = null;
   beforeDispatchUsed = false;
@@ -463,6 +499,7 @@ class DisposableBrokerAdapter {
           failureStage = 4;
           this.lockedPreEvidence = validateLockedBrokerObservationResultSet(this.context.observationBundle, bundle, lockedResultMap);
         }
+        if (statement.id === "migrator_final_ledger_assertion") this.migratorFinalLedgerRows = rows.map((row) => ({ ...row }));
         if (statement.phase === "MIGRATOR_VERIFY") migratorFinalIds.push(statement.id);
         if (statement.id === "restored_provider_identity_assertion") restoredProvider = true;
         if (statement.phase === "PROVIDER_VERIFY") {
@@ -720,6 +757,93 @@ function readConnectionTarget(value) {
 function quoteIdentifier(value) {
   if (!/^[a-z_][a-z0-9_$]{0,62}$/u.test(value)) throw new Error("fixture identifier rejected");
   return `"${value}"`;
+}
+
+function normalizeLedgerRows(rows) {
+  assert.ok(Array.isArray(rows));
+  return rows.map((row) => ({ id: Number(row.id), hash: String(row.hash), created_at: String(row.created_at) }));
+}
+
+async function readLedgerSequence(pool) {
+  const identityResult = await pool.query("select pg_catalog.pg_get_serial_sequence('drizzle.__drizzle_migrations', 'id') as sequence_identity");
+  assert.equal(identityResult.rows.length, 1);
+  const identity = String(identityResult.rows[0].sequence_identity);
+  assert.equal(identity, expectedSequenceIdentity);
+  const identityParts = identity.split(".");
+  assert.equal(identityParts.length, 2);
+  const quotedSequence = quoteIdentifier(identityParts[0]) + "." + quoteIdentifier(identityParts[1]);
+  const stateResult = await pool.query("select last_value::text as last_value, is_called from " + quotedSequence);
+  const incrementResult = await pool.query("select sequence_record.seqincrement::text as increment from pg_catalog.pg_sequence sequence_record where sequence_record.seqrelid = " + quotedSequence + "::pg_catalog.regclass");
+  assert.equal(stateResult.rows.length, 1);
+  assert.equal(incrementResult.rows.length, 1);
+  const lastValue = Number(stateResult.rows[0].last_value);
+  const isCalled = stateResult.rows[0].is_called;
+  const increment = Number(incrementResult.rows[0].increment);
+  assert.ok(Number.isSafeInteger(lastValue));
+  assert.equal(typeof isCalled, "boolean");
+  assert.ok(Number.isSafeInteger(increment));
+  assert.equal(increment, 1);
+  return { identity, last_value: lastValue, is_called: isCalled, increment, next_id: isCalled ? lastValue + increment : lastValue };
+}
+
+async function assertCompleteClusterBaseline(providerPool, context, migrationSql, label) {
+  assert.deepEqual(await readLedger(providerPool), expectedFirstNineLedger, label + ": exact first-nine ledger");
+  assert.deepEqual(await readLedgerSequence(providerPool), expectedBaselineSequence, label + ": exact sequence baseline");
+  assert.deepEqual(await roleLabels(providerPool), expectedPrewriteRoleLabels, label + ": prewrite role labels");
+  await assertDormantMigrator(providerPool);
+  const adapter = new DisposableBrokerAdapter(providerPool, context);
+  const evidence = await adapter.observe(canonicalSerializeBrokerBundle(context.observationBundle), context.observationBundle.bundle_digest);
+  const target = context.observationBundle.target_binding;
+  assert.equal(evidence.provider.current_user, "cloud_admin");
+  assert.equal(evidence.provider.session_user, "cloud_admin");
+  assert.equal(evidence.provider.role_oid, target.expected_provider_role_oid);
+  assert.equal(evidence.target.logical_database_name, target.logical_database_name);
+  assert.equal(evidence.target.database_oid, target.expected_database_oid);
+  assert.equal(evidence.target.cluster_system_identifier, target.expected_cluster_system_identifier);
+  assert.equal(evidence.target.postgres_major, 17);
+  assert.equal(evidence.target.in_recovery, false);
+  assert.equal(evidence.ledger.row_count, 9);
+  assert.equal(evidence.ledger.migration_0010_absent, true);
+  assert.equal(evidence.authority_graph.closure_complete, true);
+  assert.equal(evidence.authority_graph.application_authority_absent, true);
+  assert.equal(evidence.migrator.rolcanlogin, false);
+  assert.equal(evidence.migrator.password_is_null, true);
+  return { evidence, artifacts: brokerArtifacts(context.observationBundle, evidence, migrationSql) };
+}
+
+async function restoreDisposableLedgerSequence(providerPool) {
+  assert.deepEqual(await readLedger(providerPool), expectedFirstNineLedger);
+  assert.deepEqual(await readLedgerSequence(providerPool), expectedContaminatedSequence);
+  const identityResult = await providerPool.query("select current_user::text as current_user, session_user::text as session_user");
+  assert.deepEqual(identityResult.rows, [{ current_user: "cloud_admin", session_user: "cloud_admin" }]);
+  const restoredResult = await providerPool.query("select pg_catalog.setval(pg_catalog.pg_get_serial_sequence('drizzle.__drizzle_migrations', 'id')::pg_catalog.regclass, 9, true) as restored_value");
+  assert.equal(Number(restoredResult.rows[0].restored_value), 9);
+  assert.deepEqual(await readLedgerSequence(providerPool), expectedBaselineSequence);
+}
+
+async function proveLedgerGapRejection(providerPool, context) {
+  const ledgerStatement = context.observationBundle.statements.find((entry) => entry.id === "migration_ledger");
+  assert.ok(ledgerStatement);
+  const client = await providerPool.connect();
+  let transactionOpen = false;
+  try {
+    await client.query("begin");
+    transactionOpen = true;
+    await client.query("update drizzle.__drizzle_migrations set id = 10 where id = 9");
+    const rows = (await client.query(ledgerStatement.sql)).rows;
+    assert.deepEqual(normalizeLedgerRows(rows).map((row) => row.id), [1, 2, 3, 4, 5, 6, 7, 8, 10]);
+    assert.throws(
+      () => validateBrokerStatementResult(context.observationBundle, ledgerStatement, rows, "PREWRITE"),
+      /BROKER_MIGRATION_IDENTITY_REJECTED/u,
+    );
+    await client.query("rollback");
+    transactionOpen = false;
+  } finally {
+    if (transactionOpen) await client.query("rollback").catch(() => {});
+    client.release();
+  }
+  assert.deepEqual(await readLedger(providerPool), expectedFirstNineLedger);
+  assert.deepEqual(await readLedgerSequence(providerPool), expectedBaselineSequence);
 }
 
 async function createRoles(pool) {
