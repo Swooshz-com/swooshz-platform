@@ -260,6 +260,9 @@ test("broker bundles are canonical, target-bound, and contain the exact 0010 tra
   );
   assert.equal(bundle.statements.at(-1).id, "cleanup_identity_assertion");
   assert.equal(bundle.statements.every((entry, index) => entry.ordinal === index), true);
+  const authorityGraphEdges = observationBundle.statements.find((entry) => entry.id === "authority_graph_edges");
+  assert.match(authorityGraphEdges.sql, /where exists \(select 1 from role_closure closure where closure\.role_oid in/u);
+  assert.doesNotMatch(authorityGraphEdges.sql, /join role_closure closure on/u);
   assert.equal(canonicalSerializeBrokerBundle(bundle).includes("postgres://"), false);
   assert.equal(canonicalSerializeBrokerBundle(bundle).includes("rolpassword,"), false);
 });
