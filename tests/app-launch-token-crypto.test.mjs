@@ -73,6 +73,7 @@ test("app launch crypto imports stay only in dedicated crypto adapter modules", 
     "src/auth/generic-oidc-jwks-verifier.ts",
     "src/auth/platform-identity-crypto.ts",
     "src/http/csrf-token-crypto.ts",
+    "src/db/brokered-migration.ts",
     "src/platform/app-launch-token-crypto.ts",
     "src/platform/workspace-admin-id-crypto.ts",
   ]);

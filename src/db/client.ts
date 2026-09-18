@@ -9,7 +9,8 @@ export const DATABASE_MIGRATIONS_CONFIRM_VALUE = "apply-reviewed-migrations";
 
 export type DatabaseConfigErrorCode =
   | "missing_database_url"
-  | "missing_database_operator_url"
+  | "direct_database_credential_prohibited"
+  | "runner_owned_fixture_required"
   | "invalid_database_url"
   | "invalid_database_ssl_mode";
 
@@ -31,6 +32,7 @@ export interface DatabaseEnvironment {
   DATABASE_URL?: string;
   DATABASE_SSL_MODE?: string;
   DATABASE_MIGRATIONS_CONFIRM?: string;
+  RUNNER_OWNED_DATABASE_FIXTURE?: string;
 }
 
 export interface DatabaseConfig {
@@ -63,8 +65,17 @@ export function readDatabaseConfig(env: DatabaseEnvironment): DatabaseConfig {
   };
 }
 
-export function assertMigrationExecutionAllowed(env: DatabaseEnvironment): DatabaseConfig {
-  const config = readOperatorDatabaseConfig(env);
+export interface RunnerOwnedDatabaseFixtureV1 {
+  readonly version: "runner-owned-database-fixture-v1";
+  readonly owner: "disposable-postgres-runner";
+  readonly databaseUrl: string;
+}
+
+export function assertRunnerOwnedFixtureMigrationExecutionAllowed(
+  env: DatabaseEnvironment,
+  fixture: RunnerOwnedDatabaseFixtureV1,
+): DatabaseConfig {
+  const config = readRunnerOwnedFixtureDatabaseConfig(env, fixture);
 
   if (env.DATABASE_MIGRATIONS_CONFIRM !== DATABASE_MIGRATIONS_CONFIRM_VALUE) {
     throw new Error(
@@ -75,17 +86,28 @@ export function assertMigrationExecutionAllowed(env: DatabaseEnvironment): Datab
   return config;
 }
 
-export function readOperatorDatabaseConfig(
+export function readRunnerOwnedFixtureDatabaseConfig(
   env: DatabaseEnvironment,
+  fixture: RunnerOwnedDatabaseFixtureV1,
 ): DatabaseConfig {
-  const operatorUrl = env.DATABASE_OPERATOR_URL?.trim();
-  if (operatorUrl) {
-    return readDatabaseConfig({
-      ...env,
-      DATABASE_URL: operatorUrl,
-    });
+  if (env.DATABASE_OPERATOR_URL?.trim()) {
+    throw new DatabaseConfigError("direct_database_credential_prohibited");
   }
-  throw new DatabaseConfigError("missing_database_operator_url");
+  if (
+    env.NODE_ENV !== "test" ||
+    env.RUNNER_OWNED_DATABASE_FIXTURE !== "disposable-postgres-runner" ||
+    fixture?.version !== "runner-owned-database-fixture-v1" ||
+    fixture.owner !== "disposable-postgres-runner"
+  ) throw new DatabaseConfigError("runner_owned_fixture_required");
+  const config = readDatabaseConfig({ ...env, DATABASE_URL: fixture.databaseUrl });
+  const parsed = new URL(config.databaseUrl);
+  if (
+    !["127.0.0.1", "::1"].includes(parsed.hostname) ||
+    !parsed.port ||
+    !parsed.username ||
+    parsed.pathname.length <= 1
+  ) throw new DatabaseConfigError("runner_owned_fixture_required");
+  return config;
 }
 
 export function createDatabasePool(config: DatabaseConfig): Pool {
@@ -152,8 +174,10 @@ function readDatabaseConfigErrorMessage(code: DatabaseConfigErrorCode): string {
   switch (code) {
     case "missing_database_url":
       return "DATABASE_URL is required for database connections.";
-    case "missing_database_operator_url":
-      return "DATABASE_OPERATOR_URL is required for operator database connections.";
+    case "direct_database_credential_prohibited":
+      return "Direct production database operator credentials are prohibited.";
+    case "runner_owned_fixture_required":
+      return "A runner-owned disposable database fixture is required.";
     case "invalid_database_url":
       return "DATABASE_URL must be a valid Postgres connection string.";
     case "invalid_database_ssl_mode":

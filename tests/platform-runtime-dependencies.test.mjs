@@ -824,6 +824,7 @@ test("crypto imports remain only in dedicated crypto adapter modules", async () 
     "src/auth/generic-oidc-jwks-verifier.ts",
     "src/auth/platform-identity-crypto.ts",
     "src/http/csrf-token-crypto.ts",
+    "src/db/brokered-migration.ts",
     "src/platform/app-launch-token-crypto.ts",
     "src/platform/workspace-admin-id-crypto.ts",
   ]);
