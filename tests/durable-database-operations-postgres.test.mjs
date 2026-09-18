@@ -31,6 +31,7 @@ import {
   computeBrokerBundleDigest,
   deriveBrokerObservationEvidence,
   normalizeBrokerAttemptReservation,
+  validateLockedBrokerObservationResultSet,
   validateBrokerStatementResult,
 } from "../dist/db/brokered-migration.js";
 import { RUNTIME_TABLE_GRANT_CONTRACT } from "../dist/db/runtime-grant-contract.js";
@@ -170,6 +171,44 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
         await providerB.query(`revoke create on schema public from public`);
       }
 
+      const lockedDirectContext = await compileContext(providerB, "locked-direct");
+      const lockedDirectAdapter = new DisposableBrokerAdapter(providerB, lockedDirectContext, {
+        beforeDispatch: async () => providerB.query(`grant "platform_migrator" to "platform_app" with admin false, inherit false, set false`),
+      });
+      const lockedDirectEvidence = await lockedDirectAdapter.observe(canonicalSerializeBrokerBundle(lockedDirectContext.observationBundle), lockedDirectContext.observationBundle.bundle_digest);
+      const lockedDirectArtifacts = brokerArtifacts(lockedDirectContext.observationBundle, lockedDirectEvidence, migrationSql);
+      try {
+        const lockedDirectReceipt = await executeBrokeredMigrationPlan({ observationBundle: lockedDirectContext.observationBundle, prestate: lockedDirectArtifacts.prestate, plan: lockedDirectArtifacts.plan, migrationSql, broker: lockedDirectAdapter, attemptStore: new SingleUseAttemptStore() });
+        assert.equal(lockedDirectReceipt.outcome, "FAIL");
+        assert.equal(lockedDirectReceipt.commit_state, "NOT_COMMITTED");
+        assert.deepEqual(lockedDirectAdapter.roleAssumptionStatements, []);
+        assert.deepEqual(lockedDirectAdapter.migrationStatements, []);
+      } finally {
+        await providerB.query(`revoke "platform_migrator" from "platform_app"`);
+      }
+
+      const lockedUnknownContext = await compileContext(providerB, "locked-unknown");
+      const lockedUnknownAdapter = new DisposableBrokerAdapter(providerB, lockedUnknownContext, {
+        beforeDispatch: async () => {
+          await providerB.query(`create role "run610_unknown_bridge" nologin noinherit nosuperuser nocreatedb nocreaterole noreplication nobypassrls`);
+          await providerB.query(`grant "platform_migrator" to "run610_unknown_bridge" with admin false, inherit false, set true`);
+          await providerB.query(`grant "run610_unknown_bridge" to "platform_app" with admin true, inherit false, set false`);
+        },
+      });
+      const lockedUnknownEvidence = await lockedUnknownAdapter.observe(canonicalSerializeBrokerBundle(lockedUnknownContext.observationBundle), lockedUnknownContext.observationBundle.bundle_digest);
+      const lockedUnknownArtifacts = brokerArtifacts(lockedUnknownContext.observationBundle, lockedUnknownEvidence, migrationSql);
+      try {
+        const lockedUnknownReceipt = await executeBrokeredMigrationPlan({ observationBundle: lockedUnknownContext.observationBundle, prestate: lockedUnknownArtifacts.prestate, plan: lockedUnknownArtifacts.plan, migrationSql, broker: lockedUnknownAdapter, attemptStore: new SingleUseAttemptStore() });
+        assert.equal(lockedUnknownReceipt.outcome, "FAIL");
+        assert.equal(lockedUnknownReceipt.commit_state, "NOT_COMMITTED");
+        assert.deepEqual(lockedUnknownAdapter.roleAssumptionStatements, []);
+        assert.deepEqual(lockedUnknownAdapter.migrationStatements, []);
+      } finally {
+        await providerB.query(`revoke "run610_unknown_bridge" from "platform_app"`);
+        await providerB.query(`revoke "platform_migrator" from "run610_unknown_bridge"`);
+        await providerB.query(`drop role "run610_unknown_bridge"`);
+      }
+
       const indeterminateStore = new SingleUseAttemptStore();
       let indeterminateDispatches = 0;
       const indeterminateAdapter = new DisposableBrokerAdapter(providerB, contextB);
@@ -219,8 +258,11 @@ class DisposableBrokerAdapter {
   cleanupProofs = 0;
   dispatchedOrdinals = [];
   dispatchedStatementDigests = [];
+  roleAssumptionStatements = [];
+  migrationStatements = [];
   lastMutationBundle = null;
   lastPreEvidence = null;
+  lockedPreEvidence = null;
   beforeDispatchUsed = false;
 
   constructor(pool, context, options = {}) {
@@ -244,7 +286,7 @@ class DisposableBrokerAdapter {
       }
       const ledgerCount = resultMap.migration_ledger.length;
       const phase = ledgerCount === 9 ? "PREWRITE" : ledgerCount === 10 ? "FINAL" : "PREWRITE";
-      for (const statement of bundle.statements) validateBrokerStatementResult(bundle, statement, resultMap[statement.id], phase);
+      for (const statement of bundle.statements) validateBrokerStatementResult(bundle, statement, resultMap[statement.id], phase, statement.id === "canonical_posture");
       const evidence = deriveBrokerObservationEvidence(bundle, resultMap, phase);
       await client.query("commit");
       if (phase === "PREWRITE") this.lastPreEvidence = evidence;
@@ -270,6 +312,7 @@ class DisposableBrokerAdapter {
       await this.options.beforeDispatch();
     }
     const client = await this.pool.connect();
+    const lockedResultMap = {};
     let committed = false;
     let rolledBack = false;
     try {
@@ -279,7 +322,16 @@ class DisposableBrokerAdapter {
         this.dispatchedStatementDigests.push(statement.sha256);
         if (sameInjection(this.options.failureInjection, statement.ordinal, "BEFORE")) throw new Error("INJECTED_BUNDLE_FAILURE");
         const result = await client.query(statement.sql);
-        validateBrokerStatementResult(this.context.observationBundle, statement, result.rows, statement.id.startsWith("final_") ? "FINAL" : "PREWRITE");
+        if (statement.phase === "ASSUME_ROLE") this.roleAssumptionStatements.push(statement.id);
+        if (statement.phase === "MIGRATION") this.migrationStatements.push(statement.id);
+        const phase = statement.id.startsWith("final_") ? "FINAL" : "PREWRITE";
+        validateBrokerStatementResult(this.context.observationBundle, statement, result.rows, phase, statement.id === "locked_canonical_posture");
+        if (statement.id.startsWith("locked_") && statement.id !== "locked_binding_assertion") {
+          lockedResultMap[statement.id] = result.rows;
+        }
+        if (statement.id === "locked_role_data_invariants") {
+          this.lockedPreEvidence = validateLockedBrokerObservationResultSet(this.context.observationBundle, bundle, lockedResultMap);
+        }
         if (sameInjection(this.options.failureInjection, statement.ordinal, "AFTER")) throw new Error("INJECTED_BUNDLE_FAILURE");
       }
       await client.query("commit");

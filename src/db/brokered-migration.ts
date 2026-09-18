@@ -44,6 +44,7 @@ const FIRST_NINE_MIGRATIONS = Object.freeze([
   { created_at: "1784620602227", hashes: ["bc54f927f5ab0a2ebc97a61ede57119f29e8673ab1b902a4e132191ac688820f", "b1f9291edfb018633add360eb4e81520f9be9690c38bb1c2dede9de29a2fe25b"] },
 ]);
 const POSTURE_RESULT_SCHEMA = Object.freeze([...MIGRATOR_READINESS_FIELDS, "application_relation_owner_exact"]);
+const AUTHORITY_GRAPH_POSTURE_FIELD = "application_migrator_authority_absent" as const;
 const ROLE_DATA_RESULT_SCHEMA = Object.freeze([
   "role_labels",
   "role_values_valid",
@@ -472,6 +473,7 @@ export function validateBrokerStatementResult(
   brokerStatement: BrokerStatementV1,
   rawRows: unknown,
   phase: "PREWRITE" | "FINAL" = "PREWRITE",
+  deferAuthorityGraphPosture = false,
 ): readonly Record<string, unknown>[] {
   const sourceIndex = observationBundle.statements.findIndex((candidate) =>
     candidate.sql === brokerStatement.sql &&
@@ -489,7 +491,10 @@ export function validateBrokerStatementResult(
   } else if (sourceIndex === 4) {
     normalizedLedgerRows(rows, phase);
   } else if (sourceIndex === 5) {
-    if (rows.length !== 1 || brokerStatement.result_schema.some((key) => rows[0]![key] !== true)) reject("BROKER_CANONICAL_POSTURE_REJECTED");
+    const requiredFields = deferAuthorityGraphPosture
+      ? brokerStatement.result_schema.filter((key) => key !== AUTHORITY_GRAPH_POSTURE_FIELD)
+      : brokerStatement.result_schema;
+    if (rows.length !== 1 || requiredFields.some((key) => rows[0]![key] !== true)) reject("BROKER_CANONICAL_POSTURE_REJECTED");
   } else if (sourceIndex === 6) {
     if (rows.length !== 1) reject("BROKER_CANONICAL_POSTURE_REJECTED");
     const expectedLabels = phase === "PREWRITE" ? "owner,admin,member,viewer" : "admin,operator,viewer";
@@ -530,14 +535,14 @@ export function deriveBrokerObservationEvidence(
 ): BrokerObservationEvidenceV1 {
   if (!isRecord(resultMap)) reject("BROKER_OBSERVATION_EVIDENCE_INVALID");
   exactKeys(resultMap, bundle.statements.map((entry) => entry.id));
-  const results = new Map(bundle.statements.map((entry) => [entry.id, validateBrokerStatementResult(bundle, entry, resultMap[entry.id], phase)]));
+  const results = new Map(bundle.statements.map((entry) => [entry.id, validateBrokerStatementResult(bundle, entry, resultMap[entry.id], phase, entry.id === "canonical_posture")]));
   const providerRow = results.get("provider_target_identity")![0]!;
   const migratorRow = results.get("migrator_dormancy")![0]!;
   const nodeRows = results.get("authority_graph_nodes")!;
   const edgeRows = results.get("authority_graph_edges")!;
   const ledgerRows = normalizedLedgerRows(results.get("migration_ledger")!, phase);
-  const graph = { nodes: nodeRows, edges: edgeRows, closure_complete: true as const, application_authority_absent: true as const };
-  validateAuthorityGraph(graph, bundle.authority_classification, providerRow, migratorRow);
+  const graph = validateAuthorityGraph({ nodes: nodeRows, edges: edgeRows }, bundle.authority_classification, providerRow, migratorRow);
+  validateBrokerStatementResult(bundle, bundle.statements[5]!, results.get("canonical_posture")!, phase);
   const firstNine = ledgerRows.slice(0, 9);
   const posturePayload = {
     canonical_posture: results.get("canonical_posture")![0]!,
@@ -578,9 +583,17 @@ function validateAuthorityGraph(
   classification: BrokerAuthorityClassificationV1,
   provider: Record<string, unknown>,
   migrator: Record<string, unknown>,
-): void {
+): BrokerObservationEvidenceV1["authority_graph"] {
   if (!Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) reject("BROKER_AUTHORITY_GRAPH_REJECTED");
   const classesByOid = new Map(classification.nodes.map((node) => [node.role_oid, node]));
+  const classesByName = new Map(classification.nodes.map((node) => [node.role_name, node]));
+  for (const [roleName, authorityClass] of [
+    ["platform_app", "APPLICATION"],
+    ["platform_runtime", "RUNTIME"],
+    ["platform_migrator", "MIGRATOR"],
+  ] as const) {
+    if (classesByName.get(roleName)?.authority_class !== authorityClass) reject("BROKER_AUTHORITY_GRAPH_REJECTED");
+  }
   const nodesByOid = new Map<string, Record<string, unknown>>();
   let previousNode = "";
   for (const raw of graph.nodes) {
@@ -595,6 +608,7 @@ function validateAuthorityGraph(
   }
   if (nodesByOid.size !== classification.nodes.length) reject("BROKER_AUTHORITY_GRAPH_REJECTED");
   const edges: Array<Record<string, unknown>> = [];
+  const edgeEndpoints = new Set<string>();
   let previousEdge = "";
   for (const raw of graph.edges) {
     if (!isRecord(raw)) reject("BROKER_AUTHORITY_GRAPH_REJECTED");
@@ -602,6 +616,9 @@ function validateAuthorityGraph(
     const grantedOid = oid(raw.granted_role_oid); const memberOid = oid(raw.member_oid); const grantorOid = oid(raw.grantor_oid);
     if (nodesByOid.get(grantedOid)?.role_name !== raw.granted_role || nodesByOid.get(memberOid)?.role_name !== raw.member || nodesByOid.get(grantorOid)?.role_name !== raw.grantor) reject("BROKER_AUTHORITY_GRAPH_REJECTED");
     if (typeof raw.admin_option !== "boolean" || typeof raw.inherit_option !== "boolean" || typeof raw.set_option !== "boolean") reject("BROKER_AUTHORITY_GRAPH_REJECTED");
+    const endpointKey = `${grantedOid}\0${memberOid}\0${grantorOid}`;
+    if (edgeEndpoints.has(endpointKey)) reject("BROKER_AUTHORITY_GRAPH_REJECTED");
+    edgeEndpoints.add(endpointKey);
     const order = `${grantedOid.padStart(20, "0")}\0${memberOid.padStart(20, "0")}\0${grantorOid.padStart(20, "0")}\0${String(raw.admin_option)}\0${String(raw.inherit_option)}\0${String(raw.set_option)}`;
     if (order <= previousEdge) reject("BROKER_AUTHORITY_GRAPH_REJECTED");
     previousEdge = order; edges.push(raw);
@@ -610,6 +627,7 @@ function validateAuthorityGraph(
   const migratorOid = oid(migrator.role_oid);
   const providerClass = classesByOid.get(providerOid);
   if (!providerClass || providerClass.authority_class !== "PROVIDER_CONTROL") reject("BROKER_AUTHORITY_GRAPH_REJECTED");
+  if (classesByOid.get(migratorOid)?.authority_class !== "MIGRATOR") reject("BROKER_AUTHORITY_GRAPH_REJECTED");
   if (provider.rolsuper !== true) {
     const visited = new Set([providerOid]);
     const pending = [providerOid];
@@ -619,7 +637,7 @@ function validateAuthorityGraph(
         if (edge.member_oid !== current || edge.set_option !== true) continue;
         const next = String(edge.granted_role_oid);
         const nextClass = classesByOid.get(next)?.authority_class;
-        if (next !== migratorOid && nextClass !== "PROVIDER_CONTROL") reject("BROKER_AUTHORITY_GRAPH_REJECTED");
+        if (classesByOid.get(String(edge.grantor_oid))?.authority_class !== "PROVIDER_CONTROL" || (next !== migratorOid && nextClass !== "PROVIDER_CONTROL")) reject("BROKER_AUTHORITY_GRAPH_REJECTED");
         if (!visited.has(next)) { visited.add(next); pending.push(next); }
       }
     }
@@ -629,8 +647,14 @@ function validateAuthorityGraph(
     const classes = [String(edge.granted_role_oid), String(edge.member_oid), String(edge.grantor_oid)].map((roleOid) => classesByOid.get(roleOid)?.authority_class);
     if (!classes.some((authorityClass) => authorityClass === "APPLICATION" || authorityClass === "RUNTIME")) continue;
     const exactTuple = edge.granted_role === "platform_runtime" && edge.member === "platform_app" && edge.grantor === "cloud_admin" && edge.admin_option === true && edge.inherit_option === false && edge.set_option === false;
-    if (!exactTuple) reject("BROKER_AUTHORITY_GRAPH_REJECTED");
+    if (!exactTuple || classesByOid.get(String(edge.grantor_oid))?.authority_class !== "PROVIDER_CONTROL") reject("BROKER_AUTHORITY_GRAPH_REJECTED");
   }
+  return Object.freeze({
+    nodes: graph.nodes as BrokerObservationEvidenceV1["authority_graph"]["nodes"],
+    edges: graph.edges as BrokerObservationEvidenceV1["authority_graph"]["edges"],
+    closure_complete: true as const,
+    application_authority_absent: true as const,
+  });
 }
 
 export function normalizeBrokerObservationEvidence(
@@ -656,15 +680,54 @@ export function normalizeBrokerObservationEvidence(
   if (provider.current_user !== binding.expected_provider_role_name || provider.session_user !== binding.expected_provider_role_name || provider.role_oid !== binding.expected_provider_role_oid) reject("BROKER_SESSION_IDENTITY_REJECTED");
   if (target.logical_database_name !== binding.logical_database_name || target.database_oid !== binding.expected_database_oid || target.cluster_system_identifier !== binding.expected_cluster_system_identifier || target.postgres_major !== 17 || target.in_recovery !== false) reject("BROKER_TARGET_MISMATCH");
   if (migrator.role_name !== "platform_migrator" || !POSITIVE_INTEGER.test(String(migrator.role_oid)) || migrator.rolcanlogin !== false || migrator.rolinherit !== false || migrator.rolsuper !== false || migrator.rolcreatedb !== false || migrator.rolcreaterole !== false || migrator.rolreplication !== false || migrator.rolbypassrls !== false || migrator.password_is_null !== true || migrator.provider_has_set !== true) reject("BROKER_MIGRATOR_DORMANCY_REJECTED");
-  if (!Array.isArray(graph.nodes) || !Array.isArray(graph.edges) || graph.closure_complete !== true || graph.application_authority_absent !== true) reject("BROKER_AUTHORITY_GRAPH_REJECTED");
-  validateAuthorityGraph(graph, bundle.authority_classification, provider, migrator);
+  if (!Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) reject("BROKER_AUTHORITY_GRAPH_REJECTED");
+  const validatedGraph = validateAuthorityGraph({ nodes: graph.nodes, edges: graph.edges }, bundle.authority_classification, provider, migrator);
+  if (graph.closure_complete !== validatedGraph.closure_complete || graph.application_authority_absent !== validatedGraph.application_authority_absent) reject("BROKER_AUTHORITY_GRAPH_REJECTED");
   if (phase === "PREWRITE" && (ledger.row_count !== 9 || ledger.migration_0010_absent !== true)) reject("BROKER_MIGRATION_IDENTITY_REJECTED");
   if (phase === "FINAL" && (ledger.row_count !== 10 || ledger.migration_0010_absent !== false)) reject("BROKER_MIGRATION_IDENTITY_REJECTED");
   digest(ledger.first_nine_identity_digest); digest(input.canonical_posture_digest);
   const claimed = digest(input.evidence_digest);
   const computed = computeBrokerBundleDigest(BROKER_OBSERVATION_EVIDENCE_DOMAIN_SEPARATOR, withoutDigest(input, "evidence_digest"));
   if (claimed !== computed) reject("BROKER_OBSERVATION_EVIDENCE_INVALID");
-  return Object.freeze(input as unknown as BrokerObservationEvidenceV1);
+  return Object.freeze({ ...input, authority_graph: validatedGraph } as unknown as BrokerObservationEvidenceV1);
+}
+
+export function validateLockedBrokerObservationResultSet(
+  observationBundle: BrokerObservationBundleV1,
+  mutationBundle: BrokerMutationBundleV1,
+  lockedResultMap: BrokerStatementResultMapV1,
+): BrokerObservationEvidenceV1 {
+  if (!isRecord(lockedResultMap)) reject("BROKER_LOCKED_ADMISSION_REJECTED");
+  const lockedObservationStatements = mutationBundle.statements.filter((entry) => entry.id.startsWith("locked_") && entry.id !== "locked_binding_assertion");
+  if (lockedObservationStatements.length !== observationBundle.statements.length) reject("BROKER_LOCKED_ADMISSION_REJECTED");
+  const lockedIds = observationBundle.statements.map((entry) => `locked_${entry.id}`);
+  exactKeys(lockedResultMap as Record<string, unknown>, lockedIds);
+  const resultMap: Record<string, readonly Record<string, unknown>[]> = {};
+  for (const [index, sourceStatement] of observationBundle.statements.entries()) {
+    const lockedStatement = lockedObservationStatements[index];
+    if (!lockedStatement || lockedStatement.id !== `locked_${sourceStatement.id}`
+      || lockedStatement.phase !== "ADMISSION"
+      || lockedStatement.sql !== sourceStatement.sql
+      || lockedStatement.sha256 !== sourceStatement.sha256
+      || lockedStatement.mutating !== sourceStatement.mutating
+      || canonicalSerializeBrokerBundle(lockedStatement.result_schema) !== canonicalSerializeBrokerBundle(sourceStatement.result_schema)) reject("BROKER_LOCKED_ADMISSION_REJECTED");
+    resultMap[sourceStatement.id] = validateBrokerStatementResult(observationBundle, sourceStatement, lockedResultMap[lockedStatement.id]!, "PREWRITE", sourceStatement.id === "canonical_posture");
+  }
+  const evidence = deriveBrokerObservationEvidence(observationBundle, resultMap, "PREWRITE");
+  const claimedBundleDigest = mutationBundle.bundle_digest;
+  const mutationPayload = withoutDigest(mutationBundle as unknown as Record<string, unknown>, "bundle_digest");
+  if (claimedBundleDigest !== computeBrokerBundleDigest(BROKER_MUTATION_BUNDLE_DOMAIN_SEPARATOR, mutationPayload)
+    || mutationBundle.run !== observationBundle.run
+    || mutationBundle.lock !== observationBundle.lock
+    || mutationBundle.git_sha !== observationBundle.git_sha
+    || mutationBundle.git_tree !== observationBundle.git_tree
+    || mutationBundle.contract_digest !== observationBundle.contract_digest
+    || mutationBundle.source_manifest_digest !== observationBundle.source_manifest_digest
+    || mutationBundle.build_manifest_digest !== observationBundle.build_manifest_digest
+    || mutationBundle.target_binding_digest !== observationBundle.target_binding_digest
+    || mutationBundle.authority_classification_digest !== observationBundle.authority_classification_digest
+    || mutationBundle.observation_evidence_digest !== evidence.evidence_digest) reject("BROKER_LOCKED_ADMISSION_REJECTED");
+  return evidence;
 }
 
 export function compileBrokerMutationBundle(input: {

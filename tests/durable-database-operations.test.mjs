@@ -61,7 +61,9 @@ import {
   compileBrokerMutationBundle,
   compileBrokerObservationBundle,
   computeBrokerBundleDigest,
+  deriveBrokerObservationEvidence,
   normalizeBrokerObservationEvidence,
+  validateLockedBrokerObservationResultSet,
 } from "../dist/db/brokered-migration.js";
 import { RUNTIME_TABLE_GRANT_CONTRACT } from "../dist/db/runtime-grant-contract.js";
 
@@ -269,17 +271,115 @@ test("broker bundles are canonical, target-bound, and contain the exact 0010 tra
 
 test("broker evidence rejects target, dormancy, graph, and application authority drift before reservation", () => {
   const { observationBundle, evidence } = brokerFixture();
+  const rehash = (value) => {
+    const payload = { ...value };
+    delete payload.evidence_digest;
+    return { ...payload, evidence_digest: computeBrokerBundleDigest(BROKER_OBSERVATION_EVIDENCE_DOMAIN_SEPARATOR, payload) };
+  };
   for (const changed of [
     { ...evidence, provider: { ...evidence.provider, session_user: "platform_app" } },
     { ...evidence, target: { ...evidence.target, database_oid: "43" } },
     { ...evidence, migrator: { ...evidence.migrator, password_is_null: false } },
     { ...evidence, authority_graph: { ...evidence.authority_graph, application_authority_absent: false } },
   ]) {
-    const payload = { ...changed };
-    delete payload.evidence_digest;
-    changed.evidence_digest = computeBrokerBundleDigest(BROKER_OBSERVATION_EVIDENCE_DOMAIN_SEPARATOR, payload);
-    assert.throws(() => normalizeBrokerObservationEvidence(changed, observationBundle), /BROKER_/u);
+    assert.throws(() => normalizeBrokerObservationEvidence(rehash(changed), observationBundle), /BROKER_/u);
   }
+  const directForbiddenEdge = {
+    granted_role: "platform_migrator",
+    granted_role_oid: "4",
+    member: "platform_app",
+    member_oid: "2",
+    grantor: "cloud_admin",
+    grantor_oid: "1",
+    admin_option: false,
+    inherit_option: false,
+    set_option: false,
+  };
+  assert.throws(
+    () => normalizeBrokerObservationEvidence(rehash({ ...evidence, authority_graph: { ...evidence.authority_graph, edges: [...evidence.authority_graph.edges, directForbiddenEdge] } }), observationBundle),
+    /BROKER_AUTHORITY_GRAPH_REJECTED/u,
+  );
+  const unknownBridgeNode = { role_name: "run610_unknown_bridge", role_oid: "5", rolsuper: false, rolcreaterole: false };
+  const unknownBridgeEdge = {
+    granted_role: "platform_migrator",
+    granted_role_oid: "4",
+    member: "run610_unknown_bridge",
+    member_oid: "5",
+    grantor: "cloud_admin",
+    grantor_oid: "1",
+    admin_option: false,
+    inherit_option: false,
+    set_option: true,
+  };
+  assert.throws(
+    () => normalizeBrokerObservationEvidence(rehash({ ...evidence, authority_graph: { ...evidence.authority_graph, nodes: [...evidence.authority_graph.nodes, unknownBridgeNode], edges: [...evidence.authority_graph.edges, unknownBridgeEdge] } }), observationBundle),
+    /BROKER_AUTHORITY_GRAPH_REJECTED/u,
+  );
+});
+
+test("locked admission derives the same graph proof and rejects direct and unknown bridge drift", async () => {
+  const { observationBundle, evidence: fixtureEvidence } = brokerFixture();
+  const journal = JSON.parse(await readFile("drizzle/migrations/meta/_journal.json", "utf8"));
+  const migrationLedger = await Promise.all(journal.entries.slice(0, 9).map(async (entry, index) => ({
+    id: index + 1,
+    hash: createHash("sha256").update(await readFile(`drizzle/migrations/${entry.tag}.sql`, "utf8")).digest("hex"),
+    created_at: String(entry.when),
+  })));
+  const postureStatement = observationBundle.statements.find((entry) => entry.id === "canonical_posture");
+  const roleDataStatement = observationBundle.statements.find((entry) => entry.id === "role_data_invariants");
+  assert.ok(postureStatement);
+  assert.ok(roleDataStatement);
+  const resultMap = {
+    provider_target_identity: [{ ...fixtureEvidence.provider, ...fixtureEvidence.target }],
+    migrator_dormancy: [{ ...fixtureEvidence.migrator }],
+    authority_graph_nodes: fixtureEvidence.authority_graph.nodes,
+    authority_graph_edges: fixtureEvidence.authority_graph.edges,
+    migration_ledger: migrationLedger,
+    canonical_posture: [Object.fromEntries(postureStatement.result_schema.map((key) => [key, true]))],
+    role_data_invariants: [{ role_labels: "owner,admin,member,viewer", ...Object.fromEntries(roleDataStatement.result_schema.slice(1).map((key) => [key, true])) }],
+  };
+  const evidence = deriveBrokerObservationEvidence(observationBundle, resultMap);
+  const mutationBundle = compileBrokerMutationBundle({
+    observation_bundle: observationBundle,
+    observation_evidence: evidence,
+    prestate_digest: "9".repeat(64),
+    plan_digest: "a".repeat(64),
+    migration_sql: await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8"),
+  });
+  const lockedResultMap = Object.fromEntries(observationBundle.statements.map((entry) => [`locked_${entry.id}`, resultMap[entry.id]]));
+  assert.equal(validateLockedBrokerObservationResultSet(observationBundle, mutationBundle, lockedResultMap).evidence_digest, evidence.evidence_digest);
+
+  const directEdge = {
+    granted_role: "platform_migrator",
+    granted_role_oid: "4",
+    member: "platform_app",
+    member_oid: "2",
+    grantor: "cloud_admin",
+    grantor_oid: "1",
+    admin_option: false,
+    inherit_option: false,
+    set_option: false,
+  };
+  assert.throws(
+    () => validateLockedBrokerObservationResultSet(observationBundle, mutationBundle, { ...lockedResultMap, locked_authority_graph_edges: [...resultMap.authority_graph_edges, directEdge] }),
+    /BROKER_AUTHORITY_GRAPH_REJECTED/u,
+  );
+  const unknownBridgeNode = { role_name: "run610_unknown_bridge", role_oid: "5", rolsuper: false, rolcreaterole: false };
+  const unknownBridgeEdge = {
+    granted_role: "platform_migrator",
+    granted_role_oid: "4",
+    member: "run610_unknown_bridge",
+    member_oid: "5",
+    grantor: "cloud_admin",
+    grantor_oid: "1",
+    admin_option: false,
+    inherit_option: false,
+    set_option: true,
+  };
+  assert.throws(
+    () => validateLockedBrokerObservationResultSet(observationBundle, mutationBundle, { ...lockedResultMap, locked_authority_graph_nodes: [...resultMap.authority_graph_nodes, unknownBridgeNode], locked_authority_graph_edges: [...resultMap.authority_graph_edges, unknownBridgeEdge] }),
+    /BROKER_AUTHORITY_GRAPH_REJECTED/u,
+  );
 });
 
 test("broker execution reserves once before dispatch, validates the result, and performs a fresh observation", async () => {

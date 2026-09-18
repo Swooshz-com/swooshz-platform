@@ -4293,6 +4293,12 @@ export function normalizeBrokeredPrestateV2(
     rolcreaterole: node.rolcreaterole,
   }));
   if (nodes.some((node) => node.authority_class === undefined)) fail("PRESTATE_INVALID");
+  const authorityGraph = {
+    nodes,
+    edges: evidence.authority_graph.edges,
+    closure_complete: evidence.authority_graph.closure_complete,
+    application_authority_absent: evidence.authority_graph.application_authority_absent,
+  } as const;
   const payload = {
     version: PRESTATE_VERSION,
     git_sha: observationBundle.git_sha,
@@ -4311,12 +4317,7 @@ export function normalizeBrokeredPrestateV2(
       rolsuper: evidence.provider.rolsuper,
     },
     migrator: { ...evidence.migrator },
-    authority_graph: {
-      nodes,
-      edges: evidence.authority_graph.edges,
-      closure_complete: true as const,
-      application_authority_absent: true as const,
-    },
+    authority_graph: authorityGraph,
     ledger: { ...evidence.ledger },
     canonical_posture_digest: evidence.canonical_posture_digest,
   };
