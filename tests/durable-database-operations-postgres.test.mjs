@@ -120,35 +120,6 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
       const migrationSql = await readFile(join(migrationsFolder, "0010_admin_operator_viewer_role_collapse.sql"), "utf8");
       assert.equal(createHash("sha256").update(migrationSql).digest("hex"), migrationSha256);
       const artifactsA = brokerArtifacts(contextA.observationBundle, preEvidenceA, migrationSql);
-      const lockStatement = artifactsA.bundle.statements.find((entry) => entry.id === "target_advisory_lock");
-      assert.ok(lockStatement);
-      await runUncontendedAdvisoryLockProof(providerA, contextA.observationBundle, lockStatement);
-      await runAdvisoryLockContentionProof(providerA, contextA.observationBundle, lockStatement);
-      await runAdvisoryLockFailureProof(providerA, contextA.observationBundle, lockStatement);
-
-      const rejectedLockAdapter = new DisposableBrokerAdapter(providerA, contextA, {
-        resultOverride: (statement, rows) => statement.id === "target_advisory_lock" ? [{ lock_acquired: false }] : rows,
-      });
-      const rejectedLockReceipt = await executeBrokeredMigrationPlan({ observationBundle: contextA.observationBundle, prestate: artifactsA.prestate, plan: artifactsA.plan, migrationSql, broker: rejectedLockAdapter, attemptStore: new SingleUseAttemptStore() });
-      assert.equal(rejectedLockReceipt.outcome, "FAIL");
-      assert.equal(rejectedLockReceipt.commit_state, "NOT_COMMITTED");
-      assert.equal(rejectedLockReceipt.attempts_used, 1);
-      assert.deepEqual(rejectedLockAdapter.dispatchedOrdinals, [lockStatement.ordinal]);
-      assert.deepEqual(rejectedLockAdapter.roleAssumptionStatements, []);
-      assert.deepEqual(rejectedLockAdapter.migrationStatements, []);
-      assert.equal((await readLedger(providerA)).length, 9);
-
-      const deadlockAdapter = new DisposableBrokerAdapter(providerA, contextA, {
-        failureInjection: { ordinal: lockStatement.ordinal, boundary: "AFTER", code: "40P01", message: "deadlock detected" },
-      });
-      const deadlockReceipt = await executeBrokeredMigrationPlan({ observationBundle: contextA.observationBundle, prestate: artifactsA.prestate, plan: artifactsA.plan, migrationSql, broker: deadlockAdapter, attemptStore: new SingleUseAttemptStore() });
-      assert.equal(deadlockReceipt.outcome, "FAIL");
-      assert.equal(deadlockReceipt.commit_state, "NOT_COMMITTED");
-      assert.equal(deadlockReceipt.attempts_used, 1);
-      assert.deepEqual(deadlockAdapter.dispatchedOrdinals, [lockStatement.ordinal]);
-      assert.deepEqual(deadlockAdapter.roleAssumptionStatements, []);
-      assert.deepEqual(deadlockAdapter.migrationStatements, []);
-      assert.equal((await readLedger(providerA)).length, 9);
 
       const attemptsA = new SingleUseAttemptStore();
       const successReceipt = await executeBrokeredMigrationPlan({ observationBundle: contextA.observationBundle, prestate: artifactsA.prestate, plan: artifactsA.plan, migrationSql, broker: adapterA, attemptStore: attemptsA });
@@ -172,6 +143,36 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
       const preAdapterB = new DisposableBrokerAdapter(providerB, contextB);
       const preEvidenceB = await preAdapterB.observe(canonicalSerializeBrokerBundle(contextB.observationBundle), contextB.observationBundle.bundle_digest);
       const artifactsB = brokerArtifacts(contextB.observationBundle, preEvidenceB, migrationSql);
+      const lockStatementB = artifactsB.bundle.statements.find((entry) => entry.id === "target_advisory_lock");
+      assert.ok(lockStatementB);
+      await runUncontendedAdvisoryLockProof(providerB, contextB.observationBundle, lockStatementB);
+      await runAdvisoryLockContentionProof(providerB, contextB.observationBundle, lockStatementB);
+      await runAdvisoryLockFailureProof(providerB, contextB.observationBundle, lockStatementB);
+
+      const rejectedLockAdapter = new DisposableBrokerAdapter(providerB, contextB, {
+        resultOverride: (statement, rows) => statement.id === "target_advisory_lock" ? [{ lock_acquired: false }] : rows,
+      });
+      const rejectedLockReceipt = await executeBrokeredMigrationPlan({ observationBundle: contextB.observationBundle, prestate: artifactsB.prestate, plan: artifactsB.plan, migrationSql, broker: rejectedLockAdapter, attemptStore: new SingleUseAttemptStore() });
+      assert.equal(rejectedLockReceipt.outcome, "FAIL");
+      assert.equal(rejectedLockReceipt.commit_state, "NOT_COMMITTED");
+      assert.equal(rejectedLockReceipt.attempts_used, 1);
+      assert.deepEqual(rejectedLockAdapter.dispatchedOrdinals, [lockStatementB.ordinal]);
+      assert.deepEqual(rejectedLockAdapter.roleAssumptionStatements, []);
+      assert.deepEqual(rejectedLockAdapter.migrationStatements, []);
+      assert.equal((await readLedger(providerB)).length, 9);
+
+      const deadlockAdapter = new DisposableBrokerAdapter(providerB, contextB, {
+        failureInjection: { ordinal: lockStatementB.ordinal, boundary: "AFTER", code: "40P01", message: "deadlock detected" },
+      });
+      const deadlockReceipt = await executeBrokeredMigrationPlan({ observationBundle: contextB.observationBundle, prestate: artifactsB.prestate, plan: artifactsB.plan, migrationSql, broker: deadlockAdapter, attemptStore: new SingleUseAttemptStore() });
+      assert.equal(deadlockReceipt.outcome, "FAIL");
+      assert.equal(deadlockReceipt.commit_state, "NOT_COMMITTED");
+      assert.equal(deadlockReceipt.attempts_used, 1);
+      assert.deepEqual(deadlockAdapter.dispatchedOrdinals, [lockStatementB.ordinal]);
+      assert.deepEqual(deadlockAdapter.roleAssumptionStatements, []);
+      assert.deepEqual(deadlockAdapter.migrationStatements, []);
+      assert.equal((await readLedger(providerB)).length, 9);
+
       const injectedOrdinal = artifactsB.bundle.statements.find((entry) => entry.id === "migration_0010_05")?.ordinal;
       assert.ok(Number.isInteger(injectedOrdinal));
       const rollbackAdapter = new DisposableBrokerAdapter(providerB, contextB, { failureInjection: { ordinal: injectedOrdinal, boundary: "AFTER" } });
