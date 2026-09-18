@@ -773,7 +773,7 @@ async function readLedgerSequence(pool) {
   assert.equal(identityParts.length, 2);
   const quotedSequence = quoteIdentifier(identityParts[0]) + "." + quoteIdentifier(identityParts[1]);
   const stateResult = await pool.query("select last_value::text as last_value, is_called from " + quotedSequence);
-  const incrementResult = await pool.query("select sequence_record.seqincrement::text as increment from pg_catalog.pg_sequence sequence_record where sequence_record.seqrelid = " + quotedSequence + "::pg_catalog.regclass");
+  const incrementResult = await pool.query("select sequence_record.seqincrement::text as increment from pg_catalog.pg_sequence sequence_record where sequence_record.seqrelid = $1::pg_catalog.regclass", [identity]);
   assert.equal(stateResult.rows.length, 1);
   assert.equal(incrementResult.rows.length, 1);
   const lastValue = Number(stateResult.rows[0].last_value);
