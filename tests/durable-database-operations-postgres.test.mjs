@@ -90,6 +90,7 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
         () => preAssumed.observe(canonicalSerializeBrokerBundle(contextA.observationBundle), contextA.observationBundle.bundle_digest),
         /BROKER_SESSION_IDENTITY_REJECTED/u,
       );
+      assert.deepEqual(preAssumed.observationDispatches, ["provider_target_identity"]);
 
       await providerA.query(`grant "platform_migrator" to "platform_app" with admin false, inherit false, set false`);
       try {
@@ -214,6 +215,7 @@ class SingleUseAttemptStore {
 
 class DisposableBrokerAdapter {
   dispatchCount = 0;
+  observationDispatches = [];
   cleanupProofs = 0;
   dispatchedOrdinals = [];
   dispatchedStatementDigests = [];
@@ -234,7 +236,12 @@ class DisposableBrokerAdapter {
       await client.query("begin isolation level repeatable read read only");
       if (this.options.preAssumeMigrator) await client.query("set local role platform_migrator");
       const resultMap = {};
-      for (const statement of bundle.statements) resultMap[statement.id] = (await client.query(statement.sql)).rows;
+      for (const statement of bundle.statements) {
+        this.observationDispatches.push(statement.id);
+        const rows = (await client.query(statement.sql)).rows;
+        resultMap[statement.id] = rows;
+        if (statement.id === "provider_target_identity") validateBrokerStatementResult(bundle, statement, rows);
+      }
       const ledgerCount = resultMap.migration_ledger.length;
       const phase = ledgerCount === 9 ? "PREWRITE" : ledgerCount === 10 ? "FINAL" : "PREWRITE";
       for (const statement of bundle.statements) validateBrokerStatementResult(bundle, statement, resultMap[statement.id], phase);
