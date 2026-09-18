@@ -742,7 +742,7 @@ export function compileBrokerMutationBundle(input: {
   if (sha256(input.migration_sql) !== MIGRATION_SQL_SHA256) reject("BROKER_MIGRATION_IDENTITY_REJECTED");
   const statements: BrokerStatementV1[] = [];
   const add = (id: string, phase: BrokerStatementV1["phase"], sql: string, mutating: boolean, resultSchema: readonly string[] = []) => statements.push(statement(statements.length, id, phase, sql, mutating, resultSchema));
-  add("target_advisory_lock", "LOCK", `select (pg_catalog.pg_advisory_xact_lock(hashtextextended('${observation.target_binding_digest}', 0)) is null) as lock_acquired`, false, ["lock_acquired"]);
+  add("target_advisory_lock", "LOCK", `select true as lock_acquired from pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('${observation.target_binding_digest}', 0)) as acquired`, false, ["lock_acquired"]);
   add("ledger_lock", "LOCK", `lock table drizzle.__drizzle_migrations in access exclusive mode`, true);
   for (const observed of observation.statements) {
     add(`locked_${observed.id}`, "ADMISSION", observed.sql, false, observed.result_schema);

@@ -71,7 +71,7 @@ const productionDependencyLockDigest =
 const databaseSourceShapeAuthority = new Map([
   [
     "src/db/brokered-migration.ts",
-    "e5c9255739c8c89f101c57ae9f30cd501055aee95a771675ca99d09250d3973c",
+    "ee839209b6075c3c042f0db6c154a269b21fd431847d90fcdf3049b9c4e0c11b",
   ],
   [
     "src/db/durable-operations.ts",

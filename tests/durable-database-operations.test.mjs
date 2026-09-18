@@ -52,6 +52,7 @@ import {
   BROKER_ATTEMPT_RESERVATION_DOMAIN_SEPARATOR,
   BROKER_ATTEMPT_RESERVATION_VERSION,
   BROKER_AUTHORITY_CLASSIFICATION_VERSION,
+  BROKER_MUTATION_BUNDLE_DOMAIN_SEPARATOR,
   BROKER_OBSERVATION_EVIDENCE_DOMAIN_SEPARATOR,
   BROKER_OBSERVATION_EVIDENCE_VERSION,
   BROKER_RESULT_DOMAIN_SEPARATOR,
@@ -62,7 +63,10 @@ import {
   compileBrokerObservationBundle,
   computeBrokerBundleDigest,
   deriveBrokerObservationEvidence,
+  normalizeBrokerAttemptReservation,
   normalizeBrokerObservationEvidence,
+  validateBrokerMutationResult,
+  validateBrokerStatementResult,
   validateLockedBrokerObservationResultSet,
 } from "../dist/db/brokered-migration.js";
 import { RUNTIME_TABLE_GRANT_CONTRACT } from "../dist/db/runtime-grant-contract.js";
@@ -229,6 +233,123 @@ function rollbackResultFor(bundle, reservation) {
   };
   return { ...payload, result_digest: computeBrokerBundleDigest(BROKER_RESULT_DOMAIN_SEPARATOR, payload) };
 }
+
+function assertExactMutationBundle(candidate, expected) {
+  const { bundle_digest: claimedDigest, ...payload } = candidate;
+  if (canonicalSerializeBrokerBundle(candidate) !== canonicalSerializeBrokerBundle(expected)) throw new Error("BROKER_MUTATION_BUNDLE_REJECTED");
+  if (claimedDigest !== computeBrokerBundleDigest(BROKER_MUTATION_BUNDLE_DOMAIN_SEPARATOR, payload)) throw new Error("BROKER_MUTATION_BUNDLE_REJECTED");
+}
+
+function tamperStatement(bundle, ordinal, change) {
+  return {
+    ...bundle,
+    statements: bundle.statements.map((entry) => entry.ordinal === ordinal ? { ...entry, ...change } : entry),
+  };
+}
+
+async function mutationFixture() {
+  const { observationBundle, evidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  return { observationBundle, evidence, migrationSql, ...durableV2Artifacts(observationBundle, evidence, migrationSql) };
+}
+
+test("blocking advisory lock compiler and native result contract are exact and fail closed before downstream dispatch", async () => {
+  const { observationBundle, evidence, migrationSql } = await mutationFixture();
+  const bundle = compileBrokerMutationBundle({
+    observation_bundle: observationBundle,
+    observation_evidence: evidence,
+    prestate_digest: "9".repeat(64),
+    plan_digest: "a".repeat(64),
+    migration_sql: migrationSql,
+  });
+  const lockStatements = bundle.statements.filter((entry) => entry.id === "target_advisory_lock");
+  assert.equal(lockStatements.length, 1);
+  const lock = lockStatements[0];
+  const expectedSql = `select true as lock_acquired from pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('${observationBundle.target_binding_digest}', 0)) as acquired`;
+  assert.equal(lock.ordinal, 0);
+  assert.equal(lock.phase, "LOCK");
+  assert.equal(lock.mutating, false);
+  assert.deepEqual(lock.result_schema, ["lock_acquired"]);
+  assert.equal(lock.sql, expectedSql);
+  assert.equal(lock.sha256, createHash("sha256").update(expectedSql, "utf8").digest("hex"));
+  assert.equal((lock.sql.match(/pg_catalog\.pg_advisory_xact_lock/gu) ?? []).length, 1);
+  assert.equal((lock.sql.match(/pg_catalog\.hashtextextended/gu) ?? []).length, 1);
+  assert.doesNotMatch(lock.sql, /pg_try_advisory_xact_lock|is null|select true\s*$/u);
+  assert.equal(bundle.statements.filter((entry) => entry.id === "target_advisory_lock").length, 1);
+
+  assert.doesNotThrow(() => validateBrokerStatementResult(observationBundle, lock, [{ lock_acquired: true }]));
+  for (const invalid of [
+    null,
+    undefined,
+    [],
+    [{ }],
+    [{ lock_acquired: false }],
+    [{ lock_acquired: null }],
+    [{ lock_acquired: "true" }],
+    [{ lock_acquired: "false" }],
+    [{ lock_acquired: 0 }],
+    [{ lock_acquired: 1 }],
+    [{ lock_acquired: true, extra: false }],
+    [{ lock_acquired: true }, { lock_acquired: true }],
+    [[{ lock_acquired: true }]],
+    [null],
+    "[{\"lock_acquired\":true}]",
+  ]) {
+    assert.throws(() => validateBrokerStatementResult(observationBundle, lock, invalid), /BROKER_/u);
+  }
+
+  const dispatchTrace = [];
+  assert.throws(() => {
+    for (const statement of bundle.statements.filter((entry) => entry.phase !== "CLEANUP")) {
+      dispatchTrace.push(statement.id);
+      validateBrokerStatementResult(observationBundle, statement, statement.id === "target_advisory_lock" ? [{ lock_acquired: false }] : []);
+    }
+  }, /BROKER_STATEMENT_RESULT_REJECTED/u);
+  assert.deepEqual(dispatchTrace, ["target_advisory_lock"]);
+});
+
+test("mutation, reservation, and result bindings reject deterministic identity and tamper matrices", async () => {
+  const { observationBundle, evidence, migrationSql } = await mutationFixture();
+  const { bundle } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+  const tamperedBundles = [
+    ["statement id", tamperStatement(bundle, 0, { id: "wrong_lock" })],
+    ["ordinal", tamperStatement(bundle, 0, { ordinal: 1 })],
+    ["phase", tamperStatement(bundle, 0, { phase: "ADMISSION" })],
+    ["sql", tamperStatement(bundle, 0, { sql: "select false" })],
+    ["sql hash", tamperStatement(bundle, 0, { sha256: "f".repeat(64) })],
+    ["mutating", tamperStatement(bundle, 0, { mutating: true })],
+    ["result schema", tamperStatement(bundle, 0, { result_schema: ["wrong"] })],
+    ["statement order", { ...bundle, statements: [bundle.statements[1], bundle.statements[0], ...bundle.statements.slice(2)] }],
+    ["statement count", { ...bundle, statements: bundle.statements.slice(0, -1) }],
+    ["target binding", { ...bundle, target_binding_digest: "b".repeat(64) }],
+    ["observation evidence", { ...bundle, observation_evidence_digest: "c".repeat(64) }],
+    ["plan", { ...bundle, plan_digest: "d".repeat(64) }],
+    ["prestate", { ...bundle, prestate_digest: "e".repeat(64) }],
+    ["source manifest", { ...bundle, source_manifest_digest: "f".repeat(64) }],
+    ["build manifest", { ...bundle, build_manifest_digest: "0".repeat(64) }],
+    ["contract", { ...bundle, contract_digest: "1".repeat(64) }],
+    ["bundle digest", { ...bundle, bundle_digest: "2".repeat(64) }],
+  ];
+  for (const [label, candidate] of tamperedBundles) assert.throws(() => assertExactMutationBundle(candidate, bundle), /BROKER_MUTATION_BUNDLE_REJECTED/u, label);
+
+  const reservation = reservationFor(bundle);
+  for (const candidate of [
+    { ...reservation, target_binding_digest: "3".repeat(64) },
+    { ...reservation, plan_digest: "4".repeat(64) },
+    { ...reservation, mutation_bundle_digest: "5".repeat(64) },
+    { ...reservation, reservation_digest: "6".repeat(64) },
+    { ...reservation, reservation_id: "" },
+  ]) assert.throws(() => normalizeBrokerAttemptReservation(candidate, bundle), /BROKER_(?:ATTEMPT_RESERVATION_INVALID|ARTIFACT_INVALID)/u);
+
+  const result = resultFor(bundle, reservation);
+  for (const candidate of [
+    { ...result, mutation_bundle_digest: "7".repeat(64) },
+    { ...result, reservation_digest: "8".repeat(64) },
+    { ...result, safe_result_digest: "9".repeat(64) },
+    { ...result, result_digest: "a".repeat(64) },
+  ]) assert.throws(() => validateBrokerMutationResult(candidate, bundle, reservation), /BROKER_RESULT_INVALID/u);
+  assert.doesNotThrow(() => validateBrokerMutationResult(result, bundle, reservation));
+});
 
 test("broker bundles are canonical, target-bound, and contain the exact 0010 transaction-local role path", async () => {
   const { observationBundle, evidence } = brokerFixture();

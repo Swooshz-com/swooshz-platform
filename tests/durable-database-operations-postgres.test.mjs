@@ -120,6 +120,36 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
       const migrationSql = await readFile(join(migrationsFolder, "0010_admin_operator_viewer_role_collapse.sql"), "utf8");
       assert.equal(createHash("sha256").update(migrationSql).digest("hex"), migrationSha256);
       const artifactsA = brokerArtifacts(contextA.observationBundle, preEvidenceA, migrationSql);
+      const lockStatement = artifactsA.bundle.statements.find((entry) => entry.id === "target_advisory_lock");
+      assert.ok(lockStatement);
+      await runUncontendedAdvisoryLockProof(providerA, contextA.observationBundle, lockStatement);
+      await runAdvisoryLockContentionProof(providerA, contextA.observationBundle, lockStatement);
+      await runAdvisoryLockFailureProof(providerA, contextA.observationBundle, lockStatement);
+
+      const rejectedLockAdapter = new DisposableBrokerAdapter(providerA, contextA, {
+        resultOverride: (statement, rows) => statement.id === "target_advisory_lock" ? [{ lock_acquired: false }] : rows,
+      });
+      const rejectedLockReceipt = await executeBrokeredMigrationPlan({ observationBundle: contextA.observationBundle, prestate: artifactsA.prestate, plan: artifactsA.plan, migrationSql, broker: rejectedLockAdapter, attemptStore: new SingleUseAttemptStore() });
+      assert.equal(rejectedLockReceipt.outcome, "FAIL");
+      assert.equal(rejectedLockReceipt.commit_state, "NOT_COMMITTED");
+      assert.equal(rejectedLockReceipt.attempts_used, 1);
+      assert.deepEqual(rejectedLockAdapter.dispatchedOrdinals, [lockStatement.ordinal]);
+      assert.deepEqual(rejectedLockAdapter.roleAssumptionStatements, []);
+      assert.deepEqual(rejectedLockAdapter.migrationStatements, []);
+      assert.equal((await readLedger(providerA)).length, 9);
+
+      const deadlockAdapter = new DisposableBrokerAdapter(providerA, contextA, {
+        failureInjection: { ordinal: lockStatement.ordinal, boundary: "AFTER", code: "40P01", message: "deadlock detected" },
+      });
+      const deadlockReceipt = await executeBrokeredMigrationPlan({ observationBundle: contextA.observationBundle, prestate: artifactsA.prestate, plan: artifactsA.plan, migrationSql, broker: deadlockAdapter, attemptStore: new SingleUseAttemptStore() });
+      assert.equal(deadlockReceipt.outcome, "FAIL");
+      assert.equal(deadlockReceipt.commit_state, "NOT_COMMITTED");
+      assert.equal(deadlockReceipt.attempts_used, 1);
+      assert.deepEqual(deadlockAdapter.dispatchedOrdinals, [lockStatement.ordinal]);
+      assert.deepEqual(deadlockAdapter.roleAssumptionStatements, []);
+      assert.deepEqual(deadlockAdapter.migrationStatements, []);
+      assert.equal((await readLedger(providerA)).length, 9);
+
       const attemptsA = new SingleUseAttemptStore();
       const successReceipt = await executeBrokeredMigrationPlan({ observationBundle: contextA.observationBundle, prestate: artifactsA.prestate, plan: artifactsA.plan, migrationSql, broker: adapterA, attemptStore: attemptsA });
       assert.equal(successReceipt.outcome, "PASS");
@@ -320,19 +350,20 @@ class DisposableBrokerAdapter {
       for (const statement of bundle.statements.filter((entry) => entry.phase !== "CLEANUP")) {
         this.dispatchedOrdinals.push(statement.ordinal);
         this.dispatchedStatementDigests.push(statement.sha256);
-        if (sameInjection(this.options.failureInjection, statement.ordinal, "BEFORE")) throw new Error("INJECTED_BUNDLE_FAILURE");
+        if (sameInjection(this.options.failureInjection, statement.ordinal, "BEFORE")) throw injectedFailure(this.options.failureInjection);
         const result = await client.query(statement.sql);
+        const rows = this.options.resultOverride?.(statement, result.rows) ?? result.rows;
         if (statement.phase === "ASSUME_ROLE") this.roleAssumptionStatements.push(statement.id);
         if (statement.phase === "MIGRATION") this.migrationStatements.push(statement.id);
         const phase = statement.id.startsWith("final_") ? "FINAL" : "PREWRITE";
-        validateBrokerStatementResult(this.context.observationBundle, statement, result.rows, phase, statement.id === "locked_canonical_posture");
+        validateBrokerStatementResult(this.context.observationBundle, statement, rows, phase, statement.id === "locked_canonical_posture");
         if (statement.id.startsWith("locked_") && statement.id !== "locked_binding_assertion") {
-          lockedResultMap[statement.id] = result.rows;
+          lockedResultMap[statement.id] = rows;
         }
         if (statement.id === "locked_role_data_invariants") {
           this.lockedPreEvidence = validateLockedBrokerObservationResultSet(this.context.observationBundle, bundle, lockedResultMap);
         }
-        if (sameInjection(this.options.failureInjection, statement.ordinal, "AFTER")) throw new Error("INJECTED_BUNDLE_FAILURE");
+        if (sameInjection(this.options.failureInjection, statement.ordinal, "AFTER")) throw injectedFailure(this.options.failureInjection);
       }
       await client.query("commit");
       committed = true;
@@ -358,6 +389,146 @@ class DisposableBrokerAdapter {
 
 function sameInjection(injection, ordinal, boundary) {
   return injection?.ordinal === ordinal && injection?.boundary === boundary;
+}
+
+function injectedFailure(injection) {
+  const error = new Error(injection?.message ?? "INJECTED_BUNDLE_FAILURE");
+  if (injection?.code) error.code = injection.code;
+  return error;
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function waitForAdvisoryLockWait(pool, waiterPid, holderPid, timeoutMilliseconds = 4_000) {
+  const deadline = Date.now() + timeoutMilliseconds;
+  while (Date.now() < deadline) {
+    const result = await pool.query(`
+      select waiter.pid as waiter_pid, holder.pid as holder_pid, activity.wait_event_type, activity.wait_event
+        from pg_catalog.pg_locks waiter
+        join pg_catalog.pg_locks holder
+          on holder.locktype = 'advisory'
+         and holder.pid = $2
+         and holder.granted
+         and holder.database = waiter.database
+         and holder.classid = waiter.classid
+         and holder.objid = waiter.objid
+         and holder.objsubid = waiter.objsubid
+        join pg_catalog.pg_stat_activity activity on activity.pid = waiter.pid
+       where waiter.locktype = 'advisory'
+         and waiter.pid = $1
+         and not waiter.granted`, [waiterPid, holderPid]);
+    if (result.rows.length === 1) return result.rows[0];
+    await delay(25);
+  }
+  throw new Error("ADVISORY_LOCK_WAIT_EVIDENCE_TIMEOUT");
+}
+
+async function queryCompiledTargetLock(client, observationBundle, lockStatement) {
+  const result = await client.query(lockStatement.sql);
+  validateBrokerStatementResult(observationBundle, lockStatement, result.rows);
+  return result.rows;
+}
+
+async function runUncontendedAdvisoryLockProof(pool, observationBundle, lockStatement) {
+  const client = await pool.connect();
+  try {
+    await client.query("begin isolation level serializable read write");
+    assert.deepEqual(await queryCompiledTargetLock(client, observationBundle, lockStatement), [{ lock_acquired: true }]);
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function runAdvisoryLockContentionProof(pool, observationBundle, lockStatement) {
+  for (const releaseStatement of ["commit", "rollback"]) {
+    const holder = await pool.connect();
+    const waiter = await pool.connect();
+    let holderReleased = false;
+    let waiterFinished = false;
+    let waiterPromise;
+    try {
+      await holder.query("begin isolation level serializable read write");
+      assert.deepEqual(await queryCompiledTargetLock(holder, observationBundle, lockStatement), [{ lock_acquired: true }]);
+
+      let waiterStartedResolve;
+      const waiterStarted = new Promise((resolve) => { waiterStartedResolve = resolve; });
+      const waiterDispatchTrace = [];
+      waiterPromise = (async () => {
+        await waiter.query("begin isolation level serializable read write");
+        waiterStartedResolve();
+        waiterDispatchTrace.push(lockStatement.id);
+        try {
+          return await queryCompiledTargetLock(waiter, observationBundle, lockStatement);
+        } finally {
+          waiterFinished = true;
+        }
+      })();
+      await waiterStarted;
+
+      const waitEvidence = await waitForAdvisoryLockWait(pool, waiter.processID, holder.processID);
+      assert.equal(waitEvidence.waiter_pid, waiter.processID);
+      assert.equal(waitEvidence.holder_pid, holder.processID);
+      assert.equal(waitEvidence.wait_event_type, "Lock");
+      assert.equal(waitEvidence.wait_event, "advisory");
+      assert.equal(waiterFinished, false);
+      assert.deepEqual(waiterDispatchTrace, ["target_advisory_lock"]);
+
+      await holder.query(releaseStatement);
+      holderReleased = true;
+      assert.deepEqual(await waiterPromise, [{ lock_acquired: true }]);
+      assert.deepEqual(waiterDispatchTrace, ["target_advisory_lock"]);
+      await waiter.query("commit");
+    } finally {
+      if (waiterPromise) await waiterPromise.catch(() => {});
+      if (!holderReleased) await holder.query("rollback").catch(() => {});
+      await waiter.query("rollback").catch(() => {});
+      holder.release();
+      waiter.release();
+    }
+  }
+}
+
+async function runAdvisoryLockFailureProof(pool, observationBundle, lockStatement) {
+  const runBlockedFailure = async (mode) => {
+    const holder = await pool.connect();
+    const waiter = await pool.connect();
+    let holderReleased = false;
+    try {
+      await holder.query("begin isolation level serializable read write");
+      assert.deepEqual(await queryCompiledTargetLock(holder, observationBundle, lockStatement), [{ lock_acquired: true }]);
+      await waiter.query("begin isolation level serializable read write");
+      if (mode === "timeout") await waiter.query("set local lock_timeout = '200ms'");
+      const downstreamDispatches = [];
+      const waiterQuery = (async () => {
+        const trace = [lockStatement.id];
+        const rows = await queryCompiledTargetLock(waiter, observationBundle, lockStatement);
+        return { rows, trace };
+      })();
+      await waitForAdvisoryLockWait(pool, waiter.processID, holder.processID);
+      if (mode === "cancel") {
+        const cancelResult = await pool.query("select pg_catalog.pg_cancel_backend($1) as cancelled", [waiter.processID]);
+        assert.deepEqual(cancelResult.rows, [{ cancelled: true }]);
+      }
+      await assert.rejects(waiterQuery, (error) => mode === "timeout" ? error?.code === "55P03" : error?.code === "57014");
+      assert.deepEqual(downstreamDispatches, []);
+      await waiter.query("rollback");
+      await holder.query("rollback");
+      holderReleased = true;
+    } finally {
+      if (!holderReleased) await holder.query("rollback").catch(() => {});
+      await waiter.query("rollback").catch(() => {});
+      holder.release();
+      waiter.release();
+    }
+  };
+  await runBlockedFailure("timeout");
+  await runBlockedFailure("cancel");
 }
 
 function strictCanonicalJson(serialized) {
