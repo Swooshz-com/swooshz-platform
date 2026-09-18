@@ -6,7 +6,7 @@ import {
   CANONICAL_PLATFORM_ROUTINES,
   REQUIRED_PLATFORM_TABLES,
   RETAINED_OPERATOR_ROUTINE,
-  createDatabaseReadinessReport,
+  createDatabaseReadinessReport as createRawDatabaseReadinessReport,
   formatDatabaseReadinessReport,
 } from "../dist/db/readiness.js";
 import {
@@ -23,13 +23,33 @@ const expectedMigrationState = {
   latestCreatedAt: 1787479999088,
   migrationCount: 10,
 };
+const runnerOwnedFixture = {
+  version: "runner-owned-database-fixture-v1",
+  owner: "disposable-postgres-runner",
+  databaseUrl: "postgres://fixture_user:fixture_pass@127.0.0.1:55432/swooshz_fixture",
+};
+const runnerOwnedEnvironment = {
+  NODE_ENV: "test",
+  RUNNER_OWNED_DATABASE_FIXTURE: "disposable-postgres-runner",
+};
+
+function createDatabaseReadinessReport(input) {
+  if (input.clientFactory && input.env?.DATABASE_OPERATOR_URL === privateDatabaseUrl) {
+    return createRawDatabaseReadinessReport({
+      ...input,
+      env: runnerOwnedEnvironment,
+      runnerOwnedFixture,
+    });
+  }
+  return createRawDatabaseReadinessReport(input);
+}
 
 test("platform DB readiness check package script exists", async () => {
   const packageJson = JSON.parse(await readFile("package.json", "utf8"));
 
   assert.equal(
     packageJson.scripts["platform:db-readiness-check"],
-    "npm run build && node scripts/platform-db-readiness-check.mjs",
+    "npm run build && node scripts/platform-db-operation-build.mjs --write-manifest && node scripts/platform-db-readiness-check.mjs",
   );
 });
 
@@ -362,7 +382,7 @@ test("retained operator routine is separate from migrator-owned application rout
   assert.match(postureQuery, /aclexplode/u);
   assert.match(postureQuery, /extension_dependency_objects/u);
   const postureCall = fixture.calls.queries.find(({ sql }) =>
-    /migrator_identity_exact/i.test(sql),
+    /provider_identity_exact/i.test(sql),
   );
   assert.deepEqual(postureCall.params[3], []);
 });
@@ -432,7 +452,8 @@ test("DB readiness CLI output is sanitized for failure states", async () => {
   });
   const lines = [];
   const report = await runPlatformDatabaseReadinessCheck({
-    env: { DATABASE_OPERATOR_URL: privateDatabaseUrl },
+    env: runnerOwnedEnvironment,
+    runnerOwnedFixture,
     expectedMigrationState,
     clientFactory() {
       return fixture.client;
@@ -469,10 +490,12 @@ function createFakeReadinessClient(options = {}) {
     options.latestMigrationCreatedAt ?? expectedMigrationState.latestCreatedAt;
   const migrationCount = options.migrationCount ?? expectedMigrationState.migrationCount;
   const migratorPosture = {
-    migrator_identity_exact: true,
+    provider_identity_exact: true,
     postgres_major_17: true,
     migrator_role_attributes_exact: true,
-    migrator_creator_admin_edge_exact: true,
+    migrator_password_null: true,
+    provider_set_capability: true,
+    application_migrator_authority_absent: true,
     migrator_database_connect_exact: true,
     migrator_database_create_absent: true,
     migrator_database_temporary_absent: true,
@@ -506,7 +529,7 @@ function createFakeReadinessClient(options = {}) {
     async query(sql, params) {
       calls.queries.push({ sql, params });
 
-      if (/migrator_identity_exact/i.test(sql)) {
+      if (/provider_identity_exact/i.test(sql)) {
         const posture = { ...migratorPosture };
         if (
           Array.isArray(options.productionSchemas) &&
@@ -557,7 +580,7 @@ function createFakeReadinessClient(options = {}) {
 }
 function getMigratorPostureQuery(fixture) {
   const postureQuery = fixture.calls.queries.find(({ sql }) =>
-    /migrator_identity_exact/i.test(sql),
+    /provider_identity_exact/i.test(sql),
   )?.sql;
   assert.equal(typeof postureQuery, "string");
   return postureQuery;
