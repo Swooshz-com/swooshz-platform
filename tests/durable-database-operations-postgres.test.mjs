@@ -31,6 +31,7 @@ import {
   computeBrokerBundleDigest,
   deriveBrokerObservationEvidence,
   normalizeBrokerAttemptReservation,
+  validateBrokerProviderFinalResultSet,
   validateLockedBrokerObservationResultSet,
   validateBrokerStatementResult,
 } from "../dist/db/brokered-migration.js";
@@ -63,7 +64,7 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
       const contextB = await compileContext(providerB, "b");
       assert.notEqual(contextA.observationBundle.target_binding.expected_cluster_system_identifier, contextB.observationBundle.target_binding.expected_cluster_system_identifier);
 
-      const adapterA = new DisposableBrokerAdapter(providerA, contextA);
+      const adapterA = new DisposableBrokerAdapter(providerA, contextA, { captureProtectedEvidence: true });
       const preEvidenceA = await adapterA.observe(canonicalSerializeBrokerBundle(contextA.observationBundle), contextA.observationBundle.bundle_digest);
       assert.equal(preEvidenceA.ledger.row_count, 9);
       assert.equal(preEvidenceA.ledger.migration_0010_absent, true);
@@ -138,6 +139,16 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
       assert.equal(adapterA.cleanupProofs, 1);
       assert.deepEqual(adapterA.dispatchedOrdinals, adapterA.dispatchedOrdinals.map((_, index) => index));
       assert.equal(adapterA.dispatchedStatementDigests.every((digest, index) => digest === adapterA.lastMutationBundle.statements[index].sha256), true);
+      assert.equal(adapterA.backendPid, adapterA.protectedEvidence[0]?.pid);
+      assert.equal(adapterA.protectedEvidence.length, 2);
+      assert.equal(adapterA.protectedEvidence[0].label, "RESTORED_PROVIDER");
+      assert.equal(adapterA.protectedEvidence[1].label, "PROVIDER_FINAL");
+      assert.equal(adapterA.protectedEvidence[0].pid, adapterA.protectedEvidence[1].pid);
+      assert.equal(adapterA.protectedEvidence[0].xact_start, adapterA.protectedEvidence[1].xact_start);
+      assert.ok(adapterA.protectedEvidence[0].advisory_lock_count >= 1);
+      assert.ok(adapterA.protectedEvidence[0].ledger_lock_count >= 1);
+      assert.ok(adapterA.protectedEvidence[1].advisory_lock_count >= 1);
+      assert.ok(adapterA.protectedEvidence[1].ledger_lock_count >= 1);
       await assert.rejects(() => attemptsA.reserveOnce(attemptsA.lastRequest), /ATTEMPT_ALREADY_CONSUMED/u);
       const finalLedgerA = await readLedger(providerA);
       assert.equal(finalLedgerA.length, 10);
@@ -246,6 +257,57 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
         await providerB.query(`drop role "run610_unknown_bridge"`);
       }
 
+      const statementByIdB = (id) => {
+        const statement = artifactsB.bundle.statements.find((entry) => entry.id === id);
+        assert.ok(statement);
+        return statement;
+      };
+      const runExpectedRollbackB = async (adapter) => {
+        const receipt = await executeBrokeredMigrationPlan({ observationBundle: contextB.observationBundle, prestate: artifactsB.prestate, plan: artifactsB.plan, migrationSql, broker: adapter, attemptStore: new SingleUseAttemptStore() });
+        assert.equal(receipt.outcome, "FAIL");
+        assert.equal(receipt.commit_state, "NOT_COMMITTED");
+        assert.equal(receipt.attempts_used, 1);
+        assert.equal(adapter.dispatchCount, 1);
+        assert.equal((await readLedger(providerB)).length, 9);
+        await assertDormantMigrator(providerB);
+        return receipt;
+      };
+      const migratorFailureAdapter = new DisposableBrokerAdapter(providerB, contextB, { failureInjection: { ordinal: statementByIdB("migrator_final_ledger_assertion").ordinal, boundary: "AFTER" } });
+      await runExpectedRollbackB(migratorFailureAdapter);
+      assert.equal(migratorFailureAdapter.dispatchedOrdinals.some((ordinal) => ordinal >= statementByIdB("provider_final_target_identity").ordinal), false);
+
+      const restorationFailureAdapter = new DisposableBrokerAdapter(providerB, contextB, { failureInjection: { ordinal: statementByIdB("restore_provider_role").ordinal, boundary: "AFTER" } });
+      await runExpectedRollbackB(restorationFailureAdapter);
+      assert.equal(restorationFailureAdapter.dispatchedOrdinals.some((ordinal) => ordinal >= statementByIdB("provider_final_target_identity").ordinal), false);
+
+      const postRestoreFailureAdapter = new DisposableBrokerAdapter(providerB, contextB, { failureInjection: { ordinal: statementByIdB("restored_provider_identity_assertion").ordinal, boundary: "AFTER" } });
+      await runExpectedRollbackB(postRestoreFailureAdapter);
+      assert.equal(postRestoreFailureAdapter.dispatchedOrdinals.some((ordinal) => ordinal >= statementByIdB("provider_final_target_identity").ordinal), false);
+
+      const wrongRestoredIdentityAdapter = new DisposableBrokerAdapter(providerB, contextB, {
+        resultOverride: (statement, rows) => statement.id === "restored_provider_identity_assertion" ? [{ ...rows[0], current_user: "platform_migrator" }] : rows,
+      });
+      await runExpectedRollbackB(wrongRestoredIdentityAdapter);
+      assert.equal(wrongRestoredIdentityAdapter.dispatchedOrdinals.includes(statementByIdB("provider_final_target_identity").ordinal), false);
+
+      const wrongRestoredOidAdapter = new DisposableBrokerAdapter(providerB, contextB, {
+        resultOverride: (statement, rows) => statement.id === "restored_provider_identity_assertion" ? [{ ...rows[0], current_role_oid: "999" }] : rows,
+      });
+      await runExpectedRollbackB(wrongRestoredOidAdapter);
+      assert.equal(wrongRestoredOidAdapter.dispatchedOrdinals.includes(statementByIdB("provider_final_target_identity").ordinal), false);
+
+      const providerIdentityFailureAdapter = new DisposableBrokerAdapter(providerB, contextB, {
+        resultOverride: (statement, rows) => statement.id === "provider_final_target_identity" ? [{ ...rows[0], session_role_oid: "999" }] : rows,
+      });
+      await runExpectedRollbackB(providerIdentityFailureAdapter);
+      assert.equal(providerIdentityFailureAdapter.dispatchedOrdinals.includes(statementByIdB("provider_final_target_identity").ordinal), true);
+
+      const providerFinalFailureAdapter = new DisposableBrokerAdapter(providerB, contextB, {
+        resultOverride: (statement, rows) => statement.id === "provider_final_migrator_dormancy" ? [{ ...rows[0], password_is_null: false }] : rows,
+      });
+      await runExpectedRollbackB(providerFinalFailureAdapter);
+      assert.equal(providerFinalFailureAdapter.dispatchedOrdinals.includes(statementByIdB("provider_final_migrator_dormancy").ordinal), true);
+
       const indeterminateStore = new SingleUseAttemptStore();
       let indeterminateDispatches = 0;
       const indeterminateAdapter = new DisposableBrokerAdapter(providerB, contextB);
@@ -300,6 +362,9 @@ class DisposableBrokerAdapter {
   lastMutationBundle = null;
   lastPreEvidence = null;
   lockedPreEvidence = null;
+  providerFinalEvidence = null;
+  protectedEvidence = [];
+  backendPid = null;
   beforeDispatchUsed = false;
   lastFailure = null;
 
@@ -307,6 +372,20 @@ class DisposableBrokerAdapter {
     this.pool = pool;
     this.context = context;
     this.options = options;
+  }
+
+  async captureProtectedEvidence(client, label) {
+    const activity = await this.pool.query("select pid, xact_start::text as xact_start from pg_catalog.pg_stat_activity where pid = $1", [client.processID]);
+    const locks = await this.pool.query("select count(*) filter (where locktype = 'advisory' and granted) as advisory_lock_count, count(*) filter (where locktype = 'relation' and relation = 'drizzle.__drizzle_migrations'::regclass and mode = 'AccessExclusiveLock' and granted) as ledger_lock_count from pg_catalog.pg_locks where pid = $1", [client.processID]);
+    assert.equal(activity.rows.length, 1);
+    assert.equal(locks.rows.length, 1);
+    this.protectedEvidence.push({
+      label,
+      pid: Number(activity.rows[0].pid),
+      xact_start: activity.rows[0].xact_start,
+      advisory_lock_count: Number(locks.rows[0].advisory_lock_count),
+      ledger_lock_count: Number(locks.rows[0].ledger_lock_count),
+    });
   }
 
   async observe(serialized, digest) {
@@ -355,8 +434,14 @@ class DisposableBrokerAdapter {
     let rolledBack = false;
     let currentStatement = null;
     let failureStage = 0;
+    let restoredProvider = false;
+    const providerFinalResultMap = {};
+    const migratorFinalIds = [];
+    const transportLoss = (boundary) => this.options.transportLoss?.boundary === boundary;
+    const transportError = (boundary) => Object.assign(new Error(`transport lost at ${boundary}`), { transportLoss: true, boundary });
     try {
       await client.query("begin isolation level serializable read write");
+      this.backendPid = client.processID;
       for (const statement of bundle.statements.filter((entry) => entry.phase !== "CLEANUP")) {
         currentStatement = statement;
         this.dispatchedOrdinals.push(statement.ordinal);
@@ -368,7 +453,7 @@ class DisposableBrokerAdapter {
         const rows = this.options.resultOverride?.(statement, result.rows) ?? result.rows;
         if (statement.phase === "ASSUME_ROLE") this.roleAssumptionStatements.push(statement.id);
         if (statement.phase === "MIGRATION") this.migrationStatements.push(statement.id);
-        const phase = statement.id.startsWith("final_") ? "FINAL" : "PREWRITE";
+        const phase = statement.phase === "MIGRATOR_VERIFY" || statement.phase === "RESTORE_PROVIDER" || statement.phase === "PROVIDER_VERIFY" ? "FINAL" : "PREWRITE";
         failureStage = 3;
         validateBrokerStatementResult(this.context.observationBundle, statement, rows, phase, statement.id === "locked_canonical_posture");
         if (statement.id.startsWith("locked_") && statement.id !== "locked_binding_assertion") {
@@ -378,14 +463,35 @@ class DisposableBrokerAdapter {
           failureStage = 4;
           this.lockedPreEvidence = validateLockedBrokerObservationResultSet(this.context.observationBundle, bundle, lockedResultMap);
         }
+        if (statement.phase === "MIGRATOR_VERIFY") migratorFinalIds.push(statement.id);
+        if (statement.id === "restored_provider_identity_assertion") restoredProvider = true;
+        if (statement.phase === "PROVIDER_VERIFY") {
+          if (!restoredProvider) throw new Error("BROKER_PROVIDER_FINAL_BEFORE_RESTORATION");
+          providerFinalResultMap[statement.id] = rows;
+        }
         failureStage = 5;
         if (sameInjection(this.options.failureInjection, statement.ordinal, "AFTER")) throw injectedFailure(this.options.failureInjection);
+        if (statement.id === "restored_provider_identity_assertion" && transportLoss("RESTORE_PROVIDER")) throw transportError("RESTORE_PROVIDER");
+        if (statement.phase === "PROVIDER_VERIFY" && transportLoss("PROVIDER_VERIFY")) throw transportError("PROVIDER_VERIFY");
+        if (this.options.captureProtectedEvidence && statement.id === "restored_provider_identity_assertion") await this.captureProtectedEvidence(client, "RESTORED_PROVIDER");
       }
+      assert.deepEqual(migratorFinalIds, ["migrator_final_ledger_assertion", "migrator_final_role_data_assertion", "migrator_final_identity_assertion"]);
+      failureStage = 4;
+      this.providerFinalEvidence = validateBrokerProviderFinalResultSet(this.context.observationBundle, bundle, providerFinalResultMap);
+      if (this.options.captureProtectedEvidence) await this.captureProtectedEvidence(client, "PROVIDER_FINAL");
       failureStage = 6;
+      if (transportLoss("COMMIT")) {
+        await client.query("commit");
+        throw transportError("COMMIT");
+      }
       await client.query("commit");
       committed = true;
     } catch (error) {
       this.lastFailure = { ordinal: currentStatement?.ordinal ?? -1, stage: failureStage, code: typeof error?.code === "string" ? error.code : error?.message ?? "NONE" };
+      if (error?.transportLoss) {
+        client.release(true);
+        throw error;
+      }
       await client.query("rollback");
       rolledBack = true;
     }
@@ -393,10 +499,17 @@ class DisposableBrokerAdapter {
     try {
       const cleanup = bundle.statements.find((entry) => entry.phase === "CLEANUP");
       assert.ok(cleanup);
+      if (transportLoss("CLEANUP")) {
+        await client.query(cleanup.sql);
+        throw transportError("CLEANUP");
+      }
       const result = await client.query(cleanup.sql);
       validateBrokerStatementResult(this.context.observationBundle, cleanup, result.rows, "FINAL");
       cleanupState = "DISCARDED";
       this.cleanupProofs += 1;
+    } catch (error) {
+      cleanupState = error?.transportLoss ? "INDETERMINATE" : "FAILED";
+      this.lastFailure ??= { ordinal: 39, stage: 7, code: typeof error?.code === "string" ? error.code : error?.message ?? "NONE" };
     } finally {
       client.release(true);
     }

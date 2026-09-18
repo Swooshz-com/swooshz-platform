@@ -65,6 +65,7 @@ import {
   deriveBrokerObservationEvidence,
   normalizeBrokerAttemptReservation,
   normalizeBrokerObservationEvidence,
+  validateBrokerProviderFinalResultSet,
   validateBrokerMutationResult,
   validateBrokerStatementResult,
   validateLockedBrokerObservationResultSet,
@@ -205,13 +206,17 @@ function reservationForRequest(input) {
 }
 
 function resultFor(bundle, reservation) {
+  return resultForState(bundle, reservation, "COMMITTED", "DISCARDED");
+}
+
+function resultForState(bundle, reservation, commit_state, cleanup_state) {
   const payload = {
     version: BROKER_RESULT_VERSION,
     mutation_bundle_digest: bundle.bundle_digest,
     reservation_digest: reservation.reservation_digest,
     dispatch_state: "DISPATCHED",
-    commit_state: "COMMITTED",
-    cleanup_state: "DISCARDED",
+    commit_state,
+    cleanup_state,
     migration_tag: "0010_admin_operator_viewer_role_collapse",
     migration_sql_sha256: "452829e49a5571a8b4e14a2cbf155e671fe81ef8ee2fa3583935b7cc2ffd996b",
     safe_result_digest: "8".repeat(64),
@@ -247,10 +252,38 @@ function tamperStatement(bundle, ordinal, change) {
   };
 }
 
+function rehashMutationBundle(bundle) {
+  const { bundle_digest: _ignored, ...payload } = bundle;
+  return { ...payload, bundle_digest: computeBrokerBundleDigest(BROKER_MUTATION_BUNDLE_DOMAIN_SEPARATOR, payload) };
+}
+
 async function mutationFixture() {
   const { observationBundle, evidence } = brokerFixture();
   const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
   return { observationBundle, evidence, migrationSql, ...durableV2Artifacts(observationBundle, evidence, migrationSql) };
+}
+
+async function providerFinalResultMap(observationBundle, evidence) {
+  const journal = JSON.parse(await readFile("drizzle/migrations/meta/_journal.json", "utf8"));
+  const ledger = await Promise.all(journal.entries.slice(0, 9).map(async (entry, index) => ({
+    id: index + 1,
+    hash: createHash("sha256").update(await readFile(`drizzle/migrations/${entry.tag}.sql`, "utf8")).digest("hex"),
+    created_at: String(entry.when),
+  })));
+  ledger.push({ id: 10, hash: "452829e49a5571a8b4e14a2cbf155e671fe81ef8ee2fa3583935b7cc2ffd996b", created_at: "1787479999088" });
+  const posture = observationBundle.statements.find((entry) => entry.id === "canonical_posture");
+  const roleData = observationBundle.statements.find((entry) => entry.id === "role_data_invariants");
+  assert.ok(posture);
+  assert.ok(roleData);
+  return {
+    provider_final_target_identity: [{ ...evidence.provider, ...evidence.target }],
+    provider_final_migrator_dormancy: [{ ...evidence.migrator }],
+    provider_final_authority_graph_nodes: evidence.authority_graph.nodes,
+    provider_final_authority_graph_edges: evidence.authority_graph.edges,
+    provider_final_migration_ledger: ledger,
+    provider_final_canonical_posture: [Object.fromEntries(posture.result_schema.map((key) => [key, true]))],
+    provider_final_role_data_invariants: [{ role_labels: "admin,operator,viewer", ...Object.fromEntries(roleData.result_schema.slice(1).map((key) => [key, true])) }],
+  };
 }
 
 test("blocking advisory lock compiler and native result contract are exact and fail closed before downstream dispatch", async () => {
@@ -311,6 +344,16 @@ test("blocking advisory lock compiler and native result contract are exact and f
 test("mutation, reservation, and result bindings reject deterministic identity and tamper matrices", async () => {
   const { observationBundle, evidence, migrationSql } = await mutationFixture();
   const { bundle } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+  assert.throws(
+    () => compileBrokerMutationBundle({
+      observation_bundle: { ...observationBundle, statements: [observationBundle.statements[1], observationBundle.statements[0], ...observationBundle.statements.slice(2)] },
+      observation_evidence: evidence,
+      prestate_digest: "9".repeat(64),
+      plan_digest: "a".repeat(64),
+      migration_sql: migrationSql,
+    }),
+    /BROKER_OBSERVATION_BUNDLE_REJECTED/u,
+  );
   const tamperedBundles = [
     ["statement id", tamperStatement(bundle, 0, { id: "wrong_lock" })],
     ["ordinal", tamperStatement(bundle, 0, { ordinal: 1 })],
@@ -348,6 +391,17 @@ test("mutation, reservation, and result bindings reject deterministic identity a
     { ...result, safe_result_digest: "9".repeat(64) },
     { ...result, result_digest: "a".repeat(64) },
   ]) assert.throws(() => validateBrokerMutationResult(candidate, bundle, reservation), /BROKER_RESULT_INVALID/u);
+  for (const [dispatch_state, commit_state, cleanup_state] of [
+    ["NOT_DISPATCHED", "COMMITTED", "DISCARDED"],
+    ["NOT_DISPATCHED", "NOT_COMMITTED", "FAILED"],
+    ["INDETERMINATE", "NOT_COMMITTED", "INDETERMINATE"],
+    ["DISPATCHED", "INDETERMINATE", "DISCARDED"],
+  ]) {
+    const contradictory = resultForState(bundle, reservation, commit_state, cleanup_state);
+    contradictory.dispatch_state = dispatch_state;
+    contradictory.result_digest = computeBrokerBundleDigest(BROKER_RESULT_DOMAIN_SEPARATOR, Object.fromEntries(Object.entries(contradictory).filter(([key]) => key !== "result_digest")));
+    assert.throws(() => validateBrokerMutationResult(contradictory, bundle, reservation), /BROKER_RESULT_INVALID/u);
+  }
   assert.doesNotThrow(() => validateBrokerMutationResult(result, bundle, reservation));
 });
 
@@ -388,6 +442,111 @@ test("broker bundles are canonical, target-bound, and contain the exact 0010 tra
   assert.doesNotMatch(authorityGraphEdges.sql, /join role_closure closure on/u);
   assert.equal(canonicalSerializeBrokerBundle(bundle).includes("postgres://"), false);
   assert.equal(canonicalSerializeBrokerBundle(bundle).includes("rolpassword,"), false);
+});
+
+test("Repair-2 binds the v2 mutation tail and validates provider FINAL as an exact graph-first result set", async () => {
+  const { observationBundle, evidence, bundle } = await mutationFixture();
+  assert.equal(bundle.version, "platform-db-broker-mutation-bundle-v2");
+  assert.equal(BROKER_MUTATION_BUNDLE_DOMAIN_SEPARATOR, "Swooshz-platform:platform-db-broker-mutation-bundle-v2\0");
+  assert.equal(bundle.statements.length, 40);
+  assert.deepEqual(
+    bundle.statements.slice(0, 27).map(({ ordinal, id, phase }) => ({ ordinal, id, phase })),
+    [
+      { ordinal: 0, id: "target_advisory_lock", phase: "LOCK" },
+      { ordinal: 1, id: "ledger_lock", phase: "LOCK" },
+      { ordinal: 2, id: "locked_provider_target_identity", phase: "ADMISSION" },
+      { ordinal: 3, id: "locked_migrator_dormancy", phase: "ADMISSION" },
+      { ordinal: 4, id: "locked_authority_graph_nodes", phase: "ADMISSION" },
+      { ordinal: 5, id: "locked_authority_graph_edges", phase: "ADMISSION" },
+      { ordinal: 6, id: "locked_migration_ledger", phase: "ADMISSION" },
+      { ordinal: 7, id: "locked_canonical_posture", phase: "ADMISSION" },
+      { ordinal: 8, id: "locked_role_data_invariants", phase: "ADMISSION" },
+      { ordinal: 9, id: "locked_binding_assertion", phase: "ADMISSION" },
+      { ordinal: 10, id: "set_local_migrator", phase: "ASSUME_ROLE" },
+      { ordinal: 11, id: "assumed_identity_assertion", phase: "ASSUME_ROLE" },
+      { ordinal: 12, id: "set_local_search_path", phase: "ASSUME_ROLE" },
+      ...Array.from({ length: 13 }, (_, index) => ({ ordinal: 13 + index, id: `migration_0010_${String(index).padStart(2, "0")}`, phase: "MIGRATION" })),
+      { ordinal: 26, id: "migration_0010_ledger_insert", phase: "LEDGER" },
+    ],
+  );
+  assert.deepEqual(
+    bundle.statements.slice(27).map(({ ordinal, id, phase }) => ({ ordinal, id, phase })),
+    [
+      { ordinal: 27, id: "migrator_final_ledger_assertion", phase: "MIGRATOR_VERIFY" },
+      { ordinal: 28, id: "migrator_final_role_data_assertion", phase: "MIGRATOR_VERIFY" },
+      { ordinal: 29, id: "migrator_final_identity_assertion", phase: "MIGRATOR_VERIFY" },
+      { ordinal: 30, id: "restore_provider_role", phase: "RESTORE_PROVIDER" },
+      { ordinal: 31, id: "restored_provider_identity_assertion", phase: "RESTORE_PROVIDER" },
+      { ordinal: 32, id: "provider_final_target_identity", phase: "PROVIDER_VERIFY" },
+      { ordinal: 33, id: "provider_final_migrator_dormancy", phase: "PROVIDER_VERIFY" },
+      { ordinal: 34, id: "provider_final_authority_graph_nodes", phase: "PROVIDER_VERIFY" },
+      { ordinal: 35, id: "provider_final_authority_graph_edges", phase: "PROVIDER_VERIFY" },
+      { ordinal: 36, id: "provider_final_migration_ledger", phase: "PROVIDER_VERIFY" },
+      { ordinal: 37, id: "provider_final_canonical_posture", phase: "PROVIDER_VERIFY" },
+      { ordinal: 38, id: "provider_final_role_data_invariants", phase: "PROVIDER_VERIFY" },
+      { ordinal: 39, id: "cleanup_identity_assertion", phase: "CLEANUP" },
+    ],
+  );
+  assert.equal(bundle.statements[30].sql, "SET LOCAL ROLE NONE");
+  assert.equal(bundle.statements.every((entry) => entry.sha256 === createHash("sha256").update(entry.sql, "utf8").digest("hex")), true);
+  assert.equal(bundle.statements.slice(27).every((entry) => entry.mutating === false), true);
+
+  const assumedIdentity = bundle.statements.find((entry) => entry.id === "assumed_identity_assertion");
+  const migratorFinalIdentity = bundle.statements.find((entry) => entry.id === "migrator_final_identity_assertion");
+  const restoredIdentity = bundle.statements.find((entry) => entry.id === "restored_provider_identity_assertion");
+  const cleanupIdentity = bundle.statements.find((entry) => entry.id === "cleanup_identity_assertion");
+  const migratorIdentity = [{ current_user: "platform_migrator", session_user: "cloud_admin", current_role_oid: "4", session_role_oid: "1" }];
+  const providerIdentity = [{ current_user: "cloud_admin", session_user: "cloud_admin", current_role_oid: "1", session_role_oid: "1" }];
+  assert.doesNotThrow(() => validateBrokerStatementResult(observationBundle, assumedIdentity, migratorIdentity));
+  assert.doesNotThrow(() => validateBrokerStatementResult(observationBundle, migratorFinalIdentity, migratorIdentity, "FINAL"));
+  assert.doesNotThrow(() => validateBrokerStatementResult(observationBundle, restoredIdentity, providerIdentity, "FINAL"));
+  assert.doesNotThrow(() => validateBrokerStatementResult(observationBundle, cleanupIdentity, providerIdentity, "FINAL"));
+  for (const changed of [
+    [{ ...migratorIdentity[0], current_user: "cloud_admin" }],
+    [{ ...migratorIdentity[0], session_user: "platform_app" }],
+    [{ ...migratorIdentity[0], current_role_oid: "99" }],
+    [{ ...migratorIdentity[0], session_role_oid: "99" }],
+    [{ ...migratorIdentity[0], extra: false }],
+    [],
+  ]) assert.throws(() => validateBrokerStatementResult(observationBundle, migratorFinalIdentity, changed, "FINAL"), /BROKER_(?:SESSION_IDENTITY_REJECTED|STATEMENT_RESULT_REJECTED|ARTIFACT_INVALID)/u);
+  for (const changed of [
+    [{ ...providerIdentity[0], current_user: "platform_migrator" }],
+    [{ ...providerIdentity[0], session_user: "platform_app" }],
+    [{ ...providerIdentity[0], current_role_oid: "99" }],
+    [{ ...providerIdentity[0], session_role_oid: "99" }],
+    [{ ...providerIdentity[0], extra: false }],
+    [],
+  ]) assert.throws(() => validateBrokerStatementResult(observationBundle, restoredIdentity, changed, "FINAL"), /BROKER_(?:SESSION_IDENTITY_REJECTED|STATEMENT_RESULT_REJECTED|ARTIFACT_INVALID)/u);
+
+  const finalResults = await providerFinalResultMap(observationBundle, evidence);
+  const finalEvidence = validateBrokerProviderFinalResultSet(observationBundle, bundle, finalResults);
+  assert.equal(finalEvidence.ledger.row_count, 10);
+  assert.equal(finalEvidence.ledger.migration_0010_absent, false);
+  assert.equal(finalEvidence.authority_graph.closure_complete, true);
+  assert.equal(finalEvidence.migrator.password_is_null, true);
+  for (const changedBundle of [
+    rehashMutationBundle({ ...bundle, statements: bundle.statements.map((entry) => entry.ordinal === 32 ? { ...entry, phase: "MIGRATOR_VERIFY" } : entry) }),
+    rehashMutationBundle({ ...bundle, statements: bundle.statements.map((entry) => entry.ordinal === 35 ? { ...entry, sha256: "f".repeat(64) } : entry) }),
+    rehashMutationBundle({ ...bundle, statements: bundle.statements.map((entry) => entry.ordinal === 37 ? { ...entry, result_schema: ["wrong"] } : entry) }),
+    rehashMutationBundle({ ...bundle, statements: bundle.statements.map((entry) => entry.ordinal === 38 ? { ...entry, mutating: true } : entry) }),
+    rehashMutationBundle({ ...bundle, statements: bundle.statements.map((entry) => entry.ordinal === 34 ? { ...entry, ordinal: 35 } : entry) }),
+  ]) assert.throws(() => validateBrokerProviderFinalResultSet(observationBundle, changedBundle, finalResults), /BROKER_PROVIDER_FINAL_RESULT_SET_REJECTED/u);
+  assert.throws(() => validateBrokerProviderFinalResultSet(observationBundle, bundle, { ...finalResults, provider_final_role_data_invariants: undefined }), /BROKER_/u);
+  assert.throws(() => validateBrokerProviderFinalResultSet(observationBundle, bundle, { ...finalResults, extra: [] }), /BROKER_/u);
+  for (const changedResults of [
+    { ...finalResults, provider_final_migrator_dormancy: [{ ...finalResults.provider_final_migrator_dormancy[0], rolcanlogin: true }] },
+    { ...finalResults, provider_final_migrator_dormancy: [{ ...finalResults.provider_final_migrator_dormancy[0], password_is_null: false }] },
+    { ...finalResults, provider_final_role_data_invariants: [{ ...finalResults.provider_final_role_data_invariants[0], role_values_valid: null }] },
+    { ...finalResults, provider_final_role_data_invariants: [{ ...finalResults.provider_final_role_data_invariants[0], active_workspace_admin_valid: "true" }] },
+    { ...finalResults, provider_final_canonical_posture: [{ ...finalResults.provider_final_canonical_posture[0], application_migrator_authority_absent: false }] },
+  ]) assert.throws(() => validateBrokerProviderFinalResultSet(observationBundle, bundle, changedResults), /BROKER_/u);
+  const directForbiddenEdge = {
+    granted_role: "platform_migrator", granted_role_oid: "4", member: "platform_app", member_oid: "2", grantor: "cloud_admin", grantor_oid: "1", admin_option: false, inherit_option: false, set_option: false,
+  };
+  assert.throws(() => validateBrokerProviderFinalResultSet(observationBundle, bundle, { ...finalResults, provider_final_authority_graph_edges: [...finalResults.provider_final_authority_graph_edges, directForbiddenEdge] }), /BROKER_AUTHORITY_GRAPH_REJECTED/u);
+  const bridgeNode = { role_name: "run618_unknown_bridge", role_oid: "5", rolsuper: false, rolcreaterole: false };
+  const bridgeEdge = { granted_role: "platform_migrator", granted_role_oid: "4", member: "run618_unknown_bridge", member_oid: "5", grantor: "cloud_admin", grantor_oid: "1", admin_option: false, inherit_option: false, set_option: true };
+  assert.throws(() => validateBrokerProviderFinalResultSet(observationBundle, bundle, { ...finalResults, provider_final_authority_graph_nodes: [...finalResults.provider_final_authority_graph_nodes, bridgeNode], provider_final_authority_graph_edges: [...finalResults.provider_final_authority_graph_edges, bridgeEdge] }), /BROKER_AUTHORITY_GRAPH_REJECTED/u);
 });
 
 test("broker evidence rejects target, dormancy, graph, and application authority drift before reservation", () => {
@@ -569,6 +728,35 @@ test("pre-dispatch rejection consumes no attempt and an indeterminate dispatch i
   assert.equal(failed.dispatch_state, "INDETERMINATE");
   assert.equal(dispatches, 1);
   assert.equal(reservations, 1);
+});
+
+test("confirmed commit with cleanup failure is terminal and does not trigger a fresh observation", async () => {
+  const { observationBundle, evidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  const { prestate, plan } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+  let observes = 0;
+  let dispatches = 0;
+  const receipt = await executeBrokeredMigrationPlan({
+    observationBundle,
+    prestate,
+    plan,
+    migrationSql,
+    broker: {
+      async observe() { observes += 1; return evidence; },
+      async dispatchMutation(serialized, _digest, reservation) {
+        dispatches += 1;
+        return resultForState(JSON.parse(serialized), reservation, "COMMITTED", "FAILED");
+      },
+    },
+    attemptStore: { async reserveOnce(input) { return reservationForRequest(input); } },
+  });
+  assert.equal(receipt.outcome, "FAIL");
+  assert.equal(receipt.phase, "SESSION_CLEANUP");
+  assert.equal(receipt.commit_state, "COMMITTED");
+  assert.equal(receipt.cleanup_state, "FAILED");
+  assert.equal(receipt.final_observation_state, "NOT_RUN");
+  assert.equal(observes, 1);
+  assert.equal(dispatches, 1);
 });
 
 test("broker execution rejects a reservation for different exact bundle bytes before dispatch", async () => {

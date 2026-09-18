@@ -13,7 +13,7 @@ export const BROKER_TARGET_BINDING_VERSION = "platform-db-broker-target-v2" as c
 export const BROKER_OBSERVATION_BUNDLE_VERSION = "platform-db-broker-observation-bundle-v1" as const;
 export const BROKER_OBSERVATION_EVIDENCE_VERSION = "platform-db-broker-observation-evidence-v1" as const;
 export const BROKER_AUTHORITY_CLASSIFICATION_VERSION = "platform-db-broker-authority-classification-v1" as const;
-export const BROKER_MUTATION_BUNDLE_VERSION = "platform-db-broker-mutation-bundle-v1" as const;
+export const BROKER_MUTATION_BUNDLE_VERSION = "platform-db-broker-mutation-bundle-v2" as const;
 export const BROKER_ATTEMPT_RESERVATION_VERSION = "platform-db-migration-attempt-reservation-v1" as const;
 export const BROKER_RESULT_VERSION = "platform-db-broker-result-v1" as const;
 
@@ -21,7 +21,7 @@ export const BROKER_TARGET_BINDING_DOMAIN_SEPARATOR = "Swooshz-platform:platform
 export const BROKER_OBSERVATION_BUNDLE_DOMAIN_SEPARATOR = "Swooshz-platform:platform-db-broker-observation-bundle-v1\0" as const;
 export const BROKER_OBSERVATION_EVIDENCE_DOMAIN_SEPARATOR = "Swooshz-platform:platform-db-broker-observation-evidence-v1\0" as const;
 export const BROKER_AUTHORITY_CLASSIFICATION_DOMAIN_SEPARATOR = "Swooshz-platform:platform-db-broker-authority-classification-v1\0" as const;
-export const BROKER_MUTATION_BUNDLE_DOMAIN_SEPARATOR = "Swooshz-platform:platform-db-broker-mutation-bundle-v1\0" as const;
+export const BROKER_MUTATION_BUNDLE_DOMAIN_SEPARATOR = "Swooshz-platform:platform-db-broker-mutation-bundle-v2\0" as const;
 export const BROKER_ATTEMPT_RESERVATION_DOMAIN_SEPARATOR = "Swooshz-platform:platform-db-migration-attempt-reservation-v1\0" as const;
 export const BROKER_RESULT_DOMAIN_SEPARATOR = "Swooshz-platform:platform-db-broker-result-v1\0" as const;
 
@@ -51,6 +51,21 @@ const ROLE_DATA_RESULT_SCHEMA = Object.freeze([
   "nullable_requester_valid",
   "bootstrap_cardinality_valid",
   "active_workspace_admin_valid",
+]);
+const IDENTITY_ASSERTION_RESULT_SCHEMA = Object.freeze([
+  "current_user",
+  "session_user",
+  "current_role_oid",
+  "session_role_oid",
+]);
+const PROVIDER_FINAL_OBSERVATION_IDS = Object.freeze([
+  "provider_final_target_identity",
+  "provider_final_migrator_dormancy",
+  "provider_final_authority_graph_nodes",
+  "provider_final_authority_graph_edges",
+  "provider_final_migration_ledger",
+  "provider_final_canonical_posture",
+  "provider_final_role_data_invariants",
 ]);
 
 export interface BrokerTargetBindingV2 {
@@ -87,7 +102,7 @@ export interface BrokerAuthorityClassificationV1 {
 export interface BrokerStatementV1 {
   readonly ordinal: number;
   readonly id: string;
-  readonly phase: "OBSERVE" | "ADMISSION" | "LOCK" | "ASSUME_ROLE" | "MIGRATION" | "LEDGER" | "VERIFY" | "CLEANUP";
+  readonly phase: "OBSERVE" | "ADMISSION" | "LOCK" | "ASSUME_ROLE" | "MIGRATION" | "LEDGER" | "MIGRATOR_VERIFY" | "RESTORE_PROVIDER" | "PROVIDER_VERIFY" | "CLEANUP";
   readonly sql: string;
   readonly sha256: string;
   readonly mutating: boolean;
@@ -358,12 +373,8 @@ function compiledCanonicalPostureSql(): string {
     .replaceAll("$4::text[]", sqlTextArray(CANONICAL_PLATFORM_ROUTINES));
 }
 
-function compiledAssumedRolePostureSql(providerRoleName: string): string {
-  const provider = providerRoleName.replaceAll("'", "''");
-  return compiledCanonicalPostureSql().replace(
-    "current_user = session_user\n    and current_user not in ('platform_app', 'platform_runtime')",
-    `current_user = 'platform_migrator'\n    and session_user = '${provider}'`,
-  );
+function identityAssertionSql(): string {
+  return "select current_user, session_user, (select oid::text from pg_catalog.pg_roles where rolname = current_user) as current_role_oid, (select oid::text from pg_catalog.pg_roles where rolname = session_user) as session_role_oid";
 }
 
 const ROLE_DATA_INVARIANTS_SQL = `select
@@ -479,7 +490,35 @@ export function validateBrokerStatementResult(
     candidate.sql === brokerStatement.sql &&
     canonicalSerializeBrokerBundle(candidate.result_schema) === canonicalSerializeBrokerBundle(brokerStatement.result_schema));
   const rows = exactResultRows(rawRows, brokerStatement.result_schema, brokerStatement.result_schema.length === 0 ? 0 : undefined);
-  if (sourceIndex === 0) {
+  const finalResultIds = [
+    "migrator_final_ledger_assertion",
+    "migrator_final_role_data_assertion",
+    "migrator_final_identity_assertion",
+    ...PROVIDER_FINAL_OBSERVATION_IDS,
+  ];
+  if (finalResultIds.includes(brokerStatement.id) && phase !== "FINAL") reject("BROKER_STATEMENT_RESULT_REJECTED");
+  if (brokerStatement.id === "target_advisory_lock") {
+    if (brokerStatement.phase !== "LOCK" || brokerStatement.mutating !== false || rows.length !== 1 || rows[0]!.lock_acquired !== true) reject("BROKER_STATEMENT_RESULT_REJECTED");
+  } else if (brokerStatement.id === "locked_binding_assertion") {
+    if (brokerStatement.phase !== "ADMISSION" || rows.length !== 1 || rows[0]!.contract_digest !== observationBundle.contract_digest || rows[0]!.source_manifest_digest !== observationBundle.source_manifest_digest || rows[0]!.build_manifest_digest !== observationBundle.build_manifest_digest || rows[0]!.target_binding_digest !== observationBundle.target_binding_digest || rows[0]!.authority_classification_digest !== observationBundle.authority_classification_digest || ["observation_evidence_digest", "prestate_digest", "plan_digest"].some((key) => !HEX64.test(String(rows[0]![key])))) reject("BROKER_STATEMENT_RESULT_REJECTED");
+  } else if (brokerStatement.id === "assumed_identity_assertion" || brokerStatement.id === "migrator_final_identity_assertion") {
+    const migratorOid = observationBundle.authority_classification.nodes.find((node) => node.role_name === "platform_migrator")?.role_oid;
+    if (brokerStatement.id === "assumed_identity_assertion" && brokerStatement.phase !== "ASSUME_ROLE") reject("BROKER_SESSION_IDENTITY_REJECTED");
+    if (brokerStatement.id === "migrator_final_identity_assertion" && brokerStatement.phase !== "MIGRATOR_VERIFY") reject("BROKER_SESSION_IDENTITY_REJECTED");
+    if (rows.length !== 1 || rows[0]!.current_user !== "platform_migrator" || rows[0]!.session_user !== observationBundle.target_binding.expected_provider_role_name || String(rows[0]!.current_role_oid) !== migratorOid || String(rows[0]!.session_role_oid) !== observationBundle.target_binding.expected_provider_role_oid) reject("BROKER_SESSION_IDENTITY_REJECTED");
+  } else if (brokerStatement.id === "restored_provider_identity_assertion" || brokerStatement.id === "cleanup_identity_assertion") {
+    if ((brokerStatement.id === "restored_provider_identity_assertion" && brokerStatement.phase !== "RESTORE_PROVIDER") || (brokerStatement.id === "cleanup_identity_assertion" && brokerStatement.phase !== "CLEANUP") || rows.length !== 1 || rows[0]!.current_user !== observationBundle.target_binding.expected_provider_role_name || rows[0]!.session_user !== observationBundle.target_binding.expected_provider_role_name || String(rows[0]!.current_role_oid) !== observationBundle.target_binding.expected_provider_role_oid || String(rows[0]!.session_role_oid) !== observationBundle.target_binding.expected_provider_role_oid) reject("BROKER_SESSION_IDENTITY_REJECTED");
+  } else if (brokerStatement.id === "restore_provider_role") {
+    if (brokerStatement.phase !== "RESTORE_PROVIDER" || brokerStatement.sql !== "SET LOCAL ROLE NONE" || brokerStatement.mutating !== false || rows.length !== 0) reject("BROKER_SESSION_IDENTITY_REJECTED");
+  } else if (brokerStatement.id === "migrator_final_ledger_assertion" || brokerStatement.id === "provider_final_migration_ledger") {
+    if (sourceIndex !== 4 || brokerStatement.phase !== (brokerStatement.id === "migrator_final_ledger_assertion" ? "MIGRATOR_VERIFY" : "PROVIDER_VERIFY")) reject("BROKER_MIGRATION_IDENTITY_REJECTED");
+    normalizedLedgerRows(rows, "FINAL");
+  } else if (brokerStatement.id === "migrator_final_role_data_assertion" || brokerStatement.id === "provider_final_role_data_invariants") {
+    if (sourceIndex !== 6 || brokerStatement.phase !== (brokerStatement.id === "migrator_final_role_data_assertion" ? "MIGRATOR_VERIFY" : "PROVIDER_VERIFY")) reject("BROKER_CANONICAL_POSTURE_REJECTED");
+    if (rows.length !== 1 || rows[0]!.role_labels !== "admin,operator,viewer" || ROLE_DATA_RESULT_SCHEMA.slice(1).some((key) => rows[0]![key] !== true)) reject("BROKER_CANONICAL_POSTURE_REJECTED");
+  } else if (brokerStatement.id === "provider_final_canonical_posture") {
+    if (sourceIndex !== 5 || brokerStatement.phase !== "PROVIDER_VERIFY" || brokerStatement.mutating !== false || rows.length !== 1 || brokerStatement.result_schema.some((key) => rows[0]![key] !== true)) reject("BROKER_CANONICAL_POSTURE_REJECTED");
+  } else if (sourceIndex === 0) {
     if (rows.length !== 1) reject("BROKER_SESSION_IDENTITY_REJECTED");
     const row = rows[0]!;
     const target = observationBundle.target_binding;
@@ -499,16 +538,6 @@ export function validateBrokerStatementResult(
     if (rows.length !== 1) reject("BROKER_CANONICAL_POSTURE_REJECTED");
     const expectedLabels = phase === "PREWRITE" ? "owner,admin,member,viewer" : "admin,operator,viewer";
     if (rows[0]!.role_labels !== expectedLabels || ROLE_DATA_RESULT_SCHEMA.slice(1).some((key) => rows[0]![key] !== true)) reject("BROKER_CANONICAL_POSTURE_REJECTED");
-  } else if (brokerStatement.id === "assumed_identity_assertion" || brokerStatement.id === "final_role_assertion") {
-    if (rows.length !== 1 || rows[0]!.current_user !== "platform_migrator" || rows[0]!.session_user !== observationBundle.target_binding.expected_provider_role_name || String(rows[0]!.current_role_oid) !== observationBundle.authority_classification.nodes.find((node) => node.role_name === "platform_migrator")?.role_oid || String(rows[0]!.session_role_oid) !== observationBundle.target_binding.expected_provider_role_oid) reject("BROKER_SESSION_IDENTITY_REJECTED");
-  } else if (brokerStatement.id === "cleanup_identity_assertion") {
-    if (rows.length !== 1 || rows[0]!.current_user !== observationBundle.target_binding.expected_provider_role_name || rows[0]!.session_user !== observationBundle.target_binding.expected_provider_role_name || String(rows[0]!.current_role_oid) !== observationBundle.target_binding.expected_provider_role_oid || String(rows[0]!.session_role_oid) !== observationBundle.target_binding.expected_provider_role_oid) reject("BROKER_SESSION_IDENTITY_REJECTED");
-  } else if (brokerStatement.id === "final_canonical_posture_assertion") {
-    if (rows.length !== 1 || brokerStatement.result_schema.some((key) => rows[0]![key] !== true)) reject("BROKER_CANONICAL_POSTURE_REJECTED");
-  } else if (brokerStatement.id === "target_advisory_lock") {
-    if (rows.length !== 1 || rows[0]!.lock_acquired !== true) reject("BROKER_STATEMENT_RESULT_REJECTED");
-  } else if (brokerStatement.id === "locked_binding_assertion") {
-    if (rows.length !== 1 || rows[0]!.contract_digest !== observationBundle.contract_digest || rows[0]!.source_manifest_digest !== observationBundle.source_manifest_digest || rows[0]!.build_manifest_digest !== observationBundle.build_manifest_digest || rows[0]!.target_binding_digest !== observationBundle.target_binding_digest || rows[0]!.authority_classification_digest !== observationBundle.authority_classification_digest || ["observation_evidence_digest", "prestate_digest", "plan_digest"].some((key) => !HEX64.test(String(rows[0]![key])))) reject("BROKER_STATEMENT_RESULT_REJECTED");
   } else if (sourceIndex < 0 && brokerStatement.result_schema.length > 0) {
     reject("BROKER_STATEMENT_RESULT_REJECTED");
   }
@@ -576,6 +605,38 @@ export function deriveBrokerObservationEvidence(
     canonical_posture_digest: computeBrokerBundleDigest("Swooshz-platform:platform-db-canonical-posture-v1\0", posturePayload),
   };
   return Object.freeze({ ...payload, evidence_digest: computeBrokerBundleDigest(BROKER_OBSERVATION_EVIDENCE_DOMAIN_SEPARATOR, payload) });
+}
+
+export function validateBrokerProviderFinalResultSet(
+  observationBundle: BrokerObservationBundleV1,
+  mutationBundle: BrokerMutationBundleV1,
+  resultMap: BrokerStatementResultMapV1,
+): BrokerObservationEvidenceV1 {
+  if (!isRecord(resultMap) || mutationBundle.version !== BROKER_MUTATION_BUNDLE_VERSION || mutationBundle.statements.length !== 40) reject("BROKER_PROVIDER_FINAL_RESULT_SET_REJECTED");
+  exactKeys(resultMap as Record<string, unknown>, PROVIDER_FINAL_OBSERVATION_IDS);
+  const mutationPayload = withoutDigest(mutationBundle as unknown as Record<string, unknown>, "bundle_digest");
+  if (mutationBundle.bundle_digest !== computeBrokerBundleDigest(BROKER_MUTATION_BUNDLE_DOMAIN_SEPARATOR, mutationPayload)) reject("BROKER_PROVIDER_FINAL_RESULT_SET_REJECTED");
+  const sourceIds = [
+    "provider_target_identity",
+    "migrator_dormancy",
+    "authority_graph_nodes",
+    "authority_graph_edges",
+    "migration_ledger",
+    "canonical_posture",
+    "role_data_invariants",
+  ];
+  const finalResults: Record<string, readonly Record<string, unknown>[]> = {};
+  for (const [index, finalId] of PROVIDER_FINAL_OBSERVATION_IDS.entries()) {
+    const source = observationBundle.statements[index];
+    const statementEntry = mutationBundle.statements[32 + index];
+    if (!source || source.id !== sourceIds[index] || source.ordinal !== index || source.phase !== "OBSERVE" || source.mutating !== false || source.sha256 !== sha256(source.sql)
+      || !statementEntry || statementEntry.ordinal !== 32 + index || statementEntry.id !== finalId || statementEntry.phase !== "PROVIDER_VERIFY" || statementEntry.mutating !== false
+      || statementEntry.sql !== source.sql || statementEntry.sha256 !== source.sha256 || statementEntry.sha256 !== sha256(statementEntry.sql)
+      || canonicalSerializeBrokerBundle(statementEntry.result_schema) !== canonicalSerializeBrokerBundle(source.result_schema)) reject("BROKER_PROVIDER_FINAL_RESULT_SET_REJECTED");
+    const rows = validateBrokerStatementResult(observationBundle, statementEntry, resultMap[finalId], "FINAL");
+    finalResults[source.id] = rows;
+  }
+  return deriveBrokerObservationEvidence(observationBundle, finalResults, "FINAL");
 }
 
 function validateAuthorityGraph(
@@ -738,6 +799,18 @@ export function compileBrokerMutationBundle(input: {
   migration_sql: string;
 }): BrokerMutationBundleV1 {
   const observation = input.observation_bundle;
+  const canonicalObservation = compileBrokerObservationBundle({
+    run: observation.run,
+    lock: observation.lock,
+    git_sha: observation.git_sha,
+    git_tree: observation.git_tree,
+    contract_digest: observation.contract_digest,
+    source_manifest_digest: observation.source_manifest_digest,
+    build_manifest_digest: observation.build_manifest_digest,
+    target_binding: observation.target_binding,
+    authority_classification: observation.authority_classification,
+  });
+  if (canonicalSerializeBrokerBundle(canonicalObservation) !== canonicalSerializeBrokerBundle(observation)) reject("BROKER_OBSERVATION_BUNDLE_REJECTED");
   const evidence = normalizeBrokerObservationEvidence(input.observation_evidence, observation);
   if (sha256(input.migration_sql) !== MIGRATION_SQL_SHA256) reject("BROKER_MIGRATION_IDENTITY_REJECTED");
   const statements: BrokerStatementV1[] = [];
@@ -749,16 +822,22 @@ export function compileBrokerMutationBundle(input: {
   }
   add("locked_binding_assertion", "ADMISSION", `select '${observation.contract_digest}'::text as contract_digest, '${observation.source_manifest_digest}'::text as source_manifest_digest, '${observation.build_manifest_digest}'::text as build_manifest_digest, '${observation.target_binding_digest}'::text as target_binding_digest, '${observation.authority_classification_digest}'::text as authority_classification_digest, '${evidence.evidence_digest}'::text as observation_evidence_digest, '${digest(input.prestate_digest)}'::text as prestate_digest, '${digest(input.plan_digest)}'::text as plan_digest`, false, ["contract_digest", "source_manifest_digest", "build_manifest_digest", "target_binding_digest", "authority_classification_digest", "observation_evidence_digest", "prestate_digest", "plan_digest"]);
   add("set_local_migrator", "ASSUME_ROLE", `set local role platform_migrator`, false);
-  add("assumed_identity_assertion", "ASSUME_ROLE", `select current_user, session_user, (select oid::text from pg_catalog.pg_roles where rolname = current_user) as current_role_oid, (select oid::text from pg_catalog.pg_roles where rolname = session_user) as session_role_oid`, false, ["current_user", "session_user", "current_role_oid", "session_role_oid"]);
+  add("assumed_identity_assertion", "ASSUME_ROLE", identityAssertionSql(), false, IDENTITY_ASSERTION_RESULT_SCHEMA);
   add("set_local_search_path", "ASSUME_ROLE", `set local search_path = pg_catalog, public, drizzle`, false);
   const migrationStatements = input.migration_sql.split("--> statement-breakpoint").map((part) => part.trim()).filter(Boolean);
   for (let index = 0; index < migrationStatements.length; index += 1) add(`migration_0010_${String(index).padStart(2, "0")}`, "MIGRATION", migrationStatements[index]!, true);
   add("migration_0010_ledger_insert", "LEDGER", `insert into drizzle.__drizzle_migrations (hash, created_at) values ('${MIGRATION_SQL_SHA256}', ${MIGRATION_CREATED_AT})`, true);
-  add("final_ledger_assertion", "VERIFY", observation.statements[4]!.sql, false, observation.statements[4]!.result_schema);
-  add("final_canonical_posture_assertion", "VERIFY", compiledAssumedRolePostureSql(observation.target_binding.expected_provider_role_name), false, observation.statements[5]!.result_schema);
-  add("final_role_data_assertion", "VERIFY", observation.statements[6]!.sql, false, observation.statements[6]!.result_schema);
-  add("final_role_assertion", "VERIFY", `select current_user, session_user, (select oid::text from pg_catalog.pg_roles where rolname = current_user) as current_role_oid, (select oid::text from pg_catalog.pg_roles where rolname = session_user) as session_role_oid`, false, ["current_user", "session_user", "current_role_oid", "session_role_oid"]);
-  add("cleanup_identity_assertion", "CLEANUP", `select current_user, session_user, (select oid::text from pg_catalog.pg_roles where rolname = current_user) as current_role_oid, (select oid::text from pg_catalog.pg_roles where rolname = session_user) as session_role_oid`, false, ["current_user", "session_user", "current_role_oid", "session_role_oid"]);
+  add("migrator_final_ledger_assertion", "MIGRATOR_VERIFY", observation.statements[4]!.sql, false, observation.statements[4]!.result_schema);
+  add("migrator_final_role_data_assertion", "MIGRATOR_VERIFY", observation.statements[6]!.sql, false, observation.statements[6]!.result_schema);
+  add("migrator_final_identity_assertion", "MIGRATOR_VERIFY", identityAssertionSql(), false, IDENTITY_ASSERTION_RESULT_SCHEMA);
+  add("restore_provider_role", "RESTORE_PROVIDER", "SET LOCAL ROLE NONE", false);
+  add("restored_provider_identity_assertion", "RESTORE_PROVIDER", identityAssertionSql(), false, IDENTITY_ASSERTION_RESULT_SCHEMA);
+  const providerFinalSources = [0, 1, 2, 3, 4, 5, 6];
+  for (const [index, sourceIndex] of providerFinalSources.entries()) {
+    const source = observation.statements[sourceIndex]!;
+    add(PROVIDER_FINAL_OBSERVATION_IDS[index]!, "PROVIDER_VERIFY", source.sql, false, source.result_schema);
+  }
+  add("cleanup_identity_assertion", "CLEANUP", identityAssertionSql(), false, IDENTITY_ASSERTION_RESULT_SCHEMA);
   const payload = {
     version: BROKER_MUTATION_BUNDLE_VERSION,
     run: observation.run,
@@ -786,7 +865,15 @@ export function validateBrokerMutationResult(input: unknown, bundle: BrokerMutat
   reservation = normalizeBrokerAttemptReservation(reservation, bundle);
   exactKeys(input, ["version", "mutation_bundle_digest", "reservation_digest", "dispatch_state", "commit_state", "cleanup_state", "migration_tag", "migration_sql_sha256", "safe_result_digest", "result_digest"]);
   if (input.version !== BROKER_RESULT_VERSION || input.mutation_bundle_digest !== bundle.bundle_digest || input.reservation_digest !== reservation.reservation_digest || input.migration_tag !== MIGRATION_TAG || input.migration_sql_sha256 !== MIGRATION_SQL_SHA256) reject("BROKER_RESULT_INVALID");
-  if (!["NOT_DISPATCHED", "DISPATCHED", "INDETERMINATE"].includes(String(input.dispatch_state)) || !["NOT_COMMITTED", "COMMITTED", "INDETERMINATE"].includes(String(input.commit_state)) || !["DISCARDED", "FAILED", "INDETERMINATE"].includes(String(input.cleanup_state))) reject("BROKER_RESULT_INVALID");
+  const dispatchState = String(input.dispatch_state);
+  const commitState = String(input.commit_state);
+  const cleanupState = String(input.cleanup_state);
+  if (!["NOT_DISPATCHED", "DISPATCHED", "INDETERMINATE"].includes(dispatchState) || !["NOT_COMMITTED", "COMMITTED", "INDETERMINATE"].includes(commitState) || !["DISCARDED", "FAILED", "INDETERMINATE"].includes(cleanupState)) reject("BROKER_RESULT_INVALID");
+  if ((dispatchState === "NOT_DISPATCHED" && commitState !== "NOT_COMMITTED")
+    || (dispatchState === "NOT_DISPATCHED" && cleanupState !== "DISCARDED")
+    || (dispatchState === "INDETERMINATE" && commitState !== "INDETERMINATE")
+    || (commitState === "COMMITTED" && dispatchState !== "DISPATCHED")
+    || (commitState === "INDETERMINATE" && cleanupState !== "INDETERMINATE")) reject("BROKER_RESULT_INVALID");
   digest(input.safe_result_digest);
   const claimed = digest(input.result_digest);
   if (claimed !== computeBrokerBundleDigest(BROKER_RESULT_DOMAIN_SEPARATOR, withoutDigest(input, "result_digest"))) reject("BROKER_RESULT_INVALID");
