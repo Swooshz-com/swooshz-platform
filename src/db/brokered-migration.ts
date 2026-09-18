@@ -1,5 +1,14 @@
 import { createHash } from "node:crypto";
 
+import {
+  CANONICAL_PLATFORM_ENUM_TYPES,
+  CANONICAL_PLATFORM_ROUTINES,
+  CANONICAL_PLATFORM_TABLES,
+  MIGRATOR_READINESS_FIELDS,
+  REQUIRED_PLATFORM_TABLES,
+  migratorPostureSql,
+} from "./readiness.js";
+
 export const BROKER_TARGET_BINDING_VERSION = "platform-db-broker-target-v2" as const;
 export const BROKER_OBSERVATION_BUNDLE_VERSION = "platform-db-broker-observation-bundle-v1" as const;
 export const BROKER_OBSERVATION_EVIDENCE_VERSION = "platform-db-broker-observation-evidence-v1" as const;
@@ -23,6 +32,25 @@ const IDENTIFIER = /^[a-z_][a-z0-9_$]{0,62}$/u;
 const MIGRATION_TAG = "0010_admin_operator_viewer_role_collapse";
 const MIGRATION_CREATED_AT = 1787479999088;
 const MIGRATION_SQL_SHA256 = "452829e49a5571a8b4e14a2cbf155e671fe81ef8ee2fa3583935b7cc2ffd996b";
+const FIRST_NINE_MIGRATIONS = Object.freeze([
+  { created_at: "1782546111134", hashes: ["d156026594b36870455ba6df7525310be1ce1838cda1d58725c6f3a07514c0a6", "a4636f7af908cae22e8b15ed59103251b2f865f65a37b496b0ac4e38bc68d09b"] },
+  { created_at: "1782571351615", hashes: ["861614ef57601aff17a15fe594becfc0206fa931f22052ba98217e300285666d", "f32a717626f2ab3d009a457b81664ba2666a2318129a3383a45146b0ea6634cd"] },
+  { created_at: "1782629131478", hashes: ["76fd758786fa4583e18f3b89bf7fba0932bdb9c71de294f3291b19925bbd542b", "b8f3c2d5ac88d9cba57368695219325b025f9c953ce1e7ac59f2882ec1592321"] },
+  { created_at: "1782651725342", hashes: ["41567c07fcdb3b6e41da516d346d1a20d5e3aa4b0c5d3297e8b19091fa8f5f09", "41a3648d3443e63031277734e805b8826e8f6f34b6f6fdb9db8ed63f5fcdeb1f"] },
+  { created_at: "1783253616083", hashes: ["01179c79b777732dc03dbef0471738e00dc85964082aa22764184362722ac5fe", "5be34c50c70b76f167da4722920946f9272fd8b3aafd405718e3c76dfcea2b3d"] },
+  { created_at: "1783479304000", hashes: ["651eaa1668341fc8bdbc8d6f47ccfdd9ec1e2c80fef018de73ab0a79b9896bbe", "b47e5a1575abc53c523fada3266e32556f3e3b267c7d6878719c5aee30876a3e"] },
+  { created_at: "1783587520445", hashes: ["a8b5d90838c87ca3d74ada48295b92970c8a8476dacf5fc76b1a793995d7485b"] },
+  { created_at: "1784354477743", hashes: ["0e82a5892f22b71f8894f8776388341519ac48944a417552443d639d09cdcbc0", "1a74bbfbe23b11693dd1d1571bf6eb6d4340832124143134afe89e2c9337d0b3"] },
+  { created_at: "1784620602227", hashes: ["bc54f927f5ab0a2ebc97a61ede57119f29e8673ab1b902a4e132191ac688820f", "b1f9291edfb018633add360eb4e81520f9be9690c38bb1c2dede9de29a2fe25b"] },
+]);
+const POSTURE_RESULT_SCHEMA = Object.freeze([...MIGRATOR_READINESS_FIELDS, "application_relation_owner_exact"]);
+const ROLE_DATA_RESULT_SCHEMA = Object.freeze([
+  "role_labels",
+  "role_values_valid",
+  "nullable_requester_valid",
+  "bootstrap_cardinality_valid",
+  "active_workspace_admin_valid",
+]);
 
 export interface BrokerTargetBindingV2 {
   readonly version: typeof BROKER_TARGET_BINDING_VERSION;
@@ -58,12 +86,14 @@ export interface BrokerAuthorityClassificationV1 {
 export interface BrokerStatementV1 {
   readonly ordinal: number;
   readonly id: string;
-  readonly phase: "OBSERVE" | "ADMISSION" | "LOCK" | "ASSUME_ROLE" | "MIGRATION" | "LEDGER" | "VERIFY";
+  readonly phase: "OBSERVE" | "ADMISSION" | "LOCK" | "ASSUME_ROLE" | "MIGRATION" | "LEDGER" | "VERIFY" | "CLEANUP";
   readonly sql: string;
   readonly sha256: string;
   readonly mutating: boolean;
   readonly result_schema: readonly string[];
 }
+
+export type BrokerStatementResultMapV1 = Readonly<Record<string, readonly Record<string, unknown>[]>>;
 
 export interface BrokerObservationBundleV1 {
   readonly version: typeof BROKER_OBSERVATION_BUNDLE_VERSION;
@@ -301,9 +331,10 @@ function validateClassification(value: BrokerAuthorityClassificationV1): BrokerA
     exactKeys(node, ["role_name", "role_oid", "authority_class"]);
     const roleName = text(node.role_name, IDENTIFIER);
     const roleOid = oid(node.role_oid);
-    if (names.has(roleName) || oids.has(roleOid) || `${roleOid}\0${roleName}` <= previous) reject("BROKER_AUTHORITY_CLASSIFICATION_INVALID");
+    const order = `${roleOid.padStart(20, "0")}\0${roleName}`;
+    if (names.has(roleName) || oids.has(roleOid) || order <= previous) reject("BROKER_AUTHORITY_CLASSIFICATION_INVALID");
     if (!["APPLICATION", "RUNTIME", "MIGRATOR", "PROVIDER_CONTROL", "RUNTIME_CREATOR_TUPLE"].includes(String(node.authority_class))) reject("BROKER_AUTHORITY_CLASSIFICATION_INVALID");
-    names.add(roleName); oids.add(roleOid); previous = `${roleOid}\0${roleName}`;
+    names.add(roleName); oids.add(roleOid); previous = order;
   }
   for (const required of ["platform_app", "platform_runtime", "platform_migrator"]) if (!names.has(required)) reject("BROKER_AUTHORITY_CLASSIFICATION_INVALID");
   return Object.freeze({ ...value, nodes: Object.freeze(value.nodes.map((node) => Object.freeze({ ...node }))), runtime_creator_tuple: Object.freeze({ ...tuple }) });
@@ -313,6 +344,62 @@ function statement(ordinal: number, id: string, phase: BrokerStatementV1["phase"
   if (!Number.isSafeInteger(ordinal) || ordinal < 0 || !/^[a-z][a-z0-9_]{0,79}$/u.test(id) || typeof sql !== "string" || !sql.trim()) reject("BROKER_STATEMENT_INVALID");
   return Object.freeze({ ordinal, id, phase, sql, sha256: sha256(sql), mutating, result_schema: Object.freeze([...resultSchema]) });
 }
+
+function sqlTextArray(values: readonly string[]): string {
+  return `array[${values.map((value) => `'${value.replaceAll("'", "''")}'`).join(",")}]::text[]`;
+}
+
+function compiledCanonicalPostureSql(): string {
+  return migratorPostureSql
+    .replaceAll("$1::text[]", sqlTextArray(REQUIRED_PLATFORM_TABLES))
+    .replaceAll("$2::text[]", sqlTextArray(CANONICAL_PLATFORM_TABLES))
+    .replaceAll("$3::text[]", sqlTextArray(CANONICAL_PLATFORM_ENUM_TYPES))
+    .replaceAll("$4::text[]", sqlTextArray(CANONICAL_PLATFORM_ROUTINES));
+}
+
+function compiledAssumedRolePostureSql(providerRoleName: string): string {
+  const provider = providerRoleName.replaceAll("'", "''");
+  return compiledCanonicalPostureSql().replace(
+    "current_user = session_user\n    and current_user not in ('platform_app', 'platform_runtime')",
+    `current_user = 'platform_migrator'\n    and session_user = '${provider}'`,
+  );
+}
+
+const ROLE_DATA_INVARIANTS_SQL = `select
+  (select string_agg(enum_record.enumlabel, ',' order by enum_record.enumsortorder)
+     from pg_catalog.pg_enum enum_record
+     join pg_catalog.pg_type type_record on type_record.oid = enum_record.enumtypid
+     join pg_catalog.pg_namespace namespace_record on namespace_record.oid = type_record.typnamespace
+    where namespace_record.nspname = 'public' and type_record.typname = 'role') as role_labels,
+  not exists (
+    select role_value from (
+      select role::text as role_value from public.invitations
+      union all select role::text from public.memberships
+      union all select role::text from public.workspace_membership_approvals
+    ) role_values
+    where role_value not in ('owner', 'admin', 'member', 'operator', 'viewer')
+  ) as role_values_valid,
+  not exists (
+    select 1 from public.workspace_membership_approvals approval
+    left join public.workspaces workspace on workspace.id = approval.workspace_id
+    where approval.status = 'pending' and approval.requested_by_user_id is null
+      and not (workspace.status = 'active'
+        and not exists (select 1 from public.memberships membership where membership.workspace_id = approval.workspace_id)
+        and approval.role::text in ('owner', 'admin'))
+  ) as nullable_requester_valid,
+  not exists (
+    select approval.workspace_id from public.workspace_membership_approvals approval
+    where approval.status = 'pending' and approval.requested_by_user_id is null
+      and approval.role::text in ('owner', 'admin')
+    group by approval.workspace_id having count(*) <> 1
+  ) as bootstrap_cardinality_valid,
+  not exists (
+    select 1 from public.workspaces workspace
+    where workspace.status = 'active'
+      and exists (select 1 from public.memberships membership where membership.workspace_id = workspace.id)
+      and not exists (select 1 from public.memberships membership where membership.workspace_id = workspace.id
+        and membership.status = 'active' and membership.role::text in ('owner', 'admin'))
+  ) as active_workspace_admin_valid`;
 
 function commonPayload(input: {
   run: string; lock: string; git_sha: string; git_tree: string; contract_digest: string;
@@ -345,9 +432,145 @@ export function compileBrokerObservationBundle(input: {
     statement(2, "authority_graph_nodes", "OBSERVE", `${closureSql} select role_record.rolname as role_name, role_record.oid::text as role_oid, role_record.rolsuper, role_record.rolcreaterole from role_closure closure join pg_catalog.pg_roles role_record on role_record.oid = closure.role_oid order by role_record.oid, role_record.rolname`, false, ["role_name", "role_oid", "rolsuper", "rolcreaterole"]),
     statement(3, "authority_graph_edges", "OBSERVE", `${closureSql} select granted.rolname as granted_role, granted.oid::text as granted_role_oid, member_role.rolname as member, member_role.oid::text as member_oid, grantor.rolname as grantor, grantor.oid::text as grantor_oid, edge.admin_option, edge.inherit_option, edge.set_option from pg_catalog.pg_auth_members edge join role_closure closure on closure.role_oid in (edge.roleid, edge.member, edge.grantor) join pg_catalog.pg_roles granted on granted.oid = edge.roleid join pg_catalog.pg_roles member_role on member_role.oid = edge.member join pg_catalog.pg_roles grantor on grantor.oid = edge.grantor order by granted.oid, member_role.oid, grantor.oid`, false, ["granted_role", "granted_role_oid", "member", "member_oid", "grantor", "grantor_oid", "admin_option", "inherit_option", "set_option"]),
     statement(4, "migration_ledger", "OBSERVE", `select id, hash, created_at from drizzle.__drizzle_migrations order by created_at, id`, false, ["id", "hash", "created_at"]),
+    statement(5, "canonical_posture", "OBSERVE", compiledCanonicalPostureSql(), false, POSTURE_RESULT_SCHEMA),
+    statement(6, "role_data_invariants", "OBSERVE", ROLE_DATA_INVARIANTS_SQL, false, ROLE_DATA_RESULT_SCHEMA),
   ];
   const payload = { version: BROKER_OBSERVATION_BUNDLE_VERSION, ...common, transaction_policy: "REPEATABLE_READ_READ_ONLY_FAIL_ON_ERROR" as const, statements: Object.freeze(statements) };
   return Object.freeze({ ...payload, bundle_digest: computeBrokerBundleDigest(BROKER_OBSERVATION_BUNDLE_DOMAIN_SEPARATOR, payload) });
+}
+
+function exactResultRows(value: unknown, schema: readonly string[], expectedCount?: number): Record<string, unknown>[] {
+  if (!Array.isArray(value) || (expectedCount !== undefined && value.length !== expectedCount)) reject("BROKER_STATEMENT_RESULT_REJECTED");
+  return value.map((raw) => {
+    if (!isRecord(raw)) reject("BROKER_STATEMENT_RESULT_REJECTED");
+    exactKeys(raw, schema);
+    return raw;
+  });
+}
+
+function normalizedLedgerRows(rows: readonly Record<string, unknown>[], phase: "PREWRITE" | "FINAL"): Array<{ id: number; hash: string; created_at: string }> {
+  const expectedCount = phase === "PREWRITE" ? 9 : 10;
+  if (rows.length !== expectedCount) reject("BROKER_MIGRATION_IDENTITY_REJECTED");
+  const normalized = rows.map((row, index) => {
+    const id = typeof row.id === "number" ? row.id : Number(row.id);
+    const createdAt = String(row.created_at);
+    const hash = digest(row.hash);
+    if (!Number.isSafeInteger(id) || id !== index + 1) reject("BROKER_MIGRATION_IDENTITY_REJECTED");
+    if (index < FIRST_NINE_MIGRATIONS.length) {
+      const expected = FIRST_NINE_MIGRATIONS[index]!;
+      if (createdAt !== expected.created_at || !expected.hashes.includes(hash)) reject("BROKER_MIGRATION_IDENTITY_REJECTED");
+    } else if (createdAt !== String(MIGRATION_CREATED_AT) || hash !== MIGRATION_SQL_SHA256) {
+      reject("BROKER_MIGRATION_IDENTITY_REJECTED");
+    }
+    return { id, hash, created_at: createdAt };
+  });
+  return normalized;
+}
+
+export function validateBrokerStatementResult(
+  observationBundle: BrokerObservationBundleV1,
+  brokerStatement: BrokerStatementV1,
+  rawRows: unknown,
+  phase: "PREWRITE" | "FINAL" = "PREWRITE",
+): readonly Record<string, unknown>[] {
+  const sourceIndex = observationBundle.statements.findIndex((candidate) =>
+    candidate.sql === brokerStatement.sql &&
+    canonicalSerializeBrokerBundle(candidate.result_schema) === canonicalSerializeBrokerBundle(brokerStatement.result_schema));
+  const rows = exactResultRows(rawRows, brokerStatement.result_schema, brokerStatement.result_schema.length === 0 ? 0 : undefined);
+  if (sourceIndex === 0) {
+    if (rows.length !== 1) reject("BROKER_SESSION_IDENTITY_REJECTED");
+    const row = rows[0]!;
+    const target = observationBundle.target_binding;
+    if (row.current_user !== target.expected_provider_role_name || row.session_user !== target.expected_provider_role_name || String(row.role_oid) !== target.expected_provider_role_oid || row.logical_database_name !== target.logical_database_name || String(row.database_oid) !== target.expected_database_oid || String(row.cluster_system_identifier) !== target.expected_cluster_system_identifier || Number(row.postgres_major) !== 17 || row.in_recovery !== false || typeof row.rolsuper !== "boolean") reject("BROKER_SESSION_IDENTITY_REJECTED");
+  } else if (sourceIndex === 1) {
+    if (rows.length !== 1) reject("BROKER_MIGRATOR_DORMANCY_REJECTED");
+    const row = rows[0]!;
+    if (row.role_name !== "platform_migrator" || !POSITIVE_INTEGER.test(String(row.role_oid)) || row.rolcanlogin !== false || row.rolinherit !== false || row.rolsuper !== false || row.rolcreatedb !== false || row.rolcreaterole !== false || row.rolreplication !== false || row.rolbypassrls !== false || row.password_is_null !== true || row.provider_has_set !== true) reject("BROKER_MIGRATOR_DORMANCY_REJECTED");
+  } else if (sourceIndex === 4) {
+    normalizedLedgerRows(rows, phase);
+  } else if (sourceIndex === 5) {
+    if (rows.length !== 1 || brokerStatement.result_schema.some((key) => rows[0]![key] !== true)) reject("BROKER_CANONICAL_POSTURE_REJECTED");
+  } else if (sourceIndex === 6) {
+    if (rows.length !== 1) reject("BROKER_CANONICAL_POSTURE_REJECTED");
+    const expectedLabels = phase === "PREWRITE" ? "owner,admin,member,viewer" : "admin,operator,viewer";
+    if (rows[0]!.role_labels !== expectedLabels || ROLE_DATA_RESULT_SCHEMA.slice(1).some((key) => rows[0]![key] !== true)) reject("BROKER_CANONICAL_POSTURE_REJECTED");
+  } else if (brokerStatement.id === "assumed_identity_assertion" || brokerStatement.id === "final_role_assertion") {
+    if (rows.length !== 1 || rows[0]!.current_user !== "platform_migrator" || rows[0]!.session_user !== observationBundle.target_binding.expected_provider_role_name || String(rows[0]!.current_role_oid) !== observationBundle.authority_classification.nodes.find((node) => node.role_name === "platform_migrator")?.role_oid || String(rows[0]!.session_role_oid) !== observationBundle.target_binding.expected_provider_role_oid) reject("BROKER_SESSION_IDENTITY_REJECTED");
+  } else if (brokerStatement.id === "cleanup_identity_assertion") {
+    if (rows.length !== 1 || rows[0]!.current_user !== observationBundle.target_binding.expected_provider_role_name || rows[0]!.session_user !== observationBundle.target_binding.expected_provider_role_name || String(rows[0]!.current_role_oid) !== observationBundle.target_binding.expected_provider_role_oid || String(rows[0]!.session_role_oid) !== observationBundle.target_binding.expected_provider_role_oid) reject("BROKER_SESSION_IDENTITY_REJECTED");
+  } else if (brokerStatement.id === "final_canonical_posture_assertion") {
+    if (rows.length !== 1 || brokerStatement.result_schema.some((key) => rows[0]![key] !== true)) reject("BROKER_CANONICAL_POSTURE_REJECTED");
+  } else if (brokerStatement.id === "target_advisory_lock") {
+    if (rows.length !== 1 || rows[0]!.lock_acquired !== true) reject("BROKER_STATEMENT_RESULT_REJECTED");
+  } else if (brokerStatement.id === "locked_binding_assertion") {
+    if (rows.length !== 1 || rows[0]!.contract_digest !== observationBundle.contract_digest || rows[0]!.source_manifest_digest !== observationBundle.source_manifest_digest || rows[0]!.build_manifest_digest !== observationBundle.build_manifest_digest || rows[0]!.target_binding_digest !== observationBundle.target_binding_digest || rows[0]!.authority_classification_digest !== observationBundle.authority_classification_digest || ["observation_evidence_digest", "prestate_digest", "plan_digest"].some((key) => !HEX64.test(String(rows[0]![key])))) reject("BROKER_STATEMENT_RESULT_REJECTED");
+  } else if (sourceIndex < 0 && brokerStatement.result_schema.length > 0) {
+    reject("BROKER_STATEMENT_RESULT_REJECTED");
+  }
+  return Object.freeze(rows.map((row) => Object.freeze({ ...row })));
+}
+
+export function normalizeBrokerAttemptReservation(
+  input: unknown,
+  bundle: BrokerMutationBundleV1,
+): BrokerAttemptReservationV1 {
+  if (!isRecord(input)) reject("BROKER_ATTEMPT_RESERVATION_INVALID");
+  exactKeys(input, ["version", "state", "run", "lock", "target_binding_digest", "plan_digest", "mutation_bundle_digest", "reservation_id", "reservation_digest"]);
+  if (input.version !== BROKER_ATTEMPT_RESERVATION_VERSION || input.state !== "RESERVED_CONSUMED" || input.run !== bundle.run || input.lock !== bundle.lock || input.target_binding_digest !== bundle.target_binding_digest || input.plan_digest !== bundle.plan_digest || input.mutation_bundle_digest !== bundle.bundle_digest) reject("BROKER_ATTEMPT_RESERVATION_INVALID");
+  text(input.reservation_id);
+  const claimed = digest(input.reservation_digest);
+  if (claimed !== computeBrokerBundleDigest(BROKER_ATTEMPT_RESERVATION_DOMAIN_SEPARATOR, withoutDigest(input, "reservation_digest"))) reject("BROKER_ATTEMPT_RESERVATION_INVALID");
+  return Object.freeze(input as unknown as BrokerAttemptReservationV1);
+}
+
+export function deriveBrokerObservationEvidence(
+  bundle: BrokerObservationBundleV1,
+  resultMap: BrokerStatementResultMapV1,
+  phase: "PREWRITE" | "FINAL" = "PREWRITE",
+): BrokerObservationEvidenceV1 {
+  if (!isRecord(resultMap)) reject("BROKER_OBSERVATION_EVIDENCE_INVALID");
+  exactKeys(resultMap, bundle.statements.map((entry) => entry.id));
+  const results = new Map(bundle.statements.map((entry) => [entry.id, validateBrokerStatementResult(bundle, entry, resultMap[entry.id], phase)]));
+  const providerRow = results.get("provider_target_identity")![0]!;
+  const migratorRow = results.get("migrator_dormancy")![0]!;
+  const nodeRows = results.get("authority_graph_nodes")!;
+  const edgeRows = results.get("authority_graph_edges")!;
+  const ledgerRows = normalizedLedgerRows(results.get("migration_ledger")!, phase);
+  const graph = { nodes: nodeRows, edges: edgeRows, closure_complete: true as const, application_authority_absent: true as const };
+  validateAuthorityGraph(graph, bundle.authority_classification, providerRow, migratorRow);
+  const firstNine = ledgerRows.slice(0, 9);
+  const posturePayload = {
+    canonical_posture: results.get("canonical_posture")![0]!,
+    role_data_invariants: results.get("role_data_invariants")![0]!,
+  };
+  const payload = {
+    version: BROKER_OBSERVATION_EVIDENCE_VERSION,
+    observation_bundle_digest: bundle.bundle_digest,
+    target_binding_digest: bundle.target_binding_digest,
+    authority_classification_digest: bundle.authority_classification_digest,
+    provider: {
+      current_user: String(providerRow.current_user), session_user: String(providerRow.session_user),
+      role_oid: String(providerRow.role_oid), rolsuper: providerRow.rolsuper as boolean,
+    },
+    target: {
+      logical_database_name: String(providerRow.logical_database_name), database_oid: String(providerRow.database_oid),
+      cluster_system_identifier: String(providerRow.cluster_system_identifier), postgres_major: 17 as const, in_recovery: false as const,
+    },
+    migrator: {
+      role_name: "platform_migrator" as const, role_oid: String(migratorRow.role_oid),
+      rolcanlogin: false as const, rolinherit: false as const, rolsuper: false as const,
+      rolcreatedb: false as const, rolcreaterole: false as const, rolreplication: false as const,
+      rolbypassrls: false as const, password_is_null: true as const, provider_has_set: true as const,
+    },
+    authority_graph: graph as BrokerObservationEvidenceV1["authority_graph"],
+    ledger: {
+      first_nine_identity_digest: computeBrokerBundleDigest("Swooshz-platform:platform-db-first-nine-ledger-v1\0", firstNine),
+      row_count: (phase === "PREWRITE" ? 9 : 10) as 9 | 10,
+      migration_0010_absent: phase === "PREWRITE",
+    },
+    canonical_posture_digest: computeBrokerBundleDigest("Swooshz-platform:platform-db-canonical-posture-v1\0", posturePayload),
+  };
+  return Object.freeze({ ...payload, evidence_digest: computeBrokerBundleDigest(BROKER_OBSERVATION_EVIDENCE_DOMAIN_SEPARATOR, payload) });
 }
 
 function validateAuthorityGraph(
@@ -365,7 +588,7 @@ function validateAuthorityGraph(
     exactKeys(raw, ["role_name", "role_oid", "rolsuper", "rolcreaterole"]);
     const roleName = text(raw.role_name, IDENTIFIER);
     const roleOid = oid(raw.role_oid);
-    const order = `${roleOid}\0${roleName}`;
+    const order = `${roleOid.padStart(20, "0")}\0${roleName}`;
     const classified = classesByOid.get(roleOid);
     if (!classified || classified.role_name !== roleName || nodesByOid.has(roleOid) || order <= previousNode || typeof raw.rolsuper !== "boolean" || typeof raw.rolcreaterole !== "boolean") reject("BROKER_AUTHORITY_GRAPH_REJECTED");
     nodesByOid.set(roleOid, raw); previousNode = order;
@@ -379,7 +602,7 @@ function validateAuthorityGraph(
     const grantedOid = oid(raw.granted_role_oid); const memberOid = oid(raw.member_oid); const grantorOid = oid(raw.grantor_oid);
     if (nodesByOid.get(grantedOid)?.role_name !== raw.granted_role || nodesByOid.get(memberOid)?.role_name !== raw.member || nodesByOid.get(grantorOid)?.role_name !== raw.grantor) reject("BROKER_AUTHORITY_GRAPH_REJECTED");
     if (typeof raw.admin_option !== "boolean" || typeof raw.inherit_option !== "boolean" || typeof raw.set_option !== "boolean") reject("BROKER_AUTHORITY_GRAPH_REJECTED");
-    const order = `${grantedOid}\0${memberOid}\0${grantorOid}\0${String(raw.admin_option)}\0${String(raw.inherit_option)}\0${String(raw.set_option)}`;
+    const order = `${grantedOid.padStart(20, "0")}\0${memberOid.padStart(20, "0")}\0${grantorOid.padStart(20, "0")}\0${String(raw.admin_option)}\0${String(raw.inherit_option)}\0${String(raw.set_option)}`;
     if (order <= previousEdge) reject("BROKER_AUTHORITY_GRAPH_REJECTED");
     previousEdge = order; edges.push(raw);
   }
@@ -456,18 +679,23 @@ export function compileBrokerMutationBundle(input: {
   if (sha256(input.migration_sql) !== MIGRATION_SQL_SHA256) reject("BROKER_MIGRATION_IDENTITY_REJECTED");
   const statements: BrokerStatementV1[] = [];
   const add = (id: string, phase: BrokerStatementV1["phase"], sql: string, mutating: boolean, resultSchema: readonly string[] = []) => statements.push(statement(statements.length, id, phase, sql, mutating, resultSchema));
-  add("target_advisory_lock", "LOCK", `select pg_catalog.pg_advisory_xact_lock(hashtextextended('${observation.target_binding_digest}', 0))`, false);
-  add("locked_provider_target_assertion", "ADMISSION", observation.statements[0]!.sql, false, observation.statements[0]!.result_schema);
-  add("locked_migrator_dormancy_assertion", "ADMISSION", observation.statements[1]!.sql, false, observation.statements[1]!.result_schema);
+  add("target_advisory_lock", "LOCK", `select (pg_catalog.pg_advisory_xact_lock(hashtextextended('${observation.target_binding_digest}', 0)) is null) as lock_acquired`, false, ["lock_acquired"]);
   add("ledger_lock", "LOCK", `lock table drizzle.__drizzle_migrations in access exclusive mode`, true);
+  for (const observed of observation.statements) {
+    add(`locked_${observed.id}`, "ADMISSION", observed.sql, false, observed.result_schema);
+  }
+  add("locked_binding_assertion", "ADMISSION", `select '${observation.contract_digest}'::text as contract_digest, '${observation.source_manifest_digest}'::text as source_manifest_digest, '${observation.build_manifest_digest}'::text as build_manifest_digest, '${observation.target_binding_digest}'::text as target_binding_digest, '${observation.authority_classification_digest}'::text as authority_classification_digest, '${evidence.evidence_digest}'::text as observation_evidence_digest, '${digest(input.prestate_digest)}'::text as prestate_digest, '${digest(input.plan_digest)}'::text as plan_digest`, false, ["contract_digest", "source_manifest_digest", "build_manifest_digest", "target_binding_digest", "authority_classification_digest", "observation_evidence_digest", "prestate_digest", "plan_digest"]);
   add("set_local_migrator", "ASSUME_ROLE", `set local role platform_migrator`, false);
   add("assumed_identity_assertion", "ASSUME_ROLE", `select current_user, session_user, (select oid::text from pg_catalog.pg_roles where rolname = current_user) as current_role_oid, (select oid::text from pg_catalog.pg_roles where rolname = session_user) as session_role_oid`, false, ["current_user", "session_user", "current_role_oid", "session_role_oid"]);
   add("set_local_search_path", "ASSUME_ROLE", `set local search_path = pg_catalog, public, drizzle`, false);
   const migrationStatements = input.migration_sql.split("--> statement-breakpoint").map((part) => part.trim()).filter(Boolean);
   for (let index = 0; index < migrationStatements.length; index += 1) add(`migration_0010_${String(index).padStart(2, "0")}`, "MIGRATION", migrationStatements[index]!, true);
   add("migration_0010_ledger_insert", "LEDGER", `insert into drizzle.__drizzle_migrations (hash, created_at) values ('${MIGRATION_SQL_SHA256}', ${MIGRATION_CREATED_AT})`, true);
-  add("final_ledger_assertion", "VERIFY", `select id, hash, created_at from drizzle.__drizzle_migrations order by created_at, id`, false, ["id", "hash", "created_at"]);
-  add("final_role_assertion", "VERIFY", `select current_user, session_user`, false, ["current_user", "session_user"]);
+  add("final_ledger_assertion", "VERIFY", observation.statements[4]!.sql, false, observation.statements[4]!.result_schema);
+  add("final_canonical_posture_assertion", "VERIFY", compiledAssumedRolePostureSql(observation.target_binding.expected_provider_role_name), false, observation.statements[5]!.result_schema);
+  add("final_role_data_assertion", "VERIFY", observation.statements[6]!.sql, false, observation.statements[6]!.result_schema);
+  add("final_role_assertion", "VERIFY", `select current_user, session_user, (select oid::text from pg_catalog.pg_roles where rolname = current_user) as current_role_oid, (select oid::text from pg_catalog.pg_roles where rolname = session_user) as session_role_oid`, false, ["current_user", "session_user", "current_role_oid", "session_role_oid"]);
+  add("cleanup_identity_assertion", "CLEANUP", `select current_user, session_user, (select oid::text from pg_catalog.pg_roles where rolname = current_user) as current_role_oid, (select oid::text from pg_catalog.pg_roles where rolname = session_user) as session_role_oid`, false, ["current_user", "session_user", "current_role_oid", "session_role_oid"]);
   const payload = {
     version: BROKER_MUTATION_BUNDLE_VERSION,
     run: observation.run,
@@ -492,6 +720,7 @@ export function compileBrokerMutationBundle(input: {
 
 export function validateBrokerMutationResult(input: unknown, bundle: BrokerMutationBundleV1, reservation: BrokerAttemptReservationV1): BrokerMutationResultV1 {
   if (!isRecord(input) || !isRecord(reservation)) reject("BROKER_RESULT_INVALID");
+  reservation = normalizeBrokerAttemptReservation(reservation, bundle);
   exactKeys(input, ["version", "mutation_bundle_digest", "reservation_digest", "dispatch_state", "commit_state", "cleanup_state", "migration_tag", "migration_sql_sha256", "safe_result_digest", "result_digest"]);
   if (input.version !== BROKER_RESULT_VERSION || input.mutation_bundle_digest !== bundle.bundle_digest || input.reservation_digest !== reservation.reservation_digest || input.migration_tag !== MIGRATION_TAG || input.migration_sql_sha256 !== MIGRATION_SQL_SHA256) reject("BROKER_RESULT_INVALID");
   if (!["NOT_DISPATCHED", "DISPATCHED", "INDETERMINATE"].includes(String(input.dispatch_state)) || !["NOT_COMMITTED", "COMMITTED", "INDETERMINATE"].includes(String(input.commit_state)) || !["DISCARDED", "FAILED", "INDETERMINATE"].includes(String(input.cleanup_state))) reject("BROKER_RESULT_INVALID");

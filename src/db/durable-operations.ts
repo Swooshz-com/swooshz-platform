@@ -34,6 +34,7 @@ import {
 import {
   canonicalSerializeBrokerBundle,
   compileBrokerMutationBundle,
+  normalizeBrokerAttemptReservation,
   normalizeBrokerObservationEvidence,
   validateBrokerMutationResult,
   BROKER_RESULT_VERSION,
@@ -4405,7 +4406,7 @@ export interface DurableReceiptV2 {
   readonly receipt_version: 2;
   readonly outcome: "PASS" | "BLOCKED" | "FAIL";
   readonly phase: "OBSERVATION" | "ATTEMPT_RESERVATION" | "BROKER_DISPATCH" | "SESSION_CLEANUP" | "FINAL_OBSERVATION";
-  readonly semantic_code: "SUCCESS" | "BROKER_ADAPTER_UNAVAILABLE" | "BROKER_OBSERVATION_REJECTED" | "ATTEMPT_ALREADY_CONSUMED" | "BROKER_DISPATCH_INDETERMINATE" | "BROKER_RESULT_REJECTED" | "FINAL_OBSERVATION_FAILED";
+  readonly semantic_code: "SUCCESS" | "BROKER_ADAPTER_UNAVAILABLE" | "BROKER_OBSERVATION_REJECTED" | "ATTEMPT_ALREADY_CONSUMED" | "ATTEMPT_RESERVATION_REJECTED" | "BROKER_DISPATCH_INDETERMINATE" | "BROKER_RESULT_REJECTED" | "FINAL_OBSERVATION_FAILED";
   readonly target_binding_digest: string;
   readonly git_sha: string;
   readonly git_tree: string;
@@ -4516,9 +4517,9 @@ export async function executeBrokeredMigrationPlan(input: {
     observation_evidence_digest: evidence.evidence_digest,
     mutation_bundle_digest: mutationBundle.bundle_digest,
   };
-  let reservation;
+  let rawReservation: BrokerAttemptReservationV1;
   try {
-    reservation = await input.attemptStore.reserveOnce({
+    rawReservation = await input.attemptStore.reserveOnce({
       run: mutationBundle.run,
       lock: mutationBundle.lock,
       target_binding_digest: mutationBundle.target_binding_digest,
@@ -4527,6 +4528,12 @@ export async function executeBrokeredMigrationPlan(input: {
     });
   } catch {
     return brokeredReceipt({ ...compiled, outcome: "BLOCKED", phase: "ATTEMPT_RESERVATION", semantic_code: "ATTEMPT_ALREADY_CONSUMED" });
+  }
+  let reservation: BrokerAttemptReservationV1;
+  try {
+    reservation = normalizeBrokerAttemptReservation(rawReservation, mutationBundle);
+  } catch {
+    return brokeredReceipt({ ...compiled, outcome: "FAIL", phase: "ATTEMPT_RESERVATION", semantic_code: "ATTEMPT_RESERVATION_REJECTED", attempts_used: 1 });
   }
   const reserved = {
     ...compiled,
@@ -4556,6 +4563,46 @@ export async function executeBrokeredMigrationPlan(input: {
     });
   }
   if (result.dispatch_state !== "DISPATCHED" || result.commit_state !== "COMMITTED") {
+    if (result.dispatch_state === "DISPATCHED" && result.commit_state === "NOT_COMMITTED" && result.cleanup_state === "DISCARDED") {
+      try {
+        const restoredObservation = await input.broker.observe(
+          canonicalSerializeBrokerBundle(input.observationBundle),
+          input.observationBundle.bundle_digest,
+        );
+        const restoredEvidence = normalizeBrokerObservationEvidence(restoredObservation, input.observationBundle, "PREWRITE");
+        const restoredPrestate = normalizeBrokeredPrestateV2(input.observationBundle, restoredEvidence);
+        if (canonicalSerialize(restoredPrestate) !== canonicalSerialize(input.prestate)) fail("RESTORATION_FAILED");
+        return brokeredReceipt({
+          ...reserved,
+          outcome: "FAIL",
+          phase: "FINAL_OBSERVATION",
+          semantic_code: "BROKER_RESULT_REJECTED",
+          dispatch_state: "DISPATCHED",
+          commit_state: "NOT_COMMITTED",
+          cleanup_state: "DISCARDED",
+          mutation_started: true,
+          rollback_state: "VERIFIED",
+          recovery_state: "AVAILABLE",
+          final_observation_state: "PASS",
+          final_readiness_state: "PASS",
+        });
+      } catch {
+        return brokeredReceipt({
+          ...reserved,
+          outcome: "FAIL",
+          phase: "FINAL_OBSERVATION",
+          semantic_code: "FINAL_OBSERVATION_FAILED",
+          dispatch_state: "DISPATCHED",
+          commit_state: "NOT_COMMITTED",
+          cleanup_state: "DISCARDED",
+          mutation_started: true,
+          rollback_state: "FAILED",
+          recovery_state: "REQUIRED",
+          final_observation_state: "FAIL",
+          final_readiness_state: "FAIL",
+        });
+      }
+    }
     return brokeredReceipt({
       ...reserved,
       outcome: "FAIL",

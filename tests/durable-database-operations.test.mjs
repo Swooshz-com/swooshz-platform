@@ -184,6 +184,20 @@ function reservationFor(bundle) {
   return { ...payload, reservation_digest: computeBrokerBundleDigest(BROKER_ATTEMPT_RESERVATION_DOMAIN_SEPARATOR, payload) };
 }
 
+function reservationForRequest(input) {
+  const payload = {
+    version: BROKER_ATTEMPT_RESERVATION_VERSION,
+    state: "RESERVED_CONSUMED",
+    run: input.run,
+    lock: input.lock,
+    target_binding_digest: input.target_binding_digest,
+    plan_digest: input.plan_digest,
+    mutation_bundle_digest: input.mutation_bundle_digest,
+    reservation_id: "fixture-reservation-1",
+  };
+  return { ...payload, reservation_digest: computeBrokerBundleDigest(BROKER_ATTEMPT_RESERVATION_DOMAIN_SEPARATOR, payload) };
+}
+
 function resultFor(bundle, reservation) {
   const payload = {
     version: BROKER_RESULT_VERSION,
@@ -191,6 +205,21 @@ function resultFor(bundle, reservation) {
     reservation_digest: reservation.reservation_digest,
     dispatch_state: "DISPATCHED",
     commit_state: "COMMITTED",
+    cleanup_state: "DISCARDED",
+    migration_tag: "0010_admin_operator_viewer_role_collapse",
+    migration_sql_sha256: "452829e49a5571a8b4e14a2cbf155e671fe81ef8ee2fa3583935b7cc2ffd996b",
+    safe_result_digest: "8".repeat(64),
+  };
+  return { ...payload, result_digest: computeBrokerBundleDigest(BROKER_RESULT_DOMAIN_SEPARATOR, payload) };
+}
+
+function rollbackResultFor(bundle, reservation) {
+  const payload = {
+    version: BROKER_RESULT_VERSION,
+    mutation_bundle_digest: bundle.bundle_digest,
+    reservation_digest: reservation.reservation_digest,
+    dispatch_state: "DISPATCHED",
+    commit_state: "NOT_COMMITTED",
     cleanup_state: "DISCARDED",
     migration_tag: "0010_admin_operator_viewer_role_collapse",
     migration_sql_sha256: "452829e49a5571a8b4e14a2cbf155e671fe81ef8ee2fa3583935b7cc2ffd996b",
@@ -216,6 +245,20 @@ test("broker bundles are canonical, target-bound, and contain the exact 0010 tra
   assert.equal(bundle.migration.sql_sha256, "452829e49a5571a8b4e14a2cbf155e671fe81ef8ee2fa3583935b7cc2ffd996b");
   assert.equal(bundle.statements.some((entry) => entry.sql === "set local role platform_migrator"), true);
   assert.equal(bundle.statements.some((entry) => entry.sql === "set local search_path = pg_catalog, public, drizzle"), true);
+  assert.deepEqual(
+    bundle.statements.filter((entry) => entry.id.startsWith("locked_")).map((entry) => entry.id),
+    [
+      "locked_provider_target_identity",
+      "locked_migrator_dormancy",
+      "locked_authority_graph_nodes",
+      "locked_authority_graph_edges",
+      "locked_migration_ledger",
+      "locked_canonical_posture",
+      "locked_role_data_invariants",
+      "locked_binding_assertion",
+    ],
+  );
+  assert.equal(bundle.statements.at(-1).id, "cleanup_identity_assertion");
   assert.equal(bundle.statements.every((entry, index) => entry.ordinal === index), true);
   assert.equal(canonicalSerializeBrokerBundle(bundle).includes("postgres://"), false);
   assert.equal(canonicalSerializeBrokerBundle(bundle).includes("rolpassword,"), false);
@@ -246,8 +289,7 @@ test("broker execution reserves once before dispatch, validates the result, and 
   const attemptStore = {
     async reserveOnce(input) {
       reservations += 1;
-      const bundle = compileBrokerMutationBundle({ observation_bundle: observationBundle, observation_evidence: evidence, prestate_digest: "9".repeat(64), plan_digest: input.plan_digest, migration_sql: migrationSql });
-      return reservationFor(bundle);
+      return reservationForRequest(input);
     },
   };
   const broker = {
@@ -295,8 +337,7 @@ test("pre-dispatch rejection consumes no attempt and an indeterminate dispatch i
     attemptStore: {
       async reserveOnce(input) {
         reservations += 1;
-        const bundle = compileBrokerMutationBundle({ observation_bundle: observationBundle, observation_evidence: evidence, prestate_digest: "9".repeat(64), plan_digest: input.plan_digest, migration_sql: migrationSql });
-        return reservationFor(bundle);
+        return reservationForRequest(input);
       },
     },
   });
@@ -304,6 +345,61 @@ test("pre-dispatch rejection consumes no attempt and an indeterminate dispatch i
   assert.equal(failed.dispatch_state, "INDETERMINATE");
   assert.equal(dispatches, 1);
   assert.equal(reservations, 1);
+});
+
+test("broker execution rejects a reservation for different exact bundle bytes before dispatch", async () => {
+  const { observationBundle, evidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  const { prestate, plan } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+  let dispatches = 0;
+  const receipt = await executeBrokeredMigrationPlan({
+    observationBundle,
+    prestate,
+    plan,
+    migrationSql,
+    broker: {
+      async observe() { return evidence; },
+      async dispatchMutation() { dispatches += 1; throw new Error("must not dispatch"); },
+    },
+    attemptStore: {
+      async reserveOnce(input) {
+        return reservationForRequest({ ...input, mutation_bundle_digest: "f".repeat(64) });
+      },
+    },
+  });
+  assert.equal(receipt.outcome, "FAIL");
+  assert.equal(receipt.semantic_code, "ATTEMPT_RESERVATION_REJECTED");
+  assert.equal(receipt.attempts_used, 1);
+  assert.equal(dispatches, 0);
+});
+
+test("determinate broker rollback requires a fresh exact restoration observation and never retries", async () => {
+  const { observationBundle, evidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  const { prestate, plan } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+  let observes = 0;
+  let dispatches = 0;
+  const receipt = await executeBrokeredMigrationPlan({
+    observationBundle,
+    prestate,
+    plan,
+    migrationSql,
+    broker: {
+      async observe() { observes += 1; return evidence; },
+      async dispatchMutation(serialized, _digest, reservation) {
+        dispatches += 1;
+        return rollbackResultFor(JSON.parse(serialized), reservation);
+      },
+    },
+    attemptStore: { async reserveOnce(input) { return reservationForRequest(input); } },
+  });
+  assert.equal(receipt.outcome, "FAIL");
+  assert.equal(receipt.commit_state, "NOT_COMMITTED");
+  assert.equal(receipt.rollback_state, "VERIFIED");
+  assert.equal(receipt.final_observation_state, "PASS");
+  assert.equal(receipt.attempts_used, 1);
+  assert.equal(observes, 2);
+  assert.equal(dispatches, 1);
 });
 
 test("v2 durable broker artifacts reject legacy and tampered evidence before reservation", async () => {
@@ -1077,11 +1173,11 @@ test("Run-192 RED evidence: disposable runner must retain bounded sanitized diag
   const runner = await import("../scripts/run-disposable-durable-db-operations-tests.mjs");
   assert.equal(typeof runner.sanitizeDisposableDiagnostics, "function");
   const diagnostics = runner.sanitizeDisposableDiagnostics({
-    stdout: "TAP version 13\nnot ok 1 - Run-190 durable database operations on two disposable PostgreSQL 17 clusters\n# reason: expected status 1\n# reason: internal customer@example.invalid detail\npostgres://secret@example.invalid/db",
+    stdout: "TAP version 13\nnot ok 1 - Run-598 exact durable broker bundle on two disposable PostgreSQL 17 clusters\n# reason: expected status 1\n# reason: internal customer@example.invalid detail\npostgres://secret@example.invalid/db",
     stderr: "Error: private driver detail\nDATABASE_URL=postgres://secret@example.invalid/db",
     outputOverflow: false,
   });
-  assert.match(diagnostics, /Run-190 durable database operations/u);
+  assert.match(diagnostics, /Run-598 exact durable broker bundle/u);
   assert.match(diagnostics, /expected status 1/u);
   assert.doesNotMatch(diagnostics, /postgres:\/\/|DATABASE_URL|private driver detail/u);
   assert.doesNotMatch(diagnostics, /internal customer|example\.invalid/u);

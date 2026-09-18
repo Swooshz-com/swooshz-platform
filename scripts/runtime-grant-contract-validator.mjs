@@ -71,11 +71,11 @@ const productionDependencyLockDigest =
 const databaseSourceShapeAuthority = new Map([
   [
     "src/db/brokered-migration.ts",
-    "c0630edca3bbef93745eeedbc1cd68ea68e096d3d3b6ca6e60ef1d4aa2011098",
+    "103a4a6c60e2b189e334b844bd45ea4d5a5e07a00c177602928a7239a7000a31",
   ],
   [
     "src/db/durable-operations.ts",
-    "dbb89f9394ead556163e7507e5220e3576220b62d2886e0049a5dc71be7fee9d",
+    "fc5d66bd1a5d67930f391e0267763b73341c7e2425065728dcc6da9e9340da00",
   ],  [
     "src/db/access-validation-grant-repository.ts",
     "5f9434df56a9f5bc67468ed8c17ea9fbf60c765c0fa6a88d6902a22d7b9a4271",
@@ -437,6 +437,7 @@ const databaseCapabilityFacadePaths = new Set([
 
 const internalDatabaseImportAuthority = new Set(
   [
+    ["src/db/brokered-migration.ts", ["src/db/readiness.ts"]],
     [
       "src/db/access-validation-grant-repository.ts",
       ["src/db/mappers.ts", "src/db/schema.ts"],
