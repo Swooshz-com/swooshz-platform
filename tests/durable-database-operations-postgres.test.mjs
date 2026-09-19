@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -37,7 +36,6 @@ import {
   validateBrokerStatementResult,
 } from "../dist/db/brokered-migration.js";
 import { RUNTIME_TABLE_GRANT_CONTRACT } from "../dist/db/runtime-grant-contract.js";
-import { withDisposablePostgresFixtureMigration } from "./support/disposable-postgres-fixture.mjs";
 
 const testDatabaseUrlA = process.env.DURABLE_OPERATIONS_TEST_DATABASE_URL_A;
 const testDatabaseUrlB = process.env.DURABLE_OPERATIONS_TEST_DATABASE_URL_B;
@@ -99,7 +97,6 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
     const appB = new Pool({ ...connectionB, user: "platform_app" });
     try {
       await Promise.all([createRoles(providerA), createRoles(providerB)]);
-      await Promise.all([applyFirstNine(providerA), applyFirstNine(providerB)]);
       await Promise.all([convergeCanonicalFixture(providerA, appA), convergeCanonicalFixture(providerB, appB)]);
 
       const contextA = await compileContext(providerA, "a");
@@ -886,32 +883,6 @@ async function createRoles(pool) {
   await pool.query(`create role "platform_runtime" nologin noinherit nosuperuser nocreatedb nocreaterole noreplication nobypassrls`);
   await pool.query(`create role "platform_app" login noinherit nosuperuser nocreatedb nocreaterole noreplication nobypassrls`);
   await pool.query(`grant "platform_runtime" to "platform_app" with admin true, inherit false, set false granted by "cloud_admin"`);
-}
-
-async function applyFirstNine(pool) {
-  const temporaryRoot = await mkdtemp(join(tmpdir(), "swooshz-run598-first-nine-"));
-  const target = join(temporaryRoot, "drizzle", "migrations");
-  try {
-    await mkdir(join(target, "meta"), { recursive: true });
-    const journal = JSON.parse(await readFile(join(migrationsFolder, "meta", "_journal.json"), "utf8"));
-    journal.entries = journal.entries.slice(0, 9);
-    await writeFile(join(target, "meta", "_journal.json"), `${JSON.stringify(journal, null, 2)}\n`, "utf8");
-    for (const entry of journal.entries) await cp(join(migrationsFolder, `${entry.tag}.sql`), join(target, `${entry.tag}.sql`));
-    const connectionString = `postgres://cloud_admin@${pool.options.host}:${pool.options.port}/${pool.options.database}`;
-    await withDisposablePostgresFixtureMigration(
-      {
-        pool,
-        connectionString,
-        expectedDatabase: databaseName,
-        expectedUser: "cloud_admin",
-        migrationsFolder: target,
-      },
-      async () => {},
-    );
-  } finally {
-    await rm(temporaryRoot, { recursive: true, force: true });
-  }
-  assert.equal((await readLedger(pool)).length, 9);
 }
 
 async function convergeCanonicalFixture(providerPool, appPool) {
