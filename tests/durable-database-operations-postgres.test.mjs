@@ -15,6 +15,8 @@ import {
   createBrokeredDurablePlanV2,
   executeBrokeredMigrationPlan,
   normalizeBrokeredPrestateV2,
+  RESTORE_CAPABILITY_PROVIDER_VERSION,
+  RESTORE_CAPABILITY_VERSION,
 } from "../dist/db/durable-operations.js";
 import {
   BROKER_ATTEMPT_RESERVATION_DOMAIN_SEPARATOR,
@@ -43,6 +45,27 @@ const rootDir = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const migrationsFolder = resolve(rootDir, "drizzle", "migrations");
 const databaseName = "durable_operations_test";
 const migrationSha256 = "452829e49a5571a8b4e14a2cbf155e671fe81ef8ee2fa3583935b7cc2ffd996b";
+
+function restoreCapabilityProviderFor(plan) {
+  return {
+    version: RESTORE_CAPABILITY_PROVIDER_VERSION,
+    target_binding_digest: plan.target_binding_digest,
+    prestate_digest: plan.prestate_digest,
+    plan_digest: plan.plan_digest,
+    authority_graph_digest: plan.authority_graph_digest,
+    broker_bundle_digest: plan.broker_bundle_digest,
+    bindReservation: async (inverse) => ({
+      version: RESTORE_CAPABILITY_VERSION,
+      target_binding_digest: inverse.target_binding_digest,
+      prestate_digest: inverse.prestate_digest,
+      plan_digest: inverse.plan_digest,
+      authority_graph_digest: inverse.authority_graph_digest,
+      broker_bundle_digest: inverse.broker_bundle_digest,
+      reservation_digest: inverse.reservation_digest,
+      execute: async () => {},
+    }),
+  };
+}
 const expectedFirstNineLedger = Object.freeze([
   { id: 1, hash: "d156026594b36870455ba6df7525310be1ce1838cda1d58725c6f3a07514c0a6", created_at: "1782546111134" },
   { id: 2, hash: "861614ef57601aff17a15fe594becfc0206fa931f22052ba98217e300285666d", created_at: "1782571351615" },
@@ -142,7 +165,7 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
       const artifactsA = brokerArtifacts(contextA.observationBundle, preEvidenceA, migrationSql);
 
       const attemptsA = new SingleUseAttemptStore();
-      const successReceipt = await executeBrokeredMigrationPlan({ observationBundle: contextA.observationBundle, prestate: artifactsA.prestate, plan: artifactsA.plan, migrationSql, broker: adapterA, attemptStore: attemptsA });
+      const successReceipt = await executeBrokeredMigrationPlan({ observationBundle: contextA.observationBundle, prestate: artifactsA.prestate, plan: artifactsA.plan, migrationSql, broker: adapterA, attemptStore: attemptsA, restoreCapabilityProvider: restoreCapabilityProviderFor(artifactsA.plan) });
       if (successReceipt.outcome !== "PASS") {
         const diagnosticCode = adapterA.lastFailure?.code;
         if (typeof diagnosticCode === "string" && /^BROKER_[A-Z0-9_]+$/u.test(diagnosticCode)) console.error(diagnosticCode);
@@ -153,6 +176,7 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
       assert.equal(successReceipt.attempts_used, 1);
       assert.equal(successReceipt.commit_state, "COMMITTED");
       assert.equal(successReceipt.cleanup_state, "DISCARDED");
+      assert.equal(successReceipt.recovery_state, "AVAILABLE");
       assert.equal(successReceipt.final_observation_state, "PASS");
       assert.equal(adapterA.dispatchCount, 1);
       assert.equal(adapterA.cleanupProofs, 1);
@@ -186,7 +210,7 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
       const rejectedLockAdapter = new DisposableBrokerAdapter(providerB, contextB, {
         resultOverride: (statement, rows) => statement.id === "target_advisory_lock" ? [{ lock_acquired: false }] : rows,
       });
-      const rejectedLockReceipt = await executeBrokeredMigrationPlan({ observationBundle: contextB.observationBundle, prestate: rejectedLockBaseline.artifacts.prestate, plan: rejectedLockBaseline.artifacts.plan, migrationSql, broker: rejectedLockAdapter, attemptStore: new SingleUseAttemptStore() });
+      const rejectedLockReceipt = await executeBrokeredMigrationPlan({ observationBundle: contextB.observationBundle, prestate: rejectedLockBaseline.artifacts.prestate, plan: rejectedLockBaseline.artifacts.plan, migrationSql, broker: rejectedLockAdapter, attemptStore: new SingleUseAttemptStore(), restoreCapabilityProvider: restoreCapabilityProviderFor(rejectedLockBaseline.artifacts.plan) });
       assert.equal(rejectedLockReceipt.outcome, "FAIL");
       assert.equal(rejectedLockReceipt.commit_state, "NOT_COMMITTED");
       assert.equal(rejectedLockReceipt.attempts_used, 1);
@@ -199,7 +223,7 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
       const deadlockAdapter = new DisposableBrokerAdapter(providerB, contextB, {
         failureInjection: { ordinal: lockStatementB.ordinal, boundary: "AFTER", code: "40P01", message: "deadlock detected" },
       });
-      const deadlockReceipt = await executeBrokeredMigrationPlan({ observationBundle: contextB.observationBundle, prestate: deadlockBaseline.artifacts.prestate, plan: deadlockBaseline.artifacts.plan, migrationSql, broker: deadlockAdapter, attemptStore: new SingleUseAttemptStore() });
+      const deadlockReceipt = await executeBrokeredMigrationPlan({ observationBundle: contextB.observationBundle, prestate: deadlockBaseline.artifacts.prestate, plan: deadlockBaseline.artifacts.plan, migrationSql, broker: deadlockAdapter, attemptStore: new SingleUseAttemptStore(), restoreCapabilityProvider: restoreCapabilityProviderFor(deadlockBaseline.artifacts.plan) });
       assert.equal(deadlockReceipt.outcome, "FAIL");
       assert.equal(deadlockReceipt.commit_state, "NOT_COMMITTED");
       assert.equal(deadlockReceipt.attempts_used, 1);
@@ -212,10 +236,11 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
       const injectedOrdinal = rollbackBaseline.artifacts.bundle.statements.find((entry) => entry.id === "migration_0010_05")?.ordinal;
       assert.ok(Number.isInteger(injectedOrdinal));
       const rollbackAdapter = new DisposableBrokerAdapter(providerB, contextB, { failureInjection: { ordinal: injectedOrdinal, boundary: "AFTER" } });
-      const rollbackReceipt = await executeBrokeredMigrationPlan({ observationBundle: contextB.observationBundle, prestate: rollbackBaseline.artifacts.prestate, plan: rollbackBaseline.artifacts.plan, migrationSql, broker: rollbackAdapter, attemptStore: new SingleUseAttemptStore() });
+      const rollbackReceipt = await executeBrokeredMigrationPlan({ observationBundle: contextB.observationBundle, prestate: rollbackBaseline.artifacts.prestate, plan: rollbackBaseline.artifacts.plan, migrationSql, broker: rollbackAdapter, attemptStore: new SingleUseAttemptStore(), restoreCapabilityProvider: restoreCapabilityProviderFor(rollbackBaseline.artifacts.plan) });
       assert.equal(rollbackReceipt.outcome, "FAIL");
       assert.equal(rollbackReceipt.commit_state, "NOT_COMMITTED");
       assert.equal(rollbackReceipt.rollback_state, "VERIFIED");
+      assert.equal(rollbackReceipt.recovery_state, "AVAILABLE");
       assert.equal(rollbackReceipt.final_observation_state, "PASS");
       assert.equal(rollbackReceipt.attempts_used, 1);
       assert.equal(rollbackAdapter.dispatchCount, 1);
@@ -230,7 +255,7 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
       const driftBaseline = await assertCompleteClusterBaseline(providerB, driftContext, migrationSql, "canonical posture drift: before");
       const driftAdapter = new DisposableBrokerAdapter(providerB, driftContext, { beforeDispatch: async () => providerB.query(`grant create on schema public to public`) });
       try {
-        const driftReceipt = await executeBrokeredMigrationPlan({ observationBundle: driftContext.observationBundle, prestate: driftBaseline.artifacts.prestate, plan: driftBaseline.artifacts.plan, migrationSql, broker: driftAdapter, attemptStore: new SingleUseAttemptStore() });
+        const driftReceipt = await executeBrokeredMigrationPlan({ observationBundle: driftContext.observationBundle, prestate: driftBaseline.artifacts.prestate, plan: driftBaseline.artifacts.plan, migrationSql, broker: driftAdapter, attemptStore: new SingleUseAttemptStore(), restoreCapabilityProvider: restoreCapabilityProviderFor(driftBaseline.artifacts.plan) });
         assert.equal(driftReceipt.outcome, "FAIL");
         assert.equal(driftReceipt.commit_state, "NOT_COMMITTED");
         assert.equal(driftReceipt.attempts_used, 1);
@@ -246,7 +271,7 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
         beforeDispatch: async () => providerB.query(`grant "platform_migrator" to "platform_app" with admin false, inherit false, set false`),
       });
       try {
-        const lockedDirectReceipt = await executeBrokeredMigrationPlan({ observationBundle: lockedDirectContext.observationBundle, prestate: lockedDirectBaseline.artifacts.prestate, plan: lockedDirectBaseline.artifacts.plan, migrationSql, broker: lockedDirectAdapter, attemptStore: new SingleUseAttemptStore() });
+        const lockedDirectReceipt = await executeBrokeredMigrationPlan({ observationBundle: lockedDirectContext.observationBundle, prestate: lockedDirectBaseline.artifacts.prestate, plan: lockedDirectBaseline.artifacts.plan, migrationSql, broker: lockedDirectAdapter, attemptStore: new SingleUseAttemptStore(), restoreCapabilityProvider: restoreCapabilityProviderFor(lockedDirectBaseline.artifacts.plan) });
         assert.equal(lockedDirectReceipt.outcome, "FAIL");
         assert.equal(lockedDirectReceipt.commit_state, "NOT_COMMITTED");
         assert.deepEqual(lockedDirectAdapter.roleAssumptionStatements, []);
@@ -266,7 +291,7 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
         },
       });
       try {
-        const lockedUnknownReceipt = await executeBrokeredMigrationPlan({ observationBundle: lockedUnknownContext.observationBundle, prestate: lockedUnknownBaseline.artifacts.prestate, plan: lockedUnknownBaseline.artifacts.plan, migrationSql, broker: lockedUnknownAdapter, attemptStore: new SingleUseAttemptStore() });
+        const lockedUnknownReceipt = await executeBrokeredMigrationPlan({ observationBundle: lockedUnknownContext.observationBundle, prestate: lockedUnknownBaseline.artifacts.prestate, plan: lockedUnknownBaseline.artifacts.plan, migrationSql, broker: lockedUnknownAdapter, attemptStore: new SingleUseAttemptStore(), restoreCapabilityProvider: restoreCapabilityProviderFor(lockedUnknownBaseline.artifacts.plan) });
         assert.equal(lockedUnknownReceipt.outcome, "FAIL");
         assert.equal(lockedUnknownReceipt.commit_state, "NOT_COMMITTED");
         assert.deepEqual(lockedUnknownAdapter.roleAssumptionStatements, []);
@@ -288,7 +313,7 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
       const runExpectedRollbackB = async (name, options) => {
         const baseline = await assertCompleteClusterBaseline(providerB, contextB, migrationSql, `${name}: before`);
         const adapter = new DisposableBrokerAdapter(providerB, contextB, options);
-        const receipt = await executeBrokeredMigrationPlan({ observationBundle: contextB.observationBundle, prestate: baseline.artifacts.prestate, plan: baseline.artifacts.plan, migrationSql, broker: adapter, attemptStore: new SingleUseAttemptStore() });
+        const receipt = await executeBrokeredMigrationPlan({ observationBundle: contextB.observationBundle, prestate: baseline.artifacts.prestate, plan: baseline.artifacts.plan, migrationSql, broker: adapter, attemptStore: new SingleUseAttemptStore(), restoreCapabilityProvider: restoreCapabilityProviderFor(baseline.artifacts.plan) });
         assert.equal(receipt.outcome, "FAIL");
         assert.equal(receipt.commit_state, "NOT_COMMITTED");
         assert.equal(receipt.rollback_state, "VERIFIED");
@@ -357,9 +382,11 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
           async dispatchMutation() { indeterminateDispatches += 1; throw new Error("indeterminate dispatch"); },
         },
         attemptStore: indeterminateStore,
+        restoreCapabilityProvider: restoreCapabilityProviderFor(indeterminateBaseline.artifacts.plan),
       });
       assert.equal(indeterminateReceipt.dispatch_state, "INDETERMINATE");
       assert.equal(indeterminateReceipt.attempts_used, 1);
+      assert.equal(indeterminateReceipt.recovery_state, "INDETERMINATE");
       assert.equal(indeterminateDispatches, 1);
       await assertCompleteClusterBaseline(providerB, contextB, migrationSql, "indeterminate dispatch: after");
     } finally {

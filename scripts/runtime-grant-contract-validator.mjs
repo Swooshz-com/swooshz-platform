@@ -75,7 +75,7 @@ const databaseSourceShapeAuthority = new Map([
   ],
   [
     "src/db/durable-operations.ts",
-    "bcfd6ac61302924c41bc566c44feebc5c7c9eea68965a3ff5ea11f71722a08ed",
+    "44b1a8676018f743cdd93b6d605c5b5f6584104e28f503d5ed7f5373d8052e87",
   ],  [
     "src/db/access-validation-grant-repository.ts",
     "5f9434df56a9f5bc67468ed8c17ea9fbf60c765c0fa6a88d6902a22d7b9a4271",

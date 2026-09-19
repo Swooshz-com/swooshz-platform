@@ -23,7 +23,7 @@ function parseArguments(argv) {
 }
 
 export async function runPlatformDbOperation(input) {
-  if (!input?.broker || (input.operation === "migration" && !input.attemptStore)) {
+  if (!input?.broker || (input.operation === "migration" && (!input.attemptStore || !input.restoreCapabilityProvider))) {
     throw new Error("BROKER_ADAPTER_UNAVAILABLE");
   }
   if (process.env.DATABASE_OPERATOR_URL?.trim()) throw new Error("direct_database_credential_prohibited");
@@ -47,6 +47,7 @@ export async function runPlatformDbOperation(input) {
     migrationSql,
     broker: input.broker,
     attemptStore: input.attemptStore,
+    restoreCapabilityProvider: input.restoreCapabilityProvider,
   });
 }
 

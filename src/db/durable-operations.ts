@@ -52,6 +52,8 @@ export const PRESTATE_VERSION = "platform-db-prestate-v2" as const;
 export const PLAN_VERSION = "platform-db-plan-v2" as const;
 export const INVERSE_VERSION = "platform-db-inverse-v2" as const;
 export const RESTORE_CAPABILITY_VERSION = "restore-capability-v2" as const;
+export const RESTORE_CAPABILITY_PROVIDER_VERSION =
+  "restore-capability-provider-v2" as const;
 
 export const PRESTATE_DOMAIN_SEPARATOR =
   "swooshz-platform:platform-db-prestate-v2\0" as const;
@@ -121,6 +123,7 @@ export const RECEIPT_PHASES = [
   "RESTORE",
   "RESTORE_VERIFY",
   "FINAL_VERIFY",
+  "RECOVERY_ADMISSION",
   "RECEIPT",
 ] as const;
 export type ReceiptPhase = (typeof RECEIPT_PHASES)[number];
@@ -4275,6 +4278,16 @@ export interface RestoreCapabilityV2 extends Omit<RestoreRequestV2, "reason"> {
   execute(request: RestoreRequestV2): Promise<void>;
 }
 
+export interface RestoreCapabilityProviderV2 {
+  readonly version: typeof RESTORE_CAPABILITY_PROVIDER_VERSION;
+  readonly target_binding_digest: string;
+  readonly prestate_digest: string;
+  readonly plan_digest: string;
+  readonly authority_graph_digest: string;
+  readonly broker_bundle_digest: string;
+  readonly bindReservation: (inverse: DurableInverseV2) => Promise<RestoreCapabilityV2>;
+}
+
 function brokerGraphDigest(evidence: BrokerObservationEvidenceV1): string {
   return canonicalDigest(AUTHORITY_GRAPH_DOMAIN_SEPARATOR, evidence.authority_graph);
 }
@@ -4396,18 +4409,66 @@ export function requireRestoreCapabilityV2(
   capability: RestoreCapabilityV2 | undefined,
   inverse: DurableInverseV2,
 ): RestoreCapabilityV2 {
-  if (!capability || capability.version !== RESTORE_CAPABILITY_VERSION || typeof capability.execute !== "function") fail("RESTORE_CAPABILITY_REQUIRED");
+  if (!isRecord(capability)) fail("RESTORE_CAPABILITY_REQUIRED");
+  assertExactKeys(
+    capability,
+    [
+      "version", "target_binding_digest", "prestate_digest", "plan_digest",
+      "authority_graph_digest", "broker_bundle_digest", "reservation_digest", "execute",
+    ],
+    "RESTORE_CAPABILITY_REQUIRED",
+  );
+  if (capability.version !== RESTORE_CAPABILITY_VERSION || typeof capability.execute !== "function") fail("RESTORE_CAPABILITY_REQUIRED");
   for (const key of ["target_binding_digest", "prestate_digest", "plan_digest", "authority_graph_digest", "broker_bundle_digest", "reservation_digest"] as const) {
     if (capability[key] !== inverse[key]) fail("RESTORE_CAPABILITY_REQUIRED");
   }
-  return capability;
+  return capability as unknown as RestoreCapabilityV2;
+}
+
+function freezeRestoreCapabilityProvider(
+  provider: RestoreCapabilityProviderV2 | undefined,
+): RestoreCapabilityProviderV2 {
+  if (!isRecord(provider)) fail("RESTORE_CAPABILITY_REQUIRED");
+  assertExactKeys(
+    provider,
+    [
+      "version", "target_binding_digest", "prestate_digest", "plan_digest",
+      "authority_graph_digest", "broker_bundle_digest", "bindReservation",
+    ],
+    "RESTORE_CAPABILITY_REQUIRED",
+  );
+  if (provider.version !== RESTORE_CAPABILITY_PROVIDER_VERSION || typeof provider.bindReservation !== "function") {
+    fail("RESTORE_CAPABILITY_REQUIRED");
+  }
+  return deepFreeze({
+    version: provider.version,
+    target_binding_digest: hex(provider.target_binding_digest, 64, "RESTORE_CAPABILITY_REQUIRED"),
+    prestate_digest: hex(provider.prestate_digest, 64, "RESTORE_CAPABILITY_REQUIRED"),
+    plan_digest: hex(provider.plan_digest, 64, "RESTORE_CAPABILITY_REQUIRED"),
+    authority_graph_digest: hex(provider.authority_graph_digest, 64, "RESTORE_CAPABILITY_REQUIRED"),
+    broker_bundle_digest: hex(provider.broker_bundle_digest, 64, "RESTORE_CAPABILITY_REQUIRED"),
+    bindReservation: provider.bindReservation as RestoreCapabilityProviderV2["bindReservation"],
+  });
+}
+
+function freezeRestoreCapabilityV2(capability: RestoreCapabilityV2): RestoreCapabilityV2 {
+  return deepFreeze({
+    version: capability.version,
+    target_binding_digest: capability.target_binding_digest,
+    prestate_digest: capability.prestate_digest,
+    plan_digest: capability.plan_digest,
+    authority_graph_digest: capability.authority_graph_digest,
+    broker_bundle_digest: capability.broker_bundle_digest,
+    reservation_digest: capability.reservation_digest,
+    execute: capability.execute,
+  });
 }
 
 export interface DurableReceiptV2 {
   readonly receipt_version: 2;
   readonly outcome: "PASS" | "BLOCKED" | "FAIL";
-  readonly phase: "OBSERVATION" | "ATTEMPT_RESERVATION" | "BROKER_DISPATCH" | "SESSION_CLEANUP" | "FINAL_OBSERVATION";
-  readonly semantic_code: "SUCCESS" | "BROKER_ADAPTER_UNAVAILABLE" | "BROKER_OBSERVATION_REJECTED" | "ATTEMPT_ALREADY_CONSUMED" | "ATTEMPT_RESERVATION_REJECTED" | "BROKER_DISPATCH_INDETERMINATE" | "BROKER_RESULT_REJECTED" | "FINAL_OBSERVATION_FAILED";
+  readonly phase: "RECOVERY_ADMISSION" | "OBSERVATION" | "ATTEMPT_RESERVATION" | "BROKER_DISPATCH" | "SESSION_CLEANUP" | "FINAL_OBSERVATION";
+  readonly semantic_code: "SUCCESS" | "RESTORE_CAPABILITY_REQUIRED" | "BROKER_ADAPTER_UNAVAILABLE" | "BROKER_OBSERVATION_REJECTED" | "ATTEMPT_ALREADY_CONSUMED" | "ATTEMPT_RESERVATION_REJECTED" | "BROKER_DISPATCH_INDETERMINATE" | "BROKER_RESULT_REJECTED" | "FINAL_OBSERVATION_FAILED";
   readonly target_binding_digest: string;
   readonly git_sha: string;
   readonly git_tree: string;
@@ -4456,6 +4517,7 @@ export async function executeBrokeredMigrationPlan(input: {
   prestate: NormalizedPrestateV2;
   plan: DurablePlanV2;
   migrationSql: string;
+  restoreCapabilityProvider: RestoreCapabilityProviderV2;
   broker?: ProductionDatabaseBrokerV1;
   attemptStore?: MigrationAttemptStoreV1;
 }): Promise<BrokeredMigrationReceiptV2> {
@@ -4488,6 +4550,17 @@ export async function executeBrokeredMigrationPlan(input: {
     final_observation_state: "NOT_RUN" as const,
     final_readiness_state: "NOT_RUN" as const,
   };
+  let restoreCapabilityProvider: RestoreCapabilityProviderV2;
+  try {
+    restoreCapabilityProvider = freezeRestoreCapabilityProvider(input.restoreCapabilityProvider);
+  } catch {
+    return brokeredReceipt({
+      ...base,
+      outcome: "BLOCKED",
+      phase: "RECOVERY_ADMISSION",
+      semantic_code: "RESTORE_CAPABILITY_REQUIRED",
+    });
+  }
   if (!input.broker || !input.attemptStore) {
     return brokeredReceipt({ ...base, outcome: "BLOCKED", phase: "OBSERVATION", semantic_code: "BROKER_ADAPTER_UNAVAILABLE" });
   }
@@ -4518,6 +4591,20 @@ export async function executeBrokeredMigrationPlan(input: {
     observation_evidence_digest: evidence.evidence_digest,
     mutation_bundle_digest: mutationBundle.bundle_digest,
   };
+  if (
+    restoreCapabilityProvider.target_binding_digest !== mutationBundle.target_binding_digest ||
+    restoreCapabilityProvider.prestate_digest !== input.prestate.prestate_digest ||
+    restoreCapabilityProvider.plan_digest !== input.plan.plan_digest ||
+    restoreCapabilityProvider.authority_graph_digest !== input.plan.authority_graph_digest ||
+    restoreCapabilityProvider.broker_bundle_digest !== mutationBundle.bundle_digest
+  ) {
+    return brokeredReceipt({
+      ...compiled,
+      outcome: "BLOCKED",
+      phase: "RECOVERY_ADMISSION",
+      semantic_code: "RESTORE_CAPABILITY_REQUIRED",
+    });
+  }
   let rawReservation: BrokerAttemptReservationV1;
   try {
     rawReservation = await input.attemptStore.reserveOnce({
@@ -4541,6 +4628,39 @@ export async function executeBrokeredMigrationPlan(input: {
     reservation_digest: reservation.reservation_digest,
     attempts_used: 1 as const,
   };
+  let inverse: DurableInverseV2;
+  try {
+    inverse = createDurableInverseV2(input.plan, reservation);
+  } catch {
+    return brokeredReceipt({
+      ...reserved,
+      outcome: "FAIL",
+      phase: "RECOVERY_ADMISSION",
+      semantic_code: "RESTORE_CAPABILITY_REQUIRED",
+      dispatch_state: "NOT_DISPATCHED",
+      commit_state: "NOT_COMMITTED",
+      mutation_started: false,
+      recovery_state: "NOT_REQUIRED",
+    });
+  }
+  let admittedRestoreCapability: RestoreCapabilityV2;
+  try {
+    const boundCapability = await restoreCapabilityProvider.bindReservation(inverse);
+    admittedRestoreCapability = freezeRestoreCapabilityV2(
+      requireRestoreCapabilityV2(boundCapability, inverse),
+    );
+  } catch {
+    return brokeredReceipt({
+      ...reserved,
+      outcome: "FAIL",
+      phase: "RECOVERY_ADMISSION",
+      semantic_code: "RESTORE_CAPABILITY_REQUIRED",
+      dispatch_state: "NOT_DISPATCHED",
+      commit_state: "NOT_COMMITTED",
+      mutation_started: false,
+      recovery_state: "NOT_REQUIRED",
+    });
+  }
   let result: BrokerMutationResultV1;
   try {
     const rawResult = await input.broker.dispatchMutation(
@@ -4583,7 +4703,7 @@ export async function executeBrokeredMigrationPlan(input: {
           cleanup_state: "DISCARDED",
           mutation_started: true,
           rollback_state: "VERIFIED",
-          recovery_state: "AVAILABLE",
+          recovery_state: admittedRestoreCapability ? "AVAILABLE" : "REQUIRED",
           final_observation_state: "PASS",
           final_readiness_state: "PASS",
         });
@@ -4663,7 +4783,7 @@ export async function executeBrokeredMigrationPlan(input: {
     cleanup_state: "DISCARDED",
     mutation_started: true,
     rollback_state: "NOT_REQUIRED",
-    recovery_state: "AVAILABLE",
+    recovery_state: admittedRestoreCapability ? "AVAILABLE" : "REQUIRED",
     final_observation_state: "PASS",
     final_readiness_state: "PASS",
   });

@@ -47,6 +47,7 @@ import {
   createDurableInverseV2,
   requireRestoreCapabilityV2,
   RESTORE_CAPABILITY_VERSION,
+  RESTORE_CAPABILITY_PROVIDER_VERSION,
 } from "../dist/db/durable-operations.js";
 import {
   BROKER_ATTEMPT_RESERVATION_DOMAIN_SEPARATOR,
@@ -203,6 +204,35 @@ function reservationForRequest(input) {
     reservation_id: "fixture-reservation-1",
   };
   return { ...payload, reservation_digest: computeBrokerBundleDigest(BROKER_ATTEMPT_RESERVATION_DOMAIN_SEPARATOR, payload) };
+}
+
+function capabilityFor(inverse, overrides = {}) {
+  return {
+    version: RESTORE_CAPABILITY_VERSION,
+    target_binding_digest: inverse.target_binding_digest,
+    prestate_digest: inverse.prestate_digest,
+    plan_digest: inverse.plan_digest,
+    authority_graph_digest: inverse.authority_graph_digest,
+    broker_bundle_digest: inverse.broker_bundle_digest,
+    reservation_digest: inverse.reservation_digest,
+    execute: async () => {},
+    ...overrides,
+  };
+}
+
+function restoreCapabilityProviderFor(plan, { onBind, capability } = {}) {
+  return {
+    version: RESTORE_CAPABILITY_PROVIDER_VERSION,
+    target_binding_digest: plan.target_binding_digest,
+    prestate_digest: plan.prestate_digest,
+    plan_digest: plan.plan_digest,
+    authority_graph_digest: plan.authority_graph_digest,
+    broker_bundle_digest: plan.broker_bundle_digest,
+    bindReservation: async (inverse) => {
+      onBind?.(inverse);
+      return typeof capability === "function" ? capability(inverse) : capability ?? capabilityFor(inverse);
+    },
+  };
 }
 
 function resultFor(bundle, reservation) {
@@ -684,13 +714,189 @@ test("broker execution reserves once before dispatch, validates the result, and 
       return resultFor(parsed, reservation);
     },
   };
-  const receipt = await executeBrokeredMigrationPlan({ observationBundle, prestate, plan, migrationSql, broker, attemptStore });
+  const omitted = await executeBrokeredMigrationPlan({ observationBundle, prestate, plan, migrationSql, broker, attemptStore });
+  assert.equal(omitted.outcome, "BLOCKED");
+  assert.equal(omitted.phase, "RECOVERY_ADMISSION");
+  assert.equal(omitted.semantic_code, "RESTORE_CAPABILITY_REQUIRED");
+  assert.equal(omitted.attempts_used, 0);
+  assert.equal(omitted.dispatch_state, "NOT_DISPATCHED");
+  assert.equal(omitted.mutation_started, false);
+  assert.equal(omitted.recovery_state, "NOT_REQUIRED");
+  assert.equal(observes, 0);
+  assert.equal(reservations, 0);
+  assert.equal(dispatches, 0);
+  const receipt = await executeBrokeredMigrationPlan({ observationBundle, prestate, plan, migrationSql, broker, attemptStore, restoreCapabilityProvider: restoreCapabilityProviderFor(plan) });
   assert.equal(receipt.outcome, "PASS");
   assert.equal(receipt.attempts_used, 1);
   assert.equal(receipt.cleanup_state, "DISCARDED");
   assert.equal(observes, 2);
   assert.equal(reservations, 1);
   assert.equal(dispatches, 1);
+  assert.equal(receipt.recovery_state, "AVAILABLE");
+});
+
+test("recovery provider structural and pre-reservation digest admission fail closed", async () => {
+  const { observationBundle, evidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  const { prestate, plan } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+  for (const provider of [
+    undefined,
+    { ...restoreCapabilityProviderFor(plan), version: "restore-capability-provider-v1" },
+    { ...restoreCapabilityProviderFor(plan), bindReservation: null },
+    { ...restoreCapabilityProviderFor(plan), extra: true },
+  ]) {
+    let observes = 0;
+    let reservations = 0;
+    let dispatches = 0;
+    const receipt = await executeBrokeredMigrationPlan({
+      observationBundle,
+      prestate,
+      plan,
+      migrationSql,
+      restoreCapabilityProvider: provider,
+      broker: { async observe() { observes += 1; return evidence; }, async dispatchMutation() { dispatches += 1; } },
+      attemptStore: { async reserveOnce() { reservations += 1; throw new Error("must not reserve"); } },
+    });
+    assert.equal(receipt.outcome, "BLOCKED");
+    assert.equal(receipt.phase, "RECOVERY_ADMISSION");
+    assert.equal(receipt.semantic_code, "RESTORE_CAPABILITY_REQUIRED");
+    assert.equal(receipt.attempts_used, 0);
+    assert.equal(receipt.dispatch_state, "NOT_DISPATCHED");
+    assert.equal(receipt.mutation_started, false);
+    assert.equal(receipt.recovery_state, "NOT_REQUIRED");
+    assert.equal(observes, 0);
+    assert.equal(reservations, 0);
+    assert.equal(dispatches, 0);
+  }
+
+  for (const field of [
+    "target_binding_digest",
+    "prestate_digest",
+    "plan_digest",
+    "authority_graph_digest",
+    "broker_bundle_digest",
+  ]) {
+    const provider = { ...restoreCapabilityProviderFor(plan), [field]: "f".repeat(64) };
+    let observes = 0;
+    let reservations = 0;
+    let dispatches = 0;
+    const receipt = await executeBrokeredMigrationPlan({
+      observationBundle,
+      prestate,
+      plan,
+      migrationSql,
+      restoreCapabilityProvider: provider,
+      broker: { async observe() { observes += 1; return evidence; }, async dispatchMutation() { dispatches += 1; } },
+      attemptStore: { async reserveOnce() { reservations += 1; throw new Error("must not reserve"); } },
+    });
+    assert.equal(receipt.outcome, "BLOCKED");
+    assert.equal(receipt.phase, "RECOVERY_ADMISSION");
+    assert.equal(receipt.semantic_code, "RESTORE_CAPABILITY_REQUIRED");
+    assert.equal(receipt.attempts_used, 0);
+    assert.equal(receipt.dispatch_state, "NOT_DISPATCHED");
+    assert.equal(receipt.mutation_started, false);
+    assert.equal(receipt.recovery_state, "NOT_REQUIRED");
+    assert.equal(observes, 1);
+    assert.equal(reservations, 0);
+    assert.equal(dispatches, 0);
+  }
+});
+
+test("recovery binding consumes the reservation once but prevents dispatch on any returned-capability mismatch", async () => {
+  const { observationBundle, evidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  const { prestate, plan } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+  for (const field of ["reservation_digest", "target_binding_digest"]) {
+    let reservations = 0;
+    let dispatches = 0;
+    let binds = 0;
+    const receipt = await executeBrokeredMigrationPlan({
+      observationBundle,
+      prestate,
+      plan,
+      migrationSql,
+      restoreCapabilityProvider: restoreCapabilityProviderFor(plan, {
+        onBind: () => { binds += 1; },
+        capability: (inverse) => capabilityFor(inverse, { [field]: "0".repeat(64) }),
+      }),
+      broker: { async observe() { return evidence; }, async dispatchMutation() { dispatches += 1; } },
+      attemptStore: { async reserveOnce(input) { reservations += 1; return reservationForRequest(input); } },
+    });
+    assert.equal(receipt.outcome, "FAIL");
+    assert.equal(receipt.phase, "RECOVERY_ADMISSION");
+    assert.equal(receipt.semantic_code, "RESTORE_CAPABILITY_REQUIRED");
+    assert.equal(receipt.attempts_used, 1);
+    assert.equal(receipt.dispatch_state, "NOT_DISPATCHED");
+    assert.equal(receipt.commit_state, "NOT_COMMITTED");
+    assert.equal(receipt.mutation_started, false);
+    assert.equal(receipt.recovery_state, "NOT_REQUIRED");
+    assert.equal(reservations, 1);
+    assert.equal(binds, 1);
+    assert.equal(dispatches, 0);
+  }
+});
+
+test("broker execution order is observe, reserve, bind capability, dispatch, final observe", async () => {
+  const { observationBundle, evidence, finalEvidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  const { prestate, plan } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+  const events = [];
+  let observations = 0;
+  const receipt = await executeBrokeredMigrationPlan({
+    observationBundle,
+    prestate,
+    plan,
+    migrationSql,
+    restoreCapabilityProvider: restoreCapabilityProviderFor(plan, { onBind: () => events.push("bind capability") }),
+    broker: {
+      async observe() { observations += 1; events.push(observations === 1 ? "observe" : "final observe"); return observations === 1 ? evidence : finalEvidence; },
+      async dispatchMutation(serialized, digest, reservation) { events.push("dispatch"); return resultFor(JSON.parse(serialized), reservation); },
+    },
+    attemptStore: { async reserveOnce(input) { events.push("reserve"); return reservationForRequest(input); } },
+  });
+  assert.equal(receipt.outcome, "PASS");
+  assert.deepEqual(events, ["observe", "reserve", "bind capability", "dispatch", "final observe"]);
+});
+
+test("admitted provider and capability are copied before caller-owned mutation, and capability execute is never invoked", async () => {
+  const { observationBundle, evidence, finalEvidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  const { prestate, plan } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+  const provider = restoreCapabilityProviderFor(plan);
+  let returnedCapability;
+  let executeCalls = 0;
+  provider.bindReservation = async (inverse) => {
+    returnedCapability = capabilityFor(inverse, { execute: async () => { executeCalls += 1; } });
+    return returnedCapability;
+  };
+  let observations = 0;
+  const receipt = await executeBrokeredMigrationPlan({
+    observationBundle,
+    prestate,
+    plan,
+    migrationSql,
+    restoreCapabilityProvider: provider,
+    broker: {
+      async observe() {
+        observations += 1;
+        if (observations === 1) {
+          provider.target_binding_digest = "f".repeat(64);
+          provider.bindReservation = async () => { throw new Error("must not call replaced provider"); };
+          return evidence;
+        }
+        return finalEvidence;
+      },
+      async dispatchMutation(serialized, digest, reservation) {
+        returnedCapability.reservation_digest = "f".repeat(64);
+        assert.equal(returnedCapability.reservation_digest, "f".repeat(64));
+        return resultFor(JSON.parse(serialized), reservation);
+      },
+    },
+    attemptStore: { async reserveOnce(input) { return reservationForRequest(input); } },
+  });
+  assert.equal(receipt.outcome, "PASS");
+  assert.equal(receipt.recovery_state, "AVAILABLE");
+  assert.equal(executeCalls, 0);
 });
 
 test("pre-dispatch rejection consumes no attempt and an indeterminate dispatch is never retried", async () => {
@@ -706,6 +912,7 @@ test("pre-dispatch rejection consumes no attempt and an indeterminate dispatch i
     migrationSql,
     broker: { async observe() { return { ...evidence, target: { ...evidence.target, database_oid: "99" } }; }, async dispatchMutation() { dispatches += 1; } },
     attemptStore: { async reserveOnce() { reservations += 1; throw new Error("must not run"); } },
+    restoreCapabilityProvider: restoreCapabilityProviderFor(plan),
   });
   assert.equal(rejected.attempts_used, 0);
   assert.equal(reservations, 0);
@@ -723,9 +930,11 @@ test("pre-dispatch rejection consumes no attempt and an indeterminate dispatch i
         return reservationForRequest(input);
       },
     },
+    restoreCapabilityProvider: restoreCapabilityProviderFor(plan),
   });
   assert.equal(failed.attempts_used, 1);
   assert.equal(failed.dispatch_state, "INDETERMINATE");
+  assert.equal(failed.recovery_state, "INDETERMINATE");
   assert.equal(dispatches, 1);
   assert.equal(reservations, 1);
 });
@@ -749,11 +958,13 @@ test("confirmed commit with cleanup failure is terminal and does not trigger a f
       },
     },
     attemptStore: { async reserveOnce(input) { return reservationForRequest(input); } },
+    restoreCapabilityProvider: restoreCapabilityProviderFor(plan),
   });
   assert.equal(receipt.outcome, "FAIL");
   assert.equal(receipt.phase, "SESSION_CLEANUP");
   assert.equal(receipt.commit_state, "COMMITTED");
   assert.equal(receipt.cleanup_state, "FAILED");
+  assert.equal(receipt.recovery_state, "REQUIRED");
   assert.equal(receipt.final_observation_state, "NOT_RUN");
   assert.equal(observes, 1);
   assert.equal(dispatches, 1);
@@ -778,10 +989,13 @@ test("broker execution rejects a reservation for different exact bundle bytes be
         return reservationForRequest({ ...input, mutation_bundle_digest: "f".repeat(64) });
       },
     },
+    restoreCapabilityProvider: restoreCapabilityProviderFor(plan),
   });
   assert.equal(receipt.outcome, "FAIL");
   assert.equal(receipt.semantic_code, "ATTEMPT_RESERVATION_REJECTED");
   assert.equal(receipt.attempts_used, 1);
+  assert.equal(receipt.phase, "ATTEMPT_RESERVATION");
+  assert.equal(receipt.recovery_state, "NOT_REQUIRED");
   assert.equal(dispatches, 0);
 });
 
@@ -804,10 +1018,12 @@ test("determinate broker rollback requires a fresh exact restoration observation
       },
     },
     attemptStore: { async reserveOnce(input) { return reservationForRequest(input); } },
+    restoreCapabilityProvider: restoreCapabilityProviderFor(plan),
   });
   assert.equal(receipt.outcome, "FAIL");
   assert.equal(receipt.commit_state, "NOT_COMMITTED");
   assert.equal(receipt.rollback_state, "VERIFIED");
+  assert.equal(receipt.recovery_state, "AVAILABLE");
   assert.equal(receipt.final_observation_state, "PASS");
   assert.equal(receipt.attempts_used, 1);
   assert.equal(observes, 2);
@@ -828,7 +1044,7 @@ test("v2 durable broker artifacts reject legacy and tampered evidence before res
     { prestate, plan: { ...plan, source_manifest_digest: "e".repeat(64) } },
     { prestate, plan: { ...plan, broker_bundle_digest: "d".repeat(64) } },
   ]) {
-    const receipt = await executeBrokeredMigrationPlan({ observationBundle, ...changed, migrationSql, broker, attemptStore });
+    const receipt = await executeBrokeredMigrationPlan({ observationBundle, ...changed, migrationSql, broker, attemptStore, restoreCapabilityProvider: restoreCapabilityProviderFor(changed.plan) });
     assert.equal(receipt.outcome, "BLOCKED");
     assert.equal(receipt.attempts_used, 0);
   }
