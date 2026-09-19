@@ -4,11 +4,6 @@ import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 
-import { drizzle } from "drizzle-orm/node-postgres";
-import { migrate } from "drizzle-orm/node-postgres/migrator";
-import { readMigrationFiles } from "drizzle-orm/migrator";
-
-import * as schema from "./schema.js";
 import {
   CANONICAL_PLATFORM_ENUM_TYPES,
   CANONICAL_PLATFORM_ROUTINES,
@@ -34,7 +29,7 @@ import {
 import {
   canonicalSerializeBrokerBundle,
   compileBrokerMutationBundle,
-  normalizeBrokerAttemptReservation,
+  normalizeMigrationAttemptReservationOutcome,
   normalizeBrokerObservationEvidence,
   validateBrokerMutationResult,
   BROKER_RESULT_VERSION,
@@ -44,7 +39,7 @@ import {
   type BrokerObservationBundleV1,
   type BrokerObservationEvidenceV1,
   type BrokerTargetBindingV2,
-  type MigrationAttemptStoreV1,
+  type MigrationAttemptStoreV2,
   type ProductionDatabaseBrokerV1,
 } from "./brokered-migration.js";
 
@@ -3321,22 +3316,26 @@ export async function loadCanonicalMigrationJournal(rootDir: string): Promise<Ca
   }
   assertRecord(parsed, "MIGRATION_IDENTITY_MISMATCH");
   if (!Array.isArray(parsed.entries)) fail("MIGRATION_IDENTITY_MISMATCH");
-  const files = readMigrationFiles({ migrationsFolder: migrationDirectory }) as Array<{ hash: string; folderMillis: number }>;
-  if (files.length !== parsed.entries.length) fail("MIGRATION_IDENTITY_MISMATCH");
-  const entries = parsed.entries.map((raw, index) => {
+  const entries = await Promise.all(parsed.entries.map(async (raw) => {
     assertRecord(raw, "MIGRATION_IDENTITY_MISMATCH");
     assertExactKeys(raw, ["idx", "version", "when", "tag", "breakpoints"], "MIGRATION_IDENTITY_MISMATCH");
     const tag = stringValue(raw.tag, "MIGRATION_IDENTITY_MISMATCH");
-    if (!CANONICAL_MIGRATION_TAGS.has(tag) || files[index].folderMillis !== Number(raw.when)) fail("MIGRATION_IDENTITY_MISMATCH");
+    let contents: Buffer;
+    try {
+      contents = await readFile(join(migrationDirectory, `${tag}.sql`));
+    } catch {
+      fail("MIGRATION_IDENTITY_MISMATCH");
+    }
+    if (!CANONICAL_MIGRATION_TAGS.has(tag) || !Number.isSafeInteger(Number(raw.when))) fail("MIGRATION_IDENTITY_MISMATCH");
     return {
       idx: nonnegativeInteger(raw.idx, "MIGRATION_IDENTITY_MISMATCH"),
       version: stringValue(raw.version, "MIGRATION_IDENTITY_MISMATCH"),
       when: decimalStringValue(raw.when),
       tag,
       breakpoints: booleanValue(raw.breakpoints, "MIGRATION_IDENTITY_MISMATCH"),
-      sql_sha256: hex(files[index].hash, 64, "MIGRATION_IDENTITY_MISMATCH"),
+      sql_sha256: createHash("sha256").update(contents).digest("hex"),
     };
-  });
+  }));
   if (
     entries.length !== CANONICAL_MIGRATION_TAG_LIST.length ||
     entries.some((entry, index) => entry.idx !== index || entry.tag !== CANONICAL_MIGRATION_TAG_LIST[index])
@@ -3432,143 +3431,6 @@ export async function assertRevisionBinding(input: {
   }
 }
 
-function queryText(input: DurableQueryInput): string {
-  if (typeof input === "string") return input;
-  return typeof input.text === "string" ? input.text : "";
-}
-
-function isMutationSql(text: DurableQueryInput): boolean {
-  const normalized = queryText(text).trim().replace(/^(?:\/\*[\s\S]*?\*\/|--[^\r\n]*(?:\r?\n|$))+\s*/u, "");
-  return /^(?:CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|GRANT|REVOKE|TRUNCATE|COMMENT|DO|CALL)\b/iu.test(normalized);
-}
-
-class MutationAwareConnection implements DurableConnection {
-  constructor(private readonly connection: DurableConnection, private readonly boundary: { markMutation(): void }) {}
-
-  query(text: DurableQueryInput, values?: readonly unknown[]): Promise<DurableQueryResult> {
-    if (isMutationSql(text)) this.boundary.markMutation();
-    return this.connection.query(text, values);
-  }
-
-  release(): Promise<void> | void {
-    return this.connection.release?.();
-  }
-}
-
-class MutationAwarePool implements DurablePool {
-  constructor(private readonly pool: DurablePool, private readonly boundary: { markMutation(): void }) {}
-
-  query(text: DurableQueryInput, values?: readonly unknown[]): Promise<DurableQueryResult> {
-    const query = this.pool.query;
-    if (!query) fail("MUTATION_FAILED");
-    if (isMutationSql(text)) this.boundary.markMutation();
-    return query.call(this.pool, text, values);
-  }
-
-  async connect(): Promise<DurableConnection> {
-    return new MutationAwareConnection(await this.pool.connect(), this.boundary);
-  }
-}
-
-export interface CanonicalMigrationResult {
-  mutation_started: boolean;
-  before: MigrationAppliedRowV1[];
-  after: MigrationAppliedRowV1[];
-  applied_entries: MigrationSourceEntryV1[];
-}
-
-export async function runCanonicalMigrationPrimitive(input: {
-  pool: DurablePool;
-  migrationsFolder: string;
-  expectedOperations?: readonly MigrationOperationV1[];
-  existingTransaction?: boolean;
-}): Promise<CanonicalMigrationResult> {
-  const rootDir = resolve(input.migrationsFolder, "..", "..");
-  const journal = await loadCanonicalMigrationJournal(rootDir);
-  const files = readMigrationFiles({ migrationsFolder: resolve(input.migrationsFolder) }) as Array<{ hash: string; folderMillis: number }>;
-  if (files.length !== journal.entries.length) fail("MIGRATION_IDENTITY_MISMATCH");
-  const before = await readAppliedMigrationRows(input.pool);
-  assertAppliedPrefix(before, journal);
-  const pending = journal.entries.slice(before.length);
-  const expectedOperations = input.expectedOperations
-    ? input.expectedOperations.map((operation) => normalizeMigrationOperation(operation as unknown as Record<string, unknown>))
-    : pending.map((entry, index) => migrationOperationFromEntry(entry, [...before, ...pending.slice(0, index).map((prior) => ({ when: prior.when, sql_sha256: prior.sql_sha256 }))]));
-  if (expectedOperations.length !== pending.length || expectedOperations.some((operation, index) => !sameMigrationEntry(operation, pending[index]))) fail("MIGRATION_IDENTITY_MISMATCH");
-  let expectedRows = before.slice();
-  expectedOperations.forEach((operation, index) => {
-    const entry = pending[index];
-    const nextRows = [...expectedRows, { when: entry.when, sql_sha256: entry.sql_sha256 }];
-    if (operation.expected_applied_prefix_digest !== canonicalDigest(JOURNAL_PREFIX_DOMAIN_SEPARATOR, expectedRows) || operation.expected_post_journal_digest !== canonicalDigest(JOURNAL_PREFIX_DOMAIN_SEPARATOR, nextRows)) fail("MIGRATION_IDENTITY_MISMATCH");
-    expectedRows = nextRows;
-  });
-  if (pending.length === 0) return { mutation_started: false, before, after: before, applied_entries: [] };
-
-  const boundary = { value: false, markMutation() { this.value = true; } };
-  const awarePool = new MutationAwarePool(input.pool, boundary);
-  try {
-    const database = drizzle(awarePool as never, { schema });
-    if (input.existingTransaction) {
-      const internals = database as unknown as {
-        dialect: { migrate(migrations: unknown, session: unknown, config: unknown): Promise<void> };
-        session: { transaction(callback: (session: unknown) => Promise<unknown>): Promise<unknown> };
-      };
-      const session = internals.session;
-      const originalTransaction = session.transaction;
-      session.transaction = async (callback) => callback(session);
-      try {
-        await internals.dialect.migrate(
-          readMigrationFiles({ migrationsFolder: resolve(input.migrationsFolder) }),
-          session,
-          { migrationsFolder: resolve(input.migrationsFolder) },
-        );
-      } finally {
-        session.transaction = originalTransaction;
-      }
-    } else {
-      await migrate(database as never, { migrationsFolder: resolve(input.migrationsFolder) });
-    }
-  } catch {
-    if (!boundary.value) fail("MIGRATION_IDENTITY_MISMATCH");
-    const failure = new DurableOperationError("MUTATION_FAILED");
-    failure.mutationStarted = true;
-    throw failure;
-  }
-  let after: MigrationAppliedRowV1[] = [];
-  try {
-    after = await readAppliedMigrationRows(input.pool);
-  } catch (error) {
-    if (error instanceof DurableOperationError) error.mutationStarted = boundary.value;
-    throw error;
-  }
-  try {
-    assertAppliedPrefix(after, journal);
-    if (after.length !== journal.entries.length) fail("MIGRATION_IDENTITY_MISMATCH");
-    if (canonicalDigest(JOURNAL_PREFIX_DOMAIN_SEPARATOR, after) !== expectedOperations[expectedOperations.length - 1].expected_post_journal_digest) fail("MIGRATION_IDENTITY_MISMATCH");
-  } catch (error) {
-    if (boundary.value && error instanceof DurableOperationError) error.mutationStarted = true;
-    throw error;
-  }
-  return { mutation_started: boundary.value, before, after, applied_entries: pending };
-}
-
-async function readAppliedMigrationRows(pool: DurablePool): Promise<MigrationAppliedRowV1[]> {
-  const connection = await pool.connect();
-  try {
-    const exists = await connection.query(MIGRATION_LEDGER_EXISTS_SQL);
-    if (exists.rows[0]?.ledger_present !== true) return [];
-    const result = await connection.query(MIGRATION_LEDGER_ROWS_SQL);
-    return result.rows.map((row) => ({
-      when: decimalStringValue(row.when),
-      sql_sha256: hex(row.sql_sha256, 64, "MIGRATION_IDENTITY_MISMATCH"),
-    }));
-  } catch (error) {
-    if (error instanceof DurableOperationError) throw error;
-    fail("MIGRATION_IDENTITY_MISMATCH");
-  } finally {
-    await closeConnection(connection);
-  }
-}
-
 function assertAppliedPrefix(
   rows: readonly MigrationAppliedRowV1[],
   journal: CanonicalMigrationJournalV1,
@@ -3593,23 +3455,6 @@ function assertAppliedPrefix(
     if (!entry || row.when !== entry.when || !hashMatches || seen.has(identity)) fail("MIGRATION_IDENTITY_MISMATCH");
     seen.add(identity);
   });
-}
-
-function migrationOperationFromEntry(entry: MigrationSourceEntryV1, before: readonly MigrationAppliedRowV1[]): MigrationOperationV1 {
-  const prefix = canonicalDigest(JOURNAL_PREFIX_DOMAIN_SEPARATOR, before);
-  return {
-    kind: "migration",
-    tag: entry.tag,
-    journal_index: entry.idx,
-    when: entry.when,
-    sql_sha256: entry.sql_sha256,
-    expected_applied_prefix_digest: prefix,
-    expected_post_journal_digest: canonicalDigest(JOURNAL_PREFIX_DOMAIN_SEPARATOR, [...before, { when: entry.when, sql_sha256: entry.sql_sha256 }]),
-  };
-}
-
-function sameMigrationEntry(operation: MigrationOperationV1, entry: MigrationSourceEntryV1): boolean {
-  return operation.tag === entry.tag && operation.journal_index === entry.idx && operation.when === entry.when && operation.sql_sha256 === entry.sql_sha256;
 }
 
 export async function verifyRestoration(input: {
@@ -3821,10 +3666,15 @@ export async function executeDurablePlan(input: {
   mutationConnection?: DurableConnection;
   restoreCapability?: RestoreCapabilityV1;
   rootDir?: string;
-  migrationsFolder?: string;
   journal?: CanonicalMigrationJournalV1;
 }): Promise<DurableReceiptV1> {
   const frozenPlan = freezeDurablePlan(input.plan);
+  if (
+    frozenPlan.operation_kind === "migration" ||
+    frozenPlan.operations.some((operation) => operation.kind === "migration")
+  ) {
+    fail("OPERATION_UNSUPPORTED");
+  }
   const frozenBinding = freezeTargetBinding(input.binding);
   const expectedPrestate = normalizePrestate(input.expectedPrestate);
   assertFixedRolePosture(expectedPrestate);
@@ -3833,10 +3683,7 @@ export async function executeDurablePlan(input: {
   const frozenJournal = freezeJournal(input.journal);
   const frozenRestoreCapability = freezeRestoreCapability(input.restoreCapability);
   const frozenRootDir = input.rootDir;
-  const frozenMigrationsFolder = input.migrationsFolder;
   const frozenMutationConnection = input.mutationConnection;
-  const isMigration = frozenPlan.operation_kind === "migration";
-  const requiresRestoreCapability = frozenPlan.operations.some((operation) => operation.kind === "migration");
   let phase: ReceiptPhase = "ADMISSION";
   let observedContractDigest = expectedContractDigest;
   let observedTargetBindingDigest = "";
@@ -3879,13 +3726,6 @@ export async function executeDurablePlan(input: {
         observedTargetBindingDigest,
       );
     }
-    if (requiresRestoreCapability) {
-      restoreCapability = requireRestoreCapability(
-        restoreCapability,
-        frozenPlan,
-        observedTargetBindingDigest,
-      );
-    }
     phase = "OBSERVE";
     const observed = await captureNormalizedPrestate(frozenBinding, frozenJournal);
     phase = "PRESTATE";
@@ -3900,12 +3740,11 @@ export async function executeDurablePlan(input: {
       observedTargetBindingDigest: computeTargetBindingDigest(frozenBinding),
     });
     phase = "INVERSE";
-    inverse = isMigration ? undefined : createDurableInverse(
+    inverse = createDurableInverse(
       frozenPlan,
       expectedPrestate,
       { allowExternalRestore: restoreCapability !== undefined },
     );
-    if (isMigration && !frozenMigrationsFolder) fail("OPERATION_UNSUPPORTED");
     phase = "PREWRITE";
     mutationConnection = frozenMutationConnection ?? await frozenBinding.connect();
     session = createMutationSession(mutationConnection, frozenBinding.logicalDatabaseName);
@@ -3951,24 +3790,8 @@ export async function executeDurablePlan(input: {
       observedTargetBindingDigest: computeTargetBindingDigest(frozenBinding),
     });
     phase = "FORWARD";
-    if (isMigration) {
-      const migrationResult = await runCanonicalMigrationPrimitive({
-        pool: {
-          connect: async () => ({
-            query: (text: DurableQueryInput, values?: readonly unknown[]) => mutationConnection!.query(text, values),
-            release() {},
-          }),
-          query: (text, values) => mutationConnection!.query(text, values),
-        },
-        migrationsFolder: frozenMigrationsFolder as string,
-        expectedOperations: frozenPlan.operations as readonly MigrationOperationV1[],
-        existingTransaction: true,
-      });
-      mutationStarted = migrationResult.mutation_started;
-    } else {
-      for (const operation of frozenPlan.operations) await session.applyOperation(operation);
-      mutationStarted = session.mutationStarted;
-    }
+    for (const operation of frozenPlan.operations) await session.applyOperation(operation);
+    mutationStarted = session.mutationStarted;
     phase = "COMMIT";
     try {
       await session.commit();
@@ -4493,11 +4316,11 @@ function freezeRestoreCapabilityProvider(
   return snapshot as unknown as RestoreCapabilityProviderV2;
 }
 
-export interface DurableReceiptV2 {
-  readonly receipt_version: 2;
+export interface DurableReceiptV3 {
+  readonly receipt_version: 3;
   readonly outcome: "PASS" | "BLOCKED" | "FAIL";
   readonly phase: "RECOVERY_ADMISSION" | "OBSERVATION" | "ATTEMPT_RESERVATION" | "BROKER_DISPATCH" | "SESSION_CLEANUP" | "FINAL_OBSERVATION";
-  readonly semantic_code: "SUCCESS" | "RESTORE_CAPABILITY_REQUIRED" | "BROKER_ADAPTER_UNAVAILABLE" | "BROKER_OBSERVATION_REJECTED" | "ATTEMPT_ALREADY_CONSUMED" | "ATTEMPT_RESERVATION_REJECTED" | "BROKER_DISPATCH_INDETERMINATE" | "BROKER_RESULT_REJECTED" | "FINAL_OBSERVATION_FAILED";
+  readonly semantic_code: "SUCCESS" | "RESTORE_CAPABILITY_REQUIRED" | "BROKER_ADAPTER_UNAVAILABLE" | "BROKER_OBSERVATION_REJECTED" | "ATTEMPT_ALREADY_CONSUMED" | "ATTEMPT_RESERVATION_REJECTED" | "ATTEMPT_RESERVATION_INDETERMINATE" | "BROKER_DISPATCH_INDETERMINATE" | "BROKER_RESULT_REJECTED" | "FINAL_OBSERVATION_FAILED";
   readonly target_binding_digest: string;
   readonly git_sha: string;
   readonly git_tree: string;
@@ -4511,7 +4334,8 @@ export interface DurableReceiptV2 {
   readonly plan_digest: string;
   readonly mutation_bundle_digest: string | null;
   readonly reservation_digest: string | null;
-  readonly attempts_used: 0 | 1;
+  readonly reservation_state: "NOT_REQUESTED" | "DEFINITELY_NOT_CONSUMED" | "DEFINITELY_CONSUMED" | "CONSUMPTION_INDETERMINATE";
+  readonly attempts_used: 0 | 1 | null;
   readonly dispatch_state: "NOT_DISPATCHED" | "DISPATCHED" | "INDETERMINATE";
   readonly commit_state: "NOT_COMMITTED" | "COMMITTED" | "INDETERMINATE";
   readonly cleanup_state: "NOT_RUN" | "DISCARDED" | "FAILED" | "INDETERMINATE";
@@ -4529,11 +4353,12 @@ export interface DurableReceiptV2 {
   readonly migration_sql_sha256: "452829e49a5571a8b4e14a2cbf155e671fe81ef8ee2fa3583935b7cc2ffd996b";
 }
 
-export type BrokeredMigrationReceiptV2 = DurableReceiptV2;
+export type BrokeredMigrationReceiptV3 = DurableReceiptV3;
+export type BrokeredMigrationReceiptV2 = BrokeredMigrationReceiptV3;
 
-function brokeredReceipt(input: Omit<DurableReceiptV2, "receipt_version" | "migration_tag" | "migration_created_at" | "migration_sql_sha256">): DurableReceiptV2 {
+function brokeredReceipt(input: Omit<DurableReceiptV3, "receipt_version" | "migration_tag" | "migration_created_at" | "migration_sql_sha256">): DurableReceiptV3 {
   return deepFreeze({
-    receipt_version: 2,
+    receipt_version: 3,
     ...input,
     migration_tag: "0010_admin_operator_viewer_role_collapse",
     migration_created_at: 1787479999088,
@@ -4548,8 +4373,8 @@ export async function executeBrokeredMigrationPlan(input: {
   migrationSql: string;
   restoreCapabilityProvider: RestoreCapabilityProviderV2;
   broker?: ProductionDatabaseBrokerV1;
-  attemptStore?: MigrationAttemptStoreV1;
-}): Promise<BrokeredMigrationReceiptV2> {
+  attemptStore?: MigrationAttemptStoreV2;
+}): Promise<BrokeredMigrationReceiptV3> {
   const targetDigest = input.observationBundle.target_binding_digest;
   const base = {
     target_binding_digest: targetDigest,
@@ -4565,6 +4390,7 @@ export async function executeBrokeredMigrationPlan(input: {
     plan_digest: input.plan.plan_digest,
     mutation_bundle_digest: null,
     reservation_digest: null,
+    reservation_state: "NOT_REQUESTED" as const,
     attempts_used: 0 as const,
     dispatch_state: "NOT_DISPATCHED" as const,
     commit_state: "NOT_COMMITTED" as const,
@@ -4634,27 +4460,81 @@ export async function executeBrokeredMigrationPlan(input: {
       semantic_code: "RESTORE_CAPABILITY_REQUIRED",
     });
   }
-  let rawReservation: BrokerAttemptReservationV1;
+  if (typeof input.attemptStore.reserveOnce !== "function") {
+    return brokeredReceipt({
+      ...compiled,
+      outcome: "BLOCKED",
+      phase: "ATTEMPT_RESERVATION",
+      semantic_code: "ATTEMPT_RESERVATION_INDETERMINATE",
+      reservation_state: "CONSUMPTION_INDETERMINATE",
+      attempts_used: null,
+    });
+  }
+  let reservationOutcome: ReturnType<typeof normalizeMigrationAttemptReservationOutcome>;
   try {
-    rawReservation = await input.attemptStore.reserveOnce({
+    const rawOutcome = await input.attemptStore.reserveOnce({
       run: mutationBundle.run,
       lock: mutationBundle.lock,
       target_binding_digest: mutationBundle.target_binding_digest,
       plan_digest: mutationBundle.plan_digest,
       mutation_bundle_digest: mutationBundle.bundle_digest,
     });
+    reservationOutcome = normalizeMigrationAttemptReservationOutcome(rawOutcome, mutationBundle);
   } catch {
-    return brokeredReceipt({ ...compiled, outcome: "BLOCKED", phase: "ATTEMPT_RESERVATION", semantic_code: "ATTEMPT_ALREADY_CONSUMED" });
+    return brokeredReceipt({
+      ...compiled,
+      outcome: "BLOCKED",
+      phase: "ATTEMPT_RESERVATION",
+      semantic_code: "ATTEMPT_RESERVATION_INDETERMINATE",
+      reservation_state: "CONSUMPTION_INDETERMINATE",
+      attempts_used: null,
+    });
   }
-  let reservation: BrokerAttemptReservationV1;
-  try {
-    reservation = normalizeBrokerAttemptReservation(rawReservation, mutationBundle);
-  } catch {
-    return brokeredReceipt({ ...compiled, outcome: "FAIL", phase: "ATTEMPT_RESERVATION", semantic_code: "ATTEMPT_RESERVATION_REJECTED", attempts_used: 1 });
+  if (reservationOutcome.state === "DEFINITELY_NOT_CONSUMED") {
+    return brokeredReceipt({
+      ...compiled,
+      outcome: "BLOCKED",
+      phase: "ATTEMPT_RESERVATION",
+      semantic_code: "ATTEMPT_RESERVATION_REJECTED",
+      reservation_state: "DEFINITELY_NOT_CONSUMED",
+      attempts_used: 0,
+    });
   }
+  if (reservationOutcome.state === "ALREADY_CONSUMED") {
+    return brokeredReceipt({
+      ...compiled,
+      outcome: "BLOCKED",
+      phase: "ATTEMPT_RESERVATION",
+      semantic_code: "ATTEMPT_ALREADY_CONSUMED",
+      reservation_state: "DEFINITELY_NOT_CONSUMED",
+      attempts_used: 0,
+    });
+  }
+  if (reservationOutcome.state === "CONSUMPTION_INDETERMINATE") {
+    return brokeredReceipt({
+      ...compiled,
+      outcome: "BLOCKED",
+      phase: "ATTEMPT_RESERVATION",
+      semantic_code: "ATTEMPT_RESERVATION_INDETERMINATE",
+      reservation_state: "CONSUMPTION_INDETERMINATE",
+      attempts_used: null,
+    });
+  }
+  if (reservationOutcome.state !== "RESERVED_CONSUMED") {
+    return brokeredReceipt({
+      ...compiled,
+      outcome: "BLOCKED",
+      phase: "ATTEMPT_RESERVATION",
+      semantic_code: "ATTEMPT_RESERVATION_INDETERMINATE",
+      reservation_state: "CONSUMPTION_INDETERMINATE",
+      attempts_used: null,
+    });
+  }
+  const reservation = reservationOutcome.reservation;
   const reserved = {
     ...compiled,
     reservation_digest: reservation.reservation_digest,
+    reservation_state: "DEFINITELY_CONSUMED" as const,
     attempts_used: 1 as const,
   };
   let inverse: DurableInverseV2;

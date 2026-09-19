@@ -30,13 +30,13 @@ import {
   createDurableInverse,
   createDurablePlan,
   createMutationSession,
+  executeDurablePlan,
   loadCanonicalMigrationJournal,
   mapFailureCode,
   normalizePrestate,
   parseCanonicalJson,
   projectReceipt,
   requireRestoreCapability,
-  runCanonicalMigrationPrimitive,
   serializeReceipt,
   validateReceipt,
   verifyRestoration,
@@ -51,6 +51,7 @@ import {
 } from "../dist/db/durable-operations.js";
 import {
   BROKER_ATTEMPT_RESERVATION_DOMAIN_SEPARATOR,
+  BROKER_ATTEMPT_RESERVATION_OUTCOME_VERSION,
   BROKER_ATTEMPT_RESERVATION_VERSION,
   BROKER_AUTHORITY_CLASSIFICATION_VERSION,
   BROKER_MUTATION_BUNDLE_DOMAIN_SEPARATOR,
@@ -222,6 +223,14 @@ function reservationForRequest(input) {
     reservation_id: "fixture-reservation-1",
   };
   return { ...payload, reservation_digest: computeBrokerBundleDigest(BROKER_ATTEMPT_RESERVATION_DOMAIN_SEPARATOR, payload) };
+}
+
+function reservationOutcomeForRequest(input) {
+  return {
+    version: BROKER_ATTEMPT_RESERVATION_OUTCOME_VERSION,
+    state: "RESERVED_CONSUMED",
+    reservation: reservationForRequest(input),
+  };
 }
 
 function capabilityFor(inverse, overrides = {}) {
@@ -609,6 +618,24 @@ test("broker evidence rejects target, dormancy, graph, and application authority
     { ...evidence, target: { ...evidence.target, database_oid: "43" } },
     { ...evidence, migrator: { ...evidence.migrator, password_is_null: false } },
     { ...evidence, authority_graph: { ...evidence.authority_graph, application_authority_absent: false } },
+    {
+      ...evidence,
+      authority_graph: {
+        ...evidence.authority_graph,
+        nodes: evidence.authority_graph.nodes.map((node) =>
+          node.role_name === "platform_app" ? { ...node, rolsuper: true } : node,
+        ),
+      },
+    },
+    {
+      ...evidence,
+      authority_graph: {
+        ...evidence.authority_graph,
+        nodes: evidence.authority_graph.nodes.map((node) =>
+          node.role_name === "platform_runtime" ? { ...node, rolcreaterole: true } : node,
+        ),
+      },
+    },
   ]) {
     assert.throws(() => normalizeBrokerObservationEvidence(rehash(changed), observationBundle), /BROKER_/u);
   }
@@ -720,7 +747,7 @@ test("broker execution reserves once before dispatch, validates the result, and 
   const attemptStore = {
     async reserveOnce(input) {
       reservations += 1;
-      return reservationForRequest(input);
+      return reservationOutcomeForRequest(input);
     },
   };
   const broker = {
@@ -940,7 +967,7 @@ test("recovery provider descriptor and get traps cannot substitute admitted auth
         return resultFor(JSON.parse(serialized), reservation);
       },
     },
-    attemptStore: { async reserveOnce(input) { return reservationForRequest(input); } },
+    attemptStore: { async reserveOnce(input) { return reservationOutcomeForRequest(input); } },
   });
   assert.equal(receipt.outcome, "PASS");
   assert.equal(ownKeysCalls, 1);
@@ -966,7 +993,7 @@ test("recovery binding consumes the reservation once but prevents dispatch on an
         capability: (inverse) => capabilityFor(inverse, { [field]: "0".repeat(64) }),
       }),
       broker: { async observe() { return evidence; }, async dispatchMutation() { dispatches += 1; } },
-      attemptStore: { async reserveOnce(input) { reservations += 1; return reservationForRequest(input); } },
+      attemptStore: { async reserveOnce(input) { reservations += 1; return reservationOutcomeForRequest(input); } },
     });
     assert.equal(receipt.outcome, "FAIL");
     assert.equal(receipt.phase, "RECOVERY_ADMISSION");
@@ -1015,7 +1042,7 @@ test("post-reservation capability accessors fail before dispatch without invokin
       migrationSql,
       restoreCapabilityProvider: provider,
       broker: { async observe() { return evidence; }, async dispatchMutation() { dispatches += 1; } },
-      attemptStore: { async reserveOnce(input) { reservations += 1; return reservationForRequest(input); } },
+      attemptStore: { async reserveOnce(input) { reservations += 1; return reservationOutcomeForRequest(input); } },
     });
     assert.equal(receipt.outcome, "FAIL");
     assert.equal(receipt.phase, "RECOVERY_ADMISSION");
@@ -1043,7 +1070,7 @@ test("broker execution order is observe, reserve, bind capability, dispatch, fin
       async observe() { observations += 1; events.push(observations === 1 ? "observe" : "final observe"); return observations === 1 ? evidence : finalEvidence; },
       async dispatchMutation(serialized, digest, reservation) { events.push("dispatch"); return resultFor(JSON.parse(serialized), reservation); },
     },
-    attemptStore: { async reserveOnce(input) { events.push("reserve"); return reservationForRequest(input); } },
+    attemptStore: { async reserveOnce(input) { events.push("reserve"); return reservationOutcomeForRequest(input); } },
   });
   assert.equal(receipt.outcome, "PASS");
   assert.deepEqual(events, ["observe", "reserve", "bind capability", "dispatch", "final observe"]);
@@ -1083,7 +1110,7 @@ test("admitted provider and capability are copied before caller-owned mutation, 
         return resultFor(JSON.parse(serialized), reservation);
       },
     },
-    attemptStore: { async reserveOnce(input) { return reservationForRequest(input); } },
+    attemptStore: { async reserveOnce(input) { return reservationOutcomeForRequest(input); } },
   });
   assert.equal(receipt.outcome, "PASS");
   assert.equal(receipt.recovery_state, "AVAILABLE");
@@ -1118,7 +1145,7 @@ test("pre-dispatch rejection consumes no attempt and an indeterminate dispatch i
     attemptStore: {
       async reserveOnce(input) {
         reservations += 1;
-        return reservationForRequest(input);
+        return reservationOutcomeForRequest(input);
       },
     },
     restoreCapabilityProvider: restoreCapabilityProviderFor(plan),
@@ -1128,6 +1155,90 @@ test("pre-dispatch rejection consumes no attempt and an indeterminate dispatch i
   assert.equal(failed.recovery_state, "INDETERMINATE");
   assert.equal(dispatches, 1);
   assert.equal(reservations, 1);
+});
+
+test("v3 reservation outcomes close every non-reserved branch without dispatch", async () => {
+  const { observationBundle, evidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  const { prestate, plan } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+  const scenarios = [
+    {
+      name: "definitely not consumed",
+      outcome: { version: BROKER_ATTEMPT_RESERVATION_OUTCOME_VERSION, state: "DEFINITELY_NOT_CONSUMED" },
+      semanticCode: "ATTEMPT_RESERVATION_REJECTED",
+      reservationState: "DEFINITELY_NOT_CONSUMED",
+      attemptsUsed: 0,
+    },
+    {
+      name: "already consumed",
+      outcome: { version: BROKER_ATTEMPT_RESERVATION_OUTCOME_VERSION, state: "ALREADY_CONSUMED" },
+      semanticCode: "ATTEMPT_ALREADY_CONSUMED",
+      reservationState: "DEFINITELY_NOT_CONSUMED",
+      attemptsUsed: 0,
+    },
+    {
+      name: "explicitly indeterminate",
+      outcome: { version: BROKER_ATTEMPT_RESERVATION_OUTCOME_VERSION, state: "CONSUMPTION_INDETERMINATE" },
+      semanticCode: "ATTEMPT_RESERVATION_INDETERMINATE",
+      reservationState: "CONSUMPTION_INDETERMINATE",
+      attemptsUsed: null,
+    },
+    {
+      name: "malformed outcome",
+      outcome: "not-an-outcome",
+      semanticCode: "ATTEMPT_RESERVATION_INDETERMINATE",
+      reservationState: "CONSUMPTION_INDETERMINATE",
+      attemptsUsed: null,
+    },
+    {
+      name: "malformed reservation",
+      outcome: { version: BROKER_ATTEMPT_RESERVATION_OUTCOME_VERSION, state: "RESERVED_CONSUMED", reservation: {} },
+      semanticCode: "ATTEMPT_RESERVATION_INDETERMINATE",
+      reservationState: "CONSUMPTION_INDETERMINATE",
+      attemptsUsed: null,
+    },
+  ];
+  for (const scenario of scenarios) {
+    let dispatches = 0;
+    const receipt = await executeBrokeredMigrationPlan({
+      observationBundle,
+      prestate,
+      plan,
+      migrationSql,
+      broker: {
+        async observe() { return evidence; },
+        async dispatchMutation() { dispatches += 1; throw new Error(`${scenario.name} must not dispatch`); },
+      },
+      attemptStore: {
+        async reserveOnce() {
+          if (scenario.name === "throwing store") throw new Error("provider transport failed");
+          return scenario.outcome;
+        },
+      },
+      restoreCapabilityProvider: restoreCapabilityProviderFor(plan),
+    });
+    assert.equal(receipt.semantic_code, scenario.semanticCode, scenario.name);
+    assert.equal(receipt.reservation_state, scenario.reservationState, scenario.name);
+    assert.equal(receipt.attempts_used, scenario.attemptsUsed, scenario.name);
+    assert.equal(receipt.reservation_digest, null, scenario.name);
+    assert.equal(receipt.mutation_started, false, scenario.name);
+    assert.equal(dispatches, 0, scenario.name);
+  }
+  let dispatches = 0;
+  const thrown = await executeBrokeredMigrationPlan({
+    observationBundle,
+    prestate,
+    plan,
+    migrationSql,
+    broker: { async observe() { return evidence; }, async dispatchMutation() { dispatches += 1; } },
+    attemptStore: { async reserveOnce() { throw new Error("provider transport failed"); } },
+    restoreCapabilityProvider: restoreCapabilityProviderFor(plan),
+  });
+  assert.equal(thrown.semantic_code, "ATTEMPT_RESERVATION_INDETERMINATE");
+  assert.equal(thrown.reservation_state, "CONSUMPTION_INDETERMINATE");
+  assert.equal(thrown.attempts_used, null);
+  assert.equal(thrown.mutation_started, false);
+  assert.equal(dispatches, 0);
 });
 
 test("confirmed commit with cleanup failure is terminal and does not trigger a fresh observation", async () => {
@@ -1148,7 +1259,7 @@ test("confirmed commit with cleanup failure is terminal and does not trigger a f
         return resultForState(JSON.parse(serialized), reservation, "COMMITTED", "FAILED");
       },
     },
-    attemptStore: { async reserveOnce(input) { return reservationForRequest(input); } },
+    attemptStore: { async reserveOnce(input) { return reservationOutcomeForRequest(input); } },
     restoreCapabilityProvider: restoreCapabilityProviderFor(plan),
   });
   assert.equal(receipt.outcome, "FAIL");
@@ -1177,14 +1288,15 @@ test("broker execution rejects a reservation for different exact bundle bytes be
     },
     attemptStore: {
       async reserveOnce(input) {
-        return reservationForRequest({ ...input, mutation_bundle_digest: "f".repeat(64) });
+        return reservationOutcomeForRequest({ ...input, mutation_bundle_digest: "f".repeat(64) });
       },
     },
     restoreCapabilityProvider: restoreCapabilityProviderFor(plan),
   });
-  assert.equal(receipt.outcome, "FAIL");
-  assert.equal(receipt.semantic_code, "ATTEMPT_RESERVATION_REJECTED");
-  assert.equal(receipt.attempts_used, 1);
+  assert.equal(receipt.outcome, "BLOCKED");
+  assert.equal(receipt.semantic_code, "ATTEMPT_RESERVATION_INDETERMINATE");
+  assert.equal(receipt.reservation_state, "CONSUMPTION_INDETERMINATE");
+  assert.equal(receipt.attempts_used, null);
   assert.equal(receipt.phase, "ATTEMPT_RESERVATION");
   assert.equal(receipt.recovery_state, "NOT_REQUIRED");
   assert.equal(dispatches, 0);
@@ -1208,7 +1320,7 @@ test("determinate broker rollback requires a fresh exact restoration observation
         return rollbackResultFor(JSON.parse(serialized), reservation);
       },
     },
-    attemptStore: { async reserveOnce(input) { return reservationForRequest(input); } },
+    attemptStore: { async reserveOnce(input) { return reservationOutcomeForRequest(input); } },
     restoreCapabilityProvider: restoreCapabilityProviderFor(plan),
   });
   assert.equal(receipt.outcome, "FAIL");
@@ -2147,95 +2259,35 @@ test("one-way migration plans require restore authority before mutation", () => 
   );
 });
 
-test("migration admission accepts only exact historical CRLF aliases", async () => {
-  const journal = await loadCanonicalMigrationJournal(repositoryRoot);
-  const historicalTags = new Set([
-    "0000_overconfident_onslaught",
-    "0001_lovely_famine",
-    "0002_futuristic_aaron_stack",
-    "0003_worthless_scourge",
-    "0004_illegal_william_stryker",
-    "0005_sqag_app_key_migration",
-    "0007_remove_legacy_kqag_tables",
-    "0009_wonderful_star_brand",
-  ]);
-  const crlfHash = async (tag) => {
-    const contents = await readFile(
-      join(repositoryRoot, "drizzle", "migrations", `${tag}.sql`),
-    );
-    const crlfBytes = [];
-    for (const byte of contents) {
-      if (byte === 0x0a) crlfBytes.push(0x0d);
-      crlfBytes.push(byte);
-    }
-    return createHash("sha256").update(Buffer.from(crlfBytes)).digest("hex");
-  };
-  const canonicalRows = journal.entries.map((entry) => ({
-    when: entry.when,
-    sql_sha256: entry.sql_sha256,
-  }));
-  const historicalRows = [];
-  for (const entry of journal.entries) {
-    historicalRows.push({
-      when: entry.when,
-      sql_sha256: historicalTags.has(entry.tag)
-        ? await crlfHash(entry.tag)
-        : entry.sql_sha256,
-    });
-  }
-
-  const canonicalResult = await runCanonicalMigrationPrimitive({
-    pool: migrationLedgerPool(canonicalRows),
-    migrationsFolder: join(repositoryRoot, "drizzle", "migrations"),
+test("durable production execution rejects every migration plan before target access", async () => {
+  const plan = createDurablePlan({
+    expected_git_sha: HEX40,
+    contract_digest: HEX64,
+    target_binding_digest: HEX64,
+    prestate_digest: HEX64,
+    operations: [{
+      kind: "migration",
+      tag: "0010_admin_operator_viewer_role_collapse",
+      journal_index: 9,
+      when: "1787479999088",
+      sql_sha256: HEX64,
+      expected_applied_prefix_digest: HEX64,
+      expected_post_journal_digest: HEX64,
+    }],
   });
-  assert.equal(canonicalResult.mutation_started, false);
-  assert.deepEqual(canonicalResult.before, canonicalRows);
-
-  const historicalResult = await runCanonicalMigrationPrimitive({
-    pool: migrationLedgerPool(historicalRows),
-    migrationsFolder: join(repositoryRoot, "drizzle", "migrations"),
-  });
-  assert.equal(historicalResult.mutation_started, false);
-  assert.deepEqual(historicalResult.before, historicalRows);
-
-  const arbitraryRows = historicalRows.map((row) => ({ ...row }));
-  arbitraryRows[0].sql_sha256 = "0".repeat(64);
-  await assert.rejects(
-    () => runCanonicalMigrationPrimitive({
-      pool: migrationLedgerPool(arbitraryRows),
-      migrationsFolder: join(repositoryRoot, "drizzle", "migrations"),
-    }),
-    (error) => error?.semanticCode === "MIGRATION_IDENTITY_MISMATCH",
-  );
-
-  const futureAliasRows = historicalRows.map((row) => ({ ...row }));
-  futureAliasRows[9].sql_sha256 = await crlfHash(
-    "0010_admin_operator_viewer_role_collapse",
-  );
-  await assert.rejects(
-    () => runCanonicalMigrationPrimitive({
-      pool: migrationLedgerPool(futureAliasRows),
-      migrationsFolder: join(repositoryRoot, "drizzle", "migrations"),
-    }),
-    (error) => error?.semanticCode === "MIGRATION_IDENTITY_MISMATCH",
-  );
-});
-
-function migrationLedgerPool(rows) {
-  return {
-    async connect() {
-      return {
-        async query(text) {
-          if (text.includes("select exists")) {
-            return { rows: [{ ledger_present: true }] };
-          }
-          return { rows };
-        },
-        release() {},
-      };
+  let targetAccesses = 0;
+  const binding = new Proxy({}, {
+    get() {
+      targetAccesses += 1;
+      throw new Error("target must not be accessed");
     },
-  };
-}
+  });
+  await assert.rejects(
+    () => executeDurablePlan({ plan, binding }),
+    (error) => error?.semanticCode === "OPERATION_UNSUPPORTED",
+  );
+  assert.equal(targetAccesses, 0);
+});
 
 test("mutation boundary is set before first send and remains true on indeterminate send", async () => {
   let attempts = 0;

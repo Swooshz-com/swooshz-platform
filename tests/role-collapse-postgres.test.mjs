@@ -6,12 +6,12 @@ import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { drizzle } from "drizzle-orm/node-postgres";
-import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Pool } from "pg";
 
 import * as schema from "../dist/db/schema.js";
 import { createDrizzlePlatformRepositories } from "../dist/db/repositories.js";
 import { removeWorkspaceMembership } from "../dist/platform/workspace-admin-service.js";
+import { withDisposablePostgresFixtureMigration } from "./support/disposable-postgres-fixture.mjs";
 
 const rootDir = resolve(".");
 const migrationDatabaseUrl = process.env.ROLE_COLLAPSE_TEST_MIGRATION_OPERATOR_URL;
@@ -22,6 +22,10 @@ const proofEnabled =
 const skipReason = proofEnabled
   ? false
   : "requires the Run-153 disposable PostgreSQL 17 runner";
+
+function databaseNameFromUrl(databaseUrl) {
+  return decodeURIComponent(new URL(databaseUrl).pathname.slice(1));
+}
 
 test("PostgreSQL 17 proves the real 0009 to 0010 role-collapse migration", {
   skip: skipReason,
@@ -243,7 +247,16 @@ async function migrateTo0009(databaseUrl) {
 
     const pool = new Pool({ connectionString: databaseUrl, max: 1 });
     try {
-      await migrate(drizzle(pool), { migrationsFolder: temporaryMigrations });
+      await withDisposablePostgresFixtureMigration(
+        {
+          pool,
+          connectionString: databaseUrl,
+          expectedDatabase: databaseNameFromUrl(databaseUrl),
+          expectedUser: "cloud_admin",
+          migrationsFolder: temporaryMigrations,
+        },
+        async () => {},
+      );
     } finally {
       await pool.end();
     }
@@ -261,9 +274,16 @@ async function migrateToLatest(databaseUrl) {
 async function runRepositoryMigrator(databaseUrl) {
   const pool = new Pool({ connectionString: databaseUrl, max: 1 });
   try {
-    await migrate(drizzle(pool), {
-      migrationsFolder: join(rootDir, "drizzle", "migrations"),
-    });
+    await withDisposablePostgresFixtureMigration(
+      {
+        pool,
+        connectionString: databaseUrl,
+        expectedDatabase: databaseNameFromUrl(databaseUrl),
+        expectedUser: "cloud_admin",
+        migrationsFolder: join(rootDir, "drizzle", "migrations"),
+      },
+      async () => {},
+    );
     return { code: 0, timedOut: false };
   } catch {
     return { code: 1, timedOut: false };

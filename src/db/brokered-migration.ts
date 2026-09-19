@@ -15,6 +15,7 @@ export const BROKER_OBSERVATION_EVIDENCE_VERSION = "platform-db-broker-observati
 export const BROKER_AUTHORITY_CLASSIFICATION_VERSION = "platform-db-broker-authority-classification-v1" as const;
 export const BROKER_MUTATION_BUNDLE_VERSION = "platform-db-broker-mutation-bundle-v2" as const;
 export const BROKER_ATTEMPT_RESERVATION_VERSION = "platform-db-migration-attempt-reservation-v1" as const;
+export const BROKER_ATTEMPT_RESERVATION_OUTCOME_VERSION = "migration-attempt-reservation-outcome-v2" as const;
 export const BROKER_RESULT_VERSION = "platform-db-broker-result-v1" as const;
 
 export const BROKER_TARGET_BINDING_DOMAIN_SEPARATOR = "Swooshz-platform:platform-db-broker-target-v2\0" as const;
@@ -266,14 +267,25 @@ export interface BrokerMutationResultV1 {
   readonly result_digest: string;
 }
 
-export interface MigrationAttemptStoreV1 {
+export type MigrationAttemptReservationOutcomeV2 =
+  | {
+      readonly version: typeof BROKER_ATTEMPT_RESERVATION_OUTCOME_VERSION;
+      readonly state: "RESERVED_CONSUMED";
+      readonly reservation: BrokerAttemptReservationV1;
+    }
+  | {
+      readonly version: typeof BROKER_ATTEMPT_RESERVATION_OUTCOME_VERSION;
+      readonly state: "DEFINITELY_NOT_CONSUMED" | "ALREADY_CONSUMED" | "CONSUMPTION_INDETERMINATE";
+    };
+
+export interface MigrationAttemptStoreV2 {
   reserveOnce(input: {
     readonly run: string;
     readonly lock: string;
     readonly target_binding_digest: string;
     readonly plan_digest: string;
     readonly mutation_bundle_digest: string;
-  }): Promise<BrokerAttemptReservationV1>;
+  }): Promise<MigrationAttemptReservationOutcomeV2>;
 }
 
 export interface ProductionDatabaseBrokerV1 {
@@ -606,6 +618,32 @@ export function normalizeBrokerAttemptReservation(
   return Object.freeze(input as unknown as BrokerAttemptReservationV1);
 }
 
+export function normalizeMigrationAttemptReservationOutcome(
+  input: unknown,
+  bundle: BrokerMutationBundleV1,
+): MigrationAttemptReservationOutcomeV2 {
+  if (!isRecord(input)) reject("BROKER_ATTEMPT_RESERVATION_OUTCOME_INVALID");
+  if (input.version !== BROKER_ATTEMPT_RESERVATION_OUTCOME_VERSION || typeof input.state !== "string") {
+    reject("BROKER_ATTEMPT_RESERVATION_OUTCOME_INVALID");
+  }
+  if (input.state === "RESERVED_CONSUMED") {
+    exactKeys(input, ["version", "state", "reservation"]);
+    return Object.freeze({
+      version: BROKER_ATTEMPT_RESERVATION_OUTCOME_VERSION,
+      state: "RESERVED_CONSUMED",
+      reservation: normalizeBrokerAttemptReservation(input.reservation, bundle),
+    });
+  }
+  if (!["DEFINITELY_NOT_CONSUMED", "ALREADY_CONSUMED", "CONSUMPTION_INDETERMINATE"].includes(input.state)) {
+    reject("BROKER_ATTEMPT_RESERVATION_OUTCOME_INVALID");
+  }
+  exactKeys(input, ["version", "state"]);
+  return Object.freeze({
+    version: BROKER_ATTEMPT_RESERVATION_OUTCOME_VERSION,
+    state: input.state as "DEFINITELY_NOT_CONSUMED" | "ALREADY_CONSUMED" | "CONSUMPTION_INDETERMINATE",
+  });
+}
+
 export function deriveBrokerObservationEvidence(
   bundle: BrokerObservationBundleV1,
   resultMap: BrokerStatementResultMapV1,
@@ -717,6 +755,11 @@ function validateAuthorityGraph(
     nodesByOid.set(roleOid, raw); previousNode = order;
   }
   if (nodesByOid.size !== classification.nodes.length) reject("BROKER_AUTHORITY_GRAPH_REJECTED");
+  for (const classified of classification.nodes) {
+    if (classified.authority_class !== "APPLICATION" && classified.authority_class !== "RUNTIME") continue;
+    const observed = nodesByOid.get(classified.role_oid);
+    if (!observed || observed.rolsuper !== false || observed.rolcreaterole !== false) reject("BROKER_AUTHORITY_GRAPH_REJECTED");
+  }
   const edges: Array<Record<string, unknown>> = [];
   const edgeEndpoints = new Set<string>();
   let previousEdge = "";
@@ -753,11 +796,38 @@ function validateAuthorityGraph(
     }
     if (!visited.has(migratorOid)) reject("BROKER_AUTHORITY_GRAPH_REJECTED");
   }
-  for (const edge of edges) {
-    const classes = [String(edge.granted_role_oid), String(edge.member_oid), String(edge.grantor_oid)].map((roleOid) => classesByOid.get(roleOid)?.authority_class);
-    if (!classes.some((authorityClass) => authorityClass === "APPLICATION" || authorityClass === "RUNTIME")) continue;
-    const exactTuple = edge.granted_role === "platform_runtime" && edge.member === "platform_app" && edge.grantor === "cloud_admin" && edge.admin_option === true && edge.inherit_option === false && edge.set_option === false;
-    if (!exactTuple || classesByOid.get(String(edge.grantor_oid))?.authority_class !== "PROVIDER_CONTROL") reject("BROKER_AUTHORITY_GRAPH_REJECTED");
+  const applicationRuntimeOids = new Set(
+    classification.nodes
+      .filter((node) => node.authority_class === "APPLICATION" || node.authority_class === "RUNTIME")
+      .map((node) => node.role_oid),
+  );
+  for (const startOid of applicationRuntimeOids) {
+    const pending = [startOid];
+    const visited = new Set<string>();
+    while (pending.length > 0) {
+      const current = pending.shift()!;
+      if (visited.has(current)) continue;
+      visited.add(current);
+      for (const edge of edges) {
+        const touchesCurrent =
+          String(edge.granted_role_oid) === current ||
+          String(edge.member_oid) === current ||
+          String(edge.grantor_oid) === current;
+        if (!touchesCurrent) continue;
+        const exactTuple =
+          edge.granted_role === "platform_runtime" &&
+          edge.member === "platform_app" &&
+          edge.grantor === "cloud_admin" &&
+          edge.admin_option === true &&
+          edge.inherit_option === false &&
+          edge.set_option === false;
+        if (!exactTuple || String(edge.grantor_oid) !== providerOid) reject("BROKER_AUTHORITY_GRAPH_REJECTED");
+        if (String(edge.member_oid) === current && edge.set_option === true) {
+          const next = String(edge.granted_role_oid);
+          if (!visited.has(next)) pending.push(next);
+        }
+      }
+    }
   }
   return Object.freeze({
     nodes: graph.nodes as BrokerObservationEvidenceV1["authority_graph"]["nodes"],

@@ -4,11 +4,8 @@ import test from "node:test";
 
 import {
   DatabaseConfigError,
-  DATABASE_MIGRATIONS_CONFIRM_VALUE,
-  assertRunnerOwnedFixtureMigrationExecutionAllowed,
   createDatabasePool,
   readDatabaseConfig,
-  readRunnerOwnedFixtureDatabaseConfig,
 } from "../dist/db/client.js";
 
 const syntheticDatabaseUrl =
@@ -82,62 +79,15 @@ test("readDatabaseConfig rejects unsupported SSL modes without leaking the URL",
   );
 });
 
-const runnerOwnedFixture = {
-  version: "runner-owned-database-fixture-v1",
-  owner: "disposable-postgres-runner",
-  databaseUrl: "postgres://fixture_user:fixture_pass@127.0.0.1:55432/swooshz_fixture",
-};
-const runnerEnvironment = {
-  NODE_ENV: "test",
-  RUNNER_OWNED_DATABASE_FIXTURE: "disposable-postgres-runner",
-};
-
-test("production direct operator credentials are rejected without parsing or leaking them", () => {
+test("direct production operator credentials remain outside the client configuration API", () => {
   assert.throws(
-    () => readRunnerOwnedFixtureDatabaseConfig({ ...runnerEnvironment, DATABASE_OPERATOR_URL: syntheticDatabaseUrl }, runnerOwnedFixture),
+    () => readDatabaseConfig({ DATABASE_OPERATOR_URL: syntheticDatabaseUrl }),
     (error) => {
       assert.equal(error instanceof DatabaseConfigError, true);
-      assert.equal(error.code, "direct_database_credential_prohibited");
+      assert.equal(error.code, "missing_database_url");
       assert.doesNotMatch(error.message, /example_pass|db\.example\.invalid/);
       return true;
     },
-  );
-});
-
-test("runner-owned direct execution requires test mode, runner proof, and loopback target", () => {
-  assert.throws(
-    () => readRunnerOwnedFixtureDatabaseConfig({ NODE_ENV: "production" }, runnerOwnedFixture),
-    (error) => {
-      assert.equal(error instanceof DatabaseConfigError, true);
-      assert.equal(error.code, "runner_owned_fixture_required");
-      return true;
-    },
-  );
-  assert.throws(
-    () => readRunnerOwnedFixtureDatabaseConfig(runnerEnvironment, { ...runnerOwnedFixture, databaseUrl: syntheticDatabaseUrl }),
-    (error) => {
-      assert.equal(error instanceof DatabaseConfigError, true);
-      assert.equal(error.code, "runner_owned_fixture_required");
-      return true;
-    },
-  );
-  assert.equal(
-    readRunnerOwnedFixtureDatabaseConfig(runnerEnvironment, runnerOwnedFixture).databaseUrl,
-    runnerOwnedFixture.databaseUrl,
-  );
-});
-
-test("runner-owned migration confirmation remains mandatory", () => {
-  assert.throws(
-    () => assertRunnerOwnedFixtureMigrationExecutionAllowed(runnerEnvironment, runnerOwnedFixture),
-    /DATABASE_MIGRATIONS_CONFIRM/,
-  );
-  assert.equal(
-    assertRunnerOwnedFixtureMigrationExecutionAllowed({
-      ...runnerEnvironment,
-      DATABASE_MIGRATIONS_CONFIRM: DATABASE_MIGRATIONS_CONFIRM_VALUE,
-    }, runnerOwnedFixture).databaseUrl,
-    runnerOwnedFixture.databaseUrl,
   );
 });
 test("DB client module does not connect during import or pool creation", async () => {

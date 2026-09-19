@@ -6,8 +6,6 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { drizzle } from "drizzle-orm/node-postgres";
-import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Pool } from "pg";
 
 import {
@@ -20,6 +18,7 @@ import {
 } from "../dist/db/durable-operations.js";
 import {
   BROKER_ATTEMPT_RESERVATION_DOMAIN_SEPARATOR,
+  BROKER_ATTEMPT_RESERVATION_OUTCOME_VERSION,
   BROKER_ATTEMPT_RESERVATION_VERSION,
   BROKER_AUTHORITY_CLASSIFICATION_VERSION,
   BROKER_MUTATION_BUNDLE_DOMAIN_SEPARATOR,
@@ -38,6 +37,7 @@ import {
   validateBrokerStatementResult,
 } from "../dist/db/brokered-migration.js";
 import { RUNTIME_TABLE_GRANT_CONTRACT } from "../dist/db/runtime-grant-contract.js";
+import { withDisposablePostgresFixtureMigration } from "./support/disposable-postgres-fixture.mjs";
 
 const testDatabaseUrlA = process.env.DURABLE_OPERATIONS_TEST_DATABASE_URL_A;
 const testDatabaseUrlB = process.env.DURABLE_OPERATIONS_TEST_DATABASE_URL_B;
@@ -409,7 +409,14 @@ class SingleUseAttemptStore {
       ...input,
       reservation_id: `fixture-${createHash("sha256").update(canonicalSerializeBrokerBundle(input)).digest("hex").slice(0, 24)}`,
     };
-    return { ...payload, reservation_digest: computeBrokerBundleDigest(BROKER_ATTEMPT_RESERVATION_DOMAIN_SEPARATOR, payload) };
+    return {
+      version: BROKER_ATTEMPT_RESERVATION_OUTCOME_VERSION,
+      state: "RESERVED_CONSUMED",
+      reservation: {
+        ...payload,
+        reservation_digest: computeBrokerBundleDigest(BROKER_ATTEMPT_RESERVATION_DOMAIN_SEPARATOR, payload),
+      },
+    };
   }
 }
 
@@ -890,7 +897,17 @@ async function applyFirstNine(pool) {
     journal.entries = journal.entries.slice(0, 9);
     await writeFile(join(target, "meta", "_journal.json"), `${JSON.stringify(journal, null, 2)}\n`, "utf8");
     for (const entry of journal.entries) await cp(join(migrationsFolder, `${entry.tag}.sql`), join(target, `${entry.tag}.sql`));
-    await migrate(drizzle(pool), { migrationsFolder: target });
+    const connectionString = `postgres://cloud_admin@${pool.options.host}:${pool.options.port}/${pool.options.database}`;
+    await withDisposablePostgresFixtureMigration(
+      {
+        pool,
+        connectionString,
+        expectedDatabase: databaseName,
+        expectedUser: "cloud_admin",
+        migrationsFolder: target,
+      },
+      async () => {},
+    );
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }

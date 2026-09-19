@@ -18,6 +18,7 @@ import {
   invalidateDisposablePostgresConstructionAdmission,
   parseDisposablePostgresUrl,
   requireDisposablePostgresAdmission,
+  withDisposablePostgresFixtureMigration,
   withDisposablePostgresFixturesAdmitted,
 } from "./support/disposable-postgres-fixture.mjs";
 
@@ -183,6 +184,38 @@ test("disposable fixture admission rejects ambiguous, remote, socket, and unatte
       safeAdmissionError,
     );
   }
+});
+
+test("fixture migration scope rejects caller-supplied authority and non-initialization targets", async () => {
+  const pool = new Pool({
+    host: "127.0.0.1",
+    port: 5432,
+    user: "cloud_admin",
+    database: "runtime_posture_test",
+  });
+  const baseMigrationTarget = {
+    pool,
+    connectionString:
+      "postgres://cloud_admin@127.0.0.1:5432/runtime_posture_test",
+    expectedDatabase: "runtime_posture_test",
+    expectedUser: "cloud_admin",
+    migrationsFolder: "./drizzle",
+    phase: "initialization",
+  };
+
+  for (const rejectedTarget of [
+    { ...baseMigrationTarget, operatorUrl: "postgres://operator@127.0.0.1:5432/postgres" },
+    { ...baseMigrationTarget, connectionString: "postgres://cloud_admin@remote:5432/runtime_posture_test" },
+    { ...baseMigrationTarget, connectionString: "postgres://cloud_admin/runtime_posture_test" },
+    { ...baseMigrationTarget, phase: "final_start" },
+  ]) {
+    await assert.rejects(
+      () => withDisposablePostgresFixtureMigration(rejectedTarget, async () => {}),
+      safeAdmissionError,
+    );
+  }
+
+  await pool.end();
 });
 
 test("initialization and final-start transports are distinct admission phases", () => {

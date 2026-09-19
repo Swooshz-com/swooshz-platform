@@ -71,11 +71,11 @@ const productionDependencyLockDigest =
 const databaseSourceShapeAuthority = new Map([
   [
     "src/db/brokered-migration.ts",
-    "46a4aba04209f8c80ed21c2c0ccdb4a29736d07be8165bf3f8b2539c8aa3e5ff",
+    "59ace542d7b7710abafe4ce2656f5f1fcc61390ae95668f3f5a322c84880aced",
   ],
   [
     "src/db/durable-operations.ts",
-    "aa59b7c10b517ee9dffe28b699ec12cadbc6050c14a45c884477c8b4643c850e",
+    "0d59be4b99b0c0214c28235adbf718846c88fa6c8116ad0a0bef731a49164626",
   ],  [
     "src/db/access-validation-grant-repository.ts",
     "5f9434df56a9f5bc67468ed8c17ea9fbf60c765c0fa6a88d6902a22d7b9a4271",
@@ -90,7 +90,7 @@ const databaseSourceShapeAuthority = new Map([
   ],
   [
     "src/db/client.ts",
-    "0c780c29084b3ff9c11565bc194dab79e46c1485a706c4b287ade11370de5d74",
+    "b5cf74bbe27bcedb6d0d4d1b19a1f9c3d9c26ff6ac5c9f4ae2b58e45692650ac",
   ],
   [
     "src/db/csrf-token-repository.ts",
@@ -98,7 +98,7 @@ const databaseSourceShapeAuthority = new Map([
   ],
   [
     "src/db/readiness.ts",
-    "600431d07fa84b270ecc6817ae806d058600477743bbeb943f42fd9fb1eeb2fe",
+    "26dcd0e30ca29cfe857b5a0aecd4fb95a8c3ab71277468c4b8675a0805afbc63",
   ],
   [
     "src/db/repositories.ts",
@@ -392,21 +392,6 @@ const databaseExternalImportAuthority = new Set([
     ["and", "eq", "gt", "inArray", "isNotNull", "isNull", "lte", "or"],
   ),
   databaseExternalImportKey(
-    "src/db/durable-operations.ts",
-    "drizzle-orm/node-postgres",
-    ["drizzle"],
-  ),
-  databaseExternalImportKey(
-    "src/db/durable-operations.ts",
-    "drizzle-orm/node-postgres/migrator",
-    ["migrate"],
-  ),
-  databaseExternalImportKey(
-    "src/db/durable-operations.ts",
-    "drizzle-orm/migrator",
-    ["readMigrationFiles"],
-  ),
-  databaseExternalImportKey(
     "src/db/repositories.ts",
     "drizzle-orm",
     ["and", "eq", "isNull"],
@@ -449,7 +434,6 @@ const internalDatabaseImportAuthority = new Set(
         "src/db/readiness.ts",
         "src/db/runtime-grant-contract.ts",
         "src/db/runtime-posture.ts",
-        "src/db/schema.ts",
       ],
     ],
     [

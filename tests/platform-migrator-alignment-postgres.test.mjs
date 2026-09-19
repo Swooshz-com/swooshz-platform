@@ -1054,12 +1054,7 @@ test(
           const readinessInput = {
             env: {
               NODE_ENV: "test",
-              RUNNER_OWNED_DATABASE_FIXTURE: "disposable-postgres-runner",
-            },
-            runnerOwnedFixture: {
-              version: "runner-owned-database-fixture-v1",
-              owner: "disposable-postgres-runner",
-              databaseUrl: "postgres://fixture@127.0.0.1:5432/fixture",
+              DATABASE_URL: "postgres://fixture@127.0.0.1:5432/fixture",
             },
             requiredTables: [],
             clientFactory: async () => ({

@@ -33,14 +33,9 @@ const expectedMigrationState = {
   latestCreatedAt: 1787479999088,
   migrationCount: 10,
 };
-const runnerOwnedFixture = {
-  version: "runner-owned-database-fixture-v1",
-  owner: "disposable-postgres-runner",
-  databaseUrl: "postgres://fixture_user:fixture_pass@127.0.0.1:55432/swooshz_fixture",
-};
 const runnerOwnedEnvironment = {
   NODE_ENV: "test",
-  RUNNER_OWNED_DATABASE_FIXTURE: "disposable-postgres-runner",
+  DATABASE_URL: "postgres://fixture_user:fixture_pass@127.0.0.1:55432/swooshz_fixture",
 };
 
 const CANONICAL_FIRST_NINE_LEDGER = [
@@ -185,7 +180,6 @@ function createDatabaseReadinessReport(input) {
     return createRawDatabaseReadinessReport({
       ...input,
       env: runnerOwnedEnvironment,
-      runnerOwnedFixture,
     });
   }
   return createRawDatabaseReadinessReport(input);
@@ -600,7 +594,6 @@ test("DB readiness CLI output is sanitized for failure states", async () => {
   const lines = [];
   const report = await runPlatformDatabaseReadinessCheck({
     env: runnerOwnedEnvironment,
-    runnerOwnedFixture,
     expectedMigrationState,
     clientFactory() {
       return fixture.client;

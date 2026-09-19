@@ -1,10 +1,9 @@
 import {
   createDatabasePool,
   DatabaseConfigError,
-  readRunnerOwnedFixtureDatabaseConfig,
+  readDatabaseConfig,
   type DatabaseConfig,
   type DatabaseEnvironment,
-  type RunnerOwnedDatabaseFixtureV1,
 } from "./client.js";
 
 export const REQUIRED_PLATFORM_TABLES = [
@@ -96,7 +95,6 @@ export interface DatabaseReadinessClient {
 
 export interface DatabaseReadinessInput {
   env: DatabaseEnvironment;
-  runnerOwnedFixture?: RunnerOwnedDatabaseFixtureV1;
   expectedMigrationState?: ExpectedMigrationState;
   requiredTables?: readonly string[];
   clientFactory?: (
@@ -916,14 +914,13 @@ export async function createDatabaseReadinessReport(
   let client: DatabaseReadinessClient | null = null;
 
   try {
-    if (!input.runnerOwnedFixture) {
-      throw new DatabaseConfigError(
-        input.env.DATABASE_OPERATOR_URL?.trim()
-          ? "direct_database_credential_prohibited"
-          : "runner_owned_fixture_required",
-      );
+    if (input.env.NODE_ENV === "production" && !input.env.DATABASE_OPERATOR_URL?.trim()) {
+      throw new DatabaseConfigError("missing_database_url");
     }
-    config = readRunnerOwnedFixtureDatabaseConfig(input.env, input.runnerOwnedFixture);
+    if (input.env.DATABASE_OPERATOR_URL?.trim()) {
+      throw new DatabaseConfigError("direct_database_credential_prohibited");
+    }
+    config = readDatabaseConfig(input.env);
     checks.config = "present";
   } catch (error) {
     checks.config = readConfigFailureState(error);
@@ -1248,7 +1245,7 @@ async function readMigrationReadiness(
 function readConfigFailureState(error: unknown): "missing" | "invalid" {
   if (
     error instanceof DatabaseConfigError &&
-    ["missing_database_url", "runner_owned_fixture_required"].includes(error.code)
+    error.code === "missing_database_url"
   ) {
     return "missing";
   }

@@ -209,21 +209,11 @@ test("durable database operations are exact operator-only source authority", asy
   const sourcePath = "src/db/durable-operations.ts";
   const source = await readFile(sourcePath, "utf8");
   const expectedSourceShapeDigest =
-    "aa59b7c10b517ee9dffe28b699ec12cadbc6050c14a45c884477c8b4643c850e";
+    "0d59be4b99b0c0214c28235adbf718846c88fa6c8116ad0a0bef731a49164626";
 
   assert.equal(sourceShapeDigest(source), expectedSourceShapeDigest);
-  assert.match(
-    source,
-    /import \{ drizzle \} from "drizzle-orm\/node-postgres";/u,
-  );
-  assert.match(
-    source,
-    /import \{ migrate \} from "drizzle-orm\/node-postgres\/migrator";/u,
-  );
-  assert.match(
-    source,
-    /import \{ readMigrationFiles \} from "drizzle-orm\/migrator";/u,
-  );
+  assert.doesNotMatch(source, /from "drizzle-orm\/node-postgres\/migrator";/u);
+  assert.doesNotMatch(source, /from "drizzle-orm\/migrator";/u);
   assert.match(
     source,
     /import \{ execFile \} from "node:child_process";/u,
@@ -232,7 +222,6 @@ test("durable database operations are exact operator-only source authority", asy
   assert.match(source, /import \{ readFile \} from "node:fs\/promises";/u);
   assert.match(source, /import \{ join, resolve \} from "node:path";/u);
   assert.match(source, /import \{ promisify \} from "node:util";/u);
-  assert.match(source, /from "\.\/schema\.js";/u);
   assert.match(source, /from "\.\/readiness\.js";/u);
   assert.match(source, /from "\.\/runtime-posture\.js";/u);
   assert.match(source, /from "\.\/runtime-grant-contract\.js";/u);

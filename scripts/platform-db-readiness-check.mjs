@@ -130,7 +130,6 @@ export async function runPlatformDatabaseReadinessCheck({
   env = process.env,
   expectedMigrationState,
   clientFactory,
-  runnerOwnedFixture,
   broker,
   observationBundle,
   writeLine = console.log,
@@ -203,7 +202,6 @@ export async function runPlatformDatabaseReadinessCheck({
   const report = await createDatabaseReadinessReport({
     env,
     expectedMigrationState: migrationState,
-    ...(runnerOwnedFixture ? { runnerOwnedFixture } : {}),
     ...(clientFactory ? { clientFactory } : {}),
   });
   const write = report.ok ? writeLine : writeError;
