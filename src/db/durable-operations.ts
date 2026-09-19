@@ -55,6 +55,26 @@ export const RESTORE_CAPABILITY_VERSION = "restore-capability-v2" as const;
 export const RESTORE_CAPABILITY_PROVIDER_VERSION =
   "restore-capability-provider-v2" as const;
 
+const RESTORE_CAPABILITY_PROVIDER_KEYS = [
+  "version",
+  "target_binding_digest",
+  "prestate_digest",
+  "plan_digest",
+  "authority_graph_digest",
+  "broker_bundle_digest",
+  "bindReservation",
+] as const;
+const RESTORE_CAPABILITY_KEYS = [
+  "version",
+  "target_binding_digest",
+  "prestate_digest",
+  "plan_digest",
+  "authority_graph_digest",
+  "broker_bundle_digest",
+  "reservation_digest",
+  "execute",
+] as const;
+
 export const PRESTATE_DOMAIN_SEPARATOR =
   "swooshz-platform:platform-db-prestate-v2\0" as const;
 export const PLAN_DOMAIN_SEPARATOR =
@@ -333,6 +353,45 @@ function deepFreeze<T>(value: T): T {
     }
   }
   return value;
+}
+
+function captureFrozenDescriptorSnapshot<const T extends readonly string[]>(
+  source: unknown,
+  keys: T,
+): Readonly<Record<T[number], unknown>> {
+  if (source === null || typeof source !== "object" || Array.isArray(source)) {
+    fail("RESTORE_CAPABILITY_REQUIRED");
+  }
+  let descriptors: PropertyDescriptorMap;
+  try {
+    descriptors = Object.getOwnPropertyDescriptors(source);
+  } catch {
+    fail("RESTORE_CAPABILITY_REQUIRED");
+  }
+  const actualKeys = Reflect.ownKeys(descriptors);
+  const expectedKeys = new Set(keys);
+  if (
+    actualKeys.length !== expectedKeys.size ||
+    actualKeys.some((key) => typeof key !== "string" || !expectedKeys.has(key))
+  ) {
+    fail("RESTORE_CAPABILITY_REQUIRED");
+  }
+  const snapshot: Record<string, unknown> = {};
+  for (const key of keys) {
+    const descriptor = descriptors[key];
+    if (
+      !descriptor ||
+      descriptor.enumerable !== true ||
+      !Object.hasOwn(descriptor, "value") ||
+      !Object.hasOwn(descriptor, "writable") ||
+      Object.hasOwn(descriptor, "get") ||
+      Object.hasOwn(descriptor, "set")
+    ) {
+      fail("RESTORE_CAPABILITY_REQUIRED");
+    }
+    snapshot[key] = descriptor.value;
+  }
+  return Object.freeze(snapshot) as Readonly<Record<T[number], unknown>>;
 }
 
 function compareTuple(left: readonly unknown[], right: readonly unknown[]): number {
@@ -4409,59 +4468,29 @@ export function requireRestoreCapabilityV2(
   capability: RestoreCapabilityV2 | undefined,
   inverse: DurableInverseV2,
 ): RestoreCapabilityV2 {
-  if (!isRecord(capability)) fail("RESTORE_CAPABILITY_REQUIRED");
-  assertExactKeys(
-    capability,
-    [
-      "version", "target_binding_digest", "prestate_digest", "plan_digest",
-      "authority_graph_digest", "broker_bundle_digest", "reservation_digest", "execute",
-    ],
-    "RESTORE_CAPABILITY_REQUIRED",
-  );
-  if (capability.version !== RESTORE_CAPABILITY_VERSION || typeof capability.execute !== "function") fail("RESTORE_CAPABILITY_REQUIRED");
-  for (const key of ["target_binding_digest", "prestate_digest", "plan_digest", "authority_graph_digest", "broker_bundle_digest", "reservation_digest"] as const) {
-    if (capability[key] !== inverse[key]) fail("RESTORE_CAPABILITY_REQUIRED");
+  const snapshot = captureFrozenDescriptorSnapshot(capability, RESTORE_CAPABILITY_KEYS);
+  if (snapshot.version !== RESTORE_CAPABILITY_VERSION || typeof snapshot.execute !== "function") {
+    fail("RESTORE_CAPABILITY_REQUIRED");
   }
-  return capability as unknown as RestoreCapabilityV2;
+  for (const key of ["target_binding_digest", "prestate_digest", "plan_digest", "authority_graph_digest", "broker_bundle_digest", "reservation_digest"] as const) {
+    if (snapshot[key] !== inverse[key]) fail("RESTORE_CAPABILITY_REQUIRED");
+  }
+  return snapshot as unknown as RestoreCapabilityV2;
 }
 
 function freezeRestoreCapabilityProvider(
   provider: RestoreCapabilityProviderV2 | undefined,
 ): RestoreCapabilityProviderV2 {
-  if (!isRecord(provider)) fail("RESTORE_CAPABILITY_REQUIRED");
-  assertExactKeys(
-    provider,
-    [
-      "version", "target_binding_digest", "prestate_digest", "plan_digest",
-      "authority_graph_digest", "broker_bundle_digest", "bindReservation",
-    ],
-    "RESTORE_CAPABILITY_REQUIRED",
-  );
-  if (provider.version !== RESTORE_CAPABILITY_PROVIDER_VERSION || typeof provider.bindReservation !== "function") {
+  const snapshot = captureFrozenDescriptorSnapshot(provider, RESTORE_CAPABILITY_PROVIDER_KEYS);
+  if (snapshot.version !== RESTORE_CAPABILITY_PROVIDER_VERSION || typeof snapshot.bindReservation !== "function") {
     fail("RESTORE_CAPABILITY_REQUIRED");
   }
-  return deepFreeze({
-    version: provider.version,
-    target_binding_digest: hex(provider.target_binding_digest, 64, "RESTORE_CAPABILITY_REQUIRED"),
-    prestate_digest: hex(provider.prestate_digest, 64, "RESTORE_CAPABILITY_REQUIRED"),
-    plan_digest: hex(provider.plan_digest, 64, "RESTORE_CAPABILITY_REQUIRED"),
-    authority_graph_digest: hex(provider.authority_graph_digest, 64, "RESTORE_CAPABILITY_REQUIRED"),
-    broker_bundle_digest: hex(provider.broker_bundle_digest, 64, "RESTORE_CAPABILITY_REQUIRED"),
-    bindReservation: provider.bindReservation as RestoreCapabilityProviderV2["bindReservation"],
-  });
-}
-
-function freezeRestoreCapabilityV2(capability: RestoreCapabilityV2): RestoreCapabilityV2 {
-  return deepFreeze({
-    version: capability.version,
-    target_binding_digest: capability.target_binding_digest,
-    prestate_digest: capability.prestate_digest,
-    plan_digest: capability.plan_digest,
-    authority_graph_digest: capability.authority_graph_digest,
-    broker_bundle_digest: capability.broker_bundle_digest,
-    reservation_digest: capability.reservation_digest,
-    execute: capability.execute,
-  });
+  hex(snapshot.target_binding_digest, 64, "RESTORE_CAPABILITY_REQUIRED");
+  hex(snapshot.prestate_digest, 64, "RESTORE_CAPABILITY_REQUIRED");
+  hex(snapshot.plan_digest, 64, "RESTORE_CAPABILITY_REQUIRED");
+  hex(snapshot.authority_graph_digest, 64, "RESTORE_CAPABILITY_REQUIRED");
+  hex(snapshot.broker_bundle_digest, 64, "RESTORE_CAPABILITY_REQUIRED");
+  return snapshot as unknown as RestoreCapabilityProviderV2;
 }
 
 export interface DurableReceiptV2 {
@@ -4645,10 +4674,9 @@ export async function executeBrokeredMigrationPlan(input: {
   }
   let admittedRestoreCapability: RestoreCapabilityV2;
   try {
-    const boundCapability = await restoreCapabilityProvider.bindReservation(inverse);
-    admittedRestoreCapability = freezeRestoreCapabilityV2(
-      requireRestoreCapabilityV2(boundCapability, inverse),
-    );
+    const bindReservation = restoreCapabilityProvider.bindReservation;
+    const boundCapability = await Reflect.apply(bindReservation, restoreCapabilityProvider, [inverse]);
+    admittedRestoreCapability = requireRestoreCapabilityV2(boundCapability, inverse);
   } catch {
     return brokeredReceipt({
       ...reserved,

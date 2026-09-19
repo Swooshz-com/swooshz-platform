@@ -33,16 +33,41 @@ const MIGRATION_TAG = "0010_admin_operator_viewer_role_collapse";
 const MIGRATION_CREATED_AT = 1787479999088;
 const MIGRATION_SQL_SHA256 = "452829e49a5571a8b4e14a2cbf155e671fe81ef8ee2fa3583935b7cc2ffd996b";
 const FIRST_NINE_MIGRATIONS = Object.freeze([
-  { created_at: "1782546111134", hashes: ["d156026594b36870455ba6df7525310be1ce1838cda1d58725c6f3a07514c0a6", "a4636f7af908cae22e8b15ed59103251b2f865f65a37b496b0ac4e38bc68d09b"] },
-  { created_at: "1782571351615", hashes: ["861614ef57601aff17a15fe594becfc0206fa931f22052ba98217e300285666d", "f32a717626f2ab3d009a457b81664ba2666a2318129a3383a45146b0ea6634cd"] },
-  { created_at: "1782629131478", hashes: ["76fd758786fa4583e18f3b89bf7fba0932bdb9c71de294f3291b19925bbd542b", "b8f3c2d5ac88d9cba57368695219325b025f9c953ce1e7ac59f2882ec1592321"] },
-  { created_at: "1782651725342", hashes: ["41567c07fcdb3b6e41da516d346d1a20d5e3aa4b0c5d3297e8b19091fa8f5f09", "41a3648d3443e63031277734e805b8826e8f6f34b6f6fdb9db8ed63f5fcdeb1f"] },
-  { created_at: "1783253616083", hashes: ["01179c79b777732dc03dbef0471738e00dc85964082aa22764184362722ac5fe", "5be34c50c70b76f167da4722920946f9272fd8b3aafd405718e3c76dfcea2b3d"] },
-  { created_at: "1783479304000", hashes: ["651eaa1668341fc8bdbc8d6f47ccfdd9ec1e2c80fef018de73ab0a79b9896bbe", "b47e5a1575abc53c523fada3266e32556f3e3b267c7d6878719c5aee30876a3e"] },
-  { created_at: "1783587520445", hashes: ["a8b5d90838c87ca3d74ada48295b92970c8a8476dacf5fc76b1a793995d7485b"] },
-  { created_at: "1784354477743", hashes: ["0e82a5892f22b71f8894f8776388341519ac48944a417552443d639d09cdcbc0", "1a74bbfbe23b11693dd1d1571bf6eb6d4340832124143134afe89e2c9337d0b3"] },
-  { created_at: "1784620602227", hashes: ["bc54f927f5ab0a2ebc97a61ede57119f29e8673ab1b902a4e132191ac688820f", "b1f9291edfb018633add360eb4e81520f9be9690c38bb1c2dede9de29a2fe25b"] },
+  { tag: "0000_overconfident_onslaught", created_at: "1782546111134", hashes: ["d156026594b36870455ba6df7525310be1ce1838cda1d58725c6f3a07514c0a6", "a4636f7af908cae22e8b15ed59103251b2f865f65a37b496b0ac4e38bc68d09b"] },
+  { tag: "0001_lovely_famine", created_at: "1782571351615", hashes: ["861614ef57601aff17a15fe594becfc0206fa931f22052ba98217e300285666d", "f32a717626f2ab3d009a457b81664ba2666a2318129a3383a45146b0ea6634cd"] },
+  { tag: "0002_futuristic_aaron_stack", created_at: "1782629131478", hashes: ["76fd758786fa4583e18f3b89bf7fba0932bdb9c71de294f3291b19925bbd542b", "b8f3c2d5ac88d9cba57368695219325b025f9c953ce1e7ac59f2882ec1592321"] },
+  { tag: "0003_worthless_scourge", created_at: "1782651725342", hashes: ["41567c07fcdb3b6e41da516d346d1a20d5e3aa4b0c5d3297e8b19091fa8f5f09", "41a3648d3443e63031277734e805b8826e8f6f34b6f6fdb9db8ed63f5fcdeb1f"] },
+  { tag: "0004_illegal_william_stryker", created_at: "1783253616083", hashes: ["01179c79b777732dc03dbef0471738e00dc85964082aa22764184362722ac5fe", "5be34c50c70b76f167da4722920946f9272fd8b3aafd405718e3c76dfcea2b3d"] },
+  { tag: "0005_sqag_app_key_migration", created_at: "1783479304000", hashes: ["651eaa1668341fc8bdbc8d6f47ccfdd9ec1e2c80fef018de73ab0a79b9896bbe", "b47e5a1575abc53c523fada3266e32556f3e3b267c7d6878719c5aee30876a3e"] },
+  { tag: "0006_optimal_tomorrow_man", created_at: "1783587520445", hashes: ["a8b5d90838c87ca3d74ada48295b92970c8a8476dacf5fc76b1a793995d7485b"] },
+  { tag: "0007_remove_legacy_kqag_tables", created_at: "1784354477743", hashes: ["0e82a5892f22b71f8894f8776388341519ac48944a417552443d639d09cdcbc0", "1a74bbfbe23b11693dd1d1571bf6eb6d4340832124143134afe89e2c9337d0b3"] },
+  { tag: "0009_wonderful_star_brand", created_at: "1784620602227", hashes: ["bc54f927f5ab0a2ebc97a61ede57119f29e8673ab1b902a4e132191ac688820f", "b1f9291edfb018633add360eb4e81520f9be9690c38bb1c2dede9de29a2fe25b"] },
 ]);
+const BROKER_CANONICAL_MIGRATION_ENTRIES = [
+  ...FIRST_NINE_MIGRATIONS.map((migration, idx) => ({
+    idx,
+    version: "7",
+    when: Number(migration.created_at),
+    tag: migration.tag,
+    breakpoints: true,
+  })),
+  {
+    idx: 9,
+    version: "7",
+    when: MIGRATION_CREATED_AT,
+    tag: MIGRATION_TAG,
+    breakpoints: true,
+  },
+];
+
+export const BROKER_EXPECTED_FINAL_MIGRATION_STATE = deepFreeze({
+  version: "7",
+  dialect: "postgresql",
+  entries: BROKER_CANONICAL_MIGRATION_ENTRIES,
+  latestTag: MIGRATION_TAG,
+  latestCreatedAt: MIGRATION_CREATED_AT,
+  migrationCount: BROKER_CANONICAL_MIGRATION_ENTRIES.length,
+});
 const POSTURE_RESULT_SCHEMA = Object.freeze([...MIGRATOR_READINESS_FIELDS, "application_relation_owner_exact"]);
 const AUTHORITY_GRAPH_POSTURE_FIELD = "application_migrator_authority_absent" as const;
 const ROLE_DATA_RESULT_SCHEMA = Object.freeze([
@@ -268,6 +293,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value as Record<string, unknown>)) {
+      deepFreeze(child);
+    }
+  }
+  return value;
+}
+
 function exactKeys(value: Record<string, unknown>, keys: readonly string[]): void {
   const expected = new Set(keys);
   const actual = Object.keys(value);
@@ -314,6 +349,20 @@ export function computeBrokerBundleDigest(domainSeparator: string, value: unknow
   if (typeof domainSeparator !== "string" || !domainSeparator.endsWith("\0")) reject("BROKER_DOMAIN_INVALID");
   return sha256(domainSeparator + canonicalSerializeBrokerBundle(value));
 }
+
+const FIRST_NINE_IDENTITY_DIGESTS = (() => {
+  let combinations: Array<Array<{ id: number; hash: string; created_at: string }>> = [[]];
+  for (const [index, migration] of FIRST_NINE_MIGRATIONS.entries()) {
+    combinations = combinations.flatMap((prefix) => migration.hashes.map((hash) => [
+      ...prefix,
+      { id: index + 1, hash, created_at: migration.created_at },
+    ]));
+  }
+  return new Set(combinations.map((rows) => computeBrokerBundleDigest(
+    "Swooshz-platform:platform-db-first-nine-ledger-v1\0",
+    rows,
+  )));
+})();
 
 function withoutDigest<T extends Record<string, unknown>>(value: T, key: string): Record<string, unknown> {
   const result = { ...value };
@@ -746,7 +795,9 @@ export function normalizeBrokerObservationEvidence(
   if (graph.closure_complete !== validatedGraph.closure_complete || graph.application_authority_absent !== validatedGraph.application_authority_absent) reject("BROKER_AUTHORITY_GRAPH_REJECTED");
   if (phase === "PREWRITE" && (ledger.row_count !== 9 || ledger.migration_0010_absent !== true)) reject("BROKER_MIGRATION_IDENTITY_REJECTED");
   if (phase === "FINAL" && (ledger.row_count !== 10 || ledger.migration_0010_absent !== false)) reject("BROKER_MIGRATION_IDENTITY_REJECTED");
-  digest(ledger.first_nine_identity_digest); digest(input.canonical_posture_digest);
+  const firstNineIdentityDigest = digest(ledger.first_nine_identity_digest);
+  if (!FIRST_NINE_IDENTITY_DIGESTS.has(firstNineIdentityDigest)) reject("BROKER_MIGRATION_IDENTITY_REJECTED");
+  digest(input.canonical_posture_digest);
   const claimed = digest(input.evidence_digest);
   const computed = computeBrokerBundleDigest(BROKER_OBSERVATION_EVIDENCE_DOMAIN_SEPARATOR, withoutDigest(input, "evidence_digest"));
   if (claimed !== computed) reject("BROKER_OBSERVATION_EVIDENCE_INVALID");

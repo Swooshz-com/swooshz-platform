@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import test from "node:test";
 
 import {
@@ -13,6 +15,14 @@ import {
   readExpectedMigrationState,
   runPlatformDatabaseReadinessCheck,
 } from "../scripts/platform-db-readiness-check.mjs";
+import {
+  BROKER_AUTHORITY_CLASSIFICATION_VERSION,
+  BROKER_OBSERVATION_EVIDENCE_DOMAIN_SEPARATOR,
+  BROKER_OBSERVATION_EVIDENCE_VERSION,
+  BROKER_TARGET_BINDING_VERSION,
+  compileBrokerObservationBundle,
+  computeBrokerBundleDigest,
+} from "../dist/db/brokered-migration.js";
 
 const privateDatabaseUrl =
   ["postgres", "://private_user:private_pass@private-host.invalid:5432/swooshz_platform"].join("");
@@ -32,6 +42,143 @@ const runnerOwnedEnvironment = {
   NODE_ENV: "test",
   RUNNER_OWNED_DATABASE_FIXTURE: "disposable-postgres-runner",
 };
+
+const CANONICAL_FIRST_NINE_LEDGER = [
+  { id: 1, hash: "d156026594b36870455ba6df7525310be1ce1838cda1d58725c6f3a07514c0a6", created_at: "1782546111134" },
+  { id: 2, hash: "861614ef57601aff17a15fe594becfc0206fa931f22052ba98217e300285666d", created_at: "1782571351615" },
+  { id: 3, hash: "76fd758786fa4583e18f3b89bf7fba0932bdb9c71de294f3291b19925bbd542b", created_at: "1782629131478" },
+  { id: 4, hash: "41567c07fcdb3b6e41da516d346d1a20d5e3aa4b0c5d3297e8b19091fa8f5f09", created_at: "1782651725342" },
+  { id: 5, hash: "01179c79b777732dc03dbef0471738e00dc85964082aa22764184362722ac5fe", created_at: "1783253616083" },
+  { id: 6, hash: "651eaa1668341fc8bdbc8d6f47ccfdd9ec1e2c80fef018de73ab0a79b9896bbe", created_at: "1783479304000" },
+  { id: 7, hash: "a8b5d90838c87ca3d74ada48295b92970c8a8476dacf5fc76b1a793995d7485b", created_at: "1783587520445" },
+  { id: 8, hash: "0e82a5892f22b71f8894f8776388341519ac48944a417552443d639d09cdcbc0", created_at: "1784354477743" },
+  { id: 9, hash: "bc54f927f5ab0a2ebc97a61ede57119f29e8673ab1b902a4e132191ac688820f", created_at: "1784620602227" },
+];
+const CANONICAL_FIRST_NINE_IDENTITY_DIGEST = computeBrokerBundleDigest(
+  "Swooshz-platform:platform-db-first-nine-ledger-v1\0",
+  CANONICAL_FIRST_NINE_LEDGER,
+);
+
+function brokerReadinessFixture({
+  firstNineIdentityDigest = CANONICAL_FIRST_NINE_IDENTITY_DIGEST,
+  rowCount = 10,
+  migration0010Absent = false,
+} = {}) {
+  const target_binding = {
+    version: BROKER_TARGET_BINDING_VERSION,
+    project_id: "project-fixture",
+    branch_id: "branch-fixture",
+    endpoint_id: "endpoint-fixture",
+    endpoint_type: "read_write",
+    logical_database_name: "swooshz_platform",
+    expected_database_oid: "42",
+    expected_cluster_system_identifier: "777",
+    expected_postgres_major: 17,
+    expected_provider_role_name: "cloud_admin",
+    expected_provider_role_oid: "1",
+  };
+  const authority_classification = {
+    version: BROKER_AUTHORITY_CLASSIFICATION_VERSION,
+    nodes: [
+      { role_name: "cloud_admin", role_oid: "1", authority_class: "PROVIDER_CONTROL" },
+      { role_name: "platform_app", role_oid: "2", authority_class: "APPLICATION" },
+      { role_name: "platform_runtime", role_oid: "3", authority_class: "RUNTIME" },
+      { role_name: "platform_migrator", role_oid: "4", authority_class: "MIGRATOR" },
+    ],
+    runtime_creator_tuple: {
+      granted_role: "platform_runtime",
+      member: "platform_app",
+      grantor: "cloud_admin",
+      admin_option: true,
+      inherit_option: false,
+      set_option: false,
+    },
+  };
+  const observationBundle = compileBrokerObservationBundle({
+    run: "run-readiness-fixture",
+    lock: "lock-readiness-fixture",
+    git_sha: "1".repeat(40),
+    git_tree: "2".repeat(40),
+    contract_digest: "3".repeat(64),
+    source_manifest_digest: "4".repeat(64),
+    build_manifest_digest: "5".repeat(64),
+    target_binding,
+    authority_classification,
+  });
+  const payload = {
+    version: BROKER_OBSERVATION_EVIDENCE_VERSION,
+    observation_bundle_digest: observationBundle.bundle_digest,
+    target_binding_digest: observationBundle.target_binding_digest,
+    authority_classification_digest: observationBundle.authority_classification_digest,
+    provider: { current_user: "cloud_admin", session_user: "cloud_admin", role_oid: "1", rolsuper: false },
+    target: { logical_database_name: "swooshz_platform", database_oid: "42", cluster_system_identifier: "777", postgres_major: 17, in_recovery: false },
+    migrator: { role_name: "platform_migrator", role_oid: "4", rolcanlogin: false, rolinherit: false, rolsuper: false, rolcreatedb: false, rolcreaterole: false, rolreplication: false, rolbypassrls: false, password_is_null: true, provider_has_set: true },
+    authority_graph: {
+      nodes: [
+        { role_name: "cloud_admin", role_oid: "1", rolsuper: false, rolcreaterole: false },
+        { role_name: "platform_app", role_oid: "2", rolsuper: false, rolcreaterole: false },
+        { role_name: "platform_runtime", role_oid: "3", rolsuper: false, rolcreaterole: false },
+        { role_name: "platform_migrator", role_oid: "4", rolsuper: false, rolcreaterole: false },
+      ],
+      edges: [
+        { granted_role: "platform_runtime", granted_role_oid: "3", member: "platform_app", member_oid: "2", grantor: "cloud_admin", grantor_oid: "1", admin_option: true, inherit_option: false, set_option: false },
+        { granted_role: "platform_migrator", granted_role_oid: "4", member: "cloud_admin", member_oid: "1", grantor: "cloud_admin", grantor_oid: "1", admin_option: false, inherit_option: false, set_option: true },
+      ],
+      closure_complete: true,
+      application_authority_absent: true,
+    },
+    ledger: { first_nine_identity_digest: firstNineIdentityDigest, row_count: rowCount, migration_0010_absent: migration0010Absent },
+    canonical_posture_digest: "7".repeat(64),
+  };
+  return {
+    observationBundle,
+    evidence: {
+      ...payload,
+      evidence_digest: computeBrokerBundleDigest(BROKER_OBSERVATION_EVIDENCE_DOMAIN_SEPARATOR, payload),
+    },
+  };
+}
+
+async function runBrokerReadiness({ fixture = brokerReadinessFixture(), expected = expectedMigrationState } = {}) {
+  const lines = [];
+  let observations = 0;
+  let clientFactoryCalls = 0;
+  const report = await runPlatformDatabaseReadinessCheck({
+    env: { NODE_ENV: "production" },
+    expectedMigrationState: expected,
+    broker: {
+      async observe() {
+        observations += 1;
+        return fixture.evidence;
+      },
+    },
+    observationBundle: fixture.observationBundle,
+    clientFactory() {
+      clientFactoryCalls += 1;
+      throw new Error("direct database connection must not be created");
+    },
+    writeLine(line) {
+      lines.push(line);
+    },
+    writeError(line) {
+      lines.push(line);
+    },
+  });
+  return { report, lines, observations, clientFactoryCalls };
+}
+
+async function assertJournalRejected(mutator) {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), "swooshz-run626-journal-"));
+  const journalPath = join(temporaryRoot, "_journal.json");
+  try {
+    const journal = JSON.parse(await readFile("drizzle/migrations/meta/_journal.json", "utf8"));
+    mutator(journal);
+    await writeFile(journalPath, JSON.stringify(journal), "utf8");
+    await assert.rejects(() => readExpectedMigrationState(journalPath), /Migration journal is not readable/u);
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+}
 
 function createDatabaseReadinessReport(input) {
   if (input.clientFactory && input.env?.DATABASE_OPERATOR_URL === privateDatabaseUrl) {
@@ -478,6 +625,91 @@ test("DB readiness reads the latest migration state from the committed journal",
   const state = await readExpectedMigrationState();
 
   assert.deepEqual(state, expectedMigrationState);
+  assert.equal(Object.isFrozen(state), true);
+});
+
+test("production broker readiness requires canonical ten-entry FINAL evidence", async () => {
+  const { report, lines, observations, clientFactoryCalls } = await runBrokerReadiness();
+
+  assert.equal(report.ok, true);
+  assert.equal(report.checks.migrations, "passed");
+  assert.equal(observations, 1);
+  assert.equal(clientFactoryCalls, 0);
+  assert.equal(lines.filter((line) => line === "migrations=passed").length, 1);
+  assert.equal(lines.some((line) => line === "migrations=failed"), false);
+});
+
+test("production broker readiness rejects PREWRITE, missing, extra, and non-canonical ledger evidence", async () => {
+  const cases = [
+    brokerReadinessFixture({ rowCount: 9, migration0010Absent: true }),
+    brokerReadinessFixture({ rowCount: 10, migration0010Absent: true }),
+    brokerReadinessFixture({ rowCount: 11, migration0010Absent: false }),
+    brokerReadinessFixture({ firstNineIdentityDigest: "f".repeat(64) }),
+  ];
+
+  for (const fixture of cases) {
+    const { report, lines, observations, clientFactoryCalls } = await runBrokerReadiness({ fixture });
+    assert.equal(report.ok, false);
+    assert.equal(report.checks.migrations, "failed");
+    assert.equal(observations, 1);
+    assert.equal(clientFactoryCalls, 0);
+    assert.equal(lines.includes("migrations=failed"), true);
+    assert.equal(lines.includes("migrations=passed"), false);
+  }
+});
+
+test("production broker readiness rejects a modified canonical 0010 journal identity", async () => {
+  const altered = { ...expectedMigrationState, latestCreatedAt: expectedMigrationState.latestCreatedAt - 1 };
+  const { report, lines, observations } = await runBrokerReadiness({ expected: altered });
+
+  assert.equal(report.ok, false);
+  assert.equal(report.status, "schema_not_ready");
+  assert.equal(report.checks.migrations, "failed");
+  assert.equal(observations, 0);
+  assert.equal(lines.includes("migrations=passed"), false);
+});
+
+test("expected migration state is captured as an exact frozen data snapshot", async () => {
+  const missing = {
+    latestTag: expectedMigrationState.latestTag,
+    latestCreatedAt: expectedMigrationState.latestCreatedAt,
+  };
+  const extra = { ...expectedMigrationState, extra: true };
+  const accessor = { ...expectedMigrationState };
+  let getterCalls = 0;
+  Object.defineProperty(accessor, "latestTag", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      return expectedMigrationState.latestTag;
+    },
+  });
+
+  for (const candidate of [missing, extra, accessor]) {
+    const { report, observations } = await runBrokerReadiness({ expected: candidate });
+    assert.equal(report.ok, false);
+    assert.equal(report.status, "schema_not_ready");
+    assert.equal(observations, 0);
+  }
+  assert.equal(getterCalls, 0);
+});
+
+test("journal parsing rejects extra, reordered, and modified canonical entries", async () => {
+  await assertJournalRejected((journal) => journal.entries.push({
+    idx: 10,
+    version: "7",
+    when: 1787480000000,
+    tag: "0011_unknown",
+    breakpoints: true,
+  }));
+  await assertJournalRejected((journal) => journal.entries.reverse());
+  await assertJournalRejected((journal) => {
+    journal.entries[0].tag = journal.entries[1].tag;
+  });
+  await assertJournalRejected((journal) => {
+    journal.entries[9].when += 1;
+  });
 });
 
 function createFakeReadinessClient(options = {}) {
