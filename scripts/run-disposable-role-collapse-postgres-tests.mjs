@@ -1,9 +1,13 @@
 import { spawn } from "node:child_process";
+import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import net from "node:net";
 import { Pool } from "pg";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
+
+import { withDisposablePostgresFixtureMigration } from "../tests/support/disposable-postgres-fixture.mjs";
 
 const rootDir = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const ownedContainerName = "codex-platform153-role-collapse-pg17";
@@ -164,6 +168,75 @@ async function createDatabases(port) {
   }
 }
 
+export async function migrateTo0009(databaseUrl) {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), "swooshz-role-collapse-0009-"));
+  const temporaryMigrations = join(temporaryRoot, "migrations");
+
+  try {
+    await cp(join(rootDir, "drizzle", "migrations"), temporaryMigrations, {
+      recursive: true,
+    });
+    await rm(
+      join(
+        temporaryMigrations,
+        "0010_admin_operator_viewer_role_collapse.sql",
+      ),
+    );
+    await rm(join(temporaryMigrations, "meta", "0010_snapshot.json"));
+
+    const journalPath = join(temporaryMigrations, "meta", "_journal.json");
+    const journal = JSON.parse(await readFile(journalPath, "utf8"));
+    journal.entries = journal.entries.filter(
+      (entry) => entry.tag !== "0010_admin_operator_viewer_role_collapse",
+    );
+    await writeFile(journalPath, JSON.stringify(journal, null, 2) + "\n");
+
+    const pool = new Pool({ connectionString: databaseUrl, max: 1 });
+    try {
+      await withDisposablePostgresFixtureMigration(
+        {
+          pool,
+          connectionString: databaseUrl,
+          expectedDatabase: databaseNameFromUrl(databaseUrl),
+          expectedUser: "cloud_admin",
+          migrationsFolder: temporaryMigrations,
+        },
+        async () => {},
+      );
+    } finally {
+      await pool.end();
+    }
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+}
+
+export async function migrateToLatest(databaseUrl) {
+  const result = await runRepositoryMigrator(databaseUrl);
+  if (result.code !== 0 || result.timedOut !== false) throw new Error();
+}
+
+export async function runRepositoryMigrator(databaseUrl) {
+  const pool = new Pool({ connectionString: databaseUrl, max: 1 });
+  try {
+    await withDisposablePostgresFixtureMigration(
+      {
+        pool,
+        connectionString: databaseUrl,
+        expectedDatabase: databaseNameFromUrl(databaseUrl),
+        expectedUser: "cloud_admin",
+        migrationsFolder: join(rootDir, "drizzle", "migrations"),
+      },
+      async () => {},
+    );
+    return { code: 0, timedOut: false };
+  } catch {
+    return { code: 1, timedOut: false };
+  } finally {
+    await pool.end();
+  }
+}
+
 export function parseRoleCollapseTestSummary(output) {
   if (
     typeof output !== "string" ||
@@ -301,30 +374,33 @@ export function formatRoleCollapseSuccess(summary) {
   );
 }
 
-async function runFocusedChild(spawnImpl, port) {
-  const childEnv = { ...process.env };
-  delete childEnv.DATABASE_URL;
-  delete childEnv.DATABASE_OPERATOR_URL;
-  delete childEnv.DATABASE_MIGRATIONS_CONFIRM;
-  childEnv.ROLE_COLLAPSE_TEST_MIGRATION_OPERATOR_URL = buildUrl(
-    "postgres",
-    port,
-    migrationDatabaseName,
+async function runFocusedChild(_spawnImpl, port) {
+  const { runRoleCollapseProofs } = await import(
+    "../tests/role-collapse-postgres.test.mjs"
   );
-  childEnv.ROLE_COLLAPSE_TEST_CONCURRENCY_OPERATOR_URL = buildUrl(
-    "postgres",
-    port,
-    concurrencyDatabaseName,
-  );
-  childEnv.ROLE_COLLAPSE_TEST_CONFIRM = "disposable-only";
-
-  const result = await runCommand(
-    spawnImpl,
-    process.execPath,
-    ["--test", "tests/role-collapse-postgres.test.mjs"],
-    rootDir,
-    { env: childEnv, timeoutMs: childTimeoutMs },
-  );
+  const proof = await runRoleCollapseProofs({
+    migrationDatabaseUrl: buildUrl(
+      "postgres",
+      port,
+      migrationDatabaseName,
+    ),
+    concurrencyDatabaseUrl: buildUrl(
+      "postgres",
+      port,
+      concurrencyDatabaseName,
+    ),
+    migrateTo0009Impl: migrateTo0009,
+    migrateToLatestImpl: migrateToLatest,
+    runRepositoryMigratorImpl: runRepositoryMigrator,
+  });
+  const result = {
+    code: proof.failed === 0 ? 0 : 1,
+    signal: null,
+    timedOut: false,
+    outputOverflow: false,
+    stdout: formatRoleCollapseNodeSummary(proof),
+    stderr: "",
+  };
   const summary = validateRoleCollapseChildResult(result);
   if (!summary) {
     if (result.stdout) {
@@ -336,6 +412,19 @@ async function runFocusedChild(spawnImpl, port) {
     throw new Error();
   }
   process.stdout.write(formatRoleCollapseSuccess(summary));
+}
+
+function formatRoleCollapseNodeSummary(summary) {
+  return [
+    "# tests " + summary.total,
+    "# suites " + summary.suites,
+    "# pass " + summary.passed,
+    "# fail " + summary.failed,
+    "# cancelled " + summary.cancelled,
+    "# skipped " + summary.skipped,
+    "# todo " + summary.todo,
+    "# duration_ms " + summary.durationMs,
+  ].join("\n") + "\n";
 }
 
 async function cleanupOwnedResources(spawnImpl, port, containerStarted) {
@@ -430,6 +519,10 @@ function buildUrl(user, port, databaseName) {
     throw new Error();
   }
   return "postgres://" + user + "@127.0.0.1:" + port + "/" + databaseName;
+}
+
+function databaseNameFromUrl(databaseUrl) {
+  return decodeURIComponent(new URL(databaseUrl).pathname.slice(1));
 }
 
 function quoteIdentifier(value) {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { Client, Pool } from "pg";
 
@@ -18,6 +19,7 @@ import {
   invalidateDisposablePostgresConstructionAdmission,
   parseDisposablePostgresUrl,
   requireDisposablePostgresAdmission,
+  withDisposablePostgresFixtureMigration,
   withDisposablePostgresFixturesAdmitted,
 } from "./support/disposable-postgres-fixture.mjs";
 
@@ -183,6 +185,103 @@ test("disposable fixture admission rejects ambiguous, remote, socket, and unatte
       safeAdmissionError,
     );
   }
+});
+
+test("fixture migration scope rejects caller-supplied authority and non-initialization targets", async () => {
+  const pool = new Pool({
+    host: "127.0.0.1",
+    port: 5432,
+    user: "cloud_admin",
+    database: "runtime_posture_test",
+  });
+  const baseMigrationTarget = {
+    pool,
+    connectionString:
+      "postgres://cloud_admin@127.0.0.1:5432/runtime_posture_test",
+    expectedDatabase: "runtime_posture_test",
+    expectedUser: "cloud_admin",
+    migrationsFolder: "./drizzle",
+    phase: "initialization",
+  };
+
+  for (const rejectedTarget of [
+    { ...baseMigrationTarget, operatorUrl: "postgres://operator@127.0.0.1:5432/postgres" },
+    { ...baseMigrationTarget, authority: Object.freeze({}) },
+    { ...baseMigrationTarget, capability: Object.freeze({}) },
+    { ...baseMigrationTarget, probe: async () => ({}) },
+    { ...baseMigrationTarget, connectionString: "postgres://cloud_admin@remote:5432/runtime_posture_test" },
+    { ...baseMigrationTarget, connectionString: "postgres://cloud_admin@localhost:5432/runtime_posture_test" },
+    { ...baseMigrationTarget, connectionString: "postgres://cloud_admin/runtime_posture_test" },
+    { ...baseMigrationTarget, phase: "final_start" },
+  ]) {
+    await assert.rejects(
+      () => withDisposablePostgresFixtureMigration(rejectedTarget, async () => {}),
+      safeAdmissionError,
+    );
+  }
+
+  const missingIdentityPool = new Pool({
+    host: "127.0.0.1",
+    port: 5432,
+    user: "cloud_admin",
+    database: "runtime_posture_test",
+  });
+  missingIdentityPool.query = async () => ({
+    rows: [{
+      database_matches: true,
+      user_matches: true,
+      postgres17: true,
+      non_recovery: true,
+      catalog_fingerprint: "1",
+    }],
+  });
+  await assert.rejects(
+    () =>
+      withDisposablePostgresFixtureMigration(
+        { ...baseMigrationTarget, pool: missingIdentityPool },
+        async () => {},
+      ),
+    safeAdmissionError,
+  );
+  await missingIdentityPool.end();
+
+  await pool.end();
+});
+
+test("migration authority stays runner-local and cannot cross disposable process boundaries", async () => {
+  const [
+    helperSource,
+    roleRunnerSource,
+    roleProofSource,
+    durableRunnerSource,
+    durableProofSource,
+  ] = await Promise.all([
+    readFile("tests/support/disposable-postgres-fixture.mjs", "utf8"),
+    readFile("scripts/run-disposable-role-collapse-postgres-tests.mjs", "utf8"),
+    readFile("tests/role-collapse-postgres.test.mjs", "utf8"),
+    readFile("scripts/run-disposable-durable-db-operations-tests.mjs", "utf8"),
+    readFile("tests/durable-database-operations-postgres.test.mjs", "utf8"),
+  ]);
+
+  assert.match(helperSource, /const migrationAuthorityBrand = Symbol/u);
+  assert.match(helperSource, /const migrationAuthorityValues = new WeakMap/u);
+  assert.match(helperSource, /authority = Object\.freeze\(\{\}\)/u);
+  assert.match(helperSource, /migrationAuthorityValues\.get\(authority\)/u);
+  assert.match(helperSource, /value\.authority !== authority/u);
+  assert.match(helperSource, /value\.valid/u);
+  assert.match(helperSource, /value\.valid = false/u);
+  assert.doesNotMatch(helperSource, /JSON\.stringify\(authority\)|process\.env/u);
+
+  assert.match(roleRunnerSource, /withDisposablePostgresFixtureMigration/u);
+  assert.match(roleRunnerSource, /runRoleCollapseProofs/u);
+  assert.doesNotMatch(roleRunnerSource, /\["--test", "tests\/role-collapse-postgres\.test\.mjs"\]/u);
+  assert.doesNotMatch(roleProofSource, /withDisposablePostgresFixtureMigration/u);
+  assert.doesNotMatch(roleProofSource, /ROLE_COLLAPSE_TEST_/u);
+
+  assert.match(durableRunnerSource, /withDisposablePostgresFixtureMigration/u);
+  assert.match(durableRunnerSource, /applyFirstNine/u);
+  assert.doesNotMatch(durableProofSource, /withDisposablePostgresFixtureMigration/u);
+  assert.doesNotMatch(durableProofSource, /\bapplyFirstNine\b/u);
 });
 
 test("initialization and final-start transports are distinct admission phases", () => {

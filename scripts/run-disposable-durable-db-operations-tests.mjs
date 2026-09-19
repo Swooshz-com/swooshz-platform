@@ -1,11 +1,15 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { Pool } from "pg";
+
+import { withDisposablePostgresFixtureMigration } from "../tests/support/disposable-postgres-fixture.mjs";
 
 const rootDir = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const containerNames = [
@@ -15,7 +19,7 @@ const containerNames = [
 const databaseName = "durable_operations_test";
 const maxOutputBytes = 64 * 1024;
 const maxDiagnosticChars = 2_000;
-const SAFE_TEST_TITLE = "Run-190 durable database operations on two disposable PostgreSQL 17 clusters";
+const SAFE_TEST_TITLE = "Run-598 exact durable broker bundle on two disposable PostgreSQL 17 clusters";
 const SAFE_FAILURE_CODES = new Set([
   "ERR_ASSERTION",
   "ERR_MODULE_NOT_FOUND",
@@ -30,6 +34,12 @@ const SAFE_FAILURE_CODES = new Set([
   "RESTORE_CAPABILITY_REQUIRED",
   "TARGET_MISMATCH",
   "UNEXPECTED_FAILURE",
+  "BROKER_AUTHORITY_GRAPH_REJECTED",
+  "BROKER_CANONICAL_POSTURE_REJECTED",
+  "BROKER_MIGRATION_IDENTITY_REJECTED",
+  "BROKER_SESSION_IDENTITY_REJECTED",
+  "BROKER_STATEMENT_RESULT_REJECTED",
+  "BROKER_TARGET_MISMATCH",
 ]);
 const SAFE_POSTGRES_CODES = new Set(["25006", "23505", "42501", "42703", "42P01", "55006", "57P01", "57P02", "57P03"]);
 const SAFE_FAILURE_TYPES = new Set(["testCodeFailure", "uncaughtException", "unhandledRejection", "testTimeout"]);
@@ -237,6 +247,7 @@ export async function run({ spawnImpl = spawn } = {}) {
 }
 
 async function runFocusedTests(spawnImpl, ports) {
+  await Promise.all(ports.map((port) => applyFirstNine(port)));
   const childEnv = { ...process.env };
   for (const key of Object.keys(childEnv)) {
     if (/DATABASE_URL|DATABASE_OPERATOR_URL|DURABLE_OPERATIONS_TEST/u.test(key)) delete childEnv[key];
@@ -267,6 +278,36 @@ async function runFocusedTests(spawnImpl, ports) {
         outputOverflow: result.outputOverflow,
       }),
     });
+  }
+}
+
+async function applyFirstNine(port) {
+  const pool = new Pool({
+    connectionString: `postgres://cloud_admin@127.0.0.1:${port}/${databaseName}`,
+    max: 1,
+  });
+  const migrationsFolder = resolve(rootDir, "drizzle", "migrations");
+  const temporaryRoot = await mkdtemp(join(tmpdir(), "swooshz-run598-first-nine-"));
+  const target = join(temporaryRoot, "drizzle", "migrations");
+  try {
+    await mkdir(join(target, "meta"), { recursive: true });
+    const journal = JSON.parse(await readFile(join(migrationsFolder, "meta", "_journal.json"), "utf8"));
+    journal.entries = journal.entries.slice(0, 9);
+    await writeFile(join(target, "meta", "_journal.json"), `${JSON.stringify(journal, null, 2)}\n`, "utf8");
+    for (const entry of journal.entries) await cp(join(migrationsFolder, `${entry.tag}.sql`), join(target, `${entry.tag}.sql`));
+    await withDisposablePostgresFixtureMigration(
+      {
+        pool,
+        connectionString: `postgres://cloud_admin@127.0.0.1:${port}/${databaseName}`,
+        expectedDatabase: databaseName,
+        expectedUser: "cloud_admin",
+        migrationsFolder: target,
+      },
+      async () => {},
+    );
+  } finally {
+    await pool.end().catch(() => {});
+    await rm(temporaryRoot, { recursive: true, force: true });
   }
 }
 

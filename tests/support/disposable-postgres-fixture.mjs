@@ -1,3 +1,5 @@
+import { drizzle } from "drizzle-orm/node-postgres";
+import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Client, Pool } from "pg";
 
 import {
@@ -18,6 +20,7 @@ const databaseCreationTargetBrand = Symbol("database-creation-target");
 const configuredAggregateBrand = Symbol("configured-aggregate");
 const configuredTargetBrand = Symbol("configured-target");
 const mutationTargetBrand = Symbol("mutation-target");
+const migrationAuthorityBrand = Symbol("migration-authority");
 const managedTransportValues = new WeakMap();
 const parsedUrlValues = new WeakMap();
 const constructionAggregateValues = new WeakMap();
@@ -26,6 +29,7 @@ const databaseCreationTargetValues = new WeakMap();
 const configuredAggregateValues = new WeakMap();
 const configuredTargetValues = new WeakMap();
 const mutationTargetValues = new WeakMap();
+const migrationAuthorityValues = new WeakMap();
 
 const mutationKeyword =
   /\b(?:grant|revoke|alter|create|drop|truncate|insert|update|delete|merge|copy|vacuum|refresh)\b/iu;
@@ -95,6 +99,185 @@ export class DisposablePostgresFixtureAdmissionError extends Error {
       this.stage = stage;
     }
   }
+}
+
+export async function withDisposablePostgresFixtureMigration(
+  input,
+  operation,
+) {
+  if (typeof operation !== "function") {
+    throw new DisposablePostgresFixtureAdmissionError();
+  }
+  let authority;
+  try {
+    const target = normalizeMigrationTarget(input);
+    const identity = await readMigrationAuthorityIdentity(target.pool, target);
+    authority = Object.freeze({});
+    migrationAuthorityValues.set(authority, {
+      authority,
+      brand: migrationAuthorityBrand,
+      database: target.expectedDatabase,
+      user: target.expectedUser,
+      clusterFingerprint: identity.catalogFingerprint,
+      lifecycleFingerprint: identity.lifecycleFingerprint,
+      migrationsFolder: target.migrationsFolder,
+      phase: target.phase,
+      pool: target.pool,
+      valid: true,
+    });
+    await runScopedFixtureMigration(authority, target.pool, target.migrationsFolder, target);
+    return await operation();
+  } catch (error) {
+    if (error instanceof DisposablePostgresFixtureAdmissionError) throw error;
+    throw new DisposablePostgresFixtureAdmissionError();
+  } finally {
+    if (authority) {
+      const value = migrationAuthorityValues.get(authority);
+      if (value) value.valid = false;
+    }
+  }
+}
+
+function normalizeMigrationTarget(input) {
+  if (!input || typeof input !== "object") throw new Error();
+  const allowedKeys = new Set([
+    "pool",
+    "connectionString",
+    "expectedDatabase",
+    "expectedUser",
+    "migrationsFolder",
+    "phase",
+  ]);
+  if (Object.keys(input).some((key) => !allowedKeys.has(key))) throw new Error();
+  const expectedDatabase = input.expectedDatabase;
+  const expectedUser = input.expectedUser ?? "cloud_admin";
+  const phase = input.phase ?? "initialization";
+  if (
+    !(input.pool instanceof Pool) ||
+    typeof input.pool.connect !== "function" ||
+    typeof input.pool.query !== "function" ||
+    typeof input.connectionString !== "string" ||
+    typeof input.migrationsFolder !== "string" ||
+    input.migrationsFolder.length === 0 ||
+    phase !== "initialization" ||
+    !safeIdentifier.test(expectedDatabase) ||
+    !safeIdentifier.test(expectedUser)
+  ) throw new Error();
+
+  let parsed;
+  try {
+    parsed = new URL(input.connectionString);
+  } catch {
+    throw new Error();
+  }
+  const hostname = parsed.hostname.replace(/^\[|\]$/gu, "").toLowerCase();
+  const port = parsed.port;
+  const username = decodeURIComponent(parsed.username);
+  const database = decodeURIComponent(parsed.pathname.slice(1));
+  if (
+    !["postgres:", "postgresql:"].includes(parsed.protocol) ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash ||
+    !loopbackHosts.has(hostname) ||
+    !port ||
+    !validPort(port) ||
+    username !== expectedUser ||
+    database !== expectedDatabase ||
+    parsed.pathname !== `/${database}` ||
+    !safeIdentifier.test(database)
+  ) throw new Error();
+  if (!migrationPoolMatchesTarget(input.pool, { hostname, port, expectedDatabase, expectedUser })) {
+    throw new Error();
+  }
+  return Object.freeze({
+    connectionString: input.connectionString,
+    expectedDatabase,
+    expectedUser,
+    migrationsFolder: input.migrationsFolder,
+    phase,
+    pool: input.pool,
+    hostname,
+    port,
+  });
+}
+
+function migrationPoolMatchesTarget(pool, target) {
+  const options = pool.options;
+  if (!options || typeof options !== "object") return false;
+  const configured = options.connectionString;
+  if (typeof configured === "string") {
+    let parsed;
+    try {
+      parsed = new URL(configured);
+    } catch {
+      return false;
+    }
+    return (
+      !parsed.password &&
+      !parsed.search &&
+      !parsed.hash &&
+      parsed.hostname.replace(/^\[|\]$/gu, "").toLowerCase() === target.hostname &&
+      String(parsed.port || "") === target.port &&
+      decodeURIComponent(parsed.username) === target.expectedUser &&
+      decodeURIComponent(parsed.pathname.slice(1)) === target.expectedDatabase
+    );
+  }
+  const parameters = options.connectionParameters;
+  if (parameters && typeof parameters === "object") {
+    return (
+      String(parameters.host ?? "").toLowerCase() === target.hostname &&
+      String(parameters.port ?? "") === target.port &&
+      String(parameters.user ?? "") === target.expectedUser &&
+      String(parameters.database ?? "") === target.expectedDatabase
+    );
+  }
+  return (
+    String(options.host ?? "").toLowerCase() === target.hostname &&
+    String(options.port ?? "") === target.port &&
+    String(options.user ?? "") === target.expectedUser &&
+    String(options.database ?? "") === target.expectedDatabase
+  );
+}
+
+async function readMigrationAuthorityIdentity(pool, target) {
+  const result = await pool.query(identitySql, [target.expectedDatabase, target.expectedUser]);
+  const row = result?.rows?.[0];
+  if (
+    result?.rows?.length !== 1 ||
+    row?.database_matches !== true ||
+    row?.user_matches !== true ||
+    row?.postgres17 !== true ||
+    row?.non_recovery !== true ||
+    typeof row.catalog_fingerprint !== "string" ||
+    !/^\d+$/u.test(row.catalog_fingerprint) ||
+    typeof row.lifecycle_fingerprint !== "string" ||
+    !/^\d+$/u.test(row.lifecycle_fingerprint)
+  ) throw new Error();
+  return Object.freeze({
+    catalogFingerprint: row.catalog_fingerprint,
+    lifecycleFingerprint: row.lifecycle_fingerprint,
+  });
+}
+
+async function runScopedFixtureMigration(authority, pool, migrationsFolder, target) {
+  const value = migrationAuthorityValues.get(authority);
+  if (
+    !value ||
+    value.brand !== migrationAuthorityBrand ||
+    value.authority !== authority ||
+    !value.valid ||
+    value.pool !== pool ||
+    value.migrationsFolder !== migrationsFolder ||
+    value.database !== target.expectedDatabase ||
+    value.user !== target.expectedUser
+  ) throw new Error();
+  const identity = await readMigrationAuthorityIdentity(pool, target);
+  if (
+    identity.catalogFingerprint !== value.clusterFingerprint ||
+    identity.lifecycleFingerprint !== value.lifecycleFingerprint
+  ) throw new Error();
+  await migrate(drizzle(pool), { migrationsFolder });
 }
 
 export function parseDisposablePostgresUrl(

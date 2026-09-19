@@ -4,11 +4,8 @@ import test from "node:test";
 
 import {
   DatabaseConfigError,
-  DATABASE_MIGRATIONS_CONFIRM_VALUE,
-  assertMigrationExecutionAllowed,
   createDatabasePool,
   readDatabaseConfig,
-  readOperatorDatabaseConfig,
 } from "../dist/db/client.js";
 
 const syntheticDatabaseUrl =
@@ -82,108 +79,15 @@ test("readDatabaseConfig rejects unsupported SSL modes without leaking the URL",
   );
 });
 
-test("migration confirmation guard requires the documented exact value", () => {
+test("direct production operator credentials remain outside the client configuration API", () => {
   assert.throws(
-    () => assertMigrationExecutionAllowed({ DATABASE_OPERATOR_URL: syntheticDatabaseUrl }),
-    /DATABASE_MIGRATIONS_CONFIRM/,
-  );
-  assert.throws(
-    () =>
-      assertMigrationExecutionAllowed({
-        DATABASE_OPERATOR_URL: syntheticDatabaseUrl,
-        DATABASE_MIGRATIONS_CONFIRM: "local",
-      }),
-    /DATABASE_MIGRATIONS_CONFIRM/,
-  );
-
-  assert.throws(
-    () =>
-      assertMigrationExecutionAllowed({
-        DATABASE_URL: syntheticDatabaseUrl,
-        DATABASE_MIGRATIONS_CONFIRM: DATABASE_MIGRATIONS_CONFIRM_VALUE,
-      }),
+    () => readDatabaseConfig({ DATABASE_OPERATOR_URL: syntheticDatabaseUrl }),
     (error) => {
       assert.equal(error instanceof DatabaseConfigError, true);
-      assert.equal(error.code, "missing_database_operator_url");
-      return true;
-    },
-  );
-
-  assert.doesNotThrow(() =>
-    assertMigrationExecutionAllowed({
-      DATABASE_OPERATOR_URL:
-        "postgres://operator_user:operator_pass@operator.example.invalid:5432/swooshz_platform",
-      DATABASE_MIGRATIONS_CONFIRM: DATABASE_MIGRATIONS_CONFIRM_VALUE,
-    }),
-  );
-});
-
-test("production operator connections require DATABASE_OPERATOR_URL", () => {
-  assert.throws(
-    () =>
-      readOperatorDatabaseConfig({
-        NODE_ENV: "production",
-        DATABASE_URL: syntheticDatabaseUrl,
-      }),
-    (error) => {
-      assert.equal(error instanceof DatabaseConfigError, true);
-      assert.equal(error.code, "missing_database_operator_url");
+      assert.equal(error.code, "missing_database_url");
       assert.doesNotMatch(error.message, /example_pass|db\.example\.invalid/);
       return true;
     },
-  );
-});
-
-test("operator connections always require an explicit operator URL", () => {
-  const operatorUrl =
-    "postgres://operator_user:operator_pass@operator.example.invalid:5432/swooshz_platform";
-  const production = readOperatorDatabaseConfig({
-    NODE_ENV: "production",
-    DATABASE_URL: syntheticDatabaseUrl,
-    DATABASE_OPERATOR_URL: operatorUrl,
-  });
-  assert.throws(
-    () =>
-      readOperatorDatabaseConfig({
-        NODE_ENV: "development",
-        DATABASE_URL: syntheticDatabaseUrl,
-      }),
-    (error) => {
-      assert.equal(error instanceof DatabaseConfigError, true);
-      assert.equal(error.code, "missing_database_operator_url");
-      return true;
-    },
-  );
-
-  assert.equal(production.databaseUrl, operatorUrl);
-  assert.equal(
-    readOperatorDatabaseConfig({
-      NODE_ENV: "development",
-      DATABASE_URL: syntheticDatabaseUrl,
-      DATABASE_OPERATOR_URL: operatorUrl,
-    }).databaseUrl,
-    operatorUrl,
-  );
-});
-
-test("migration confirmation remains mandatory with operator URL", () => {
-  const operatorUrl =
-    "postgres://operator_user:operator_pass@operator.example.invalid:5432/swooshz_platform";
-  assert.throws(
-    () =>
-      assertMigrationExecutionAllowed({
-        NODE_ENV: "production",
-        DATABASE_OPERATOR_URL: operatorUrl,
-      }),
-    /DATABASE_MIGRATIONS_CONFIRM/,
-  );
-  assert.equal(
-    assertMigrationExecutionAllowed({
-      NODE_ENV: "production",
-      DATABASE_OPERATOR_URL: operatorUrl,
-      DATABASE_MIGRATIONS_CONFIRM: DATABASE_MIGRATIONS_CONFIRM_VALUE,
-    }).databaseUrl,
-    operatorUrl,
   );
 });
 test("DB client module does not connect during import or pool creation", async () => {
@@ -220,11 +124,12 @@ test("DB client preserves explicit SSL-mode construction semantics", async () =>
   }
 });
 
-test("migration command is explicit and delegates to guarded config", async () => {
+test("migration command fails closed without a provider broker and has no direct pg path", async () => {
   const script = await readFile("scripts/db-migrate.mjs", "utf8");
 
-  assert.match(script, /assertMigrationExecutionAllowed/);
-  assert.match(script, /migrate\(/);
+  assert.match(script, /provider broker adapter/);
+  assert.match(script, /DATABASE_OPERATOR_URL/);
+  assert.doesNotMatch(script, /createDatabaseClient|new Pool|migrate\(/);
   assert.doesNotMatch(script, /postinstall|prestart|npm test/);
   assert.doesNotMatch(script, /console\.log\(.*DATABASE_URL/);
 });

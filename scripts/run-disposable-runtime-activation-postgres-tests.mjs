@@ -18,8 +18,6 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { drizzle } from "drizzle-orm/node-postgres";
-import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Client, Pool } from "pg";
 
 import {
@@ -28,6 +26,7 @@ import {
 import {
   admitDisposablePostgresFixtures,
   invalidateDisposablePostgresAdmission,
+  withDisposablePostgresFixtureMigration,
 } from "../tests/support/disposable-postgres-fixture.mjs";
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const databaseName = "runtime_posture_test";
@@ -1207,7 +1206,16 @@ async function provisionFixture(
     );
     await withActivationFailure(
       "FIXTURE_PROVISION", "MIGRATION_FAILED", target,
-      () => migrate(drizzle(pool), { migrationsFolder }),
+      () => withDisposablePostgresFixtureMigration(
+        {
+          pool,
+          connectionString,
+          expectedDatabase: databaseName,
+          expectedUser: "cloud_admin",
+          migrationsFolder,
+        },
+        async () => {},
+      ),
     );
     creatorEdgeEvidence = await establishCreatorEdge(pool, target);
     await withActivationFailure(
