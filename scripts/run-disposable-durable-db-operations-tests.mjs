@@ -282,10 +282,6 @@ async function runFocusedTests(spawnImpl, ports) {
 }
 
 async function applyFirstNine(port) {
-  const pool = new Pool({
-    connectionString: `postgres://cloud_admin@127.0.0.1:${port}/${databaseName}`,
-    max: 1,
-  });
   const migrationsFolder = resolve(rootDir, "drizzle", "migrations");
   const temporaryRoot = await mkdtemp(join(tmpdir(), "swooshz-run598-first-nine-"));
   const target = join(temporaryRoot, "drizzle", "migrations");
@@ -297,7 +293,6 @@ async function applyFirstNine(port) {
     for (const entry of journal.entries) await cp(join(migrationsFolder, `${entry.tag}.sql`), join(target, `${entry.tag}.sql`));
     await withDisposablePostgresFixtureMigration(
       {
-        pool,
         connectionString: `postgres://cloud_admin@127.0.0.1:${port}/${databaseName}`,
         expectedDatabase: databaseName,
         expectedUser: "cloud_admin",
@@ -306,7 +301,6 @@ async function applyFirstNine(port) {
       async () => {},
     );
   } finally {
-    await pool.end().catch(() => {});
     await rm(temporaryRoot, { recursive: true, force: true });
   }
 }

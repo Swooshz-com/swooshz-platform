@@ -195,21 +195,15 @@ export async function migrateTo0009(databaseUrl) {
     );
     await writeFile(journalPath, JSON.stringify(journal, null, 2) + "\n");
 
-    const pool = new Pool({ connectionString: databaseUrl, max: 1 });
-    try {
-      await withDisposablePostgresFixtureMigration(
-        {
-          pool,
-          connectionString: databaseUrl,
-          expectedDatabase: databaseNameFromUrl(databaseUrl),
-          expectedUser: "cloud_admin",
-          migrationsFolder: temporaryMigrations,
-        },
-        async () => {},
-      );
-    } finally {
-      await pool.end();
-    }
+    await withDisposablePostgresFixtureMigration(
+      {
+        connectionString: databaseUrl,
+        expectedDatabase: databaseNameFromUrl(databaseUrl),
+        expectedUser: "cloud_admin",
+        migrationsFolder: temporaryMigrations,
+      },
+      async () => {},
+    );
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
   }
@@ -221,11 +215,9 @@ export async function migrateToLatest(databaseUrl) {
 }
 
 export async function runRepositoryMigrator(databaseUrl) {
-  const pool = new Pool({ connectionString: databaseUrl, max: 1 });
   try {
     await withDisposablePostgresFixtureMigration(
       {
-        pool,
         connectionString: databaseUrl,
         expectedDatabase: databaseNameFromUrl(databaseUrl),
         expectedUser: "cloud_admin",
@@ -236,8 +228,6 @@ export async function runRepositoryMigrator(databaseUrl) {
     return { code: 0, timedOut: false };
   } catch {
     return { code: 1, timedOut: false };
-  } finally {
-    await pool.end();
   }
 }
 

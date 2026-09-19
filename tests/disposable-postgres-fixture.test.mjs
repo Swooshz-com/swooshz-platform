@@ -187,15 +187,8 @@ test("disposable fixture admission rejects ambiguous, remote, socket, and unatte
   }
 });
 
-test("fixture migration scope rejects caller-supplied authority and non-initialization targets", async () => {
-  const pool = new Pool({
-    host: "127.0.0.1",
-    port: 5432,
-    user: "cloud_admin",
-    database: "runtime_posture_test",
-  });
+test("fixture migration scope rejects caller-supplied authority and transport", async () => {
   const baseMigrationTarget = {
-    pool,
     connectionString:
       "postgres://cloud_admin@127.0.0.1:5432/runtime_posture_test",
     expectedDatabase: "runtime_posture_test",
@@ -205,10 +198,15 @@ test("fixture migration scope rejects caller-supplied authority and non-initiali
   };
 
   for (const rejectedTarget of [
+    { ...baseMigrationTarget, pool: Object.freeze({}) },
     { ...baseMigrationTarget, operatorUrl: "postgres://operator@127.0.0.1:5432/postgres" },
     { ...baseMigrationTarget, authority: Object.freeze({}) },
     { ...baseMigrationTarget, capability: Object.freeze({}) },
     { ...baseMigrationTarget, probe: async () => ({}) },
+    { ...baseMigrationTarget, query: async () => ({}) },
+    { ...baseMigrationTarget, connect: async () => ({}) },
+    { ...baseMigrationTarget, clientFactory: async () => ({}) },
+    { ...baseMigrationTarget, transport: Object.freeze({}) },
     { ...baseMigrationTarget, connectionString: "postgres://cloud_admin@remote:5432/runtime_posture_test" },
     { ...baseMigrationTarget, connectionString: "postgres://cloud_admin@localhost:5432/runtime_posture_test" },
     { ...baseMigrationTarget, connectionString: "postgres://cloud_admin/runtime_posture_test" },
@@ -219,33 +217,63 @@ test("fixture migration scope rejects caller-supplied authority and non-initiali
       safeAdmissionError,
     );
   }
+});
 
-  const missingIdentityPool = new Pool({
+test("migration helper rejects an injected pg Pool before transport or completion", async () => {
+  const callerPool = new Pool({
     host: "127.0.0.1",
-    port: 5432,
+    port: 1,
     user: "cloud_admin",
     database: "runtime_posture_test",
   });
-  missingIdentityPool.query = async () => ({
-    rows: [{
-      database_matches: true,
-      user_matches: true,
-      postgres17: true,
-      non_recovery: true,
-      catalog_fingerprint: "1",
-    }],
-  });
+  assert.equal(callerPool instanceof Pool, true);
+  const queryTexts = [];
+  let connectCalls = 0;
+  callerPool.query = async (text) => {
+    queryTexts.push(String(text));
+    return {
+      rows: [{
+        database_matches: true,
+        user_matches: true,
+        postgres17: true,
+        non_recovery: true,
+        catalog_fingerprint: "1",
+        lifecycle_fingerprint: "2",
+      }],
+    };
+  };
+  callerPool.connect = async () => {
+    connectCalls += 1;
+    return {
+      async query() {
+        throw new Error("injected transport must not receive migration SQL");
+      },
+      release() {},
+    };
+  };
+  let completionCalled = false;
   await assert.rejects(
     () =>
       withDisposablePostgresFixtureMigration(
-        { ...baseMigrationTarget, pool: missingIdentityPool },
-        async () => {},
+        {
+          pool: callerPool,
+          connectionString:
+            "postgres://cloud_admin@127.0.0.1:1/runtime_posture_test",
+          expectedDatabase: "runtime_posture_test",
+          expectedUser: "cloud_admin",
+          migrationsFolder: "./drizzle",
+          phase: "initialization",
+        },
+        async () => {
+          completionCalled = true;
+        },
       ),
     safeAdmissionError,
   );
-  await missingIdentityPool.end();
-
-  await pool.end();
+  assert.deepEqual(queryTexts, []);
+  assert.equal(connectCalls, 0);
+  assert.equal(completionCalled, false);
+  await callerPool.end();
 });
 
 test("migration authority stays runner-local and cannot cross disposable process boundaries", async () => {

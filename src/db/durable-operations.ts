@@ -4506,8 +4506,8 @@ export async function executeBrokeredMigrationPlan(input: {
       outcome: "BLOCKED",
       phase: "ATTEMPT_RESERVATION",
       semantic_code: "ATTEMPT_ALREADY_CONSUMED",
-      reservation_state: "DEFINITELY_NOT_CONSUMED",
-      attempts_used: 0,
+      reservation_state: "DEFINITELY_CONSUMED",
+      attempts_used: 1,
     });
   }
   if (reservationOutcome.state === "CONSUMPTION_INDETERMINATE") {

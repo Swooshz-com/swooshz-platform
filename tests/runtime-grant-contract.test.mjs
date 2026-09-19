@@ -209,7 +209,7 @@ test("durable database operations are exact operator-only source authority", asy
   const sourcePath = "src/db/durable-operations.ts";
   const source = await readFile(sourcePath, "utf8");
   const expectedSourceShapeDigest =
-    "0d59be4b99b0c0214c28235adbf718846c88fa6c8116ad0a0bef731a49164626";
+    "bb33fc4bb5b37bb71a90dd7c26f1b91cd6749473a2e84c4398ec321deb028de1";
 
   assert.equal(sourceShapeDigest(source), expectedSourceShapeDigest);
   assert.doesNotMatch(source, /from "drizzle-orm\/node-postgres\/migrator";/u);

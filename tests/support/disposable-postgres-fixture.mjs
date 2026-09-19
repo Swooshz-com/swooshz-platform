@@ -109,9 +109,11 @@ export async function withDisposablePostgresFixtureMigration(
     throw new DisposablePostgresFixtureAdmissionError();
   }
   let authority;
+  let pool;
   try {
     const target = normalizeMigrationTarget(input);
-    const identity = await readMigrationAuthorityIdentity(target.pool, target);
+    pool = new Pool({ connectionString: target.connectionString, max: 1 });
+    const identity = await readMigrationAuthorityIdentity(pool, target);
     authority = Object.freeze({});
     migrationAuthorityValues.set(authority, {
       authority,
@@ -122,10 +124,10 @@ export async function withDisposablePostgresFixtureMigration(
       lifecycleFingerprint: identity.lifecycleFingerprint,
       migrationsFolder: target.migrationsFolder,
       phase: target.phase,
-      pool: target.pool,
+      pool,
       valid: true,
     });
-    await runScopedFixtureMigration(authority, target.pool, target.migrationsFolder, target);
+    await runScopedFixtureMigration(authority, pool, target.migrationsFolder, target);
     return await operation();
   } catch (error) {
     if (error instanceof DisposablePostgresFixtureAdmissionError) throw error;
@@ -135,13 +137,13 @@ export async function withDisposablePostgresFixtureMigration(
       const value = migrationAuthorityValues.get(authority);
       if (value) value.valid = false;
     }
+    if (pool) await pool.end().catch(() => {});
   }
 }
 
 function normalizeMigrationTarget(input) {
   if (!input || typeof input !== "object") throw new Error();
   const allowedKeys = new Set([
-    "pool",
     "connectionString",
     "expectedDatabase",
     "expectedUser",
@@ -153,9 +155,6 @@ function normalizeMigrationTarget(input) {
   const expectedUser = input.expectedUser ?? "cloud_admin";
   const phase = input.phase ?? "initialization";
   if (
-    !(input.pool instanceof Pool) ||
-    typeof input.pool.connect !== "function" ||
-    typeof input.pool.query !== "function" ||
     typeof input.connectionString !== "string" ||
     typeof input.migrationsFolder !== "string" ||
     input.migrationsFolder.length === 0 ||
@@ -187,57 +186,15 @@ function normalizeMigrationTarget(input) {
     parsed.pathname !== `/${database}` ||
     !safeIdentifier.test(database)
   ) throw new Error();
-  if (!migrationPoolMatchesTarget(input.pool, { hostname, port, expectedDatabase, expectedUser })) {
-    throw new Error();
-  }
   return Object.freeze({
     connectionString: input.connectionString,
     expectedDatabase,
     expectedUser,
     migrationsFolder: input.migrationsFolder,
     phase,
-    pool: input.pool,
     hostname,
     port,
   });
-}
-
-function migrationPoolMatchesTarget(pool, target) {
-  const options = pool.options;
-  if (!options || typeof options !== "object") return false;
-  const configured = options.connectionString;
-  if (typeof configured === "string") {
-    let parsed;
-    try {
-      parsed = new URL(configured);
-    } catch {
-      return false;
-    }
-    return (
-      !parsed.password &&
-      !parsed.search &&
-      !parsed.hash &&
-      parsed.hostname.replace(/^\[|\]$/gu, "").toLowerCase() === target.hostname &&
-      String(parsed.port || "") === target.port &&
-      decodeURIComponent(parsed.username) === target.expectedUser &&
-      decodeURIComponent(parsed.pathname.slice(1)) === target.expectedDatabase
-    );
-  }
-  const parameters = options.connectionParameters;
-  if (parameters && typeof parameters === "object") {
-    return (
-      String(parameters.host ?? "").toLowerCase() === target.hostname &&
-      String(parameters.port ?? "") === target.port &&
-      String(parameters.user ?? "") === target.expectedUser &&
-      String(parameters.database ?? "") === target.expectedDatabase
-    );
-  }
-  return (
-    String(options.host ?? "").toLowerCase() === target.hostname &&
-    String(options.port ?? "") === target.port &&
-    String(options.user ?? "") === target.expectedUser &&
-    String(options.database ?? "") === target.expectedDatabase
-  );
 }
 
 async function readMigrationAuthorityIdentity(pool, target) {

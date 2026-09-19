@@ -1208,7 +1208,6 @@ async function provisionFixture(
       "FIXTURE_PROVISION", "MIGRATION_FAILED", target,
       () => withDisposablePostgresFixtureMigration(
         {
-          pool,
           connectionString,
           expectedDatabase: databaseName,
           expectedUser: "cloud_admin",
