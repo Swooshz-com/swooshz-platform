@@ -56,6 +56,10 @@ export async function run({ spawnImpl = spawn } = {}) {
         ownedContainerName,
         "--env",
         "POSTGRES_HOST_AUTH_METHOD=trust",
+        "--env",
+        "POSTGRES_USER=cloud_admin",
+        "--env",
+        "POSTGRES_DB=postgres",
         "--publish",
         "127.0.0.1::5432",
         "postgres:17",
@@ -132,7 +136,7 @@ async function readPublishedPort(spawnImpl) {
 }
 
 async function waitForPostgres(port) {
-  const connectionString = buildUrl("postgres", port, "postgres");
+  const connectionString = buildUrl("cloud_admin", port, "postgres");
   const deadline = Date.now() + 45_000;
   while (Date.now() < deadline) {
     const pool = new Pool({ connectionString, max: 1 });
@@ -156,7 +160,7 @@ async function waitForPostgres(port) {
 
 async function createDatabases(port) {
   const pool = new Pool({
-    connectionString: buildUrl("postgres", port, "postgres"),
+    connectionString: buildUrl("cloud_admin", port, "postgres"),
     max: 1,
   });
   try {
@@ -380,12 +384,12 @@ async function runFocusedChild(_spawnImpl, port) {
   );
   const proof = await runRoleCollapseProofs({
     migrationDatabaseUrl: buildUrl(
-      "postgres",
+      "cloud_admin",
       port,
       migrationDatabaseName,
     ),
     concurrencyDatabaseUrl: buildUrl(
-      "postgres",
+      "cloud_admin",
       port,
       concurrencyDatabaseName,
     ),
@@ -432,7 +436,7 @@ async function cleanupOwnedResources(spawnImpl, port, containerStarted) {
   if (containerStarted && Number.isInteger(port)) {
     try {
       const pool = new Pool({
-        connectionString: buildUrl("postgres", port, "postgres"),
+        connectionString: buildUrl("cloud_admin", port, "postgres"),
         max: 1,
       });
       try {
