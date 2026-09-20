@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import test from "node:test";
+import test, { mock } from "node:test";
 import { Client, Pool } from "pg";
+import { inspect } from "node:util";
 
 import {
   DisposablePostgresFixtureAdmissionError,
@@ -153,6 +154,175 @@ function createBoundaryClient({
   return client;
 }
 
+const migrationTargetDefaults = Object.freeze({
+  connectionString:
+    "postgres://cloud_admin@127.0.0.1:1/runtime_posture_test",
+  expectedDatabase: "runtime_posture_test",
+  expectedUser: "cloud_admin",
+  migrationsFolder: "./drizzle/migrations",
+  phase: "initialization",
+});
+
+const passingMigrationIdentity = Object.freeze({
+  database_matches: true,
+  user_matches: true,
+  postgres17: true,
+  non_recovery: true,
+  catalog_fingerprint: "100",
+  lifecycle_fingerprint: "200",
+});
+
+async function runMigrationPoolHarness({
+  input = migrationTargetDefaults,
+  operation = async () => ({ ok: true }),
+  identityRows = [passingMigrationIdentity, passingMigrationIdentity],
+  endError,
+} = {}) {
+  const state = {
+    endCalls: 0,
+    error: undefined,
+    identityCalls: 0,
+    migrationCalls: 0,
+    poolCount: 0,
+    poolOptions: [],
+    returned: undefined,
+  };
+  const pools = new WeakMap();
+  let nextPoolId = 0;
+
+  const query = async function query(text) {
+    const queryText = typeof text === "string" ? text : text?.text ?? "";
+    if (!pools.has(this)) {
+      nextPoolId += 1;
+      pools.set(this, nextPoolId);
+    }
+    const options = this.options ?? {};
+    state.poolOptions.push({
+      database: options.database,
+      hasConnectionString: Object.hasOwn(options, "connectionString"),
+      hasPassword: Object.hasOwn(options, "password"),
+      host: options.host,
+      max: options.max,
+      password: options.password,
+      poolId: pools.get(this),
+      port: options.port,
+      user: options.user,
+    });
+    if (queryText.includes("current_database()")) {
+      const row = identityRows[Math.min(
+        state.identityCalls,
+        identityRows.length - 1,
+      )];
+      state.identityCalls += 1;
+      return { rows: [{ ...row }] };
+    }
+    state.migrationCalls += 1;
+    return { rows: [] };
+  };
+
+  mock.method(Pool.prototype, "query", query);
+  mock.method(Pool.prototype, "connect", async function connect() {
+    return {
+      query: query.bind(this),
+      release() {},
+    };
+  });
+  mock.method(Pool.prototype, "end", async function end() {
+    state.endCalls += 1;
+    if (endError) throw endError;
+  });
+
+  try {
+    state.returned = await withDisposablePostgresFixtureMigration(
+      input,
+      operation,
+    );
+  } catch (error) {
+    state.error = error;
+  } finally {
+    state.poolCount = nextPoolId;
+    mock.restoreAll();
+  }
+
+  return state;
+}
+
+function sourceSection(source, startMarker, endMarker) {
+  const start = source.indexOf(startMarker);
+  const end = source.indexOf(endMarker, start + startMarker.length);
+  assert.equal(start >= 0 && end > start, true);
+  return source.slice(start, end);
+}
+
+function publicErrorSurface(error) {
+  const values = [
+    error?.name,
+    error?.message,
+    error?.code,
+    error?.stack,
+  ];
+  try {
+    values.push(JSON.stringify(error));
+  } catch {
+    values.push("<unserializable>");
+  }
+  try {
+    values.push(inspect(error));
+  } catch {
+    values.push("<uninspectable>");
+  }
+  return values.filter((value) => typeof value === "string").join("\n");
+}
+
+function assertPrivateAdmissionFailure(error, secrets = []) {
+  const surface = publicErrorSurface(error);
+  assert.equal(error instanceof DisposablePostgresFixtureAdmissionError, true);
+  assert.equal(error?.name === "DisposablePostgresFixtureAdmissionError", true);
+  assert.equal(error?.code === "disposable_fixture_admission_failed", true);
+  assert.equal(error?.message === "Disposable fixture admission failed.", true);
+  for (const secret of secrets) {
+    assert.equal(surface.includes(secret), false);
+  }
+}
+
+async function captureProcessSurfaces(operation) {
+  const captured = { console: [], stderr: [], stdout: [] };
+  const originalConsoleError = console.error;
+  const originalConsoleLog = console.log;
+  const originalStderrWrite = process.stderr.write;
+  const originalStdoutWrite = process.stdout.write;
+  const envBefore = Object.values(process.env).join("\n");
+  console.error = (...values) => {
+    captured.console.push(values.map((value) => String(value)).join(" "));
+  };
+  console.log = (...values) => {
+    captured.console.push(values.map((value) => String(value)).join(" "));
+  };
+  process.stderr.write = (value) => {
+    captured.stderr.push(String(value));
+    return true;
+  };
+  process.stdout.write = (value) => {
+    captured.stdout.push(String(value));
+    return true;
+  };
+  let result;
+  let error;
+  try {
+    result = await operation();
+  } catch (caught) {
+    error = caught;
+  } finally {
+    console.error = originalConsoleError;
+    console.log = originalConsoleLog;
+    process.stderr.write = originalStderrWrite;
+    process.stdout.write = originalStdoutWrite;
+  }
+  captured.envBefore = envBefore;
+  captured.envAfter = Object.values(process.env).join("\n");
+  return { captured, error, result };
+}
+
 test("disposable fixture admission rejects ambiguous, remote, socket, and unattested targets", () => {
   const rejected = [
     [
@@ -220,6 +390,140 @@ test("fixture migration scope rejects caller-supplied authority and transport", 
   }
 });
 
+test("migration helper contract binds structured Pool construction and authority ordering", async () => {
+  const helperSource = await readFile(
+    "tests/support/disposable-postgres-fixture.mjs",
+    "utf8",
+  );
+  const migrationSource = sourceSection(
+    helperSource,
+    "export async function withDisposablePostgresFixtureMigration(",
+    "\nfunction normalizeMigrationTarget",
+  );
+  const targetSource = sourceSection(
+    helperSource,
+    "function normalizeMigrationTarget",
+    "\nfunction readMigrationConnectionPassword",
+  );
+  const passwordSource = sourceSection(
+    helperSource,
+    "function readMigrationConnectionPassword",
+    "\nasync function readMigrationAuthorityIdentity",
+  );
+  const identitySource = sourceSection(
+    helperSource,
+    "async function readMigrationAuthorityIdentity",
+    "\nasync function runScopedFixtureMigration",
+  );
+  const scopedMigrationSource = sourceSection(
+    helperSource,
+    "async function runScopedFixtureMigration",
+    "\nexport function parseDisposablePostgresUrl",
+  );
+  const authorityRecordSource = sourceSection(
+    helperSource,
+    "migrationAuthorityValues.set(authority, {",
+    "});",
+  );
+
+  assert.equal(/import \{ Client, Pool \} from "pg";/u.test(helperSource), true);
+  assert.equal(
+    /const poolOptions = \{\s*host: target\.hostname,\s*port: Number\(target\.port\),\s*user: target\.expectedUser,\s*database: target\.expectedDatabase,\s*max: 1,\s*\};/su.test(migrationSource),
+    true,
+  );
+  assert.equal(/pool = new Pool\(poolOptions\);/u.test(migrationSource), true);
+  assert.equal(
+    /if \(connectionPassword !== undefined\) \{\s*poolOptions\.password = connectionPassword;\s*\}/su.test(migrationSource),
+    true,
+  );
+  assert.equal(
+    !/(?:connectionString|pg-connection-string|new URL|Object\.assign|Object\.fromEntries|\.\.\.)/u.test(migrationSource),
+    true,
+  );
+  const constructionStart = migrationSource.indexOf("const poolOptions");
+  const constructionEnd = migrationSource.indexOf("pool = new Pool", constructionStart);
+  assert.equal(constructionStart >= 0 && constructionEnd > constructionStart, true);
+  assert.equal(
+    !/(?:trim|encodeURIComponent|decodeURIComponent|String\()/u.test(
+      migrationSource.slice(constructionStart, constructionEnd),
+    ),
+    true,
+  );
+
+  for (const pattern of [
+    /\["postgres:", "postgresql:"\]\.includes\(parsed\.protocol\)/u,
+    /parsed\.password\s*\|\|\s*parsed\.search\s*\|\|\s*parsed\.hash/su,
+    /!loopbackHosts\.has\(hostname\)/u,
+    /!port/u,
+    /!validPort\(port\)/u,
+    /username !== expectedUser/u,
+    /database !== expectedDatabase/u,
+    /parsed\.pathname !== `\/\$\{database\}`/u,
+  ]) {
+    assert.equal(pattern.test(targetSource), true);
+  }
+  assert.equal(/password !== undefined/u.test(passwordSource), true);
+  assert.equal(/typeof password !== "string"/u.test(passwordSource), true);
+  assert.equal(/password\.trim\(\)\.length === 0/u.test(passwordSource), true);
+
+  for (const pattern of [
+    /result\?\.rows\?\.length !== 1/u,
+    /row\?\.database_matches !== true/u,
+    /row\?\.user_matches !== true/u,
+    /row\?\.postgres17 !== true/u,
+    /row\?\.non_recovery !== true/u,
+    /typeof row\.catalog_fingerprint !== "string"/u,
+    /\/\^\\d\+\$\/u\.test\(row\.catalog_fingerprint\)/u,
+    /typeof row\.lifecycle_fingerprint !== "string"/u,
+    /\/\^\\d\+\$\/u\.test\(row\.lifecycle_fingerprint\)/u,
+  ]) {
+    assert.equal(pattern.test(identitySource), true);
+  }
+
+  const firstIdentity = migrationSource.indexOf(
+    "const identity = await readMigrationAuthorityIdentity(pool, target);",
+  );
+  const authorityCreation = migrationSource.indexOf(
+    "authority = Object.freeze({});",
+  );
+  const scopedMigration = migrationSource.indexOf(
+    "await runScopedFixtureMigration(authority, pool, target.migrationsFolder, target);",
+  );
+  assert.equal(
+    firstIdentity >= 0 && firstIdentity < authorityCreation &&
+      authorityCreation < scopedMigration,
+    true,
+  );
+  assert.equal(
+    (scopedMigrationSource.match(/readMigrationAuthorityIdentity\(pool, target\)/gu) ?? []).length,
+    1,
+  );
+  for (const pattern of [
+    /value\.authority !== authority/u,
+    /!value\.valid/u,
+    /value\.pool !== pool/u,
+    /value\.database !== target\.expectedDatabase/u,
+    /value\.user !== target\.expectedUser/u,
+    /identity\.catalogFingerprint !== value\.clusterFingerprint/u,
+    /identity\.lifecycleFingerprint !== value\.lifecycleFingerprint/u,
+    /await migrate\(drizzle\(pool\), \{ migrationsFolder \}\);/u,
+  ]) {
+    assert.equal(pattern.test(scopedMigrationSource), true);
+  }
+  assert.equal(/authority = Object\.freeze\(\{\}\)/u.test(migrationSource), true);
+  assert.equal(/migrationAuthorityValues\.set\(authority, \{/u.test(helperSource), true);
+  assert.equal(/value\.valid = false/u.test(migrationSource), true);
+  assert.equal(/pool\.end\(\)\.catch\(\(\) => \{\}\)/u.test(migrationSource), true);
+  assert.equal(/connectionPassword/u.test(authorityRecordSource), false);
+  assert.equal(/return await operation\(\)/u.test(migrationSource), true);
+  assert.equal(
+    !/(?:process\.env|console\.|JSON\.stringify|writeFile|createWriteStream|createHash|createHmac)/u.test(
+      `${migrationSource}\n${authorityRecordSource}`,
+    ),
+    true,
+  );
+});
+
 test("migration connection credentials are optional, validated, and private", async () => {
   const baseMigrationTarget = {
     connectionString:
@@ -238,15 +542,15 @@ test("migration connection credentials are optional, validated, and private", as
     ),
     (error) => {
       safeAdmissionError(error);
-      assert.doesNotMatch(
-        `${error.message}\n${error.stack ?? ""}`,
-        /synthetic-only/u,
+      assert.equal(
+        !`${error.message}\n${error.stack ?? ""}`.includes("synthetic-only"),
+        true,
       );
       return true;
     },
   );
 
-  for (const connectionPassword of ["", "   ", null, 42, false, {}]) {
+  for (const connectionPassword of ["", "   ", null, 42, false, {}, [], () => {}]) {
     await assert.rejects(
       () => withDisposablePostgresFixtureMigration(
         { ...baseMigrationTarget, connectionPassword },
@@ -255,6 +559,260 @@ test("migration connection credentials are optional, validated, and private", as
       safeAdmissionError,
     );
   }
+});
+
+test("migration helper admits only undefined or nonblank credentials before transport", async () => {
+  const invalidCredentials = ["", "   ", null, 42, false, {}, [], () => {}];
+  for (const connectionPassword of invalidCredentials) {
+    const state = await runMigrationPoolHarness({
+      input: { ...migrationTargetDefaults, connectionPassword },
+    });
+    assertPrivateAdmissionFailure(state.error);
+    assert.equal(state.poolCount === 0, true);
+    assert.equal(state.identityCalls === 0, true);
+    assert.equal(state.migrationCalls === 0, true);
+    assert.equal(state.endCalls === 0, true);
+  }
+
+  const noCredential = await runMigrationPoolHarness({
+    input: { ...migrationTargetDefaults, connectionPassword: undefined },
+  });
+  assert.equal(noCredential.error === undefined, true);
+  assert.equal(noCredential.returned?.ok === true, true);
+  assert.equal(noCredential.endCalls === 1, true);
+  assert.equal(noCredential.identityCalls === 2, true);
+  assert.equal(noCredential.migrationCalls > 0, true);
+  assert.equal(noCredential.poolOptions[0]?.hasPassword === false, true);
+  assert.equal(noCredential.poolOptions[0]?.hasConnectionString === false, true);
+
+  const syntheticPassword = "  Operator_A1!synthetic-whitespace  ";
+  const whitespaceCredential = await runMigrationPoolHarness({
+    input: {
+      ...migrationTargetDefaults,
+      connectionPassword: syntheticPassword,
+    },
+  });
+  assert.equal(whitespaceCredential.error === undefined, true);
+  assert.equal(whitespaceCredential.poolCount === 1, true);
+  assert.equal(whitespaceCredential.identityCalls === 2, true);
+  assert.equal(whitespaceCredential.migrationCalls > 0, true);
+  assert.equal(whitespaceCredential.endCalls === 1, true);
+  assert.equal(
+    whitespaceCredential.poolOptions.every((options) =>
+      options.host === "127.0.0.1" &&
+      options.port === 1 &&
+      options.user === "cloud_admin" &&
+      options.database === "runtime_posture_test" &&
+      options.max === 1 &&
+      options.hasConnectionString === false &&
+      options.hasPassword === true &&
+      options.password === syntheticPassword
+    ),
+    true,
+  );
+  assert.equal(
+    new Set(whitespaceCredential.poolOptions.map((options) => options.poolId)).size === 1,
+    true,
+  );
+});
+
+test("migration URL identity boundary rejects the complete pre-authority matrix", async () => {
+  const encodedPassword = "Encoded_A1!synthetic-url";
+  const cases = [
+    [
+      "clear URL password",
+      { connectionString: `postgres://cloud_admin:${encodedPassword}@127.0.0.1:1/runtime_posture_test` },
+    ],
+    [
+      "encoded URL password",
+      { connectionString: `postgres://cloud_admin:${encodeURIComponent(encodedPassword)}@127.0.0.1:1/runtime_posture_test` },
+    ],
+    [
+      "query parameters",
+      { connectionString: `${migrationTargetDefaults.connectionString}?sslmode=require` },
+    ],
+    [
+      "fragment",
+      { connectionString: `${migrationTargetDefaults.connectionString}#fragment` },
+    ],
+    [
+      "missing port",
+      { connectionString: "postgres://cloud_admin@127.0.0.1/runtime_posture_test" },
+    ],
+    [
+      "zero port",
+      { connectionString: "postgres://cloud_admin@127.0.0.1:0/runtime_posture_test" },
+    ],
+    [
+      "out of range port",
+      { connectionString: "postgres://cloud_admin@127.0.0.1:65536/runtime_posture_test" },
+    ],
+    [
+      "nonnumeric port",
+      { connectionString: "postgres://cloud_admin@127.0.0.1:not-a-port/runtime_posture_test" },
+    ],
+    [
+      "localhost",
+      { connectionString: "postgres://cloud_admin@localhost:1/runtime_posture_test" },
+    ],
+    [
+      "forbidden host",
+      { connectionString: "postgres://cloud_admin@remote.example:1/runtime_posture_test" },
+    ],
+    [
+      "wrong user",
+      { connectionString: "postgres://other_user@127.0.0.1:1/runtime_posture_test" },
+    ],
+    [
+      "wrong database",
+      { connectionString: "postgres://cloud_admin@127.0.0.1:1/other_database" },
+    ],
+    [
+      "invalid database identifier",
+      {
+        connectionString: "postgres://cloud_admin@127.0.0.1:1/bad-database",
+        expectedDatabase: "bad-database",
+      },
+    ],
+    [
+      "invalid user identifier",
+      {
+        connectionString: "postgres://bad-user@127.0.0.1:1/runtime_posture_test",
+        expectedUser: "bad-user",
+      },
+    ],
+    [
+      "extra pathname",
+      { connectionString: "postgres://cloud_admin@127.0.0.1:1/runtime_posture_test/extra" },
+    ],
+    [
+      "unsupported protocol",
+      { connectionString: "mysql://cloud_admin@127.0.0.1:1/runtime_posture_test" },
+    ],
+  ];
+
+  for (const [label, override] of cases) {
+    const state = await runMigrationPoolHarness({
+      input: { ...migrationTargetDefaults, ...override },
+      operation: async () => {
+        throw new Error("migration must not be reached");
+      },
+    });
+    assertPrivateAdmissionFailure(state.error, [encodedPassword]);
+    assert.equal(state.poolCount === 0, true, label);
+    assert.equal(state.identityCalls === 0, true, label);
+    assert.equal(state.migrationCalls === 0, true, label);
+    assert.equal(state.endCalls === 0, true, label);
+  }
+});
+
+test("migration helper gates identity and lifecycle drift before migration and cleans up", async () => {
+  const invalidIdentities = [
+    ["database", { ...passingMigrationIdentity, database_matches: false }],
+    ["user", { ...passingMigrationIdentity, user_matches: false }],
+    ["version", { ...passingMigrationIdentity, postgres17: false }],
+    ["recovery", { ...passingMigrationIdentity, non_recovery: false }],
+    ["catalog", { ...passingMigrationIdentity, catalog_fingerprint: "not-numeric" }],
+    ["lifecycle", { ...passingMigrationIdentity, lifecycle_fingerprint: "" }],
+  ];
+
+  for (const [label, invalidIdentity] of invalidIdentities) {
+    const firstFailure = await runMigrationPoolHarness({
+      identityRows: [invalidIdentity],
+    });
+    assertPrivateAdmissionFailure(firstFailure.error);
+    assert.equal(firstFailure.poolCount === 1, true, label);
+    assert.equal(firstFailure.identityCalls === 1, true, label);
+    assert.equal(firstFailure.migrationCalls === 0, true, label);
+    assert.equal(firstFailure.endCalls === 1, true, label);
+
+    const secondFailure = await runMigrationPoolHarness({
+      identityRows: [passingMigrationIdentity, invalidIdentity],
+    });
+    assertPrivateAdmissionFailure(secondFailure.error);
+    assert.equal(secondFailure.poolCount === 1, true, label);
+    assert.equal(secondFailure.identityCalls === 2, true, label);
+    assert.equal(secondFailure.migrationCalls === 0, true, label);
+    assert.equal(secondFailure.endCalls === 1, true, label);
+  }
+
+  for (const [label, drift] of [
+    ["catalog drift", { ...passingMigrationIdentity, catalog_fingerprint: "101" }],
+    ["lifecycle drift", { ...passingMigrationIdentity, lifecycle_fingerprint: "201" }],
+  ]) {
+    const state = await runMigrationPoolHarness({
+      identityRows: [passingMigrationIdentity, drift],
+    });
+    assertPrivateAdmissionFailure(state.error);
+    assert.equal(state.identityCalls === 2, true, label);
+    assert.equal(state.migrationCalls === 0, true, label);
+    assert.equal(state.endCalls === 1, true, label);
+  }
+
+  let operationCalls = 0;
+  const success = await runMigrationPoolHarness({
+    operation: async () => {
+      operationCalls += 1;
+      return { migrated: true };
+    },
+  });
+  assert.equal(success.error === undefined, true);
+  assert.equal(success.returned?.migrated === true, true);
+  assert.equal(operationCalls === 1, true);
+  assert.equal(success.identityCalls === 2, true);
+  assert.equal(success.migrationCalls > 0, true);
+  assert.equal(success.endCalls === 1, true);
+  assert.equal(success.poolCount === 1, true);
+  assert.equal(
+    new Set(success.poolOptions.map((options) => options.poolId)).size === 1,
+    true,
+  );
+});
+
+test("migration authority and cleanup failures never propagate synthetic secrets", async () => {
+  const credential = "Operator_A1!synthetic-secret";
+  const cleanupDiagnostic = "Cleanup_A1!synthetic-diagnostic";
+  const successfulCleanupFailure = await runMigrationPoolHarness({
+    input: { ...migrationTargetDefaults, connectionPassword: credential },
+    endError: new Error(cleanupDiagnostic),
+    operation: async () => ({ migrated: true }),
+  });
+  assert.equal(successfulCleanupFailure.error === undefined, true);
+  assert.equal(successfulCleanupFailure.returned?.migrated === true, true);
+  assert.equal(successfulCleanupFailure.endCalls === 1, true);
+
+  const captured = await captureProcessSurfaces(() =>
+    runMigrationPoolHarness({
+      input: { ...migrationTargetDefaults, connectionPassword: credential },
+      endError: new Error(cleanupDiagnostic),
+      operation: async () => {
+        throw new Error(credential);
+      },
+    }),
+  );
+  assert.equal(captured.error === undefined, true);
+  const failed = captured.result;
+  assertPrivateAdmissionFailure(failed.error, [credential, cleanupDiagnostic]);
+  assert.equal(failed.endCalls === 1, true);
+  const publicValues = [
+    failed.returned,
+    failed.error?.name,
+    failed.error?.message,
+    failed.error?.code,
+    failed.error?.stack,
+    publicErrorSurface(failed.error),
+  ].map((value) => String(value ?? "")).join("\n");
+  const capturedOutput = [
+    ...captured.captured.console,
+    ...captured.captured.stdout,
+    ...captured.captured.stderr,
+    captured.captured.envBefore,
+    captured.captured.envAfter,
+  ].join("\n");
+  assert.equal(publicValues.includes(credential), false);
+  assert.equal(publicValues.includes(cleanupDiagnostic), false);
+  assert.equal(capturedOutput.includes(credential), false);
+  assert.equal(capturedOutput.includes(cleanupDiagnostic), false);
 });
 
 test("structured migration Pool options preserve credentials without URL authority", async () => {
@@ -1582,12 +2140,12 @@ test("fixture probes cannot mutate before aggregate admission", async () => {
 
 function safeAdmissionError(error) {
   assert.equal(error instanceof DisposablePostgresFixtureAdmissionError, true);
-  assert.equal(error.code, "disposable_fixture_admission_failed");
+  assert.equal(error?.code === "disposable_fixture_admission_failed", true);
+  assert.equal(error?.message === "Disposable fixture admission failed.", true);
   assert.equal(
-    error.message,
-    "Disposable fixture admission failed.",
+    !/postgres|platform_|runtime_|127|5432|localhost/iu.test(error?.message ?? ""),
+    true,
   );
-  assert.doesNotMatch(error.message, /postgres|platform_|runtime_|127|5432|localhost/i);
   return true;
 }
 
@@ -1596,19 +2154,25 @@ function admissionEvidence(target, stage) {
     safeAdmissionError(error);
     assert.equal(error.target, target);
     assert.equal(error.stage, stage);
-    assert.match(error.target, /^(?:PRIMARY|SECONDARY)$/u);
-    assert.match(
-      error.stage,
-      /^(?:CONNECT|BINDING|READONLY|IDENTITY|POSTURE|OWNERSHIP|EXPECTED_OBJECTS)$/u,
+    assert.equal(/^(?:PRIMARY|SECONDARY)$/u.test(error.target), true);
+    assert.equal(
+      /^(?:CONNECT|BINDING|READONLY|IDENTITY|POSTURE|OWNERSHIP|EXPECTED_OBJECTS)$/u.test(
+        error.stage,
+      ),
+      true,
     );
     const publicError = JSON.stringify(error);
-    assert.doesNotMatch(
-      publicError,
-      /unsafe|internal|detail|password|token|postgres(?:ql)?:|127\.0\.0\.1|5432|select|runtime_posture_test/iu,
+    assert.equal(
+      !/unsafe|internal|detail|password|token|postgres(?:ql)?:|127\.0\.0\.1|5432|select|runtime_posture_test/iu.test(
+        publicError,
+      ),
+      true,
     );
-    assert.doesNotMatch(
-      String(error.stack),
-      /unsafe-internal-detail|password|token|postgres(?:ql)?:/iu,
+    assert.equal(
+      !/unsafe-internal-detail|password|token|postgres(?:ql)?:/iu.test(
+        String(error.stack),
+      ),
+      true,
     );
     assert.equal("cause" in error, false);
     return true;
