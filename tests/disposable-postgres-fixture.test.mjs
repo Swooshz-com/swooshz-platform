@@ -247,6 +247,49 @@ async function runMigrationPoolHarness({
   return state;
 }
 
+async function captureMigrationAuthority(operation) {
+  const originalWeakMapSet = WeakMap.prototype.set;
+  const records = [];
+  WeakMap.prototype.set = function interceptedWeakMapSet(key, value) {
+    const result = originalWeakMapSet.call(this, key, value);
+    if (
+      value &&
+      typeof value === "object" &&
+      value.authority === key &&
+      value.pool instanceof Pool &&
+      Object.hasOwn(value, "clusterFingerprint") &&
+      Object.hasOwn(value, "lifecycleFingerprint") &&
+      Object.hasOwn(value, "valid")
+    ) {
+      records.push({ record: value, validAtCapture: value.valid });
+    }
+    return result;
+  };
+
+  try {
+    return { result: await operation(), records };
+  } finally {
+    WeakMap.prototype.set = originalWeakMapSet;
+  }
+}
+
+function assertMigrationAuthorityRevoked(capture) {
+  assert.equal(capture.records.length === 1, true);
+  for (const { record, validAtCapture } of capture.records) {
+    assert.equal(validAtCapture === true, true);
+    assert.equal(record.valid === false, true);
+  }
+}
+
+function migrationAuthorityMetadataSurface(record) {
+  const { pool, ...metadata } = record;
+  return [
+    Object.keys(metadata).join("\n"),
+    JSON.stringify(metadata),
+    inspect(metadata),
+  ].join("\n");
+}
+
 function sourceSection(source, startMarker, endMarker) {
   const start = source.indexOf(startMarker);
   const end = source.indexOf(endMarker, start + startMarker.length);
@@ -617,15 +660,26 @@ test("migration helper admits only undefined or nonblank credentials before tran
 });
 
 test("migration URL identity boundary rejects the complete pre-authority matrix", async () => {
-  const encodedPassword = "Encoded_A1!synthetic-url";
+  const clearUrlPassword = [
+    "Encoded",
+    "URL",
+    "Password",
+    "A1",
+    ":",
+    " ",
+    "+",
+    "%",
+  ].join("");
+  const encodedUrlPassword = encodeURIComponent(clearUrlPassword);
+  assert.equal(encodedUrlPassword !== clearUrlPassword, true);
   const cases = [
     [
       "clear URL password",
-      { connectionString: `postgres://cloud_admin:${encodedPassword}@127.0.0.1:1/runtime_posture_test` },
+      { connectionString: `postgres://cloud_admin:${clearUrlPassword}@127.0.0.1:1/runtime_posture_test` },
     ],
     [
       "encoded URL password",
-      { connectionString: `postgres://cloud_admin:${encodeURIComponent(encodedPassword)}@127.0.0.1:1/runtime_posture_test` },
+      { connectionString: `postgres://cloud_admin:${encodedUrlPassword}@127.0.0.1:1/runtime_posture_test` },
     ],
     [
       "query parameters",
@@ -698,7 +752,7 @@ test("migration URL identity boundary rejects the complete pre-authority matrix"
         throw new Error("migration must not be reached");
       },
     });
-    assertPrivateAdmissionFailure(state.error, [encodedPassword]);
+    assertPrivateAdmissionFailure(state.error, [clearUrlPassword, encodedUrlPassword]);
     assert.equal(state.poolCount === 0, true, label);
     assert.equal(state.identityCalls === 0, true, label);
     assert.equal(state.migrationCalls === 0, true, label);
@@ -770,49 +824,133 @@ test("migration helper gates identity and lifecycle drift before migration and c
 });
 
 test("migration authority and cleanup failures never propagate synthetic secrets", async () => {
-  const credential = "Operator_A1!synthetic-secret";
-  const cleanupDiagnostic = "Cleanup_A1!synthetic-diagnostic";
-  const successfulCleanupFailure = await runMigrationPoolHarness({
-    input: { ...migrationTargetDefaults, connectionPassword: credential },
-    endError: new Error(cleanupDiagnostic),
-    operation: async () => ({ migrated: true }),
-  });
-  assert.equal(successfulCleanupFailure.error === undefined, true);
-  assert.equal(successfulCleanupFailure.returned?.migrated === true, true);
-  assert.equal(successfulCleanupFailure.endCalls === 1, true);
-
-  const captured = await captureProcessSurfaces(() =>
-    runMigrationPoolHarness({
-      input: { ...migrationTargetDefaults, connectionPassword: credential },
-      endError: new Error(cleanupDiagnostic),
+  const syntheticSecret = [
+    "Operator",
+    "A1",
+    "!",
+    "migration",
+    "secret",
+    "20260920",
+  ].join("_");
+  const scenarios = [
+    {
+      kind: "success",
+      operation: async () => ({ migrated: true }),
+    },
+    {
+      kind: "operation-failure",
       operation: async () => {
-        throw new Error(credential);
+        throw new Error(syntheticSecret);
       },
-    }),
+      endError: new Error(),
+    },
+    {
+      kind: "helper-failure",
+      identityRows: [
+        passingMigrationIdentity,
+        { ...passingMigrationIdentity, lifecycle_fingerprint: "201" },
+      ],
+      operation: async () => ({ migrated: true }),
+    },
+    {
+      kind: "cleanup-failure",
+      operation: async () => ({ migrated: true }),
+      endError: new Error(),
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const captured = await captureProcessSurfaces(() =>
+      captureMigrationAuthority(() =>
+        runMigrationPoolHarness({
+          input: { ...migrationTargetDefaults, connectionPassword: syntheticSecret },
+          ...scenario,
+        }),
+      ),
+    );
+    assert.equal(captured.error === undefined, true);
+    const authorityCapture = captured.result;
+    const run = authorityCapture.result;
+    assertMigrationAuthorityRevoked(authorityCapture);
+    assert.equal(run.endCalls === 1, true);
+    if (scenario.kind === "operation-failure" || scenario.kind === "helper-failure") {
+      assertPrivateAdmissionFailure(run.error, [syntheticSecret]);
+      assert.equal(run.returned === undefined, true);
+    } else {
+      assert.equal(run.error === undefined, true);
+      assert.equal(run.returned?.migrated === true, true);
+    }
+    for (const { record } of authorityCapture.records) {
+      const metadataSurface = migrationAuthorityMetadataSurface(record);
+      assert.equal(metadataSurface.includes(syntheticSecret), false);
+      assert.equal(
+        Object.keys(record).some((key) =>
+          /(?:password|secret|hash|digest|diagnostic|log|env)/iu.test(key),
+        ),
+        false,
+      );
+    }
+
+    const publicSurface = [
+      run.returned,
+      run.returned === undefined ? undefined : JSON.stringify(run.returned),
+      run.returned === undefined ? undefined : inspect(run.returned),
+      run.error?.name,
+      run.error?.message,
+      run.error?.code,
+      run.error?.stack,
+      publicErrorSurface(run.error),
+      ...captured.captured.console,
+      ...captured.captured.stdout,
+      ...captured.captured.stderr,
+      captured.captured.envBefore,
+      captured.captured.envAfter,
+    ].map((value) => String(value ?? "")).join("\n");
+    assert.equal(publicSurface.includes(syntheticSecret), false);
+  }
+
+  const helperSource = await readFile(
+    "tests/support/disposable-postgres-fixture.mjs",
+    "utf8",
   );
-  assert.equal(captured.error === undefined, true);
-  const failed = captured.result;
-  assertPrivateAdmissionFailure(failed.error, [credential, cleanupDiagnostic]);
-  assert.equal(failed.endCalls === 1, true);
-  const publicValues = [
-    failed.returned,
-    failed.error?.name,
-    failed.error?.message,
-    failed.error?.code,
-    failed.error?.stack,
-    publicErrorSurface(failed.error),
-  ].map((value) => String(value ?? "")).join("\n");
-  const capturedOutput = [
-    ...captured.captured.console,
-    ...captured.captured.stdout,
-    ...captured.captured.stderr,
-    captured.captured.envBefore,
-    captured.captured.envAfter,
+  const migrationClosureSource = [
+    helperSource.slice(0, helperSource.indexOf("const phases")),
+    sourceSection(
+      helperSource,
+      "export async function withDisposablePostgresFixtureMigration(",
+      "\nfunction normalizeMigrationTarget",
+    ),
+    sourceSection(
+      helperSource,
+      "function normalizeMigrationTarget",
+      "\nfunction readMigrationConnectionPassword",
+    ),
+    sourceSection(
+      helperSource,
+      "function readMigrationConnectionPassword",
+      "\nasync function readMigrationAuthorityIdentity",
+    ),
+    sourceSection(
+      helperSource,
+      "async function readMigrationAuthorityIdentity",
+      "\nasync function runScopedFixtureMigration",
+    ),
+    sourceSection(
+      helperSource,
+      "async function runScopedFixtureMigration",
+      "\nexport function parseDisposablePostgresUrl",
+    ),
   ].join("\n");
-  assert.equal(publicValues.includes(credential), false);
-  assert.equal(publicValues.includes(cleanupDiagnostic), false);
-  assert.equal(capturedOutput.includes(credential), false);
-  assert.equal(capturedOutput.includes(cleanupDiagnostic), false);
+  for (const sink of [
+    /process\.(?:env|stdout|stderr)/u,
+    /console\./u,
+    /JSON\.stringify|inspect\(/u,
+    /\b(?:writeFile|writeFileSync|appendFile|appendFileSync|createWriteStream|mkdir|mkdirSync|rename|renameSync|rm|rmSync|unlink|unlinkSync|open|openSync)\b/u,
+    /(?:node:fs|node:crypto|createHash|createHmac|digest\(|crypto)/iu,
+    /(?:logger|diagnostic|telemetry|trace)\b/iu,
+  ]) {
+    assert.doesNotMatch(migrationClosureSource, sink);
+  }
 });
 
 test("structured migration Pool options preserve credentials without URL authority", async () => {
@@ -849,61 +987,77 @@ test("structured migration Pool options preserve credentials without URL authori
   }
 });
 
-test("migration helper rejects an injected pg Pool before transport or completion", async () => {
-  const callerPool = new Pool({
-    host: "127.0.0.1",
-    port: 1,
-    user: "cloud_admin",
-    database: "runtime_posture_test",
+test("migration helper rejects the complete caller-injection boundary before transport or completion", async () => {
+  const baseline = await runMigrationPoolHarness({
+    operation: async () => ({ completed: true }),
   });
-  assert.equal(callerPool instanceof Pool, true);
-  const queryTexts = [];
-  let connectCalls = 0;
-  callerPool.query = async (text) => {
-    queryTexts.push(String(text));
-    return {
-      rows: [{
-        database_matches: true,
-        user_matches: true,
-        postgres17: true,
-        non_recovery: true,
-        catalog_fingerprint: "1",
-        lifecycle_fingerprint: "2",
-      }],
+  assert.equal(baseline.error === undefined, true);
+  assert.equal(baseline.returned?.completed === true, true);
+
+  for (const key of [
+    "pool",
+    "query",
+    "connect",
+    "probe",
+    "clientFactory",
+    "transport",
+    "stream",
+    "config",
+    "options",
+    "unknownKey",
+  ]) {
+    let invocationCount = 0;
+    let cleanup;
+    const trackedFunction = () => {
+      invocationCount += 1;
+      throw new Error();
     };
-  };
-  callerPool.connect = async () => {
-    connectCalls += 1;
-    return {
-      async query() {
-        throw new Error("injected transport must not receive migration SQL");
+    const trackedObject = new Proxy({}, {
+      get() {
+        invocationCount += 1;
+        throw new Error();
       },
-      release() {},
-    };
-  };
-  let completionCalled = false;
-  await assert.rejects(
-    () =>
-      withDisposablePostgresFixtureMigration(
-        {
-          pool: callerPool,
-          connectionString:
-            "postgres://cloud_admin@127.0.0.1:1/runtime_posture_test",
-          expectedDatabase: "runtime_posture_test",
-          expectedUser: "cloud_admin",
-          migrationsFolder: "./drizzle",
-          phase: "initialization",
-        },
-        async () => {
-          completionCalled = true;
-        },
-      ),
-    safeAdmissionError,
-  );
-  assert.deepEqual(queryTexts, []);
-  assert.equal(connectCalls, 0);
-  assert.equal(completionCalled, false);
-  await callerPool.end();
+    });
+    let value = trackedFunction;
+    if (["transport", "stream", "config", "options"].includes(key)) {
+      value = trackedObject;
+    }
+    if (key === "pool") {
+      const callerPool = new Pool({
+        host: "127.0.0.1",
+        port: 1,
+        user: "cloud_admin",
+        database: "runtime_posture_test",
+      });
+      callerPool.query = async () => {
+        invocationCount += 1;
+        throw new Error();
+      };
+      callerPool.connect = async () => {
+        invocationCount += 1;
+        throw new Error();
+      };
+      value = callerPool;
+      cleanup = () => callerPool.end();
+    }
+
+    let completionCalls = 0;
+    const state = await runMigrationPoolHarness({
+      input: { ...migrationTargetDefaults, [key]: value },
+      operation: async () => {
+        completionCalls += 1;
+        return { completed: true };
+      },
+    });
+    assertPrivateAdmissionFailure(state.error);
+    assert.equal(state.poolCount === 0, true);
+    assert.equal(state.identityCalls === 0, true);
+    assert.equal(state.migrationCalls === 0, true);
+    assert.equal(state.endCalls === 0, true);
+    assert.equal(completionCalls === 0, true);
+    assert.equal(invocationCount === 0, true);
+    await cleanup?.();
+  }
 });
 
 test("migration authority stays runner-local and cannot cross disposable process boundaries", async () => {
