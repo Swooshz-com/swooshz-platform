@@ -209,11 +209,49 @@ test("fixture migration scope rejects caller-supplied authority and transport", 
     { ...baseMigrationTarget, transport: Object.freeze({}) },
     { ...baseMigrationTarget, connectionString: "postgres://cloud_admin@remote:5432/runtime_posture_test" },
     { ...baseMigrationTarget, connectionString: "postgres://cloud_admin@localhost:5432/runtime_posture_test" },
+    { ...baseMigrationTarget, connectionString: "postgres://cloud_admin:uri-secret@127.0.0.1:5432/runtime_posture_test" },
     { ...baseMigrationTarget, connectionString: "postgres://cloud_admin/runtime_posture_test" },
     { ...baseMigrationTarget, phase: "final_start" },
   ]) {
     await assert.rejects(
       () => withDisposablePostgresFixtureMigration(rejectedTarget, async () => {}),
+      safeAdmissionError,
+    );
+  }
+});
+
+test("migration connection credentials are optional, validated, and private", async () => {
+  const baseMigrationTarget = {
+    connectionString:
+      "postgres://cloud_admin@127.0.0.1:1/runtime_posture_test",
+    expectedDatabase: "runtime_posture_test",
+    expectedUser: "cloud_admin",
+    migrationsFolder: "./drizzle",
+    phase: "initialization",
+  };
+  const syntheticPassword = "Operator_A1!synthetic-only";
+
+  await assert.rejects(
+    () => withDisposablePostgresFixtureMigration(
+      { ...baseMigrationTarget, connectionPassword: syntheticPassword },
+      async () => {},
+    ),
+    (error) => {
+      safeAdmissionError(error);
+      assert.doesNotMatch(
+        `${error.message}\n${error.stack ?? ""}`,
+        /synthetic-only/u,
+      );
+      return true;
+    },
+  );
+
+  for (const connectionPassword of ["", "   ", null, 42, false, {}]) {
+    await assert.rejects(
+      () => withDisposablePostgresFixtureMigration(
+        { ...baseMigrationTarget, connectionPassword },
+        async () => {},
+      ),
       safeAdmissionError,
     );
   }
@@ -298,6 +336,16 @@ test("migration authority stays runner-local and cannot cross disposable process
   assert.match(helperSource, /value\.authority !== authority/u);
   assert.match(helperSource, /value\.valid/u);
   assert.match(helperSource, /value\.valid = false/u);
+  assert.match(helperSource, /poolOptions\.password = connectionPassword/u);
+  const authorityStart = helperSource.indexOf(
+    "migrationAuthorityValues.set(authority, {",
+  );
+  const authorityEnd = helperSource.indexOf("});", authorityStart);
+  assert.ok(authorityStart >= 0 && authorityEnd > authorityStart);
+  assert.doesNotMatch(
+    helperSource.slice(authorityStart, authorityEnd),
+    /connectionPassword/u,
+  );
   assert.doesNotMatch(helperSource, /JSON\.stringify\(authority\)|process\.env/u);
 
   assert.match(roleRunnerSource, /withDisposablePostgresFixtureMigration/u);

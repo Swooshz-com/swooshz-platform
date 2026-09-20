@@ -1209,6 +1209,7 @@ async function provisionFixture(
       () => withDisposablePostgresFixtureMigration(
         {
           connectionString,
+          connectionPassword: operatorPassword,
           expectedDatabase: databaseName,
           expectedUser: "cloud_admin",
           migrationsFolder,

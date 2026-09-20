@@ -111,8 +111,16 @@ export async function withDisposablePostgresFixtureMigration(
   let authority;
   let pool;
   try {
+    const connectionPassword = readMigrationConnectionPassword(input);
     const target = normalizeMigrationTarget(input);
-    pool = new Pool({ connectionString: target.connectionString, max: 1 });
+    const poolOptions = {
+      connectionString: target.connectionString,
+      max: 1,
+    };
+    if (connectionPassword !== undefined) {
+      poolOptions.password = connectionPassword;
+    }
+    pool = new Pool(poolOptions);
     const identity = await readMigrationAuthorityIdentity(pool, target);
     authority = Object.freeze({});
     migrationAuthorityValues.set(authority, {
@@ -145,6 +153,7 @@ function normalizeMigrationTarget(input) {
   if (!input || typeof input !== "object") throw new Error();
   const allowedKeys = new Set([
     "connectionString",
+    "connectionPassword",
     "expectedDatabase",
     "expectedUser",
     "migrationsFolder",
@@ -195,6 +204,18 @@ function normalizeMigrationTarget(input) {
     hostname,
     port,
   });
+}
+
+function readMigrationConnectionPassword(input) {
+  if (!input || typeof input !== "object") throw new Error();
+  const password = input.connectionPassword;
+  if (
+    password !== undefined &&
+    (typeof password !== "string" || password.trim().length === 0)
+  ) {
+    throw new Error();
+  }
+  return password;
 }
 
 async function readMigrationAuthorityIdentity(pool, target) {
