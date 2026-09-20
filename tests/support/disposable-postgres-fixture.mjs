@@ -114,7 +114,10 @@ export async function withDisposablePostgresFixtureMigration(
     const connectionPassword = readMigrationConnectionPassword(input);
     const target = normalizeMigrationTarget(input);
     const poolOptions = {
-      connectionString: target.connectionString,
+      host: target.hostname,
+      port: Number(target.port),
+      user: target.expectedUser,
+      database: target.expectedDatabase,
       max: 1,
     };
     if (connectionPassword !== undefined) {

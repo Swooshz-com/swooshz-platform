@@ -257,6 +257,40 @@ test("migration connection credentials are optional, validated, and private", as
   }
 });
 
+test("structured migration Pool options preserve credentials without URL authority", async () => {
+  const connectionString =
+    "postgres://cloud_admin@127.0.0.1:1/runtime_posture_test";
+  const syntheticPassword = "Operator_A1!synthetic-only";
+  const legacyPool = new Pool({
+    connectionString,
+    password: syntheticPassword,
+    max: 1,
+  });
+  const structuredPool = new Pool({
+    host: "127.0.0.1",
+    port: 1,
+    user: "cloud_admin",
+    database: "runtime_posture_test",
+    password: syntheticPassword,
+    max: 1,
+  });
+  const legacyClient = new legacyPool.Client(legacyPool.options);
+  const structuredClient = new structuredPool.Client(structuredPool.options);
+
+  try {
+    assert.equal(legacyClient.connectionParameters.password === syntheticPassword, false);
+    assert.equal(structuredClient.connectionParameters.password === syntheticPassword, true);
+    assert.equal(Object.hasOwn(structuredPool.options, "connectionString"), false);
+    assert.equal(structuredPool.options.password === syntheticPassword, true);
+    assert.equal(new URL(connectionString).password, "");
+  } finally {
+    await legacyClient.end().catch(() => {});
+    await legacyPool.end();
+    await structuredClient.end().catch(() => {});
+    await structuredPool.end();
+  }
+});
+
 test("migration helper rejects an injected pg Pool before transport or completion", async () => {
   const callerPool = new Pool({
     host: "127.0.0.1",
