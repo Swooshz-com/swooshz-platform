@@ -23,6 +23,13 @@ const STATIC_IDS = Object.freeze([
   "NC08_TRANSIENT_ENV",
   "NC09_INNOCENT_AUTHORITY_FIELD",
   "NC10_CLEANUP_PUBLISH",
+  "PROBE_ARROW_OUTPUT",
+  "PROBE_ARRAY_SOME_OUTPUT",
+  "PROBE_MODULE_IF_OUTPUT",
+  "PROBE_PUBLIC_CREDENTIAL_RETURN",
+  "PROBE_TRIMMED_PASSWORD",
+  "PROBE_CLEANUP_CONCISE_OUTPUT",
+  "PROBE_AUTHORITY_BRAND",
 ]);
 
 const BEHAVIORAL_IDS = Object.freeze([
@@ -30,6 +37,14 @@ const BEHAVIORAL_IDS = Object.freeze([
   "NC12_PUBLIC_NONENUM",
   "NC13_BROKEN_INSTALL",
   "NC14_BROKEN_RESTORE",
+  "NC15_OUTER_RESTORE_FAILURE",
+  "NC16_HIDDEN_AUTHORITY_METADATA",
+  "NC17_DEEP_HIDDEN_SURFACE",
+  "NC18_BOUNDED_HIDDEN_SURFACE",
+  "NC19_SYMBOL_HIDDEN_SURFACE",
+  "NC20_POOL_WRONG_PASSWORD",
+  "NC21_POOL_BINDING_MISMATCH",
+  "NC22_RUNTIME_PRE_EFFECT_CAPABILITY",
 ]);
 
 const SCENARIO_IDS = Object.freeze([
@@ -92,4 +107,9 @@ test("SSC_BASELINE_SECRET_SURFACE", async (suite) => {
       assert.equal(control.id, BEHAVIORAL_IDS.find((id) => id === control.id));
     });
   }
+
+  const restorationBoundary = await runSecretSurfaceBehavioralHarness({ forceRestoreMismatch: true });
+  assert.equal(restorationBoundary.ok, false);
+  assert.equal(restorationBoundary.code, "SSC_OBSERVER_RESTORE");
+  assert.equal(restorationBoundary.detector, "RESTORE_LEDGER");
 });

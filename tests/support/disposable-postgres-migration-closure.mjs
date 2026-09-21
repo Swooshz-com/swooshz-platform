@@ -41,6 +41,24 @@ const AUTHORITY_KEYS = Object.freeze([
   "valid",
 ]);
 
+const SAFE_INPUT_FIELDS = new Set([
+  "connectionString",
+  "expectedDatabase",
+  "expectedUser",
+  "migrationsFolder",
+  "phase",
+]);
+
+const QUERY_ROW_FIELDS = new Set([
+  "database_matches",
+  "user_matches",
+  "postgres17",
+  "non_recovery",
+  "catalog_fingerprint",
+  "lifecycle_fingerprint",
+  "target_database_absent",
+]);
+
 const NEGATIVE_CONTROLS = Object.freeze([
   Object.freeze({
     id: "NC01_REACHABLE_WRITE_HELPER",
@@ -91,6 +109,41 @@ const NEGATIVE_CONTROLS = Object.freeze([
     id: "NC10_CLEANUP_PUBLISH",
     code: "SSC_SECRET_FLOW_DENIED",
     detector: "CLEANUP_DIAGNOSTIC",
+  }),
+  Object.freeze({
+    id: "PROBE_ARROW_OUTPUT",
+    code: "SSC_SECRET_FLOW_DENIED",
+    detector: "CAPABILITY_OUTPUT",
+  }),
+  Object.freeze({
+    id: "PROBE_ARRAY_SOME_OUTPUT",
+    code: "SSC_SECRET_FLOW_DENIED",
+    detector: "CAPABILITY_OUTPUT",
+  }),
+  Object.freeze({
+    id: "PROBE_MODULE_IF_OUTPUT",
+    code: "SSC_AST_UNSUPPORTED",
+    detector: "TOP_LEVEL_SYNTAX",
+  }),
+  Object.freeze({
+    id: "PROBE_PUBLIC_CREDENTIAL_RETURN",
+    code: "SSC_SECRET_FLOW_DENIED",
+    detector: "PUBLIC_RETURN",
+  }),
+  Object.freeze({
+    id: "PROBE_TRIMMED_PASSWORD",
+    code: "SSC_SECRET_FLOW_DENIED",
+    detector: "CAPABILITY_PASSWORD",
+  }),
+  Object.freeze({
+    id: "PROBE_CLEANUP_CONCISE_OUTPUT",
+    code: "SSC_SECRET_FLOW_DENIED",
+    detector: "CLEANUP_DIAGNOSTIC",
+  }),
+  Object.freeze({
+    id: "PROBE_AUTHORITY_BRAND",
+    code: "SSC_AUTHORITY_SHAPE",
+    detector: "AUTHORITY_SCHEMA",
   }),
 ]);
 
@@ -202,6 +255,7 @@ function capabilityValue(cap, options = {}) {
 function mergeValues(left, right) {
   if (!left) return right ?? unknownValue();
   if (!right) return left;
+  if (left === right) return left;
   if (left.kind === "unknown") {
     const preserved = { ...right, taint: joinTaint(left.taint, right.taint) };
     return preserved;
@@ -243,9 +297,9 @@ class ClosureAnalyzer {
     this.program = program;
     this.checker = checker;
     this.topValues = new Map();
+    this.topValuesByName = new Map();
     this.bindingNames = new Map();
     this.topInitialising = new Set();
-    this.functionCache = new Map();
     this.functionActive = new Set();
     this.weakMapRecords = new Map();
     this.poolConstructs = 0;
@@ -264,7 +318,12 @@ class ClosureAnalyzer {
     this.rootFunction = this.findRootFunction();
     const input = value({ kind: "input" });
     const operation = value({ kind: "opaque-function", caps: ["OPAQUE_OPERATION"] });
-    this.analyzeFunction(this.rootFunction, [input, operation], null);
+    const rootResult = this.analyzeFunction(this.rootFunction, [input, operation], null);
+    if (rootResult.kind === "unknown" ||
+        hasTaint(rootResult, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC | Taint.MAYBE_SENSITIVE) ||
+        rootResult.caps.size > 0) {
+      fail(SAFE.flow, "PUBLIC_RETURN");
+    }
     if (this.poolConstructs !== 1 || this.declassificationCount !== 1) {
       fail(SAFE.flow, "CAPABILITY_POOL");
     }
@@ -312,6 +371,9 @@ class ClosureAnalyzer {
   scanModuleInitializers() {
     const moduleEnv = new Map();
     for (const statement of this.sourceFile.statements) {
+      if (ts.isImportDeclaration(statement)) {
+        continue;
+      }
       if (ts.isVariableStatement(statement)) {
         for (const declaration of statement.declarationList.declarations) {
           if (!ts.isIdentifier(declaration.name)) fail(SAFE.ast, "SYNTAX_POLICY");
@@ -320,19 +382,24 @@ class ClosureAnalyzer {
             const initialized = this.evalExpression(declaration.initializer, moduleEnv, {});
             if (declaration.name.text === "identitySql") initialized.label = "identitySql";
             this.topValues.set(key, initialized);
+            this.topValuesByName.set(declaration.name.text, initialized);
             moduleEnv.set(key, initialized);
             this.bindingNames.set(key, declaration.name.text);
           } else {
             const empty = unknownValue();
             this.topValues.set(key, empty);
+            this.topValuesByName.set(declaration.name.text, empty);
             moduleEnv.set(key, empty);
             this.bindingNames.set(key, declaration.name.text);
           }
         }
       } else if (ts.isClassDeclaration(statement)) {
         this.scanClassInitialization(statement, moduleEnv);
-      } else if (ts.isExpressionStatement(statement)) {
-        this.evalExpression(statement.expression, moduleEnv, {});
+      } else if (ts.isFunctionDeclaration(statement)) {
+        if (!statement.name) fail(SAFE.ast, "TOP_LEVEL_SYNTAX");
+        this.bindingNames.set(keyForDeclaration(statement.name), statement.name.text);
+      } else {
+        fail(SAFE.ast, "TOP_LEVEL_SYNTAX");
       }
     }
   }
@@ -359,12 +426,20 @@ class ClosureAnalyzer {
   }
 
   findRootFunction() {
-    const root = this.sourceFile.statements.find(
+    const roots = this.sourceFile.statements.filter(
       (statement) => ts.isFunctionDeclaration(statement) &&
         statement.name?.text === ROOT_EXPORT,
     );
-    if (!root || !root.body) fail(SAFE.ast, "ROOT_EXPORT");
+    if (roots.length !== 1) fail(SAFE.ast, "ROOT_EXPORT");
+    const root = roots[0];
+    if (!root.body || !root.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) {
+      fail(SAFE.ast, "ROOT_EXPORT");
+    }
     return root;
+  }
+
+  topValue(name) {
+    return this.topValuesByName.get(name) ?? unknownValue();
   }
 
   resolveDeclaration(identifier) {
@@ -467,21 +542,26 @@ class ClosureAnalyzer {
   }
 
   analyzeFunction(node, args, closure) {
-    const signature = `${node.pos}:${node.end}:${args.map((item) => `${item.kind}:${item.taint}:${[...item.caps].sort().join(",")}`).join("|")}`;
-    if (this.functionCache.has(signature)) return this.functionCache.get(signature);
-    if (this.functionActive.has(signature)) return unknownValue();
+    const signature = `${node.pos}:${node.end}`;
+    if (this.functionActive.has(signature)) fail(SAFE.flow, "FIXED_POINT_RECURSION");
     this.functionActive.add(signature);
-    const env = new Map(closure ?? this.topValues);
-    for (const [index, parameter] of node.parameters.entries()) {
-      if (!ts.isIdentifier(parameter.name)) fail(SAFE.ast, "SYNTAX_POLICY");
-      env.set(keyForDeclaration(parameter.name), args[index] ?? unknownValue());
-      this.bindingNames.set(keyForDeclaration(parameter.name), parameter.name.text);
+    try {
+      const env = new Map(closure ?? this.topValues);
+      for (const [index, parameter] of node.parameters.entries()) {
+        if (!ts.isIdentifier(parameter.name) || parameter.initializer || parameter.dotDotDotToken) {
+          fail(SAFE.ast, "SYNTAX_POLICY");
+        }
+        env.set(keyForDeclaration(parameter.name), args[index] ?? unknownValue());
+        this.bindingNames.set(keyForDeclaration(parameter.name), parameter.name.text);
+      }
+      if (!node.body) fail(SAFE.ast, "SYNTAX_POLICY");
+      const result = ts.isBlock(node.body)
+        ? this.analyzeStatements(node.body.statements, env, {})
+        : { env, returnValue: this.evalExpression(node.body, env, {}) };
+      return result.returnValue ?? primitiveValue("undefined");
+    } finally {
+      this.functionActive.delete(signature);
     }
-    const result = this.analyzeStatements(node.body?.statements ?? [], env, {});
-    const returned = result.returnValue ?? primitiveValue("undefined");
-    this.functionActive.delete(signature);
-    this.functionCache.set(signature, returned);
-    return returned;
   }
 
   analyzeStatements(statements, env, context) {
@@ -801,7 +881,10 @@ class ClosureAnalyzer {
       }
       if (options.props.has("password")) {
         const password = options.props.get("password");
-        if (!password.directCredential || password.taint !== Taint.CREDENTIAL) {
+        if (password.kind !== "credential" ||
+            !password.directCredential ||
+            password.label !== "input.connectionPassword" ||
+            password.taint !== Taint.CREDENTIAL) {
           fail(SAFE.flow, "CAPABILITY_PASSWORD");
         }
       }
@@ -841,6 +924,25 @@ class ClosureAnalyzer {
       this.assignTarget(node.left, right, env, context);
       return right;
     }
+    if ([
+      ts.SyntaxKind.PlusEqualsToken,
+      ts.SyntaxKind.MinusEqualsToken,
+      ts.SyntaxKind.AsteriskEqualsToken,
+      ts.SyntaxKind.SlashEqualsToken,
+      ts.SyntaxKind.PercentEqualsToken,
+      ts.SyntaxKind.AmpersandEqualsToken,
+      ts.SyntaxKind.BarEqualsToken,
+      ts.SyntaxKind.CaretEqualsToken,
+      ts.SyntaxKind.LessThanLessThanEqualsToken,
+      ts.SyntaxKind.GreaterThanGreaterThanEqualsToken,
+      ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
+      ts.SyntaxKind.QuestionQuestionEqualsToken,
+      ts.SyntaxKind.AmpersandAmpersandEqualsToken,
+      ts.SyntaxKind.BarBarEqualsToken,
+      ts.SyntaxKind.AsteriskAsteriskEqualsToken,
+    ].includes(node.operatorToken.kind)) {
+      fail(SAFE.ast, "SYNTAX_POLICY");
+    }
     const left = this.evalExpression(node.left, env, context);
     const right = this.evalExpression(node.right, env, context);
     const operator = node.operatorToken.kind;
@@ -861,7 +963,11 @@ class ClosureAnalyzer {
 
   evalPrefixUnary(node, env, context) {
     const operand = this.evalExpression(node.operand, env, context);
-    if (node.operator === ts.SyntaxKind.PlusToken || node.operator === ts.SyntaxKind.MinusToken) {
+    if (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken) {
+      fail(SAFE.ast, "SYNTAX_POLICY");
+    }
+    if (node.operator === ts.SyntaxKind.PlusToken || node.operator === ts.SyntaxKind.MinusToken ||
+        node.operator === ts.SyntaxKind.TildeToken) {
       if (hasTaint(operand, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC)) {
         fail(SAFE.flow, "CAPABILITY_RECONSTRUCTION");
       }
@@ -883,7 +989,13 @@ class ClosureAnalyzer {
     if (computed) fail(SAFE.computed, "COMPUTED_CAPABILITY");
     if (!receiver) return unknownValue();
     if (receiver.props.has(name)) return receiver.props.get(name);
-    if (receiver.kind === "input" && name === "connectionPassword") return credentialValue();
+    if (receiver.kind === "input") {
+      if (name === "connectionPassword") return credentialValue();
+      if (SAFE_INPUT_FIELDS.has(name)) return primitiveValue(`input.${name}`);
+    }
+    if (receiver.kind === "row" && QUERY_ROW_FIELDS.has(name)) {
+      return primitiveValue(`query.${name}`);
+    }
     if (receiver.kind === "array") {
       if (name === "length") return primitiveValue("number");
       const index = Number(name);
@@ -983,7 +1095,10 @@ class ClosureAnalyzer {
       return primitiveValue("promise");
     }
     if (callee.caps.has("WEAKMAP_SET")) {
-      if (args[0]?.kind === "object" && args[0].props.size === 0) args[0].kind = "authority-token";
+      if (args[0]?.kind === "object" && args[0].props.size === 0) {
+        args[0].kind = "authority-token";
+        args[0].provenance = {};
+      }
       if (args.length !== 2 || !args[0] || args[0].kind !== "authority-token" || args[1].kind !== "object") {
         fail(SAFE.authority, "AUTHORITY_SCHEMA");
       }
@@ -996,7 +1111,17 @@ class ClosureAnalyzer {
     }
     if (callee.caps.has("WEAKMAP_GET")) {
       if (args.length !== 1) fail(SAFE.authority, "AUTHORITY_SCHEMA");
-      return callee.bound.map.get(args[0]) ?? unknownValue();
+      let record = callee.bound.map.get(args[0]);
+      if (!record && args[0]?.provenance) {
+        for (const [candidate, candidateRecord] of callee.bound.map) {
+          if (candidate?.provenance === args[0].provenance) {
+            record = candidateRecord;
+            break;
+          }
+        }
+      }
+      if (!record) fail(SAFE.authority, "AUTHORITY_SCHEMA");
+      return record;
     }
     if (callee.caps.has("CLEANUP_CATCH")) {
       if (args.length !== 1 || !args[0].fn) fail(SAFE.flow, "CLEANUP_DIAGNOSTIC");
@@ -1021,11 +1146,12 @@ class ClosureAnalyzer {
     if (callee.caps.has("REGEXP_TEST")) return primitiveValue("boolean");
     if (callee.caps.has("SYMBOL_CONSTRUCTOR")) return value({ kind: "symbol" });
     if (callee.caps.has("STRING_METHOD")) {
-      if (callee.bound.taint && callee.label !== "trim") fail(SAFE.flow, "CAPABILITY_RECONSTRUCTION");
+      if (!callee.bound) fail(SAFE.flow, "CAPABILITY_RECONSTRUCTION");
       return value({
-        kind: callee.bound.kind === "credential" ? "credential" : "string",
+        kind: "string",
         taint: callee.bound.taint,
-        directCredential: callee.bound.directCredential,
+        directCredential: false,
+        label: callee.bound.taint ? "transformed-credential" : "",
       });
     }
     if (callee.caps.has("OBJECT_FREEZE")) return args.length === 1 ? args[0] : unknownValue();
@@ -1053,7 +1179,7 @@ class ClosureAnalyzer {
       return value({ kind: "operation-result" });
     }
     if (callee.fn && isFunctionLike(callee.fn)) return this.analyzeFunction(callee.fn, args, callee.closure);
-    if (callee.kind === "function" && !callee.fn) return unknownValue();
+    if (callee.kind === "function" && !callee.fn) fail(SAFE.unresolved, "CALL_RESOLUTION");
     if (callee.kind === "class") return value({ kind: "error" });
     if (callee.caps.has("UNUSED_EXTERNAL")) fail(SAFE.unresolved, "CALL_RESOLUTION");
     if (callee.kind === "unknown") fail(SAFE.unresolved, "CALL_RESOLUTION");
@@ -1063,12 +1189,20 @@ class ClosureAnalyzer {
   validateAuthorityRecord(token, record) {
     const keys = [...record.props.keys()];
     if (!sameTextSet(keys, AUTHORITY_KEYS)) fail(SAFE.authority, "AUTHORITY_SCHEMA");
-    for (const item of record.props.values()) {
-      if (hasTaint(item, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC | Taint.MAYBE_SENSITIVE)) {
+    for (const [name, item] of record.props) {
+      if (!item || item.kind === "unknown" ||
+          hasTaint(item, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC | Taint.MAYBE_SENSITIVE)) {
         fail(SAFE.flow, "AUTHORITY_SCHEMA");
+      }
+      if (name !== "authority" && name !== "brand" && name !== "pool" &&
+          name !== "valid" && item.kind !== "primitive" && item.kind !== "string") {
+        fail(SAFE.authority, "AUTHORITY_SCHEMA");
       }
     }
     if (record.props.get("authority") !== token) {
+      fail(SAFE.authority, "AUTHORITY_SCHEMA");
+    }
+    if (record.props.get("brand") !== this.topValue("migrationAuthorityBrand")) {
       fail(SAFE.authority, "AUTHORITY_SCHEMA");
     }
     if (record.props.get("pool")?.kind !== "pool") {
@@ -1091,6 +1225,7 @@ class ClosureAnalyzer {
       const receiver = this.evalExpression(target.expression, env, context);
       const name = target.name.text;
       if (receiver.caps.has("ENV")) fail(SAFE.flow, "CAPABILITY_ENV");
+      if (receiver.kind === "unknown") fail(SAFE.flow, "CAPABILITY_STORAGE");
       if (receiver.kind === "pool-options") {
         if (name !== "password" || !right.directCredential || right.taint !== Taint.CREDENTIAL) {
           fail(SAFE.flow, "CAPABILITY_PASSWORD");
@@ -1238,6 +1373,29 @@ function buildMutantSources(source, sourceFile) {
     text: "import { readFile as unexpectedRead } from \"node:fs\";\n",
   }]));
 
+  mutants.set("PROBE_ARROW_OUTPUT", prefix(
+    "const innocuousArrow = (value) => console.log(value); innocuousArrow(input.connectionPassword);",
+  ));
+  mutants.set("PROBE_ARRAY_SOME_OUTPUT", prefix(
+    "[input.connectionPassword].some((value) => console.log(value));",
+  ));
+  mutants.set("PROBE_MODULE_IF_OUTPUT", applyEdits(source, [{
+    start: root.getStart(sourceFile),
+    end: root.getStart(sourceFile),
+    text: "if (true) { console.log(\"ssc-module-output\"); }\n",
+  }]));
+
+  const publicReturn = findNode(root, (node) =>
+    ts.isReturnStatement(node) && node.expression &&
+    node.expression.getText(sourceFile).includes("operation"),
+  );
+  if (!publicReturn?.expression) fail(SAFE.internal, "MUTANT_PUBLIC_RETURN_ANCHOR");
+  mutants.set("PROBE_PUBLIC_CREDENTIAL_RETURN", applyEdits(source, [{
+    start: publicReturn.expression.getStart(sourceFile),
+    end: publicReturn.expression.getEnd(),
+    text: "input.connectionPassword",
+  }]));
+
   const authorityCall = findNode(sourceFile, (node) =>
     ts.isCallExpression(node) &&
     ts.isPropertyAccessExpression(node.expression) &&
@@ -1255,6 +1413,30 @@ function buildMutantSources(source, sourceFile) {
     text: " innocentMetadata: connectionPassword",
   }]));
 
+  const brandProperty = authorityObject.properties.find((property) =>
+    ts.isPropertyAssignment(property) &&
+    property.name.getText(sourceFile).replace(/^['"]|['"]$/gu, "") === "brand" &&
+    ts.isIdentifier(property.initializer) && property.initializer.text === "migrationAuthorityBrand",
+  );
+  if (!brandProperty || !ts.isPropertyAssignment(brandProperty)) fail(SAFE.internal, "MUTANT_BRAND_ANCHOR");
+  mutants.set("PROBE_AUTHORITY_BRAND", applyEdits(source, [{
+    start: brandProperty.initializer.getStart(sourceFile),
+    end: brandProperty.initializer.getEnd(),
+    text: "Symbol(\"spoofed-authority\")",
+  }]));
+
+  const passwordAssignment = findNode(sourceFile, (node) =>
+    ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+    ts.isPropertyAccessExpression(node.left) && node.left.name.text === "password" &&
+    ts.isIdentifier(node.right) && node.right.text === "connectionPassword",
+  );
+  if (!passwordAssignment) fail(SAFE.internal, "MUTANT_PASSWORD_ANCHOR");
+  mutants.set("PROBE_TRIMMED_PASSWORD", applyEdits(source, [{
+    start: passwordAssignment.right.getStart(sourceFile),
+    end: passwordAssignment.right.getEnd(),
+    text: "connectionPassword.trim()",
+  }]));
+
   const cleanupCall = findNode(sourceFile, (node) =>
     ts.isCallExpression(node) &&
     ts.isPropertyAccessExpression(node.expression) &&
@@ -1270,6 +1452,11 @@ function buildMutantSources(source, sourceFile) {
     start: cleanupCall.arguments[0].getStart(sourceFile),
     end: cleanupCall.arguments[0].getEnd(),
     text: "(cleanupError) => { console.log(cleanupError); }",
+  }]));
+  mutants.set("PROBE_CLEANUP_CONCISE_OUTPUT", applyEdits(source, [{
+    start: cleanupCall.arguments[0].getStart(sourceFile),
+    end: cleanupCall.arguments[0].getEnd(),
+    text: "(cleanupError) => console.log(cleanupError)",
   }]));
   return mutants;
 }
