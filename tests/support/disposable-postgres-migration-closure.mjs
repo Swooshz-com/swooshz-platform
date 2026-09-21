@@ -145,6 +145,96 @@ const NEGATIVE_CONTROLS = Object.freeze([
     code: "SSC_AUTHORITY_SHAPE",
     detector: "AUTHORITY_SCHEMA",
   }),
+  Object.freeze({
+    id: "PROBE_ARRAY_CREDENTIAL_RETURN",
+    code: "SSC_SECRET_FLOW_DENIED",
+    detector: "PUBLIC_RETURN",
+  }),
+  Object.freeze({
+    id: "PROBE_NESTED_ARRAY_CREDENTIAL_RETURN",
+    code: "SSC_SECRET_FLOW_DENIED",
+    detector: "PUBLIC_RETURN",
+  }),
+  Object.freeze({
+    id: "PROBE_JSON_ARRAY_CREDENTIAL_RETURN",
+    code: "SSC_SECRET_FLOW_DENIED",
+    detector: "PUBLIC_RETURN",
+  }),
+  Object.freeze({
+    id: "PROBE_SYMBOL_CREDENTIAL_RETURN",
+    code: "SSC_SECRET_FLOW_DENIED",
+    detector: "PUBLIC_RETURN",
+  }),
+  Object.freeze({
+    id: "PROBE_CLOSURE_ASSIGNMENT_RETURN",
+    code: "SSC_SECRET_FLOW_DENIED",
+    detector: "PUBLIC_RETURN",
+  }),
+  Object.freeze({
+    id: "PROBE_CALLBACK_ASSIGNMENT_RETURN",
+    code: "SSC_SECRET_FLOW_DENIED",
+    detector: "PUBLIC_RETURN",
+  }),
+  Object.freeze({
+    id: "PROBE_CONDITIONAL_AGGREGATE_RETURN",
+    code: "SSC_SECRET_FLOW_DENIED",
+    detector: "PUBLIC_RETURN",
+  }),
+  Object.freeze({
+    id: "PROBE_FOR_INITIALIZER_OUTPUT",
+    code: "SSC_SECRET_FLOW_DENIED",
+    detector: "CAPABILITY_OUTPUT",
+  }),
+  Object.freeze({
+    id: "PROBE_WHILE_CONDITION_OUTPUT",
+    code: "SSC_SECRET_FLOW_DENIED",
+    detector: "CAPABILITY_OUTPUT",
+  }),
+  Object.freeze({
+    id: "PROBE_DO_CONDITION_OUTPUT",
+    code: "SSC_SECRET_FLOW_DENIED",
+    detector: "CAPABILITY_OUTPUT",
+  }),
+  Object.freeze({
+    id: "PROBE_CONSTRUCTOR_OUTPUT",
+    code: "SSC_SECRET_FLOW_DENIED",
+    detector: "CAPABILITY_OUTPUT",
+  }),
+  Object.freeze({
+    id: "PROBE_CONSTRUCTOR_PROPERTY_RETURN",
+    code: "SSC_SECRET_FLOW_DENIED",
+    detector: "CAPABILITY_STORAGE",
+  }),
+  Object.freeze({
+    id: "PROBE_AUTHORITY_DATABASE_IDENTITY",
+    code: "SSC_AUTHORITY_SHAPE",
+    detector: "AUTHORITY_SCHEMA",
+  }),
+  Object.freeze({
+    id: "PROBE_AUTHORITY_USER_IDENTITY",
+    code: "SSC_AUTHORITY_SHAPE",
+    detector: "AUTHORITY_SCHEMA",
+  }),
+  Object.freeze({
+    id: "PROBE_AUTHORITY_CLUSTER_IDENTITY",
+    code: "SSC_AUTHORITY_SHAPE",
+    detector: "AUTHORITY_SCHEMA",
+  }),
+  Object.freeze({
+    id: "PROBE_AUTHORITY_LIFECYCLE_IDENTITY",
+    code: "SSC_AUTHORITY_SHAPE",
+    detector: "AUTHORITY_SCHEMA",
+  }),
+  Object.freeze({
+    id: "PROBE_AUTHORITY_MIGRATIONS_IDENTITY",
+    code: "SSC_AUTHORITY_SHAPE",
+    detector: "AUTHORITY_SCHEMA",
+  }),
+  Object.freeze({
+    id: "PROBE_AUTHORITY_PHASE_IDENTITY",
+    code: "SSC_AUTHORITY_SHAPE",
+    detector: "AUTHORITY_SCHEMA",
+  }),
 ]);
 
 const Taint = Object.freeze({
@@ -203,6 +293,31 @@ function hasTaint(value, mask) {
   return Boolean((value?.taint ?? Taint.NONE) & mask);
 }
 
+function provenanceOf(item) {
+  if (item?.provenance instanceof Set) return item.provenance;
+  return item?.label ? new Set([item.label]) : new Set();
+}
+
+function combinedProvenance(items) {
+  const result = new Set();
+  for (const item of items) {
+    for (const label of provenanceOf(item)) result.add(label);
+  }
+  return result;
+}
+
+function combinedCaps(items) {
+  const result = new Set();
+  for (const item of items) {
+    for (const cap of item?.caps ?? []) result.add(cap);
+  }
+  return result;
+}
+
+function combinedTaint(items) {
+  return items.reduce((taint, item) => joinTaint(taint, item?.taint ?? Taint.NONE), Taint.NONE);
+}
+
 function value({
   kind = "unknown",
   taint = Taint.NONE,
@@ -215,6 +330,7 @@ function value({
   directCredential = false,
   elements = null,
   map = null,
+  provenance = [],
 } = {}) {
   return {
     kind,
@@ -228,6 +344,7 @@ function value({
     directCredential,
     elements,
     map,
+    provenance: new Set(provenance),
   };
 }
 
@@ -236,7 +353,7 @@ function unknownValue() {
 }
 
 function primitiveValue(label = "") {
-  return value({ kind: "primitive", label });
+  return value({ kind: "primitive", label, provenance: label ? [label] : [] });
 }
 
 function credentialValue() {
@@ -245,6 +362,7 @@ function credentialValue() {
     taint: Taint.CREDENTIAL,
     directCredential: true,
     label: "input.connectionPassword",
+    provenance: ["input.connectionPassword"],
   });
 }
 
@@ -257,12 +375,16 @@ function mergeValues(left, right) {
   if (!right) return left;
   if (left === right) return left;
   if (left.kind === "unknown") {
-    const preserved = { ...right, taint: joinTaint(left.taint, right.taint) };
-    return preserved;
+    right.taint = joinTaint(left.taint, right.taint);
+    for (const cap of left.caps) right.caps.add(cap);
+    for (const label of provenanceOf(left)) right.provenance.add(label);
+    return right;
   }
   if (right.kind === "unknown") {
-    const preserved = { ...left, taint: joinTaint(left.taint, right.taint) };
-    return preserved;
+    left.taint = joinTaint(left.taint, right.taint);
+    for (const cap of right.caps) left.caps.add(cap);
+    for (const label of provenanceOf(right)) left.provenance.add(label);
+    return left;
   }
   const merged = value({
     kind: left.kind === right.kind ? left.kind : "unknown",
@@ -271,11 +393,16 @@ function mergeValues(left, right) {
     bound: left.bound === right.bound ? left.bound : null,
     label: left.label === right.label ? left.label : "",
     directCredential: left.directCredential && right.directCredential,
+    provenance: new Set([...provenanceOf(left), ...provenanceOf(right)]),
   });
   for (const [key, property] of left.props) {
     if (right.props.has(key)) {
       merged.props.set(key, mergeValues(property, right.props.get(key)));
     }
+  }
+  if (left.kind === "array" && right.kind === "array" &&
+      left.elements?.length === right.elements?.length) {
+    merged.elements = left.elements.map((item, index) => mergeValues(item, right.elements[index]));
   }
   return merged;
 }
@@ -558,10 +685,60 @@ class ClosureAnalyzer {
       const result = ts.isBlock(node.body)
         ? this.analyzeStatements(node.body.statements, env, {})
         : { env, returnValue: this.evalExpression(node.body, env, {}) };
+      this.propagateClosure(closure, env);
       return result.returnValue ?? primitiveValue("undefined");
     } finally {
       this.functionActive.delete(signature);
     }
+  }
+
+  propagateClosure(closure, env) {
+    if (!(closure instanceof Map)) return;
+    for (const key of closure.keys()) {
+      if (env.has(key)) closure.set(key, env.get(key));
+    }
+  }
+
+  analyzeClassConstructor(node, args, closure) {
+    const instance = value({ kind: "instance" });
+    const constructor = node.members.find((member) => ts.isConstructorDeclaration(member));
+    if (!constructor) return instance;
+    if (!constructor.body) fail(SAFE.ast, "SYNTAX_POLICY");
+    const env = new Map(closure ?? this.topValues);
+    for (const [index, parameter] of constructor.parameters.entries()) {
+      if (!ts.isIdentifier(parameter.name) || parameter.initializer || parameter.dotDotDotToken) {
+        fail(SAFE.ast, "SYNTAX_POLICY");
+      }
+      env.set(keyForDeclaration(parameter.name), args[index] ?? unknownValue());
+      this.bindingNames.set(keyForDeclaration(parameter.name), parameter.name.text);
+    }
+    for (const member of node.members) {
+      if (!ts.isPropertyDeclaration(member) || !member.initializer) continue;
+      if (!member.name || member.name.kind === ts.SyntaxKind.ComputedPropertyName || !ts.isIdentifier(member.name)) {
+        fail(SAFE.ast, "SYNTAX_POLICY");
+      }
+      const initialized = this.evalExpression(member.initializer, env, {});
+      instance.props.set(member.name.text, initialized);
+      instance.taint |= initialized.taint;
+      for (const cap of initialized.caps) instance.caps.add(cap);
+      for (const label of provenanceOf(initialized)) instance.provenance.add(label);
+    }
+    const previousThis = this.currentThis;
+    this.currentThis = instance;
+    try {
+      const result = this.analyzeStatements(constructor.body.statements, env, {});
+      this.propagateClosure(closure, env);
+      if (result.returnValue && result.returnValue.label !== "undefined") return result.returnValue;
+      return instance;
+    } finally {
+      this.currentThis = previousThis;
+    }
+  }
+
+  classConstructorHasRelevantInput(callee, args) {
+    return args.some((item) => item?.kind === "input" ||
+      hasTaint(item, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC | Taint.MAYBE_SENSITIVE) ||
+      [...provenanceOf(item)].some((label) => label.startsWith("input.") || label.startsWith("query.")));
   }
 
   analyzeStatements(statements, env, context) {
@@ -671,19 +848,24 @@ class ClosureAnalyzer {
       return this.analyzeStatement(node.statement, loopEnv, context);
     }
     if (ts.isForStatement(node) || ts.isWhileStatement(node) || ts.isDoStatement(node)) {
-      if (node.initializer && ts.isVariableDeclarationList(node.initializer)) {
-        for (const declaration of node.initializer.declarations) {
-          if (!ts.isIdentifier(declaration.name)) fail(SAFE.ast, "SYNTAX_POLICY");
-          env.set(
-            keyForDeclaration(declaration.name),
-            declaration.initializer
-              ? this.evalExpression(declaration.initializer, env, context)
-              : unknownValue(),
-          );
-          this.bindingNames.set(keyForDeclaration(declaration.name), declaration.name.text);
+      if (node.initializer) {
+        if (ts.isVariableDeclarationList(node.initializer)) {
+          for (const declaration of node.initializer.declarations) {
+            if (!ts.isIdentifier(declaration.name)) fail(SAFE.ast, "SYNTAX_POLICY");
+            env.set(
+              keyForDeclaration(declaration.name),
+              declaration.initializer
+                ? this.evalExpression(declaration.initializer, env, context)
+                : unknownValue(),
+            );
+            this.bindingNames.set(keyForDeclaration(declaration.name), declaration.name.text);
+          }
+        } else {
+          this.evalExpression(node.initializer, env, context);
         }
       }
-      if (node.condition) this.evalExpression(node.condition, env, context);
+      const condition = ts.isForStatement(node) ? node.condition : node.expression;
+      if (condition) this.evalExpression(condition, env, context);
       const body = this.analyzeStatement(node.statement, new Map(env), context);
       if (node.incrementor) this.evalExpression(node.incrementor, body.env, context);
       return { env: this.joinEnvironments(env, body.env), returnValue: body.returnValue };
@@ -731,7 +913,7 @@ class ClosureAnalyzer {
       case ts.SyntaxKind.NullKeyword:
         return primitiveValue(ts.tokenToString(node.kind) ?? "literal");
       case ts.SyntaxKind.ThisKeyword:
-        return value({ kind: "this" });
+        return this.currentThis ?? value({ kind: "this" });
       case ts.SyntaxKind.ArrayLiteralExpression:
         return this.evalArray(node, env, context);
       case ts.SyntaxKind.ObjectLiteralExpression:
@@ -810,7 +992,13 @@ class ClosureAnalyzer {
       }
       elements.push(this.evalExpression(element, env, context));
     }
-    return value({ kind: "array", elements });
+    return value({
+      kind: "array",
+      elements,
+      taint: combinedTaint(elements),
+      caps: combinedCaps(elements),
+      provenance: combinedProvenance(elements),
+    });
   }
 
   evalObject(node, env, context) {
@@ -834,6 +1022,8 @@ class ClosureAnalyzer {
         : this.evalExpression(property.name, env, context);
       result.props.set(name, propertyValue);
       result.taint |= propertyValue.taint;
+      for (const cap of propertyValue.caps) result.caps.add(cap);
+      for (const label of provenanceOf(propertyValue)) result.provenance.add(label);
     }
     if (sameTextSet([...result.props.keys()], ["host", "port", "user", "database", "max"])) {
       result.kind = "pool-options";
@@ -905,7 +1095,14 @@ class ClosureAnalyzer {
     if (callee.caps.has("WEAKMAP_CONSTRUCTOR")) {
       return value({ kind: "weakmap", map: new Map() });
     }
-    if (callee.caps.has("SYMBOL_CONSTRUCTOR")) return value({ kind: "symbol" });
+    if (callee.caps.has("SYMBOL_CONSTRUCTOR")) {
+      return value({
+        kind: "symbol",
+        taint: combinedTaint(args),
+        caps: combinedCaps(args),
+        provenance: combinedProvenance(args),
+      });
+    }
     if (callee.caps.has("REGEXP_CONSTRUCTOR")) return value({ kind: "regexp" });
     if (callee.caps.has("ERROR_CONSTRUCTOR")) {
       if (args.some((item) => hasTaint(item, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC))) {
@@ -913,7 +1110,11 @@ class ClosureAnalyzer {
       }
       return value({ kind: "error" });
     }
-    if (callee.kind === "class") return value({ kind: "error" });
+    if (callee.kind === "class") {
+      if (!callee.fn || !ts.isClassDeclaration(callee.fn)) fail(SAFE.unresolved, "CALL_RESOLUTION");
+      if (!this.classConstructorHasRelevantInput(callee, args)) return value({ kind: "error" });
+      return this.analyzeClassConstructor(callee.fn, args, callee.closure);
+    }
     if (callee.fn && isFunctionLike(callee.fn)) return this.analyzeFunction(callee.fn, args, callee.closure);
     fail(SAFE.unresolved, "CALL_RESOLUTION");
   }
@@ -1097,7 +1298,7 @@ class ClosureAnalyzer {
     if (callee.caps.has("WEAKMAP_SET")) {
       if (args[0]?.kind === "object" && args[0].props.size === 0) {
         args[0].kind = "authority-token";
-        args[0].provenance = {};
+        args[0].provenance = new Set();
       }
       if (args.length !== 2 || !args[0] || args[0].kind !== "authority-token" || args[1].kind !== "object") {
         fail(SAFE.authority, "AUTHORITY_SCHEMA");
@@ -1144,7 +1345,14 @@ class ClosureAnalyzer {
     if (callee.caps.has("SET_HAS")) return primitiveValue("boolean");
     if (callee.caps.has("SET_ADD")) return callee.bound;
     if (callee.caps.has("REGEXP_TEST")) return primitiveValue("boolean");
-    if (callee.caps.has("SYMBOL_CONSTRUCTOR")) return value({ kind: "symbol" });
+    if (callee.caps.has("SYMBOL_CONSTRUCTOR")) {
+      return value({
+        kind: "symbol",
+        taint: combinedTaint(args),
+        caps: combinedCaps(args),
+        provenance: combinedProvenance(args),
+      });
+    }
     if (callee.caps.has("STRING_METHOD")) {
       if (!callee.bound) fail(SAFE.flow, "CAPABILITY_RECONSTRUCTION");
       return value({
@@ -1152,6 +1360,7 @@ class ClosureAnalyzer {
         taint: callee.bound.taint,
         directCredential: false,
         label: callee.bound.taint ? "transformed-credential" : "",
+        provenance: provenanceOf(callee.bound),
       });
     }
     if (callee.caps.has("OBJECT_FREEZE")) return args.length === 1 ? args[0] : unknownValue();
@@ -1171,8 +1380,13 @@ class ClosureAnalyzer {
       return primitiveValue("string");
     }
     if (callee.caps.has("JSON_STRINGIFY")) {
-      if (args.some((item) => hasTaint(item, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC))) fail(SAFE.flow, "CAPABILITY_SERIALIZATION");
-      return primitiveValue("string");
+      return value({
+        kind: "string",
+        taint: combinedTaint(args),
+        caps: combinedCaps(args),
+        provenance: combinedProvenance(args),
+        label: combinedTaint(args) ? "serialized-value" : "string",
+      });
     }
     if (callee.caps.has("OPAQUE_OPERATION")) {
       if (args.length !== 0) fail(SAFE.flow, "CAPABILITY_CALLBACK");
@@ -1180,7 +1394,11 @@ class ClosureAnalyzer {
     }
     if (callee.fn && isFunctionLike(callee.fn)) return this.analyzeFunction(callee.fn, args, callee.closure);
     if (callee.kind === "function" && !callee.fn) fail(SAFE.unresolved, "CALL_RESOLUTION");
-    if (callee.kind === "class") return value({ kind: "error" });
+    if (callee.kind === "class") {
+      if (!callee.fn || !ts.isClassDeclaration(callee.fn)) fail(SAFE.unresolved, "CALL_RESOLUTION");
+      if (!this.classConstructorHasRelevantInput(callee, args)) return value({ kind: "error" });
+      return this.analyzeClassConstructor(callee.fn, args, callee.closure);
+    }
     if (callee.caps.has("UNUSED_EXTERNAL")) fail(SAFE.unresolved, "CALL_RESOLUTION");
     if (callee.kind === "unknown") fail(SAFE.unresolved, "CALL_RESOLUTION");
     fail(SAFE.unresolved, "CALL_RESOLUTION");
@@ -1209,6 +1427,23 @@ class ClosureAnalyzer {
       fail(SAFE.authority, "AUTHORITY_SCHEMA");
     }
     if (record.props.get("valid")?.label !== "true") {
+      fail(SAFE.authority, "AUTHORITY_SCHEMA");
+    }
+    const exact = (name, expected) => {
+      const item = record.props.get(name);
+      if (!item || !(item.provenance instanceof Set) || item.provenance.size !== expected.length ||
+          !expected.every((label) => item.provenance.has(label))) {
+        fail(SAFE.authority, "AUTHORITY_SCHEMA");
+      }
+    };
+    exact("database", ["input.expectedDatabase"]);
+    exact("user", ["input.expectedUser", "cloud_admin"]);
+    exact("clusterFingerprint", ["query.catalog_fingerprint"]);
+    exact("lifecycleFingerprint", ["query.lifecycle_fingerprint"]);
+    exact("migrationsFolder", ["input.migrationsFolder"]);
+    const phase = record.props.get("phase");
+    if (!phase?.provenance?.has("initialization") ||
+        [...phase.provenance].some((label) => label !== "initialization" && label !== "input.phase")) {
       fail(SAFE.authority, "AUTHORITY_SCHEMA");
     }
   }
@@ -1240,6 +1475,9 @@ class ClosureAnalyzer {
       }
       if (hasTaint(right, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC)) fail(SAFE.flow, "CAPABILITY_STORAGE");
       receiver.props.set(name, right);
+      receiver.taint |= right.taint;
+      for (const cap of right.caps) receiver.caps.add(cap);
+      for (const label of provenanceOf(right)) receiver.provenance.add(label);
       return;
     }
     if (ts.isElementAccessExpression(target)) {
@@ -1458,6 +1696,70 @@ function buildMutantSources(source, sourceFile) {
     end: cleanupCall.arguments[0].getEnd(),
     text: "(cleanupError) => console.log(cleanupError)",
   }]));
+
+  mutants.set("PROBE_ARRAY_CREDENTIAL_RETURN", prefix(
+    "return [input.connectionPassword];",
+  ));
+  mutants.set("PROBE_NESTED_ARRAY_CREDENTIAL_RETURN", prefix(
+    "return { data: [input.connectionPassword] };",
+  ));
+  mutants.set("PROBE_JSON_ARRAY_CREDENTIAL_RETURN", prefix(
+    "return JSON.stringify([input.connectionPassword]);",
+  ));
+  mutants.set("PROBE_SYMBOL_CREDENTIAL_RETURN", prefix(
+    "return Symbol(input.connectionPassword);",
+  ));
+  mutants.set("PROBE_CLOSURE_ASSIGNMENT_RETURN", prefix(
+    "let leak = \"safe\"; const capture = () => { leak = input.connectionPassword; }; capture(); return leak;",
+  ));
+  mutants.set("PROBE_CALLBACK_ASSIGNMENT_RETURN", prefix(
+    "let callbackLeak = \"safe\"; function captureCallback() { callbackLeak = input.connectionPassword; } captureCallback(); return callbackLeak;",
+  ));
+  mutants.set("PROBE_CONDITIONAL_AGGREGATE_RETURN", prefix(
+    "return input ? [input.connectionPassword] : [];",
+  ));
+  mutants.set("PROBE_FOR_INITIALIZER_OUTPUT", prefix(
+    "for (console.log(input.connectionPassword); false;) {}",
+  ));
+  mutants.set("PROBE_WHILE_CONDITION_OUTPUT", prefix(
+    "while (console.log(input.connectionPassword)) {}",
+  ));
+  mutants.set("PROBE_DO_CONDITION_OUTPUT", prefix(
+    "do {} while (console.log(input.connectionPassword));",
+  ));
+
+  const withTopLevelClass = (classSource, rootSource) => applyEdits(source, [
+    { start: insertion, end: insertion, text: `${rootSource}\n` },
+    { start: root.getStart(sourceFile), end: root.getStart(sourceFile), text: `${classSource}\n` },
+  ]);
+  mutants.set("PROBE_CONSTRUCTOR_OUTPUT", withTopLevelClass(
+    "class SecretSurfaceCarrier { constructor(value) { console.log(value); } }",
+    "new SecretSurfaceCarrier(input.connectionPassword);",
+  ));
+  mutants.set("PROBE_CONSTRUCTOR_PROPERTY_RETURN", withTopLevelClass(
+    "class SecretSurfaceCarrier { constructor(value) { this.value = value; } }",
+    "const carrier = new SecretSurfaceCarrier(input.connectionPassword); return carrier;",
+  ));
+
+  const authorityProperty = (name) => authorityObject.properties.find((property) =>
+    ts.isPropertyAssignment(property) &&
+    property.name.getText(sourceFile).replace(/^['"]|['"]$/gu, "") === name,
+  );
+  const replaceAuthorityProperty = (id, name, text) => {
+    const property = authorityProperty(name);
+    if (!property || !ts.isPropertyAssignment(property)) fail(SAFE.internal, "MUTANT_AUTHORITY_FIELD_ANCHOR");
+    mutants.set(id, applyEdits(source, [{
+      start: property.initializer.getStart(sourceFile),
+      end: property.initializer.getEnd(),
+      text,
+    }]));
+  };
+  replaceAuthorityProperty("PROBE_AUTHORITY_DATABASE_IDENTITY", "database", "\"wrong-database\"");
+  replaceAuthorityProperty("PROBE_AUTHORITY_USER_IDENTITY", "user", "\"wrong-user\"");
+  replaceAuthorityProperty("PROBE_AUTHORITY_CLUSTER_IDENTITY", "clusterFingerprint", "\"wrong-cluster\"");
+  replaceAuthorityProperty("PROBE_AUTHORITY_LIFECYCLE_IDENTITY", "lifecycleFingerprint", "\"wrong-lifecycle\"");
+  replaceAuthorityProperty("PROBE_AUTHORITY_MIGRATIONS_IDENTITY", "migrationsFolder", "\"wrong-migrations\"");
+  replaceAuthorityProperty("PROBE_AUTHORITY_PHASE_IDENTITY", "phase", "\"final_start\"");
   return mutants;
 }
 

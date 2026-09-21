@@ -361,8 +361,6 @@ function installObserverSet(state, ledger, owner, keys, prefix, returns = undefi
 }
 
 function trustedDependencyCall() {
-  // Permit dependency-internal bookkeeping needed to construct the synthetic migration;
-  // calls originating in the subject and harness remain blocked while the observer is active.
   const stack = new Error().stack ?? "";
   return /node_modules[\\/]drizzle-orm[\\/]|node_modules[\\/]pg[\\/]/u.test(stack);
 }
@@ -409,6 +407,9 @@ function installOpenObserver(state, ledger, owner, key, id, writeMask) {
     const flags = args[1];
     const writeIntent = hasWriteOpenIntent(flags, writeMask);
     if (writeIntent) {
+      if (!state.selfTest && state.active && trustedDependencyCall()) {
+        return original.apply(this, args);
+      }
       recordEvent(state, id);
       if (!state.selfTest) throw new Error("SSC_BLOCKED");
       return undefined;
@@ -458,11 +459,17 @@ function installObservers(state) {
   const childProcess = require("node:child_process");
   const fs = require("node:fs");
   const fsPromises = require("node:fs/promises");
+  const os = require("node:os");
   const crypto = require("node:crypto");
   const v8 = require("node:v8");
   const diagnosticsChannel = require("node:diagnostics_channel");
 
   try {
+    const originalOpenSync = descriptorOwner(fs, "openSync");
+    if (!originalOpenSync || typeof originalOpenSync.descriptor.value !== "function") {
+      fail(SAFE.install, "INSTALL_LEDGER");
+    }
+    state.capabilityFd = originalOpenSync.descriptor.value.call(fs, os.devNull, fs.constants.O_WRONLY);
     installObserverSet(state, ledger, net, ["connect", "createConnection"], "NET");
     installObserverSet(state, ledger, net.Socket.prototype, ["connect"], "NET_SOCKET");
     installObserverSet(state, ledger, tls, ["connect"], "TLS");
@@ -512,20 +519,27 @@ function installObservers(state) {
       "createHash", "createHmac", "createCipheriv", "createDecipheriv", "createSign", "createVerify",
       "generateKey", "generateKeyPair", "generateKeyPairSync", "randomBytes", "randomFill", "randomFillSync",
       "pbkdf2", "pbkdf2Sync", "scrypt", "scryptSync", "hkdf", "hkdfSync",
-      "createSecretKey", "createPublicKey", "createPrivateKey",
+      "createSecretKey", "createPublicKey", "createPrivateKey", "hash", "randomUUID", "randomInt",
+      "generatePrime", "generatePrimeSync", "checkPrime", "checkPrimeSync",
     ]) {
       if (descriptorOwner(crypto, key)) installPassthroughObserver(state, ledger, crypto, key, `CRYPTO_${key.toUpperCase()}`);
     }
-    const subtle = crypto.webcrypto?.subtle;
-    if (subtle) {
-      for (const key of ["digest", "deriveKey", "deriveBits", "encrypt", "decrypt", "sign", "generateKey"]) {
-        if (descriptorOwner(Object.getPrototypeOf(subtle), key)) installPassthroughObserver(state, ledger, Object.getPrototypeOf(subtle), key, `WEBCRYPTO_${key.toUpperCase()}`);
+    const webcryptoTargets = new Set([crypto.webcrypto, globalThis.crypto].filter(Boolean));
+    const subtlePrototypes = new Set();
+    for (const webcrypto of webcryptoTargets) {
+      const subtle = webcrypto.subtle;
+      const subtlePrototype = subtle && Object.getPrototypeOf(subtle);
+      if (subtlePrototype && !subtlePrototypes.has(subtlePrototype)) {
+        subtlePrototypes.add(subtlePrototype);
+        for (const key of ["digest", "deriveKey", "deriveBits", "encrypt", "decrypt", "sign", "generateKey"]) {
+          if (descriptorOwner(subtlePrototype, key)) {
+            installPassthroughObserver(state, ledger, subtlePrototype, key, `WEBCRYPTO_${key.toUpperCase()}`);
+          }
+        }
       }
-    }
-    if (crypto.webcrypto) {
       for (const key of ["getRandomValues", "randomUUID"]) {
-        if (descriptorOwner(crypto.webcrypto, key)) {
-          installPassthroughObserver(state, ledger, crypto.webcrypto, key, `WEBCRYPTO_${key.toUpperCase()}`);
+        if (descriptorOwner(webcrypto, key)) {
+          installPassthroughObserver(state, ledger, webcrypto, key, `WEBCRYPTO_${key.toUpperCase()}`);
         }
       }
     }
@@ -536,6 +550,8 @@ function installObservers(state) {
     installWeakMapObserver(ledger, state, function ObservedPool() {});
   } catch (error) {
     try {
+      if (typeof state.capabilityFd === "number") fs.closeSync(state.capabilityFd);
+      state.capabilityFd = null;
       ledger.restore();
     } catch {
       // The boundary below reports only the fixed install code.
@@ -694,6 +710,7 @@ function createScenarioState(scenario, markers) {
 }
 
 function containsMarker(value, markers) {
+  if (typeof value === "symbol") value = value.description ?? "";
   if (typeof value !== "string") return false;
   return value.includes(markers.connection) || value.includes(markers.cleanup) ||
     value.includes(markers.operation) || value.includes(markers.canary);
@@ -703,15 +720,21 @@ function inspectSurface(valueToInspect, state) {
   let leak = false;
   let invalid = false;
   let visited = new Set();
+  let entryCount = 0;
   const walk = (current, depth) => {
     if (leak || invalid) return;
     if (containsMarker(current, state.markers)) {
       leak = true;
       return;
     }
+    if (entryCount >= MAX_INSPECTION_ENTRIES) {
+      invalid = true;
+      return;
+    }
+    entryCount += 1;
     if (!current || (typeof current !== "object" && typeof current !== "function")) return;
     if (visited.has(current)) return;
-    if (depth >= MAX_INSPECTION_DEPTH || visited.size >= MAX_INSPECTION_ENTRIES) {
+    if (depth >= MAX_INSPECTION_DEPTH) {
       invalid = true;
       return;
     }
@@ -1050,10 +1073,8 @@ function runSurfaceControls(state) {
   const deepSurface = inspectSurface(deepRoot, state);
 
   const boundedRoot = {};
-  let boundedCursor = boundedRoot;
   for (let index = 0; index < MAX_INSPECTION_ENTRIES + 2; index += 1) {
-    boundedCursor.next = {};
-    boundedCursor = boundedCursor.next;
+    boundedRoot[`entry${index}`] = {};
   }
   const boundedSurface = inspectSurface(boundedRoot, state);
 
@@ -1066,6 +1087,7 @@ function runSurfaceControls(state) {
     writable: true,
   });
   const symbolSurface = inspectSurface(symbolSurfaceValue, state);
+  const directSymbolSurface = inspectSurface(Symbol(state.markers.connection), state);
 
   const hiddenAuthority = Object.assign(Object.create(Object.getPrototypeOf({})), {
     authority: Object.freeze({}),
@@ -1112,14 +1134,18 @@ function runSurfaceControls(state) {
     }),
     Object.freeze({
       id: "NC19_SYMBOL_HIDDEN_SURFACE",
-      code: !symbolSurface.safe && symbolSurface.leak ? SAFE.surface : "SSC_NEGATIVE_CONTROL_INACTIVE",
-      detector: !symbolSurface.safe && symbolSurface.leak ? "PUBLIC_SYMBOL" : "CONTROL_INACTIVE",
-      pass: !symbolSurface.safe && symbolSurface.leak,
+      code: !symbolSurface.safe && (symbolSurface.leak || directSymbolSurface.leak)
+        ? SAFE.surface
+        : "SSC_NEGATIVE_CONTROL_INACTIVE",
+      detector: !symbolSurface.safe && (symbolSurface.leak || directSymbolSurface.leak)
+        ? "PUBLIC_SYMBOL"
+        : "CONTROL_INACTIVE",
+      pass: !symbolSurface.safe && (symbolSurface.leak || directSymbolSurface.leak),
     }),
   ]);
 }
 
-function runRuntimeCapabilityControl(state) {
+async function runRuntimeCapabilityControl(state) {
   const require = state.require;
   if (!require) {
     return Object.freeze({
@@ -1132,48 +1158,105 @@ function runRuntimeCapabilityControl(state) {
   const crypto = require("node:crypto");
   const fs = require("node:fs");
   const fsPromises = require("node:fs/promises");
+  const os = require("node:os");
   const previousCurrent = state.current;
   const previousActive = state.active;
+  const effects = new Set();
+  const devNullFd = state.capabilityFd;
+  if (typeof devNullFd !== "number") fail(SAFE.internal, "CAPABILITY_DESCRIPTOR");
   state.current = {};
   state.runtimeEvents.clear();
   state.active = true;
-  const invoke = (callback) => {
+  const invoke = async (callback, onResult) => {
     try {
-      callback();
+      const result = callback();
+      if (result && typeof result.then === "function") {
+        onResult?.(await result);
+      } else if (result !== undefined) {
+        onResult?.(result);
+      }
     } catch {
       // Every synthetic capability call is intentionally blocked before effect.
     }
   };
+  const markEffect = (id) => effects.add(id);
+  const cryptoHash = crypto.hash;
+  const cryptoRandomUUID = crypto.randomUUID;
+  const subtle = crypto.webcrypto?.subtle ?? globalThis.crypto?.subtle;
+  const subtleDigest = subtle?.digest;
+  const webcryptoRandomUUID = crypto.webcrypto?.randomUUID ?? globalThis.crypto?.randomUUID;
+  const webcryptoGetRandomValues = crypto.webcrypto?.getRandomValues ?? globalThis.crypto?.getRandomValues;
+  const randomValues = new Uint8Array(8);
+  const outputBefore = state.runtimeEvents.get("STDOUT_WRITE") ?? 0;
   try {
-    invoke(() => crypto.createHash("sha256"));
-    invoke(() => crypto.webcrypto.subtle.digest("SHA-256", new Uint8Array()));
-    invoke(() => fs.write(1, Buffer.from("safe"), () => {}));
-    invoke(() => fs.writeSync(1, "safe"));
-    invoke(() => fs.writevSync(1, []));
-    invoke(() => fs.openSync("ssc-runtime-gate", fs.constants.O_WRONLY));
-    invoke(() => fsPromises.writeFile("ssc-runtime-gate", "safe"));
-    invoke(() => console.log("ssc-runtime-gate"));
-    invoke(() => { process.env.SSC_RUNTIME_GATE = "safe"; });
-    invoke(() => { delete process.env.SSC_RUNTIME_GATE; });
-    invoke(() => Object.defineProperty(process.env, "SSC_RUNTIME_GATE", { value: "safe" }));
+    await invoke(() => crypto.createHash("sha256"), () => markEffect("CRYPTO_CREATEHASH_EFFECT"));
+    if (typeof cryptoHash === "function") {
+      await invoke(() => cryptoHash("sha256", "synthetic"), () => markEffect("CRYPTO_HASH_EFFECT"));
+    }
+    if (typeof cryptoRandomUUID === "function") {
+      await invoke(() => cryptoRandomUUID(), () => markEffect("CRYPTO_RANDOMUUID_EFFECT"));
+    }
+    if (typeof subtleDigest === "function") {
+      await invoke(() => subtleDigest.call(subtle, "SHA-256", new Uint8Array()), () => markEffect("WEBCRYPTO_DIGEST_EFFECT"));
+    }
+    if (typeof webcryptoRandomUUID === "function") {
+      await invoke(() => webcryptoRandomUUID.call(crypto.webcrypto ?? globalThis.crypto), () => markEffect("WEBCRYPTO_RANDOMUUID_EFFECT"));
+    }
+    if (typeof webcryptoGetRandomValues === "function") {
+      await invoke(() => webcryptoGetRandomValues.call(crypto.webcrypto ?? globalThis.crypto, randomValues), () => markEffect("WEBCRYPTO_GETRANDOMVALUES_EFFECT"));
+    }
+    await invoke(() => fs.write(devNullFd, Buffer.from("synthetic"), () => markEffect("FS_WRITE_EFFECT")));
+    await invoke(() => fs.writeSync(devNullFd, "synthetic"), () => markEffect("FS_WRITESYNC_EFFECT"));
+    await invoke(() => fs.writevSync(devNullFd, []), () => markEffect("FS_WRITEVSYNC_EFFECT"));
+    await invoke(() => fs.openSync(os.devNull, fs.constants.O_WRONLY), (fd) => {
+      markEffect("FS_OPENSYNC_EFFECT");
+      if (typeof fd === "number") fs.closeSync(fd);
+    });
+    await invoke(() => fs.open(os.devNull, fs.constants.O_WRONLY, (error, fd) => {
+      if (fd !== undefined) {
+        markEffect("FS_OPEN_EFFECT");
+        try { fs.closeSync(fd); } catch { /* synthetic descriptor cleanup */ }
+      }
+      void error;
+    }));
+    await invoke(() => fsPromises.open(os.devNull, fs.constants.O_WRONLY), async (handle) => {
+      markEffect("FS_PROMISES_OPEN_EFFECT");
+      await handle?.close?.();
+    });
+    await invoke(() => fsPromises.writeFile(os.devNull, "synthetic"), () => markEffect("FS_PROMISES_WRITEFILE_EFFECT"));
+    await invoke(() => console.log("ssc-runtime-gate"));
+    await invoke(() => { process.env.SSC_RUNTIME_GATE = "safe"; });
+    await invoke(() => { delete process.env.SSC_RUNTIME_GATE; });
+    await invoke(() => Object.defineProperty(process.env, "SSC_RUNTIME_GATE", { value: "safe" }));
+    await settle(state);
   } finally {
     state.active = previousActive;
     state.current = previousCurrent;
+    try { fs.closeSync(devNullFd); } catch { /* synthetic descriptor cleanup */ }
+    state.capabilityFd = null;
   }
   const requiredIds = [
     "CRYPTO_CREATEHASH",
+    "CRYPTO_HASH",
+    "CRYPTO_RANDOMUUID",
     "WEBCRYPTO_DIGEST",
+    "WEBCRYPTO_RANDOMUUID",
+    "WEBCRYPTO_GETRANDOMVALUES",
     "FS_WRITE",
     "FS_WRITESYNC",
     "FS_WRITEVSYNC",
+    "FS_OPEN",
     "FS_OPENSYNC",
     "FS_PROMISES_WRITEFILE",
+    "FS_PROMISES_OPEN",
     "CONSOLE_LOG",
     "ENV_SET",
     "ENV_DELETE",
     "ENV_DEFINE",
   ];
-  const pass = requiredIds.every((id) => (state.runtimeEvents.get(id) ?? 0) > 0);
+  const outputEffect = (state.runtimeEvents.get("STDOUT_WRITE") ?? 0) > outputBefore;
+  const pass = requiredIds.every((id) => (state.runtimeEvents.get(id) ?? 0) > 0) &&
+    effects.size === 0 && !outputEffect && process.env.SSC_RUNTIME_GATE === undefined;
   state.runtimeEvents.clear();
   return Object.freeze({
     id: "NC22_RUNTIME_PRE_EFFECT_CAPABILITY",
@@ -1183,7 +1266,7 @@ function runRuntimeCapabilityControl(state) {
   });
 }
 
-function runBehavioralControls(state) {
+async function runBehavioralControls(state) {
   const markers = state.markers;
   const causeError = new Error("safe");
   causeError.cause = new Error(markers.connection);
@@ -1256,7 +1339,7 @@ function runBehavioralControls(state) {
   controls.push(runRestoreBoundaryControl());
   controls.push(...runSurfaceControls(state));
   controls.push(...runPoolBindingControls(state));
-  controls.push(runRuntimeCapabilityControl(state));
+  controls.push(await runRuntimeCapabilityControl(state));
   return Object.freeze({
     count: controls.length,
     ids: Object.freeze(controls.map((control) => control.id)),
@@ -1319,7 +1402,7 @@ export async function runSecretSurfaceBehavioralHarness(options = {}) {
     state.observedPool = ObservedPool;
     installWeakMapObserver(installed.ledger, state, ObservedPool);
     state.subjectUrl = pathToFileURL(subjectPath).href;
-    const observerControls = runBehavioralControls(state);
+    const observerControls = await runBehavioralControls(state);
     const scenarioResults = [];
     for (const scenario of SCENARIOS) {
       const result = await runScenario(state, scenario);
