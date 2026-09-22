@@ -160,10 +160,104 @@ const INDEPENDENT_MATRIX_SNIPPETS = Object.freeze([
   ["INDEPENDENT_UNKNOWN_COMPUTED", "const independentName = input.expectedUser; console[independentName](input.connectionPassword);", "SSC_COMPUTED_ACCESS", "COMPUTED_CAPABILITY"],
 ]);
 
+const PROVENANCE_IDENTITY_REGRESSION_CASES = Object.freeze([
+  Object.freeze({
+    id: "PROVENANCE_LITERAL_EXPECTED_DATABASE",
+    property: "database",
+    replacement: '"input.expectedDatabase"',
+    code: "SSC_AUTHORITY_SHAPE",
+    detector: "AUTHORITY_SCHEMA",
+  }),
+  Object.freeze({
+    id: "PROVENANCE_LITERAL_QUERY_CATALOG",
+    property: "clusterFingerprint",
+    replacement: '"query.catalog_fingerprint"',
+    code: "SSC_AUTHORITY_SHAPE",
+    detector: "AUTHORITY_SCHEMA",
+  }),
+  Object.freeze({
+    id: "PROVENANCE_LITERAL_QUERY_LIFECYCLE",
+    property: "lifecycleFingerprint",
+    replacement: '"query.lifecycle_fingerprint"',
+    code: "SSC_AUTHORITY_SHAPE",
+    detector: "AUTHORITY_SCHEMA",
+  }),
+  Object.freeze({
+    id: "PROVENANCE_LITERAL_MIGRATIONS_FOLDER",
+    property: "migrationsFolder",
+    replacement: '"input.migrationsFolder"',
+    code: "SSC_AUTHORITY_SHAPE",
+    detector: "AUTHORITY_SCHEMA",
+  }),
+  Object.freeze({
+    id: "PROVENANCE_LITERAL_INITIALIZATION",
+    property: "phase",
+    replacement: '"initialization"',
+    code: "SSC_AUTHORITY_SHAPE",
+    detector: "AUTHORITY_SCHEMA",
+  }),
+  Object.freeze({
+    id: "PROVENANCE_LITERAL_EXPECTED_USER",
+    property: "user",
+    replacement: '"input.expectedUser"',
+    code: "SSC_AUTHORITY_SHAPE",
+    detector: "AUTHORITY_SCHEMA",
+  }),
+  Object.freeze({
+    id: "PROVENANCE_LITERAL_BOOLEAN_TRUE",
+    property: "valid",
+    replacement: '"true"',
+    code: "SSC_AUTHORITY_SHAPE",
+    detector: "AUTHORITY_SCHEMA",
+  }),
+]);
+
 function insertIndependentSnippet(source, snippet) {
   const rootStart = source.indexOf("export async function withDisposablePostgresFixtureMigration");
   const insertion = source.indexOf("{", rootStart) + 1;
   return `${source.slice(0, insertion)}${snippet}\n${source.slice(insertion)}`;
+}
+
+function replaceAuthorityProperty(source, property, replacement) {
+  const authorityStart = source.indexOf("migrationAuthorityValues.set(authority, {");
+  const propertyStart = source.indexOf(`      ${property}:`, authorityStart);
+  const lineEnd = source.indexOf("\n", propertyStart);
+  if (authorityStart < 0 || propertyStart < 0 || lineEnd < 0) {
+    throw new Error(`PROVENANCE_MUTANT_ANCHOR:${property}`);
+  }
+  const originalLine = source.slice(propertyStart, lineEnd);
+  const lineEnding = originalLine.endsWith("\r") ? "\r" : "";
+  const line = originalLine.slice(0, originalLine.length - lineEnding.length);
+  const updatedLine = line.replace(
+    new RegExp(`^(\\s*${property}:)\\s*.*$`, "u"),
+    `$1 ${replacement},`,
+  );
+  if (updatedLine === line) throw new Error(`PROVENANCE_MUTANT_REPLACE:${property}`);
+  return `${source.slice(0, propertyStart)}${updatedLine}${lineEnding}${source.slice(lineEnd)}`;
+}
+
+async function runProvenanceIdentityRegressions() {
+  const frozen = await readFrozenMigrationClosureSource();
+  const authorityVariants = PROVENANCE_IDENTITY_REGRESSION_CASES.map((item) => ({
+    id: item.id,
+    source: replaceAuthorityProperty(frozen.source, item.property, item.replacement),
+  }));
+  const fakeIdentitySqlSource = insertIndependentSnippet(
+    frozen.source.replaceAll("pool.query(identitySql,", "pool.query(fakeIdentitySql,"),
+    'const fakeIdentitySql = "identitySql";',
+  );
+  const variants = [
+    ...authorityVariants,
+    { id: "PROVENANCE_LITERAL_IDENTITY_SQL", source: fakeIdentitySqlSource },
+  ];
+  const results = await analyzeMigrationClosureVariants(variants);
+  const pass = results.every((result, index) => {
+    const expected = index < PROVENANCE_IDENTITY_REGRESSION_CASES.length
+      ? PROVENANCE_IDENTITY_REGRESSION_CASES[index]
+      : { code: "SSC_SECRET_FLOW_DENIED", detector: "CAPABILITY_QUERY" };
+    return !result.ok && result.result.code === expected.code && result.result.detector === expected.detector;
+  });
+  return Object.freeze({ pass, count: results.length, results });
 }
 
 async function runIndependentSourceAssurance() {
@@ -206,6 +300,7 @@ test("SSC_BASELINE_SECRET_SURFACE", async (suite) => {
   const runtimeF2 = await runSecretSurfaceF2();
   const runtimeF3 = await runSecretSurfaceF3();
   const independentAssurance = await runIndependentSourceAssurance();
+  const provenanceRegressions = await runProvenanceIdentityRegressions();
 
   assert.deepEqual(positiveControls.ids, migrationClosurePositiveControlIds);
   assert.equal(positiveControls.pass, true);
@@ -219,6 +314,19 @@ test("SSC_BASELINE_SECRET_SURFACE", async (suite) => {
   assert.equal(independentAssurance.matrixPass, true);
   assert.equal(independentAssurance.positiveCount, 8);
   assert.equal(independentAssurance.matrixCount, 32);
+  assert.equal(provenanceRegressions.pass, true);
+  assert.equal(provenanceRegressions.count, PROVENANCE_IDENTITY_REGRESSION_CASES.length + 1);
+
+  for (const [index, regression] of provenanceRegressions.results.entries()) {
+    const expected = index < PROVENANCE_IDENTITY_REGRESSION_CASES.length
+      ? PROVENANCE_IDENTITY_REGRESSION_CASES[index]
+      : { id: "PROVENANCE_LITERAL_IDENTITY_SQL", code: "SSC_SECRET_FLOW_DENIED", detector: "CAPABILITY_QUERY" };
+    await suite.test(expected.id, () => {
+      assert.equal(regression.ok, false, expected.id);
+      assert.equal(regression.result.code, expected.code, expected.id);
+      assert.equal(regression.result.detector, expected.detector, expected.id);
+    });
+  }
 
   assert.equal(baseline.id, "SSC_STATIC_BASELINE");
   assert.equal(baseline.ok, true);

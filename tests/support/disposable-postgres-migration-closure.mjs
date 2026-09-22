@@ -357,6 +357,16 @@ function summarizeRisk(item, seen = new Set()) {
   return { taint, caps };
 }
 
+function sameIdentitySet(left, right) {
+  const actual = left instanceof Set ? left : new Set(left ?? []);
+  const expected = right instanceof Set ? right : new Set(right ?? []);
+  return actual.size === expected.size && [...expected].every((item) => actual.has(item));
+}
+
+function sameIdentitySequence(left, right) {
+  return left.length === right.length && left.every((item, index) => sameIdentitySet(item, right[index]));
+}
+
 function rememberRisk(target, source) {
   if (!target || !source) return target;
   const risk = summarizeRisk(source);
@@ -401,7 +411,7 @@ function deleteValueProperty(target, key) {
 
 function provenanceOf(item) {
   if (item?.provenance instanceof Set) return item.provenance;
-  return item?.label ? new Set([item.label]) : new Set();
+  return new Set();
 }
 
 function combinedProvenance(items) {
@@ -439,6 +449,8 @@ function value({
   methods = null,
   refs = null,
   constant = undefined,
+  literalType = "",
+  binding = null,
   provenance = [],
 } = {}) {
   const directTaint = taint ?? Taint.NONE;
@@ -457,11 +469,13 @@ function value({
     fn,
     closure,
     bound,
+    binding,
     label,
     directCredential,
     elements,
     map,
     constant,
+    literalType,
     provenance: directProvenance,
     historyProvenance: new Set(directProvenance),
   };
@@ -471,23 +485,37 @@ function unknownValue() {
   return value();
 }
 
-function primitiveValue(label = "") {
+function primitiveValue(label = "", options = {}) {
+  const constant = Object.prototype.hasOwnProperty.call(options, "constant")
+    ? options.constant
+    : label;
   return value({
     kind: "primitive",
     label,
-    constant: label,
-    provenance: label ? [label] : [],
+    constant,
+    literalType: options.literalType ?? "abstract",
+    provenance: options.provenance ?? [],
   });
 }
 
-function credentialValue() {
+function credentialValue(origin) {
   return value({
     kind: "credential",
     taint: Taint.CREDENTIAL,
     directCredential: true,
     label: "input.connectionPassword",
-    provenance: ["input.connectionPassword"],
+    provenance: origin ? [origin] : [],
   });
+}
+
+function booleanValue(boolean) {
+  return primitiveValue(String(boolean), { constant: boolean, literalType: "boolean" });
+}
+
+function isBooleanValue(item, expected) {
+  return item?.kind === "primitive" &&
+    item.literalType === "boolean" &&
+    item.constant === expected;
 }
 
 function capabilityValue(cap, options = {}) {
@@ -512,8 +540,10 @@ function mergeValues(left, right) {
     taint: joinTaint(summarizeRisk(left).taint, summarizeRisk(right).taint),
     caps: [...summarizeRisk(left).caps, ...summarizeRisk(right).caps],
     bound: left.bound === right.bound ? left.bound : null,
+    binding: left.binding === right.binding ? left.binding : null,
     label: left.label === right.label ? left.label : "",
     directCredential: left.directCredential && right.directCredential,
+    literalType: left.literalType === right.literalType ? left.literalType : "",
     provenance: new Set([...provenanceOf(left), ...provenanceOf(right)]),
     constant: left.constant === right.constant ? left.constant : undefined,
   });
@@ -579,6 +609,42 @@ class ClosureAnalyzer {
     this.graphEdges = new Set();
     this.graphNodeCounter = 0;
     this.dormantBodies = [];
+    this.originIdentities = new Map();
+    this.identitySqlBinding = this.originIdentity("binding.identitySql");
+  }
+
+  originIdentity(key) {
+    let identity = this.originIdentities.get(key);
+    if (!identity) {
+      identity = Symbol(key);
+      this.originIdentities.set(key, identity);
+    }
+    return identity;
+  }
+
+  canonicalDefaultOrigin(node) {
+    if (!ts.isStringLiteral(node) || !ts.isBinaryExpression(node.parent) ||
+        node.parent.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken ||
+        node.parent.right !== node || !ts.isVariableDeclaration(node.parent.parent) ||
+        !ts.isIdentifier(node.parent.parent.name) ||
+        node.parent.parent.initializer !== node.parent) {
+      return null;
+    }
+    const variableName = node.parent.parent.name.text;
+    if (variableName === "expectedUser" && node.text === "cloud_admin") {
+      return this.originIdentity("default.expectedUser.cloud_admin");
+    }
+    if (variableName === "phase" && node.text === "initialization") {
+      return this.originIdentity("default.phase.initialization");
+    }
+    return null;
+  }
+
+  literalValue(node) {
+    const result = primitiveValue(node.text, { literalType: "string" });
+    const defaultOrigin = this.canonicalDefaultOrigin(node);
+    if (defaultOrigin) result.provenance.add(defaultOrigin);
+    return result;
   }
 
   analyze() {
@@ -736,7 +802,10 @@ class ClosureAnalyzer {
           const key = keyForDeclaration(declaration.name);
           if (declaration.initializer) {
             const initialized = this.evalExpression(declaration.initializer, moduleEnv, {});
-            if (declaration.name.text === "identitySql") initialized.label = "identitySql";
+            if (declaration.name.text === "identitySql") {
+              initialized.label = "identitySql";
+              initialized.binding = this.identitySqlBinding;
+            }
             this.topValues.set(key, initialized);
             this.topValuesByName.set(declaration.name.text, initialized);
             if (declaration.name.text === "migrationAuthorityValues") initialized.role = "authority-store";
@@ -1010,7 +1079,7 @@ class ClosureAnalyzer {
   classConstructorHasRelevantInput(callee, args) {
     return args.some((item) => item?.kind === "input" ||
       hasTaint(item, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC | Taint.MAYBE_SENSITIVE) ||
-      [...provenanceOf(item)].some((label) => label.startsWith("input.") || label.startsWith("query.")));
+      provenanceOf(item).size > 0);
   }
 
   analyzeStatements(statements, env, context) {
@@ -1207,16 +1276,21 @@ class ClosureAnalyzer {
       case ts.SyntaxKind.Identifier:
         return this.lookup(node, env);
       case ts.SyntaxKind.StringLiteral:
+        return this.literalValue(node);
       case ts.SyntaxKind.NumericLiteral:
+        return primitiveValue(node.text, { constant: Number(node.text), literalType: "number" });
       case ts.SyntaxKind.BigIntLiteral:
+        return primitiveValue(node.text, { literalType: "bigint" });
       case ts.SyntaxKind.NoSubstitutionTemplateLiteral:
-        return primitiveValue(node.text);
+        return primitiveValue(node.text, { literalType: "string" });
       case ts.SyntaxKind.RegularExpressionLiteral:
         return value({ kind: "regexp" });
       case ts.SyntaxKind.TrueKeyword:
+        return booleanValue(true);
       case ts.SyntaxKind.FalseKeyword:
+        return booleanValue(false);
       case ts.SyntaxKind.NullKeyword:
-        return primitiveValue(ts.tokenToString(node.kind) ?? "literal");
+        return primitiveValue("null", { constant: null, literalType: "null" });
       case ts.SyntaxKind.ThisKeyword:
         return this.currentThis ?? value({ kind: "this" });
       case ts.SyntaxKind.SuperKeyword:
@@ -1398,10 +1472,8 @@ class ClosureAnalyzer {
   evalKey(node, env, context) {
     if (!node) return null;
     const key = this.evalExpression(node, env, context);
-    if (key.constant !== undefined && key.constant !== "") return String(key.constant);
-    if (key.label && key.kind === "primitive" && !key.label.startsWith("input.") && !key.label.startsWith("query.")) {
-      return String(key.label);
-    }
+    if (key.literalType && key.literalType !== "abstract" &&
+        key.constant !== undefined && key.constant !== "") return String(key.constant);
     return null;
   }
 
@@ -1456,7 +1528,10 @@ class ClosureAnalyzer {
         const password = options.props.get("password");
         if (password.kind !== "credential" ||
             !password.directCredential ||
-            password.label !== "input.connectionPassword" ||
+            !sameIdentitySet(
+              provenanceOf(password),
+              new Set([this.originIdentity("input.connectionPassword")]),
+            ) ||
             summarizeRisk(password).taint !== Taint.CREDENTIAL ||
             summarizeRisk(password).caps.size > 0) {
           fail(SAFE.flow, "CAPABILITY_PASSWORD");
@@ -1626,18 +1701,20 @@ class ClosureAnalyzer {
     }
     if (receiver.kind === "input") {
       if (name === "connectionPassword") {
-        const result = credentialValue();
+        const result = credentialValue(this.originIdentity("input.connectionPassword"));
         this.graphEdge(receiver, result, "READS");
         return result;
       }
       if (SAFE_INPUT_FIELDS.has(name)) {
-        const result = primitiveValue(`input.${name}`);
+        const result = primitiveValue(`input.${name}`, { constant: undefined });
+        result.provenance.add(this.originIdentity(`input.${name}`));
         this.graphEdge(receiver, result, "READS");
         return result;
       }
     }
     if (receiver.kind === "row" && QUERY_ROW_FIELDS.has(name)) {
-      const result = primitiveValue(`query.${name}`);
+      const result = primitiveValue(`query.${name}`, { constant: undefined });
+      result.provenance.add(this.originIdentity(`query.${name}`));
       this.graphEdge(receiver, result, "READS");
       return result;
     }
@@ -1754,15 +1831,14 @@ class ClosureAnalyzer {
     if (callee.caps.has("ENV")) fail(SAFE.flow, "CAPABILITY_ENV");
     if (callee.caps.has("CLASS_SUPER")) return primitiveValue("super");
     if (callee.caps.has("POOL_QUERY")) {
-      if (args.length !== 2 || args[0].label !== "identitySql" || args[1].kind !== "array" ||
+      if (args.length !== 2 || args[0].binding !== this.identitySqlBinding || args[1].kind !== "array" ||
           args[1].elements?.length !== 2 || args[1].elements.some((item) => hasTaint(item, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC))) {
         fail(SAFE.flow, "CAPABILITY_QUERY");
       }
       if (callee.bound?.kind !== "pool") fail(SAFE.flow, "CAPABILITY_QUERY");
-      const identityArguments = args[1].elements.map((item) => [...provenanceOf(item)].sort().join("|"));
+      const identityArguments = args[1].elements.map((item) => new Set(provenanceOf(item)));
       if (this.identityQueryPool && this.identityQueryPool !== callee.bound) fail(SAFE.flow, "CAPABILITY_QUERY");
-      if (this.identityQueryArguments && (identityArguments.length !== this.identityQueryArguments.length ||
-          identityArguments.some((item, index) => item !== this.identityQueryArguments[index]))) {
+      if (this.identityQueryArguments && !sameIdentitySequence(identityArguments, this.identityQueryArguments)) {
         fail(SAFE.flow, "CAPABILITY_QUERY");
       }
       this.identityQueryPool = callee.bound;
@@ -1786,14 +1862,13 @@ class ClosureAnalyzer {
       return client;
     }
     if (callee.caps.has("CLIENT_QUERY")) {
-      if (args.length !== 2 || args[0].label !== "identitySql" || args[1].kind !== "array" ||
+      if (args.length !== 2 || args[0].binding !== this.identitySqlBinding || args[1].kind !== "array" ||
           args[1].elements?.length !== 2 || callee.bound?.pool?.kind !== "pool") {
         fail(SAFE.flow, "CAPABILITY_QUERY");
       }
-      const identityArguments = args[1].elements.map((item) => [...provenanceOf(item)].sort().join("|"));
+      const identityArguments = args[1].elements.map((item) => new Set(provenanceOf(item)));
       if (this.identityQueryPool && this.identityQueryPool !== callee.bound.pool) fail(SAFE.flow, "CAPABILITY_QUERY");
-      if (this.identityQueryArguments && (identityArguments.length !== this.identityQueryArguments.length ||
-          identityArguments.some((item, index) => item !== this.identityQueryArguments[index]))) {
+      if (this.identityQueryArguments && !sameIdentitySequence(identityArguments, this.identityQueryArguments)) {
         fail(SAFE.flow, "CAPABILITY_QUERY");
       }
       this.identityQueryPool = callee.bound.pool;
@@ -1848,15 +1923,7 @@ class ClosureAnalyzer {
     }
     if (callee.caps.has("WEAKMAP_GET")) {
       if (args.length !== 1) fail(SAFE.authority, "AUTHORITY_SCHEMA");
-      let record = callee.bound.map.get(args[0]);
-      if (!record && args[0]?.provenance) {
-        for (const [candidate, candidateRecord] of callee.bound.map) {
-          if (candidate?.provenance === args[0].provenance) {
-            record = candidateRecord;
-            break;
-          }
-        }
-      }
+      const record = callee.bound.map.get(args[0]);
       if (!record && callee.bound?.role === "authority-store") fail(SAFE.authority, "AUTHORITY_SCHEMA");
       return record ?? unknownValue();
     }
@@ -2128,24 +2195,27 @@ class ClosureAnalyzer {
     if (record.props.get("pool")?.kind !== "pool") {
       fail(SAFE.authority, "AUTHORITY_SCHEMA");
     }
-    if (record.props.get("valid")?.label !== "true") {
+    if (!isBooleanValue(record.props.get("valid"), true)) {
       fail(SAFE.authority, "AUTHORITY_SCHEMA");
     }
-    const exact = (name, expected) => {
+    const exact = (name, expectedKeys) => {
       const item = record.props.get(name);
-      if (!item || !(item.provenance instanceof Set) || item.provenance.size !== expected.length ||
-          !expected.every((label) => item.provenance.has(label))) {
+      const expected = new Set(expectedKeys.map((key) => this.originIdentity(key)));
+      if (!item || !sameIdentitySet(provenanceOf(item), expected)) {
         fail(SAFE.authority, "AUTHORITY_SCHEMA");
       }
     };
     exact("database", ["input.expectedDatabase"]);
-    exact("user", ["input.expectedUser", "cloud_admin"]);
+    exact("user", ["input.expectedUser", "default.expectedUser.cloud_admin"]);
     exact("clusterFingerprint", ["query.catalog_fingerprint"]);
     exact("lifecycleFingerprint", ["query.lifecycle_fingerprint"]);
     exact("migrationsFolder", ["input.migrationsFolder"]);
     const phase = record.props.get("phase");
-    if (!phase?.provenance?.has("initialization") ||
-        [...phase.provenance].some((label) => label !== "initialization" && label !== "input.phase")) {
+    const expectedPhase = new Set([
+      this.originIdentity("input.phase"),
+      this.originIdentity("default.phase.initialization"),
+    ]);
+    if (!phase || !sameIdentitySet(provenanceOf(phase), expectedPhase)) {
       fail(SAFE.authority, "AUTHORITY_SCHEMA");
     }
   }
@@ -2178,7 +2248,7 @@ class ClosureAnalyzer {
         this.graphEdge(right, receiver, "DECLASSIFICATION_USE");
         return;
       }
-      if (receiver === this.authorityRecord && name === "valid" && right.label === "false") {
+      if (receiver === this.authorityRecord && name === "valid" && isBooleanValue(right, false)) {
         assignValueProperty(receiver, name, right);
         return;
       }
