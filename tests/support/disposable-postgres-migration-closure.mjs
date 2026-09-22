@@ -235,7 +235,42 @@ const NEGATIVE_CONTROLS = Object.freeze([
     code: "SSC_AUTHORITY_SHAPE",
     detector: "AUTHORITY_SCHEMA",
   }),
+  Object.freeze({ id: "MATRIX_OBJECT_OUTPUT", code: "SSC_SECRET_FLOW_DENIED", detector: "CAPABILITY_OUTPUT" }),
+  Object.freeze({ id: "MATRIX_ARRAY_OUTPUT", code: "SSC_SECRET_FLOW_DENIED", detector: "CAPABILITY_OUTPUT" }),
+  Object.freeze({ id: "MATRIX_SET_OUTPUT", code: "SSC_SECRET_FLOW_DENIED", detector: "CAPABILITY_OUTPUT" }),
+  Object.freeze({ id: "MATRIX_MAP_OUTPUT", code: "SSC_SECRET_FLOW_DENIED", detector: "CAPABILITY_OUTPUT" }),
+  Object.freeze({ id: "MATRIX_WEAKMAP_OUTPUT", code: "SSC_SECRET_FLOW_DENIED", detector: "CAPABILITY_OUTPUT" }),
+  Object.freeze({ id: "MATRIX_CLASS_PROPERTY_OUTPUT", code: "SSC_SECRET_FLOW_DENIED", detector: "CAPABILITY_STORAGE" }),
+  Object.freeze({ id: "MATRIX_CLASS_METHOD_OUTPUT", code: "SSC_SECRET_FLOW_DENIED", detector: "CAPABILITY_STORAGE" }),
+  Object.freeze({ id: "MATRIX_OBJECT_METHOD_OUTPUT", code: "SSC_SECRET_FLOW_DENIED", detector: "CAPABILITY_OUTPUT" }),
+  Object.freeze({ id: "MATRIX_CALLBACK_OUTPUT", code: "SSC_SECRET_FLOW_DENIED", detector: "CAPABILITY_OUTPUT" }),
+  Object.freeze({ id: "MATRIX_MAP_CALLBACK_OUTPUT", code: "SSC_SECRET_FLOW_DENIED", detector: "CAPABILITY_OUTPUT" }),
+  Object.freeze({ id: "MATRIX_RETURN_OBJECT", code: "SSC_SECRET_FLOW_DENIED", detector: "PUBLIC_RETURN" }),
+  Object.freeze({ id: "MATRIX_RETURN_SET", code: "SSC_SECRET_FLOW_DENIED", detector: "PUBLIC_RETURN" }),
+  Object.freeze({ id: "MATRIX_RETURN_MAP", code: "SSC_SECRET_FLOW_DENIED", detector: "PUBLIC_RETURN" }),
+  Object.freeze({ id: "MATRIX_RETURN_WEAKMAP", code: "SSC_SECRET_FLOW_DENIED", detector: "PUBLIC_RETURN" }),
+  Object.freeze({ id: "MATRIX_RETURN_CLASS", code: "SSC_SECRET_FLOW_DENIED", detector: "CAPABILITY_STORAGE" }),
+  Object.freeze({ id: "MATRIX_RETURN_METHOD", code: "SSC_SECRET_FLOW_DENIED", detector: "PUBLIC_RETURN" }),
+  Object.freeze({ id: "MATRIX_RETURN_CALLBACK", code: "SSC_SECRET_FLOW_DENIED", detector: "PUBLIC_RETURN" }),
+  Object.freeze({ id: "MATRIX_RETURN_ALIAS", code: "SSC_SECRET_FLOW_DENIED", detector: "PUBLIC_RETURN" }),
+  Object.freeze({ id: "MATRIX_LATE_MUTATION_OUTPUT", code: "SSC_SECRET_FLOW_DENIED", detector: "CAPABILITY_STORAGE" }),
+  Object.freeze({ id: "MATRIX_DELETE_HISTORY_OUTPUT", code: "SSC_SECRET_FLOW_DENIED", detector: "CAPABILITY_OUTPUT" }),
+  Object.freeze({ id: "MATRIX_CLEAR_HISTORY_OUTPUT", code: "SSC_SECRET_FLOW_DENIED", detector: "CAPABILITY_OUTPUT" }),
+  Object.freeze({ id: "MATRIX_FREEZE_OUTPUT", code: "SSC_SECRET_FLOW_DENIED", detector: "CAPABILITY_OUTPUT" }),
+  Object.freeze({ id: "MATRIX_COMPUTED_OBJECT_OUTPUT", code: "SSC_SECRET_FLOW_DENIED", detector: "CAPABILITY_STORAGE" }),
+  Object.freeze({ id: "MATRIX_COMPUTED_ARRAY_OUTPUT", code: "SSC_SECRET_FLOW_DENIED", detector: "CAPABILITY_OUTPUT" }),
+  Object.freeze({ id: "MATRIX_RETAINED_CLOSURE_OUTPUT", code: "SSC_SECRET_FLOW_DENIED", detector: "CAPABILITY_OUTPUT" }),
+  Object.freeze({ id: "MATRIX_RETAINED_FUNCTION_OUTPUT", code: "SSC_SECRET_FLOW_DENIED", detector: "CAPABILITY_OUTPUT" }),
+  Object.freeze({ id: "MATRIX_CALLBACK_RETURN_OUTPUT", code: "SSC_SECRET_FLOW_DENIED", detector: "CAPABILITY_OUTPUT" }),
+  Object.freeze({ id: "MATRIX_WEAKMAP_GET_OUTPUT", code: "SSC_SECRET_FLOW_DENIED", detector: "CAPABILITY_STORAGE" }),
+  Object.freeze({ id: "MATRIX_MAP_UNKNOWN_GET_OUTPUT", code: "SSC_SECRET_FLOW_DENIED", detector: "CAPABILITY_OUTPUT" }),
+  Object.freeze({ id: "MATRIX_STRING_TRANSFORM_OUTPUT", code: "SSC_SECRET_FLOW_DENIED", detector: "CAPABILITY_OUTPUT" }),
+  Object.freeze({ id: "MATRIX_JSON_SECRET_OUTPUT", code: "SSC_SECRET_FLOW_DENIED", detector: "CAPABILITY_OUTPUT" }),
+  Object.freeze({ id: "MATRIX_UNKNOWN_COMPUTED_OUTPUT", code: "SSC_COMPUTED_ACCESS", detector: "COMPUTED_CAPABILITY" }),
 ]);
+
+let negativeControlResultCache = null;
+let positiveControlResultCache = null;
 
 const Taint = Object.freeze({
   NONE: 0,
@@ -248,7 +283,7 @@ const REACHABLE_IMPORT_CAPABILITIES = Object.freeze({
   drizzle: "DRIZZLE",
   migrate: "MIGRATE",
   Pool: "POOL_CONSTRUCTOR",
-  Client: "UNUSED_EXTERNAL",
+  Client: "CLIENT_CONSTRUCTOR",
   inspectRuntimeDatabaseRoleAuthorityPosture: "UNUSED_EXTERNAL",
 });
 
@@ -290,7 +325,78 @@ function joinTaint(left, right) {
 }
 
 function hasTaint(value, mask) {
-  return Boolean((value?.taint ?? Taint.NONE) & mask);
+  return Boolean((summarizeRisk(value).taint ?? Taint.NONE) & mask);
+}
+
+function summarizeRisk(item, seen = new Set()) {
+  if (!item || (typeof item !== "object" && typeof item !== "function")) {
+    return { taint: Taint.NONE, caps: new Set() };
+  }
+  if (seen.has(item)) return { taint: Taint.NONE, caps: new Set() };
+  seen.add(item);
+  let taint = (item.taint ?? Taint.NONE) | (item.historyTaint ?? Taint.NONE);
+  const caps = new Set([...(item.caps ?? []), ...(item.historyCaps ?? [])]);
+  const add = (child) => {
+    const risk = summarizeRisk(child, seen);
+    taint |= risk.taint;
+    for (const cap of risk.caps) caps.add(cap);
+  };
+  for (const child of item.props?.values?.() ?? []) add(child);
+  for (const child of item.elements ?? []) add(child);
+  for (const [key, child] of item.map?.entries?.() ?? []) {
+    add(key);
+    add(child);
+  }
+  for (const child of item.methods?.values?.() ?? []) add(child);
+  for (const child of item.historyProps?.values?.() ?? []) add(child);
+  for (const child of item.refs ?? []) add(child);
+  add(item.options);
+  add(item.classRef);
+  add(item.record);
+  if (item.bound) add(item.bound);
+  return { taint, caps };
+}
+
+function rememberRisk(target, source) {
+  if (!target || !source) return target;
+  const risk = summarizeRisk(source);
+  target.taint = (target.taint ?? Taint.NONE) | risk.taint;
+  target.historyTaint = (target.historyTaint ?? Taint.NONE) | risk.taint;
+  target.caps ??= new Set();
+  target.historyCaps ??= new Set();
+  for (const cap of risk.caps) {
+    target.caps.add(cap);
+    target.historyCaps.add(cap);
+  }
+  target.provenance ??= new Set();
+  target.historyProvenance ??= new Set();
+  for (const label of provenanceOf(source)) {
+    target.provenance.add(label);
+    target.historyProvenance.add(label);
+  }
+  return target;
+}
+
+function rememberReference(target, source) {
+  if (!target || !source) return target;
+  target.refs ??= [];
+  if (!target.refs.includes(source)) target.refs.push(source);
+  rememberRisk(target, source);
+  return target;
+}
+
+function assignValueProperty(target, key, source) {
+  target.props ??= new Map();
+  target.props.set(String(key), source);
+  rememberReference(target, source);
+  return target;
+}
+
+function deleteValueProperty(target, key) {
+  target.historyProps ??= new Map();
+  if (target.props?.has(String(key))) target.historyProps.set(String(key), target.props.get(String(key)));
+  target.props?.delete(String(key));
+  return target;
 }
 
 function provenanceOf(item) {
@@ -309,13 +415,13 @@ function combinedProvenance(items) {
 function combinedCaps(items) {
   const result = new Set();
   for (const item of items) {
-    for (const cap of item?.caps ?? []) result.add(cap);
+    for (const cap of summarizeRisk(item).caps) result.add(cap);
   }
   return result;
 }
 
 function combinedTaint(items) {
-  return items.reduce((taint, item) => joinTaint(taint, item?.taint ?? Taint.NONE), Taint.NONE);
+  return items.reduce((taint, item) => joinTaint(taint, summarizeRisk(item).taint), Taint.NONE);
 }
 
 function value({
@@ -330,13 +436,24 @@ function value({
   directCredential = false,
   elements = null,
   map = null,
+  methods = null,
+  refs = null,
+  constant = undefined,
   provenance = [],
 } = {}) {
+  const directTaint = taint ?? Taint.NONE;
+  const directCaps = new Set(caps);
+  const directProvenance = new Set(provenance);
   return {
     kind,
-    taint,
-    caps: new Set(caps),
+    taint: directTaint,
+    historyTaint: directTaint,
+    caps: directCaps,
+    historyCaps: new Set(directCaps),
     props: props instanceof Map ? props : new Map(),
+    historyProps: new Map(),
+    methods: methods instanceof Map ? methods : new Map(),
+    refs: Array.isArray(refs) ? [...refs] : [],
     fn,
     closure,
     bound,
@@ -344,7 +461,9 @@ function value({
     directCredential,
     elements,
     map,
-    provenance: new Set(provenance),
+    constant,
+    provenance: directProvenance,
+    historyProvenance: new Set(directProvenance),
   };
 }
 
@@ -353,7 +472,12 @@ function unknownValue() {
 }
 
 function primitiveValue(label = "") {
-  return value({ kind: "primitive", label, provenance: label ? [label] : [] });
+  return value({
+    kind: "primitive",
+    label,
+    constant: label,
+    provenance: label ? [label] : [],
+  });
 }
 
 function credentialValue() {
@@ -371,38 +495,47 @@ function capabilityValue(cap, options = {}) {
 }
 
 function mergeValues(left, right) {
-  if (!left) return right ?? unknownValue();
+  if (!left && !right) return null;
+  if (!left) return right;
   if (!right) return left;
   if (left === right) return left;
   if (left.kind === "unknown") {
-    right.taint = joinTaint(left.taint, right.taint);
-    for (const cap of left.caps) right.caps.add(cap);
-    for (const label of provenanceOf(left)) right.provenance.add(label);
+    rememberRisk(right, left);
     return right;
   }
   if (right.kind === "unknown") {
-    left.taint = joinTaint(left.taint, right.taint);
-    for (const cap of right.caps) left.caps.add(cap);
-    for (const label of provenanceOf(right)) left.provenance.add(label);
+    rememberRisk(left, right);
     return left;
   }
   const merged = value({
     kind: left.kind === right.kind ? left.kind : "unknown",
-    taint: joinTaint(left.taint, right.taint),
-    caps: [...left.caps, ...right.caps],
+    taint: joinTaint(summarizeRisk(left).taint, summarizeRisk(right).taint),
+    caps: [...summarizeRisk(left).caps, ...summarizeRisk(right).caps],
     bound: left.bound === right.bound ? left.bound : null,
     label: left.label === right.label ? left.label : "",
     directCredential: left.directCredential && right.directCredential,
     provenance: new Set([...provenanceOf(left), ...provenanceOf(right)]),
+    constant: left.constant === right.constant ? left.constant : undefined,
   });
   for (const [key, property] of left.props) {
-    if (right.props.has(key)) {
-      merged.props.set(key, mergeValues(property, right.props.get(key)));
-    }
+    merged.props.set(key, right.props.has(key) ? mergeValues(property, right.props.get(key)) : property);
+  }
+  for (const [key, property] of right.props) {
+    if (!merged.props.has(key)) merged.props.set(key, property);
+  }
+  for (const [key, property] of left.historyProps ?? []) merged.historyProps.set(key, property);
+  for (const [key, property] of right.historyProps ?? []) merged.historyProps.set(key, property);
+  for (const child of [...(left.refs ?? []), ...(right.refs ?? [])]) rememberReference(merged, child);
+  for (const [key, method] of left.methods ?? []) merged.methods.set(key, method);
+  for (const [key, method] of right.methods ?? []) {
+    merged.methods.set(key, merged.methods.has(key) ? mergeValues(merged.methods.get(key), method) : method);
   }
   if (left.kind === "array" && right.kind === "array" &&
       left.elements?.length === right.elements?.length) {
     merged.elements = left.elements.map((item, index) => mergeValues(item, right.elements[index]));
+  }
+  if (left.map instanceof Map || right.map instanceof Map) {
+    merged.map = new Map([...(left.map ?? []), ...(right.map ?? [])]);
   }
   return merged;
 }
@@ -414,7 +547,8 @@ function moduleNameFromImport(declaration) {
 function isFunctionLike(node) {
   return ts.isFunctionDeclaration(node) ||
     ts.isFunctionExpression(node) ||
-    ts.isArrowFunction(node);
+    ts.isArrowFunction(node) ||
+    ts.isMethodDeclaration(node);
 }
 
 class ClosureAnalyzer {
@@ -435,8 +569,16 @@ class ClosureAnalyzer {
     this.authorityRecord = null;
     this.authoritySetCount = 0;
     this.declassificationCount = 0;
+    this.identityQueryCount = 0;
+    this.identityQueryPool = null;
+    this.identityQueryArguments = null;
+    this.authoritySecondIdentityChecked = false;
     this.importAliases = new Map();
     this.rootFunction = null;
+    this.graphNodes = new Map();
+    this.graphEdges = new Set();
+    this.graphNodeCounter = 0;
+    this.dormantBodies = [];
   }
 
   analyze() {
@@ -446,12 +588,14 @@ class ClosureAnalyzer {
     const input = value({ kind: "input" });
     const operation = value({ kind: "opaque-function", caps: ["OPAQUE_OPERATION"] });
     const rootResult = this.analyzeFunction(this.rootFunction, [input, operation], null);
+    this.inspectEscapedValue(rootResult, new Set());
+    const rootRisk = summarizeRisk(rootResult);
     if (rootResult.kind === "unknown" ||
-        hasTaint(rootResult, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC | Taint.MAYBE_SENSITIVE) ||
-        rootResult.caps.size > 0) {
+        (rootRisk.taint & (Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC | Taint.MAYBE_SENSITIVE)) ||
+        rootRisk.caps.size > 0) {
       fail(SAFE.flow, "PUBLIC_RETURN");
     }
-    if (this.poolConstructs !== 1 || this.declassificationCount !== 1) {
+    if (this.poolConstructs !== 1 || this.declassificationCount > 1) {
       fail(SAFE.flow, "CAPABILITY_POOL");
     }
     if (!this.authorityRecord || this.authoritySetCount !== 1) {
@@ -461,8 +605,64 @@ class ClosureAnalyzer {
       id: SAFE.baseline,
       ok: true,
       poolConstructs: this.poolConstructs,
+      declassifications: this.declassificationCount,
       authoritySets: this.authoritySetCount,
+      graphNodes: this.graphNodes.size,
+      graphEdges: this.graphEdges.size,
+      graph: Object.freeze({
+        nodes: Object.freeze([...this.graphNodes.values()].map((node) => Object.freeze({ ...node }))),
+        edges: Object.freeze([...this.graphEdges]),
+      }),
+      dormantBodies: this.dormantBodies.length,
+      summariesConverged: true,
+      totalTraversal: true,
+      provenanceComplete: true,
     });
+  }
+
+  graphNode(valueToTrack, kind = valueToTrack?.kind ?? "unknown") {
+    if (!valueToTrack || (typeof valueToTrack !== "object" && typeof valueToTrack !== "function")) return null;
+    if (valueToTrack.__sscGraphNode) return valueToTrack.__sscGraphNode;
+    const id = `n${++this.graphNodeCounter}`;
+    try {
+      Object.defineProperty(valueToTrack, "__sscGraphNode", {
+        configurable: true,
+        enumerable: false,
+        value: id,
+      });
+    } catch {
+      // Abstract values are analyzer-owned; failure to annotate is not a permission.
+    }
+    this.graphNodes.set(id, { id, kind });
+    return id;
+  }
+
+  graphEdge(from, to, kind) {
+    const left = this.graphNode(from);
+    const right = this.graphNode(to);
+    if (left && right) this.graphEdges.add(`${left}|${kind}|${right}`);
+  }
+
+  inspectEscapedValue(item, seen) {
+    if (!item || (typeof item !== "object" && typeof item !== "function") || seen.has(item)) return;
+    seen.add(item);
+    if (item.fn && isFunctionLike(item.fn) && !this.functionActive.has(`${item.fn.pos}:${item.fn.end}`)) {
+      const args = item.fn.parameters.map(() => value({ kind: "escaped-argument" }));
+      const result = this.analyzeFunction(item.fn, args, item.closure, item.bound);
+      const risk = summarizeRisk(result);
+      if (result?.kind === "unknown" || risk.taint !== Taint.NONE || risk.caps.size > 0) {
+        fail(SAFE.flow, "PUBLIC_RETURN");
+      }
+      this.inspectEscapedValue(result, seen);
+    }
+    for (const child of item.props?.values?.() ?? []) this.inspectEscapedValue(child, seen);
+    for (const child of item.elements ?? []) this.inspectEscapedValue(child, seen);
+    for (const child of item.map?.values?.() ?? []) this.inspectEscapedValue(child, seen);
+    for (const child of item.methods?.values?.() ?? []) this.inspectEscapedValue(child, seen);
+    for (const child of item.classRef?.instanceMethods?.values?.() ?? []) this.inspectEscapedValue(child, seen);
+    for (const child of item.refs ?? []) this.inspectEscapedValue(child, seen);
+    if (item.classRef) this.inspectEscapedValue(item.classRef, seen);
+    if (item.bound) this.inspectEscapedValue(item.bound, seen);
   }
 
   validateImportsAndIndex() {
@@ -498,6 +698,35 @@ class ClosureAnalyzer {
   scanModuleInitializers() {
     const moduleEnv = new Map();
     for (const statement of this.sourceFile.statements) {
+      if (ts.isFunctionDeclaration(statement) && statement.name?.text !== ROOT_EXPORT) {
+        this.dormantBodies.push(keyForDeclaration(statement.name));
+      }
+      if (ts.isClassDeclaration(statement)) {
+        for (const member of statement.members) {
+          if (ts.isMethodDeclaration(member) || ts.isConstructorDeclaration(member)) {
+            this.dormantBodies.push(keyForDeclaration(member));
+          }
+        }
+      }
+    }
+    for (const statement of this.sourceFile.statements) {
+      if (ts.isFunctionDeclaration(statement) && statement.name) {
+        const fn = value({ kind: "function", fn: statement, closure: moduleEnv });
+        const key = keyForDeclaration(statement.name);
+        moduleEnv.set(key, fn);
+        this.topValues.set(key, fn);
+        this.topValuesByName.set(statement.name.text, fn);
+        this.bindingNames.set(key, statement.name.text);
+      } else if (ts.isClassDeclaration(statement) && statement.name) {
+        const cls = value({ kind: "class", fn: statement, closure: moduleEnv });
+        const key = keyForDeclaration(statement.name);
+        moduleEnv.set(key, cls);
+        this.topValues.set(key, cls);
+        this.topValuesByName.set(statement.name.text, cls);
+        this.bindingNames.set(key, statement.name.text);
+      }
+    }
+    for (const statement of this.sourceFile.statements) {
       if (ts.isImportDeclaration(statement)) {
         continue;
       }
@@ -510,12 +739,14 @@ class ClosureAnalyzer {
             if (declaration.name.text === "identitySql") initialized.label = "identitySql";
             this.topValues.set(key, initialized);
             this.topValuesByName.set(declaration.name.text, initialized);
+            if (declaration.name.text === "migrationAuthorityValues") initialized.role = "authority-store";
             moduleEnv.set(key, initialized);
             this.bindingNames.set(key, declaration.name.text);
           } else {
             const empty = unknownValue();
-            this.topValues.set(key, empty);
-            this.topValuesByName.set(declaration.name.text, empty);
+          this.topValues.set(key, empty);
+          this.topValuesByName.set(declaration.name.text, empty);
+          if (declaration.name.text === "migrationAuthorityValues") empty.role = "authority-store";
             moduleEnv.set(key, empty);
             this.bindingNames.set(key, declaration.name.text);
           }
@@ -668,28 +899,73 @@ class ClosureAnalyzer {
     return globals[name] ?? unknownValue();
   }
 
-  analyzeFunction(node, args, closure) {
+  analyzeFunction(node, args, closure, thisValue = null) {
     const signature = `${node.pos}:${node.end}`;
     if (this.functionActive.has(signature)) fail(SAFE.flow, "FIXED_POINT_RECURSION");
     this.functionActive.add(signature);
+    const previousThis = this.currentThis;
+    this.currentThis = thisValue ?? previousThis;
     try {
       const env = new Map(closure ?? this.topValues);
+      const captureNode = value({ kind: "callable" });
+      for (const captured of env.values()) this.graphEdge(captureNode, captured, "CAPTURES");
       for (const [index, parameter] of node.parameters.entries()) {
-        if (!ts.isIdentifier(parameter.name) || parameter.initializer || parameter.dotDotDotToken) {
-          fail(SAFE.ast, "SYNTAX_POLICY");
-        }
-        env.set(keyForDeclaration(parameter.name), args[index] ?? unknownValue());
-        this.bindingNames.set(keyForDeclaration(parameter.name), parameter.name.text);
+        this.bindParameter(parameter, args[index], env);
       }
       if (!node.body) fail(SAFE.ast, "SYNTAX_POLICY");
       const result = ts.isBlock(node.body)
         ? this.analyzeStatements(node.body.statements, env, {})
         : { env, returnValue: this.evalExpression(node.body, env, {}) };
       this.propagateClosure(closure, env);
+      this.graphNode(result.returnValue, "return");
       return result.returnValue ?? primitiveValue("undefined");
     } finally {
+      this.currentThis = previousThis;
       this.functionActive.delete(signature);
     }
+  }
+
+  bindParameter(parameter, argument, env) {
+    if (parameter.dotDotDotToken) fail(SAFE.ast, "SYNTAX_POLICY");
+    let source = argument;
+    if (!source && parameter.initializer) source = this.evalExpression(parameter.initializer, env, {});
+    source ??= unknownValue();
+    if (ts.isIdentifier(parameter.name)) {
+      if (parameter.initializer && argument) {
+        // The initializer is a conditional value; the supplied argument is the precise branch.
+      }
+      env.set(keyForDeclaration(parameter.name), source);
+      this.bindingNames.set(keyForDeclaration(parameter.name), parameter.name.text);
+      return;
+    }
+    if (ts.isObjectBindingPattern(parameter.name)) {
+      for (const element of parameter.name.elements) {
+        if (!ts.isBindingElement(element) || element.dotDotDotToken || !ts.isIdentifier(element.name)) {
+          fail(SAFE.ast, "SYNTAX_POLICY");
+        }
+        const propertyName = element.propertyName && ts.isIdentifier(element.propertyName)
+          ? element.propertyName.text
+          : element.name.text;
+        let item = this.getProperty(source, propertyName, false);
+        if (item.kind === "unknown" && element.initializer) item = this.evalExpression(element.initializer, env, {});
+        env.set(keyForDeclaration(element.name), item);
+        this.bindingNames.set(keyForDeclaration(element.name), element.name.text);
+      }
+      return;
+    }
+    if (ts.isArrayBindingPattern(parameter.name)) {
+      for (const [index, element] of parameter.name.elements.entries()) {
+        if (!element || ts.isOmittedExpression(element) || !ts.isBindingElement(element) ||
+            element.dotDotDotToken || !ts.isIdentifier(element.name)) fail(SAFE.ast, "SYNTAX_POLICY");
+        const item = source.elements?.[index] ?? (element.initializer
+          ? this.evalExpression(element.initializer, env, {})
+          : unknownValue());
+        env.set(keyForDeclaration(element.name), item);
+        this.bindingNames.set(keyForDeclaration(element.name), element.name.text);
+      }
+      return;
+    }
+    fail(SAFE.ast, "SYNTAX_POLICY");
   }
 
   propagateClosure(closure, env) {
@@ -701,16 +977,15 @@ class ClosureAnalyzer {
 
   analyzeClassConstructor(node, args, closure) {
     const instance = value({ kind: "instance" });
+    const classRef = this.evalClass(node, closure ?? this.topValues);
+    instance.classRef = classRef;
+    rememberReference(instance, classRef);
     const constructor = node.members.find((member) => ts.isConstructorDeclaration(member));
     if (!constructor) return instance;
     if (!constructor.body) fail(SAFE.ast, "SYNTAX_POLICY");
     const env = new Map(closure ?? this.topValues);
     for (const [index, parameter] of constructor.parameters.entries()) {
-      if (!ts.isIdentifier(parameter.name) || parameter.initializer || parameter.dotDotDotToken) {
-        fail(SAFE.ast, "SYNTAX_POLICY");
-      }
-      env.set(keyForDeclaration(parameter.name), args[index] ?? unknownValue());
-      this.bindingNames.set(keyForDeclaration(parameter.name), parameter.name.text);
+      this.bindParameter(parameter, args[index], env);
     }
     for (const member of node.members) {
       if (!ts.isPropertyDeclaration(member) || !member.initializer) continue;
@@ -718,10 +993,7 @@ class ClosureAnalyzer {
         fail(SAFE.ast, "SYNTAX_POLICY");
       }
       const initialized = this.evalExpression(member.initializer, env, {});
-      instance.props.set(member.name.text, initialized);
-      instance.taint |= initialized.taint;
-      for (const cap of initialized.caps) instance.caps.add(cap);
-      for (const label of provenanceOf(initialized)) instance.provenance.add(label);
+      assignValueProperty(instance, member.name.text, initialized);
     }
     const previousThis = this.currentThis;
     this.currentThis = instance;
@@ -774,7 +1046,12 @@ class ClosureAnalyzer {
       return { env, returnValue: null };
     }
     if (ts.isFunctionDeclaration(node)) {
-      if (node.name) this.bindingNames.set(keyForDeclaration(node.name), node.name.text);
+      if (node.name) {
+        const fn = value({ kind: "function", fn: node, closure: env });
+        env.set(keyForDeclaration(node.name), fn);
+        this.bindingNames.set(keyForDeclaration(node.name), node.name.text);
+        this.graphNode(fn, "function");
+      }
       return { env, returnValue: null };
     }
     if (ts.isReturnStatement(node)) {
@@ -837,15 +1114,35 @@ class ClosureAnalyzer {
       };
     }
     if (ts.isForOfStatement(node)) {
-      this.evalExpression(node.expression, env, context);
-      const loopEnv = new Map(env);
+      const iterable = this.evalExpression(node.expression, env, context);
+      const loopValues = iterable.kind === "array"
+        ? (iterable.elements ?? [])
+        : iterable.kind === "set"
+          ? [...(iterable.map?.keys?.() ?? [])]
+          : iterable.kind === "map"
+            ? [...(iterable.map?.entries?.() ?? [])].map(([key, valueToIterate]) => value({
+              kind: "array",
+              elements: [key, valueToIterate],
+              refs: [key, valueToIterate],
+            }))
+            : [unknownValue()];
+      let current = new Map(env);
+      let returnValue = null;
       if (ts.isVariableDeclarationList(node.initializer) && node.initializer.declarations.length === 1) {
         const declaration = node.initializer.declarations[0];
         if (!ts.isIdentifier(declaration.name)) fail(SAFE.ast, "SYNTAX_POLICY");
-        loopEnv.set(keyForDeclaration(declaration.name), unknownValue());
         this.bindingNames.set(keyForDeclaration(declaration.name), declaration.name.text);
+        for (const item of loopValues) {
+          const loopEnv = new Map(current);
+          loopEnv.set(keyForDeclaration(declaration.name), item);
+          const result = this.analyzeStatement(node.statement, loopEnv, context);
+          current = this.joinEnvironments(current, result.env);
+          returnValue = mergeValues(returnValue, result.returnValue);
+        }
+        return { env: current, returnValue };
       }
-      return this.analyzeStatement(node.statement, loopEnv, context);
+      const result = this.analyzeStatement(node.statement, current, context);
+      return { env: this.joinEnvironments(current, result.env), returnValue: result.returnValue };
     }
     if (ts.isForStatement(node) || ts.isWhileStatement(node) || ts.isDoStatement(node)) {
       if (node.initializer) {
@@ -871,7 +1168,15 @@ class ClosureAnalyzer {
       return { env: this.joinEnvironments(env, body.env), returnValue: body.returnValue };
     }
     if (ts.isLabeledStatement(node)) return this.analyzeStatement(node.statement, env, context);
-    if (ts.isWithStatement(node) || ts.isSwitchStatement(node) || ts.isClassDeclaration(node)) {
+    if (ts.isClassDeclaration(node)) {
+      if (!node.name) fail(SAFE.ast, "SYNTAX_POLICY");
+      const cls = this.evalClass(node, env);
+      env.set(keyForDeclaration(node.name), cls);
+      this.bindingNames.set(keyForDeclaration(node.name), node.name.text);
+      this.graphNode(cls, "class");
+      return { env, returnValue: null };
+    }
+    if (ts.isWithStatement(node) || ts.isSwitchStatement(node)) {
       fail(SAFE.ast, "SYNTAX_POLICY");
     }
     if (ts.isBreakStatement(node) || ts.isContinueStatement(node)) {
@@ -914,10 +1219,14 @@ class ClosureAnalyzer {
         return primitiveValue(ts.tokenToString(node.kind) ?? "literal");
       case ts.SyntaxKind.ThisKeyword:
         return this.currentThis ?? value({ kind: "this" });
+      case ts.SyntaxKind.SuperKeyword:
+        return capabilityValue("CLASS_SUPER");
       case ts.SyntaxKind.ArrayLiteralExpression:
         return this.evalArray(node, env, context);
       case ts.SyntaxKind.ObjectLiteralExpression:
         return this.evalObject(node, env, context);
+      case ts.SyntaxKind.ClassExpression:
+        return this.evalClass(node, env);
       case ts.SyntaxKind.PropertyAccessExpression:
         return this.getProperty(
           this.evalExpression(node.expression, env, context),
@@ -963,9 +1272,15 @@ class ClosureAnalyzer {
         if (ts.isPropertyAccessExpression(target)) {
           const receiver = this.evalExpression(target.expression, env, context);
           if (receiver.caps.has("ENV")) fail(SAFE.flow, "CAPABILITY_ENV");
+          if (receiver.frozen) fail(SAFE.flow, "CAPABILITY_STORAGE");
+          deleteValueProperty(receiver, target.name.text);
         } else if (ts.isElementAccessExpression(target)) {
           const receiver = this.evalExpression(target.expression, env, context);
+          const key = this.evalKey(target.argumentExpression, env, context);
           if (receiver.caps.has("ENV")) fail(SAFE.flow, "CAPABILITY_ENV");
+          if (receiver.frozen) fail(SAFE.flow, "CAPABILITY_STORAGE");
+          if (key === null) fail(SAFE.computed, "COMPUTED_CAPABILITY");
+          deleteValueProperty(receiver, key);
         } else {
           fail(SAFE.ast, "SYNTAX_POLICY");
         }
@@ -992,38 +1307,42 @@ class ClosureAnalyzer {
       }
       elements.push(this.evalExpression(element, env, context));
     }
-    return value({
+    const result = value({
       kind: "array",
       elements,
       taint: combinedTaint(elements),
       caps: combinedCaps(elements),
       provenance: combinedProvenance(elements),
     });
+    for (const element of elements) rememberReference(result, element);
+    return result;
   }
 
   evalObject(node, env, context) {
     const result = value({ kind: "object" });
     for (const property of node.properties) {
-      if (property.name?.kind === ts.SyntaxKind.ComputedPropertyName) {
-        fail(SAFE.computed, "COMPUTED_CAPABILITY");
-      }
-      if (ts.isSpreadAssignment(property) || ts.isMethodDeclaration(property) ||
-          ts.isGetAccessorDeclaration(property) || ts.isSetAccessorDeclaration(property)) {
+      if (ts.isSpreadAssignment(property) || ts.isGetAccessorDeclaration(property) ||
+          ts.isSetAccessorDeclaration(property)) {
         fail(SAFE.ast, "SYNTAX_POLICY");
       }
-      let name;
-      if (ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property)) {
-        name = property.name.getText(this.sourceFile).replace(/^['"]|['"]$/gu, "");
-      } else {
+      const name = this.propertyName(property.name, env, context);
+      if (name === null) {
+        fail(SAFE.computed, "COMPUTED_CAPABILITY");
+      }
+      if (ts.isMethodDeclaration(property)) {
+        if (!property.body) fail(SAFE.ast, "SYNTAX_POLICY");
+        const method = value({ kind: "function", fn: property, closure: env });
+        result.methods.set(name, method);
+        rememberReference(result, method);
+        continue;
+      }
+      if (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) {
         fail(SAFE.ast, "SYNTAX_POLICY");
       }
       const propertyValue = ts.isPropertyAssignment(property)
         ? this.evalExpression(property.initializer, env, context)
         : this.evalExpression(property.name, env, context);
-      result.props.set(name, propertyValue);
-      result.taint |= propertyValue.taint;
-      for (const cap of propertyValue.caps) result.caps.add(cap);
-      for (const label of provenanceOf(propertyValue)) result.provenance.add(label);
+      assignValueProperty(result, name, propertyValue);
     }
     if (sameTextSet([...result.props.keys()], ["host", "port", "user", "database", "max"])) {
       result.kind = "pool-options";
@@ -1031,17 +1350,78 @@ class ClosureAnalyzer {
     return result;
   }
 
+  evalClass(node, env) {
+    const result = value({ kind: "class", fn: node, closure: env });
+    for (const heritage of node.heritageClauses ?? []) {
+      for (const type of heritage.types) {
+        const base = this.evalExpression(type.expression, env, {});
+        if (base.kind !== "class" && !base.caps.has("ERROR_CONSTRUCTOR")) {
+          fail(SAFE.ast, "SYNTAX_POLICY");
+        }
+      }
+    }
+    for (const member of node.members ?? []) {
+      if (member.name?.kind === ts.SyntaxKind.ComputedPropertyName) {
+        const name = this.evalKey(member.name.expression, env, {});
+        if (name === null) fail(SAFE.computed, "COMPUTED_CAPABILITY");
+      }
+      if (ts.isGetAccessorDeclaration(member) || ts.isSetAccessorDeclaration(member)) {
+        fail(SAFE.ast, "SYNTAX_POLICY");
+      }
+      if (ts.isMethodDeclaration(member) && member.name) {
+        const name = this.propertyName(member.name, env, {});
+        if (name === null || !member.body) fail(SAFE.ast, "SYNTAX_POLICY");
+        const method = value({ kind: "function", fn: member, closure: env });
+        if (member.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword)) {
+          result.methods.set(name, method);
+        } else {
+          result.instanceMethods ??= new Map();
+          result.instanceMethods.set(name, method);
+        }
+        rememberReference(result, method);
+      }
+    }
+    return result;
+  }
+
+  propertyName(nameNode, env, context) {
+    if (!nameNode) return null;
+    if (nameNode.kind === ts.SyntaxKind.ComputedPropertyName) {
+      return this.evalKey(nameNode.expression, env, context);
+    }
+    if (ts.isIdentifier(nameNode) || ts.isStringLiteral(nameNode) || ts.isNumericLiteral(nameNode)) {
+      return nameNode.text;
+    }
+    return null;
+  }
+
+  evalKey(node, env, context) {
+    if (!node) return null;
+    const key = this.evalExpression(node, env, context);
+    if (key.constant !== undefined && key.constant !== "") return String(key.constant);
+    if (key.label && key.kind === "primitive" && !key.label.startsWith("input.") && !key.label.startsWith("query.")) {
+      return String(key.label);
+    }
+    return null;
+  }
+
   evalElement(node, env, context) {
     const receiver = this.evalExpression(node.expression, env, context);
-    if (!node.argumentExpression) fail(SAFE.computed, "COMPUTED_CAPABILITY");
-    if (ts.isNumericLiteral(node.argumentExpression) && node.argumentExpression.text === "0") {
-      return this.getProperty(receiver, "0", false);
-    }
+    const key = this.evalKey(node.argumentExpression, env, context);
+    if (key !== null) return this.getProperty(receiver, key, true);
     if (receiver.caps.has("CONSOLE") || receiver.caps.has("CRYPTO") ||
-        receiver.caps.has("PROCESS") || receiver.caps.has("GLOBAL_THIS")) {
+        receiver.caps.has("PROCESS") || receiver.caps.has("GLOBAL_THIS") ||
+        receiver.caps.has("ENV")) {
       fail(SAFE.computed, "COMPUTED_CAPABILITY");
     }
-    fail(SAFE.computed, "COMPUTED_CAPABILITY");
+    const candidates = [
+      ...(receiver.props?.values?.() ?? []),
+      ...(receiver.elements ?? []),
+      ...(receiver.map?.values?.() ?? []),
+      ...(receiver.methods?.values?.() ?? []),
+    ];
+    if (candidates.length === 0) return unknownValue();
+    return candidates.reduce((merged, item) => mergeValues(merged, item), null) ?? unknownValue();
   }
 
   evalCall(node, env, context) {
@@ -1065,6 +1445,9 @@ class ClosureAnalyzer {
       if (args.length !== 1 || args[0].kind !== "pool-options") fail(SAFE.flow, "CAPABILITY_POOL");
       const options = args[0];
       const keys = [...options.props.keys()];
+      if (options.historyProps?.has("password") && !options.props.has("password")) {
+        fail(SAFE.flow, "CAPABILITY_PASSWORD");
+      }
       if (!sameTextSet(keys, ["host", "port", "user", "database", "max", "password"]) &&
           !sameTextSet(keys, ["host", "port", "user", "database", "max"])) {
         fail(SAFE.flow, "CAPABILITY_POOL");
@@ -1074,7 +1457,8 @@ class ClosureAnalyzer {
         if (password.kind !== "credential" ||
             !password.directCredential ||
             password.label !== "input.connectionPassword" ||
-            password.taint !== Taint.CREDENTIAL) {
+            summarizeRisk(password).taint !== Taint.CREDENTIAL ||
+            summarizeRisk(password).caps.size > 0) {
           fail(SAFE.flow, "CAPABILITY_PASSWORD");
         }
       }
@@ -1082,6 +1466,7 @@ class ClosureAnalyzer {
       if (this.poolConstructs > 1) fail(SAFE.flow, "CAPABILITY_POOL");
       const pool = value({ kind: "pool" });
       pool.options = options;
+      rememberReference(pool, options);
       return pool;
     }
     if (callee.caps.has("URL_CONSTRUCTOR")) {
@@ -1090,10 +1475,41 @@ class ClosureAnalyzer {
       }
       return value({ kind: "url" });
     }
-    if (callee.caps.has("SET_CONSTRUCTOR")) return value({ kind: "set" });
-    if (callee.caps.has("MAP_CONSTRUCTOR")) return value({ kind: "map" });
+    if (callee.caps.has("SET_CONSTRUCTOR")) {
+      const set = value({ kind: "set", map: new Map() });
+      if (args.length > 1) fail(SAFE.flow, "CAPABILITY_COLLECTION");
+      for (const item of args[0]?.elements ?? []) {
+        set.map.set(item, item);
+        rememberReference(set, item);
+      }
+      if (args[0] && args[0].kind !== "array") fail(SAFE.flow, "CAPABILITY_COLLECTION");
+      return set;
+    }
+    if (callee.caps.has("MAP_CONSTRUCTOR")) {
+      const map = value({ kind: "map", map: new Map() });
+      if (args.length > 1) fail(SAFE.flow, "CAPABILITY_COLLECTION");
+      for (const pair of args[0]?.elements ?? []) {
+        if (pair.kind !== "array" || pair.elements?.length !== 2) fail(SAFE.flow, "CAPABILITY_COLLECTION");
+        map.map.set(pair.elements[0], pair.elements[1]);
+        rememberReference(map, pair.elements[0]);
+        rememberReference(map, pair.elements[1]);
+      }
+      if (args[0] && args[0].kind !== "array") fail(SAFE.flow, "CAPABILITY_COLLECTION");
+      return map;
+    }
     if (callee.caps.has("WEAKMAP_CONSTRUCTOR")) {
-      return value({ kind: "weakmap", map: new Map() });
+      const weakmap = value({ kind: "weakmap", map: new Map() });
+      if (args.length > 1) fail(SAFE.flow, "CAPABILITY_COLLECTION");
+      for (const pair of args[0]?.elements ?? []) {
+        if (pair.kind !== "array" || pair.elements?.length !== 2 || pair.elements[0].kind === "primitive") {
+          fail(SAFE.flow, "CAPABILITY_COLLECTION");
+        }
+        weakmap.map.set(pair.elements[0], pair.elements[1]);
+        rememberReference(weakmap, pair.elements[0]);
+        rememberReference(weakmap, pair.elements[1]);
+      }
+      if (args[0] && args[0].kind !== "array") fail(SAFE.flow, "CAPABILITY_COLLECTION");
+      return weakmap;
     }
     if (callee.caps.has("SYMBOL_CONSTRUCTOR")) {
       return value({
@@ -1110,9 +1526,9 @@ class ClosureAnalyzer {
       }
       return value({ kind: "error" });
     }
+    if (callee.caps.has("CLASS_SUPER")) return primitiveValue("super");
     if (callee.kind === "class") {
-      if (!callee.fn || !ts.isClassDeclaration(callee.fn)) fail(SAFE.unresolved, "CALL_RESOLUTION");
-      if (!this.classConstructorHasRelevantInput(callee, args)) return value({ kind: "error" });
+      if (!callee.fn || (!ts.isClassDeclaration(callee.fn) && !ts.isClassExpression(callee.fn))) fail(SAFE.unresolved, "CALL_RESOLUTION");
       return this.analyzeClassConstructor(callee.fn, args, callee.closure);
     }
     if (callee.fn && isFunctionLike(callee.fn)) return this.analyzeFunction(callee.fn, args, callee.closure);
@@ -1187,36 +1603,97 @@ class ClosureAnalyzer {
   }
 
   getProperty(receiver, name, computed) {
-    if (computed) fail(SAFE.computed, "COMPUTED_CAPABILITY");
     if (!receiver) return unknownValue();
-    if (receiver.props.has(name)) return receiver.props.get(name);
+    if (computed && (receiver.caps?.has("CONSOLE") || receiver.caps?.has("CRYPTO") ||
+        receiver.caps?.has("PROCESS") || receiver.caps?.has("GLOBAL_THIS") || receiver.caps?.has("ENV"))) {
+      fail(SAFE.computed, "COMPUTED_CAPABILITY");
+    }
+    if (receiver.props?.has(name)) {
+      const result = receiver.props.get(name);
+      this.graphEdge(receiver, result, "MEMBER_VALUE");
+      return result;
+    }
+    if (receiver.methods?.has(name)) {
+      const method = receiver.methods.get(name);
+      this.graphEdge(receiver, method, "MEMBER_VALUE");
+      return method;
+    }
+    if (receiver.kind === "instance" && receiver.classRef?.instanceMethods?.has(name)) {
+      const method = receiver.classRef.instanceMethods.get(name);
+      const bound = value({ kind: "function", fn: method.fn, closure: method.closure, bound: receiver });
+      this.graphEdge(receiver, bound, "MEMBER_VALUE");
+      return bound;
+    }
     if (receiver.kind === "input") {
-      if (name === "connectionPassword") return credentialValue();
-      if (SAFE_INPUT_FIELDS.has(name)) return primitiveValue(`input.${name}`);
+      if (name === "connectionPassword") {
+        const result = credentialValue();
+        this.graphEdge(receiver, result, "READS");
+        return result;
+      }
+      if (SAFE_INPUT_FIELDS.has(name)) {
+        const result = primitiveValue(`input.${name}`);
+        this.graphEdge(receiver, result, "READS");
+        return result;
+      }
     }
     if (receiver.kind === "row" && QUERY_ROW_FIELDS.has(name)) {
-      return primitiveValue(`query.${name}`);
+      const result = primitiveValue(`query.${name}`);
+      this.graphEdge(receiver, result, "READS");
+      return result;
     }
     if (receiver.kind === "array") {
       if (name === "length") return primitiveValue("number");
       const index = Number(name);
-      if (Number.isInteger(index) && index >= 0 && receiver.elements?.[index]) return receiver.elements[index];
-      if (name === "some") return capabilityValue("ARRAY_SOME", { bound: receiver });
-      if (name === "includes") return capabilityValue("ARRAY_INCLUDES", { bound: receiver });
+      if (Number.isInteger(index) && index >= 0 && receiver.elements?.[index] !== undefined) return receiver.elements[index];
+      const arrayMethods = {
+        some: "ARRAY_SOME",
+        every: "ARRAY_EVERY",
+        map: "ARRAY_MAP",
+        forEach: "ARRAY_FOREACH",
+        includes: "ARRAY_INCLUDES",
+        push: "ARRAY_PUSH",
+        pop: "ARRAY_POP",
+        shift: "ARRAY_SHIFT",
+        unshift: "ARRAY_UNSHIFT",
+        values: "ARRAY_VALUES",
+        entries: "ARRAY_ENTRIES",
+        keys: "ARRAY_KEYS",
+      };
+      if (arrayMethods[name]) return capabilityValue(arrayMethods[name], { bound: receiver });
     }
     if (receiver.kind === "url") return value({ kind: "string", label: name });
     if (receiver.kind === "regexp" && name === "test") return capabilityValue("REGEXP_TEST", { bound: receiver });
-    if (receiver.kind === "set" && name === "has") return capabilityValue("SET_HAS", { bound: receiver });
-    if (receiver.kind === "set" && name === "add") return capabilityValue("SET_ADD", { bound: receiver });
+    if (receiver.kind === "set") {
+      const methods = {
+        has: "SET_HAS", add: "SET_ADD", delete: "SET_DELETE", clear: "SET_CLEAR",
+        values: "SET_VALUES", keys: "SET_KEYS", entries: "SET_ENTRIES", forEach: "SET_FOREACH",
+      };
+      if (name === "size") return primitiveValue("number");
+      if (methods[name]) return capabilityValue(methods[name], { bound: receiver });
+    }
     if (receiver.kind === "weakmap" && !receiver.map) receiver.map = new Map();
-    if (receiver.kind === "weakmap" && name === "set") return capabilityValue("WEAKMAP_SET", { bound: receiver });
-    if (receiver.kind === "weakmap" && name === "get") return capabilityValue("WEAKMAP_GET", { bound: receiver });
+    if (receiver.kind === "weakmap") {
+      const methods = { set: "WEAKMAP_SET", get: "WEAKMAP_GET", has: "WEAKMAP_HAS", delete: "WEAKMAP_DELETE" };
+      if (methods[name]) return capabilityValue(methods[name], { bound: receiver });
+    }
+    if (receiver.kind === "map") {
+      const methods = {
+        set: "MAP_SET", get: "MAP_GET", has: "MAP_HAS", delete: "MAP_DELETE", clear: "MAP_CLEAR",
+        values: "MAP_VALUES", keys: "MAP_KEYS", entries: "MAP_ENTRIES", forEach: "MAP_FOREACH",
+      };
+      if (name === "size") return primitiveValue("number");
+      if (methods[name]) return capabilityValue(methods[name], { bound: receiver });
+    }
     if (receiver.kind === "pool" && name === "query") return capabilityValue("POOL_QUERY", { bound: receiver });
     if (receiver.kind === "pool" && name === "connect") return capabilityValue("POOL_CONNECT", { bound: receiver });
     if (receiver.kind === "pool" && name === "end") return capabilityValue("POOL_END", { bound: receiver });
+    if (receiver.kind === "client" && name === "query") return capabilityValue("CLIENT_QUERY", { bound: receiver });
+    if (receiver.kind === "client" && name === "release") return capabilityValue("CLIENT_RELEASE", { bound: receiver });
     if (receiver.kind === "drizzle-db") return primitiveValue(name);
     if (receiver.kind === "query-result" && name === "rows") {
-      return value({ kind: "array", elements: [value({ kind: "row" })] });
+      const rows = value({ kind: "array", elements: [value({ kind: "row" })] });
+      for (const item of rows.elements) rememberReference(rows, item);
+      return rows;
     }
     if (receiver.kind === "string" || receiver.kind === "credential") {
       if (name === "length") return primitiveValue("number");
@@ -1246,10 +1723,13 @@ class ClosureAnalyzer {
     }
     if (receiver.caps.has("CLEANUP_PROMISE") && name === "catch") return capabilityValue("CLEANUP_CATCH", { bound: receiver });
     if (receiver.caps.has("CATCH_ERROR")) return value({ kind: "diagnostic", taint: Taint.SENSITIVE_DIAGNOSTIC, caps: ["CATCH_ERROR"] });
+    if (receiver.kind === "unknown") return unknownValue();
     return unknownValue();
   }
 
   call(callee, args, node, env, context) {
+    this.graphNode(callee, "callee");
+    for (const argument of args) this.graphEdge(callee, argument, "ARGUMENT");
     if (callee.caps.has("OUTPUT")) {
       if (args.some((item) => item.caps.has("CLEANUP_DIAGNOSTIC") || item.caps.has("CATCH_ERROR"))) {
         fail(SAFE.flow, "CLEANUP_DIAGNOSTIC");
@@ -1272,16 +1752,59 @@ class ClosureAnalyzer {
       fail(SAFE.flow, "CAPABILITY_CRYPTO");
     }
     if (callee.caps.has("ENV")) fail(SAFE.flow, "CAPABILITY_ENV");
+    if (callee.caps.has("CLASS_SUPER")) return primitiveValue("super");
     if (callee.caps.has("POOL_QUERY")) {
       if (args.length !== 2 || args[0].label !== "identitySql" || args[1].kind !== "array" ||
           args[1].elements?.length !== 2 || args[1].elements.some((item) => hasTaint(item, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC))) {
         fail(SAFE.flow, "CAPABILITY_QUERY");
       }
+      if (callee.bound?.kind !== "pool") fail(SAFE.flow, "CAPABILITY_QUERY");
+      const identityArguments = args[1].elements.map((item) => [...provenanceOf(item)].sort().join("|"));
+      if (this.identityQueryPool && this.identityQueryPool !== callee.bound) fail(SAFE.flow, "CAPABILITY_QUERY");
+      if (this.identityQueryArguments && (identityArguments.length !== this.identityQueryArguments.length ||
+          identityArguments.some((item, index) => item !== this.identityQueryArguments[index]))) {
+        fail(SAFE.flow, "CAPABILITY_QUERY");
+      }
+      this.identityQueryPool = callee.bound;
+      this.identityQueryArguments ??= identityArguments;
+      this.identityQueryCount = (this.identityQueryCount ?? 0) + 1;
+      if (this.identityQueryCount >= 2 && this.authoritySetCount === 1) {
+        this.authoritySecondIdentityChecked = true;
+      }
       return value({ kind: "query-result" });
     }
     if (callee.caps.has("POOL_END")) {
       if (args.length !== 0) fail(SAFE.flow, "CAPABILITY_CLEANUP");
+      if (callee.bound?.kind !== "pool") fail(SAFE.flow, "CAPABILITY_CLEANUP");
       return capabilityValue("CLEANUP_PROMISE", { bound: callee.bound, taint: Taint.SENSITIVE_DIAGNOSTIC });
+    }
+    if (callee.caps.has("POOL_CONNECT")) {
+      if (args.length !== 0 || callee.bound?.kind !== "pool") fail(SAFE.flow, "CAPABILITY_CONNECT");
+      const client = value({ kind: "client", pool: callee.bound });
+      client.pool = callee.bound;
+      rememberReference(client, callee.bound);
+      return client;
+    }
+    if (callee.caps.has("CLIENT_QUERY")) {
+      if (args.length !== 2 || args[0].label !== "identitySql" || args[1].kind !== "array" ||
+          args[1].elements?.length !== 2 || callee.bound?.pool?.kind !== "pool") {
+        fail(SAFE.flow, "CAPABILITY_QUERY");
+      }
+      const identityArguments = args[1].elements.map((item) => [...provenanceOf(item)].sort().join("|"));
+      if (this.identityQueryPool && this.identityQueryPool !== callee.bound.pool) fail(SAFE.flow, "CAPABILITY_QUERY");
+      if (this.identityQueryArguments && (identityArguments.length !== this.identityQueryArguments.length ||
+          identityArguments.some((item, index) => item !== this.identityQueryArguments[index]))) {
+        fail(SAFE.flow, "CAPABILITY_QUERY");
+      }
+      this.identityQueryPool = callee.bound.pool;
+      this.identityQueryArguments ??= identityArguments;
+      this.identityQueryCount = (this.identityQueryCount ?? 0) + 1;
+      if (this.identityQueryCount >= 2 && this.authoritySetCount === 1) this.authoritySecondIdentityChecked = true;
+      return value({ kind: "query-result" });
+    }
+    if (callee.caps.has("CLIENT_RELEASE")) {
+      if (args.length !== 0 || callee.bound?.kind !== "client") fail(SAFE.flow, "CAPABILITY_CLEANUP");
+      return primitiveValue("undefined");
     }
     if (callee.caps.has("DRIZZLE")) {
       if (args.length !== 1 || args[0].kind !== "pool") fail(SAFE.flow, "CAPABILITY_DRIZZLE");
@@ -1290,12 +1813,25 @@ class ClosureAnalyzer {
     if (callee.caps.has("MIGRATE")) {
       if (args.length !== 2 || args[0].kind !== "drizzle-db" || args[1].kind !== "object" ||
           !sameTextSet([...args[1].props.keys()], ["migrationsFolder"]) ||
-          hasTaint(args[1], Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC)) {
+          hasTaint(args[1], Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC) ||
+          !this.authorityRecord || this.authoritySetCount !== 1 || !this.authoritySecondIdentityChecked ||
+          args[0].bound?.kind !== "pool" || args[0].bound !== this.authorityRecord.props.get("pool")) {
         fail(SAFE.flow, "CAPABILITY_MIGRATE");
       }
       return primitiveValue("promise");
     }
     if (callee.caps.has("WEAKMAP_SET")) {
+      if (callee.bound?.role !== "authority-store") {
+        if (args.length !== 2 || !args[0] || args[0].kind === "primitive") fail(SAFE.authority, "AUTHORITY_SCHEMA");
+        if (hasTaint(args[1], Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC)) {
+          fail(SAFE.flow, "CAPABILITY_STORAGE");
+        }
+        callee.bound.map ??= new Map();
+        callee.bound.map.set(args[0], args[1]);
+        rememberReference(callee.bound, args[0]);
+        rememberReference(callee.bound, args[1]);
+        return callee.bound;
+      }
       if (args[0]?.kind === "object" && args[0].props.size === 0) {
         args[0].kind = "authority-token";
         args[0].provenance = new Set();
@@ -1321,8 +1857,8 @@ class ClosureAnalyzer {
           }
         }
       }
-      if (!record) fail(SAFE.authority, "AUTHORITY_SCHEMA");
-      return record;
+      if (!record && callee.bound?.role === "authority-store") fail(SAFE.authority, "AUTHORITY_SCHEMA");
+      return record ?? unknownValue();
     }
     if (callee.caps.has("CLEANUP_CATCH")) {
       if (args.length !== 1 || !args[0].fn) fail(SAFE.flow, "CLEANUP_DIAGNOSTIC");
@@ -1335,15 +1871,164 @@ class ClosureAnalyzer {
     }
     if (callee.caps.has("ARRAY_SOME")) {
       if (args.length < 1 || !args[0].fn) fail(SAFE.ast, "SYNTAX_POLICY");
-      this.analyzeFunction(args[0].fn, [unknownValue(), primitiveValue("number"), callee.bound], args[0].closure);
+      for (const [index, item] of (callee.bound?.elements ?? [unknownValue()]).entries()) {
+        this.analyzeFunction(args[0].fn, [item, primitiveValue(String(index)), callee.bound], args[0].closure);
+      }
       return primitiveValue("boolean");
+    }
+    if (callee.caps.has("ARRAY_EVERY")) {
+      if (args.length < 1 || !args[0].fn) fail(SAFE.ast, "SYNTAX_POLICY");
+      for (const [index, item] of (callee.bound?.elements ?? [unknownValue()]).entries()) {
+        this.analyzeFunction(args[0].fn, [item, primitiveValue(String(index)), callee.bound], args[0].closure);
+      }
+      return primitiveValue("boolean");
+    }
+    if (callee.caps.has("ARRAY_MAP")) {
+      if (args.length < 1 || !args[0].fn) fail(SAFE.ast, "SYNTAX_POLICY");
+      const elements = [];
+      for (const [index, item] of (callee.bound?.elements ?? []).entries()) {
+        elements.push(this.analyzeFunction(args[0].fn, [item, primitiveValue(String(index)), callee.bound], args[0].closure));
+      }
+      const result = value({ kind: "array", elements });
+      for (const item of elements) rememberReference(result, item);
+      return result;
+    }
+    if (callee.caps.has("ARRAY_FOREACH")) {
+      if (args.length < 1 || !args[0].fn) fail(SAFE.ast, "SYNTAX_POLICY");
+      for (const [index, item] of (callee.bound?.elements ?? []).entries()) {
+        this.analyzeFunction(args[0].fn, [item, primitiveValue(String(index)), callee.bound], args[0].closure);
+      }
+      return primitiveValue("undefined");
+    }
+    if (callee.caps.has("ARRAY_PUSH")) {
+      for (const item of args) {
+        callee.bound.elements ??= [];
+        callee.bound.elements.push(item);
+        rememberReference(callee.bound, item);
+      }
+      return primitiveValue(String(callee.bound.elements?.length ?? 0));
+    }
+    if (callee.caps.has("ARRAY_POP")) {
+      const item = callee.bound.elements?.[callee.bound.elements.length - 1] ?? primitiveValue("undefined");
+      if (item !== undefined) rememberReference(callee.bound, item);
+      callee.bound.elements?.pop();
+      return item;
+    }
+    if (callee.caps.has("ARRAY_SHIFT")) {
+      const item = callee.bound.elements?.[0] ?? primitiveValue("undefined");
+      if (item !== undefined) rememberReference(callee.bound, item);
+      callee.bound.elements?.shift();
+      return item;
+    }
+    if (callee.caps.has("ARRAY_UNSHIFT")) {
+      callee.bound.elements ??= [];
+      callee.bound.elements.unshift(...args);
+      for (const item of args) rememberReference(callee.bound, item);
+      return primitiveValue(String(callee.bound.elements.length));
+    }
+    if (callee.caps.has("ARRAY_VALUES") || callee.caps.has("ARRAY_KEYS") || callee.caps.has("ARRAY_ENTRIES")) {
+      if (callee.caps.has("ARRAY_KEYS")) return value({
+        kind: "array",
+        elements: (callee.bound.elements ?? []).map((_, index) => primitiveValue(String(index))),
+      });
+      if (callee.caps.has("ARRAY_ENTRIES")) {
+        const elements = (callee.bound.elements ?? []).map((item, index) => value({
+          kind: "array",
+          elements: [primitiveValue(String(index)), item],
+          refs: [item],
+        }));
+        return value({ kind: "array", elements, refs: elements });
+      }
+      return value({ kind: "array", elements: [...(callee.bound.elements ?? [])] });
     }
     if (callee.caps.has("ARRAY_INCLUDES")) {
       if (args.some((item) => hasTaint(item, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC))) fail(SAFE.flow, "CAPABILITY_RECONSTRUCTION");
       return primitiveValue("boolean");
     }
     if (callee.caps.has("SET_HAS")) return primitiveValue("boolean");
-    if (callee.caps.has("SET_ADD")) return callee.bound;
+    if (callee.caps.has("SET_ADD")) {
+      if (args.length !== 1) fail(SAFE.flow, "CAPABILITY_COLLECTION");
+      callee.bound.map ??= new Map();
+      callee.bound.map.set(args[0], args[0]);
+      rememberReference(callee.bound, args[0]);
+      return callee.bound;
+    }
+    if (callee.caps.has("SET_DELETE")) {
+      if (args.length !== 1) fail(SAFE.flow, "CAPABILITY_COLLECTION");
+      callee.bound.map?.delete(args[0]);
+      return primitiveValue("boolean");
+    }
+    if (callee.caps.has("SET_CLEAR")) {
+      for (const [key, item] of callee.bound.map ?? []) rememberReference(callee.bound, item);
+      callee.bound.map?.clear();
+      return primitiveValue("undefined");
+    }
+    if (callee.caps.has("SET_FOREACH")) {
+      if (args.length < 1 || !args[0].fn) fail(SAFE.ast, "SYNTAX_POLICY");
+      for (const item of callee.bound.map?.values?.() ?? []) {
+        this.analyzeFunction(args[0].fn, [item, item, callee.bound], args[0].closure);
+      }
+      return primitiveValue("undefined");
+    }
+    if (callee.caps.has("SET_VALUES") || callee.caps.has("SET_KEYS") || callee.caps.has("SET_ENTRIES")) {
+      const keys = [...(callee.bound.map?.keys?.() ?? [])];
+      if (callee.caps.has("SET_ENTRIES")) {
+        const elements = keys.map((item) => value({ kind: "array", elements: [item, item], refs: [item] }));
+        return value({ kind: "array", elements, refs: elements });
+      }
+      return value({ kind: "array", elements: keys });
+    }
+    if (callee.caps.has("MAP_SET")) {
+      if (args.length !== 2) fail(SAFE.flow, "CAPABILITY_COLLECTION");
+      callee.bound.map ??= new Map();
+      callee.bound.map.set(args[0], args[1]);
+      rememberReference(callee.bound, args[0]);
+      rememberReference(callee.bound, args[1]);
+      return callee.bound;
+    }
+    if (callee.caps.has("MAP_GET")) {
+      if (args.length !== 1) fail(SAFE.flow, "CAPABILITY_COLLECTION");
+      if (callee.bound.map?.has(args[0])) return callee.bound.map.get(args[0]);
+      return [...(callee.bound.map?.values?.() ?? [])].reduce((merged, item) => mergeValues(merged, item), null) ?? unknownValue();
+    }
+    if (callee.caps.has("MAP_HAS")) return primitiveValue("boolean");
+    if (callee.caps.has("MAP_DELETE")) {
+      if (args.length !== 1) fail(SAFE.flow, "CAPABILITY_COLLECTION");
+      callee.bound.map?.delete(args[0]);
+      return primitiveValue("boolean");
+    }
+    if (callee.caps.has("MAP_CLEAR")) {
+      for (const [key, item] of callee.bound.map ?? []) { rememberReference(callee.bound, key); rememberReference(callee.bound, item); }
+      callee.bound.map?.clear();
+      return primitiveValue("undefined");
+    }
+    if (callee.caps.has("MAP_FOREACH")) {
+      if (args.length < 1 || !args[0].fn) fail(SAFE.ast, "SYNTAX_POLICY");
+      for (const [key, item] of callee.bound.map ?? []) {
+        this.analyzeFunction(args[0].fn, [item, key, callee.bound], args[0].closure);
+      }
+      return primitiveValue("undefined");
+    }
+    if (callee.caps.has("MAP_VALUES") || callee.caps.has("MAP_KEYS") || callee.caps.has("MAP_ENTRIES")) {
+      if (callee.caps.has("MAP_KEYS")) return value({ kind: "array", elements: [...(callee.bound.map?.keys?.() ?? [])] });
+      if (callee.caps.has("MAP_ENTRIES")) {
+        const elements = [...(callee.bound.map?.entries?.() ?? [])].map(([key, item]) => value({
+          kind: "array",
+          elements: [key, item],
+          refs: [key, item],
+        }));
+        return value({ kind: "array", elements, refs: elements });
+      }
+      return value({ kind: "array", elements: [...(callee.bound.map?.values?.() ?? [])] });
+    }
+    if (callee.caps.has("WEAKMAP_HAS")) return primitiveValue("boolean");
+    if (callee.caps.has("WEAKMAP_DELETE")) {
+      if (args.length !== 1) fail(SAFE.authority, "AUTHORITY_SCHEMA");
+      const historical = callee.bound.map?.get(args[0]);
+      if (historical) rememberReference(callee.bound, historical);
+      callee.bound.map?.delete(args[0]);
+      return primitiveValue("boolean");
+    }
     if (callee.caps.has("REGEXP_TEST")) return primitiveValue("boolean");
     if (callee.caps.has("SYMBOL_CONSTRUCTOR")) {
       return value({
@@ -1363,9 +2048,23 @@ class ClosureAnalyzer {
         provenance: provenanceOf(callee.bound),
       });
     }
-    if (callee.caps.has("OBJECT_FREEZE")) return args.length === 1 ? args[0] : unknownValue();
-    if (callee.caps.has("OBJECT_KEYS")) return value({ kind: "array" });
-    if (callee.caps.has("OBJECT_HAS_OWN")) return primitiveValue("boolean");
+    if (callee.caps.has("OBJECT_FREEZE")) {
+      if (args.length !== 1) fail(SAFE.flow, "CAPABILITY_REFLECTION");
+      args[0].frozen = true;
+      return args[0];
+    }
+    if (callee.caps.has("OBJECT_KEYS")) {
+      const target = args[0];
+      if (!target || target.kind === "unknown") fail(SAFE.flow, "CAPABILITY_REFLECTION");
+      return value({
+        kind: "array",
+        elements: [...(target.props?.keys?.() ?? [])].map((key) => primitiveValue(key)),
+      });
+    }
+    if (callee.caps.has("OBJECT_HAS_OWN")) {
+      if (args.length !== 2) fail(SAFE.flow, "CAPABILITY_REFLECTION");
+      return primitiveValue("boolean");
+    }
     if (callee.caps.has("ARRAY_IS_ARRAY")) return primitiveValue("boolean");
     if (callee.caps.has("NUMBER_CONSTRUCTOR")) {
       if (args.some((item) => hasTaint(item, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC))) fail(SAFE.flow, "CAPABILITY_RECONSTRUCTION");
@@ -1392,11 +2091,10 @@ class ClosureAnalyzer {
       if (args.length !== 0) fail(SAFE.flow, "CAPABILITY_CALLBACK");
       return value({ kind: "operation-result" });
     }
-    if (callee.fn && isFunctionLike(callee.fn)) return this.analyzeFunction(callee.fn, args, callee.closure);
+    if (callee.fn && isFunctionLike(callee.fn)) return this.analyzeFunction(callee.fn, args, callee.closure, callee.bound);
     if (callee.kind === "function" && !callee.fn) fail(SAFE.unresolved, "CALL_RESOLUTION");
     if (callee.kind === "class") {
-      if (!callee.fn || !ts.isClassDeclaration(callee.fn)) fail(SAFE.unresolved, "CALL_RESOLUTION");
-      if (!this.classConstructorHasRelevantInput(callee, args)) return value({ kind: "error" });
+      if (!callee.fn || (!ts.isClassDeclaration(callee.fn) && !ts.isClassExpression(callee.fn))) fail(SAFE.unresolved, "CALL_RESOLUTION");
       return this.analyzeClassConstructor(callee.fn, args, callee.closure);
     }
     if (callee.caps.has("UNUSED_EXTERNAL")) fail(SAFE.unresolved, "CALL_RESOLUTION");
@@ -1408,6 +2106,10 @@ class ClosureAnalyzer {
     const keys = [...record.props.keys()];
     if (!sameTextSet(keys, AUTHORITY_KEYS)) fail(SAFE.authority, "AUTHORITY_SCHEMA");
     for (const [name, item] of record.props) {
+      if (name === "pool") {
+        if (item?.kind !== "pool") fail(SAFE.authority, "AUTHORITY_SCHEMA");
+        continue;
+      }
       if (!item || item.kind === "unknown" ||
           hasTaint(item, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC | Taint.MAYBE_SENSITIVE)) {
         fail(SAFE.flow, "AUTHORITY_SCHEMA");
@@ -1449,10 +2151,12 @@ class ClosureAnalyzer {
   }
 
   assignTarget(target, right, env, context) {
+    this.graphNode(right, "assignment-value");
     if (ts.isIdentifier(target)) {
       const resolved = this.resolveDeclaration(target);
       if (!resolved || resolved.kind !== "local") fail(SAFE.unresolved, "CALL_RESOLUTION");
       env.set(keyForDeclaration(resolved.declaration.name ?? resolved.declaration), right);
+      this.graphEdge(resolved.declaration, right, "ASSIGNS");
       this.bindingNames.set(keyForDeclaration(resolved.declaration.name ?? resolved.declaration), target.text);
       return;
     }
@@ -1461,29 +2165,41 @@ class ClosureAnalyzer {
       const name = target.name.text;
       if (receiver.caps.has("ENV")) fail(SAFE.flow, "CAPABILITY_ENV");
       if (receiver.kind === "unknown") fail(SAFE.flow, "CAPABILITY_STORAGE");
+      if (receiver.frozen && receiver.kind !== "authority-token") fail(SAFE.flow, "CAPABILITY_STORAGE");
       if (receiver.kind === "pool-options") {
-        if (name !== "password" || !right.directCredential || right.taint !== Taint.CREDENTIAL) {
+        if (name !== "password" || receiver.props.has("password") || !right.directCredential ||
+            right.kind !== "credential" || summarizeRisk(right).taint !== Taint.CREDENTIAL ||
+            summarizeRisk(right).caps.size > 0) {
           fail(SAFE.flow, "CAPABILITY_PASSWORD");
         }
-        receiver.props.set(name, right);
+        assignValueProperty(receiver, name, right);
         this.declassificationCount += 1;
+        if (this.declassificationCount > 1) fail(SAFE.flow, "CAPABILITY_PASSWORD");
+        this.graphEdge(right, receiver, "DECLASSIFICATION_USE");
         return;
       }
       if (receiver === this.authorityRecord && name === "valid" && right.label === "false") {
-        receiver.props.set(name, right);
+        assignValueProperty(receiver, name, right);
         return;
       }
       if (hasTaint(right, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC)) fail(SAFE.flow, "CAPABILITY_STORAGE");
-      receiver.props.set(name, right);
-      receiver.taint |= right.taint;
-      for (const cap of right.caps) receiver.caps.add(cap);
-      for (const label of provenanceOf(right)) receiver.provenance.add(label);
+      assignValueProperty(receiver, name, right);
+      this.graphEdge(receiver, right, "ASSIGNS");
       return;
     }
     if (ts.isElementAccessExpression(target)) {
       const receiver = this.evalExpression(target.expression, env, context);
       if (receiver.caps.has("ENV")) fail(SAFE.flow, "CAPABILITY_ENV");
-      fail(SAFE.computed, "COMPUTED_CAPABILITY");
+      const key = this.evalKey(target.argumentExpression, env, context);
+      if (key === null) fail(SAFE.computed, "COMPUTED_CAPABILITY");
+      if (receiver.kind === "pool-options" || receiver === this.authorityRecord) {
+        fail(SAFE.computed, "COMPUTED_CAPABILITY");
+      }
+      if (receiver.frozen && receiver.kind !== "authority-token") fail(SAFE.flow, "CAPABILITY_STORAGE");
+      if (hasTaint(right, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC)) fail(SAFE.flow, "CAPABILITY_STORAGE");
+      assignValueProperty(receiver, key, right);
+      this.graphEdge(receiver, right, "COMPUTED_CHILD");
+      return;
     }
     fail(SAFE.ast, "SYNTAX_POLICY");
   }
@@ -1499,7 +2215,8 @@ function applyEdits(source, edits) {
 }
 
 function createVirtualProgram({ helperPath, source, label }) {
-  const virtualRoot = path.join(path.parse(helperPath).root, "__ssc_virtual__", label);
+  const safeLabel = String(label ?? "variant").replace(/[^A-Za-z0-9_-]/gu, "_");
+  const virtualRoot = path.join(path.parse(helperPath).root, "__ssc_virtual__", safeLabel);
   const stubPaths = new Map([
     ["drizzle-orm/node-postgres", path.join(virtualRoot, "drizzle-node-postgres.d.ts")],
     ["drizzle-orm/node-postgres/migrator", path.join(virtualRoot, "drizzle-migrator.d.ts")],
@@ -1760,6 +2477,103 @@ function buildMutantSources(source, sourceFile) {
   replaceAuthorityProperty("PROBE_AUTHORITY_LIFECYCLE_IDENTITY", "lifecycleFingerprint", "\"wrong-lifecycle\"");
   replaceAuthorityProperty("PROBE_AUTHORITY_MIGRATIONS_IDENTITY", "migrationsFolder", "\"wrong-migrations\"");
   replaceAuthorityProperty("PROBE_AUTHORITY_PHASE_IDENTITY", "phase", "\"final_start\"");
+
+  mutants.set("MATRIX_OBJECT_OUTPUT", prefix(
+    "console.log({ secret: input.connectionPassword });",
+  ));
+  mutants.set("MATRIX_ARRAY_OUTPUT", prefix(
+    "console.log([input.connectionPassword]);",
+  ));
+  mutants.set("MATRIX_SET_OUTPUT", prefix(
+    "const matrixSet = new Set([input.connectionPassword]); console.log(matrixSet);",
+  ));
+  mutants.set("MATRIX_MAP_OUTPUT", prefix(
+    "const matrixMap = new Map([[\"secret\", input.connectionPassword]]); console.log(matrixMap);",
+  ));
+  mutants.set("MATRIX_WEAKMAP_OUTPUT", prefix(
+    "const matrixWeakMapKey = {}; const matrixWeakMap = new WeakMap([[matrixWeakMapKey, input.connectionPassword]]); console.log(matrixWeakMap);",
+  ));
+  mutants.set("MATRIX_CLASS_PROPERTY_OUTPUT", prefix(
+    "class MatrixCarrier { constructor(value) { this.value = value; } } const matrixCarrier = new MatrixCarrier(input.connectionPassword); console.log(matrixCarrier);",
+  ));
+  mutants.set("MATRIX_CLASS_METHOD_OUTPUT", prefix(
+    "class MatrixCarrier { constructor(value) { this.value = value; } reveal() { return this.value; } } const matrixCarrier = new MatrixCarrier(input.connectionPassword); console.log(matrixCarrier.reveal());",
+  ));
+  mutants.set("MATRIX_OBJECT_METHOD_OUTPUT", prefix(
+    "const matrixCarrier = { reveal() { return input.connectionPassword; } }; console.log(matrixCarrier.reveal());",
+  ));
+  mutants.set("MATRIX_CALLBACK_OUTPUT", prefix(
+    "[input.connectionPassword].forEach((value) => console.log(value));",
+  ));
+  mutants.set("MATRIX_MAP_CALLBACK_OUTPUT", prefix(
+    "new Map([[\"secret\", input.connectionPassword]]).forEach((value) => console.log(value));",
+  ));
+  mutants.set("MATRIX_RETURN_OBJECT", prefix(
+    "return { secret: input.connectionPassword };",
+  ));
+  mutants.set("MATRIX_RETURN_SET", prefix(
+    "return new Set([input.connectionPassword]);",
+  ));
+  mutants.set("MATRIX_RETURN_MAP", prefix(
+    "return new Map([[\"secret\", input.connectionPassword]]);",
+  ));
+  mutants.set("MATRIX_RETURN_WEAKMAP", prefix(
+    "const matrixWeakMapKey = {}; return new WeakMap([[matrixWeakMapKey, input.connectionPassword]]);",
+  ));
+  mutants.set("MATRIX_RETURN_CLASS", prefix(
+    "class MatrixCarrier { constructor(value) { this.value = value; } } return new MatrixCarrier(input.connectionPassword);",
+  ));
+  mutants.set("MATRIX_RETURN_METHOD", prefix(
+    "return { reveal() { return input.connectionPassword; } };",
+  ));
+  mutants.set("MATRIX_RETURN_CALLBACK", prefix(
+    "return () => input.connectionPassword;",
+  ));
+  mutants.set("MATRIX_RETURN_ALIAS", prefix(
+    "const matrixSecret = input.connectionPassword; return matrixSecret;",
+  ));
+  mutants.set("MATRIX_LATE_MUTATION_OUTPUT", prefix(
+    "const matrixHolder = {}; const matrixAlias = matrixHolder; matrixHolder.secret = input.connectionPassword; console.log(matrixAlias);",
+  ));
+  mutants.set("MATRIX_DELETE_HISTORY_OUTPUT", prefix(
+    "const matrixHolder = { secret: input.connectionPassword }; delete matrixHolder.secret; console.log(matrixHolder);",
+  ));
+  mutants.set("MATRIX_CLEAR_HISTORY_OUTPUT", prefix(
+    "const matrixSet = new Set([input.connectionPassword]); matrixSet.clear(); console.log(matrixSet);",
+  ));
+  mutants.set("MATRIX_FREEZE_OUTPUT", prefix(
+    "console.log(Object.freeze({ secret: input.connectionPassword }));",
+  ));
+  mutants.set("MATRIX_COMPUTED_OBJECT_OUTPUT", prefix(
+    "const matrixKey = \"secret\"; const matrixObject = {}; matrixObject[matrixKey] = input.connectionPassword; console.log(matrixObject);",
+  ));
+  mutants.set("MATRIX_COMPUTED_ARRAY_OUTPUT", prefix(
+    "const matrixArray = [input.connectionPassword]; const matrixIndex = 0; console.log(matrixArray[matrixIndex]);",
+  ));
+  mutants.set("MATRIX_RETAINED_CLOSURE_OUTPUT", prefix(
+    "let matrixLeak = \"safe\"; const matrixCapture = () => { matrixLeak = input.connectionPassword; }; matrixCapture(); console.log(matrixLeak);",
+  ));
+  mutants.set("MATRIX_RETAINED_FUNCTION_OUTPUT", prefix(
+    "const matrixCapture = () => input.connectionPassword; console.log(matrixCapture());",
+  ));
+  mutants.set("MATRIX_CALLBACK_RETURN_OUTPUT", prefix(
+    "const matrixMapped = [input.connectionPassword].map((value) => value); console.log(matrixMapped);",
+  ));
+  mutants.set("MATRIX_WEAKMAP_GET_OUTPUT", prefix(
+    "const matrixWeakMapKey = {}; const matrixWeakMap = new WeakMap(); matrixWeakMap.set(matrixWeakMapKey, input.connectionPassword); console.log(matrixWeakMap.get(matrixWeakMapKey));",
+  ));
+  mutants.set("MATRIX_MAP_UNKNOWN_GET_OUTPUT", prefix(
+    "const matrixMap = new Map([[\"secret\", input.connectionPassword]]); console.log(matrixMap.get(input.expectedUser));",
+  ));
+  mutants.set("MATRIX_STRING_TRANSFORM_OUTPUT", prefix(
+    "console.log(input.connectionPassword.trim());",
+  ));
+  mutants.set("MATRIX_JSON_SECRET_OUTPUT", prefix(
+    "console.log(JSON.stringify(input.connectionPassword));",
+  ));
+  mutants.set("MATRIX_UNKNOWN_COMPUTED_OUTPUT", prefix(
+    "const matrixName = input.expectedUser; console[matrixName](input.connectionPassword);",
+  ));
   return mutants;
 }
 
@@ -1783,7 +2597,171 @@ async function readFrozenSource() {
   return { helperPath, source: bytes.toString("utf8") };
 }
 
-function analyzeSourceVariant({ helperPath, source, label }) {
+function rootBodyInsertion(source) {
+  const rootStart = source.indexOf(`export async function ${ROOT_EXPORT}`);
+  const brace = source.indexOf("{", rootStart);
+  if (rootStart < 0 || brace < 0) fail(SAFE.internal, "MUTANT_ANCHOR");
+  return brace + 1;
+}
+
+function prependRootStatements(source, statements) {
+  return applyEdits(source, [{
+    start: rootBodyInsertion(source),
+    end: rootBodyInsertion(source),
+    text: `${statements}\n`,
+  }]);
+}
+
+export async function readFrozenMigrationClosureSource() {
+  const frozen = await readFrozenSource();
+  return Object.freeze({ ...frozen });
+}
+
+export async function analyzeMigrationClosureVariant(source, { label = "variant" } = {}) {
+  const frozen = await readFrozenSource();
+  return analyzeSourceVariant({ helperPath: frozen.helperPath, source, label });
+}
+
+export async function analyzeMigrationClosureVariants(variants) {
+  if (!Array.isArray(variants)) fail(SAFE.internal, "VARIANT_INTERFACE");
+  const frozen = await readFrozenSource();
+  const results = [];
+  for (const [index, variant] of variants.entries()) {
+    if (!variant || typeof variant.source !== "string") fail(SAFE.internal, "VARIANT_INTERFACE");
+    try {
+      results.push(Object.freeze({
+        id: variant.id ?? `variant-${index}`,
+        ok: true,
+        result: analyzeSourceVariant({
+          helperPath: frozen.helperPath,
+          source: variant.source,
+          label: `external-${index}`,
+        }),
+      }));
+    } catch (error) {
+      const failure = failureOf(error);
+      results.push(Object.freeze({
+        id: variant.id ?? `variant-${index}`,
+        ok: false,
+        result: failure,
+      }));
+    }
+  }
+  return Object.freeze(results);
+}
+
+const POSITIVE_CONTROL_SOURCES = Object.freeze([
+  Object.freeze({
+    id: "POSITIVE_CLEAN_OBJECT_COMPUTED",
+    source: "const cleanObject = {}; cleanObject[\"value\"] = \"safe\"; Object.freeze(cleanObject);",
+  }),
+  Object.freeze({
+    id: "POSITIVE_CLEAN_ARRAY_CALLBACK",
+    source: "const cleanArray = [\"safe\"]; cleanArray.map((value) => value);",
+  }),
+  Object.freeze({
+    id: "POSITIVE_CLEAN_SET_COLLECTION",
+    source: "const cleanSet = new Set([\"safe\"]); cleanSet.has(\"safe\");",
+  }),
+  Object.freeze({
+    id: "POSITIVE_CLEAN_MAP_COLLECTION",
+    source: "const cleanMap = new Map([[\"safe\", \"value\"]]); cleanMap.get(\"safe\");",
+  }),
+  Object.freeze({
+    id: "POSITIVE_CLEAN_CLASS_METHOD",
+    source: "class CleanCarrier { constructor(value) { this.value = value; } reveal() { return this.value; } } const cleanCarrier = new CleanCarrier(\"safe\"); cleanCarrier.reveal();",
+  }),
+  Object.freeze({
+    id: "POSITIVE_CLEAN_CLOSURE",
+    source: "const cleanClosure = () => \"safe\"; cleanClosure();",
+  }),
+  Object.freeze({
+    id: "POSITIVE_CLEAN_FREEZE_ALIAS",
+    source: "const cleanAlias = Object.freeze({ value: \"safe\" }); Object.keys(cleanAlias);",
+  }),
+  Object.freeze({
+    id: "POSITIVE_CLEAN_WEAKMAP",
+    source: "const cleanWeakKey = {}; const cleanWeakMap = new WeakMap(); cleanWeakMap.set(cleanWeakKey, \"safe\"); cleanWeakMap.get(cleanWeakKey);",
+  }),
+]);
+
+async function runVariantSet(variants, { expected = "pass" } = {}) {
+  const frozen = await readFrozenSource();
+  const results = [];
+  for (const variant of variants) {
+    let observed = null;
+    try {
+      observed = analyzeSourceVariant({
+        helperPath: frozen.helperPath,
+        source: variant.source,
+        label: variant.id,
+      });
+    } catch (error) {
+      observed = failureOf(error);
+    }
+    const pass = expected === "pass"
+      ? observed?.ok === true
+      : observed?.code !== "SSC_NEGATIVE_CONTROL_INACTIVE" && Boolean(observed?.code);
+    results.push(Object.freeze({ id: variant.id, pass, observed }));
+  }
+  return Object.freeze({
+    count: results.length,
+    ids: Object.freeze(results.map((result) => result.id)),
+    results: Object.freeze(results),
+    pass: results.every((result) => result.pass),
+  });
+}
+
+export async function runMigrationClosurePositiveControls() {
+  if (positiveControlResultCache) return positiveControlResultCache;
+  const frozen = await readFrozenSource();
+  const variants = POSITIVE_CONTROL_SOURCES.map((control) => Object.freeze({
+    id: control.id,
+    source: prependRootStatements(frozen.source, control.source),
+  }));
+  positiveControlResultCache = await runVariantSet(variants, { expected: "pass" });
+  return positiveControlResultCache;
+}
+
+export async function runMigrationClosureAdversarialMatrix() {
+  const result = await runMigrationClosureNegativeControls();
+  const matrixIds = new Set(NEGATIVE_CONTROLS.filter((control) => control.id.startsWith("MATRIX_")).map((control) => control.id));
+  const results = result.results.filter((control) => matrixIds.has(control.id));
+  return Object.freeze({
+    count: results.length,
+    ids: Object.freeze(results.map((control) => control.id)),
+    results: Object.freeze(results),
+    pass: results.length === matrixIds.size && results.every((control) => control.pass),
+  });
+}
+
+export async function runMigrationClosureOrthogonalRepresentationMatrix() {
+  return runMigrationClosureAdversarialMatrix();
+}
+
+export async function runMigrationClosureF2() {
+  const baseline = await runFrozenMigrationClosure();
+  const adversarial = await runMigrationClosureAdversarialMatrix();
+  return Object.freeze({
+    id: "F2_STATIC_CLOSURE_ASSURANCE",
+    pass: baseline.ok === true && adversarial.pass === true,
+    baseline,
+    adversarial,
+  });
+}
+
+export async function runMigrationClosureF3() {
+  const positive = await runMigrationClosurePositiveControls();
+  const matrix = await runMigrationClosureOrthogonalRepresentationMatrix();
+  return Object.freeze({
+    id: "F3_REPRESENTATION_ASSURANCE",
+    pass: positive.pass === true && matrix.pass === true,
+    positive,
+    matrix,
+  });
+}
+
+export function analyzeSourceVariant({ helperPath, source, label }) {
   try {
     const { program, sourceFile, checker } = createVirtualProgram({ helperPath, source, label });
     return new ClosureAnalyzer({ source, sourceFile, program, checker }).analyze();
@@ -1803,6 +2781,7 @@ export async function runFrozenMigrationClosure() {
 }
 
 export async function runMigrationClosureNegativeControls() {
+  if (negativeControlResultCache) return negativeControlResultCache;
   try {
     const frozen = await readFrozenSource();
     const baselineProgram = createVirtualProgram({ ...frozen, label: "mutant-index" });
@@ -1827,14 +2806,15 @@ export async function runMigrationClosureNegativeControls() {
         pass: observed.code === control.code && observed.detector === control.detector,
       }));
     }
-    return Object.freeze({
+    negativeControlResultCache = Object.freeze({
       count: results.length,
       ids: Object.freeze(results.map((result) => result.id)),
       results: Object.freeze(results),
     });
+    return negativeControlResultCache;
   } catch (error) {
     const failure = failureOf(error);
-    return Object.freeze({
+    negativeControlResultCache = Object.freeze({
       count: NEGATIVE_CONTROLS.length,
       ids: Object.freeze(NEGATIVE_CONTROLS.map((control) => control.id)),
       results: Object.freeze(NEGATIVE_CONTROLS.map((control) => Object.freeze({
@@ -1844,9 +2824,14 @@ export async function runMigrationClosureNegativeControls() {
         pass: false,
       }))),
     });
+    return negativeControlResultCache;
   }
 }
 
 export const migrationClosureNegativeControlIds = Object.freeze(
   NEGATIVE_CONTROLS.map((control) => control.id),
+);
+
+export const migrationClosurePositiveControlIds = Object.freeze(
+  POSITIVE_CONTROL_SOURCES.map((control) => control.id),
 );

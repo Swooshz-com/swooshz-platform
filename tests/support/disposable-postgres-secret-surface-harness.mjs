@@ -44,6 +44,8 @@ const BEHAVIORAL_CONTROLS = Object.freeze([
   Object.freeze({ id: "NC22_RUNTIME_PRE_EFFECT_CAPABILITY", code: "SSC_RUNTIME_CAPABILITY", detector: "PRE_EFFECT_CAPABILITY_GATE" }),
 ]);
 
+let defaultHarnessResultCache = null;
+
 const SAFE = Object.freeze({
   pass: "PASS",
   internal: "SSC_HARNESS_INTERNAL",
@@ -360,9 +362,30 @@ function installObserverSet(state, ledger, owner, keys, prefix, returns = undefi
   }
 }
 
-function trustedDependencyCall() {
-  const stack = new Error().stack ?? "";
-  return /node_modules[\\/]drizzle-orm[\\/]|node_modules[\\/]pg[\\/]/u.test(stack);
+function installPoolDependencyObserver(state, ledger, owner, key, id) {
+  const found = descriptorOwner(owner, key);
+  if (!found || typeof found.descriptor.value !== "function") fail(SAFE.install, "INSTALL_LEDGER");
+  const original = found.descriptor.value;
+  const wrapper = function observedPoolDependency(...args) {
+    if (state.active && state.poolDependencyAllowed && !state.selfTest) {
+      return original.apply(this, args);
+    }
+    recordEvent(state, id);
+    if (state.selfTest) return undefined;
+    if (state.active) throw new Error("SSC_BLOCKED");
+    return original.apply(this, args);
+  };
+  ledger.install(found.owner, key, wrapper);
+  state.selfTest = true;
+  try {
+    wrapper.call(found.owner, state.markers.canary);
+  } catch {
+    // The synthetic canary is intentionally blocked.
+  } finally {
+    state.selfTest = false;
+  }
+  if (!state.canaryHits.has(id)) fail(SAFE.install, "INSTALL_LEDGER");
+  state.canaryHits.delete(id);
 }
 
 function installPassthroughObserver(state, ledger, target, key, id) {
@@ -371,7 +394,8 @@ function installPassthroughObserver(state, ledger, target, key, id) {
   const original = found.descriptor.value;
   const wrapper = function observedPassthrough(...args) {
     if (state.selfTest || state.active) {
-      if (!state.selfTest && state.active && trustedDependencyCall()) {
+      if (!state.selfTest && state.active && state.poolDependencyAllowed &&
+          state.allowedDependencyEffects?.has(id)) {
         return original.apply(this, args);
       }
       recordEvent(state, id);
@@ -407,9 +431,6 @@ function installOpenObserver(state, ledger, owner, key, id, writeMask) {
     const flags = args[1];
     const writeIntent = hasWriteOpenIntent(flags, writeMask);
     if (writeIntent) {
-      if (!state.selfTest && state.active && trustedDependencyCall()) {
-        return original.apply(this, args);
-      }
       recordEvent(state, id);
       if (!state.selfTest) throw new Error("SSC_BLOCKED");
       return undefined;
@@ -632,7 +653,7 @@ function installPoolSeam(state, ledger, pg) {
   for (const key of ["query", "connect", "end"]) {
     const found = descriptorOwner(originalPool.prototype, key);
     if (!found) fail(SAFE.install, "INSTALL_LEDGER");
-    installFunction(ledger, state, found.owner, key, `POOL_FALLBACK_${key.toUpperCase()}`);
+    installPoolDependencyObserver(state, ledger, found.owner, key, `POOL_FALLBACK_${key.toUpperCase()}`);
   }
   state.selfTest = true;
   const canary = new ObservedPool({ host: "127.0.0.1", port: 1, user: "canary", database: "canary", max: 1 });
@@ -940,6 +961,8 @@ async function runScenario(state, scenario) {
     error = importError;
   }
   state.active = true;
+  state.poolDependencyAllowed = true;
+  state.allowedDependencyEffects = new Set(["CRYPTO_CREATEHASH"]);
   if (!error) {
     const operation = async () => {
       current.operationCalls += 1;
@@ -959,6 +982,8 @@ async function runScenario(state, scenario) {
   current.resourcesStable = resources.length === current.resourceBefore.length &&
     resources.every((resource, index) => resource === current.resourceBefore[index]);
   state.active = false;
+  state.poolDependencyAllowed = false;
+  state.allowedDependencyEffects = new Set();
   const scenarioResult = scenarioChecks(current, result, error, state);
   state.current = null;
   state.authorityRecord = null;
@@ -1386,6 +1411,8 @@ function failureResult(error) {
 }
 
 export async function runSecretSurfaceBehavioralHarness(options = {}) {
+  const defaultRun = Object.keys(options).length === 0;
+  if (defaultRun && defaultHarnessResultCache) return defaultHarnessResultCache;
   const state = newRunState();
   let ledger = null;
   const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -1431,8 +1458,30 @@ export async function runSecretSurfaceBehavioralHarness(options = {}) {
       result = fixedRestoreFailure();
     }
   }
-  return finalizeBoundary(result, ledger);
+  const finalized = finalizeBoundary(result, ledger);
+  if (defaultRun && finalized.allScenariosPass === true && finalized.allControlsPass === true) {
+    defaultHarnessResultCache = finalized;
+  }
+  return finalized;
 }
 
 export const behavioralSecretSurfaceScenarioIds = Object.freeze(SCENARIOS.map((scenario) => scenario.id));
 export const behavioralSecretSurfaceControlIds = Object.freeze(BEHAVIORAL_CONTROLS.map((control) => control.id));
+
+export async function runSecretSurfaceF2(options = {}) {
+  const result = await runSecretSurfaceBehavioralHarness(options);
+  return Object.freeze({
+    id: "F2_RUNTIME_BEHAVIOURAL_CONTROLS",
+    pass: result.allControlsPass === true,
+    controls: result.controls,
+  });
+}
+
+export async function runSecretSurfaceF3(options = {}) {
+  const result = await runSecretSurfaceBehavioralHarness(options);
+  return Object.freeze({
+    id: "F3_RUNTIME_LIFECYCLE_SCENARIOS",
+    pass: result.allScenariosPass === true,
+    scenarios: result.scenarios,
+  });
+}
