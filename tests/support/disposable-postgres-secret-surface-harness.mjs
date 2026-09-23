@@ -1,8 +1,10 @@
 import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
-import { inspect } from "node:util";
+import { inspect, types } from "node:util";
+import ts from "typescript";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { readFrozenMigrationClosureSource } from "./disposable-postgres-migration-closure.mjs";
 
 const SUBJECT_RELATIVE = "tests/support/disposable-postgres-fixture.mjs";
 const MIGRATIONS_FOLDER = "./drizzle/migrations";
@@ -21,12 +23,46 @@ const AUTHORITY_KEYS = Object.freeze([
 
 const MAX_INSPECTION_DEPTH = 6;
 const MAX_INSPECTION_ENTRIES = 256;
+const BUILTIN_PROTOTYPES = new Set([
+  Object.prototype,
+  Array.prototype,
+  Function.prototype,
+  Error.prototype,
+  EvalError.prototype,
+  RangeError.prototype,
+  ReferenceError.prototype,
+  SyntaxError.prototype,
+  TypeError.prototype,
+  URIError.prototype,
+  AggregateError.prototype,
+  Map.prototype,
+  Set.prototype,
+  WeakMap.prototype,
+  WeakSet.prototype,
+  Date.prototype,
+  RegExp.prototype,
+  String.prototype,
+  Number.prototype,
+  Boolean.prototype,
+  BigInt.prototype,
+  Symbol.prototype,
+  Promise.prototype,
+]);
+const BOXED_PRIMITIVE_UNBOXERS = Object.freeze([
+  String.prototype.valueOf,
+  Number.prototype.valueOf,
+  Boolean.prototype.valueOf,
+  BigInt.prototype.valueOf,
+  Symbol.prototype.valueOf,
+]);
+const NATIVE_ERROR_STACK_DESCRIPTOR = Object.getOwnPropertyDescriptor(new Error(), "stack");
 
 const SCENARIOS = Object.freeze([
   Object.freeze({ id: "SC01_ORDINARY_SUCCESS", rejectOperation: false, rejectCleanup: false, rejectSecondIdentity: false }),
   Object.freeze({ id: "SC02_SUCCESS_CLEANUP_REJECT", rejectOperation: false, rejectCleanup: true, rejectSecondIdentity: false }),
   Object.freeze({ id: "SC03_OPERATION_REJECT_CLEANUP_REJECT", rejectOperation: true, rejectCleanup: true, rejectSecondIdentity: false }),
   Object.freeze({ id: "SC04_SECOND_IDENTITY_REJECT_CLEANUP_REJECT", rejectOperation: false, rejectCleanup: true, rejectSecondIdentity: true }),
+  Object.freeze({ id: "SC05_PASSWORD_ABSENT", rejectOperation: false, rejectCleanup: false, rejectSecondIdentity: false, omitPassword: true }),
 ]);
 
 const BEHAVIORAL_CONTROLS = Object.freeze([
@@ -42,6 +78,13 @@ const BEHAVIORAL_CONTROLS = Object.freeze([
   Object.freeze({ id: "NC20_POOL_WRONG_PASSWORD", code: "SSC_POOL_BINDING", detector: "POOL_PASSWORD_PRESERVATION" }),
   Object.freeze({ id: "NC21_POOL_BINDING_MISMATCH", code: "SSC_POOL_BINDING", detector: "POOL_BINDING_IDENTITY" }),
   Object.freeze({ id: "NC22_RUNTIME_PRE_EFFECT_CAPABILITY", code: "SSC_RUNTIME_CAPABILITY", detector: "PRE_EFFECT_CAPABILITY_GATE" }),
+  Object.freeze({ id: "NC23_INHERITED_HIDDEN_SURFACE", code: "SSC_PUBLIC_SURFACE", detector: "INHERITED_DATA_SURFACE" }),
+  Object.freeze({ id: "NC24_MAP_INTERNAL_HIDDEN_SURFACE", code: "SSC_PUBLIC_SURFACE", detector: "COLLECTION_INTERNAL_SURFACE" }),
+  Object.freeze({ id: "NC25_POOL_WRONG_MAX", code: "SSC_POOL_BINDING", detector: "POOL_MAX_EXACTNESS" }),
+  Object.freeze({ id: "NC26_POOL_WRONG_DATABASE", code: "SSC_POOL_BINDING", detector: "POOL_DATABASE_EXACTNESS" }),
+  Object.freeze({ id: "NC27_QUERY_WRONG_IDENTITY_ARGUMENTS", code: "SSC_POOL_BINDING", detector: "POOL_IDENTITY_ARGUMENTS" }),
+  Object.freeze({ id: "NC28_QUERY_WRONG_RECEIVER", code: "SSC_POOL_BINDING", detector: "POOL_QUERY_RECEIVER" }),
+  Object.freeze({ id: "NC29_QUERY_UNKNOWN_SQL", code: "SSC_POOL_BINDING", detector: "POOL_QUERY_ALLOWLIST" }),
 ]);
 
 let defaultHarnessResultCache = null;
@@ -170,8 +213,6 @@ function newRunState() {
     runtimeEvents: new Map(),
     current: null,
     markers: fixedMarkers(),
-    originalStringify: JSON.stringify,
-    originalInspect: inspect,
     originalSetImmediate: globalThis.setImmediate,
     authorityRecord: null,
     authorityPool: null,
@@ -179,6 +220,13 @@ function newRunState() {
     require: null,
     subjectUrl: null,
     scenarioSerial: 0,
+    identitySql: null,
+    migrationQueryPlan: Object.freeze([]),
+    migrationHashPlan: Object.freeze([]),
+    pgClient: null,
+    originalPromise: globalThis.Promise,
+    originalPool: null,
+    allowedReadPaths: new Set(),
   };
 }
 
@@ -367,9 +415,6 @@ function installPoolDependencyObserver(state, ledger, owner, key, id) {
   if (!found || typeof found.descriptor.value !== "function") fail(SAFE.install, "INSTALL_LEDGER");
   const original = found.descriptor.value;
   const wrapper = function observedPoolDependency(...args) {
-    if (state.active && state.poolDependencyAllowed && !state.selfTest) {
-      return original.apply(this, args);
-    }
     recordEvent(state, id);
     if (state.selfTest) return undefined;
     if (state.active) throw new Error("SSC_BLOCKED");
@@ -394,10 +439,6 @@ function installPassthroughObserver(state, ledger, target, key, id) {
   const original = found.descriptor.value;
   const wrapper = function observedPassthrough(...args) {
     if (state.selfTest || state.active) {
-      if (!state.selfTest && state.active && state.poolDependencyAllowed &&
-          state.allowedDependencyEffects?.has(id)) {
-        return original.apply(this, args);
-      }
       recordEvent(state, id);
       if (state.selfTest) return undefined;
       throw new Error("SSC_BLOCKED");
@@ -417,6 +458,101 @@ function installPassthroughObserver(state, ledger, target, key, id) {
   state.canaryHits.delete(id);
 }
 
+function installMigrationHashObserver(state, ledger, crypto) {
+  const createHashDescriptor = descriptorOwner(crypto, "createHash");
+  if (!createHashDescriptor || typeof createHashDescriptor.descriptor.value !== "function") {
+    fail(SAFE.install, "INSTALL_LEDGER");
+  }
+  const originalCreateHash = createHashDescriptor.descriptor.value;
+  const probeHash = originalCreateHash.call(crypto, "sha256");
+  const hashPrototype = Object.getPrototypeOf(probeHash);
+  const updateDescriptor = descriptorOwner(hashPrototype, "update");
+  const digestDescriptor = descriptorOwner(hashPrototype, "digest");
+  if (!updateDescriptor || !digestDescriptor ||
+      typeof updateDescriptor.descriptor.value !== "function" ||
+      typeof digestDescriptor.descriptor.value !== "function") {
+    fail(SAFE.install, "INSTALL_LEDGER");
+  }
+  const originalUpdate = updateDescriptor.descriptor.value;
+  const originalDigest = digestDescriptor.descriptor.value;
+  try { originalDigest.call(probeHash); } catch { fail(SAFE.install, "INSTALL_LEDGER"); }
+
+  const createHash = function observedMigrationCreateHash(...args) {
+    if (state.selfTest) {
+      recordEvent(state, "CRYPTO_CREATEHASH");
+      return undefined;
+    }
+    if (!state.active) return originalCreateHash.apply(this, args);
+    const current = state.current;
+    const index = current?.hashIndex ?? -1;
+    const expected = state.migrationHashPlan[index];
+    if (this !== crypto || args.length !== 1 || args[0] !== "sha256" ||
+        !current?.allowMigrationHash || current.pendingHash || !expected) {
+      recordEvent(state, "CRYPTO_CREATEHASH");
+      throw new Error("SSC_BLOCKED");
+    }
+    const hash = originalCreateHash.apply(this, args);
+    current.hashIndex = index + 1;
+    current.pendingHash = { hash, index, updated: false };
+    return hash;
+  };
+  const update = function observedMigrationHashUpdate(...args) {
+    if (state.selfTest) {
+      recordEvent(state, "CRYPTO_HASH_UPDATE");
+      return this;
+    }
+    if (!state.active) return originalUpdate.apply(this, args);
+    const current = state.current;
+    const pending = current?.pendingHash;
+    const expected = pending && state.migrationHashPlan[pending.index];
+    if (pending?.hash !== this || pending.updated || args.length !== 1 ||
+        typeof args[0] !== "string" || args[0] !== expected?.input) {
+      recordEvent(state, "CRYPTO_HASH_UPDATE");
+      throw new Error("SSC_BLOCKED");
+    }
+    const result = originalUpdate.apply(this, args);
+    pending.updated = true;
+    return result;
+  };
+  const digest = function observedMigrationHashDigest(...args) {
+    if (state.selfTest) {
+      recordEvent(state, "CRYPTO_HASH_DIGEST");
+      return "ssc-canary";
+    }
+    if (!state.active) return originalDigest.apply(this, args);
+    const current = state.current;
+    const pending = current?.pendingHash;
+    const expected = pending && state.migrationHashPlan[pending.index];
+    if (pending?.hash !== this || !pending.updated || args.length !== 1 || args[0] !== "hex") {
+      recordEvent(state, "CRYPTO_HASH_DIGEST");
+      throw new Error("SSC_BLOCKED");
+    }
+    const result = originalDigest.apply(this, args);
+    if (result !== expected?.hash) {
+      recordEvent(state, "CRYPTO_HASH_DIGEST");
+      throw new Error("SSC_BLOCKED");
+    }
+    current.pendingHash = null;
+    current.hashCompleted += 1;
+    return result;
+  };
+
+  ledger.install(createHashDescriptor.owner, "createHash", createHash);
+  ledger.install(updateDescriptor.owner, "update", update);
+  ledger.install(digestDescriptor.owner, "digest", digest);
+  for (const [wrapper, receiver, args, id] of [
+    [createHash, crypto, ["canary"], "CRYPTO_CREATEHASH"],
+    [update, {}, ["canary"], "CRYPTO_HASH_UPDATE"],
+    [digest, {}, ["hex"], "CRYPTO_HASH_DIGEST"],
+  ]) {
+    state.selfTest = true;
+    try { wrapper.apply(receiver, args); } catch { /* observer canary */ }
+    state.selfTest = false;
+    if (!state.canaryHits.has(id)) fail(SAFE.install, "INSTALL_LEDGER");
+    state.canaryHits.delete(id);
+  }
+}
+
 function hasWriteOpenIntent(flags, writeMask) {
   if (typeof flags === "number") return (flags & writeMask) !== 0;
   if (typeof flags === "string") return /[wax+]/u.test(flags);
@@ -430,7 +566,8 @@ function installOpenObserver(state, ledger, owner, key, id, writeMask) {
   const wrapper = function observedOpen(...args) {
     const flags = args[1];
     const writeIntent = hasWriteOpenIntent(flags, writeMask);
-    if (writeIntent) {
+    const allowedRead = state.allowedReadPaths instanceof Set && state.allowedReadPaths.has(args[0]);
+    if (writeIntent || (state.active && !allowedRead)) {
       recordEvent(state, id);
       if (!state.selfTest) throw new Error("SSC_BLOCKED");
       return undefined;
@@ -456,6 +593,10 @@ function installJsonObserver(state, ledger) {
   if (!found || typeof found.descriptor.value !== "function") fail(SAFE.install, "INSTALL_LEDGER");
   const original = found.descriptor.value;
   const wrapper = function observedJsonStringify(...args) {
+    if (state.active && !state.selfTest) {
+      recordEvent(state, "JSON_SECRET_SERIALIZATION");
+      throw new Error("SSC_BLOCKED");
+    }
     const output = original.apply(this, args);
     if (typeof output === "string" && containsMarker(output, state.markers)) recordEvent(state, "JSON_SECRET_SERIALIZATION");
     return output;
@@ -537,7 +678,7 @@ function installObservers(state) {
     if (process.report && descriptorOwner(process.report, "writeReport")) installFunction(ledger, state, process.report, "writeReport", "PROCESS_REPORT");
 
     for (const key of [
-      "createHash", "createHmac", "createCipheriv", "createDecipheriv", "createSign", "createVerify",
+      "createHmac", "createCipheriv", "createDecipheriv", "createSign", "createVerify",
       "generateKey", "generateKeyPair", "generateKeyPairSync", "randomBytes", "randomFill", "randomFillSync",
       "pbkdf2", "pbkdf2Sync", "scrypt", "scryptSync", "hkdf", "hkdfSync",
       "createSecretKey", "createPublicKey", "createPrivateKey", "hash", "randomUUID", "randomInt",
@@ -545,6 +686,7 @@ function installObservers(state) {
     ]) {
       if (descriptorOwner(crypto, key)) installPassthroughObserver(state, ledger, crypto, key, `CRYPTO_${key.toUpperCase()}`);
     }
+    installMigrationHashObserver(state, ledger, crypto);
     const webcryptoTargets = new Set([crypto.webcrypto, globalThis.crypto].filter(Boolean));
     const subtlePrototypes = new Set();
     for (const webcrypto of webcryptoTargets) {
@@ -605,43 +747,80 @@ function isAuthorityRecord(key, record, ObservedPool, { allowRevoked = false } =
 function installPoolSeam(state, ledger, pg) {
   const originalPool = pg.Pool;
   if (typeof originalPool !== "function") fail(SAFE.install, "INSTALL_LEDGER");
+  state.originalPool = originalPool;
   class ObservedPool extends originalPool {
     constructor(options) {
+      if (state.active && state.current && !state.selfTest &&
+          !poolOptionsMatch(options, state, state.current, false)) {
+        state.current.poolOptionRejectCount += 1;
+        recordEvent(state, "POOL_OPTIONS_REJECT");
+        throw new Error("SSC_BLOCKED");
+      }
       super(options);
       this.__sscInputOptions = options;
       if (state.active && state.current) {
+        if (!poolOptionsMatch(this.options, state, state.current, true)) {
+          state.current.poolOptionRejectCount += 1;
+          recordEvent(state, "POOL_EFFECTIVE_OPTIONS_REJECT");
+          throw new Error("SSC_BLOCKED");
+        }
         state.current.poolCount += 1;
         state.current.pools.push(this);
         state.current.events.push("POOL_CONSTRUCTOR");
       }
     }
 
-    async query(text, values) {
-      return executeQuery(state, this, text, values);
+    async query(...args) {
+      return executeQuery(state, this, args, "pool");
     }
 
-    async connect() {
+    async connect(...args) {
       if (!state.active || !state.current) throw new Error("SSC_BLOCKED");
-      if (state.current.pools[0] && state.current.pools[0] !== this) state.current.bindingMismatch = true;
-      state.current.connectCount += 1;
-      const pool = this;
-      return {
-        async query(text, values) {
-          return executeQuery(state, pool, text, values);
+      const current = state.current;
+      const expected = state.migrationQueryPlan[current.migrationPlanIndex];
+      if (this !== current.pools[0] || args.length !== 0 || current.connectCount !== 0 ||
+          current.identityCalls !== 2 || expected?.channel !== "client" ||
+          expected.text.toLowerCase() !== "begin" || expected.values.length !== 0) {
+        rejectPoolOperation(state, "POOL_CONNECT_REJECT");
+      }
+      current.connectCount += 1;
+      const client = {
+        async query(...queryArgs) {
+          if (this !== client) rejectPoolOperation(state, "POOL_CLIENT_RECEIVER_REJECT");
+          return executeQuery(state, this, queryArgs, "client");
         },
-        release() {
-          state.current.releaseCount += 1;
+        release(...releaseArgs) {
+          if (this !== client || releaseArgs.length !== 0 ||
+              current.connectedClient !== client || current.connectCount !== 1 ||
+              current.releaseCount !== 0 ||
+              current.migrationPlanIndex !== state.migrationQueryPlan.length) {
+            rejectPoolOperation(state, "POOL_RELEASE_REJECT");
+          }
+          current.releaseCount += 1;
         },
       };
+      current.connectedClient = client;
+      return client;
     }
 
-    async end() {
+    async end(...args) {
       if (!state.active || !state.current) return undefined;
-      state.current.endCount += 1;
-      state.current.events.push("POOL_END");
-      if (state.current.scenario.rejectCleanup) {
-        state.current.cleanupWasAsyncPromise = true;
-        throw state.current.cleanupError;
+      const current = state.current;
+      const complete = current.identityCalls === 2 &&
+        current.migrationPlanIndex === state.migrationQueryPlan.length &&
+        current.releaseCount === 1 && current.operationCalls === 1;
+      const expectedEarlyReject = current.scenario.rejectSecondIdentity &&
+        current.identityCalls === 2 && current.migrationPlanIndex === 0 &&
+        current.connectCount === 0 && current.operationCalls === 0;
+      if (this !== current.pools[0] || args.length !== 0 || current.endCount !== 0 ||
+          (!complete && !expectedEarlyReject && !current.queryRejected)) {
+        rejectPoolOperation(state, "POOL_END_REJECT");
+      }
+      current.endCount += 1;
+      current.events.push("POOL_END");
+      if (current.scenario.rejectCleanup) {
+        current.cleanupWasAsyncPromise = true;
+        throw current.cleanupError;
       }
       return undefined;
     }
@@ -663,19 +842,217 @@ function installPoolSeam(state, ledger, pg) {
   return ObservedPool;
 }
 
-function queryText(text) {
-  if (typeof text === "string") return text;
-  if (text && typeof text === "object" && typeof text.text === "string") return text.text;
-  return "";
+function extractIdentitySql(source) {
+  const sourceFile = ts.createSourceFile(
+    "disposable-postgres-fixture.mjs",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.JS,
+  );
+  let count = 0;
+  let value;
+  const visit = (node) => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) &&
+        node.name.text === "identitySql") {
+      count += 1;
+      if (!node.initializer || !ts.isNoSubstitutionTemplateLiteral(node.initializer)) {
+        fail(SAFE.internal, "IDENTITY_SQL_SOURCE");
+      }
+      value = node.initializer.text;
+    }
+    ts.forEachChild(node, visit);
+  };
+  if (sourceFile.parseDiagnostics.length !== 0) fail(SAFE.internal, "IDENTITY_SQL_SOURCE");
+  visit(sourceFile);
+  if (count !== 1 || typeof value !== "string" || value.length === 0) {
+    fail(SAFE.internal, "IDENTITY_SQL_SOURCE");
+  }
+  return value;
 }
 
-function executeQuery(state, pool, text, values) {
+async function buildMigrationContract(require, migrationsFolder) {
+  const { PgDialect } = require("drizzle-orm/pg-core");
+  const { sql } = require("drizzle-orm");
+  const { readMigrationFiles } = require("drizzle-orm/migrator");
+  if (typeof PgDialect !== "function" || typeof readMigrationFiles !== "function" ||
+      !sql || typeof sql.raw !== "function") {
+    fail(SAFE.internal, "DRIZZLE_CONTRACT");
+  }
+  const migrations = readMigrationFiles({ migrationsFolder });
+  const fs = require("node:fs");
+  const migrationRoot = path.resolve(migrationsFolder);
+  const journalPath = path.join(migrationRoot, "meta", "_journal.json");
+  let journal;
+  try {
+    journal = JSON.parse(await readFile(journalPath, "utf8"));
+  } catch {
+    fail(SAFE.internal, "DRIZZLE_MANIFEST");
+  }
+  if (!Array.isArray(journal?.entries) || journal.entries.length !== migrations.length) {
+    fail(SAFE.internal, "DRIZZLE_MANIFEST");
+  }
+  const readPaths = new Set([`${migrationsFolder}/meta/_journal.json`]);
+  const verifiedReadPaths = new Set([journalPath]);
+  const migrationTags = new Set();
+  for (const entry of journal.entries) {
+    const tag = entry?.tag;
+    if (typeof tag !== "string" || !/^\d{4}_[a-z0-9_]+$/u.test(tag) || migrationTags.has(tag)) {
+      fail(SAFE.internal, "DRIZZLE_MANIFEST");
+    }
+    migrationTags.add(tag);
+    const sqlPath = path.resolve(migrationRoot, `${tag}.sql`);
+    if (path.dirname(sqlPath) !== migrationRoot) fail(SAFE.internal, "DRIZZLE_MANIFEST");
+    readPaths.add(`${migrationsFolder}/${tag}.sql`);
+    verifiedReadPaths.add(sqlPath);
+  }
+  for (const readPath of verifiedReadPaths) {
+    try {
+      const realPath = fs.realpathSync.native(readPath);
+      if (path.resolve(realPath).toLowerCase() !== readPath.toLowerCase() ||
+          !fs.statSync(readPath).isFile()) {
+        fail(SAFE.internal, "DRIZZLE_MANIFEST");
+      }
+    } catch {
+      fail(SAFE.internal, "DRIZZLE_MANIFEST");
+    }
+  }
+  const dialect = new PgDialect();
+  const queries = [];
+  const capture = (channel, statement) => {
+    const query = dialect.sqlToQuery(statement);
+    if (!query || typeof query.sql !== "string" || !Array.isArray(query.params)) {
+      fail(SAFE.internal, "DRIZZLE_CONTRACT");
+    }
+    queries.push(Object.freeze({
+      channel,
+      text: query.sql,
+      values: Object.freeze([...query.params]),
+    }));
+  };
+  const session = {
+    async execute(statement) {
+      capture("pool", statement);
+      return { rows: [] };
+    },
+    async all(statement) {
+      capture("pool", statement);
+      return [];
+    },
+    async transaction(callback) {
+      capture("client", sql`begin`);
+      const transaction = {
+        async execute(statement) {
+          capture("client", statement);
+          return { rows: [] };
+        },
+      };
+      try {
+        const result = await callback(transaction);
+        capture("client", sql`commit`);
+        return result;
+      } catch (error) {
+        capture("client", sql`rollback`);
+        throw error;
+      }
+    },
+  };
+  await dialect.migrate(migrations, session, {});
+  return Object.freeze({
+    queries: Object.freeze(queries),
+    hashes: Object.freeze(migrations.map((migration) => Object.freeze({
+      input: migration.sql.join("--> statement-breakpoint"),
+      hash: migration.hash,
+    }))),
+    readPaths: Object.freeze([...readPaths]),
+  });
+}
+
+function ownDataValue(target, key, enumerable = true) {
+  const descriptor = Object.getOwnPropertyDescriptor(target, key);
+  if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, "value") ||
+      descriptor.enumerable !== enumerable || descriptor.configurable !== true ||
+      descriptor.writable !== true) return { ok: false };
+  return { ok: true, value: descriptor.value };
+}
+
+function queryText(input) {
+  if (typeof input === "string") return { text: input, configured: false };
+  if (!input || typeof input !== "object" || types.isProxy(input) ||
+      Object.getPrototypeOf(input) !== Object.prototype) return null;
+  const keys = Reflect.ownKeys(input);
+  if (keys.length !== 3 || keys.some((key) =>
+    typeof key !== "string" || !["name", "text", "types"].includes(key))) return null;
+  const name = ownDataValue(input, "name");
+  const text = ownDataValue(input, "text");
+  const typeMap = ownDataValue(input, "types");
+  if (!name.ok || name.value !== undefined || !text.ok || typeof text.value !== "string" ||
+      !typeMap.ok || !typeMap.value || typeof typeMap.value !== "object" ||
+      types.isProxy(typeMap.value) || Object.getPrototypeOf(typeMap.value) !== Object.prototype) return null;
+  const typeKeys = Reflect.ownKeys(typeMap.value);
+  const parser = ownDataValue(typeMap.value, "getTypeParser");
+  if (typeKeys.length !== 1 || typeKeys[0] !== "getTypeParser" ||
+      !parser.ok || typeof parser.value !== "function") return null;
+  return { text: text.value, configured: true };
+}
+
+function arrayValues(value) {
+  if (!Array.isArray(value) || types.isProxy(value) ||
+      Object.getPrototypeOf(value) !== Array.prototype) return null;
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+  if (!lengthDescriptor || lengthDescriptor.enumerable || lengthDescriptor.configurable ||
+      !lengthDescriptor.writable || !Number.isSafeInteger(lengthDescriptor.value) ||
+      lengthDescriptor.value < 0) return null;
+  const length = lengthDescriptor.value;
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== length + 1 || keys.some((key) =>
+    key !== "length" && (typeof key !== "string" || !/^(?:0|[1-9]\d*)$/u.test(key) ||
+      Number(key) >= length))) return null;
+  const values = [];
+  for (let index = 0; index < length; index += 1) {
+    const descriptor = ownDataValue(value, String(index));
+    if (!descriptor.ok) return null;
+    values.push(descriptor.value);
+  }
+  return values;
+}
+
+function sameValues(actual, expected) {
+  const values = arrayValues(actual);
+  return values !== null && values.length === expected.length &&
+    values.every((value, index) => Object.is(value, expected[index]));
+}
+
+function rejectPoolOperation(state, id = "POOL_QUERY_REJECT") {
+  if (state.current) state.current.queryRejected = true;
+  recordEvent(state, id);
+  throw new Error("SSC_BLOCKED");
+}
+
+function executeQuery(state, receiver, args, channel) {
   if (!state.active || !state.current) throw new Error("SSC_BLOCKED");
   const current = state.current;
-  if (current.pools[0] && current.pools[0] !== pool) current.bindingMismatch = true;
-  const query = queryText(text);
-  void values;
-  if (query.includes("current_database()")) {
+  const expectedPool = current.pools[0];
+  const query = args.length > 0 ? queryText(args[0]) : null;
+  const values = args.length === 2 ? args[1] : null;
+  if ((channel === "pool" && receiver !== expectedPool) ||
+      (channel === "client" && receiver !== current.connectedClient) ||
+      args.length !== 2 || !query || !Array.isArray(values) || types.isProxy(values)) {
+    rejectPoolOperation(state);
+  }
+  const parameters = arrayValues(values);
+  if (parameters === null) rejectPoolOperation(state);
+
+  if (query.text === state.identitySql) {
+    const expectedAuthorityOrder = current.identityCalls === 0
+      ? current.authorityCaptureCount === 0 && state.authorityRecord === null
+      : current.identityCalls === 1 && current.authorityCaptureCount === 1 &&
+        state.authorityRecord?.valid === true && state.authorityPool === expectedPool;
+    if (channel !== "pool" || query.configured || current.identityCalls >= 2 ||
+        !expectedAuthorityOrder ||
+        !sameValues(values, ["runtime_posture_test", "cloud_admin"])) {
+      rejectPoolOperation(state, "POOL_IDENTITY_REJECT");
+    }
     current.identityCalls += 1;
     current.events.push(current.identityCalls === 1 ? "IDENTITY_1" : "IDENTITY_2");
     const rejected = current.scenario.rejectSecondIdentity && current.identityCalls === 2;
@@ -690,6 +1067,15 @@ function executeQuery(state, pool, text, values) {
       }],
     });
   }
+
+  const expected = state.migrationQueryPlan[current.migrationPlanIndex];
+  if (current.identityCalls !== 2 || state.authorityRecord?.valid !== true ||
+      state.authorityPool !== expectedPool || !expected || expected.channel !== channel ||
+      !query.configured || query.text !== expected.text ||
+      !sameValues(values, expected.values)) {
+    rejectPoolOperation(state);
+  }
+  current.migrationPlanIndex += 1;
   current.migrationQueries += 1;
   if (!current.events.includes("MIGRATION")) current.events.push("MIGRATION");
   return Promise.resolve({ rows: [] });
@@ -720,11 +1106,20 @@ function createScenarioState(scenario, markers) {
     pools: [],
     identityCalls: 0,
     migrationQueries: 0,
+    migrationPlanIndex: 0,
+    hashIndex: 0,
+    hashCompleted: 0,
+    pendingHash: null,
+    allowMigrationHash: false,
     operationCalls: 0,
     endCount: 0,
     connectCount: 0,
     releaseCount: 0,
     bindingMismatch: false,
+    connectedClient: null,
+    queryRejected: false,
+    poolOptionRejectCount: 0,
+    operationOrderViolation: false,
     cleanupWasAsyncPromise: false,
     events: [],
   };
@@ -740,7 +1135,7 @@ function containsMarker(value, markers) {
 function inspectSurface(valueToInspect, state) {
   let leak = false;
   let invalid = false;
-  let visited = new Set();
+  const visited = new Set();
   let entryCount = 0;
   const walk = (current, depth) => {
     if (leak || invalid) return;
@@ -754,69 +1149,115 @@ function inspectSurface(valueToInspect, state) {
     }
     entryCount += 1;
     if (!current || (typeof current !== "object" && typeof current !== "function")) return;
+    if (types.isProxy(current)) {
+      invalid = true;
+      return;
+    }
     if (visited.has(current)) return;
     if (depth >= MAX_INSPECTION_DEPTH) {
       invalid = true;
       return;
     }
     visited.add(current);
-    let keys;
-    try {
-      keys = Reflect.ownKeys(current);
-    } catch {
-      invalid = true;
-      return;
-    }
-    for (const key of keys) {
-      if (containsMarker(typeof key === "symbol" ? key.description ?? "" : key, state.markers)) {
-        leak = true;
-        return;
-      }
-      let descriptor;
+    const inspectDescriptors = (owner, childDepth) => {
+      let keys;
       try {
-        descriptor = Object.getOwnPropertyDescriptor(current, key);
+        keys = Reflect.ownKeys(owner);
       } catch {
         invalid = true;
         return;
       }
-      if (!descriptor) {
-        invalid = true;
-        return;
-      }
-      if (descriptor.get || descriptor.set) {
-        if (!(current instanceof Error) || key !== "stack" || typeof descriptor.get !== "function") {
-          invalid = true;
+      for (const key of keys) {
+        if (containsMarker(typeof key === "symbol" ? key.description ?? "" : key, state.markers)) {
+          leak = true;
           return;
         }
-        let stackValue;
+        let descriptor;
         try {
-          stackValue = current.stack;
+          descriptor = Object.getOwnPropertyDescriptor(owner, key);
         } catch {
           invalid = true;
           return;
         }
-        walk(stackValue, depth + 1);
-        continue;
+        if (!descriptor) {
+          invalid = true;
+          return;
+        }
+        if (descriptor.get || descriptor.set) {
+          if (key === "stack" &&
+              descriptor.get === NATIVE_ERROR_STACK_DESCRIPTOR?.get &&
+              descriptor.set === NATIVE_ERROR_STACK_DESCRIPTOR?.set) continue;
+          invalid = true;
+          return;
+        }
+        walk(descriptor.value, childDepth);
+        if (leak || invalid) return;
       }
-      walk(descriptor.value, depth + 1);
+    };
+    inspectDescriptors(current, depth + 1);
+    if (leak || invalid) return;
+
+    try {
+      Reflect.apply(Map.prototype.forEach, current, [
+        (item, key) => {
+          walk(key, depth + 1);
+          walk(item, depth + 1);
+        },
+      ]);
+    } catch {
+      // The intrinsic rejects non-Map values without consulting user iterators.
+    }
+    if (leak || invalid) return;
+    try {
+      Reflect.apply(Set.prototype.forEach, current, [
+        (item) => walk(item, depth + 1),
+      ]);
+    } catch {
+      // The intrinsic rejects non-Set values without consulting user iterators.
+    }
+    if (leak || invalid) return;
+
+    for (const unbox of BOXED_PRIMITIVE_UNBOXERS) {
+      try {
+        walk(Reflect.apply(unbox, current, []), depth + 1);
+        break;
+      } catch {
+        // Only boxed primitives pass these intrinsic internal-slot checks.
+      }
+    }
+    if (leak || invalid) return;
+
+    let prototype;
+    try {
+      prototype = Object.getPrototypeOf(current);
+    } catch {
+      invalid = true;
+      return;
+    }
+    while (prototype && !BUILTIN_PROTOTYPES.has(prototype)) {
+      if (types.isProxy(prototype)) {
+        invalid = true;
+        return;
+      }
+      if (visited.has(prototype)) break;
+      if (depth + 1 >= MAX_INSPECTION_DEPTH || entryCount >= MAX_INSPECTION_ENTRIES) {
+        invalid = true;
+        return;
+      }
+      visited.add(prototype);
+      entryCount += 1;
+      inspectDescriptors(prototype, depth + 2);
+      if (leak || invalid) return;
+      try {
+        prototype = Object.getPrototypeOf(prototype);
+      } catch {
+        invalid = true;
+        return;
+      }
     }
   };
   walk(valueToInspect, 0);
-  let jsonLeak = false;
-  let inspectLeak = false;
-  if (!invalid && valueToInspect !== undefined) {
-    try {
-      jsonLeak = containsMarker(state.originalStringify(valueToInspect), state.markers);
-    } catch {
-      invalid = true;
-    }
-    try {
-      inspectLeak = containsMarker(state.originalInspect(valueToInspect, { showHidden: true, showProxy: true, depth: 6 }), state.markers);
-    } catch {
-      invalid = true;
-    }
-  }
-  return Object.freeze({ safe: !leak && !jsonLeak && !inspectLeak && !invalid, leak, jsonLeak, inspectLeak, invalid });
+  return Object.freeze({ safe: !leak && !invalid, leak, invalid });
 }
 
 function authorityMetadataSafe(record, state) {
@@ -848,12 +1289,36 @@ function eventIndex(events, name) {
   return events.indexOf(name);
 }
 
-function poolOptionsMatch(options, state) {
-  if (!options || typeof options !== "object") return false;
-  const required = ["host", "port", "user", "database", "max", "password"];
-  return required.every((key) => Object.prototype.hasOwnProperty.call(options, key)) &&
-    !Object.prototype.hasOwnProperty.call(options, "connectionString") &&
-    options.password === state.markers.connection;
+function poolOptionsMatch(options, state, current, effective) {
+  if (!options || typeof options !== "object" || types.isProxy(options) ||
+      Object.getPrototypeOf(options) !== Object.prototype) return false;
+  const omitPassword = current?.scenario?.omitPassword === true;
+  const expected = new Map([
+    ["host", "127.0.0.1"],
+    ["port", 1],
+    ["user", "cloud_admin"],
+    ["database", "runtime_posture_test"],
+    ["max", 1],
+  ]);
+  if (!omitPassword) expected.set("password", state.markers.connection);
+  if (effective) {
+    expected.set("min", 0);
+    expected.set("maxUses", Infinity);
+    expected.set("allowExitOnIdle", false);
+    expected.set("maxLifetimeSeconds", 0);
+    expected.set("idleTimeoutMillis", 10000);
+  }
+  const keys = Reflect.ownKeys(options);
+  if (keys.length !== expected.size ||
+      keys.some((key) => typeof key !== "string" || !expected.has(key))) return false;
+  for (const [key, expectedValue] of expected) {
+    const descriptor = Object.getOwnPropertyDescriptor(options, key);
+    if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, "value") ||
+        descriptor.configurable !== true || descriptor.writable !== true ||
+        descriptor.enumerable !== !(effective && key === "password") ||
+        !Object.is(descriptor.value, expectedValue)) return false;
+  }
+  return true;
 }
 
 function poolBindingContract(current, state) {
@@ -867,8 +1332,8 @@ function poolBindingContract(current, state) {
     state.authorityPool === pool &&
     state.authorityRecord?.pool === pool &&
     !current.bindingMismatch &&
-    poolOptionsMatch(capturedOptions, state) &&
-    poolOptionsMatch(observedOptions, state),
+    poolOptionsMatch(capturedOptions, state, current, false) &&
+    poolOptionsMatch(observedOptions, state, current, true),
   );
 }
 
@@ -895,13 +1360,21 @@ function scenarioChecks(current, result, error, state) {
   const noRuntimeEffects = [...state.runtimeEvents.values()].every((count) => count === 0);
   const authorityRevoked = Boolean(state.authorityRecord && state.authorityRecord.valid === false);
   const operationCount = scenario.rejectSecondIdentity ? current.operationCalls === 0 : current.operationCalls === 1;
-  const migrationCount = scenario.rejectSecondIdentity ? current.migrationQueries === 0 : current.migrationQueries > 0;
+  const migrationCount = scenario.rejectSecondIdentity
+    ? current.migrationQueries === 0 && current.migrationPlanIndex === 0
+    : current.migrationQueries === state.migrationQueryPlan.length &&
+      current.migrationPlanIndex === state.migrationQueryPlan.length;
+  const hashCount = scenario.rejectSecondIdentity
+    ? current.hashCompleted === 0 && current.hashIndex === 0 && current.pendingHash === null
+    : current.hashCompleted === state.migrationHashPlan.length &&
+      current.hashIndex === state.migrationHashPlan.length && current.pendingHash === null;
   const cleanupCount = current.endCount === 1;
   const successOrFailure = scenario.rejectOperation || scenario.rejectSecondIdentity
     ? error && !result
     : result && !error;
   const pass = poolBinding && ordering && expectedPublic && cleanupSuppressed && surface.safe &&
     noRuntimeEffects && authorityRevoked && metadataSafe && cleanupWasAsyncPromise && current.authorityValidAtCapture && operationCount &&
+    hashCount && !current.operationOrderViolation &&
     migrationCount && cleanupCount && successOrFailure;
   return Object.freeze({
     id: scenario.id,
@@ -910,6 +1383,11 @@ function scenarioChecks(current, result, error, state) {
     poolCount: current.poolCount,
     identityCalls: current.identityCalls,
     migrationQueries: current.migrationQueries,
+    migrationPlanQueries: current.migrationPlanIndex,
+    migrationHashes: current.hashCompleted,
+    poolOptionRejects: current.poolOptionRejectCount,
+    queryRejected: current.queryRejected,
+    runtimeEventIds: Object.freeze([...state.runtimeEvents.keys()]),
     operationCalls: current.operationCalls,
     cleanupCalls: current.endCount,
     authorityCaptureCount: current.authorityCaptureCount,
@@ -946,12 +1424,12 @@ async function runScenario(state, scenario) {
   state.active = false;
   const input = {
     connectionString: "postgres://cloud_admin@127.0.0.1:1/runtime_posture_test",
-    connectionPassword: state.markers.connection,
     expectedDatabase: "runtime_posture_test",
     expectedUser: "cloud_admin",
     migrationsFolder: MIGRATIONS_FOLDER,
     phase: "initialization",
   };
+  if (!scenario.omitPassword) input.connectionPassword = state.markers.connection;
   let result;
   let error;
   let subject;
@@ -961,10 +1439,15 @@ async function runScenario(state, scenario) {
     error = importError;
   }
   state.active = true;
-  state.poolDependencyAllowed = true;
-  state.allowedDependencyEffects = new Set(["CRYPTO_CREATEHASH"]);
+  current.allowMigrationHash = !scenario.rejectSecondIdentity;
   if (!error) {
     const operation = async () => {
+      if (current.identityCalls !== 2 ||
+          current.migrationPlanIndex !== state.migrationQueryPlan.length ||
+          current.releaseCount !== 1) {
+        current.operationOrderViolation = true;
+        throw new Error("SSC_BLOCKED");
+      }
       current.operationCalls += 1;
       current.events.push("OPERATION");
       if (scenario.rejectOperation) throw makeDiagnosticError(state.markers, "operation");
@@ -982,8 +1465,6 @@ async function runScenario(state, scenario) {
   current.resourcesStable = resources.length === current.resourceBefore.length &&
     resources.every((resource, index) => resource === current.resourceBefore[index]);
   state.active = false;
-  state.poolDependencyAllowed = false;
-  state.allowedDependencyEffects = new Set();
   const scenarioResult = scenarioChecks(current, result, error, state);
   state.current = null;
   state.authorityRecord = null;
@@ -1032,16 +1513,30 @@ function runRestoreBoundaryControl() {
 
 function createSyntheticPool(state) {
   const pool = Object.create(state.observedPool.prototype);
-  const options = {
+  const inputOptions = {
     host: "127.0.0.1",
     port: 1,
     user: "cloud_admin",
     database: "runtime_posture_test",
     max: 1,
-    password: state.markers.connection,
   };
-  pool.options = options;
-  pool.__sscInputOptions = options;
+  inputOptions.password = state.markers.connection;
+  const effectiveOptions = {
+    ...inputOptions,
+    min: 0,
+    maxUses: Infinity,
+    allowExitOnIdle: false,
+    maxLifetimeSeconds: 0,
+    idleTimeoutMillis: 10000,
+  };
+  Object.defineProperty(effectiveOptions, "password", {
+    configurable: true,
+    enumerable: false,
+    writable: true,
+    value: state.markers.connection,
+  });
+  pool.options = effectiveOptions;
+  pool.__sscInputOptions = inputOptions;
   return pool;
 }
 
@@ -1053,6 +1548,7 @@ function runPoolBindingControls(state) {
     authorityRecord: { pool },
   };
   const current = {
+    scenario: { omitPassword: false },
     pools: [pool],
     poolCount: 1,
     authorityCaptureCount: 1,
@@ -1080,6 +1576,80 @@ function runPoolBindingControls(state) {
       pass: bindingMismatchRejected,
     }),
   ]);
+}
+
+async function runExactPoolBoundaryControls(state) {
+  const current = createScenarioState({
+    id: "NC_POOL_EXACTNESS",
+    rejectOperation: false,
+    rejectCleanup: false,
+    rejectSecondIdentity: false,
+    omitPassword: false,
+  }, state.markers);
+  const previousCurrent = state.current;
+  const previousActive = state.active;
+  state.current = current;
+  state.active = true;
+  state.runtimeEvents.clear();
+  const baseOptions = {
+    host: "127.0.0.1",
+    port: 1,
+    user: "cloud_admin",
+    database: "runtime_posture_test",
+    max: 1,
+    password: state.markers.connection,
+  };
+  const rejects = async (operation) => {
+    try {
+      await operation();
+      return false;
+    } catch (error) {
+      return error?.message === "SSC_BLOCKED";
+    }
+  };
+  let wrongMaxRejected = false;
+  let wrongDatabaseRejected = false;
+  let wrongArgumentsRejected = false;
+  let wrongReceiverRejected = false;
+  let unknownSqlRejected = false;
+  let pool = null;
+  try {
+    wrongMaxRejected = await rejects(() => new state.observedPool({ ...baseOptions, max: 2 }));
+    wrongDatabaseRejected = await rejects(() =>
+      new state.observedPool({ ...baseOptions, database: "production" }));
+    pool = new state.observedPool(baseOptions);
+    wrongArgumentsRejected = await rejects(() =>
+      pool.query(state.identitySql, ["wrong_database", "cloud_admin"]));
+    wrongReceiverRejected = await rejects(() =>
+      state.observedPool.prototype.query.call(
+        {},
+        state.identitySql,
+        ["runtime_posture_test", "cloud_admin"],
+      ));
+    unknownSqlRejected = await rejects(() => pool.query("select 1", []));
+  } catch {
+    // A control setup failure makes each unmet boundary assertion fail below.
+  } finally {
+    state.active = false;
+    state.current = previousCurrent;
+    if (pool) await pool.end();
+    state.runtimeEvents.clear();
+  }
+  const noQueryEffects = current.identityCalls === 0 && current.migrationQueries === 0 &&
+    current.migrationPlanIndex === 0;
+  const checks = [
+    ["NC25_POOL_WRONG_MAX", wrongMaxRejected && current.poolOptionRejectCount >= 1, "POOL_MAX_EXACTNESS"],
+    ["NC26_POOL_WRONG_DATABASE", wrongDatabaseRejected && current.poolOptionRejectCount >= 2, "POOL_DATABASE_EXACTNESS"],
+    ["NC27_QUERY_WRONG_IDENTITY_ARGUMENTS", wrongArgumentsRejected && noQueryEffects, "POOL_IDENTITY_ARGUMENTS"],
+    ["NC28_QUERY_WRONG_RECEIVER", wrongReceiverRejected && noQueryEffects, "POOL_QUERY_RECEIVER"],
+    ["NC29_QUERY_UNKNOWN_SQL", unknownSqlRejected && noQueryEffects, "POOL_QUERY_ALLOWLIST"],
+  ];
+  return Object.freeze(checks.map(([id, pass, detector]) => Object.freeze({
+    id,
+    code: pass ? SAFE.pool : "SSC_NEGATIVE_CONTROL_INACTIVE",
+    detector: pass ? detector : "CONTROL_INACTIVE",
+    pass,
+  })));
 }
 
 function runSurfaceControls(state) {
@@ -1166,6 +1736,37 @@ function runSurfaceControls(state) {
         ? "PUBLIC_SYMBOL"
         : "CONTROL_INACTIVE",
       pass: !symbolSurface.safe && (symbolSurface.leak || directSymbolSurface.leak),
+    }),
+  ]);
+}
+
+function runInheritedAndMapSurfaceControls(state) {
+  const inheritedSurface = inspectSurface(
+    Object.create({ inheritedDiagnostic: state.markers.connection }),
+    state,
+  );
+  const mapValue = new Map([["diagnostic", state.markers.cleanup]]);
+  let customRendererCalled = false;
+  Object.defineProperty(mapValue, inspect.custom, {
+    configurable: true,
+    value() {
+      customRendererCalled = true;
+      return "safe";
+    },
+  });
+  const mapSurface = inspectSurface(mapValue, state);
+  return Object.freeze([
+    Object.freeze({
+      id: "NC23_INHERITED_HIDDEN_SURFACE",
+      code: inheritedSurface.leak ? SAFE.surface : "SSC_NEGATIVE_CONTROL_INACTIVE",
+      detector: inheritedSurface.leak ? "INHERITED_DATA_SURFACE" : "CONTROL_INACTIVE",
+      pass: inheritedSurface.leak && !inheritedSurface.invalid,
+    }),
+    Object.freeze({
+      id: "NC24_MAP_INTERNAL_HIDDEN_SURFACE",
+      code: mapSurface.leak && !customRendererCalled ? SAFE.surface : "SSC_NEGATIVE_CONTROL_INACTIVE",
+      detector: mapSurface.leak && !customRendererCalled ? "COLLECTION_INTERNAL_SURFACE" : "CONTROL_INACTIVE",
+      pass: mapSurface.leak && !customRendererCalled && !mapSurface.invalid,
     }),
   ]);
 }
@@ -1308,14 +1909,14 @@ async function runBehavioralControls(state) {
     id: "NC11_PUBLIC_CAUSE",
     code: causeSurface.safe ? "SSC_NEGATIVE_CONTROL_INACTIVE" : SAFE.surface,
     detector: causeSurface.safe ? "CONTROL_INACTIVE" : "PUBLIC_CAUSE",
-    pass: !causeSurface.safe && (causeSurface.leak || causeSurface.jsonLeak || causeSurface.inspectLeak),
+    pass: !causeSurface.safe && causeSurface.leak,
   }));
   const descriptorSurface = inspectSurface(descriptorError, state);
   controls.push(Object.freeze({
     id: "NC12_PUBLIC_NONENUM",
     code: descriptorSurface.safe ? "SSC_NEGATIVE_CONTROL_INACTIVE" : SAFE.surface,
     detector: descriptorSurface.safe ? "CONTROL_INACTIVE" : "PUBLIC_DESCRIPTOR",
-    pass: !descriptorSurface.safe && (descriptorSurface.leak || descriptorSurface.jsonLeak || descriptorSurface.inspectLeak),
+    pass: !descriptorSurface.safe && descriptorSurface.leak,
   }));
   const lockedTarget = {};
   Object.defineProperty(lockedTarget, "locked", {
@@ -1365,6 +1966,8 @@ async function runBehavioralControls(state) {
   controls.push(...runSurfaceControls(state));
   controls.push(...runPoolBindingControls(state));
   controls.push(await runRuntimeCapabilityControl(state));
+  controls.push(...runInheritedAndMapSurfaceControls(state));
+  controls.push(...await runExactPoolBoundaryControls(state));
   return Object.freeze({
     count: controls.length,
     ids: Object.freeze(controls.map((control) => control.id)),
@@ -1422,9 +2025,24 @@ export async function runSecretSurfaceBehavioralHarness(options = {}) {
   try {
     const source = await readFile(subjectPath, "utf8");
     if (!source.includes("withDisposablePostgresFixtureMigration")) fail(SAFE.internal, "SUBJECT_IDENTITY");
+    const require = createRequire(import.meta.url);
+    state.require = require;
+    const pgBeforeObservers = require("pg");
+    state.pgClient = pgBeforeObservers.Client;
+    if (path.resolve(process.cwd(), MIGRATIONS_FOLDER) !==
+        path.resolve(repoRoot, MIGRATIONS_FOLDER)) fail(SAFE.internal, "MIGRATION_FOLDER_CWD");
+    state.identitySql = extractIdentitySql(source);
+    const migrationContract = await buildMigrationContract(
+      require,
+      MIGRATIONS_FOLDER,
+    );
+    state.migrationQueryPlan = migrationContract.queries;
+    state.migrationHashPlan = migrationContract.hashes;
+    state.allowedReadPaths = new Set(migrationContract.readPaths);
     const installed = installObservers(state);
     ledger = installed.ledger;
     const pg = installed.require("pg");
+    state.pgClient = pg.Client;
     const ObservedPool = installPoolSeam(state, installed.ledger, pg);
     state.observedPool = ObservedPool;
     installWeakMapObserver(installed.ledger, state, ObservedPool);
@@ -1483,5 +2101,276 @@ export async function runSecretSurfaceF3(options = {}) {
     id: "F3_RUNTIME_LIFECYCLE_SCENARIOS",
     pass: result.allScenariosPass === true,
     scenarios: result.scenarios,
+  });
+}
+
+export async function runSecretSurfaceIndependentRuntimeCorpus() {
+  const surfaceState = newRunState();
+  const marker = surfaceState.markers.connection;
+  const surfaceCases = [
+    ["symbol", Symbol(marker)],
+    ["symbol_key", { [Symbol(marker)]: 0 }],
+    ["symbol_array", { items: [...Array(100).fill(0), Symbol(marker)] }],
+    ["nested_symbol", { x: { y: Symbol(marker) } }],
+    ["nonenum", Object.defineProperty({}, "x", { value: marker })],
+    ["getter", Object.defineProperty({}, "x", { get() { return marker; } })],
+    ["throw_getter", Object.defineProperty({}, "x", { get() { throw new Error("synthetic"); } })],
+    ["throw_descriptor", new Proxy({}, {
+      getOwnPropertyDescriptor() { throw new Error("synthetic"); },
+      ownKeys() { return ["x"]; },
+    })],
+    ["inherited_long", Object.create({ x: "x".repeat(12000) + marker })],
+    ["inherited", Object.create({ x: marker })],
+    ["inherited_nonenum", Object.create(Object.defineProperty({}, "x", { value: marker }))],
+    ["wide_258", Object.fromEntries(Array.from({ length: 258 }, (_, index) => ["x" + index, 0]))],
+    ["wide_late_marker", Object.fromEntries(Array.from(
+      { length: 258 },
+      (_, index) => ["x" + index, index === 257 ? marker : 0],
+    ))],
+    ["map_internal", new Map([["x", marker]])],
+    ["set_internal", new Set([marker])],
+    ["boxed_symbol", Object(Symbol(marker))],
+  ];
+  let customRendererCalled = false;
+  const customInspectedMap = new Map([["x", marker]]);
+  Object.defineProperty(customInspectedMap, inspect.custom, {
+    configurable: true,
+    value() {
+      customRendererCalled = true;
+      return "safe";
+    },
+  });
+  surfaceCases.push(["map_custom_inspect", customInspectedMap]);
+  const deepRoot = {};
+  let deepCursor = deepRoot;
+  for (let index = 0; index < 7; index += 1) {
+    deepCursor.next = {};
+    deepCursor = deepCursor.next;
+  }
+  surfaceCases.push(["depth_7", deepRoot]);
+  const surfaces = surfaceCases.map(([id, valueToInspect]) => {
+    const surface = inspectSurface(valueToInspect, surfaceState);
+    return Object.freeze({
+      id,
+      safe: surface.safe,
+      leak: surface.leak,
+      invalid: surface.invalid,
+      ...(id === "map_custom_inspect" ? { customRendererCalled } : {}),
+    });
+  });
+
+  const restoration = [];
+  const successLedger = new PatchLedger();
+  const successTarget = { x: 1 };
+  successLedger.install(successTarget, "x", 2);
+  const successResult = finalizeBoundary({ ok: true }, successLedger);
+  restoration.push(Object.freeze({
+    id: "success",
+    ok: successResult.ok === true,
+    restored: successTarget.x === 1,
+  }));
+  for (const mode of ["mismatch", "throw", "verify_false", "verify_throw"]) {
+    const ledger = new PatchLedger();
+    const target = { x: 1 };
+    if (mode === "mismatch") {
+      ledger.install(target, "x", 2);
+      target.x = 3;
+    } else {
+      ledger.installCustom(
+        () => {
+          if (mode === "throw") throw new Error("synthetic");
+        },
+        () => {
+          if (mode === "verify_throw") throw new Error("synthetic");
+          return false;
+        },
+      );
+    }
+    const result = finalizeBoundary({ ok: true }, ledger);
+    restoration.push(Object.freeze({
+      id: mode,
+      code: result.code,
+      detector: result.detector,
+    }));
+  }
+  const order = [];
+  const reverseLedger = new PatchLedger();
+  reverseLedger.installCustom(() => order.push(1), () => true);
+  reverseLedger.installCustom(() => order.push(2), () => true);
+  const reverseResult = finalizeBoundary({ ok: true }, reverseLedger);
+  restoration.push(Object.freeze({
+    id: "reverse_order",
+    pass: reverseResult.ok && order.join(",") === "2,1",
+  }));
+  const partialLedger = new PatchLedger();
+  const partialTarget = { a: 1 };
+  let partialRejected = false;
+  partialLedger.install(partialTarget, "a", 2);
+  try {
+    partialLedger.install(Object.freeze({ b: 1 }), "b", 2);
+  } catch {
+    partialRejected = true;
+  }
+  const partialResult = finalizeBoundary({ ok: false }, partialLedger);
+  restoration.push(Object.freeze({
+    id: "partial_install",
+    pass: partialRejected && partialTarget.a === 1 && partialResult.ok === false,
+  }));
+  const failedLedger = new PatchLedger();
+  const failedTarget = { x: 1 };
+  failedLedger.install(failedTarget, "x", 2);
+  finalizeBoundary({ ok: false }, failedLedger);
+  restoration.push(Object.freeze({
+    id: "scenario_failure_restore",
+    pass: failedTarget.x === 1,
+  }));
+
+  const poolState = newRunState();
+  poolState.observedPool = function ObservedPool() {};
+  const pool = createSyntheticPool(poolState);
+  poolState.authorityPool = pool;
+  poolState.authorityRecord = { pool };
+  const current = {
+    pools: [pool],
+    poolCount: 1,
+    authorityCaptureCount: 1,
+    bindingMismatch: false,
+  };
+  const poolBindings = [
+    Object.freeze({ id: "good", pass: poolBindingContract(current, poolState) }),
+  ];
+  for (const id of [
+    "captured_password", "observed_password", "binding", "authority_pool",
+    "authority_record_pool", "two_pools", "two_captures", "connectionString",
+    "wrong_max", "wrong_database",
+  ]) {
+    const candidateState = { ...poolState };
+    const candidateCurrent = { ...current };
+    const originalCaptured = pool.__sscInputOptions;
+    const originalObserved = pool.options;
+    if (id === "captured_password") {
+      pool.__sscInputOptions = { ...originalCaptured, password: "synthetic-wrong" };
+    } else if (id === "observed_password") {
+      pool.options = { ...originalObserved, password: "synthetic-wrong" };
+    } else if (id === "binding") {
+      candidateCurrent.bindingMismatch = true;
+    } else if (id === "authority_pool") {
+      candidateState.authorityPool = {};
+    } else if (id === "authority_record_pool") {
+      candidateState.authorityRecord = { pool: {} };
+    } else if (id === "two_pools") {
+      candidateCurrent.poolCount = 2;
+    } else if (id === "two_captures") {
+      candidateCurrent.authorityCaptureCount = 2;
+    } else if (id === "connectionString") {
+      pool.options = { ...originalObserved, connectionString: "synthetic" };
+    } else if (id === "wrong_max") {
+      pool.options = { ...originalObserved, max: 2 };
+    } else if (id === "wrong_database") {
+      pool.options = { ...originalObserved, database: "wrong" };
+    }
+    poolBindings.push(Object.freeze({
+      id,
+      rejected: !poolBindingContract(candidateCurrent, candidateState),
+    }));
+    pool.__sscInputOptions = originalCaptured;
+    pool.options = originalObserved;
+  }
+
+  const dependencies = [];
+  for (const id of [
+    "WRONG_HASH_ALGORITHM", "WRONG_HASH_RECEIVER", "POOL_FALLBACK_WRONG_RECEIVER",
+    "UNLISTED_READ_PATH", "WRITE_OPEN_DENIED",
+  ]) {
+    const state = newRunState();
+    const ledger = new PatchLedger();
+    let effects = 0;
+    const owner = {
+      call() {
+        effects += 1;
+        return {
+          update() { return this; },
+          digest() { return "synthetic"; },
+        };
+      },
+    };
+    if (id.startsWith("WRONG_HASH")) {
+      installPassthroughObserver(state, ledger, owner, "call", "CRYPTO_CREATEHASH");
+    } else if (id.startsWith("POOL_")) {
+      installPoolDependencyObserver(state, ledger, owner, "call", "POOL_FALLBACK_QUERY");
+    } else {
+      installOpenObserver(state, ledger, owner, "call", "FS_OPEN", 1);
+    }
+    effects = 0;
+    state.active = true;
+    state.poolDependencyAllowed = true;
+    state.allowedDependencyEffects = new Set(["CRYPTO_CREATEHASH"]);
+    let threw = false;
+    try {
+      if (id === "WRONG_HASH_ALGORITHM") {
+        owner.call("md5").update("not-migration-bytes").digest("base64");
+      } else if (id === "WRONG_HASH_RECEIVER") {
+        owner.call.call({}, "sha256");
+      } else if (id === "POOL_FALLBACK_WRONG_RECEIVER") {
+        owner.call.call({}, "unexpected SQL");
+      } else {
+        owner.call("unlisted-synthetic-path", id === "WRITE_OPEN_DENIED" ? "w" : "r");
+      }
+    } catch {
+      threw = true;
+    } finally {
+      state.active = false;
+      ledger.restore();
+    }
+    dependencies.push(Object.freeze({
+      id,
+      effects,
+      threw,
+      eventCount: state.runtimeEvents.size,
+    }));
+  }
+  const queryProbes = [];
+  for (const [id, text, values] of [
+    ["UNEXPECTED_SQL", "select unexpected_synthetic_statement", [1]],
+    ["WRONG_IDENTITY_PARAMETERS", "select current_database() = $1", ["wrong", "wrong"]],
+  ]) {
+    const state = newRunState();
+    const pool = {};
+    state.identitySql = "select current_database() = $1";
+    state.active = true;
+    state.current = {
+      pools: [pool],
+      identityCalls: 0,
+      migrationQueries: 0,
+      migrationPlanIndex: 0,
+      authorityCaptureCount: 0,
+      events: [],
+      scenario: {},
+    };
+    let threw = false;
+    try {
+      await executeQuery(state, pool, [text, values], "pool");
+    } catch {
+      threw = true;
+    }
+    queryProbes.push(Object.freeze({
+      id,
+      threw,
+      migrationQueries: state.current.migrationQueries,
+      identityCalls: state.current.identityCalls,
+      queryRejected: state.current.queryRejected,
+    }));
+  }
+  const cases = Object.freeze([
+    ...surfaces.map((result) => Object.freeze({ family: "F4A", ...result })),
+    ...restoration.map((result) => Object.freeze({ family: "F2", ...result })),
+    ...poolBindings.map((result) => Object.freeze({ family: "F3", ...result })),
+    ...dependencies.map((result) => Object.freeze({ family: "DEPENDENCY", ...result })),
+    ...queryProbes.map((result) => Object.freeze({ family: "DEPENDENCY", ...result })),
+  ]);
+  return Object.freeze({
+    id: "RUN657_INDEPENDENT_RUNTIME_CORPUS",
+    count: cases.length,
+    cases,
   });
 }

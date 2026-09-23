@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  MIGRATION_CLOSURE_OBLIGATION_IDS,
+  MIGRATION_CLOSURE_RESULT_INTERFACE,
   migrationClosurePositiveControlIds,
   migrationClosureNegativeControlIds,
   analyzeMigrationClosureVariants,
@@ -20,7 +22,73 @@ import {
   runSecretSurfaceF2,
   runSecretSurfaceF3,
   runSecretSurfaceBehavioralHarness,
+  runSecretSurfaceIndependentRuntimeCorpus,
 } from "./support/disposable-postgres-secret-surface-harness.mjs";
+
+const RUN658_OBLIGATION_IDS = Object.freeze([
+  "CF_PUBLIC_ESCAPE",
+  "CF_PUBLIC_THROW",
+  "CF_NONCONVERGENCE",
+  "CF_RECURSION",
+  "TV_CHILD_UNDISPOSED",
+  "TV_CALLBACK_UNMODELED",
+  "TV_ITERATOR_UNMODELED",
+  "TV_COERCION_UNMODELED",
+  "PV_EXACT_RELATION",
+  "AP_POOL_OPTIONS",
+  "AP_IDENTITY_SQL",
+  "AP_IDENTITY_ARGUMENTS",
+  "AP_AUTHORITY_GUARD",
+  "AP_FINGERPRINT_COMPARE",
+  "AP_TOKEN",
+  "AP_REVOCATION",
+  "AP_MIGRATION",
+  "AP_OPERATION",
+  "AP_CLIENT_PROTOCOL",
+  "AP_CLEANUP",
+  "HS_SECRET_REACHABLE",
+  "HS_ACCESSOR_UNSUPPORTED",
+  "HS_INTERNAL_SLOT_UNSUPPORTED",
+  "HS_DEPTH_BOUND",
+  "HS_ENTRY_BOUND",
+  "DP_CAPABILITY",
+  "DP_RECEIVER",
+  "DP_ARGUMENTS",
+  "DP_STATE",
+  "DP_MANIFEST",
+]);
+
+const RUN658_RESULT_INTERFACE = Object.freeze({
+  successFields: Object.freeze([
+    "id",
+    "ok",
+    "poolConstructs",
+    "declassifications",
+    "authoritySets",
+    "graphNodes",
+    "graphEdges",
+    "graph",
+    "dormantBodies",
+    "summariesConverged",
+    "totalTraversal",
+    "provenanceComplete",
+    "violations",
+    "childInventory",
+  ]),
+  failureFields: Object.freeze([
+    "code",
+    "detector",
+    "obligation",
+    "violations",
+    "coordinates",
+  ]),
+  violationOrdering: "lexicographic",
+});
+
+test("RUN658_RESULT_INTERFACE_IS_FROZEN", () => {
+  assert.deepEqual(MIGRATION_CLOSURE_OBLIGATION_IDS, RUN658_OBLIGATION_IDS);
+  assert.deepEqual(MIGRATION_CLOSURE_RESULT_INTERFACE, RUN658_RESULT_INTERFACE);
+});
 
 const STATIC_IDS = Object.freeze([
   "NC01_REACHABLE_WRITE_HELPER",
@@ -58,6 +126,7 @@ const STATIC_IDS = Object.freeze([
   "PROBE_AUTHORITY_LIFECYCLE_IDENTITY",
   "PROBE_AUTHORITY_MIGRATIONS_IDENTITY",
   "PROBE_AUTHORITY_PHASE_IDENTITY",
+  "PROBE_EFFECTIVE_SQL_REBIND",
   "MATRIX_OBJECT_OUTPUT",
   "MATRIX_ARRAY_OUTPUT",
   "MATRIX_SET_OUTPUT",
@@ -105,6 +174,13 @@ const BEHAVIORAL_IDS = Object.freeze([
   "NC20_POOL_WRONG_PASSWORD",
   "NC21_POOL_BINDING_MISMATCH",
   "NC22_RUNTIME_PRE_EFFECT_CAPABILITY",
+  "NC23_INHERITED_HIDDEN_SURFACE",
+  "NC24_MAP_INTERNAL_HIDDEN_SURFACE",
+  "NC25_POOL_WRONG_MAX",
+  "NC26_POOL_WRONG_DATABASE",
+  "NC27_QUERY_WRONG_IDENTITY_ARGUMENTS",
+  "NC28_QUERY_WRONG_RECEIVER",
+  "NC29_QUERY_UNKNOWN_SQL",
 ]);
 
 const SCENARIO_IDS = Object.freeze([
@@ -112,6 +188,7 @@ const SCENARIO_IDS = Object.freeze([
   "SC02_SUCCESS_CLEANUP_REJECT",
   "SC03_OPERATION_REJECT_CLEANUP_REJECT",
   "SC04_SECOND_IDENTITY_REJECT_CLEANUP_REJECT",
+  "SC05_PASSWORD_ABSENT",
 ]);
 
 const INDEPENDENT_POSITIVE_SNIPPETS = Object.freeze([
@@ -279,6 +356,560 @@ async function runIndependentSourceAssurance() {
   });
   return Object.freeze({ positivePass, matrixPass, positiveCount: positiveResults.length, matrixCount: matrixResults.length });
 }
+
+function replaceRun657AuthorityProperty(source, name, expression) {
+  const start = source.indexOf("migrationAuthorityValues.set(authority, {");
+  const end = source.indexOf("\n    });", start);
+  if (start < 0 || end < 0) throw new Error("RUN657_AUTHORITY_ANCHOR:" + name);
+  const original = source.slice(start, end);
+  const pattern = new RegExp("      " + name + "(?:\\s*:[^\\n,]*|),", "u");
+  const updated = original.replace(pattern, "      " + name + ": " + expression + ",");
+  if (updated === original) throw new Error("RUN657_AUTHORITY_REPLACE:" + name);
+  return source.slice(0, start) + updated + source.slice(end);
+}
+
+function buildRun657IndependentStaticVariants(source) {
+  const variants = [];
+  const add = (id, mutatedSource) => variants.push(Object.freeze({ id, source: mutatedSource }));
+  const insert = (mutatedSource, snippet) => insertIndependentSnippet(mutatedSource, snippet);
+  const returnExpression = (expression) =>
+    source.replace("return await operation();", "return " + expression + ";");
+  const property = (name, expression) => replaceRun657AuthorityProperty(source, name, expression);
+
+  add("GENUINE_BASELINE", source);
+  for (const [name, expression] of [
+    ["database", "\"input.expectedDatabase\""],
+    ["clusterFingerprint", "\"query.catalog_fingerprint\""],
+    ["migrationsFolder", "\"input.migrationsFolder\""],
+    ["phase", "\"initialization\""],
+    ["user", "\"input.expectedUser\""],
+    ["lifecycleFingerprint", "\"query.lifecycle_fingerprint\""],
+    ["brand", "Symbol(\"migration-authority\")"],
+    ["authority", "Object.freeze({})"],
+    ["pool", "{}"],
+  ]) add("LITERAL_" + name, property(name, expression));
+  for (const [name, expression] of [
+    ["database", "JSON.stringify(input.expectedDatabase)"],
+    ["lifecycleFingerprint", "JSON.stringify(identity.lifecycleFingerprint)"],
+    ["clusterFingerprint", "JSON.stringify(identity.catalogFingerprint)"],
+    ["migrationsFolder", "JSON.stringify(target.migrationsFolder)"],
+    ["user", "JSON.stringify(target.expectedUser)"],
+    ["phase", "JSON.stringify(target.phase)"],
+  ]) add("SERIALIZED_" + name, property(name, expression));
+  for (const [id, setup, expression] of [
+    ["ALIAS", "const impostor=\"input.expectedDatabase\";", "impostor"],
+    ["OBJECT", "const impostor={v:\"input.expectedDatabase\"};", "impostor.v"],
+    ["ARRAY", "const impostor=[\"input.expectedDatabase\"];", "impostor[0]"],
+    ["SET", "const impostor=new Set([\"input.expectedDatabase\"]);", "impostor.values()[0]"],
+    ["MAP", "const impostor=new Map([[\"k\",\"input.expectedDatabase\"]]);", "impostor.get(\"k\")"],
+    ["WEAKMAP", "const key={}; const impostor=new WeakMap([[key,\"input.expectedDatabase\"]]);", "impostor.get(key)"],
+    ["CLOSURE", "const impostor=()=>\"input.expectedDatabase\";", "impostor()"],
+    ["CLASS", "class Impostor { value(){return \"input.expectedDatabase\";} } const impostor=new Impostor();", "impostor.value()"],
+  ]) add("EQUAL_TEXT_" + id, insert(property("database", expression), setup));
+  add("FORGED_DEFAULT_USER", property("user", "(() => { const expectedUser = input.expectedUser, ignored = 0; return expectedUser; })()"));
+  add("DEFAULT_USER_WRONG_LHS", source
+    .replace("const expectedUser = input.expectedUser ?? \"cloud_admin\";", "const expectedUser = \"intruder\" ?? \"cloud_admin\"; const additional = input.expectedUser;")
+    .replace("      user: target.expectedUser,", "      user: target.expectedUser ?? input.expectedUser,"));
+  add("SPOOF_DEFAULT_USER_ORIGIN", property("user", "(() => { const expectedUser = \"intruder\" ?? \"cloud_admin\"; return expectedUser ?? input.expectedUser; })()"));
+  add("SPOOF_DEFAULT_PHASE_ORIGIN", property("phase", "(() => { const phase = \"final_start\" ?? \"initialization\"; return phase ?? input.phase; })()"));
+
+  for (const [id, prefix, expression] of [
+    ["PRIOR_CONDITIONAL_ASSIGN", "let leak=\"safe\"; input ? (leak=input.connectionPassword) : 0;", "leak"],
+    ["PRIOR_CLOSURE_IF", "let leak=\"safe\"; const capture=()=>{if(input)leak=input.connectionPassword;};capture();", "leak"],
+    ["PRIOR_CLOSURE_LOOP", "let leak=\"safe\"; const capture=()=>{while(input){leak=input.connectionPassword;break;}};capture();", "leak"],
+    ["PRIOR_RETURN_CLOSURE", "", "()=>input.connectionPassword"],
+    ["PRIOR_RETURN_SET", "", "new Set([input.connectionPassword])"],
+    ["PRIOR_RETURN_MAP", "", "new Map([[\"x\",input.connectionPassword]])"],
+    ["CONDITIONAL_CALLABLE", "", "input ? (()=>input.connectionPassword) : (()=>\"safe\")"],
+    ["RETURN_CLASS", "", "class Carrier { constructor(){this.secret=input.connectionPassword;} }"],
+    ["RETURN_AUTHORITY", "", "authority"],
+    ["CLOSURE_SERIALIZE", "", "JSON.stringify({getSecret:()=>input.connectionPassword})"],
+    ["COMMA_LAUNDER", "", "(0,input.connectionPassword)"],
+    ["ARITHMETIC_LAUNDER", "", "input.connectionPassword * 1"],
+    ["REGEXP_LAUNDER", "", "new RegExp(input.connectionPassword)"],
+    ["CYCLE_CLEAN", "const c={};c.self=c;", "c"],
+    ["LATE_ALIAS_CLOSURE", "const a={}; const f=()=>a.secret; const b=a; b.secret=()=>input.connectionPassword;", "f"],
+    ["LOOP_SECOND_ITERATION", "let a=\"safe\";let b=\"safe\";for(let i=0;i<2;i++){a=b;b=input.connectionPassword;}", "a"],
+    ["RECURSION", "function recurse(){return recurse();} recurse();", undefined],
+    ["UNKNOWN_CALL", "nonexistent();", undefined],
+    ["PROMISE_CALLBACK", "Promise.resolve().then(()=>console.log(input.connectionPassword));", undefined],
+    ["CLASS_STATIC_BLOCK", "class Probe {static {console.log(input.connectionPassword);}}", undefined],
+    ["CLASS_STATIC_FIELD", "class Probe {static value=console.log(input.connectionPassword);}", undefined],
+    ["CLASS_INSTANCE_FIELD", "class Probe {value=console.log(input.connectionPassword);} new Probe();", undefined],
+    ["STRING_REPLACEMENT_CALLBACK", "new URL(input.connectionString).pathname.replace(/x/,()=>{console.log(input.connectionPassword);return \"safe\";});", undefined],
+    ["JSON_CALLBACK", "JSON.stringify({},()=>{console.log(input.connectionPassword);return \"safe\";});", undefined],
+    ["IMPLICIT_COERCION", "String({toString(){console.log(input.connectionPassword);return \"safe\";}});", undefined],
+    ["DELETE_KEY", "delete input[console.log(input.connectionPassword)];", undefined],
+    ["PROPERTY_KEY", "const a={ [console.log(input.connectionPassword)]:0 };", undefined],
+    ["ASSIGNMENT_KEY", "const a={};a[console.log(input.connectionPassword)]=0;", undefined],
+    ["OPTIONAL_KEY", "const a={};a?.[console.log(input.connectionPassword)];", undefined],
+    ["CALL_RECEIVER", "(console.log(input.connectionPassword),Object).keys({});", undefined],
+    ["NEW_ARGUMENT", "new Set([console.log(input.connectionPassword)]);", undefined],
+    ["FOROF_ASSIGN_TARGET", "const a={};for(a[console.log(input.connectionPassword)] of [1]){}", undefined],
+    ["MODULE_ALIAS", "const captured=globalThis.fetch;", undefined],
+    ["UNLISTED_RETURN", "", "globalThis.fetch"],
+    ["UNLISTED_ACQUIRE", "const captured=globalThis.fetch;void captured;", undefined],
+    ["UNLISTED_CALL", "globalThis.fetch(\"https://invalid.example\");", undefined],
+    ["CONSTRUCTOR_CAPTURE", "class Carrier {constructor(){console.log(input.connectionPassword);}} new Carrier();", undefined],
+  ]) add(id, insert(expression === undefined ? source : returnExpression(expression), prefix));
+
+  for (const [id, before, after] of [
+    ["PASSWORD_TRIM", "poolOptions.password = connectionPassword;", "poolOptions.password = connectionPassword.trim();"],
+    ["PASSWORD_RECONSTRUCT", "poolOptions.password = connectionPassword;", "poolOptions.password = \"\" + connectionPassword;"],
+    ["PASSWORD_EXTRA_STORAGE", "pool = new Pool(poolOptions);", "const extra={secret:connectionPassword}; pool = new Pool(poolOptions);"],
+    ["PASSWORD_ABSENT", "poolOptions.password = connectionPassword;", "void connectionPassword;"],
+    ["SECOND_POOL", "pool = new Pool(poolOptions);", "pool = new Pool(poolOptions);new Pool(poolOptions);"],
+    ["WRONG_STRUCTURED_DATABASE", "database: target.expectedDatabase,\n      max: 1,", "database: \"different_database\",\n      max: 1,"],
+    ["WRONG_MAX", "max: 1,", "max: 7,"],
+    ["WRONG_QUERY_ARGS", "[target.expectedDatabase, target.expectedUser]", "[\"different_database\", \"different_user\"]"],
+    ["FAKE_SQL_BINDING", "const identitySql = `", "const identitySql = \"select 1\"; const unusedSql = `"],
+    ["NO_REVOKE", "if (value) value.valid = false;", "if (value) void 0;"],
+    ["UNFROZEN_TOKEN", "authority = Object.freeze({});", "authority = {};"],
+    ["NO_FINGERPRINT_COMPARE", "identity.catalogFingerprint !== value.clusterFingerprint ||\n    identity.lifecycleFingerprint !== value.lifecycleFingerprint", "false"],
+    ["WRONG_MIGRATION_FOLDER", "await migrate(drizzle(pool), { migrationsFolder });", "await migrate(drizzle(pool), { migrationsFolder: \"different_folder\" });"],
+    ["NO_MIGRATION", "await migrate(drizzle(pool), { migrationsFolder });", "void 0;"],
+    ["OPERATION_EARLY", "    pool = new Pool(poolOptions);", "    await operation(); pool = new Pool(poolOptions);"],
+    ["POOL_CONNECT_HELPER", "    pool = new Pool(poolOptions);", "    pool = new Pool(poolOptions); const c=await pool.connect(); c.release();"],
+    ["POOL_END_EARLY", "    pool = new Pool(poolOptions);", "    pool = new Pool(poolOptions); await pool.end();"],
+    ["PASSWORD_READBACK", "return await operation();", "return pool.options.password;"],
+  ]) {
+    if (!source.includes(before)) throw new Error("RUN657_STATIC_ANCHOR:" + id);
+    if (id !== "NO_AUTHORITY_GUARD") add(id, source.replace(before, after));
+  }
+  add("NO_AUTHORITY_GUARD", source.replace(
+    /  if \(\n    !value \|\|[\s\S]*?  \) throw new Error\(\);/u,
+    "  if (false) throw new Error();",
+  ));
+  return Object.freeze(variants);
+}
+
+function buildRun657SupplementaryStaticVariants(source) {
+  const variants = [];
+  const rootInsert = (sourceText, snippet) => {
+    const rootStart = sourceText.indexOf("export async function withDisposablePostgresFixtureMigration");
+    const insertion = sourceText.indexOf("{", rootStart) + 1;
+    return sourceText.slice(0, insertion) + snippet + sourceText.slice(insertion);
+  };
+  const add = (id, mutatedSource) => variants.push(Object.freeze({ id, source: mutatedSource }));
+  const rootReturns = [
+    ["ROOT_INPUT_ESCAPE", "input"],
+    ["ROOT_INPUT_FROZEN_ESCAPE", "Object.freeze(input)"],
+    ["PASSWORD_LENGTH", "input.connectionPassword.length"],
+    ["DELETE_CLOSURE_HISTORY", "(()=>{const x={secret:()=>input.connectionPassword}; delete x.secret;return x;})()"],
+    ["CLEAR_CLOSURE_HISTORY", "(()=>{const x=new Set([()=>input.connectionPassword]);x.clear();return x;})()"],
+    ["OVERWRITE_CLOSURE_HISTORY", "(()=>{const x={secret:()=>input.connectionPassword};x.secret=\"safe\";return x;})()"],
+    ["CLASS_PROTOTYPE_RETAINED", "class {value(){return input.connectionPassword;}}"],
+  ];
+  for (const [id, expression] of rootReturns) {
+    add(id, source.replace("return await operation();", "return " + expression + ";"));
+  }
+  add("MODULE_CLASS_STATIC", "class GlobalProbe { static { console.log(\"synthetic\"); } }\n" + source);
+  add("CALLABLE_DEFAULT_CHILD", rootInsert(source, "function f(v=console.log(input.connectionPassword)){}f(undefined);"));
+  add("PRECAPTURED_UNLISTED", rootInsert("const capturedCapability=globalThis.fetch;\n" + source, ""));
+  for (const [id, snippet] of [
+    ["UNLISTED_STATIC_FIELD", "class C{static x=globalThis.crypto.subtle.importKey(\"raw\",input.connectionPassword,{},false,[]);}"],
+    ["THROWN_CLOSURE", "throw ()=>input.connectionPassword;"],
+    ["CATCH_ESCAPE", "try{throw input.connectionPassword;}catch(e){return e;}"],
+    ["MUTUAL_RECURSION", "function a(){return b();}function b(){return a();}a();"],
+    ["UNSUPPORTED_SYNTAX", "with(input){}"],
+    ["UNKNOWN_RECEIVER", "unknownReceiver.run();"],
+    ["CALLBACK_RECURSION", "function f(){[0].map(()=>f());}f();"],
+  ]) add(id, rootInsert(source, snippet));
+  for (const [id, expression] of rootReturns) {
+    const raw = variants.find((variant) => variant.id === id);
+    const anchor = "return " + expression + ";";
+    if (!raw?.source.includes(anchor)) throw new Error("RUN657_PROTOCOL_ANCHOR:" + id);
+    add(id + "_PROTOCOL", raw.source.replace(anchor, "await operation(); return " + expression + ";"));
+  }
+  const rawCycle = buildRun657IndependentStaticVariants(source).find((variant) => variant.id === "CYCLE_CLEAN");
+  if (!rawCycle) throw new Error("RUN657_CYCLE_ANCHOR");
+  add("CYCLE_CLEAN_PROTOCOL", rawCycle.source.replace("return c;", "await operation(); return c;"));
+  return Object.freeze(variants);
+}
+
+const RUN657_STATIC_ORACLE_GROUPS = Object.freeze([
+  ["SSC_AUTHORITY_SHAPE", "AUTHORITY_SCHEMA", "AP_AUTHORITY_GUARD", [
+    "LITERAL_database", "LITERAL_clusterFingerprint", "LITERAL_migrationsFolder", "LITERAL_phase",
+    "LITERAL_user", "LITERAL_lifecycleFingerprint", "LITERAL_brand", "LITERAL_authority", "LITERAL_pool",
+    "SERIALIZED_database", "SERIALIZED_lifecycleFingerprint", "SERIALIZED_clusterFingerprint",
+    "SERIALIZED_migrationsFolder", "SERIALIZED_user", "SERIALIZED_phase",
+    "EQUAL_TEXT_ALIAS", "EQUAL_TEXT_OBJECT", "EQUAL_TEXT_ARRAY", "EQUAL_TEXT_SET", "EQUAL_TEXT_MAP",
+    "EQUAL_TEXT_WEAKMAP", "EQUAL_TEXT_CLOSURE", "EQUAL_TEXT_CLASS", "FORGED_DEFAULT_USER",
+    "SPOOF_DEFAULT_USER_ORIGIN", "SPOOF_DEFAULT_PHASE_ORIGIN", "NO_AUTHORITY_GUARD",
+  ]],
+  ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_POOL", "AP_POOL_OPTIONS", ["DEFAULT_USER_WRONG_LHS"]],
+  ["SSC_SECRET_FLOW_DENIED", "PUBLIC_RETURN", ["AP_OPERATION", "CF_PUBLIC_ESCAPE"], [
+    "PRIOR_CONDITIONAL_ASSIGN", "PRIOR_CLOSURE_IF", "PRIOR_CLOSURE_LOOP", "PRIOR_RETURN_CLOSURE",
+    "PRIOR_RETURN_SET", "PRIOR_RETURN_MAP", "CONDITIONAL_CALLABLE", "RETURN_AUTHORITY",
+    "CLOSURE_SERIALIZE", "COMMA_LAUNDER", "LOOP_SECOND_ITERATION", "PASSWORD_READBACK",
+    "ROOT_INPUT_ESCAPE", "ROOT_INPUT_FROZEN_ESCAPE", "DELETE_CLOSURE_HISTORY",
+    "CLEAR_CLOSURE_HISTORY", "OVERWRITE_CLOSURE_HISTORY", "CLASS_PROTOTYPE_RETAINED",
+  ]],
+  ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_STORAGE", ["AP_OPERATION", "CF_PUBLIC_ESCAPE"], ["RETURN_CLASS"]],
+  ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_STORAGE", "CF_PUBLIC_ESCAPE", ["LATE_ALIAS_CLOSURE", "PASSWORD_EXTRA_STORAGE"]],
+  ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_RECONSTRUCTION", "PV_EXACT_RELATION", ["ARITHMETIC_LAUNDER", "REGEXP_LAUNDER", "PASSWORD_RECONSTRUCT"]],
+  ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_CALLBACK", "AP_OPERATION", ["CYCLE_CLEAN", "OPERATION_EARLY"]],
+  ["SSC_SECRET_FLOW_DENIED", "PUBLIC_RETURN", "CF_PUBLIC_ESCAPE", [
+    "ROOT_INPUT_ESCAPE_PROTOCOL", "ROOT_INPUT_FROZEN_ESCAPE_PROTOCOL",
+    "DELETE_CLOSURE_HISTORY_PROTOCOL", "CLEAR_CLOSURE_HISTORY_PROTOCOL",
+    "OVERWRITE_CLOSURE_HISTORY_PROTOCOL", "CLASS_PROTOTYPE_RETAINED_PROTOCOL",
+  ]],
+  ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_PASSWORD", "AP_TOKEN", ["PASSWORD_TRIM", "PASSWORD_LENGTH", "PASSWORD_LENGTH_PROTOCOL"]],
+  ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_POOL", "AP_POOL_OPTIONS", [
+    "SECOND_POOL", "WRONG_STRUCTURED_DATABASE", "WRONG_MAX",
+  ]],
+  ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_QUERY", "AP_IDENTITY_ARGUMENTS", ["WRONG_QUERY_ARGS"]],
+  ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_QUERY", "AP_IDENTITY_SQL", ["FAKE_SQL_BINDING"]],
+  ["SSC_AUTHORITY_SHAPE", "AUTHORITY_SCHEMA", "AP_REVOCATION", ["NO_REVOKE"]],
+  ["SSC_AUTHORITY_SHAPE", "AUTHORITY_SCHEMA", "AP_TOKEN", ["UNFROZEN_TOKEN"]],
+  ["SSC_AUTHORITY_SHAPE", "AUTHORITY_SCHEMA", "AP_FINGERPRINT_COMPARE", ["NO_FINGERPRINT_COMPARE"]],
+  ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_MIGRATE", "AP_MIGRATION", ["WRONG_MIGRATION_FOLDER", "NO_MIGRATION"]],
+  ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_CONNECT", "AP_CLIENT_PROTOCOL", ["POOL_CONNECT_HELPER"]],
+  ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_CLEANUP", "AP_CLEANUP", ["POOL_END_EARLY"]],
+  ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_OUTPUT", "CF_PUBLIC_ESCAPE", [
+    "CLASS_STATIC_BLOCK", "CLASS_STATIC_FIELD", "CLASS_INSTANCE_FIELD", "STRING_REPLACEMENT_CALLBACK",
+    "JSON_CALLBACK", "IMPLICIT_COERCION", "DELETE_KEY", "PROPERTY_KEY", "ASSIGNMENT_KEY", "OPTIONAL_KEY",
+    "CALL_RECEIVER", "NEW_ARGUMENT", "FOROF_ASSIGN_TARGET", "CONSTRUCTOR_CAPTURE",
+    "MODULE_CLASS_STATIC", "CALLABLE_DEFAULT_CHILD",
+  ]],
+  ["SSC_CALL_UNRESOLVED", "CALL_RESOLUTION", "TV_CALLBACK_UNMODELED", [
+    "UNKNOWN_CALL", "PROMISE_CALLBACK", "UNKNOWN_RECEIVER", "UNLISTED_STATIC_FIELD",
+  ]],
+  ["SSC_CALL_UNRESOLVED", "CALL_RESOLUTION", "DP_CAPABILITY", [
+    "MODULE_ALIAS", "UNLISTED_RETURN", "UNLISTED_ACQUIRE", "UNLISTED_CALL", "PRECAPTURED_UNLISTED",
+  ]],
+  ["SSC_PUBLIC_SURFACE", "PUBLIC_CAUSE", "CF_PUBLIC_THROW", ["THROWN_CLOSURE", "CATCH_ESCAPE"]],
+  ["SSC_SECRET_FLOW_DENIED", "FIXED_POINT_RECURSION", "CF_RECURSION", [
+    "RECURSION", "MUTUAL_RECURSION", "CALLBACK_RECURSION",
+  ]],
+  ["SSC_AST_UNSUPPORTED", "SYNTAX_POLICY", "TV_CHILD_UNDISPOSED", ["UNSUPPORTED_SYNTAX"]],
+]);
+
+function run657StaticExpectedResults() {
+  const expected = new Map([
+    ["GENUINE_BASELINE", Object.freeze({ ok: true })],
+    ["PASSWORD_ABSENT", Object.freeze({ ok: true })],
+    ["CYCLE_CLEAN_PROTOCOL", Object.freeze({ ok: true })],
+  ]);
+  for (const [code, detector, obligationOrViolations, ids] of RUN657_STATIC_ORACLE_GROUPS) {
+    const obligation = Array.isArray(obligationOrViolations) ? null : obligationOrViolations;
+    const violations = Array.isArray(obligationOrViolations)
+      ? obligationOrViolations
+      : [obligationOrViolations];
+    for (const id of ids) {
+      if (expected.has(id)) throw new Error("RUN657_DUPLICATE_ORACLE:" + id);
+      expected.set(id, Object.freeze({
+        ok: false,
+        code,
+        detector,
+        obligation: obligation ?? violations[violations.length - 1],
+        violations: Object.freeze([...violations].sort()),
+      }));
+    }
+  }
+  return expected;
+}
+
+const RUN657_MATRIX_REPRESENTATIONS = Object.freeze({
+  direct: (fact) => [fact, fact],
+  alias: (fact) => [
+    "(()=>{const alias=" + fact + ";return alias;})()",
+    "(()=>{const alias=" + fact + ";return alias;})()",
+  ],
+  closure: (fact) => ["()=>"+fact, "(()=>"+fact+")()"],
+  object: (fact) => ["({v:"+fact+"})", "({v:"+fact+"}).v"],
+  array: (fact) => ["["+fact+"]", "["+fact+"][0]"],
+  Set: (fact) => ["new Set(["+fact+"])", "new Set(["+fact+"]).values()[0]"],
+  Map: (fact) => [
+    "new Map([[\"key\","+fact+"]])",
+    "new Map([[\"key\","+fact+"]]).get(\"key\")",
+  ],
+  WeakMap: (fact) => [
+    "(()=>{const key={};return new WeakMap([[key,"+fact+"]]);})()",
+    "(()=>{const key={};const box=new WeakMap([[key,"+fact+"]]);return box.get(key);})()",
+  ],
+  class: (fact) => [
+    "new (class {value(){return "+fact+";}})()",
+    "new (class {value(){return "+fact+";}})().value()",
+  ],
+  callback: (fact) => ["[0].map(()=>()=>"+fact+")", "[0].map(()=>"+fact+")[0]"],
+  functionReturn: (fact) => ["(()=>()=>"+fact+")()", "(()=>()=>"+fact+")()()"],
+});
+
+function buildRun657RepresentationMatrix(source, protocolPreserving = false) {
+  const matrix = [];
+  const facts = {
+    credential: "input.connectionPassword",
+    diagnostic: "error",
+    authority: "authority",
+    capability: "globalThis.crypto",
+    clean: "\"safe\"",
+  };
+  const diagnosticAnchor =
+    "if (error instanceof DisposablePostgresFixtureAdmissionError) throw error;\n" +
+    "    throw new DisposablePostgresFixtureAdmissionError();";
+  for (const [fact, expression] of Object.entries(facts)) {
+    for (const [representation, make] of Object.entries(RUN657_MATRIX_REPRESENTATIONS)) {
+      for (const [index, originalExpression] of make(expression).entries()) {
+        const observation = index === 0 ? "retained" : "extracted";
+        const id = (protocolPreserving ? "RUN659_PROTOCOL" : "RUN657_RAW") +
+          "_" + fact + "_" + representation + "_" + observation;
+        let mutated;
+        if (!protocolPreserving && fact === "diagnostic") {
+          if (!source.includes(diagnosticAnchor)) throw new Error("RUN657_MATRIX_DIAGNOSTIC_ANCHOR");
+          mutated = source.replace(diagnosticAnchor, "return " + originalExpression + ";");
+        } else if (!protocolPreserving) {
+          mutated = source.replace("return await operation();", "return " + originalExpression + ";");
+        } else if (fact === "diagnostic") {
+          const syntheticError = "await operation(); " +
+            "const syntheticError = new Error(\"synthetic\", { cause: input.connectionPassword }); " +
+            "try { throw syntheticError; } catch (error) { return " + originalExpression + "; }";
+          mutated = source.replace("return await operation();", syntheticError);
+        } else {
+          const preservedExpression = representation === "Set" && observation === "extracted"
+            ? "(()=>{let selected;for(const item of new Set([" + expression +
+              "]))selected=item;return selected;})()"
+            : originalExpression;
+          mutated = source.replace(
+            "return await operation();",
+            "await operation(); return " + preservedExpression + ";",
+          );
+        }
+        if (mutated === source) throw new Error("RUN657_MATRIX_ANCHOR:" + id);
+        matrix.push(Object.freeze({
+          id,
+          source: mutated,
+          fact,
+          representation,
+          observation,
+          protocolPreserving,
+        }));
+      }
+    }
+  }
+  return Object.freeze(matrix);
+}
+
+function run657MatrixOracle(variant) {
+  if (variant.protocolPreserving && variant.fact === "clean") {
+    return Object.freeze({ ok: true });
+  }
+  if (variant.protocolPreserving && variant.fact === "diagnostic") {
+    return Object.freeze({
+      ok: false,
+      code: "SSC_PUBLIC_SURFACE",
+      detector: "PUBLIC_CAUSE",
+      obligation: "CF_PUBLIC_THROW",
+      violations: Object.freeze(["CF_PUBLIC_THROW"]),
+    });
+  }
+  if (variant.fact === "capability" &&
+      variant.observation === "extracted" &&
+      ["array", "callback"].includes(variant.representation)) {
+    return Object.freeze({
+      ok: false,
+      code: "SSC_COMPUTED_ACCESS",
+      detector: "COMPUTED_CAPABILITY",
+      obligation: "TV_CHILD_UNDISPOSED",
+      violations: Object.freeze(["TV_CHILD_UNDISPOSED"]),
+    });
+  }
+  if (variant.protocolPreserving) {
+    return Object.freeze({
+      ok: false,
+      code: "SSC_SECRET_FLOW_DENIED",
+      detector: "PUBLIC_RETURN",
+      obligation: "CF_PUBLIC_ESCAPE",
+      violations: Object.freeze(["CF_PUBLIC_ESCAPE"]),
+    });
+  }
+  if (variant.fact === "diagnostic") {
+    return Object.freeze({
+      ok: false,
+      code: "SSC_SECRET_FLOW_DENIED",
+      detector: "PUBLIC_RETURN",
+      obligation: "CF_PUBLIC_ESCAPE",
+      violations: Object.freeze(["CF_PUBLIC_ESCAPE"]),
+    });
+  }
+  if (variant.fact === "clean") {
+    return Object.freeze({
+      ok: false,
+      code: "SSC_SECRET_FLOW_DENIED",
+      detector: "CAPABILITY_CALLBACK",
+      obligation: "AP_OPERATION",
+      violations: Object.freeze(["AP_OPERATION"]),
+    });
+  }
+  return Object.freeze({
+    ok: false,
+    code: "SSC_SECRET_FLOW_DENIED",
+    detector: "PUBLIC_RETURN",
+    obligation: "CF_PUBLIC_ESCAPE",
+    violations: Object.freeze(["AP_OPERATION", "CF_PUBLIC_ESCAPE"]),
+  });
+}
+
+test("RUN657_INDEPENDENT_STATIC_CORPUS", async () => {
+  const frozen = await readFrozenMigrationClosureSource();
+  const independent = buildRun657IndependentStaticVariants(frozen.source);
+  const supplementary = buildRun657SupplementaryStaticVariants(frozen.source);
+  const variants = [...independent, ...supplementary];
+  const expected = run657StaticExpectedResults();
+  assert.equal(independent.length, 84);
+  assert.equal(supplementary.length, 25);
+  assert.equal(expected.size, variants.length);
+  assert.equal(new Set(variants.map((variant) => variant.id)).size, variants.length);
+  const results = await analyzeMigrationClosureVariants(variants);
+  assert.equal(results.length, variants.length);
+  assert.deepEqual(results.map((result) => result.id), variants.map((variant) => variant.id));
+  for (const result of results) {
+    const oracle = expected.get(result.id);
+    assert.ok(oracle, "missing independent oracle: " + result.id);
+    if (oracle.ok) {
+      assert.equal(result.ok, true, result.id);
+      assert.equal(result.result.ok, true, result.id);
+      assert.deepEqual(result.result.violations, [], result.id);
+      assert.equal(result.result.totalTraversal, true, result.id);
+      assert.equal(result.result.summariesConverged, true, result.id);
+      assert.equal(result.result.provenanceComplete, true, result.id);
+      continue;
+    }
+    assert.equal(result.ok, false, result.id);
+    assert.deepEqual({
+      code: result.result.code,
+      detector: result.result.detector,
+      obligation: result.result.obligation,
+      violations: result.result.violations,
+    }, {
+      code: oracle.code,
+      detector: oracle.detector,
+      obligation: oracle.obligation,
+      violations: oracle.violations,
+    }, result.id);
+  }
+});
+
+async function assertRun657RepresentationMatrix(source, protocolPreserving) {
+  const variants = buildRun657RepresentationMatrix(source, protocolPreserving);
+  const expectedCount = 110;
+  assert.equal(variants.length, expectedCount);
+  assert.equal(new Set(variants.map((variant) => variant.id)).size, expectedCount);
+  const results = await analyzeMigrationClosureVariants(variants);
+  assert.equal(results.length, expectedCount);
+  let passes = 0;
+  let failures = 0;
+  for (const [index, result] of results.entries()) {
+    const variant = variants[index];
+    const oracle = run657MatrixOracle(variant);
+    assert.equal(result.id, variant.id);
+    if (oracle.ok) {
+      passes += 1;
+      assert.equal(result.ok, true, variant.id);
+      assert.equal(result.result.ok, true, variant.id);
+      assert.deepEqual(result.result.violations, [], variant.id);
+      assert.equal(result.result.totalTraversal, true, variant.id);
+      assert.equal(result.result.summariesConverged, true, variant.id);
+      assert.equal(result.result.provenanceComplete, true, variant.id);
+      continue;
+    }
+    failures += 1;
+    assert.equal(result.ok, false, variant.id);
+    assert.deepEqual({
+      code: result.result.code,
+      detector: result.result.detector,
+      obligation: result.result.obligation,
+      violations: result.result.violations,
+    }, {
+      code: oracle.code,
+      detector: oracle.detector,
+      obligation: oracle.obligation,
+      violations: oracle.violations,
+    }, variant.id);
+  }
+  return Object.freeze({ count: results.length, passes, failures });
+}
+
+test("RUN657_RAW_STATIC_REPRESENTATION_MATRIX", async () => {
+  const frozen = await readFrozenMigrationClosureSource();
+  assert.deepEqual(
+    await assertRun657RepresentationMatrix(frozen.source, false),
+    { count: 110, passes: 0, failures: 110 },
+  );
+});
+
+test("RUN659_PROTOCOL_PRESERVING_REPRESENTATION_MATRIX", async () => {
+  const frozen = await readFrozenMigrationClosureSource();
+  assert.deepEqual(
+    await assertRun657RepresentationMatrix(frozen.source, true),
+    { count: 110, passes: 22, failures: 88 },
+  );
+});
+
+test("RUN657_INDEPENDENT_RUNTIME_CORPUS", async () => {
+  const result = await runSecretSurfaceIndependentRuntimeCorpus();
+  const leakingSurfaces = new Set([
+    "symbol", "symbol_key", "symbol_array", "nested_symbol", "nonenum",
+    "inherited_long", "inherited", "inherited_nonenum", "map_internal",
+    "set_internal", "boxed_symbol", "map_custom_inspect",
+  ]);
+  const invalidSurfaces = new Set([
+    "getter", "throw_getter", "throw_descriptor", "wide_258", "wide_late_marker", "depth_7",
+  ]);
+  const surfaceIds = [
+    "symbol", "symbol_key", "symbol_array", "nested_symbol", "nonenum",
+    "getter", "throw_getter", "throw_descriptor", "inherited_long", "inherited",
+    "inherited_nonenum", "wide_258", "wide_late_marker", "map_internal",
+    "set_internal", "boxed_symbol", "map_custom_inspect", "depth_7",
+  ];
+  const expectedSurfaces = surfaceIds.map((id) => {
+    const leak = leakingSurfaces.has(id);
+    const invalid = invalidSurfaces.has(id);
+    return {
+      family: "F4A",
+      id,
+      safe: !leak && !invalid,
+      leak,
+      invalid,
+      ...(id === "map_custom_inspect" ? { customRendererCalled: false } : {}),
+    };
+  });
+  const expectedRestoration = [
+    { family: "F2", id: "success", ok: true, restored: true },
+    ...["mismatch", "throw", "verify_false", "verify_throw"].map((id) => ({
+      family: "F2", id, code: "SSC_OBSERVER_RESTORE", detector: "RESTORE_LEDGER",
+    })),
+    { family: "F2", id: "reverse_order", pass: true },
+    { family: "F2", id: "partial_install", pass: true },
+    { family: "F2", id: "scenario_failure_restore", pass: true },
+  ];
+  const expectedPoolBindings = [
+    { family: "F3", id: "good", pass: true },
+    ...[
+      "captured_password", "observed_password", "binding", "authority_pool",
+      "authority_record_pool", "two_pools", "two_captures", "connectionString",
+      "wrong_max", "wrong_database",
+    ].map((id) => ({ family: "F3", id, rejected: true })),
+  ];
+  const expectedDependencies = [
+    ...[
+      "WRONG_HASH_ALGORITHM", "WRONG_HASH_RECEIVER", "POOL_FALLBACK_WRONG_RECEIVER",
+      "UNLISTED_READ_PATH", "WRITE_OPEN_DENIED",
+    ].map((id) => ({ family: "DEPENDENCY", id, effects: 0, threw: true, eventCount: 1 })),
+    ...["UNEXPECTED_SQL", "WRONG_IDENTITY_PARAMETERS"].map((id) => ({
+      family: "DEPENDENCY",
+      id,
+      threw: true,
+      migrationQueries: 0,
+      identityCalls: 0,
+      queryRejected: true,
+    })),
+  ];
+  const expected = [...expectedSurfaces, ...expectedRestoration, ...expectedPoolBindings, ...expectedDependencies];
+  assert.equal(result.id, "RUN657_INDEPENDENT_RUNTIME_CORPUS");
+  assert.equal(result.count, 44);
+  assert.deepEqual(result.cases, expected);
+});
 
 test("SSC_BASELINE_SECRET_SURFACE", async (suite) => {
   let baseline;
