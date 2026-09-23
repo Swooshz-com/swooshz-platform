@@ -219,10 +219,14 @@ function newRunState() {
     observedPool: null,
     require: null,
     subjectUrl: null,
+    admissionErrorPrototype: null,
     scenarioSerial: 0,
     identitySql: null,
     migrationQueryPlan: Object.freeze([]),
     migrationHashPlan: Object.freeze([]),
+    migrationManifestPlan: null,
+    hashDelegationTotals: { createHash: 0, update: 0, digest: 0 },
+    runSerial: 0,
     pgClient: null,
     originalPromise: globalThis.Promise,
     originalPool: null,
@@ -384,10 +388,15 @@ function installWeakMapObserver(ledger, state, ObservedPool) {
     const result = original.call(this, key, record);
     if (state.selfTest && key === state.weakMapCanaryKey) recordEvent(state, "WEAKMAP_CANARY");
     if (state.active && isAuthorityRecord(key, record, ObservedPool)) {
+      if (!Object.isFrozen(key) || record.valid !== true) {
+        if (state.current) state.current.protocolRejected = true;
+        return result;
+      }
       state.authorityRecord = record;
       state.authorityPool = record.pool;
       state.current.authorityCaptureCount += 1;
       state.current.authorityValidAtCapture = record.valid === true;
+      state.current.authorityTokenFrozen = Object.isFrozen(key);
       state.current.events.push("AUTHORITY_SET");
     }
     return result;
@@ -458,6 +467,53 @@ function installPassthroughObserver(state, ledger, target, key, id) {
   state.canaryHits.delete(id);
 }
 
+function migrationIdentityAdmission(state, current) {
+  const pool = current?.pools?.[0];
+  const record = state.authorityRecord;
+  return Boolean(
+    state.active && current && state.current === current && !current.protocolRejected &&
+    current.poolCount === 1 && current.poolInputValidated === true && current.poolEffectiveValidated === true &&
+    pool && pool === state.authorityPool && current.identityCalls === 2 &&
+    current.identity1Validated === true && current.identity2Validated === true && current.fingerprintsEqual === true &&
+    current.authorityGuardPassed === true && current.authorityCaptureCount === 1 &&
+    current.authorityValidAtCapture === true && current.authorityTokenFrozen === true &&
+    record && record.valid === true && record.pool === pool && record.authority && Object.isFrozen(record.authority) &&
+    record.database === "runtime_posture_test" && record.user === "cloud_admin" &&
+    record.phase === "initialization" && record.migrationsFolder === MIGRATIONS_FOLDER &&
+    current.identityFingerprints?.[0]?.catalog === record.clusterFingerprint &&
+    current.identityFingerprints?.[0]?.lifecycle === record.lifecycleFingerprint &&
+    isAuthorityRecord(record.authority, record, state.observedPool) &&
+    poolBindingContract(current, state)
+  );
+}
+
+function migrationHashAdmission(state, current, index, stage) {
+  if (!migrationIdentityAdmission(state, current) || current.migrationEntered !== true ||
+      current.manifestExistsCount !== 1 || current.manifestReadCount !== 1 ||
+      current.migrationReadCursor !== index + 1 || current.lastReadMigrationIndex !== index ||
+      current.lastReadMigrationPath !== state.migrationHashPlan[index]?.path ||
+      current.lastReadMigrationSource !== state.migrationHashPlan[index]?.source ||
+      current.hashCompleted !== index) return false;
+  if (stage === "NEW") {
+    return current.hashIndex === index && current.pendingHash === null;
+  }
+  const pending = current.pendingHash;
+  return Boolean(
+    pending && pending.index === index && pending.runId === current.runId &&
+    pending.path === state.migrationHashPlan[index]?.path &&
+    current.hashIndex === index + 1 &&
+    (stage === "HASH_ALLOCATED" ? pending.stage === "HASH_ALLOCATED" && !pending.updated
+      : stage === "HASH_UPDATED" ? pending.stage === "HASH_UPDATED" && pending.updated
+        : false)
+  );
+}
+
+function rejectMigrationDependency(state, detector, eventId) {
+  if (state.current) state.current.protocolRejected = true;
+  recordEvent(state, eventId);
+  fail(SAFE.runtime, detector);
+}
+
 function installMigrationHashObserver(state, ledger, crypto) {
   const createHashDescriptor = descriptorOwner(crypto, "createHash");
   if (!createHashDescriptor || typeof createHashDescriptor.descriptor.value !== "function") {
@@ -483,17 +539,21 @@ function installMigrationHashObserver(state, ledger, crypto) {
       return undefined;
     }
     if (!state.active) return originalCreateHash.apply(this, args);
+    if (this !== crypto) rejectMigrationDependency(state, "DP_RECEIVER", "CRYPTO_CREATEHASH");
+    if (args.length !== 1 || args[0] !== "sha256") {
+      rejectMigrationDependency(state, "DP_ARGUMENTS", "CRYPTO_CREATEHASH");
+    }
     const current = state.current;
     const index = current?.hashIndex ?? -1;
     const expected = state.migrationHashPlan[index];
-    if (this !== crypto || args.length !== 1 || args[0] !== "sha256" ||
-        !current?.allowMigrationHash || current.pendingHash || !expected) {
-      recordEvent(state, "CRYPTO_CREATEHASH");
-      throw new Error("SSC_BLOCKED");
+    if (!expected || !migrationHashAdmission(state, current, index, "NEW")) {
+      rejectMigrationDependency(state, "DP_STATE", "CRYPTO_CREATEHASH");
     }
+    current.hashDelegations.createHash += 1;
+    state.hashDelegationTotals.createHash += 1;
     const hash = originalCreateHash.apply(this, args);
     current.hashIndex = index + 1;
-    current.pendingHash = { hash, index, updated: false };
+    current.pendingHash = { hash, index, runId: current.runId, path: expected.path, updated: false, stage: "HASH_ALLOCATED" };
     return hash;
   };
   const update = function observedMigrationHashUpdate(...args) {
@@ -504,14 +564,21 @@ function installMigrationHashObserver(state, ledger, crypto) {
     if (!state.active) return originalUpdate.apply(this, args);
     const current = state.current;
     const pending = current?.pendingHash;
-    const expected = pending && state.migrationHashPlan[pending.index];
-    if (pending?.hash !== this || pending.updated || args.length !== 1 ||
-        typeof args[0] !== "string" || args[0] !== expected?.input) {
-      recordEvent(state, "CRYPTO_HASH_UPDATE");
-      throw new Error("SSC_BLOCKED");
+    if (!pending || pending.hash !== this) {
+      rejectMigrationDependency(state, "DP_RECEIVER", "CRYPTO_HASH_UPDATE");
     }
+    if (args.length !== 1 || typeof args[0] !== "string" ||
+        args[0] !== state.migrationHashPlan[pending.index]?.input) {
+      rejectMigrationDependency(state, "DP_ARGUMENTS", "CRYPTO_HASH_UPDATE");
+    }
+    if (!migrationHashAdmission(state, current, pending.index, "HASH_ALLOCATED")) {
+      rejectMigrationDependency(state, "DP_STATE", "CRYPTO_HASH_UPDATE");
+    }
+    current.hashDelegations.update += 1;
+    state.hashDelegationTotals.update += 1;
     const result = originalUpdate.apply(this, args);
     pending.updated = true;
+    pending.stage = "HASH_UPDATED";
     return result;
   };
   const digest = function observedMigrationHashDigest(...args) {
@@ -522,16 +589,20 @@ function installMigrationHashObserver(state, ledger, crypto) {
     if (!state.active) return originalDigest.apply(this, args);
     const current = state.current;
     const pending = current?.pendingHash;
-    const expected = pending && state.migrationHashPlan[pending.index];
-    if (pending?.hash !== this || !pending.updated || args.length !== 1 || args[0] !== "hex") {
-      recordEvent(state, "CRYPTO_HASH_DIGEST");
-      throw new Error("SSC_BLOCKED");
+    if (!pending || pending.hash !== this) {
+      rejectMigrationDependency(state, "DP_RECEIVER", "CRYPTO_HASH_DIGEST");
     }
+    if (args.length !== 1 || args[0] !== "hex") {
+      rejectMigrationDependency(state, "DP_ARGUMENTS", "CRYPTO_HASH_DIGEST");
+    }
+    if (!migrationHashAdmission(state, current, pending.index, "HASH_UPDATED")) {
+      rejectMigrationDependency(state, "DP_STATE", "CRYPTO_HASH_DIGEST");
+    }
+    const expected = state.migrationHashPlan[pending.index];
+    current.hashDelegations.digest += 1;
+    state.hashDelegationTotals.digest += 1;
     const result = originalDigest.apply(this, args);
-    if (result !== expected?.hash) {
-      recordEvent(state, "CRYPTO_HASH_DIGEST");
-      throw new Error("SSC_BLOCKED");
-    }
+    if (result !== expected.hash) rejectMigrationDependency(state, "DP_STATE", "CRYPTO_HASH_DIGEST");
     current.pendingHash = null;
     current.hashCompleted += 1;
     return result;
@@ -551,6 +622,86 @@ function installMigrationHashObserver(state, ledger, crypto) {
     if (!state.canaryHits.has(id)) fail(SAFE.install, "INSTALL_LEDGER");
     state.canaryHits.delete(id);
   }
+}
+
+function installMigrationExistenceObserver(state, ledger, fs) {
+  const found = descriptorOwner(fs, "existsSync");
+  if (!found || typeof found.descriptor.value !== "function") fail(SAFE.install, "INSTALL_LEDGER");
+  const original = found.descriptor.value;
+  const wrapper = function observedMigrationExistsSync(...args) {
+    if (state.selfTest) { recordEvent(state, "FS_MIGRATION_EXISTS"); return true; }
+    if (!state.active) return original.apply(this, args);
+    const current = state.current;
+    if (this !== fs) rejectMigrationDependency(state, "DP_RECEIVER", "FS_MIGRATION_EXISTS");
+    if (args.length !== 1 || typeof args[0] !== "string") rejectMigrationDependency(state, "DP_ARGUMENTS", "FS_MIGRATION_EXISTS");
+    if (!migrationIdentityAdmission(state, current) || current.migrationEntered || current.manifestExistsCount !== 0 ||
+        current.manifestReadCount !== 0 || current.hashIndex !== 0) {
+      rejectMigrationDependency(state, "DP_STATE", "FS_MIGRATION_EXISTS");
+    }
+    if (args[0] !== state.migrationManifestPlan?.path) rejectMigrationDependency(state, "DP_MANIFEST", "FS_MIGRATION_EXISTS");
+    const result = original.apply(this, args);
+    if (result !== true) rejectMigrationDependency(state, "DP_MANIFEST", "FS_MIGRATION_EXISTS");
+    current.manifestExistsCount += 1;
+    current.events.push("MIGRATION_MANIFEST_EXISTS");
+    return result;
+  };
+  ledger.install(found.owner, "existsSync", wrapper);
+  state.selfTest = true;
+  try { wrapper.call(fs, "ssc-canary"); } catch { /* observer canary */ }
+  state.selfTest = false;
+  if (!state.canaryHits.has("FS_MIGRATION_EXISTS")) fail(SAFE.install, "INSTALL_LEDGER");
+  state.canaryHits.delete("FS_MIGRATION_EXISTS");
+}
+
+function installMigrationReadObserver(state, ledger, fs) {
+  const found = descriptorOwner(fs, "readFileSync");
+  if (!found || typeof found.descriptor.value !== "function") fail(SAFE.install, "INSTALL_LEDGER");
+  const original = found.descriptor.value;
+  const wrapper = function observedMigrationReadFileSync(...args) {
+    if (state.selfTest) { recordEvent(state, "FS_MIGRATION_READ"); return Buffer.from("ssc-canary"); }
+    if (!state.active) return original.apply(this, args);
+    const current = state.current;
+    if (this !== fs) rejectMigrationDependency(state, "DP_RECEIVER", "FS_MIGRATION_READ");
+    if (args.length !== 1 || typeof args[0] !== "string") rejectMigrationDependency(state, "DP_ARGUMENTS", "FS_MIGRATION_READ");
+    if (!migrationIdentityAdmission(state, current)) rejectMigrationDependency(state, "DP_STATE", "FS_MIGRATION_READ");
+    let expected;
+    let kind;
+    let index = -1;
+    if (current.manifestExistsCount === 1 && current.manifestReadCount === 0 && !current.migrationEntered &&
+        current.migrationReadCursor === 0 && current.hashIndex === 0) {
+      expected = state.migrationManifestPlan;
+      kind = "manifest";
+    } else {
+      index = current.migrationReadCursor;
+      expected = state.migrationHashPlan[index];
+      kind = "migration";
+      if (!current.migrationEntered || current.manifestReadCount !== 1 || current.hashIndex !== index ||
+          current.hashCompleted !== index || current.pendingHash !== null || !expected) {
+        rejectMigrationDependency(state, "DP_STATE", "FS_MIGRATION_READ");
+      }
+    }
+    if (!expected || args[0] !== expected.path) rejectMigrationDependency(state, "DP_MANIFEST", "FS_MIGRATION_READ");
+    const content = original.apply(this, args);
+    if (content.toString("utf8") !== expected.source) rejectMigrationDependency(state, "DP_MANIFEST", "FS_MIGRATION_READ");
+    if (kind === "manifest") {
+      current.manifestReadCount += 1;
+      current.migrationEntered = true;
+      current.events.push("MIGRATION_MANIFEST_READ");
+    } else {
+      current.lastReadMigrationIndex = index;
+      current.lastReadMigrationPath = expected.path;
+      current.lastReadMigrationSource = expected.source;
+      current.migrationReadCursor += 1;
+      current.events.push("MIGRATION_SQL_READ");
+    }
+    return content;
+  };
+  ledger.install(found.owner, "readFileSync", wrapper);
+  state.selfTest = true;
+  try { wrapper.call(fs, "ssc-canary"); } catch { /* observer canary */ }
+  state.selfTest = false;
+  if (!state.canaryHits.has("FS_MIGRATION_READ")) fail(SAFE.install, "INSTALL_LEDGER");
+  state.canaryHits.delete("FS_MIGRATION_READ");
 }
 
 function hasWriteOpenIntent(flags, writeMask) {
@@ -673,6 +824,8 @@ function installObservers(state) {
       (fs.constants?.O_TMPFILE ?? 0);
     if (descriptorOwner(fs, "open")) installOpenObserver(state, ledger, fs, "open", "FS_OPEN", writeOpenMask);
     if (descriptorOwner(fs, "openSync")) installOpenObserver(state, ledger, fs, "openSync", "FS_OPENSYNC", writeOpenMask);
+    installMigrationExistenceObserver(state, ledger, fs);
+    installMigrationReadObserver(state, ledger, fs);
     if (descriptorOwner(fsPromises, "open")) installOpenObserver(state, ledger, fsPromises, "open", "FS_PROMISES_OPEN", writeOpenMask);
     if (descriptorOwner(v8, "writeHeapSnapshot")) installFunction(ledger, state, v8, "writeHeapSnapshot", "V8_WRITE_HEAP_SNAPSHOT");
     if (process.report && descriptorOwner(process.report, "writeReport")) installFunction(ledger, state, process.report, "writeReport", "PROCESS_REPORT");
@@ -750,20 +903,25 @@ function installPoolSeam(state, ledger, pg) {
   state.originalPool = originalPool;
   class ObservedPool extends originalPool {
     constructor(options) {
-      if (state.active && state.current && !state.selfTest &&
-          !poolOptionsMatch(options, state, state.current, false)) {
-        state.current.poolOptionRejectCount += 1;
-        recordEvent(state, "POOL_OPTIONS_REJECT");
-        throw new Error("SSC_BLOCKED");
+      if (state.active && state.current && !state.selfTest) {
+        if (!poolOptionsMatch(options, state, state.current, false)) {
+          state.current.poolOptionRejectCount += 1;
+          state.current.protocolRejected = true;
+          recordEvent(state, "POOL_OPTIONS_REJECT");
+          throw new Error("SSC_BLOCKED");
+        }
+        state.current.poolInputValidated = true;
       }
       super(options);
       this.__sscInputOptions = options;
       if (state.active && state.current) {
         if (!poolOptionsMatch(this.options, state, state.current, true)) {
           state.current.poolOptionRejectCount += 1;
+          state.current.protocolRejected = true;
           recordEvent(state, "POOL_EFFECTIVE_OPTIONS_REJECT");
           throw new Error("SSC_BLOCKED");
         }
+        state.current.poolEffectiveValidated = true;
         state.current.poolCount += 1;
         state.current.pools.push(this);
         state.current.events.push("POOL_CONSTRUCTOR");
@@ -884,8 +1042,10 @@ async function buildMigrationContract(require, migrationsFolder) {
   const migrationRoot = path.resolve(migrationsFolder);
   const journalPath = path.join(migrationRoot, "meta", "_journal.json");
   let journal;
+  let manifestSource;
   try {
-    journal = JSON.parse(await readFile(journalPath, "utf8"));
+    manifestSource = await readFile(journalPath, "utf8");
+    journal = JSON.parse(manifestSource);
   } catch {
     fail(SAFE.internal, "DRIZZLE_MANIFEST");
   }
@@ -958,13 +1118,27 @@ async function buildMigrationContract(require, migrationsFolder) {
     },
   };
   await dialect.migrate(migrations, session, {});
-  return Object.freeze({
-    queries: Object.freeze(queries),
-    hashes: Object.freeze(migrations.map((migration) => Object.freeze({
+  const hashes = migrations.map((migration, index) => {
+    const tag = journal.entries[index].tag;
+    const relativePath = migrationsFolder + "/" + tag + ".sql";
+    const absolutePath = path.resolve(migrationRoot, tag + ".sql");
+    return Object.freeze({
       input: migration.sql.join("--> statement-breakpoint"),
       hash: migration.hash,
-    }))),
+      path: relativePath,
+      absolutePath,
+      source: fs.readFileSync(absolutePath, "utf8"),
+    });
+  });
+  return Object.freeze({
+    queries: Object.freeze(queries),
+    hashes: Object.freeze(hashes),
     readPaths: Object.freeze([...readPaths]),
+    manifest: Object.freeze({
+      path: migrationsFolder + "/meta/_journal.json",
+      absolutePath: journalPath,
+      source: manifestSource,
+    }),
   });
 }
 
@@ -1024,7 +1198,7 @@ function sameValues(actual, expected) {
 }
 
 function rejectPoolOperation(state, id = "POOL_QUERY_REJECT") {
-  if (state.current) state.current.queryRejected = true;
+  if (state.current) { state.current.queryRejected = true; state.current.protocolRejected = true; }
   recordEvent(state, id);
   throw new Error("SSC_BLOCKED");
 }
@@ -1056,16 +1230,31 @@ function executeQuery(state, receiver, args, channel) {
     current.identityCalls += 1;
     current.events.push(current.identityCalls === 1 ? "IDENTITY_1" : "IDENTITY_2");
     const rejected = current.scenario.rejectSecondIdentity && current.identityCalls === 2;
-    return Promise.resolve({
-      rows: [{
-        database_matches: !rejected,
-        user_matches: true,
-        postgres17: true,
-        non_recovery: true,
-        catalog_fingerprint: "100",
-        lifecycle_fingerprint: rejected ? "201" : "200",
-      }],
-    });
+    const row = {
+      database_matches: !rejected,
+      user_matches: true,
+      postgres17: true,
+      non_recovery: true,
+      catalog_fingerprint: "100",
+      lifecycle_fingerprint: rejected ? "201" : "200",
+    };
+    current.identityFingerprints.push({ catalog: row.catalog_fingerprint, lifecycle: row.lifecycle_fingerprint });
+    const rowValidated = row.database_matches && row.user_matches && row.postgres17 && row.non_recovery;
+    if (current.identityCalls === 1) {
+      current.identity1Validated = rowValidated && current.poolInputValidated && current.poolEffectiveValidated;
+    } else {
+      const first = current.identityFingerprints[0];
+      current.fingerprintsEqual = Boolean(first && first.catalog === row.catalog_fingerprint &&
+        first.lifecycle === row.lifecycle_fingerprint);
+      const record = state.authorityRecord;
+      current.authorityGuardPassed = Boolean(record && record.valid === true && record.pool === expectedPool &&
+        record.database === "runtime_posture_test" && record.user === "cloud_admin" &&
+        record.migrationsFolder === MIGRATIONS_FOLDER && record.phase === "initialization" &&
+        current.authorityTokenFrozen && Object.isFrozen(record.authority));
+      current.identity2Validated = rowValidated && current.authorityGuardPassed;
+      if (rejected || !current.identity2Validated || !current.fingerprintsEqual) current.protocolRejected = true;
+    }
+    return Promise.resolve({ rows: [row] });
   }
 
   const expected = state.migrationQueryPlan[current.migrationPlanIndex];
@@ -1110,7 +1299,6 @@ function createScenarioState(scenario, markers) {
     hashIndex: 0,
     hashCompleted: 0,
     pendingHash: null,
-    allowMigrationHash: false,
     operationCalls: 0,
     endCount: 0,
     connectCount: 0,
@@ -1119,6 +1307,23 @@ function createScenarioState(scenario, markers) {
     connectedClient: null,
     queryRejected: false,
     poolOptionRejectCount: 0,
+    protocolRejected: false,
+    poolInputValidated: false,
+    poolEffectiveValidated: false,
+    identity1Validated: false,
+    identity2Validated: false,
+    identityFingerprints: [],
+    fingerprintsEqual: false,
+    authorityGuardPassed: false,
+    authorityTokenFrozen: false,
+    migrationEntered: false,
+    manifestExistsCount: 0,
+    manifestReadCount: 0,
+    migrationReadCursor: 0,
+    lastReadMigrationIndex: -1,
+    lastReadMigrationPath: null,
+    lastReadMigrationSource: null,
+    hashDelegations: { createHash: 0, update: 0, digest: 0 },
     operationOrderViolation: false,
     cleanupWasAsyncPromise: false,
     events: [],
@@ -1132,134 +1337,165 @@ function containsMarker(value, markers) {
     value.includes(markers.operation) || value.includes(markers.canary);
 }
 
-function inspectSurface(valueToInspect, state) {
+function inspectSurface(valueToInspect, state, { trustedClassPrototype = null } = {}) {
   let leak = false;
   let invalid = false;
+  let unsupported = false;
+  let accessorUnsupported = false;
+  let boundDetector = null;
+  let halted = false;
   const visited = new Set();
   let entryCount = 0;
+  const markUnsupported = () => {
+    invalid = true;
+    unsupported = true;
+  };
+  const markBound = (detector) => {
+    invalid = true;
+    boundDetector ??= detector;
+    halted = true;
+  };
+  const customClassInstance = (prototype) => {
+    if (!prototype || prototype === trustedClassPrototype || BUILTIN_PROTOTYPES.has(prototype) || types.isProxy(prototype)) return false;
+    let descriptor;
+    try { descriptor = Object.getOwnPropertyDescriptor(prototype, "constructor"); }
+    catch { markUnsupported(); return true; }
+    if (!descriptor || descriptor.get || descriptor.set || typeof descriptor.value !== "function" || types.isProxy(descriptor.value)) return false;
+    let source;
+    try { source = Function.prototype.toString.call(descriptor.value); }
+    catch { markUnsupported(); return true; }
+    if (/^\s*class(?:\s|\{)/u.test(source)) {
+      markUnsupported();
+      return true;
+    }
+    return false;
+  };
   const walk = (current, depth) => {
-    if (leak || invalid) return;
+    if (halted || leak) return;
     if (containsMarker(current, state.markers)) {
       leak = true;
       return;
     }
     if (entryCount >= MAX_INSPECTION_ENTRIES) {
-      invalid = true;
+      markBound("HS_ENTRY_BOUND");
       return;
     }
     entryCount += 1;
     if (!current || (typeof current !== "object" && typeof current !== "function")) return;
     if (types.isProxy(current)) {
-      invalid = true;
+      markUnsupported();
+      halted = true;
+      return;
+    }
+    if (typeof current === "function" || types.isWeakMap(current) || types.isWeakSet(current) || types.isPromise(current)) {
+      markUnsupported();
       return;
     }
     if (visited.has(current)) return;
     if (depth >= MAX_INSPECTION_DEPTH) {
-      invalid = true;
+      markBound("HS_DEPTH_BOUND");
       return;
     }
     visited.add(current);
+
+    let prototype;
+    try { prototype = Object.getPrototypeOf(current); }
+    catch {
+      markUnsupported();
+      halted = true;
+      return;
+    }
+    customClassInstance(prototype);
+
     const inspectDescriptors = (owner, childDepth) => {
       let keys;
-      try {
-        keys = Reflect.ownKeys(owner);
-      } catch {
-        invalid = true;
-        return;
-      }
+      try { keys = Reflect.ownKeys(owner); }
+      catch { markUnsupported(); halted = true; return; }
       for (const key of keys) {
+        if (halted || leak) return;
         if (containsMarker(typeof key === "symbol" ? key.description ?? "" : key, state.markers)) {
           leak = true;
           return;
         }
         let descriptor;
-        try {
-          descriptor = Object.getOwnPropertyDescriptor(owner, key);
-        } catch {
-          invalid = true;
-          return;
-        }
+        try { descriptor = Object.getOwnPropertyDescriptor(owner, key); }
+        catch { markUnsupported(); halted = true; return; }
         if (!descriptor) {
-          invalid = true;
+          markUnsupported();
+          halted = true;
           return;
         }
         if (descriptor.get || descriptor.set) {
-          if (key === "stack" &&
-              descriptor.get === NATIVE_ERROR_STACK_DESCRIPTOR?.get &&
+          if (key === "stack" && descriptor.get === NATIVE_ERROR_STACK_DESCRIPTOR?.get &&
               descriptor.set === NATIVE_ERROR_STACK_DESCRIPTOR?.set) continue;
           invalid = true;
-          return;
+          accessorUnsupported = true;
+          continue;
         }
+        if (key === "then" && typeof descriptor.value === "function") markUnsupported();
         walk(descriptor.value, childDepth);
-        if (leak || invalid) return;
       }
     };
+
     inspectDescriptors(current, depth + 1);
-    if (leak || invalid) return;
+    if (halted || leak) return;
 
     try {
       Reflect.apply(Map.prototype.forEach, current, [
-        (item, key) => {
-          walk(key, depth + 1);
-          walk(item, depth + 1);
-        },
+        (item, key) => { walk(key, depth + 1); walk(item, depth + 1); },
       ]);
-    } catch {
-      // The intrinsic rejects non-Map values without consulting user iterators.
-    }
-    if (leak || invalid) return;
+    } catch { /* The intrinsic rejects non-Map values without consulting user iterators. */ }
+    if (halted || leak) return;
     try {
-      Reflect.apply(Set.prototype.forEach, current, [
-        (item) => walk(item, depth + 1),
-      ]);
-    } catch {
-      // The intrinsic rejects non-Set values without consulting user iterators.
-    }
-    if (leak || invalid) return;
+      Reflect.apply(Set.prototype.forEach, current, [(item) => walk(item, depth + 1)]);
+    } catch { /* The intrinsic rejects non-Set values without consulting user iterators. */ }
+    if (halted || leak) return;
 
     for (const unbox of BOXED_PRIMITIVE_UNBOXERS) {
-      try {
-        walk(Reflect.apply(unbox, current, []), depth + 1);
-        break;
-      } catch {
-        // Only boxed primitives pass these intrinsic internal-slot checks.
-      }
+      try { walk(Reflect.apply(unbox, current, []), depth + 1); break; }
+      catch { /* Only boxed primitives pass these intrinsic internal-slot checks. */ }
     }
-    if (leak || invalid) return;
+    if (halted || leak) return;
 
-    let prototype;
-    try {
-      prototype = Object.getPrototypeOf(current);
-    } catch {
-      invalid = true;
-      return;
-    }
     while (prototype && !BUILTIN_PROTOTYPES.has(prototype)) {
+      if (prototype === trustedClassPrototype) {
+        try { prototype = Object.getPrototypeOf(prototype); }
+        catch { markUnsupported(); halted = true; return; }
+        continue;
+      }
       if (types.isProxy(prototype)) {
-        invalid = true;
+        markUnsupported();
+        halted = true;
         return;
       }
       if (visited.has(prototype)) break;
-      if (depth + 1 >= MAX_INSPECTION_DEPTH || entryCount >= MAX_INSPECTION_ENTRIES) {
-        invalid = true;
+      if (depth + 1 >= MAX_INSPECTION_DEPTH) {
+        markBound("HS_DEPTH_BOUND");
+        return;
+      }
+      if (entryCount >= MAX_INSPECTION_ENTRIES) {
+        markBound("HS_ENTRY_BOUND");
         return;
       }
       visited.add(prototype);
       entryCount += 1;
       inspectDescriptors(prototype, depth + 2);
-      if (leak || invalid) return;
-      try {
-        prototype = Object.getPrototypeOf(prototype);
-      } catch {
-        invalid = true;
+      if (halted || leak) return;
+      try { prototype = Object.getPrototypeOf(prototype); }
+      catch {
+        markUnsupported();
+        halted = true;
         return;
       }
     }
   };
   walk(valueToInspect, 0);
-  return Object.freeze({ safe: !leak && !invalid, leak, invalid });
+  const detector = leak ? "HS_SECRET_REACHABLE"
+    : unsupported ? "HS_INTERNAL_SLOT_UNSUPPORTED"
+      : accessorUnsupported ? "HS_ACCESSOR_UNSUPPORTED"
+        : boundDetector;
+  return Object.freeze({ safe: !leak && !invalid, leak, invalid, ...(detector ? { detector } : {}) });
 }
-
 function authorityMetadataSafe(record, state) {
   if (!record || !isAuthorityRecord(record.authority, record, state.observedPool, { allowRevoked: true })) return false;
   for (const key of AUTHORITY_KEYS) {
@@ -1276,12 +1512,13 @@ function publicSuccess(result) {
 }
 
 function publicFailure(error, state) {
-  if (!error || typeof error !== "object") return false;
+  if (!error || typeof error !== "object" || !types.isNativeError(error) ||
+      !state.admissionErrorPrototype || Object.getPrototypeOf(error) !== state.admissionErrorPrototype) return false;
   if (error.name !== "DisposablePostgresFixtureAdmissionError" ||
       error.message !== "Disposable fixture admission failed." ||
       error.code !== "disposable_fixture_admission_failed" ||
       Object.prototype.hasOwnProperty.call(error, "cause")) return false;
-  const surface = inspectSurface(error, state);
+  const surface = inspectSurface(error, state, { trustedClassPrototype: state.admissionErrorPrototype });
   return surface.safe && Object.keys(error).every((key) => key === "name" || key === "code");
 }
 
@@ -1356,7 +1593,10 @@ function scenarioChecks(current, result, error, state) {
     : true;
   const cleanupWasAsyncPromise = scenario.rejectCleanup ? current.cleanupWasAsyncPromise : true;
   const metadataSafe = authorityMetadataSafe(state.authorityRecord, state);
-  const surface = inspectSurface(scenario.rejectOperation || scenario.rejectSecondIdentity ? error : result, state);
+  const publicError = scenario.rejectOperation || scenario.rejectSecondIdentity ? error : null;
+  const surface = publicError && publicFailure(publicError, state)
+    ? inspectSurface(publicError, state, { trustedClassPrototype: state.admissionErrorPrototype })
+    : inspectSurface(publicError ?? result, state);
   const noRuntimeEffects = [...state.runtimeEvents.values()].every((count) => count === 0);
   const authorityRevoked = Boolean(state.authorityRecord && state.authorityRecord.valid === false);
   const operationCount = scenario.rejectSecondIdentity ? current.operationCalls === 0 : current.operationCalls === 1;
@@ -1365,9 +1605,16 @@ function scenarioChecks(current, result, error, state) {
     : current.migrationQueries === state.migrationQueryPlan.length &&
       current.migrationPlanIndex === state.migrationQueryPlan.length;
   const hashCount = scenario.rejectSecondIdentity
-    ? current.hashCompleted === 0 && current.hashIndex === 0 && current.pendingHash === null
+    ? current.hashCompleted === 0 && current.hashIndex === 0 && current.pendingHash === null &&
+      current.manifestExistsCount === 0 && current.manifestReadCount === 0 && current.migrationReadCursor === 0 &&
+      current.hashDelegations.createHash === 0 && current.hashDelegations.update === 0 && current.hashDelegations.digest === 0
     : current.hashCompleted === state.migrationHashPlan.length &&
-      current.hashIndex === state.migrationHashPlan.length && current.pendingHash === null;
+      current.hashIndex === state.migrationHashPlan.length && current.pendingHash === null &&
+      current.manifestExistsCount === 1 && current.manifestReadCount === 1 &&
+      current.migrationReadCursor === state.migrationHashPlan.length &&
+      current.hashDelegations.createHash === state.migrationHashPlan.length &&
+      current.hashDelegations.update === state.migrationHashPlan.length &&
+      current.hashDelegations.digest === state.migrationHashPlan.length;
   const cleanupCount = current.endCount === 1;
   const successOrFailure = scenario.rejectOperation || scenario.rejectSecondIdentity
     ? error && !result
@@ -1385,6 +1632,10 @@ function scenarioChecks(current, result, error, state) {
     migrationQueries: current.migrationQueries,
     migrationPlanQueries: current.migrationPlanIndex,
     migrationHashes: current.hashCompleted,
+    migrationManifestExists: current.manifestExistsCount,
+    migrationManifestReads: current.manifestReadCount,
+    migrationSqlReads: current.migrationReadCursor,
+    hashDelegations: Object.freeze({ ...current.hashDelegations }),
     poolOptionRejects: current.poolOptionRejectCount,
     queryRejected: current.queryRejected,
     runtimeEventIds: Object.freeze([...state.runtimeEvents.keys()]),
@@ -1416,6 +1667,7 @@ function activeResources() {
 async function runScenario(state, scenario) {
   await settle(state);
   const current = createScenarioState(scenario, state.markers);
+  current.runId = state.runSerial++;
   current.resourceBefore = activeResources();
   state.current = current;
   state.authorityRecord = null;
@@ -1435,11 +1687,11 @@ async function runScenario(state, scenario) {
   let subject;
   try {
     subject = await import(`${state.subjectUrl}?ssc=${scenario.id}-${state.scenarioSerial++}`);
+    state.admissionErrorPrototype = subject.DisposablePostgresFixtureAdmissionError?.prototype ?? null;
   } catch (importError) {
     error = importError;
   }
   state.active = true;
-  current.allowMigrationHash = !scenario.rejectSecondIdentity;
   if (!error) {
     const operation = async () => {
       if (current.identityCalls !== 2 ||
@@ -1766,7 +2018,7 @@ function runInheritedAndMapSurfaceControls(state) {
       id: "NC24_MAP_INTERNAL_HIDDEN_SURFACE",
       code: mapSurface.leak && !customRendererCalled ? SAFE.surface : "SSC_NEGATIVE_CONTROL_INACTIVE",
       detector: mapSurface.leak && !customRendererCalled ? "COLLECTION_INTERNAL_SURFACE" : "CONTROL_INACTIVE",
-      pass: mapSurface.leak && !customRendererCalled && !mapSurface.invalid,
+      pass: mapSurface.leak && !customRendererCalled,
     }),
   ]);
 }
@@ -2038,6 +2290,7 @@ export async function runSecretSurfaceBehavioralHarness(options = {}) {
     );
     state.migrationQueryPlan = migrationContract.queries;
     state.migrationHashPlan = migrationContract.hashes;
+    state.migrationManifestPlan = migrationContract.manifest;
     state.allowedReadPaths = new Set(migrationContract.readPaths);
     const installed = installObservers(state);
     ledger = installed.ledger;
@@ -2104,7 +2357,320 @@ export async function runSecretSurfaceF3(options = {}) {
   });
 }
 
+function makeRun660AuthorityRecord(state, pool) {
+  const authority = Object.freeze({});
+  return {
+    authority,
+    brand: Symbol("migration-authority"),
+    database: "runtime_posture_test",
+    user: "cloud_admin",
+    clusterFingerprint: "100",
+    lifecycleFingerprint: "200",
+    migrationsFolder: MIGRATIONS_FOLDER,
+    phase: "initialization",
+    pool,
+    valid: true,
+  };
+}
+
+function prepareRun660HashAdmission(state, { authorized = true } = {}) {
+  state.observedPool = function ObservedPool() {};
+  const current = createScenarioState({
+    id: "RUN660_DP6_SYNTHETIC_BOUNDARY",
+    rejectOperation: false,
+    rejectCleanup: false,
+    rejectSecondIdentity: false,
+    omitPassword: false,
+  }, state.markers);
+  current.runId = state.runSerial++;
+  const pool = createSyntheticPool(state);
+  current.pools = [pool];
+  current.poolCount = 1;
+  current.poolInputValidated = true;
+  current.poolEffectiveValidated = true;
+  current.identityCalls = authorized ? 2 : 0;
+  current.identity1Validated = authorized;
+  current.identity2Validated = authorized;
+  current.identityFingerprints = authorized
+    ? [{ catalog: "100", lifecycle: "200" }, { catalog: "100", lifecycle: "200" }]
+    : [];
+  current.fingerprintsEqual = authorized;
+  current.authorityGuardPassed = authorized;
+  current.migrationEntered = true;
+  current.manifestExistsCount = 1;
+  current.manifestReadCount = 1;
+  current.migrationReadCursor = 1;
+  current.lastReadMigrationIndex = 0;
+  current.lastReadMigrationPath = state.migrationHashPlan[0]?.path ?? null;
+  current.lastReadMigrationSource = state.migrationHashPlan[0]?.source ?? null;
+  if (authorized) {
+    const record = makeRun660AuthorityRecord(state, pool);
+    state.authorityRecord = record;
+    state.authorityPool = pool;
+    current.authorityCaptureCount = 1;
+    current.authorityValidAtCapture = true;
+    current.authorityTokenFrozen = Object.isFrozen(record.authority);
+  } else {
+    state.authorityRecord = null;
+    state.authorityPool = null;
+  }
+  state.current = current;
+  return current;
+}
+
+function prepareRun660MigrationReadAdmission(state) {
+  state.observedPool = function ObservedPool() {};
+  const current = createScenarioState({
+    id: "RUN660_DP6_ADMITTED_RUNTIME_SEQUENCE",
+    rejectOperation: false,
+    rejectCleanup: false,
+    rejectSecondIdentity: false,
+    omitPassword: false,
+  }, state.markers);
+  current.runId = state.runSerial++;
+  const pool = createSyntheticPool(state);
+  current.pools = [pool];
+  current.poolCount = 1;
+  current.poolInputValidated = true;
+  current.poolEffectiveValidated = true;
+  current.identityCalls = 2;
+  current.identity1Validated = true;
+  current.identity2Validated = true;
+  current.identityFingerprints = [
+    { catalog: "100", lifecycle: "200" },
+    { catalog: "100", lifecycle: "200" },
+  ];
+  current.fingerprintsEqual = true;
+  current.authorityGuardPassed = true;
+  current.authorityCaptureCount = 1;
+  current.authorityValidAtCapture = true;
+  const record = makeRun660AuthorityRecord(state, pool);
+  state.authorityRecord = record;
+  state.authorityPool = pool;
+  current.authorityTokenFrozen = Object.isFrozen(record.authority);
+  state.current = current;
+  return current;
+}
+
+function installRun660MigrationObservers(state, ledger, fs, crypto) {
+  installMigrationExistenceObserver(state, ledger, fs);
+  installMigrationReadObserver(state, ledger, fs);
+  installMigrationHashObserver(state, ledger, crypto);
+}
+
+function readRun660MigrationManifestAndSql(state, fs) {
+  fs.existsSync(state.migrationManifestPlan.path);
+  fs.readFileSync(state.migrationManifestPlan.path);
+  fs.readFileSync(state.migrationHashPlan[0].path);
+}
+
+function readRun660MigrationPrefix(state, fs, count, crypto) {
+  fs.existsSync(state.migrationManifestPlan.path);
+  fs.readFileSync(state.migrationManifestPlan.path);
+  const hashes = [];
+  for (let index = 0; index < count; index += 1) {
+    const plan = state.migrationHashPlan[index];
+    fs.readFileSync(plan.path);
+    hashes.push(crypto.createHash("sha256").update(plan.input).digest("hex"));
+  }
+  return hashes;
+}
+
+function hashDelegationCount(state) {
+  const totals = state.hashDelegationTotals;
+  return totals.createHash + totals.update + totals.digest;
+}
+
+export async function runSecretSurfaceRun660RuntimeControls() {
+  const require = createRequire(import.meta.url);
+  const crypto = require("node:crypto");
+  const fs = require("node:fs");
+  const migrationContract = await buildMigrationContract(require, MIGRATIONS_FOLDER);
+  const configure = (state) => {
+    state.migrationManifestPlan = migrationContract.manifest;
+    state.migrationHashPlan = migrationContract.hashes;
+    state.allowedReadPaths = new Set(migrationContract.readPaths);
+  };
+  const hashCases = [];
+  const rejectedCases = [
+    ["RUN660_DP6_WRONG_RECEIVER", (state) => crypto.createHash.call({}, "sha256"), "DP_RECEIVER"],
+    ["RUN660_DP6_NO_CURRENT_STATE", (state) => { state.current = null; return crypto.createHash("sha256"); }, "DP_STATE"],
+    ["RUN660_DP6_EXTRA_ARGUMENT", (_state) => crypto.createHash("sha256", "utf8"), "DP_ARGUMENTS"],
+    ["RUN660_DP6_NO_IDENTITY_AUTHORITY", (_state) => crypto.createHash("sha256"), "DP_STATE"],
+    ["RUN660_DP6_WRONG_ALGORITHM", (_state) => crypto.createHash("md5"), "DP_ARGUMENTS"],
+  ];
+  for (const [id, invoke, expectedDetector] of rejectedCases) {
+    const state = newRunState();
+    configure(state);
+    const current = prepareRun660MigrationReadAdmission(state);
+    const ledger = new PatchLedger();
+    installRun660MigrationObservers(state, ledger, fs, crypto);
+    state.active = true;
+    let code = "SSC_NEGATIVE_CONTROL_INACTIVE";
+    let detector = "CONTROL_INACTIVE";
+    let threw = false;
+    try {
+      readRun660MigrationManifestAndSql(state, fs);
+      if (id === "RUN660_DP6_NO_CURRENT_STATE") state.current = null;
+      if (id === "RUN660_DP6_NO_IDENTITY_AUTHORITY") {
+        current.identity1Validated = false;
+        current.identity2Validated = false;
+        current.authorityGuardPassed = false;
+        current.authorityCaptureCount = 0;
+        current.authorityValidAtCapture = false;
+        current.authorityTokenFrozen = false;
+        state.authorityRecord = null;
+        state.authorityPool = null;
+      }
+      invoke(state);
+    } catch (error) {
+      threw = true;
+      code = error?.code ?? "SSC_HARNESS_INTERNAL";
+      detector = error?.detector ?? "BOUNDARY";
+    } finally {
+      state.active = false;
+      ledger.restore();
+    }
+    const delegated = hashDelegationCount(state);
+    hashCases.push(Object.freeze({
+      id,
+      code,
+      detector,
+      threw,
+      delegatedHashCalls: delegated,
+      pass: threw && code === SAFE.runtime && detector === expectedDetector && delegated === 0,
+    }));
+  }
+
+  const positiveState = newRunState();
+  configure(positiveState);
+  const positiveCurrent = prepareRun660MigrationReadAdmission(positiveState);
+  const positiveLedger = new PatchLedger();
+  installRun660MigrationObservers(positiveState, positiveLedger, fs, crypto);
+  positiveState.active = true;
+  let positiveHashes = [];
+  try {
+    positiveHashes = readRun660MigrationPrefix(positiveState, fs, migrationContract.hashes.length, crypto);
+  } finally {
+    positiveState.active = false;
+    positiveLedger.restore();
+  }
+  const expectedHashes = migrationContract.hashes.map((item) => item.hash);
+  const positivePass = positiveHashes.length === expectedHashes.length &&
+    positiveHashes.every((hash, index) => hash === expectedHashes[index]) &&
+    positiveCurrent.manifestExistsCount === 1 && positiveCurrent.manifestReadCount === 1 &&
+    positiveCurrent.migrationReadCursor === migrationContract.hashes.length &&
+    positiveCurrent.hashCompleted === migrationContract.hashes.length &&
+    positiveCurrent.hashIndex === migrationContract.hashes.length &&
+    hashDelegationCount(positiveState) === migrationContract.hashes.length * 3;
+  hashCases.push(Object.freeze({
+    id: "RUN660_DP6_ADMITTED_REAL_MIGRATION_FILES",
+    pass: positivePass,
+    migrationFiles: migrationContract.hashes.length,
+    manifestExists: positiveCurrent.manifestExistsCount,
+    manifestReads: positiveCurrent.manifestReadCount,
+    migrationReads: positiveCurrent.migrationReadCursor,
+    delegatedHashCalls: hashDelegationCount(positiveState),
+    hashDelegations: Object.freeze({ ...positiveCurrent.hashDelegations }),
+    hashOutputsMatch: positiveHashes.length === expectedHashes.length &&
+      positiveHashes.every((hash, index) => hash === expectedHashes[index]),
+  }));
+
+  const surfaceState = newRunState();
+  class Run660AdmissionError extends Error {}
+  surfaceState.admissionErrorPrototype = Run660AdmissionError.prototype;
+  surfaceState.observedPool = function ObservedPool() {};
+  const marker = surfaceState.markers.connection;
+  const effects = { getter: 0, callable: 0, thenable: 0, renderer: 0, iterator: 0, toJSON: 0 };
+  class Run660PrivateCarrier { #value; constructor(value) { this.#value = value; } }
+  const makeWeakMap = (value) => new WeakMap([[{}, value]]);
+  const makeThenable = (value) => ({ then(resolve) { effects.thenable += 1; resolve(value); } });
+  const makeCallable = (value) => function run660Callable() { effects.callable += 1; return value; };
+  const values = [
+    ["weakmap_marker", makeWeakMap(marker)],
+    ["promise_marker", Promise.resolve(marker)],
+    ["callable_marker", makeCallable(marker)],
+    ["private_marker", new Run660PrivateCarrier(marker)],
+    ["thenable_marker", makeThenable(marker)],
+    ["weakmap_clean", makeWeakMap("clean")],
+    ["promise_clean", Promise.resolve("clean")],
+    ["callable_clean", makeCallable("clean")],
+    ["private_clean", new Run660PrivateCarrier("clean")],
+    ["thenable_clean", makeThenable("clean")],
+  ];
+  const surfaceCases = [];
+  const pool = createSyntheticPool(surfaceState);
+  const baseRecord = makeRun660AuthorityRecord(surfaceState, pool);
+  for (const [id, candidate] of values) {
+    const observed = inspectSurface(candidate, surfaceState);
+    const record = { ...baseRecord, database: candidate };
+    const authorityRejected = !authorityMetadataSafe(record, { ...surfaceState, observedPool: surfaceState.observedPool });
+    const publicError = new Run660AdmissionError();
+    Object.defineProperty(publicError, "opaquePayload", { configurable: true, enumerable: false, value: candidate, writable: true });
+    const publicFailureRejected = !publicFailure(publicError, surfaceState);
+    surfaceCases.push(Object.freeze({
+      id,
+      safe: observed.safe,
+      invalid: observed.invalid,
+      detector: observed.detector ?? null,
+      authorityRejected,
+      publicFailureRejected,
+    }));
+  }
+  let getterCalls = 0;
+  const getterValue = Object.defineProperty({}, "secret", { get() { getterCalls += 1; return marker; } });
+  const getterSurface = inspectSurface(getterValue, surfaceState);
+  const customMap = new Map([["marker", marker]]);
+  Object.defineProperty(customMap, inspect.custom, { configurable: true, value() { effects.renderer += 1; return "safe"; } });
+  const customMapSurface = inspectSurface(customMap, surfaceState);
+  const customIterator = { [Symbol.iterator]() { effects.iterator += 1; return [marker][Symbol.iterator](); } };
+  const iteratorSurface = inspectSurface(customIterator, surfaceState);
+  const customJson = { toJSON() { effects.toJSON += 1; return marker; } };
+  const jsonSurface = inspectSurface(customJson, surfaceState);
+  const structural = [
+    Object.create({ inherited: "clean" }),
+    ["clean"],
+    new Map([["clean", "value"]]),
+    new Set(["clean"]),
+    new String("clean"),
+  ];
+  const cyclic = {}; cyclic.self = cyclic;
+  structural.push(cyclic);
+  const structuralPass = structural.every((value) => inspectSurface(value, surfaceState).safe);
+  const hsPass = surfaceCases.length === 10 && surfaceCases.every((item) =>
+    !item.safe && item.invalid && item.detector === "HS_INTERNAL_SLOT_UNSUPPORTED" &&
+    item.authorityRejected && item.publicFailureRejected) &&
+    !getterSurface.safe && getterSurface.invalid && getterSurface.detector === "HS_ACCESSOR_UNSUPPORTED" &&
+    getterCalls === 0 && customMapSurface.leak && customMapSurface.invalid &&
+    customMapSurface.detector === "HS_SECRET_REACHABLE" && iteratorSurface.invalid && jsonSurface.invalid &&
+    structuralPass && Object.values(effects).every((count) => count === 0);
+  return Object.freeze({
+    id: "RUN660_HS5_DP6_RUNTIME_CONTROLS",
+    hs: Object.freeze({
+      count: surfaceCases.length,
+      cases: Object.freeze(surfaceCases),
+      getter: Object.freeze({ safe: getterSurface.safe, invalid: getterSurface.invalid, detector: getterSurface.detector, calls: getterCalls }),
+      map: Object.freeze({ leak: customMapSurface.leak, invalid: customMapSurface.invalid, detector: customMapSurface.detector }),
+      customIteratorInvalid: iteratorSurface.invalid,
+      customJsonInvalid: jsonSurface.invalid,
+      structuralPass,
+      effects: Object.freeze({ ...effects }),
+      pass: hsPass,
+    }),
+    dp6: Object.freeze({
+      count: hashCases.length,
+      cases: Object.freeze(hashCases),
+      pass: hashCases.every((item) => item.pass),
+    }),
+    pass: hsPass && hashCases.every((item) => item.pass),
+  });
+}
+
 export async function runSecretSurfaceIndependentRuntimeCorpus() {
+  const require = createRequire(import.meta.url);
+  const crypto = require("node:crypto");
+  const fs = require("node:fs");
+  const migrationContract = await buildMigrationContract(require, MIGRATIONS_FOLDER);
   const surfaceState = newRunState();
   const marker = surfaceState.markers.connection;
   const surfaceCases = [
@@ -2295,7 +2861,11 @@ export async function runSecretSurfaceIndependentRuntimeCorpus() {
       },
     };
     if (id.startsWith("WRONG_HASH")) {
-      installPassthroughObserver(state, ledger, owner, "call", "CRYPTO_CREATEHASH");
+      state.migrationManifestPlan = migrationContract.manifest;
+      state.migrationHashPlan = migrationContract.hashes;
+      state.allowedReadPaths = new Set(migrationContract.readPaths);
+      prepareRun660MigrationReadAdmission(state);
+      installRun660MigrationObservers(state, ledger, fs, crypto);
     } else if (id.startsWith("POOL_")) {
       installPoolDependencyObserver(state, ledger, owner, "call", "POOL_FALLBACK_QUERY");
     } else {
@@ -2307,10 +2877,11 @@ export async function runSecretSurfaceIndependentRuntimeCorpus() {
     state.allowedDependencyEffects = new Set(["CRYPTO_CREATEHASH"]);
     let threw = false;
     try {
+      if (id.startsWith("WRONG_HASH")) readRun660MigrationManifestAndSql(state, fs);
       if (id === "WRONG_HASH_ALGORITHM") {
-        owner.call("md5").update("not-migration-bytes").digest("base64");
+        crypto.createHash("md5");
       } else if (id === "WRONG_HASH_RECEIVER") {
-        owner.call.call({}, "sha256");
+        crypto.createHash.call({}, "sha256");
       } else if (id === "POOL_FALLBACK_WRONG_RECEIVER") {
         owner.call.call({}, "unexpected SQL");
       } else {
@@ -2324,7 +2895,7 @@ export async function runSecretSurfaceIndependentRuntimeCorpus() {
     }
     dependencies.push(Object.freeze({
       id,
-      effects,
+      effects: id.startsWith("WRONG_HASH") ? hashDelegationCount(state) : effects,
       threw,
       eventCount: state.runtimeEvents.size,
     }));

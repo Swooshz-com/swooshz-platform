@@ -23,6 +23,7 @@ import {
   runSecretSurfaceF3,
   runSecretSurfaceBehavioralHarness,
   runSecretSurfaceIndependentRuntimeCorpus,
+  runSecretSurfaceRun660RuntimeControls,
 } from "./support/disposable-postgres-secret-surface-harness.mjs";
 
 const RUN658_OBLIGATION_IDS = Object.freeze([
@@ -528,14 +529,15 @@ function buildRun657SupplementaryStaticVariants(source) {
 }
 
 const RUN657_STATIC_ORACLE_GROUPS = Object.freeze([
+  ["SSC_AUTHORITY_SHAPE", "AUTHORITY_SCHEMA", "PV_EXACT_RELATION", ["LITERAL_phase", "SERIALIZED_phase", "SPOOF_DEFAULT_PHASE_ORIGIN"]],
   ["SSC_AUTHORITY_SHAPE", "AUTHORITY_SCHEMA", "AP_AUTHORITY_GUARD", [
-    "LITERAL_database", "LITERAL_clusterFingerprint", "LITERAL_migrationsFolder", "LITERAL_phase",
+    "LITERAL_database", "LITERAL_clusterFingerprint", "LITERAL_migrationsFolder",
     "LITERAL_user", "LITERAL_lifecycleFingerprint", "LITERAL_brand", "LITERAL_authority", "LITERAL_pool",
     "SERIALIZED_database", "SERIALIZED_lifecycleFingerprint", "SERIALIZED_clusterFingerprint",
-    "SERIALIZED_migrationsFolder", "SERIALIZED_user", "SERIALIZED_phase",
+    "SERIALIZED_migrationsFolder", "SERIALIZED_user",
     "EQUAL_TEXT_ALIAS", "EQUAL_TEXT_OBJECT", "EQUAL_TEXT_ARRAY", "EQUAL_TEXT_SET", "EQUAL_TEXT_MAP",
     "EQUAL_TEXT_WEAKMAP", "EQUAL_TEXT_CLOSURE", "EQUAL_TEXT_CLASS", "FORGED_DEFAULT_USER",
-    "SPOOF_DEFAULT_USER_ORIGIN", "SPOOF_DEFAULT_PHASE_ORIGIN", "NO_AUTHORITY_GUARD",
+    "SPOOF_DEFAULT_USER_ORIGIN", "NO_AUTHORITY_GUARD",
   ]],
   ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_POOL", "AP_POOL_OPTIONS", ["DEFAULT_USER_WRONG_LHS"]],
   ["SSC_SECRET_FLOW_DENIED", "PUBLIC_RETURN", ["AP_OPERATION", "CF_PUBLIC_ESCAPE"], [
@@ -548,7 +550,7 @@ const RUN657_STATIC_ORACLE_GROUPS = Object.freeze([
   ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_STORAGE", ["AP_OPERATION", "CF_PUBLIC_ESCAPE"], ["RETURN_CLASS"]],
   ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_STORAGE", "CF_PUBLIC_ESCAPE", ["LATE_ALIAS_CLOSURE", "PASSWORD_EXTRA_STORAGE"]],
   ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_RECONSTRUCTION", "PV_EXACT_RELATION", ["ARITHMETIC_LAUNDER", "REGEXP_LAUNDER", "PASSWORD_RECONSTRUCT"]],
-  ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_CALLBACK", "AP_OPERATION", ["CYCLE_CLEAN", "OPERATION_EARLY"]],
+  ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_CALLBACK", "AP_OPERATION", ["CYCLE_CLEAN", "OPERATION_EARLY", "NO_MIGRATION"]],
   ["SSC_SECRET_FLOW_DENIED", "PUBLIC_RETURN", "CF_PUBLIC_ESCAPE", [
     "ROOT_INPUT_ESCAPE_PROTOCOL", "ROOT_INPUT_FROZEN_ESCAPE_PROTOCOL",
     "DELETE_CLOSURE_HISTORY_PROTOCOL", "CLEAR_CLOSURE_HISTORY_PROTOCOL",
@@ -563,7 +565,7 @@ const RUN657_STATIC_ORACLE_GROUPS = Object.freeze([
   ["SSC_AUTHORITY_SHAPE", "AUTHORITY_SCHEMA", "AP_REVOCATION", ["NO_REVOKE"]],
   ["SSC_AUTHORITY_SHAPE", "AUTHORITY_SCHEMA", "AP_TOKEN", ["UNFROZEN_TOKEN"]],
   ["SSC_AUTHORITY_SHAPE", "AUTHORITY_SCHEMA", "AP_FINGERPRINT_COMPARE", ["NO_FINGERPRINT_COMPARE"]],
-  ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_MIGRATE", "AP_MIGRATION", ["WRONG_MIGRATION_FOLDER", "NO_MIGRATION"]],
+  ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_MIGRATE", "AP_MIGRATION", ["WRONG_MIGRATION_FOLDER"]],
   ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_CONNECT", "AP_CLIENT_PROTOCOL", ["POOL_CONNECT_HELPER"]],
   ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_CLEANUP", "AP_CLEANUP", ["POOL_END_EARLY"]],
   ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_OUTPUT", "CF_PUBLIC_ESCAPE", [
@@ -578,7 +580,8 @@ const RUN657_STATIC_ORACLE_GROUPS = Object.freeze([
   ["SSC_CALL_UNRESOLVED", "CALL_RESOLUTION", "DP_CAPABILITY", [
     "MODULE_ALIAS", "UNLISTED_RETURN", "UNLISTED_ACQUIRE", "UNLISTED_CALL", "PRECAPTURED_UNLISTED",
   ]],
-  ["SSC_PUBLIC_SURFACE", "PUBLIC_CAUSE", "CF_PUBLIC_THROW", ["THROWN_CLOSURE", "CATCH_ESCAPE"]],
+  ["SSC_PUBLIC_SURFACE", "PUBLIC_CAUSE", "CF_PUBLIC_THROW", ["THROWN_CLOSURE"]],
+  ["SSC_SECRET_FLOW_DENIED", "PUBLIC_RETURN", "CF_PUBLIC_ESCAPE", ["CATCH_ESCAPE"]],
   ["SSC_SECRET_FLOW_DENIED", "FIXED_POINT_RECURSION", "CF_RECURSION", [
     "RECURSION", "MUTUAL_RECURSION", "CALLBACK_RECURSION",
   ]],
@@ -854,7 +857,7 @@ test("RUN657_INDEPENDENT_RUNTIME_CORPUS", async () => {
     "set_internal", "boxed_symbol", "map_custom_inspect",
   ]);
   const invalidSurfaces = new Set([
-    "getter", "throw_getter", "throw_descriptor", "wide_258", "wide_late_marker", "depth_7",
+    "getter", "throw_getter", "throw_descriptor", "wide_258", "wide_late_marker", "depth_7", "map_custom_inspect",
   ]);
   const surfaceIds = [
     "symbol", "symbol_key", "symbol_array", "nested_symbol", "nonenum",
@@ -909,6 +912,210 @@ test("RUN657_INDEPENDENT_RUNTIME_CORPUS", async () => {
   assert.equal(result.id, "RUN657_INDEPENDENT_RUNTIME_CORPUS");
   assert.equal(result.count, 44);
   assert.deepEqual(result.cases, expected);
+});
+
+test("RUN660_HS5_DP6_RUNTIME_BOUNDARY_CONTROLS", async () => {
+  const result = await runSecretSurfaceRun660RuntimeControls();
+  assert.equal(result.id, "RUN660_HS5_DP6_RUNTIME_CONTROLS");
+  assert.equal(result.pass, true);
+  assert.equal(result.hs.pass, true);
+  assert.equal(result.hs.count, 10);
+  assert.deepEqual(result.hs.effects, { getter: 0, callable: 0, thenable: 0, renderer: 0, iterator: 0, toJSON: 0 });
+  for (const item of result.hs.cases) {
+    assert.equal(item.safe, false, item.id);
+    assert.equal(item.invalid, true, item.id);
+    assert.equal(item.detector, "HS_INTERNAL_SLOT_UNSUPPORTED", item.id);
+    assert.equal(item.authorityRejected, true, item.id);
+    assert.equal(item.publicFailureRejected, true, item.id);
+  }
+  assert.equal(result.dp6.pass, true);
+  assert.equal(result.dp6.count, 6);
+  const byId = new Map(result.dp6.cases.map((item) => [item.id, item]));
+  for (const [id, detector] of [
+    ["RUN660_DP6_WRONG_RECEIVER", "DP_RECEIVER"],
+    ["RUN660_DP6_NO_CURRENT_STATE", "DP_STATE"],
+    ["RUN660_DP6_EXTRA_ARGUMENT", "DP_ARGUMENTS"],
+    ["RUN660_DP6_NO_IDENTITY_AUTHORITY", "DP_STATE"],
+    ["RUN660_DP6_WRONG_ALGORITHM", "DP_ARGUMENTS"],
+  ]) {
+    const item = byId.get(id);
+    assert.ok(item, id);
+    assert.equal(item.code, "SSC_RUNTIME_CAPABILITY", id);
+    assert.equal(item.detector, detector, id);
+    assert.equal(item.delegatedHashCalls, 0, id);
+    assert.equal(item.pass, true, id);
+  }
+  const admitted = byId.get("RUN660_DP6_ADMITTED_REAL_MIGRATION_FILES");
+  assert.ok(admitted);
+  assert.ok(admitted.migrationFiles > 0);
+  assert.equal(admitted.manifestExists, 1);
+  assert.equal(admitted.manifestReads, 1);
+  assert.equal(admitted.migrationReads, admitted.migrationFiles);
+  assert.equal(admitted.delegatedHashCalls, admitted.migrationFiles * 3);
+  assert.deepEqual(admitted.hashDelegations, {
+    createHash: admitted.migrationFiles,
+    update: admitted.migrationFiles,
+    digest: admitted.migrationFiles,
+  });
+  assert.equal(admitted.hashOutputsMatch, true);
+  assert.equal(admitted.pass, true);
+});
+
+function run660PrependRoot(source, statements) {
+  const root = source.indexOf("export async function withDisposablePostgresFixtureMigration");
+  const brace = source.indexOf("{", root);
+  if (root < 0 || brace < 0) throw new Error("RUN660_ROOT_ANCHOR");
+  return source.slice(0, brace + 1) + "\n" + statements + "\n" + source.slice(brace + 1);
+}
+
+function run660ReplaceOnce(source, needle, replacement) {
+  const index = source.indexOf(needle);
+  if (index < 0) {
+    throw new Error("RUN660_SOURCE_ANCHOR");
+  }
+  return source.slice(0, index) + replacement + source.slice(index + needle.length);
+}
+
+function run660ShiftLoop(kind, hops, secret) {
+  const names = Array.from({ length: hops + 1 }, (_item, index) => "run660Hop" + index);
+  const declarations = names.map((name, index) => name + "=" +
+    (index === 0 && secret ? "input.connectionPassword" : "\"clean\"")).join(",");
+  const shift = names.slice(1).reverse().map((_name, reverseIndex) => {
+    const index = hops - reverseIndex;
+    return names[index] + "=" + names[index - 1] + ";";
+  }).join("");
+  const setup = "let " + declarations + ";";
+  if (kind === "for") return setup + "for(let run660Index=0;run660Index<" + hops + ";run660Index++){" + shift + "}";
+  if (kind === "while") return setup + "let run660Index=0;while(run660Index<" + hops + "){" + shift + "run660Index++;}";
+  if (kind === "do") return setup + "let run660Index=0;do{" + shift + "run660Index++;}while(run660Index<" + hops + ");";
+  throw new Error("RUN660_LOOP_KIND");
+}
+
+test("RUN660_CF1_TV2_PV3_AP4_STATIC_WITNESSES", async () => {
+  const frozen = await readFrozenMigrationClosureSource();
+  const variants = [];
+  const cleanChecks = [];
+  const loopCases = [];
+  for (const kind of ["for", "while", "do"]) {
+    for (const hops of [4, 12]) {
+      const id = "RUN660_CF_" + kind.toUpperCase() + "_" + hops;
+      const body = run660ShiftLoop(kind, hops, true);
+      const returnExpression = "return run660Hop" + hops + ";";
+      variants.push({ id, source: run660PrependRoot(frozen.source, body + returnExpression) });
+      loopCases.push({ id, body, returnExpression });
+    }
+    const cleanId = "RUN660_CF_" + kind.toUpperCase() + "_CLEAN";
+    const cleanBody = run660ShiftLoop(kind, 4, false);
+    cleanChecks.push({ id: cleanId, source: run660PrependRoot(frozen.source, cleanBody) });
+  }
+  const add = (id, candidate) => variants.push({ id, source: candidate });
+  add("RUN660_CF_CAUGHT_SAFE", run660PrependRoot(frozen.source,
+    "try { throw input.connectionPassword; } catch {} return \"safe\";"));
+  add("RUN660_CF_CAUGHT_RETURN", run660PrependRoot(frozen.source,
+    "try { throw input.connectionPassword; } catch (caught) { return caught; } return \"safe\";"));
+  add("RUN660_CF_UNCAUGHT_THROW", run660PrependRoot(frozen.source,
+    "throw input.connectionPassword;"));
+
+  const outputClass = "class Run660Parent { constructor() { console.log(input.connectionPassword); } } class Run660Child extends Run660Parent {} new Run660Child();";
+  const cleanClass = "class Run660Parent { constructor() { this.value = \"safe\"; } } class Run660Child extends Run660Parent {} new Run660Child();";
+  add("RUN660_TV_PARENT_OUTPUT", run660PrependRoot(frozen.source, outputClass));
+  cleanChecks.push({ id: "RUN660_TV_PARENT_CLEAN", source: run660PrependRoot(frozen.source, cleanClass) });
+
+  const recordAnchor = "migrationAuthorityValues.set(authority, {";
+  const replaceAuthorityField = (candidate, field, original, replacement) => {
+    const start = candidate.indexOf(recordAnchor);
+    const tail = run660ReplaceOnce(candidate.slice(start), field + ": " + original + ",",
+      field + ": " + replacement + ",");
+    return candidate.slice(0, start) + tail;
+  };
+  const pvCases = [
+    ["RUN660_PV_DATABASE_NUMBER", "database", "target.expectedDatabase", "Number(target.expectedDatabase)"],
+    ["RUN660_PV_USER_NUMBER", "user", "target.expectedUser", "Number(target.expectedUser)"],
+    ["RUN660_PV_CATALOG_NUMBER", "clusterFingerprint", "identity.catalogFingerprint", "Number(identity.catalogFingerprint)"],
+    ["RUN660_PV_LIFECYCLE_NUMBER", "lifecycleFingerprint", "identity.lifecycleFingerprint", "Number(identity.lifecycleFingerprint)"],
+    ["RUN660_PV_PHASE_NUMBER", "phase", "target.phase", "Number(target.phase)"],
+  ];
+  for (const [id, field, original, replacement] of pvCases) {
+    add(id, replaceAuthorityField(frozen.source, field, original, replacement));
+  }
+  const aliasSource = run660ReplaceOnce(frozen.source, recordAnchor,
+    "const run660DatabaseAlias = target.expectedDatabase;\n    " + recordAnchor);
+  cleanChecks.push({ id: "RUN660_PV_ALIAS_CLEAN", source: replaceAuthorityField(
+    aliasSource, "database", "target.expectedDatabase", "run660DatabaseAlias") });
+  cleanChecks.push({ id: "RUN660_PV_PROPERTY_ROUNDTRIP_CLEAN", source: replaceAuthorityField(
+    frozen.source, "database", "target.expectedDatabase", "({ value: target.expectedDatabase }).value") });
+  const identitySource = run660ReplaceOnce(frozen.source, recordAnchor,
+    "const run660Identity = (item) => item;\n    " + recordAnchor);
+  cleanChecks.push({ id: "RUN660_PV_IDENTITY_CALL_CLEAN", source: replaceAuthorityField(
+    identitySource, "database", "target.expectedDatabase", "run660Identity(target.expectedDatabase)") });
+
+  add("RUN660_AP_OPERATION_FALSE", run660ReplaceOnce(frozen.source, "return await operation();",
+    "if (false) { await operation(); }\n    return { ok: true };"));
+  add("RUN660_AP_OPERATION_BEFORE_MIGRATION", run660ReplaceOnce(frozen.source,
+    "await runScopedFixtureMigration(authority, pool, target.migrationsFolder, target);\n    return await operation();",
+    "return await operation();\n    await runScopedFixtureMigration(authority, pool, target.migrationsFolder, target);"));
+  add("RUN660_AP_REVOCATION_FALSE", run660ReplaceOnce(frozen.source,
+    "if (value) value.valid = false;", "if (false) value.valid = false;"));
+  add("RUN660_AP_CLEANUP_FALSE", run660ReplaceOnce(frozen.source,
+    "if (pool) await pool.end().catch(() => {});", "if (false) await pool.end().catch(() => {});"));
+  const guardPattern = /if\s*\(\s*identity\.catalogFingerprint\s*!==\s*value\.clusterFingerprint\s*\|\|\s*identity\.lifecycleFingerprint\s*!==\s*value\.lifecycleFingerprint\s*\)/u;
+  if (!guardPattern.test(frozen.source)) throw new Error("RUN660_FINGERPRINT_GUARD_ANCHOR");
+  add("RUN660_AP_FINGERPRINT_SHORT_CIRCUIT_FALSE", frozen.source.replace(guardPattern,
+    "if (false && (identity.catalogFingerprint !== value.clusterFingerprint || identity.lifecycleFingerprint !== value.lifecycleFingerprint))"));
+
+  const results = await analyzeMigrationClosureVariants([...variants, ...cleanChecks]);
+  const byId = new Map(results.map((item) => [item.id, item]));
+  assert.equal(results.length, variants.length + cleanChecks.length);
+  for (const clean of cleanChecks) {
+    assert.equal(byId.get(clean.id)?.ok, true, clean.id);
+    assert.equal(byId.get(clean.id)?.result?.ok, true, clean.id);
+  }
+  for (const item of loopCases) {
+    const observed = byId.get(item.id)?.result;
+    assert.equal(byId.get(item.id)?.ok, false, item.id);
+    assert.equal(observed.code, "SSC_SECRET_FLOW_DENIED", item.id);
+    assert.equal(observed.detector, "PUBLIC_RETURN", item.id);
+    assert.equal(observed.obligation, "CF_PUBLIC_ESCAPE", item.id);
+    assert.deepEqual(observed.violations, ["AP_OPERATION", "CF_PUBLIC_ESCAPE"], item.id);
+    const marker = "run660-synthetic-connection-marker";
+    const result = new Function("input", item.body + item.returnExpression)({ connectionPassword: marker });
+    assert.equal(result, marker, item.id + " runtime");
+  }
+  for (const [id, expected] of [
+    ["RUN660_CF_CAUGHT_RETURN", ["SSC_SECRET_FLOW_DENIED", "PUBLIC_RETURN", "CF_PUBLIC_ESCAPE"]],
+    ["RUN660_CF_UNCAUGHT_THROW", ["SSC_PUBLIC_SURFACE", "PUBLIC_CAUSE", "CF_PUBLIC_THROW"]],
+    ["RUN660_TV_PARENT_OUTPUT", ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_OUTPUT", "CF_PUBLIC_ESCAPE"]],
+    ["RUN660_AP_OPERATION_FALSE", ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_CALLBACK", "AP_OPERATION"]],
+    ["RUN660_AP_OPERATION_BEFORE_MIGRATION", ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_CALLBACK", "AP_OPERATION"]],
+    ["RUN660_AP_REVOCATION_FALSE", ["SSC_AUTHORITY_SHAPE", "AUTHORITY_SCHEMA", "AP_REVOCATION"]],
+    ["RUN660_AP_CLEANUP_FALSE", ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_CLEANUP", "AP_CLEANUP"]],
+    ["RUN660_AP_FINGERPRINT_SHORT_CIRCUIT_FALSE", ["SSC_AUTHORITY_SHAPE", "AUTHORITY_SCHEMA", "AP_FINGERPRINT_COMPARE"]],
+  ]) {
+    const observed = byId.get(id)?.result;
+    assert.equal(byId.get(id)?.ok, false, id);
+    assert.deepEqual([observed.code, observed.detector, observed.obligation], expected, id);
+    assert.deepEqual(observed.violations, [expected[2]], id);
+  }
+  const caughtSafe = byId.get("RUN660_CF_CAUGHT_SAFE");
+  assert.equal(caughtSafe.ok, false, "baseline lifecycle still applies to early public completion");
+  assert.equal(caughtSafe.result.violations.includes("CF_PUBLIC_THROW"), false);
+  assert.equal(caughtSafe.result.violations.includes("CF_PUBLIC_ESCAPE"), false);
+  for (const [id, field] of pvCases) {
+    const observed = byId.get(id)?.result;
+    assert.equal(byId.get(id)?.ok, false, id);
+    assert.deepEqual([observed.code, observed.detector, observed.obligation],
+      ["SSC_AUTHORITY_SHAPE", "AUTHORITY_SCHEMA", "PV_EXACT_RELATION"], id);
+    assert.deepEqual(observed.violations, ["PV_EXACT_RELATION"], id + " " + field);
+  }
+  const cleanCode = "class Run660Parent { constructor() { this.value = \"safe\"; } } class Run660Child extends Run660Parent {} const run660Child = new Run660Child(); return run660Child.value;";
+  const child = new Function(cleanCode)();
+  assert.equal(child, "safe");
+  let attemptedOutput = 0;
+  const externalOutput = [];
+  const boundaryConsole = { log(...args) { attemptedOutput += 1; assert.deepEqual(args, ["run660-synthetic-connection-marker"]); } };
+  new Function("input", "console", outputClass)({ connectionPassword: "run660-synthetic-connection-marker" }, boundaryConsole);
+  assert.equal(attemptedOutput, 1);
+  assert.deepEqual(externalOutput, []);
 });
 
 test("SSC_BASELINE_SECRET_SURFACE", async (suite) => {

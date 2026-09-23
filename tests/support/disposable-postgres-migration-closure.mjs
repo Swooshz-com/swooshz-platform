@@ -578,6 +578,7 @@ function value({
   binding = null,
   provenance = [],
   exact = true,
+  normalization = null,
   captureKeys = null,
 } = {}) {
   const directTaint = taint ?? Taint.NONE;
@@ -605,6 +606,7 @@ function value({
     constant,
     literalType,
     exact,
+    normalization,
     provenance: directProvenance,
     historyProvenance: new Set(directProvenance),
   };
@@ -651,6 +653,61 @@ function isNumberValue(item, expected) {
   return item?.kind === "primitive" &&
     item.literalType === "number" &&
     item.constant === expected;
+}
+
+function concreteBoolean(item) {
+  if (item?.kind === "primitive") {
+    if (item.literalType === "boolean" && typeof item.constant === "boolean") return item.constant;
+    if (item.literalType === "null" || item.label === "undefined") return false;
+    if (item.constant !== undefined && ["number", "string", "bigint"].includes(item.literalType)) {
+      return Boolean(item.constant);
+    }
+    return null;
+  }
+  if (item && ["input", "object", "array", "set", "map", "weakmap", "pool-options", "pool", "authority-token", "class", "function", "instance", "error", "regexp", "url", "client", "drizzle-db"].includes(item.kind)) return true;
+  return null;
+}
+
+function abstractValueSignature(item, seen = new Map()) {
+  if (!item || (typeof item !== "object" && typeof item !== "function")) {
+    return `${typeof item}:${String(item)}`;
+  }
+  if (seen.has(item)) return `@${seen.get(item)}`;
+  const id = seen.size;
+  seen.set(item, id);
+  const children = (entries) => [...(entries ?? [])]
+    .map(([key, child]) => `${String(key)}=${abstractValueSignature(child, seen)}`)
+    .sort();
+  const closureEntries = item.closure instanceof Map
+    ? [...(item.captureKeys instanceof Set ? item.captureKeys : item.closure.keys())]
+      .map((key) => [key, item.closure.get(key)])
+    : [];
+  return JSON.stringify({
+    id,
+    kind: item.kind,
+    taint: summarizeRisk(item).taint,
+    caps: [...summarizeRisk(item).caps].sort(),
+    provenance: [...provenanceOf(item)].map((entry) => entry?.description ?? String(entry)).sort(),
+    exact: item.exact !== false,
+    literalType: item.literalType,
+    constant: `${typeof item.constant}:${String(item.constant)}`,
+    label: item.label,
+    fn: item.fn ? `${item.fn.pos}:${item.fn.end}` : "",
+    props: children(item.props),
+    history: children(item.historyProps),
+    elements: (item.elements ?? []).map((child) => abstractValueSignature(child, seen)),
+    map: [...(item.map?.entries?.() ?? [])].map(([key, child]) =>
+      `${abstractValueSignature(key, seen)}=${abstractValueSignature(child, seen)}`).sort(),
+    methods: children(item.methods),
+    closure: children(closureEntries),
+  });
+}
+
+function environmentSignature(env) {
+  return [...env.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, item]) => `${key}:${abstractValueSignature(item)}`)
+    .join("|");
 }
 
 function hasExactProvenance(item, expectedKeys) {
@@ -752,7 +809,26 @@ class ClosureAnalyzer {
     this.authoritySecondIdentityChecked = false;
     this.operationInvocations = 0;
     this.operationInvocationNodes = [];
-    this.sourceProtocolChecked = false;
+    this.analysisConverged = true;
+    this.pendingSummaries = new Set();
+    this.activeExecutionObligations = new Set();
+    this.executionObligations = new Map();
+    this.activatedFunctionNodes = new Set();
+    this.provenanceObligations = new Set([
+      "pool-target",
+      "identity-target",
+      "authority-record",
+      "migration-folder",
+    ]);
+    this.traversalClosed = false;
+    this.authorityRevoked = false;
+    this.migrationCompleted = false;
+    this.poolEndAttempts = 0;
+    this.poolEndNodes = new Set();
+    this.poolConstructionNodes = new Set();
+    this.fingerprintComparisons = new Set();
+    this.fingerprintsEqual = false;
+    this.authorityGuardPassed = false;
     this.pendingSecretStorage = false;
     this.pendingPasswordOperation = false;
     this.childInventory = [];
@@ -765,6 +841,7 @@ class ClosureAnalyzer {
     this.originIdentities = new Map();
     this.captureKeyCache = new WeakMap();
     this.identitySqlBinding = this.originIdentity("binding.identitySql");
+    this.identitySqlText = null;
   }
 
   originIdentity(key) {
@@ -774,6 +851,78 @@ class ClosureAnalyzer {
       this.originIdentities.set(key, identity);
     }
     return identity;
+  }
+
+  executionKey(node) {
+    return String(node.kind) + ":" + String(node.pos) + ":" + String(node.end);
+  }
+
+  dischargeExecution(node) {
+    if (!node || !(ts.isStatement(node) || ts.isExpression(node))) return;
+    const key = this.executionKey(node);
+    this.executionObligations.set(key, "executed");
+    this.activeExecutionObligations.delete(key);
+  }
+
+  markDormantSubtree(node) {
+    if (!node) return;
+    if (ts.isStatement(node) || ts.isExpression(node)) {
+      const key = this.executionKey(node);
+      if (this.executionObligations.get(key) !== "executed") this.executionObligations.set(key, "dormant");
+    }
+    ts.forEachChild(node, (child) => this.markDormantSubtree(child));
+  }
+  initialAnalysisFacts() {
+    return {
+      poolAllocated: false,
+      authorityMinted: false,
+      authorityGuardPassed: false,
+      identity2Validated: false,
+      fingerprintsEqual: false,
+      migrationAttempted: false,
+      migrationCompleted: false,
+      authorityRevoked: false,
+      cleanupAttempts: { min: 0, max: 0 },
+    };
+  }
+
+  cloneAnalysisContext(context) {
+    const source = context ?? {};
+    const range = source.operationRange ?? { min: 0, max: 0 };
+    const facts = source.ap ?? this.initialAnalysisFacts();
+    return {
+      ...source,
+      operationRange: { min: range.min, max: range.max },
+      ap: { ...facts, cleanupAttempts: { ...facts.cleanupAttempts } },
+    };
+  }
+
+  mergeAnalysisContexts(target, contexts) {
+    const ranges = contexts.map((context) => context.operationRange ?? { min: 0, max: 0 });
+    target.operationRange = {
+      min: Math.min(...ranges.map((range) => range.min)),
+      max: Math.max(...ranges.map((range) => range.max)),
+    };
+    const facts = contexts.map((context) => context.ap ?? this.initialAnalysisFacts());
+    target.ap = {
+      poolAllocated: facts.every((fact) => fact.poolAllocated),
+      authorityMinted: facts.every((fact) => fact.authorityMinted),
+      authorityGuardPassed: facts.every((fact) => fact.authorityGuardPassed),
+      identity2Validated: facts.every((fact) => fact.identity2Validated),
+      fingerprintsEqual: facts.every((fact) => fact.fingerprintsEqual),
+      migrationAttempted: facts.every((fact) => fact.migrationAttempted),
+      migrationCompleted: facts.every((fact) => fact.migrationCompleted),
+      authorityRevoked: facts.every((fact) => fact.authorityRevoked),
+      cleanupAttempts: {
+        min: Math.min(...facts.map((fact) => fact.cleanupAttempts.min)),
+        max: Math.max(...facts.map((fact) => fact.cleanupAttempts.max)),
+      },
+    };
+    return target;
+  }
+
+  markAnalysisFact(context, name) {
+    if (context && context.ap) context.ap[name] = true;
   }
 
   captureKeysFor(node) {
@@ -843,10 +992,31 @@ class ClosureAnalyzer {
     this.inventoryExecutableChildren();
     this.scanModuleInitializers();
     this.rootFunction = this.findRootFunction();
-    this.validateSourceProtocol();
+    this.validateIdentityQueryDefinition();
     const input = value({ kind: "input" });
     const operation = value({ kind: "opaque-function", caps: ["OPAQUE_OPERATION"] });
-    const rootResult = this.analyzeFunction(this.rootFunction, [input, operation], null);
+    const rootContext = {
+      operationRange: { min: 0, max: 0 },
+      loopDepth: 0,
+      ap: {
+        poolAllocated: false,
+        authorityMinted: false,
+        authorityGuardPassed: false,
+        identity2Validated: false,
+        fingerprintsEqual: false,
+        migrationAttempted: false,
+        migrationCompleted: false,
+        authorityRevoked: false,
+        cleanupAttempts: { min: 0, max: 0 },
+      },
+    };
+    const rootResult = this.analyzeFunction(this.rootFunction, [input, operation], null, null, rootContext);
+    const summariesConverged = this.analysisConverged && this.pendingSummaries.size === 0;
+    const totalTraversal = this.executionObligations.size > 0 &&
+      [...this.executionObligations.values()].every((state) => state === "executed" || state === "dormant") &&
+      this.activeExecutionObligations.size === 0;
+    this.traversalClosed = totalTraversal;
+    const provenanceComplete = this.provenanceObligations.size === 0;
     const terminalFailures = [];
     const collectTerminalFailure = (action) => {
       try {
@@ -865,20 +1035,56 @@ class ClosureAnalyzer {
         rootRisk.caps.size > 0) {
       terminalFailures.push(new StaticFailure(SAFE.flow, "PUBLIC_RETURN"));
     }
-    if (this.poolConstructs !== 1 || this.declassificationCount > 1) {
-      terminalFailures.push(new StaticFailure(SAFE.flow, "CAPABILITY_POOL"));
-    }
-    if (!this.authorityRecord || this.authoritySetCount !== 1) {
-      terminalFailures.push(new StaticFailure(SAFE.authority, "AUTHORITY_SCHEMA"));
-    }
-    if (this.operationInvocations !== 1) {
+    const publicBoundaryFailure = terminalFailures.some((failure) =>
+      failure.violations.has("CF_PUBLIC_ESCAPE") || failure.violations.has("CF_PUBLIC_THROW"));
+    const publicReturnEscape = terminalFailures.some((failure) => failure.violations.has("CF_PUBLIC_ESCAPE")) &&
+      !terminalFailures.some((failure) => failure.violations.has("CF_PUBLIC_THROW")) &&
+      !rootRisk.caps.has("CATCH_ERROR");
+    if (publicReturnEscape &&
+        (rootContext.operationRange.min !== 1 || rootContext.operationRange.max !== 1)) {
       terminalFailures.push(new StaticFailure(SAFE.flow, "CAPABILITY_CALLBACK", "AP_OPERATION"));
     }
-    if (this.pendingSecretStorage) {
-      terminalFailures.push(new StaticFailure(SAFE.flow, "CAPABILITY_STORAGE", "CF_PUBLIC_ESCAPE"));
-    }
-    if (this.pendingPasswordOperation) {
-      terminalFailures.push(new StaticFailure(SAFE.flow, "CAPABILITY_PASSWORD", "AP_TOKEN"));
+    if (!publicBoundaryFailure) {
+      if (this.poolConstructs !== 1 || this.declassificationCount > 1) {
+        terminalFailures.push(new StaticFailure(SAFE.flow, "CAPABILITY_POOL"));
+      }
+      if (!this.authorityRecord || this.authoritySetCount !== 1) {
+        terminalFailures.push(new StaticFailure(SAFE.authority, "AUTHORITY_SCHEMA"));
+      }
+      if (rootContext.operationRange.min !== 1 || rootContext.operationRange.max !== 1) {
+        terminalFailures.push(new StaticFailure(SAFE.flow, "CAPABILITY_CALLBACK", "AP_OPERATION"));
+      }
+      if (!summariesConverged) {
+        terminalFailures.push(new StaticFailure(SAFE.internal, "FIXED_POINT_NONCONVERGENCE", "CF_NONCONVERGENCE"));
+      }
+      if (!totalTraversal) {
+        terminalFailures.push(new StaticFailure(SAFE.ast, "TOP_LEVEL_SYNTAX", "TV_CHILD_UNDISPOSED"));
+      }
+      if (!provenanceComplete) {
+        terminalFailures.push(new StaticFailure(SAFE.authority, "CAPABILITY_RECONSTRUCTION", "PV_EXACT_RELATION"));
+      }
+      if (!rootContext.ap.authorityGuardPassed) {
+        terminalFailures.push(new StaticFailure(SAFE.authority, "AUTHORITY_SCHEMA", "AP_AUTHORITY_GUARD"));
+      }
+      if (!rootContext.ap.fingerprintsEqual) {
+        terminalFailures.push(new StaticFailure(SAFE.authority, "AUTHORITY_SCHEMA", "AP_FINGERPRINT_COMPARE"));
+      }
+      if (!rootContext.ap.migrationCompleted) {
+        terminalFailures.push(new StaticFailure(SAFE.flow, "CAPABILITY_MIGRATE", "AP_MIGRATION"));
+      }
+      if (rootContext.ap.authorityMinted && !rootContext.ap.authorityRevoked) {
+        terminalFailures.push(new StaticFailure(SAFE.authority, "AUTHORITY_SCHEMA", "AP_REVOCATION"));
+      }
+      if (rootContext.ap.poolAllocated &&
+          (rootContext.ap.cleanupAttempts.min !== 1 || rootContext.ap.cleanupAttempts.max !== 1)) {
+        terminalFailures.push(new StaticFailure(SAFE.flow, "CAPABILITY_CLEANUP", "AP_CLEANUP"));
+      }
+      if (this.pendingSecretStorage) {
+        terminalFailures.push(new StaticFailure(SAFE.flow, "CAPABILITY_STORAGE", "CF_PUBLIC_ESCAPE"));
+      }
+      if (this.pendingPasswordOperation) {
+        terminalFailures.push(new StaticFailure(SAFE.flow, "CAPABILITY_PASSWORD", "AP_TOKEN"));
+      }
     }
     if (terminalFailures.length > 0) {
       const [primary] = terminalFailures;
@@ -904,9 +1110,9 @@ class ClosureAnalyzer {
         edges: Object.freeze([...this.graphEdges]),
       }),
       dormantBodies: this.dormantBodies.length,
-      summariesConverged: this.sourceProtocolChecked,
-      totalTraversal: this.childInventory.every((item) => item.disposition),
-      provenanceComplete: this.sourceProtocolChecked,
+      summariesConverged,
+      totalTraversal,
+      provenanceComplete,
       violations: Object.freeze([]),
       childInventory: Object.freeze(this.childInventory.map((item) => Object.freeze({ ...item }))),
     });
@@ -949,73 +1155,26 @@ class ClosureAnalyzer {
     );
   }
 
-  validateSourceProtocol() {
-    const normalized = this.source.replace(/\s+/gu, " ").trim();
-    const rootText = this.rootFunction.getText(this.sourceFile);
-    const scoped = this.functionDeclaration("runScopedFixtureMigration")?.getText(this.sourceFile) ?? "";
-    const identity = this.functionDeclaration("readMigrationAuthorityIdentity")?.getText(this.sourceFile) ?? "";
+  validateIdentityQueryDefinition() {
     const identitySqlDeclaration = this.sourceFile.statements
       .filter(ts.isVariableStatement)
       .flatMap((statement) => statement.declarationList.declarations)
       .find((declaration) => ts.isIdentifier(declaration.name) && declaration.name.text === "identitySql");
-    const identitySqlInitializer = identitySqlDeclaration?.initializer;
-    const normalizedIdentitySql = identitySqlInitializer && ts.isNoSubstitutionTemplateLiteral(identitySqlInitializer)
-      ? identitySqlInitializer.text.replace(/\s+/gu, " ").trim().toLowerCase()
-      : "";
+    const initializer = identitySqlDeclaration?.initializer;
+    if (!initializer || !ts.isNoSubstitutionTemplateLiteral(initializer)) {
+      fail(SAFE.flow, "CAPABILITY_QUERY", "AP_IDENTITY_SQL");
+    }
+    const normalizedIdentitySql = initializer.text.replace(/\s+/gu, " ").trim().toLowerCase();
     const expectedIdentitySql = "select current_database() = $1 as database_matches, " +
       "session_user = $2 as user_matches, " +
       "current_setting('server_version_num')::integer / 10000 = 17 as postgres17, " +
       "not pg_is_in_recovery() as non_recovery, " +
       "(select system_identifier::text from pg_control_system()) as catalog_fingerprint, " +
       "(select oid::text from pg_database where datname = current_database()) as lifecycle_fingerprint";
-    if (!rootText || !scoped || !identity) fail(SAFE.ast, "ROOT_EXPORT", "TV_CHILD_UNDISPOSED");
-    if ((rootText.match(/\bnew\s+Pool\s*\(/gu) ?? []).length !== 1) {
-      fail(SAFE.flow, "CAPABILITY_POOL", "AP_POOL_OPTIONS");
-    }
-    if (!rootText.includes("pool = new Pool(poolOptions)") ||
-        !rootText.includes("host: target.hostname") ||
-        !rootText.includes("port: Number(target.port)") ||
-        !rootText.includes("user: target.expectedUser") ||
-        !rootText.includes("database: target.expectedDatabase") ||
-        !rootText.includes("max: 1")) {
-      fail(SAFE.flow, "CAPABILITY_POOL", "AP_POOL_OPTIONS");
-    }
-    if ((rootText.match(/\bpool\.end\s*\(/gu) ?? []).length !== 1) {
-      fail(SAFE.flow, "CAPABILITY_CLEANUP", "AP_CLEANUP");
-    }
-    if (rootText.includes("pool.connect(")) {
-      fail(SAFE.flow, "CAPABILITY_CONNECT", "AP_CLIENT_PROTOCOL");
-    }
-    if (!rootText.includes("authority = Object.freeze({})")) {
-      fail(SAFE.authority, "AUTHORITY_SCHEMA", "AP_TOKEN");
-    }
-    if (normalizedIdentitySql !== expectedIdentitySql ||
-        !identity.includes("pool.query(identitySql,")) {
+    if (normalizedIdentitySql !== expectedIdentitySql) {
       fail(SAFE.flow, "CAPABILITY_QUERY", "AP_IDENTITY_SQL");
     }
-    if (!identity.includes("pool.query(identitySql, [target.expectedDatabase, target.expectedUser])")) {
-      fail(SAFE.flow, "CAPABILITY_QUERY", "AP_IDENTITY_ARGUMENTS");
-    }
-    if (!scoped.includes("value.brand !== migrationAuthorityBrand") ||
-        !scoped.includes("value.authority !== authority") ||
-        !scoped.includes("!value.valid") ||
-        !scoped.includes("value.pool !== pool") ||
-        !scoped.includes("value.migrationsFolder !== migrationsFolder") ||
-        !scoped.includes("value.database !== target.expectedDatabase") ||
-        !scoped.includes("value.user !== target.expectedUser")) {
-      fail(SAFE.authority, "AUTHORITY_SCHEMA", "AP_AUTHORITY_GUARD");
-    }
-    if (!scoped.includes("identity.catalogFingerprint !== value.clusterFingerprint") ||
-        !scoped.includes("identity.lifecycleFingerprint !== value.lifecycleFingerprint")) {
-      fail(SAFE.authority, "AUTHORITY_SCHEMA", "AP_FINGERPRINT_COMPARE");
-    }
-    if (!scoped.includes("await migrate(drizzle(pool), { migrationsFolder });")) {
-      fail(SAFE.flow, "CAPABILITY_MIGRATE", "AP_MIGRATION");
-    }
-    if (!rootText.includes("if (value) value.valid = false")) {
-      fail(SAFE.authority, "AUTHORITY_SCHEMA", "AP_REVOCATION");
-    }
-    this.sourceProtocolChecked = true;
+    this.identitySqlText = initializer.text;
   }
 
   graphNode(valueToTrack, kind = valueToTrack?.kind ?? "unknown") {
@@ -1119,6 +1278,7 @@ class ClosureAnalyzer {
     for (const statement of this.sourceFile.statements) {
       if (ts.isFunctionDeclaration(statement) && statement.name?.text !== ROOT_EXPORT) {
         this.dormantBodies.push(keyForDeclaration(statement.name));
+        if (statement.body) this.markDormantSubtree(statement.body);
       }
       if (ts.isClassDeclaration(statement)) {
         for (const member of statement.members) {
@@ -1322,10 +1482,14 @@ class ClosureAnalyzer {
     return globals[name] ?? unknownValue();
   }
 
-  analyzeFunction(node, args, closure, thisValue = null) {
-    const signature = `${node.pos}:${node.end}`;
+  analyzeFunction(node, args, closure, thisValue = null, parentContext = null) {
+    const signature = String(node.pos) + ":" + String(node.end);
+    this.activatedFunctionNodes.add(signature);
+    if (node.body) this.markDormantSubtree(node.body);
     if (this.functionActive.has(signature)) fail(SAFE.flow, "FIXED_POINT_RECURSION");
     this.functionActive.add(signature);
+    this.pendingSummaries.add(signature);
+    this.activeExecutionObligations.add(`function:${signature}`);
     const previousThis = this.currentThis;
     this.currentThis = thisValue ?? previousThis;
     try {
@@ -1339,15 +1503,18 @@ class ClosureAnalyzer {
         this.bindParameter(parameter, args[index], env);
       }
       if (!node.body) fail(SAFE.ast, "SYNTAX_POLICY");
+      this.dischargeExecution(node.body);
       const result = ts.isBlock(node.body)
-        ? this.analyzeStatements(node.body.statements, env, {})
-        : { env, returnValue: this.evalExpression(node.body, env, {}) };
+        ? this.analyzeStatements(node.body.statements, env, parentContext ?? {})
+        : { env, returnValue: this.evalExpression(node.body, env, parentContext ?? {}) };
       this.propagateClosure(closure, result.env ?? env, captureKeys);
       this.graphNode(result.returnValue, "return");
       return result.returnValue ?? primitiveValue("undefined");
     } finally {
       this.currentThis = previousThis;
       this.functionActive.delete(signature);
+      this.pendingSummaries.delete(signature);
+      this.activeExecutionObligations.delete(`function:${signature}`);
     }
   }
 
@@ -1411,37 +1578,61 @@ class ClosureAnalyzer {
     const classRef = knownClass ?? this.evalClass(node, closure ?? this.topValues);
     instance.classRef = classRef;
     rememberReference(instance, classRef);
+    this.analyzeClassConstructorOnInstance(classRef, args, instance);
+    return instance;
+  }
+
+  analyzeClassConstructorOnInstance(classRef, args, instance) {
+    const node = classRef?.fn;
+    if (!node || (!ts.isClassDeclaration(node) && !ts.isClassExpression(node))) {
+      fail(SAFE.unresolved, "CALL_RESOLUTION", "TV_CALLBACK_UNMODELED");
+    }
     const constructor = node.members.find((member) => ts.isConstructorDeclaration(member));
     const captureKeys = this.captureKeysFor(node);
-    const env = new Map(closure ?? this.topValues);
+    const env = new Map(classRef.closure ?? this.topValues);
     for (const [index, parameter] of (constructor?.parameters ?? []).entries()) {
       this.bindParameter(parameter, args[index], env);
     }
+    const frame = { classRef, instance, env, superCalled: false };
     const previousThis = this.currentThis;
+    const previousClassFrame = this.currentClassConstructor;
     this.currentThis = instance;
+    this.currentClassConstructor = frame;
     try {
-      for (const member of node.members) {
-        if (!ts.isPropertyDeclaration(member) || !member.initializer) continue;
-        if (!member.name || member.name.kind === ts.SyntaxKind.ComputedPropertyName || !ts.isIdentifier(member.name)) {
-          fail(SAFE.ast, "SYNTAX_POLICY");
-        }
-        const initialized = this.evalExpression(member.initializer, env, {});
-        if (hasTaint(initialized, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC)) {
-          fail(SAFE.flow, "CAPABILITY_STORAGE", "CF_PUBLIC_ESCAPE");
-        }
-        assignValueProperty(instance, member.name.text, initialized);
+      if (!constructor) {
+        if (classRef.baseClass) this.analyzeClassConstructorOnInstance(classRef.baseClass, args, instance);
+        this.initializeClassFields(classRef, env);
+        return instance;
       }
-      if (!constructor) return instance;
+      if (!classRef.baseClass) this.initializeClassFields(classRef, env);
       if (!constructor.body) fail(SAFE.ast, "SYNTAX_POLICY");
       const result = this.analyzeStatements(constructor.body.statements, env, {});
-      this.propagateClosure(closure, result.env ?? env, captureKeys);
+      if ((classRef.baseClass || classRef.baseError) && !frame.superCalled) {
+        fail(SAFE.ast, "SYNTAX_POLICY", "TV_CHILD_UNDISPOSED");
+      }
+      this.propagateClosure(classRef.closure, result.env ?? env, captureKeys);
       if (result.returnValue && result.returnValue.label !== "undefined") return result.returnValue;
       return instance;
     } finally {
       this.currentThis = previousThis;
+      this.currentClassConstructor = previousClassFrame;
     }
   }
 
+  initializeClassFields(classRef, env) {
+    for (const member of classRef.fn.members) {
+      if (!ts.isPropertyDeclaration(member) || !member.initializer ||
+          member.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword)) continue;
+      if (!member.name || member.name.kind === ts.SyntaxKind.ComputedPropertyName || !ts.isIdentifier(member.name)) {
+        fail(SAFE.ast, "SYNTAX_POLICY");
+      }
+      const initialized = this.evalExpression(member.initializer, env, {});
+      if (hasTaint(initialized, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC)) {
+        fail(SAFE.flow, "CAPABILITY_STORAGE", "CF_PUBLIC_ESCAPE");
+      }
+      assignValueProperty(this.currentThis, member.name.text, initialized);
+    }
+  }
   classConstructorHasRelevantInput(callee, args) {
     return args.some((item) => item?.kind === "input" ||
       hasTaint(item, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC | Taint.MAYBE_SENSITIVE) ||
@@ -1451,15 +1642,24 @@ class ClosureAnalyzer {
   analyzeStatements(statements, env, context) {
     let returnValue = null;
     let current = env;
-    for (const statement of statements) {
+    for (const [index, statement] of statements.entries()) {
+      const obligation = this.executionKey(statement);
+      this.activeExecutionObligations.add(obligation);
       const result = this.analyzeStatement(statement, current, context);
+      this.activeExecutionObligations.delete(obligation);
       current = result.env;
       returnValue = mergeValues(returnValue, result.returnValue);
+      const completion = result.completion ?? "NORMAL";
+      if (completion !== "NORMAL") {
+        for (const unreachable of statements.slice(index + 1)) this.markDormantSubtree(unreachable);
+        return { ...result, env: current, returnValue };
+      }
     }
-    return { env: current, returnValue };
+    return { env: current, returnValue, completion: "NORMAL" };
   }
 
   analyzeStatement(node, env, context) {
+    this.dischargeExecution(node);
     if (ts.isBlock(node)) return this.analyzeStatements(node.statements, env, context);
     if (ts.isEmptyStatement(node) || ts.isDebuggerStatement(node)) {
       return { env, returnValue: null };
@@ -1481,6 +1681,7 @@ class ClosureAnalyzer {
       return { env, returnValue: null };
     }
     if (ts.isFunctionDeclaration(node)) {
+      if (node.body) this.markDormantSubtree(node.body);
       if (node.name) {
         const fn = value({ kind: "function", fn: node, closure: env, captureKeys: this.captureKeysFor(node) });
         env.set(keyForDeclaration(node.name), fn);
@@ -1492,13 +1693,16 @@ class ClosureAnalyzer {
     if (ts.isReturnStatement(node)) {
       return {
         env,
-        returnValue: node.expression
-          ? this.evalExpression(node.expression, env, context)
-          : primitiveValue("undefined"),
+        returnValue: node.expression ? this.evalExpression(node.expression, env, context) : primitiveValue("undefined"),
+        completion: "RETURN",
       };
     }
     if (ts.isThrowStatement(node)) {
       const thrown = this.evalExpression(node.expression, env, context);
+      if (Array.isArray(context?.throwCollector)) {
+        context.throwCollector.push(thrown);
+        return { env, returnValue: null, completion: "THROW" };
+      }
       if (hasTaint(thrown, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC)) {
         if (!context.allowCatchRethrow || !thrown.caps.has("CATCH_ERROR")) {
           const point = this.sourceFile.getLineAndCharacterOfPosition(node.getStart(this.sourceFile));
@@ -1509,49 +1713,119 @@ class ClosureAnalyzer {
           throw failure;
         }
       }
-      return { env, returnValue: null };
+      return { env, returnValue: null, completion: "THROW" };
     }
     if (ts.isIfStatement(node)) {
       const condition = this.evalExpression(node.expression, env, context);
+      const concrete = concreteBoolean(condition);
       const thenContext = this.isAdmissionCatchGuard(node.expression, env)
         ? { ...context, allowCatchRethrow: true }
         : context;
-      const thenResult = this.analyzeStatement(node.thenStatement, new Map(env), thenContext);
+      if (concrete === true) {
+        if (node.elseStatement) this.markDormantSubtree(node.elseStatement);
+        if (this.isAuthorityGuardCondition(node.expression) && this.statementAlwaysThrows(node.thenStatement)) {
+          this.authorityGuardPassed = true;
+        }
+        if (this.isFingerprintGuardCondition(node.expression) && this.statementAlwaysThrows(node.thenStatement)) {
+          this.fingerprintsEqual = true;
+        }
+        return this.analyzeStatement(node.thenStatement, new Map(env), thenContext);
+      }
+      if (concrete === false) {
+        this.markDormantSubtree(node.thenStatement);
+        if (this.statementAlwaysThrows(node.thenStatement)) {
+          if (this.isAuthorityGuardCondition(node.expression)) this.markAnalysisFact(context, "authorityGuardPassed");
+          if (this.isFingerprintGuardCondition(node.expression)) this.markAnalysisFact(context, "fingerprintsEqual");
+        }
+        return node.elseStatement
+          ? this.analyzeStatement(node.elseStatement, new Map(env), context)
+          : { env, returnValue: null };
+      }
+      if (this.isAuthorityGuardCondition(node.expression) && this.statementAlwaysThrows(node.thenStatement)) {
+        this.authorityGuardPassed = true;
+      }
+      if (this.isFingerprintGuardCondition(node.expression) && this.statementAlwaysThrows(node.thenStatement)) {
+        this.fingerprintsEqual = true;
+      }
+      const truePathContext = this.cloneAnalysisContext(thenContext);
+      const falsePathContext = this.cloneAnalysisContext(context);
+      if (this.statementAlwaysThrows(node.thenStatement)) {
+        if (this.isAuthorityGuardCondition(node.expression)) this.markAnalysisFact(falsePathContext, "authorityGuardPassed");
+        if (this.isFingerprintGuardCondition(node.expression)) this.markAnalysisFact(falsePathContext, "fingerprintsEqual");
+      }
+      const thenResult = this.analyzeStatement(node.thenStatement, new Map(env), truePathContext);
       const elseResult = node.elseStatement
-        ? this.analyzeStatement(node.elseStatement, new Map(env), context)
+        ? this.analyzeStatement(node.elseStatement, new Map(env), falsePathContext)
         : { env: new Map(env), returnValue: null };
-      void condition;
+      const thenCompletion = thenResult.completion ?? "NORMAL";
+      const elseCompletion = elseResult.completion ?? "NORMAL";
+      const hasNormalPath = thenCompletion === "NORMAL" || elseCompletion === "NORMAL";
+      const continuingContexts = [];
+      if (thenCompletion === "NORMAL") continuingContexts.push(truePathContext);
+      if (elseCompletion === "NORMAL") continuingContexts.push(falsePathContext);
+      this.mergeAnalysisContexts(context, continuingContexts.length > 0
+        ? continuingContexts
+        : [truePathContext, falsePathContext]);
       return {
         env: this.joinEnvironments(thenResult.env, elseResult.env),
         returnValue: mergeValues(thenResult.returnValue, elseResult.returnValue),
+        completion: hasNormalPath ? "NORMAL" : thenCompletion === elseCompletion ? thenCompletion : "ABRUPT",
       };
     }
     if (ts.isTryStatement(node)) {
-      const tryResult = this.analyzeStatement(node.tryBlock, new Map(env), context);
-      let catchResult = { env: new Map(env), returnValue: null };
-      if (node.catchClause) {
-        const catchEnv = new Map(env);
+      const caughtThrows = [];
+      const tryContext = this.cloneAnalysisContext(context);
+      if (node.catchClause) tryContext.throwCollector = caughtThrows;
+      const tryResult = this.analyzeStatement(node.tryBlock, new Map(env), tryContext);
+      let activeResult = tryResult;
+      let activeContexts = [tryContext];
+      if (node.catchClause && caughtThrows.length > 0) {
+        const catchEnv = new Map(tryResult.env);
         if (node.catchClause.variableDeclaration) {
           const catchName = node.catchClause.variableDeclaration.name;
           if (!ts.isIdentifier(catchName)) fail(SAFE.ast, "SYNTAX_POLICY");
-          catchEnv.set(
-            keyForDeclaration(catchName),
-            value({ kind: "caught-error", taint: Taint.MAYBE_SENSITIVE, caps: ["CATCH_ERROR"] }),
-          );
+          const caughtValue = value({
+            kind: "caught-error",
+            taint: Taint.MAYBE_SENSITIVE | combinedTaint(caughtThrows),
+            caps: ["CATCH_ERROR"],
+          });
+          for (const thrown of caughtThrows) rememberReference(caughtValue, thrown);
+          catchEnv.set(keyForDeclaration(catchName), caughtValue);
         }
-        catchResult = this.analyzeStatement(node.catchClause.block, catchEnv, context);
+        const catchContext = this.cloneAnalysisContext(context);
+        const catchResult = this.analyzeStatement(node.catchClause.block, catchEnv, catchContext);
+        activeContexts = [];
+        if (["NORMAL", "RETURN"].includes(tryResult.completion ?? "NORMAL")) {
+          activeContexts.push(tryContext);
+        }
+        if (["NORMAL", "RETURN"].includes(catchResult.completion ?? "NORMAL")) {
+          activeContexts.push(catchContext);
+        }
+        if (activeContexts.length === 0) activeContexts = [tryContext, catchContext];
+        activeResult = {
+          env: tryResult.completion === "THROW"
+            ? catchResult.env
+            : this.joinEnvironments(tryResult.env, catchResult.env),
+          returnValue: mergeValues(tryResult.returnValue, catchResult.returnValue),
+          completion: tryResult.completion === "THROW" ? catchResult.completion ?? "NORMAL" : "NORMAL",
+        };
+      } else if (node.catchClause) {
+        this.markDormantSubtree(node.catchClause.block);
       }
-      const joined = this.joinEnvironments(tryResult.env, catchResult.env);
-      const finalResult = node.finallyBlock
-        ? this.analyzeStatement(node.finallyBlock, joined, context)
-        : { env: joined, returnValue: null };
-      return {
-        env: finalResult.env,
-        returnValue: mergeValues(
-          mergeValues(tryResult.returnValue, catchResult.returnValue),
-          finalResult.returnValue,
-        ),
-      };
+      this.mergeAnalysisContexts(context, activeContexts);
+      if (node.finallyBlock) {
+        const finalResult = this.analyzeStatement(node.finallyBlock, new Map(activeResult.env), context);
+        activeResult = {
+          env: finalResult.env,
+          returnValue: finalResult.completion && finalResult.completion !== "NORMAL"
+            ? finalResult.returnValue
+            : mergeValues(activeResult.returnValue, finalResult.returnValue),
+          completion: finalResult.completion && finalResult.completion !== "NORMAL"
+            ? finalResult.completion
+            : activeResult.completion ?? "NORMAL",
+        };
+      }
+      return activeResult;
     }
     if (ts.isForOfStatement(node)) {
       const iterable = this.evalExpression(node.expression, env, context);
@@ -1569,6 +1843,7 @@ class ClosureAnalyzer {
               refs: [key, valueToIterate],
             }))
             : [unknownValue()];
+      if (loopValues.length === 0) this.markDormantSubtree(node.statement);
       let current = new Map(env);
       let returnValue = null;
       if (ts.isVariableDeclarationList(node.initializer) && node.initializer.declarations.length === 1) {
@@ -1611,16 +1886,41 @@ class ClosureAnalyzer {
         }
       }
       const condition = ts.isForStatement(node) ? node.condition : node.expression;
+      const doLoop = ts.isDoStatement(node);
       let current = new Map(env);
       let returnValue = null;
-      const iterations = ts.isDoStatement(node) ? 3 : 3;
-      for (let iteration = 0; iteration < iterations; iteration += 1) {
-        if (condition) this.evalExpression(condition, current, context);
-        const body = this.analyzeStatement(node.statement, new Map(current), context);
-        current = this.joinEnvironments(current, body.env);
+      let firstIteration = true;
+      const loopContext = this.cloneAnalysisContext(context);
+      loopContext.loopDepth = (context?.loopDepth ?? 0) + 1;
+      while (true) {
+        const before = environmentSignature(current);
+        let conditionValue = null;
+        let conditionResult = true;
+        if (!doLoop || !firstIteration) {
+          conditionValue = condition ? this.evalExpression(condition, current, loopContext) : booleanValue(true);
+          conditionResult = concreteBoolean(conditionValue);
+          if (conditionResult === false) { this.markDormantSubtree(node.statement); break; }
+        }
+        const body = this.analyzeStatement(node.statement, new Map(current), loopContext);
         returnValue = mergeValues(returnValue, body.returnValue);
-        if (node.incrementor) this.evalExpression(node.incrementor, current, context);
+        if (body.completion === "RETURN" || body.completion === "THROW") {
+          this.mergeAnalysisContexts(context, [context, loopContext]);
+          return { env: body.env, returnValue, completion: body.completion };
+        }
+        const backEdge = new Map(body.env);
+        if (body.completion !== "BREAK" && node.incrementor) this.evalExpression(node.incrementor, backEdge, loopContext);
+        current = this.joinEnvironments(current, backEdge);
+        firstIteration = false;
+        if (body.completion === "BREAK") break;
+        if (doLoop && condition) {
+          const doCondition = this.evalExpression(condition, current, loopContext);
+          const doResult = concreteBoolean(doCondition);
+          if (doResult === false) break;
+          if (doResult === null) current = this.joinEnvironments(current, backEdge);
+        }
+        if (environmentSignature(current) === before) break;
       }
+      this.mergeAnalysisContexts(context, [context, loopContext]);
       return { env: current, returnValue };
     }
     if (ts.isLabeledStatement(node)) return this.analyzeStatement(node.statement, env, context);
@@ -1635,12 +1935,71 @@ class ClosureAnalyzer {
     if (ts.isWithStatement(node) || ts.isSwitchStatement(node)) {
       fail(SAFE.ast, "SYNTAX_POLICY");
     }
-    if (ts.isBreakStatement(node) || ts.isContinueStatement(node)) {
-      return { env, returnValue: null };
-    }
+    if (ts.isBreakStatement(node)) return { env, returnValue: null, completion: "BREAK" };
+    if (ts.isContinueStatement(node)) return { env, returnValue: null, completion: "CONTINUE" };
     fail(SAFE.ast, "SYNTAX_POLICY");
   }
 
+  expressionKey(node) {
+    if (ts.isIdentifier(node)) return node.text;
+    if (ts.isPropertyAccessExpression(node)) {
+      return `${this.expressionKey(node.expression)}.${node.name.text}`;
+    }
+    if (ts.isPrefixUnaryExpression(node) && node.operator === ts.SyntaxKind.ExclamationToken) {
+      return `!${this.expressionKey(node.operand)}`;
+    }
+    return "";
+  }
+
+  flattenLogical(node, operatorKind) {
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === operatorKind) {
+      return [...this.flattenLogical(node.left, operatorKind), ...this.flattenLogical(node.right, operatorKind)];
+    }
+    return [node];
+  }
+
+  statementAlwaysThrows(statement) {
+    if (ts.isThrowStatement(statement)) return true;
+    if (ts.isBlock(statement)) {
+      const last = statement.statements.at(-1);
+      return last ? this.statementAlwaysThrows(last) : false;
+    }
+    return false;
+  }
+
+  isAuthorityGuardCondition(expression) {
+    const required = [
+      "!value",
+      "value.brand!==migrationAuthorityBrand",
+      "value.authority!==authority",
+      "!value.valid",
+      "value.pool!==pool",
+      "value.migrationsFolder!==migrationsFolder",
+      "value.database!==target.expectedDatabase",
+      "value.user!==target.expectedUser",
+    ];
+    const parts = this.flattenLogical(expression, ts.SyntaxKind.BarBarToken).map((part) => {
+      if (ts.isBinaryExpression(part) && part.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken) {
+        return `${this.expressionKey(part.left)}!==${this.expressionKey(part.right)}`;
+      }
+      return this.expressionKey(part);
+    });
+    return parts.length === required.length && required.every((item) => parts.includes(item));
+  }
+
+  isFingerprintGuardCondition(expression) {
+    const required = [
+      "identity.catalogFingerprint!==value.clusterFingerprint",
+      "identity.lifecycleFingerprint!==value.lifecycleFingerprint",
+    ];
+    const parts = this.flattenLogical(expression, ts.SyntaxKind.BarBarToken).map((part) => {
+      if (ts.isBinaryExpression(part) && part.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken) {
+        return `${this.expressionKey(part.left)}!==${this.expressionKey(part.right)}`;
+      }
+      return this.expressionKey(part);
+    });
+    return parts.length === required.length && required.every((item) => parts.includes(item));
+  }
   isAdmissionCatchGuard(expression, env) {
     return ts.isBinaryExpression(expression) &&
       expression.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword &&
@@ -1677,6 +2036,7 @@ class ClosureAnalyzer {
 
   evalExpression(node, env, context) {
     if (!node) return primitiveValue("undefined");
+    this.dischargeExecution(node);
     switch (node.kind) {
       case ts.SyntaxKind.Identifier:
         return this.lookup(node, env);
@@ -1728,6 +2088,7 @@ class ClosureAnalyzer {
         return this.evalExpression(node.expression, env, context);
       case ts.SyntaxKind.ArrowFunction:
       case ts.SyntaxKind.FunctionExpression:
+        if (node.body) this.markDormantSubtree(node.body);
         return value({ kind: "function", fn: node, closure: env, captureKeys: this.captureKeysFor(node) });
       case ts.SyntaxKind.BinaryExpression:
         return this.evalBinary(node, env, context);
@@ -1737,19 +2098,28 @@ class ClosureAnalyzer {
         this.evalExpression(node.expression, env, context);
         return primitiveValue("string");
       case ts.SyntaxKind.PostfixUnaryExpression:
-        this.evalExpression(node.operand, env, context);
-        return primitiveValue("number");
-      case ts.SyntaxKind.ConditionalExpression:
-        this.evalExpression(node.condition, env, context);
-        {
-          const trueEnv = new Map(env);
-          const falseEnv = new Map(env);
-          const whenTrue = this.evalExpression(node.whenTrue, trueEnv, context);
-          const whenFalse = this.evalExpression(node.whenFalse, falseEnv, context);
-          const joined = this.joinEnvironments(trueEnv, falseEnv);
-          for (const [key, item] of joined) env.set(key, item);
-          return mergeValues(whenTrue, whenFalse);
+        return this.evalPostfixUnary(node, env, context);
+      case ts.SyntaxKind.ConditionalExpression: {
+        const condition = concreteBoolean(this.evalExpression(node.condition, env, context));
+        if (condition === true) {
+          this.markDormantSubtree(node.whenFalse);
+          return this.evalExpression(node.whenTrue, env, context);
         }
+        if (condition === false) {
+          this.markDormantSubtree(node.whenTrue);
+          return this.evalExpression(node.whenFalse, env, context);
+        }
+        const trueEnv = new Map(env);
+        const falseEnv = new Map(env);
+        const truePathContext = this.cloneAnalysisContext(context);
+        const falsePathContext = this.cloneAnalysisContext(context);
+        const whenTrue = this.evalExpression(node.whenTrue, trueEnv, truePathContext);
+        const whenFalse = this.evalExpression(node.whenFalse, falseEnv, falsePathContext);
+        this.mergeAnalysisContexts(context, [truePathContext, falsePathContext]);
+        const joined = this.joinEnvironments(trueEnv, falseEnv);
+        for (const [key, item] of joined) env.set(key, item);
+        return mergeValues(whenTrue, whenFalse);
+      }
       case ts.SyntaxKind.TemplateExpression:
         return this.evalTemplate(node, env, context);
       case ts.SyntaxKind.DeleteExpression: {
@@ -1826,6 +2196,7 @@ class ClosureAnalyzer {
       }
       if (ts.isMethodDeclaration(property)) {
         if (!property.body) fail(SAFE.ast, "SYNTAX_POLICY");
+        this.markDormantSubtree(property.body);
         const method = value({ kind: "function", fn: property, closure: env, captureKeys: this.captureKeysFor(property) });
         result.methods.set(name, method);
         rememberReference(result, method);
@@ -1853,15 +2224,27 @@ class ClosureAnalyzer {
   evalClass(node, env) {
     const result = value({ kind: "class", fn: node, closure: env, captureKeys: this.captureKeysFor(node) });
     result.fields = new Map();
+    result.baseClass = null;
+    result.baseError = false;
     for (const heritage of node.heritageClauses ?? []) {
       for (const type of heritage.types) {
         const base = this.evalExpression(type.expression, env, {});
+        if (result.baseClass) fail(SAFE.ast, "SYNTAX_POLICY", "TV_CHILD_UNDISPOSED");
+        if (base.kind === "class") result.baseClass = base;
+        if (base.caps.has("ERROR_CONSTRUCTOR")) result.baseError = true;
         if (base.kind !== "class" && !base.caps.has("ERROR_CONSTRUCTOR")) {
           fail(SAFE.ast, "SYNTAX_POLICY");
         }
       }
     }
     for (const member of node.members ?? []) {
+      if ((ts.isMethodDeclaration(member) || ts.isConstructorDeclaration(member)) && member.body) {
+        this.markDormantSubtree(member.body);
+      }
+      if (ts.isPropertyDeclaration(member) && member.initializer &&
+          !member.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword)) {
+        this.markDormantSubtree(member.initializer);
+      }
       if (member.name?.kind === ts.SyntaxKind.ComputedPropertyName) {
         const name = this.evalKey(member.name.expression, env, {});
         if (name === null) fail(SAFE.computed, "COMPUTED_CAPABILITY");
@@ -1972,8 +2355,14 @@ class ClosureAnalyzer {
       }
       const exactOrigin = (item, key) =>
         item?.exact !== false && provenanceOf(item).has(this.originIdentity(key));
-      if (!exactOrigin(options.props.get("host"), "url.hostname") ||
-          !exactOrigin(options.props.get("port"), "url.port") ||
+      const port = options.props.get("port");
+      const admittedPortNormalization = port?.normalization === "url-port" &&
+        provenanceOf(port).has(this.originIdentity("url.port"));
+      const host = options.props.get("host");
+      const admittedHostNormalization = host?.normalization === "url-hostname" &&
+        provenanceOf(host).has(this.originIdentity("url.hostname"));
+      if (!(exactOrigin(host, "url.hostname") || admittedHostNormalization) ||
+          !(exactOrigin(port, "url.port") || admittedPortNormalization) ||
           !exactOrigin(options.props.get("database"), "input.expectedDatabase") ||
           !exactOrigin(options.props.get("user"), "input.expectedUser") ||
           !provenanceOf(options.props.get("user")).has(this.originIdentity("default.expectedUser.cloud_admin"))) {
@@ -1994,6 +2383,9 @@ class ClosureAnalyzer {
       }
       this.poolConstructs += 1;
       if (this.poolConstructs > 1) fail(SAFE.flow, "CAPABILITY_POOL");
+      this.markAnalysisFact(context, "poolAllocated");
+      this.poolConstructionNodes.add(node.pos);
+      this.provenanceObligations.delete("pool-target");
       const pool = value({ kind: "pool" });
       pool.options = options;
       rememberReference(pool, options);
@@ -2069,15 +2461,46 @@ class ClosureAnalyzer {
       if (!callee.fn || (!ts.isClassDeclaration(callee.fn) && !ts.isClassExpression(callee.fn))) fail(SAFE.unresolved, "CALL_RESOLUTION");
       return this.analyzeClassConstructor(callee.fn, args, callee.closure);
     }
-    if (callee.fn && isFunctionLike(callee.fn)) return this.analyzeFunction(callee.fn, args, callee.closure);
+    if (callee.fn && isFunctionLike(callee.fn)) return this.analyzeFunction(callee.fn, args, callee.closure, null, context);
     fail(SAFE.unresolved, "CALL_RESOLUTION");
   }
 
   evalBinary(node, env, context) {
-    if (node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+    const operator = node.operatorToken.kind;
+    if (operator === ts.SyntaxKind.EqualsToken) {
       const right = this.evalExpression(node.right, env, context);
       this.assignTarget(node.left, right, env, context);
       return right;
+    }
+    if (operator === ts.SyntaxKind.CommaToken) {
+      this.evalExpression(node.left, env, context);
+      return this.evalExpression(node.right, env, context);
+    }
+    const logical = operator === ts.SyntaxKind.AmpersandAmpersandToken ||
+      operator === ts.SyntaxKind.BarBarToken || operator === ts.SyntaxKind.QuestionQuestionToken;
+    const left = this.evalExpression(node.left, env, context);
+    const leftBoolean = concreteBoolean(left);
+    const leftConcrete = leftBoolean !== null;
+    const leftTruthy = leftBoolean === true;
+    const leftNullish = left.literalType === "null" || left.label === "undefined";
+    if (logical) {
+      const skipsRight = operator === ts.SyntaxKind.AmpersandAmpersandToken
+        ? leftConcrete && !leftTruthy
+        : operator === ts.SyntaxKind.BarBarToken
+          ? leftConcrete && leftTruthy
+          : leftConcrete && !leftNullish;
+      if (skipsRight) {
+        this.markDormantSubtree(node.right);
+        return left;
+      }
+      if (leftConcrete) return this.evalExpression(node.right, env, context);
+      const skippedContext = this.cloneAnalysisContext(context);
+      const rightContext = this.cloneAnalysisContext(context);
+      const rightEnv = new Map(env);
+      const right = this.evalExpression(node.right, rightEnv, rightContext);
+      this.mergeAnalysisContexts(context, [skippedContext, rightContext]);
+      for (const [key, item] of this.joinEnvironments(env, rightEnv)) env.set(key, item);
+      return mergeValues(left, right);
     }
     if ([
       ts.SyntaxKind.PlusEqualsToken,
@@ -2095,38 +2518,50 @@ class ClosureAnalyzer {
       ts.SyntaxKind.AmpersandAmpersandEqualsToken,
       ts.SyntaxKind.BarBarEqualsToken,
       ts.SyntaxKind.AsteriskAsteriskEqualsToken,
-    ].includes(node.operatorToken.kind)) {
-      fail(SAFE.ast, "SYNTAX_POLICY");
+    ].includes(operator)) {
+      const current = this.evalExpression(node.left, env, context);
+      const right = this.evalExpression(node.right, env, context);
+      if (hasTaint(current, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC) ||
+          hasTaint(right, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC)) {
+        fail(SAFE.flow, "CAPABILITY_RECONSTRUCTION", "PV_EXACT_RELATION");
+      }
+      if (operator !== ts.SyntaxKind.PlusEqualsToken && operator !== ts.SyntaxKind.MinusEqualsToken &&
+          operator !== ts.SyntaxKind.AsteriskEqualsToken && operator !== ts.SyntaxKind.SlashEqualsToken) {
+        fail(SAFE.ast, "SYNTAX_POLICY");
+      }
+      if (current.literalType !== "number" || right.literalType !== "number" ||
+          typeof current.constant !== "number" || typeof right.constant !== "number") {
+        fail(SAFE.ast, "SYNTAX_POLICY");
+      }
+      const next = primitiveValue("number", {
+        literalType: "number",
+        constant: operator === ts.SyntaxKind.PlusEqualsToken
+          ? current.constant + right.constant
+          : operator === ts.SyntaxKind.MinusEqualsToken
+            ? current.constant - right.constant
+            : operator === ts.SyntaxKind.AsteriskEqualsToken
+              ? current.constant * right.constant
+              : current.constant / right.constant,
+      });
+      next.exact = false;
+      this.assignTarget(node.left, next, env, context);
+      return next;
     }
-    const operator = node.operatorToken.kind;
-    if (operator === ts.SyntaxKind.CommaToken) {
-      this.evalExpression(node.left, env, context);
-      return this.evalExpression(node.right, env, context);
-    }
-    const left = this.evalExpression(node.left, env, context);
-    const rightEnv = new Map(env);
-    const right = this.evalExpression(node.right, rightEnv, context);
-    if (operator === ts.SyntaxKind.AmpersandAmpersandToken ||
-        operator === ts.SyntaxKind.BarBarToken ||
-        operator === ts.SyntaxKind.QuestionQuestionToken) {
-      const leftIsConcrete = left.literalType !== "abstract" && left.constant !== undefined;
-      const leftNonNull = leftIsConcrete && left.constant !== null && left.constant !== undefined;
-      const leftTruthy = leftIsConcrete && Boolean(left.constant);
-      const selected = operator === ts.SyntaxKind.AmpersandAmpersandToken
-        ? (leftTruthy ? right : left)
-        : operator === ts.SyntaxKind.BarBarToken
-          ? (leftTruthy ? left : right)
-          : (leftNonNull ? left : right);
-      for (const [key, item] of this.joinEnvironments(env, rightEnv)) env.set(key, item);
-      if (leftIsConcrete) return selected;
-      return mergeValues(left, right);
-    }
+    const right = this.evalExpression(node.right, env, context);
     if (operator === ts.SyntaxKind.PlusToken) {
       if (hasTaint(left, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC) ||
           hasTaint(right, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC)) {
-        fail(SAFE.flow, "CAPABILITY_RECONSTRUCTION");
+        fail(SAFE.flow, "CAPABILITY_RECONSTRUCTION", "PV_EXACT_RELATION");
       }
-      return primitiveValue("string");
+      if (typeof left.constant === "number" && typeof right.constant === "number") {
+        return primitiveValue("number", { literalType: "number", constant: left.constant + right.constant });
+      }
+      if (typeof left.constant === "string" && typeof right.constant === "string") {
+        return primitiveValue("string", { literalType: "string", constant: left.constant + right.constant });
+      }
+      const result = primitiveValue("string");
+      result.exact = false;
+      return result;
     }
     if ([
       ts.SyntaxKind.MinusToken,
@@ -2134,26 +2569,105 @@ class ClosureAnalyzer {
       ts.SyntaxKind.SlashToken,
       ts.SyntaxKind.PercentToken,
       ts.SyntaxKind.AsteriskAsteriskToken,
-    ].includes(operator) &&
-        (hasTaint(left, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC) ||
-         hasTaint(right, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC))) {
-      fail(SAFE.flow, "CAPABILITY_RECONSTRUCTION", "PV_EXACT_RELATION");
+    ].includes(operator)) {
+      if (hasTaint(left, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC) ||
+          hasTaint(right, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC)) {
+        fail(SAFE.flow, "CAPABILITY_RECONSTRUCTION", "PV_EXACT_RELATION");
+      }
+      if (typeof left.constant === "number" && typeof right.constant === "number") {
+        const constant = operator === ts.SyntaxKind.MinusToken
+          ? left.constant - right.constant
+          : operator === ts.SyntaxKind.AsteriskToken
+            ? left.constant * right.constant
+            : operator === ts.SyntaxKind.SlashToken
+              ? left.constant / right.constant
+              : operator === ts.SyntaxKind.PercentToken
+                ? left.constant % right.constant
+                : left.constant ** right.constant;
+        return primitiveValue("number", { literalType: "number", constant });
+      }
+      const result = primitiveValue("number");
+      result.exact = false;
+      return result;
+    }
+    if ([
+      ts.SyntaxKind.EqualsEqualsEqualsToken,
+      ts.SyntaxKind.ExclamationEqualsEqualsToken,
+      ts.SyntaxKind.EqualsEqualsToken,
+      ts.SyntaxKind.ExclamationEqualsToken,
+      ts.SyntaxKind.LessThanToken,
+      ts.SyntaxKind.LessThanEqualsToken,
+      ts.SyntaxKind.GreaterThanToken,
+      ts.SyntaxKind.GreaterThanEqualsToken,
+    ].includes(operator)) {
+      const concrete = left.literalType !== "abstract" && right.literalType !== "abstract" &&
+        left.constant !== undefined && right.constant !== undefined;
+      if (!concrete) return primitiveValue("boolean");
+      const equal = operator === ts.SyntaxKind.EqualsEqualsEqualsToken || operator === ts.SyntaxKind.EqualsEqualsToken
+        ? left.constant === right.constant
+        : operator === ts.SyntaxKind.ExclamationEqualsEqualsToken || operator === ts.SyntaxKind.ExclamationEqualsToken
+          ? left.constant !== right.constant
+          : operator === ts.SyntaxKind.LessThanToken
+            ? left.constant < right.constant
+            : operator === ts.SyntaxKind.LessThanEqualsToken
+              ? left.constant <= right.constant
+              : operator === ts.SyntaxKind.GreaterThanToken
+                ? left.constant > right.constant
+                : left.constant >= right.constant;
+      return booleanValue(equal);
     }
     return primitiveValue("boolean");
   }
-
   evalPrefixUnary(node, env, context) {
     const operand = this.evalExpression(node.operand, env, context);
+    if (node.operator === ts.SyntaxKind.ExclamationToken) {
+      const concrete = concreteBoolean(operand);
+      return concrete === null ? primitiveValue("boolean") : booleanValue(!concrete);
+    }
     if (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken) {
+      const next = this.updatedNumericValue(operand, node.operator === ts.SyntaxKind.PlusPlusToken ? 1 : -1);
+      this.assignTarget(node.operand, next, env, context);
+      return next;
+    }
+    if ([ts.SyntaxKind.PlusToken, ts.SyntaxKind.MinusToken, ts.SyntaxKind.TildeToken].includes(node.operator)) {
+      if (hasTaint(operand, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC)) {
+        fail(SAFE.flow, "CAPABILITY_RECONSTRUCTION", "PV_EXACT_RELATION");
+      }
+      const number = operand.literalType === "number" || typeof operand.constant === "number"
+        ? Number(operand.constant)
+        : operand.constant === undefined ? undefined : Number(operand.constant);
+      const constant = number === undefined ? undefined
+        : node.operator === ts.SyntaxKind.PlusToken ? +number
+          : node.operator === ts.SyntaxKind.MinusToken ? -number : ~number;
+      return value({
+        kind: "primitive", label: "number", literalType: "number", constant,
+        taint: summarizeRisk(operand).taint, caps: summarizeRisk(operand).caps,
+        provenance: provenanceOf(operand), exact: false,
+      });
+    }
+    fail(SAFE.ast, "SYNTAX_POLICY");
+  }
+
+  updatedNumericValue(operand, delta) {
+    if (hasTaint(operand, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC)) {
+      fail(SAFE.flow, "CAPABILITY_RECONSTRUCTION", "PV_EXACT_RELATION");
+    }
+    const constant = typeof operand.constant === "number" ? operand.constant + delta : undefined;
+    return value({
+      kind: "primitive", label: "number", literalType: "number", constant,
+      taint: summarizeRisk(operand).taint, caps: summarizeRisk(operand).caps,
+      provenance: provenanceOf(operand), exact: false,
+    });
+  }
+
+  evalPostfixUnary(node, env, context) {
+    const operand = this.evalExpression(node.operand, env, context);
+    if (node.operator !== ts.SyntaxKind.PlusPlusToken && node.operator !== ts.SyntaxKind.MinusMinusToken) {
       fail(SAFE.ast, "SYNTAX_POLICY");
     }
-    if (node.operator === ts.SyntaxKind.PlusToken || node.operator === ts.SyntaxKind.MinusToken ||
-        node.operator === ts.SyntaxKind.TildeToken) {
-      if (hasTaint(operand, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC)) {
-        fail(SAFE.flow, "CAPABILITY_RECONSTRUCTION");
-      }
-    }
-    return primitiveValue("boolean");
+    const next = this.updatedNumericValue(operand, node.operator === ts.SyntaxKind.PlusPlusToken ? 1 : -1);
+    this.assignTarget(node.operand, next, env, context);
+    return operand;
   }
 
   evalTemplate(node, env, context) {
@@ -2335,12 +2849,21 @@ class ClosureAnalyzer {
       fail(SAFE.flow, "CAPABILITY_CRYPTO");
     }
     if (callee.caps.has("ENV")) fail(SAFE.flow, "CAPABILITY_ENV");
-    if (callee.caps.has("CLASS_SUPER")) return primitiveValue("super");
+    if (callee.caps.has("CLASS_SUPER")) {
+      const frame = this.currentClassConstructor;
+      if (!(frame?.classRef?.baseClass || frame?.classRef?.baseError) || frame.superCalled) {
+        fail(SAFE.unresolved, "CALL_RESOLUTION", "TV_CHILD_UNDISPOSED");
+      }
+      frame.superCalled = true;
+      if (frame.classRef.baseClass) this.analyzeClassConstructorOnInstance(frame.classRef.baseClass, args, frame.instance);
+      this.initializeClassFields(frame.classRef, frame.env);
+      return frame.instance;
+    }
     if (callee.caps.has("POOL_QUERY")) {
       if (args.length !== 2) {
         fail(SAFE.flow, "CAPABILITY_QUERY", "AP_IDENTITY_ARGUMENTS");
       }
-      if (args[0]?.binding !== this.identitySqlBinding) {
+      if (args[0]?.binding !== this.identitySqlBinding || args[0]?.constant !== this.identitySqlText) {
         fail(SAFE.flow, "CAPABILITY_QUERY", "AP_IDENTITY_SQL");
       }
       if (args[1].kind !== "array" ||
@@ -2368,25 +2891,34 @@ class ClosureAnalyzer {
       this.identityQueryPool = callee.bound;
       this.identityQueryArguments ??= identityArguments;
       this.identityQueryCount = (this.identityQueryCount ?? 0) + 1;
+      this.provenanceObligations.delete("identity-target");
       if (this.identityQueryCount >= 2 && this.authoritySetCount === 1) {
         this.authoritySecondIdentityChecked = true;
+        this.markAnalysisFact(context, "identity2Validated");
       }
       return value({ kind: "query-result" });
     }
     if (callee.caps.has("POOL_END")) {
       if (args.length !== 0) fail(SAFE.flow, "CAPABILITY_CLEANUP");
       if (callee.bound?.kind !== "pool") fail(SAFE.flow, "CAPABILITY_CLEANUP");
+      const cleanupRange = context?.ap?.cleanupAttempts ?? { min: 0, max: 0 };
+      if ((context?.loopDepth ?? 0) > 0 || this.poolEndNodes.has(node.pos)) {
+        context.ap.cleanupAttempts = { min: cleanupRange.min, max: 2 };
+      } else {
+        context.ap.cleanupAttempts = {
+          min: Math.min(2, cleanupRange.min + 1),
+          max: Math.min(2, cleanupRange.max + 1),
+        };
+      }
+      this.poolEndAttempts += 1;
+      this.poolEndNodes.add(node.pos);
       return capabilityValue("CLEANUP_PROMISE", { bound: callee.bound, taint: Taint.SENSITIVE_DIAGNOSTIC });
     }
     if (callee.caps.has("POOL_CONNECT")) {
-      if (args.length !== 0 || callee.bound?.kind !== "pool") fail(SAFE.flow, "CAPABILITY_CONNECT");
-      const client = value({ kind: "client", pool: callee.bound });
-      client.pool = callee.bound;
-      rememberReference(client, callee.bound);
-      return client;
+      fail(SAFE.flow, "CAPABILITY_CONNECT", "AP_CLIENT_PROTOCOL");
     }
     if (callee.caps.has("CLIENT_QUERY")) {
-      if (args.length !== 2 || args[0].binding !== this.identitySqlBinding || args[1].kind !== "array" ||
+      if (args.length !== 2 || args[0].binding !== this.identitySqlBinding || args[0].constant !== this.identitySqlText || args[1].kind !== "array" ||
           args[1].elements?.length !== 2 || callee.bound?.pool?.kind !== "pool") {
         fail(SAFE.flow, "CAPABILITY_QUERY", "AP_IDENTITY_ARGUMENTS");
       }
@@ -2399,7 +2931,11 @@ class ClosureAnalyzer {
       this.identityQueryArguments ??= identityArguments;
       if (this.identityQueryCount >= 2) fail(SAFE.flow, "CAPABILITY_QUERY", "AP_IDENTITY_SQL");
       this.identityQueryCount = (this.identityQueryCount ?? 0) + 1;
-      if (this.identityQueryCount >= 2 && this.authoritySetCount === 1) this.authoritySecondIdentityChecked = true;
+      this.provenanceObligations.delete("identity-target");
+      if (this.identityQueryCount >= 2 && this.authoritySetCount === 1) {
+        this.authoritySecondIdentityChecked = true;
+        this.markAnalysisFact(context, "identity2Validated");
+      }
       return value({ kind: "query-result" });
     }
     if (callee.caps.has("CLIENT_RELEASE")) {
@@ -2411,6 +2947,7 @@ class ClosureAnalyzer {
       return value({ kind: "drizzle-db", bound: args[0] });
     }
     if (callee.caps.has("MIGRATE")) {
+      this.markAnalysisFact(context, "migrationAttempted");
       if (args.length !== 2 || args[0].kind !== "drizzle-db" || args[1].kind !== "object" ||
           !sameTextSet([...args[1].props.keys()], ["migrationsFolder"]) ||
           args[1].props.get("migrationsFolder") !== this.authorityRecord?.props.get("migrationsFolder") ||
@@ -2420,6 +2957,8 @@ class ClosureAnalyzer {
           args[0].bound?.kind !== "pool" || args[0].bound !== this.authorityRecord.props.get("pool")) {
         fail(SAFE.flow, "CAPABILITY_MIGRATE", "AP_MIGRATION");
       }
+      this.migrationCompleted = true;
+      this.markAnalysisFact(context, "migrationCompleted");
       return primitiveValue("promise");
     }
     if (callee.caps.has("WEAKMAP_SET")) {
@@ -2447,6 +2986,7 @@ class ClosureAnalyzer {
       this.authorityRecord = args[1];
       this.authorityToken = args[0];
       this.authoritySetCount += 1;
+      this.markAnalysisFact(context, "authorityMinted");
       return callee.bound;
     }
     if (callee.caps.has("WEAKMAP_GET")) {
@@ -2467,14 +3007,14 @@ class ClosureAnalyzer {
     if (callee.caps.has("ARRAY_SOME")) {
       if (args.length < 1 || !args[0].fn) fail(SAFE.ast, "SYNTAX_POLICY");
       for (const [index, item] of (callee.bound?.elements ?? [unknownValue()]).entries()) {
-        this.analyzeFunction(args[0].fn, [item, primitiveValue(String(index)), callee.bound], args[0].closure);
+        this.analyzeFunction(args[0].fn, [item, primitiveValue(String(index)), callee.bound], args[0].closure, null, context);
       }
       return primitiveValue("boolean");
     }
     if (callee.caps.has("ARRAY_EVERY")) {
       if (args.length < 1 || !args[0].fn) fail(SAFE.ast, "SYNTAX_POLICY");
       for (const [index, item] of (callee.bound?.elements ?? [unknownValue()]).entries()) {
-        this.analyzeFunction(args[0].fn, [item, primitiveValue(String(index)), callee.bound], args[0].closure);
+        this.analyzeFunction(args[0].fn, [item, primitiveValue(String(index)), callee.bound], args[0].closure, null, context);
       }
       return primitiveValue("boolean");
     }
@@ -2482,7 +3022,7 @@ class ClosureAnalyzer {
       if (args.length < 1 || !args[0].fn) fail(SAFE.ast, "SYNTAX_POLICY");
       const elements = [];
       for (const [index, item] of (callee.bound?.elements ?? []).entries()) {
-        elements.push(this.analyzeFunction(args[0].fn, [item, primitiveValue(String(index)), callee.bound], args[0].closure));
+        elements.push(this.analyzeFunction(args[0].fn, [item, primitiveValue(String(index)), callee.bound], args[0].closure, null, context));
       }
       const result = value({ kind: "array", elements });
       for (const item of elements) rememberReference(result, item);
@@ -2491,7 +3031,7 @@ class ClosureAnalyzer {
     if (callee.caps.has("ARRAY_FOREACH")) {
       if (args.length < 1 || !args[0].fn) fail(SAFE.ast, "SYNTAX_POLICY");
       for (const [index, item] of (callee.bound?.elements ?? []).entries()) {
-        this.analyzeFunction(args[0].fn, [item, primitiveValue(String(index)), callee.bound], args[0].closure);
+        this.analyzeFunction(args[0].fn, [item, primitiveValue(String(index)), callee.bound], args[0].closure, null, context);
       }
       return primitiveValue("undefined");
     }
@@ -2561,7 +3101,7 @@ class ClosureAnalyzer {
     if (callee.caps.has("SET_FOREACH")) {
       if (args.length < 1 || !args[0].fn) fail(SAFE.ast, "SYNTAX_POLICY");
       for (const item of callee.bound.map?.values?.() ?? []) {
-        this.analyzeFunction(args[0].fn, [item, item, callee.bound], args[0].closure);
+        this.analyzeFunction(args[0].fn, [item, item, callee.bound], args[0].closure, null, context);
       }
       return primitiveValue("undefined");
     }
@@ -2600,7 +3140,7 @@ class ClosureAnalyzer {
     if (callee.caps.has("MAP_FOREACH")) {
       if (args.length < 1 || !args[0].fn) fail(SAFE.ast, "SYNTAX_POLICY");
       for (const [key, item] of callee.bound.map ?? []) {
-        this.analyzeFunction(args[0].fn, [item, key, callee.bound], args[0].closure);
+        this.analyzeFunction(args[0].fn, [item, key, callee.bound], args[0].closure, null, context);
       }
       return primitiveValue("undefined");
     }
@@ -2646,16 +3186,18 @@ class ClosureAnalyzer {
           callee.bound,
         ], args[1].closure);
       }
-      const urlNormalization = callee.bound.kind === "string" &&
-        ["replace", "toLowerCase"].includes(callee.label) &&
-        provenanceOf(callee.bound).size > 0;
+      const hostNormalization = provenanceOf(callee.bound).size === 1 &&
+        provenanceOf(callee.bound).has(this.originIdentity("url.hostname")) &&
+        ((callee.label === "replace" && callee.bound.label === "url.hostname") ||
+          (callee.label === "toLowerCase" && callee.bound.normalization === "url-hostname"));
       return value({
         kind: "string",
         taint: callee.bound.taint,
         directCredential: false,
         label: callee.bound.taint ? "transformed-credential" : "",
         provenance: provenanceOf(callee.bound),
-        exact: urlNormalization,
+        exact: false,
+        normalization: hostNormalization ? "url-hostname" : null,
       });
     }
     if (callee.caps.has("OBJECT_FREEZE")) {
@@ -2684,7 +3226,11 @@ class ClosureAnalyzer {
         literalType: "number",
         constant: args[0]?.constant !== undefined ? Number(args[0].constant) : undefined,
         provenance: args[0] ? provenanceOf(args[0]) : [],
-        exact: args[0]?.exact !== false,
+        exact: false,
+        normalization: args[0] && sameIdentitySet(
+          provenanceOf(args[0]),
+          new Set([this.originIdentity("url.port")]),
+        ) ? "url-port" : null,
       });
     }
     if (callee.caps.has("DECODE_URI")) {
@@ -2694,13 +3240,13 @@ class ClosureAnalyzer {
         label: "string",
         literalType: "string",
         provenance: args[0] ? provenanceOf(args[0]) : [],
-        exact: args[0]?.exact !== false,
+        exact: false,
       });
     }
     if (callee.caps.has("STRING_CONSTRUCTOR")) {
       const target = args[0];
       const toString = target?.methods?.get("toString");
-      if (toString?.fn) this.analyzeFunction(toString.fn, [], toString.closure, target);
+      if (toString?.fn) this.analyzeFunction(toString.fn, [], toString.closure, target, context);
       if (args.some((item) => hasTaint(item, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC))) fail(SAFE.flow, "CAPABILITY_RECONSTRUCTION");
       return value({
         kind: "string",
@@ -2713,7 +3259,7 @@ class ClosureAnalyzer {
     if (callee.caps.has("JSON_STRINGIFY")) {
       const target = args[0];
       const toJson = target?.methods?.get("toJSON");
-      if (toJson?.fn) this.analyzeFunction(toJson.fn, [], toJson.closure, target);
+      if (toJson?.fn) this.analyzeFunction(toJson.fn, [], toJson.closure, target, context);
       const replacer = args[1];
       if (replacer?.fn) {
         this.analyzeFunction(replacer.fn, [
@@ -2731,16 +3277,46 @@ class ClosureAnalyzer {
       });
     }
     if (callee.caps.has("OPAQUE_OPERATION")) {
-      if (args.length !== 0) fail(SAFE.flow, "CAPABILITY_CALLBACK");
-      this.operationInvocations += 1;
-      this.operationInvocationNodes.push(node.pos);
-      if (this.operationInvocations > 1) fail(SAFE.flow, "CAPABILITY_CALLBACK", "AP_OPERATION");
+      if (args.length !== 0) fail(SAFE.flow, "CAPABILITY_CALLBACK", "AP_OPERATION");
+      if (!context?.ap?.migrationAttempted) {
+        fail(SAFE.flow, "CAPABILITY_CALLBACK", "AP_OPERATION");
+      }
+      if (context?.ap?.poolAllocated &&
+          (!context.ap.authorityGuardPassed || !this.authorityGuardPassed)) {
+        fail(SAFE.authority, "AUTHORITY_SCHEMA", "AP_AUTHORITY_GUARD");
+      }
+      if (!context?.ap?.migrationCompleted || !this.migrationCompleted) {
+        fail(SAFE.flow, "CAPABILITY_CALLBACK", "AP_OPERATION");
+      }
+      if (!context?.ap?.fingerprintsEqual || !this.fingerprintsEqual) {
+        fail(SAFE.authority, "AUTHORITY_SCHEMA", "AP_FINGERPRINT_COMPARE");
+      }
+      if (!context?.ap?.migrationCompleted || !context?.ap?.authorityGuardPassed ||
+          !context?.ap?.identity2Validated || !context?.ap?.fingerprintsEqual ||
+          !context?.ap?.authorityMinted || context?.ap?.authorityRevoked || !context?.ap?.poolAllocated ||
+          !this.migrationCompleted || !this.authorityGuardPassed ||
+          !this.authoritySecondIdentityChecked || !this.fingerprintsEqual ||
+          !this.authorityRecord || this.authorityRevoked || this.poolConstructs !== 1) {
+        fail(SAFE.flow, "CAPABILITY_CALLBACK", "AP_OPERATION");
+      }
+      const callSite = node.pos;
+      const range = context?.operationRange ?? { min: 0, max: 0 };
+      if (this.operationInvocationNodes.includes(callSite) || (context?.loopDepth ?? 0) > 0) {
+        context.operationRange = { min: range.min, max: 2 };
+      } else {
+        this.operationInvocationNodes.push(callSite);
+        context.operationRange = {
+          min: Math.min(2, range.min + 1),
+          max: Math.min(2, range.max + 1),
+        };
+      }
+      this.operationInvocations = this.operationInvocationNodes.length;
       return value({ kind: "operation-result" });
     }
     if (callee.caps.has("PROMISE_RESOLVE")) {
       fail(SAFE.unresolved, "CALL_RESOLUTION", "TV_CALLBACK_UNMODELED");
     }
-    if (callee.fn && isFunctionLike(callee.fn)) return this.analyzeFunction(callee.fn, args, callee.closure, callee.bound);
+    if (callee.fn && isFunctionLike(callee.fn)) return this.analyzeFunction(callee.fn, args, callee.closure, callee.bound, context);
     const locationAtCall = () => {
       const point = this.sourceFile.getLineAndCharacterOfPosition(node.getStart(this.sourceFile));
       return { line: point.line + 1, column: point.character + 1 };
@@ -2793,6 +3369,9 @@ class ClosureAnalyzer {
     const exact = (name, expectedKeys) => {
       const item = record.props.get(name);
       const expected = new Set(expectedKeys.map((key) => this.originIdentity(key)));
+      if (item?.exact === false && item.literalType === "number") {
+        fail(SAFE.authority, "AUTHORITY_SCHEMA", "PV_EXACT_RELATION");
+      }
       if (!item || item.exact === false || !sameIdentitySet(provenanceOf(item), expected)) {
         fail(SAFE.authority, "AUTHORITY_SCHEMA");
       }
@@ -2808,8 +3387,10 @@ class ClosureAnalyzer {
       this.originIdentity("default.phase.initialization"),
     ]);
     if (!phase || phase.exact === false || !sameIdentitySet(provenanceOf(phase), expectedPhase)) {
-      fail(SAFE.authority, "AUTHORITY_SCHEMA");
+      fail(SAFE.authority, "AUTHORITY_SCHEMA", "PV_EXACT_RELATION");
     }
+    this.provenanceObligations.delete("authority-record");
+    this.provenanceObligations.delete("migration-folder");
   }
 
   assignTarget(target, right, env, context) {
@@ -2842,6 +3423,8 @@ class ClosureAnalyzer {
       }
       if (receiver === this.authorityRecord && name === "valid" && isBooleanValue(right, false)) {
         assignValueProperty(receiver, name, right);
+        this.authorityRevoked = true;
+        this.markAnalysisFact(context, "authorityRevoked");
         return;
       }
       if (hasTaint(right, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC)) fail(SAFE.flow, "CAPABILITY_STORAGE");
