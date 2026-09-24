@@ -56,8 +56,32 @@ const BOXED_PRIMITIVE_UNBOXERS = Object.freeze([
   BigInt.prototype.valueOf,
   Symbol.prototype.valueOf,
 ]);
-const SURFACE_PROBE_KEY = Symbol("ssc.surface.origin.probe");
+const TRUSTED_SURFACE_ORIGIN_KINDS = new Set([
+  "ordinary",
+  "array",
+  "map",
+  "set",
+  "boxed-primitive",
+  "admission-error",
+]);
 const NATIVE_ERROR_STACK_DESCRIPTOR = Object.getOwnPropertyDescriptor(new Error(), "stack");
+
+class Run669PrivateStateCarrier extends class {
+  constructor(target) {
+    return target;
+  }
+} {
+  #value;
+
+  constructor(target, value) {
+    super(target);
+    this.#value = value;
+  }
+
+  static has(candidate) {
+    return isSurfaceObject(candidate) && #value in candidate;
+  }
+}
 
 const SCENARIOS = Object.freeze([
   Object.freeze({ id: "SC01_ORDINARY_SUCCESS", rejectOperation: false, rejectCleanup: false, rejectSecondIdentity: false }),
@@ -402,6 +426,7 @@ function installWeakMapObserver(ledger, state, ObservedPool) {
         if (state.current) state.current.protocolRejected = true;
         return result;
       }
+      rememberSurfaceOrigin(state, key, "ordinary", "trusted-authority-token-allocation");
       state.authorityRecord = record;
       state.authorityPool = record.pool;
       state.current.authorityCaptureCount += 1;
@@ -1827,35 +1852,34 @@ function currentSurfaceRunId(state) {
 
 function rememberSurfaceOrigin(state, candidate, kind, producer) {
   if (!candidate || (typeof candidate !== "object" && typeof candidate !== "function")) return null;
+  const runId = currentSurfaceRunId(state);
+  const existing = state.surfaceOrigins.get(candidate);
+  const proxy = types.isProxy(candidate);
+  let privateState = false;
+  if (!proxy) {
+    try {
+      privateState = Run669PrivateStateCarrier.has(candidate);
+    } catch {
+      privateState = true;
+    }
+  }
+  const supported = TRUSTED_SURFACE_ORIGIN_KINDS.has(kind) && !proxy && !privateState;
+  if (existing && existing.identity === candidate && existing.runId === runId) {
+    if (existing.kind === "unsupported" || supported) return existing;
+  }
   const entry = Object.freeze({
     identity: candidate,
-    kind,
-    producer,
-    runId: currentSurfaceRunId(state),
+    kind: supported ? kind : "unsupported",
+    producer: supported ? producer : privateState ? "private-state-origin" : proxy ? "proxy-identity" : "unresolved-construction-origin",
+    runId,
   });
   state.surfaceOrigins.set(candidate, entry);
   return entry;
 }
 
-function intrinsicSurfaceOrigin(candidate) {
-  if (Array.isArray(candidate)) return "array";
-  if (types.isWeakMap(candidate) || types.isWeakSet(candidate) || types.isPromise(candidate) ||
-      typeof candidate === "function") return "unsupported";
-  try {
-    Reflect.apply(Map.prototype.has, candidate, [SURFACE_PROBE_KEY]);
-    return "map";
-  } catch { /* Not an intrinsic Map allocation. */ }
-  try {
-    Reflect.apply(Set.prototype.has, candidate, [Symbol.for("ssc.surface.origin.probe")]);
-    return "set";
-  } catch { /* Not an intrinsic Set allocation. */ }
-  for (const unbox of BOXED_PRIMITIVE_UNBOXERS) {
-    try {
-      Reflect.apply(unbox, candidate, []);
-      return "boxed-primitive";
-    } catch { /* Not a boxed primitive with the required internal slot. */ }
-  }
-  return null;
+function trustedSurfaceAllocation(state, candidate, kind, producer) {
+  rememberSurfaceOrigin(state, candidate, kind, producer);
+  return candidate;
 }
 
 function isSurfaceObject(candidate) {
@@ -1864,22 +1888,21 @@ function isSurfaceObject(candidate) {
 
 function surfaceOrigin(state, candidate) {
   if (!isSurfaceObject(candidate)) return null;
+  if (types.isProxy(candidate)) return rememberSurfaceOrigin(state, candidate, "unsupported", "proxy-identity");
+  try {
+    if (Run669PrivateStateCarrier.has(candidate)) {
+      return rememberSurfaceOrigin(state, candidate, "unsupported", "private-state-origin");
+    }
+  } catch {
+    return rememberSurfaceOrigin(state, candidate, "unsupported", "unresolved-private-state");
+  }
   const existing = state.surfaceOrigins.get(candidate);
   const runId = currentSurfaceRunId(state);
   if (existing) {
     if (existing.identity === candidate && existing.runId === runId) return existing;
     return rememberSurfaceOrigin(state, candidate, "unsupported", "stale-run-identity");
   }
-  if (types.isProxy(candidate)) return rememberSurfaceOrigin(state, candidate, "unsupported", "proxy-identity");
-  const intrinsic = intrinsicSurfaceOrigin(candidate);
-  if (intrinsic) return rememberSurfaceOrigin(state, candidate, intrinsic, "verified-intrinsic-allocation");
-  let prototype;
-  try { prototype = Object.getPrototypeOf(candidate); }
-  catch { return rememberSurfaceOrigin(state, candidate, "unsupported", "unresolved-prototype"); }
-  if (prototype === null || prototype === Object.prototype) {
-    return rememberSurfaceOrigin(state, candidate, "ordinary", "verified-ordinary-boundary");
-  }
-  return rememberSurfaceOrigin(state, candidate, "unsupported", "unresolved-construction-origin");
+  return rememberSurfaceOrigin(state, candidate, "unsupported", "unregistered-construction-origin");
 }
 
 function capturePrototypeMutation(state, target, nextPrototype) {
@@ -1906,6 +1929,20 @@ function capturePrototypeMutation(state, target, nextPrototype) {
 function installPrototypeMutationObservers(state, ledger) {
   const originalObjectSetPrototypeOf = Object.setPrototypeOf;
   const originalReflectSetPrototypeOf = Reflect.setPrototypeOf;
+  const originalReflectConstruct = Reflect.construct;
+  ledger.install(Reflect, "construct", function observedReflectConstruct(target, args, newTarget) {
+    const result = arguments.length >= 3
+      ? Reflect.apply(originalReflectConstruct, this, [target, args, newTarget])
+      : Reflect.apply(originalReflectConstruct, this, [target, args]);
+    if (state.active && !state.selfTest && isSurfaceObject(result)) {
+      const existing = state.surfaceOrigins.get(result);
+      if (existing && existing.identity === result && existing.runId === currentSurfaceRunId(state) &&
+          existing.kind !== "unsupported") {
+        rememberSurfaceOrigin(state, result, "unsupported", "reflect-construct-exposure");
+      }
+    }
+    return result;
+  });
   ledger.install(Object, "setPrototypeOf", function observedObjectSetPrototypeOf(target, prototype) {
     if (state.active && !state.selfTest) capturePrototypeMutation(state, target, prototype);
     return Reflect.apply(originalObjectSetPrototypeOf, this, [target, prototype]);
@@ -2213,10 +2250,10 @@ async function runExactPoolBoundaryControls(state) {
 }
 
 function runSurfaceControls(state) {
-  const deepRoot = {};
+  const deepRoot = trustedSurfaceAllocation(state, {}, "ordinary", "surface-depth-root");
   let deepCursor = deepRoot;
   for (let index = 0; index < MAX_INSPECTION_DEPTH + 3; index += 1) {
-    deepCursor.next = {};
+    deepCursor.next = trustedSurfaceAllocation(state, {}, "ordinary", "surface-depth-child");
     deepCursor = deepCursor.next;
   }
   Object.defineProperty(deepCursor, "hidden", {
@@ -2227,14 +2264,14 @@ function runSurfaceControls(state) {
   });
   const deepSurface = inspectSurface(deepRoot, state);
 
-  const boundedRoot = {};
+  const boundedRoot = trustedSurfaceAllocation(state, {}, "ordinary", "surface-entry-root");
   for (let index = 0; index < MAX_INSPECTION_ENTRIES + 2; index += 1) {
-    boundedRoot[`entry${index}`] = {};
+    boundedRoot[`entry${index}`] = trustedSurfaceAllocation(state, {}, "ordinary", "surface-entry-child");
   }
   const boundedSurface = inspectSurface(boundedRoot, state);
 
   const hiddenSymbol = Symbol("hidden-authority-field");
-  const symbolSurfaceValue = {};
+  const symbolSurfaceValue = trustedSurfaceAllocation(state, {}, "ordinary", "surface-symbol-root");
   Object.defineProperty(symbolSurfaceValue, hiddenSymbol, {
     configurable: true,
     enumerable: false,
@@ -2306,7 +2343,12 @@ function runInheritedAndMapSurfaceControls(state) {
   const inheritedRoot = Object.create(inheritedPrototype);
   rememberSurfaceOrigin(state, inheritedRoot, "ordinary", "Object.create-control");
   const inheritedSurface = inspectSurface(inheritedRoot, state);
-  const mapValue = new Map([["diagnostic", state.markers.cleanup]]);
+  const mapValue = trustedSurfaceAllocation(
+    state,
+    new Map([["diagnostic", state.markers.cleanup]]),
+    "map",
+    "surface-map-allocation",
+  );
   let customRendererCalled = false;
   Object.defineProperty(mapValue, inspect.custom, {
     configurable: true,
@@ -2739,6 +2781,7 @@ export async function runSecretSurfaceF3(options = {}) {
 
 function makeRun660AuthorityRecord(state, pool) {
   const authority = Object.freeze({});
+  if (state.current) rememberSurfaceOrigin(state, authority, "ordinary", "trusted-authority-token-allocation");
   return {
     authority,
     brand: Symbol("migration-authority"),
@@ -2795,6 +2838,7 @@ function prepareRun660HashAdmission(state, { authorized = true } = {}) {
     state.authorityPool = null;
   }
   state.current = current;
+  if (authorized) rememberSurfaceOrigin(state, state.authorityRecord.authority, "ordinary", "trusted-authority-token-allocation");
   return current;
 }
 
@@ -2830,6 +2874,7 @@ function prepareRun660MigrationReadAdmission(state) {
   state.authorityPool = pool;
   current.authorityTokenFrozen = Object.isFrozen(record.authority);
   state.current = current;
+  rememberSurfaceOrigin(state, record.authority, "ordinary", "trusted-authority-token-allocation");
   return current;
 }
 
@@ -3150,14 +3195,34 @@ export async function runSecretSurfaceRun660RuntimeControls() {
     appendSurfaceCase("RUN663_HS_PRIVATE_ORDINARY_CUSTOM_PROTO", secretCustomPrototype);
 
     let getterCalls = 0;
-    const getterValue = Object.defineProperty({}, "secret", { get() { getterCalls += 1; return marker; } });
+    const getterValue = trustedSurfaceAllocation(
+      surfaceState,
+      Object.defineProperty({}, "secret", { get() { getterCalls += 1; return marker; } }),
+      "ordinary",
+      "run660-getter-control",
+    );
     const getterSurface = inspectSurface(getterValue, surfaceState);
-    const customMap = new Map([["marker", marker]]);
+    const customMap = trustedSurfaceAllocation(
+      surfaceState,
+      new Map([["marker", marker]]),
+      "map",
+      "run660-map-control",
+    );
     Object.defineProperty(customMap, inspect.custom, { configurable: true, value() { effects.renderer += 1; return "safe"; } });
     const customMapSurface = inspectSurface(customMap, surfaceState);
-    const customIterator = { [Symbol.iterator]() { effects.iterator += 1; return [marker][Symbol.iterator](); } };
+    const customIterator = trustedSurfaceAllocation(
+      surfaceState,
+      { [Symbol.iterator]() { effects.iterator += 1; return [marker][Symbol.iterator](); } },
+      "ordinary",
+      "run660-iterator-control",
+    );
     const iteratorSurface = inspectSurface(customIterator, surfaceState);
-    const customJson = { toJSON() { effects.toJSON += 1; return marker; } };
+    const customJson = trustedSurfaceAllocation(
+      surfaceState,
+      { toJSON() { effects.toJSON += 1; return marker; } },
+      "ordinary",
+      "run660-json-control",
+    );
     const jsonSurface = inspectSurface(customJson, surfaceState);
 
     const inheritedPrototype = { inherited: "clean" };
@@ -3178,12 +3243,13 @@ export async function runSecretSurfaceRun660RuntimeControls() {
       ordinaryNull,
       ordinaryTransition,
       ordinaryObject,
-      ["clean"],
-      new Map([["clean", "value"]]),
-      new Set(["clean"]),
-      new String("clean"),
+      trustedSurfaceAllocation(surfaceState, ["clean"], "array", "run660-array-control"),
+      trustedSurfaceAllocation(surfaceState, new Map([["clean", "value"]]), "map", "run660-map-positive-control"),
+      trustedSurfaceAllocation(surfaceState, new Set(["clean"]), "set", "run660-set-positive-control"),
+      trustedSurfaceAllocation(surfaceState, new String("clean"), "boxed-primitive", "run660-boxed-positive-control"),
     ];
-    const cyclic = {}; cyclic.self = cyclic;
+    const cyclic = trustedSurfaceAllocation(surfaceState, {}, "ordinary", "run660-cycle-control");
+    cyclic.self = cyclic;
     structural.push(cyclic);
     const structuralPass = structural.every((value) => inspectSurface(value, surfaceState).safe);
     const hsPass = surfaceCases.length === 14 && surfaceCases.every((item) =>
@@ -3222,6 +3288,169 @@ export async function runSecretSurfaceRun660RuntimeControls() {
   });
 }
 
+export async function runSecretSurfaceRun669PrivateStateOriginControls() {
+  const surfaceState = newRunState();
+  surfaceState.current = { runId: surfaceState.runSerial++ };
+  surfaceState.observedPool = function ObservedPool() {};
+  const fixturePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..", SUBJECT_RELATIVE);
+  const frozenSubject = await import(`${pathToFileURL(fixturePath).href}?run669-hs5-${surfaceState.current.runId}`);
+  surfaceState.admissionErrorPrototype = frozenSubject.DisposablePostgresFixtureAdmissionError.prototype;
+  const surfaceMutationLedger = new PatchLedger();
+  installPrototypeMutationObservers(surfaceState, surfaceMutationLedger);
+  surfaceState.active = true;
+  const marker = surfaceState.markers.connection;
+  const pool = createSyntheticPool(surfaceState);
+  const baseRecord = makeRun660AuthorityRecord(surfaceState, pool);
+  const negativeCases = [];
+  const appendNegative = (id, candidate, cachedSafe = null) => {
+    const observed = inspectSurface(candidate, surfaceState);
+    const record = { ...baseRecord, database: candidate };
+    const authorityRejected = !authorityMetadataSafe(record, surfaceState);
+    const publicError = new frozenSubject.DisposablePostgresFixtureAdmissionError();
+    rememberSurfaceOrigin(surfaceState, publicError, "admission-error", "frozen-helper-allocation");
+    Object.defineProperty(publicError, "opaquePayload", {
+      configurable: true,
+      enumerable: false,
+      value: candidate,
+      writable: true,
+    });
+    const publicFailureRejected = !publicFailure(publicError, surfaceState);
+    negativeCases.push(Object.freeze({
+      id,
+      safe: observed.safe,
+      invalid: observed.invalid,
+      detector: observed.detector ?? null,
+      authorityRejected,
+      publicFailureRejected,
+      ...(cachedSafe === null ? {} : { cachedSafe }),
+    }));
+  };
+  try {
+    const unregisteredOrdinary = Object.create(Object.prototype);
+    appendNegative("unregistered_ordinary", unregisteredOrdinary);
+
+    const shapeFactories = [
+      ["reflect_object_prototype", () => Object.create(Object.prototype)],
+      ["ordinary", () => ({})],
+      ["null_prototype", () => Object.create(null)],
+      ["array", () => []],
+      ["map", () => new Map([["clean", "value"]])],
+      ["set", () => new Set(["clean"])],
+      ["boxed_string", () => new String("clean")],
+    ];
+    for (const [shape, create] of shapeFactories) {
+      for (const [stateId, privateValue] of [["secret", marker], ["clean", "clean"]]) {
+        const candidate = create();
+        Reflect.construct(Run669PrivateStateCarrier, [candidate, privateValue]);
+        appendNegative(`${shape}_${stateId}`, candidate);
+      }
+    }
+
+    for (const [stateId, privateValue] of [["secret", marker], ["clean", "clean"]]) {
+      const candidate = trustedSurfaceAllocation(
+        surfaceState,
+        {},
+        "ordinary",
+        "run669-cached-ordinary-allocation",
+      );
+      const cachedSafe = inspectSurface(candidate, surfaceState).safe;
+      Reflect.construct(Run669PrivateStateCarrier, [candidate, privateValue]);
+      appendNegative(`cached_ordinary_${stateId}`, candidate, cachedSafe);
+    }
+
+    const cleanOrdinary = trustedSurfaceAllocation(
+      surfaceState,
+      { value: "clean" },
+      "ordinary",
+      "run669-positive-ordinary-allocation",
+    );
+    const cleanNullPrototype = trustedSurfaceAllocation(
+      surfaceState,
+      Object.create(null),
+      "ordinary",
+      "run669-positive-null-prototype-allocation",
+    );
+    const cleanArray = trustedSurfaceAllocation(
+      surfaceState,
+      ["clean"],
+      "array",
+      "run669-positive-array-allocation",
+    );
+    const cleanMap = trustedSurfaceAllocation(
+      surfaceState,
+      new Map([["clean", "value"]]),
+      "map",
+      "run669-positive-map-allocation",
+    );
+    const cleanSet = trustedSurfaceAllocation(
+      surfaceState,
+      new Set(["clean"]),
+      "set",
+      "run669-positive-set-allocation",
+    );
+    const cleanBoxedString = trustedSurfaceAllocation(
+      surfaceState,
+      new String("clean"),
+      "boxed-primitive",
+      "run669-positive-boxed-allocation",
+    );
+    const safeTransitionPrototype = trustedSurfaceAllocation(
+      surfaceState,
+      Object.create(null),
+      "ordinary",
+      "run669-positive-transition-prototype",
+    );
+    const safeTransition = trustedSurfaceAllocation(
+      surfaceState,
+      { value: "clean" },
+      "ordinary",
+      "run669-positive-transition-allocation",
+    );
+    Object.setPrototypeOf(safeTransition, safeTransitionPrototype);
+    const positiveCases = [
+      ["ordinary", cleanOrdinary, "ordinary"],
+      ["null_prototype", cleanNullPrototype, "ordinary"],
+      ["array", cleanArray, "array"],
+      ["map", cleanMap, "map"],
+      ["set", cleanSet, "set"],
+      ["boxed_string", cleanBoxedString, "boxed-primitive"],
+      ["safe_transition", safeTransition, "ordinary"],
+    ].map(([id, candidate, kind]) => {
+      const observed = inspectSurface(candidate, surfaceState);
+      const record = { ...baseRecord, database: candidate };
+      return Object.freeze({
+        id,
+        kind,
+        safe: observed.safe,
+        authorityAccepted: authorityMetadataSafe(record, surfaceState),
+      });
+    });
+    const cleanAdmissionError = new frozenSubject.DisposablePostgresFixtureAdmissionError();
+    rememberSurfaceOrigin(surfaceState, cleanAdmissionError, "admission-error", "frozen-helper-allocation");
+    const frozenAdmissionErrorAccepted = publicFailure(cleanAdmissionError, surfaceState);
+    const positives = Object.freeze([
+      ...positiveCases,
+      Object.freeze({ id: "frozen_admission_error", publicAccepted: frozenAdmissionErrorAccepted }),
+    ]);
+    const negatives = Object.freeze(negativeCases);
+    const pass = negatives.length === 17 && negatives.every((item) =>
+      item.safe === false && item.invalid === true && item.detector === "HS_INTERNAL_SLOT_UNSUPPORTED" &&
+      item.authorityRejected === true && item.publicFailureRejected === true &&
+      (item.cachedSafe === undefined || item.cachedSafe === true)) &&
+      positives.slice(0, 7).every((item) => item.safe === true && item.authorityAccepted === true) &&
+      positives[7]?.publicAccepted === true;
+    return Object.freeze({
+      id: "RUN669_HS5_PRIVATE_STATE_ORIGIN_PROVENANCE",
+      negatives,
+      positives,
+      pass,
+    });
+  } finally {
+    surfaceState.active = false;
+    surfaceMutationLedger.restore();
+  }
+}
+
 export async function runSecretSurfaceIndependentRuntimeCorpus() {
   const require = createRequire(import.meta.url);
   const crypto = require("node:crypto");
@@ -3241,14 +3470,89 @@ export async function runSecretSurfaceIndependentRuntimeCorpus() {
   rememberSurfaceOrigin(surfaceState, inheritedNonenumPrototype, "ordinary", "corpus-prototype-literal");
   const inheritedNonenumRoot = Object.create(inheritedNonenumPrototype);
   rememberSurfaceOrigin(surfaceState, inheritedNonenumRoot, "ordinary", "Object.create-corpus");
+  const symbolArray = trustedSurfaceAllocation(
+    surfaceState,
+    [...Array(100).fill(0), Symbol(marker)],
+    "array",
+    "corpus-array-allocation",
+  );
+  const symbolArrayRoot = trustedSurfaceAllocation(
+    surfaceState,
+    { items: symbolArray },
+    "ordinary",
+    "corpus-object-allocation",
+  );
+  const nestedSymbolChild = trustedSurfaceAllocation(
+    surfaceState,
+    { y: Symbol(marker) },
+    "ordinary",
+    "corpus-object-allocation",
+  );
+  const nestedSymbolRoot = trustedSurfaceAllocation(
+    surfaceState,
+    { x: nestedSymbolChild },
+    "ordinary",
+    "corpus-object-allocation",
+  );
+  const nonenum = trustedSurfaceAllocation(
+    surfaceState,
+    Object.defineProperty({}, "x", { value: marker }),
+    "ordinary",
+    "corpus-object-allocation",
+  );
+  const getter = trustedSurfaceAllocation(
+    surfaceState,
+    Object.defineProperty({}, "x", { get() { return marker; } }),
+    "ordinary",
+    "corpus-object-allocation",
+  );
+  const throwGetter = trustedSurfaceAllocation(
+    surfaceState,
+    Object.defineProperty({}, "x", { get() { throw new Error("synthetic"); } }),
+    "ordinary",
+    "corpus-object-allocation",
+  );
+  const wide = trustedSurfaceAllocation(
+    surfaceState,
+    Object.fromEntries(Array.from({ length: 258 }, (_, index) => ["x" + index, 0])),
+    "ordinary",
+    "corpus-wide-object-allocation",
+  );
+  const wideLateMarker = trustedSurfaceAllocation(
+    surfaceState,
+    Object.fromEntries(Array.from(
+      { length: 258 },
+      (_, index) => ["x" + index, index === 257 ? marker : 0],
+    )),
+    "ordinary",
+    "corpus-wide-object-allocation",
+  );
+  const mapInternal = trustedSurfaceAllocation(
+    surfaceState,
+    new Map([["x", marker]]),
+    "map",
+    "corpus-map-allocation",
+  );
+  const setInternal = trustedSurfaceAllocation(
+    surfaceState,
+    new Set([marker]),
+    "set",
+    "corpus-set-allocation",
+  );
+  const boxedSymbol = trustedSurfaceAllocation(
+    surfaceState,
+    Object(Symbol(marker)),
+    "boxed-primitive",
+    "corpus-boxed-allocation",
+  );
   const surfaceCases = [
     ["symbol", Symbol(marker)],
-    ["symbol_key", { [Symbol(marker)]: 0 }],
-    ["symbol_array", { items: [...Array(100).fill(0), Symbol(marker)] }],
-    ["nested_symbol", { x: { y: Symbol(marker) } }],
-    ["nonenum", Object.defineProperty({}, "x", { value: marker })],
-    ["getter", Object.defineProperty({}, "x", { get() { return marker; } })],
-    ["throw_getter", Object.defineProperty({}, "x", { get() { throw new Error("synthetic"); } })],
+    ["symbol_key", trustedSurfaceAllocation(surfaceState, { [Symbol(marker)]: 0 }, "ordinary", "corpus-object-allocation")],
+    ["symbol_array", symbolArrayRoot],
+    ["nested_symbol", nestedSymbolRoot],
+    ["nonenum", nonenum],
+    ["getter", getter],
+    ["throw_getter", throwGetter],
     ["throw_descriptor", new Proxy({}, {
       getOwnPropertyDescriptor() { throw new Error("synthetic"); },
       ownKeys() { return ["x"]; },
@@ -3256,17 +3560,19 @@ export async function runSecretSurfaceIndependentRuntimeCorpus() {
     ["inherited_long", inheritedLongRoot],
     ["inherited", inheritedRoot],
     ["inherited_nonenum", inheritedNonenumRoot],
-    ["wide_258", Object.fromEntries(Array.from({ length: 258 }, (_, index) => ["x" + index, 0]))],
-    ["wide_late_marker", Object.fromEntries(Array.from(
-      { length: 258 },
-      (_, index) => ["x" + index, index === 257 ? marker : 0],
-    ))],
-    ["map_internal", new Map([["x", marker]])],
-    ["set_internal", new Set([marker])],
-    ["boxed_symbol", Object(Symbol(marker))],
+    ["wide_258", wide],
+    ["wide_late_marker", wideLateMarker],
+    ["map_internal", mapInternal],
+    ["set_internal", setInternal],
+    ["boxed_symbol", boxedSymbol],
   ];
   let customRendererCalled = false;
-  const customInspectedMap = new Map([["x", marker]]);
+  const customInspectedMap = trustedSurfaceAllocation(
+    surfaceState,
+    new Map([["x", marker]]),
+    "map",
+    "corpus-map-allocation",
+  );
   Object.defineProperty(customInspectedMap, inspect.custom, {
     configurable: true,
     value() {
@@ -3275,10 +3581,10 @@ export async function runSecretSurfaceIndependentRuntimeCorpus() {
     },
   });
   surfaceCases.push(["map_custom_inspect", customInspectedMap]);
-  const deepRoot = {};
+  const deepRoot = trustedSurfaceAllocation(surfaceState, {}, "ordinary", "corpus-depth-root");
   let deepCursor = deepRoot;
   for (let index = 0; index < 7; index += 1) {
-    deepCursor.next = {};
+    deepCursor.next = trustedSurfaceAllocation(surfaceState, {}, "ordinary", "corpus-depth-child");
     deepCursor = deepCursor.next;
   }
   surfaceCases.push(["depth_7", deepRoot]);

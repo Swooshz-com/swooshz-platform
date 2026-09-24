@@ -24,6 +24,7 @@ import {
   runSecretSurfaceBehavioralHarness,
   runSecretSurfaceIndependentRuntimeCorpus,
   runSecretSurfaceRun660RuntimeControls,
+  runSecretSurfaceRun669PrivateStateOriginControls,
 } from "./support/disposable-postgres-secret-surface-harness.mjs";
 
 const RUN658_OBLIGATION_IDS = Object.freeze([
@@ -987,6 +988,28 @@ test("RUN660_HS5_DP6_RUNTIME_BOUNDARY_CONTROLS", async () => {
     assert.equal(item.underlyingDelegateDelta, 0, id);
     assert.equal(item.pass, true, id);
   }
+});
+
+test("RUN669_G4_669_01_PRIVATE_STATE_ORIGIN_PROVENANCE", async () => {
+  const result = await runSecretSurfaceRun669PrivateStateOriginControls();
+  assert.equal(result.id, "RUN669_HS5_PRIVATE_STATE_ORIGIN_PROVENANCE");
+  assert.equal(result.pass, true);
+  assert.equal(result.negatives.length, 17);
+  for (const item of result.negatives) {
+    assert.equal(item.safe, false, item.id);
+    assert.equal(item.invalid, true, item.id);
+    assert.equal(item.detector, "HS_INTERNAL_SLOT_UNSUPPORTED", item.id);
+    assert.equal(item.authorityRejected, true, item.id);
+    assert.equal(item.publicFailureRejected, true, item.id);
+    if (item.cachedSafe !== undefined) assert.equal(item.cachedSafe, true, item.id);
+  }
+  assert.equal(result.positives.length, 8);
+  for (const item of result.positives.slice(0, 7)) {
+    assert.equal(item.safe, true, item.id);
+    assert.equal(item.authorityAccepted, true, item.id);
+  }
+  assert.equal(result.positives[7].id, "frozen_admission_error");
+  assert.equal(result.positives[7].publicAccepted, true);
 });
 
 test("RUN668_RUN660_TO_F3_SAME_PROCESS_REGRESSION", async () => {
