@@ -376,6 +376,10 @@ const Taint = Object.freeze({
   MAYBE_SENSITIVE: 4,
 });
 
+const NON_OBJECT_VALUE_KINDS = new Set([
+  "primitive", "string", "number", "boolean", "null", "undefined", "bigint", "symbol",
+]);
+
 const REACHABLE_IMPORT_CAPABILITIES = Object.freeze({
   drizzle: "DRIZZLE",
   migrate: "MIGRATE",
@@ -401,6 +405,18 @@ class StaticFailure extends Error {
 
 function fail(code, detector, obligation = null, location = null, violations = []) {
   throw new StaticFailure(code, detector, obligation, location, violations);
+}
+
+function minimumOf(items, select) {
+  let minimum = Number.POSITIVE_INFINITY;
+  for (const item of items) minimum = Math.min(minimum, select(item));
+  return minimum;
+}
+
+function maximumOf(items, select) {
+  let maximum = Number.NEGATIVE_INFINITY;
+  for (const item of items) maximum = Math.max(maximum, select(item));
+  return maximum;
 }
 
 function failureOf(error) {
@@ -482,6 +498,31 @@ function closureCaptureValues(item) {
     : value({ kind: "unknown", taint: Taint.MAYBE_SENSITIVE }));
 }
 
+function containsPublicBoundaryValue(item, seen = new Set(), publicFunctionWitnesses = null) {
+  if (!item || (typeof item !== "object" && typeof item !== "function") || seen.has(item)) return false;
+  seen.add(item);
+  if (item.kind === "input" || item.kind === "authority-token") return true;
+  const callableTargets = item.callableTargets?.length
+    ? item.callableTargets
+    : item.fn && isFunctionLike(item.fn) ? [{ fn: item.fn }] : [];
+  if (publicFunctionWitnesses && callableTargets.some((target) => target.fn &&
+      publicFunctionWitnesses.has(String(target.fn.pos) + ":" + String(target.fn.end)))) return true;
+  return [
+    ...closureCaptureValues(item),
+    ...(item.props?.values?.() ?? []),
+    ...(item.historyProps?.values?.() ?? []),
+    ...(item.elements ?? []),
+    ...(item.map?.keys?.() ?? []),
+    ...(item.map?.values?.() ?? []),
+    ...(item.methods?.values?.() ?? []),
+    ...(item.refs ?? []),
+    item.classRef,
+    item.bound,
+    item.options,
+    item.record,
+  ].some((child) => containsPublicBoundaryValue(child, seen, publicFunctionWitnesses));
+}
+
 function sameIdentitySet(left, right) {
   const actual = left instanceof Set ? left : new Set(left ?? []);
   const expected = right instanceof Set ? right : new Set(right ?? []);
@@ -505,9 +546,15 @@ function rememberRisk(target, source) {
   }
   target.provenance ??= new Set();
   target.historyProvenance ??= new Set();
-  for (const label of provenanceOf(source)) {
-    target.provenance.add(label);
-    target.historyProvenance.add(label);
+  target.origins ??= target.provenance;
+  target.securityDependencies ??= new Set();
+  for (const origin of provenanceOf(source)) {
+    target.provenance.add(origin);
+    target.historyProvenance.add(origin);
+    target.origins.add(origin);
+  }
+  for (const dependency of source.securityDependencies ?? provenanceOf(source)) {
+    target.securityDependencies.add(dependency);
   }
   return target;
 }
@@ -537,6 +584,32 @@ function deleteValueProperty(target, key) {
 function provenanceOf(item) {
   if (item?.provenance instanceof Set) return item.provenance;
   return new Set();
+}
+
+function exactRelationsOf(item) {
+  return item?.exactRelations instanceof Set ? item.exactRelations : new Set();
+}
+
+function mergeCaptureIdentityMaps(left, right) {
+  const merged = new Map();
+  for (const source of [left, right]) {
+    if (!(source instanceof Map)) continue;
+    for (const [key, identities] of source) {
+      if (!merged.has(key)) merged.set(key, new Set());
+      for (const identity of identities instanceof Set ? identities : [identities]) {
+        merged.get(key).add(identity);
+      }
+    }
+  }
+  return merged;
+}
+
+function sameCaptureIdentityMaps(left, right) {
+  if (!(left instanceof Map) || !(right instanceof Map) || left.size !== right.size) return false;
+  for (const [key, identities] of left) {
+    if (!right.has(key) || !sameIdentitySet(identities, right.get(key))) return false;
+  }
+  return true;
 }
 
 function combinedProvenance(items) {
@@ -578,12 +651,39 @@ function value({
   binding = null,
   provenance = [],
   exact = true,
+  exactRelations = null,
+  securityDependencies = null,
+  precision = null,
+  derived = false,
   normalization = null,
   captureKeys = null,
+  captureCells = null,
+  callableTargets = null,
+  authorityRecord = false,
+  allocationIdentity = null,
+  allocationIdentityCandidates = [],
+  allocationIdentityKinds = null,
+  allocationMayBeUnknown = null,
 } = {}) {
   const directTaint = taint ?? Taint.NONE;
   const directCaps = new Set(caps);
-  const directProvenance = new Set(provenance);
+  const directOrigins = new Set(provenance);
+  const directExactRelations = exactRelations instanceof Set
+    ? new Set(exactRelations)
+    : exact && !derived ? new Set(directOrigins) : new Set();
+  const directDependencies = new Set(securityDependencies ??
+    (directTaint !== Taint.NONE ? directOrigins : []));
+  const identityCandidates = new Set(allocationIdentityCandidates);
+  if (allocationIdentity) identityCandidates.add(allocationIdentity);
+  const identityKinds = new Map(allocationIdentityKinds ?? []);
+  if (allocationIdentity && !identityKinds.has(allocationIdentity)) identityKinds.set(allocationIdentity, kind);
+  const mayBeUnknownAllocation = allocationMayBeUnknown ??
+    (!NON_OBJECT_VALUE_KINDS.has(kind) && identityCandidates.size === 0);
+  const targets = Array.isArray(callableTargets) ? [...callableTargets]
+    : kind === "function" && fn
+      ? [{ fn, closure, captureKeys: captureKeys instanceof Set ? new Set(captureKeys) : captureKeys,
+        captureCells: captureCells instanceof Map ? new Map(captureCells) : captureCells, bound }]
+      : [];
   return {
     kind,
     taint: directTaint,
@@ -597,6 +697,13 @@ function value({
     fn,
     closure,
     captureKeys: captureKeys instanceof Set ? new Set(captureKeys) : captureKeys,
+    captureCells: captureCells instanceof Map ? new Map(captureCells) : captureCells,
+    callableTargets: targets,
+    authorityRecord: Boolean(authorityRecord),
+    allocationIdentity,
+    allocationIdentityCandidates: identityCandidates,
+    allocationIdentityKinds: identityKinds,
+    allocationMayBeUnknown: mayBeUnknownAllocation,
     bound,
     binding,
     label,
@@ -605,15 +712,24 @@ function value({
     map,
     constant,
     literalType,
-    exact,
+    exact: Boolean(exact && !derived),
     normalization,
-    provenance: directProvenance,
-    historyProvenance: new Set(directProvenance),
+    provenance: directOrigins,
+    historyProvenance: new Set(directOrigins),
+    origins: directOrigins,
+    securityDependencies: directDependencies,
+    exactRelations: directExactRelations,
+    precision: precision ?? (derived ? "derived" : exact ? "exact" : "unresolved"),
+    derived: Boolean(derived),
   };
 }
 
 function unknownValue() {
   return value();
+}
+
+function abstractIdentityKey(item) {
+  return item?.allocationIdentity ?? item;
 }
 
 function primitiveValue(label = "", options = {}) {
@@ -688,10 +804,21 @@ function abstractValueSignature(item, seen = new Map()) {
     taint: summarizeRisk(item).taint,
     caps: [...summarizeRisk(item).caps].sort(),
     provenance: [...provenanceOf(item)].map((entry) => entry?.description ?? String(entry)).sort(),
+    origins: [...(item.origins ?? provenanceOf(item))].map((entry) => entry?.description ?? String(entry)).sort(),
+    securityDependencies: [...(item.securityDependencies ?? provenanceOf(item))]
+      .map((entry) => entry?.description ?? String(entry)).sort(),
+    exactRelations: [...exactRelationsOf(item)].map((entry) => entry?.description ?? String(entry)).sort(),
     exact: item.exact !== false,
+    precision: item.precision ?? "unresolved",
+    derived: item.derived === true,
+    normalization: item.normalization ?? null,
     literalType: item.literalType,
     constant: `${typeof item.constant}:${String(item.constant)}`,
     label: item.label,
+    allocationIdentity: item.allocationIdentity ?? null,
+    allocationIdentityCandidates: [...(item.allocationIdentityCandidates ?? [])].sort(),
+    allocationIdentityKinds: [...(item.allocationIdentityKinds ?? [])].sort(([left], [right]) => left.localeCompare(right)),
+    allocationMayBeUnknown: item.allocationMayBeUnknown === true,
     fn: item.fn ? `${item.fn.pos}:${item.fn.end}` : "",
     props: children(item.props),
     history: children(item.historyProps),
@@ -700,6 +827,14 @@ function abstractValueSignature(item, seen = new Map()) {
       `${abstractValueSignature(key, seen)}=${abstractValueSignature(child, seen)}`).sort(),
     methods: children(item.methods),
     closure: children(closureEntries),
+    captureCells: [...(item.captureCells ?? [])].map(([key, identities]) =>
+      `${key}:${[...(identities instanceof Set ? identities : [identities])].sort().join(",")}`).sort(),
+    callableTargets: (item.callableTargets ?? []).map((target) => JSON.stringify({
+      fn: target.fn ? `${target.fn.pos}:${target.fn.end}` : "",
+      bound: target.bound?.kind ?? "",
+      captureCells: [...(target.captureCells ?? [])].map(([key, identities]) =>
+        `${key}:${[...(identities instanceof Set ? identities : [identities])].sort().join(",")}`).sort(),
+    })).sort(),
   });
 }
 
@@ -713,63 +848,138 @@ function environmentSignature(env) {
 function hasExactProvenance(item, expectedKeys) {
   return item?.exact !== false &&
     sameIdentitySet(
-      provenanceOf(item),
+      exactRelationsOf(item),
       new Set(expectedKeys.map((key) => key)),
     );
+}
+
+function sameExactPrimitiveValue(left, right) {
+  return left === right || (left?.kind === right?.kind &&
+    ["primitive", "string"].includes(left?.kind) &&
+    left.literalType === right.literalType && Object.is(left.constant, right.constant) &&
+    left.exact !== false && right.exact !== false &&
+    sameIdentitySet(exactRelationsOf(left), exactRelationsOf(right)));
 }
 
 function capabilityValue(cap, options = {}) {
   return value({ ...options, kind: "capability", caps: [cap] });
 }
 
-function mergeValues(left, right) {
+function mergeValues(left, right, seen = new Map(), missingAlternative = null) {
   if (!left && !right) return null;
   if (!left) return right;
   if (!right) return left;
   if (left === right) return left;
-  if (left.kind === "unknown") {
-    rememberRisk(right, left);
-    return right;
-  }
-  if (right.kind === "unknown") {
-    rememberRisk(left, right);
-    return left;
+  missingAlternative ??= value({ kind: "unknown", exact: false });
+  const priorPairs = seen.get(left);
+  if (priorPairs?.has(right)) return priorPairs.get(right);
+
+  const leftOrigins = provenanceOf(left);
+  const rightOrigins = provenanceOf(right);
+  const origins = new Set([...leftOrigins, ...rightOrigins]);
+  const leftRelations = exactRelationsOf(left);
+  const rightRelations = exactRelationsOf(right);
+  const commonRelations = new Set([...leftRelations].filter((relation) => rightRelations.has(relation)));
+  const securityDependencies = new Set([
+    ...(left.securityDependencies ?? leftOrigins),
+    ...(right.securityDependencies ?? rightOrigins),
+  ]);
+  const sameKnownConstant = left.kind !== "unknown" && right.kind !== "unknown" &&
+    left.kind === right.kind && left.constant !== undefined && right.constant !== undefined &&
+    left.literalType === right.literalType && Object.is(left.constant, right.constant);
+  const unresolvedAlternative = left.kind === "unknown" || right.kind === "unknown" ||
+    left.exact === false || right.exact === false || left.derived === true || right.derived === true;
+  const relationExact = commonRelations.size > 0 && !unresolvedAlternative;
+  const valueExactWithoutOrigin = origins.size === 0 && sameKnownConstant && !unresolvedAlternative;
+  const mergedExact = relationExact || valueExactWithoutOrigin;
+  const callableTargets = [...(left.callableTargets ?? []), ...(right.callableTargets ?? [])];
+  const uniqueCallableTargets = [];
+  for (const target of callableTargets) {
+    if (!uniqueCallableTargets.some((item) => item.fn === target.fn && item.bound === target.bound &&
+        sameCaptureIdentityMaps(item.captureCells, target.captureCells))) {
+      uniqueCallableTargets.push(target);
+    }
   }
   const merged = value({
-    kind: left.kind === right.kind ? left.kind : "unknown",
+    kind: left.kind === right.kind && left.kind !== "unknown" ? left.kind : "unknown",
     taint: joinTaint(summarizeRisk(left).taint, summarizeRisk(right).taint),
     caps: [...summarizeRisk(left).caps, ...summarizeRisk(right).caps],
     bound: left.bound === right.bound ? left.bound : null,
     binding: left.binding === right.binding ? left.binding : null,
+    fn: left.fn === right.fn ? left.fn : null,
+    closure: left.closure === right.closure ? left.closure : null,
     label: left.label === right.label ? left.label : "",
     directCredential: left.directCredential && right.directCredential,
     literalType: left.literalType === right.literalType ? left.literalType : "",
-    provenance: new Set([...provenanceOf(left), ...provenanceOf(right)]),
-    constant: left.constant === right.constant ? left.constant : undefined,
-    exact: left.exact !== false && right.exact !== false,
+    provenance: origins,
+    securityDependencies,
+    exactRelations: commonRelations,
+    constant: sameKnownConstant ? left.constant : undefined,
+    exact: mergedExact,
+    precision: relationExact ? "exact" : mergedExact ? "exact-value" :
+      left.derived === true || right.derived === true ? "derived" : "unresolved",
+    derived: left.derived === true || right.derived === true,
+    normalization: left.normalization === right.normalization ? left.normalization : null,
     captureKeys: left.captureKeys instanceof Set && right.captureKeys instanceof Set
       ? new Set([...left.captureKeys, ...right.captureKeys])
       : null,
+    captureCells: left.captureCells instanceof Map || right.captureCells instanceof Map
+      ? mergeCaptureIdentityMaps(left.captureCells, right.captureCells) : null,
+    callableTargets: uniqueCallableTargets,
+    authorityRecord: left.authorityRecord === true && right.authorityRecord === true,
+    allocationIdentity: left.allocationIdentity &&
+      left.allocationIdentity === right.allocationIdentity ? left.allocationIdentity : null,
+    allocationIdentityCandidates: [
+      ...(left.allocationIdentityCandidates ?? []), ...(left.allocationIdentity ? [left.allocationIdentity] : []),
+      ...(right.allocationIdentityCandidates ?? []), ...(right.allocationIdentity ? [right.allocationIdentity] : []),
+    ],
+    allocationIdentityKinds: [
+      ...(left.allocationIdentityKinds ?? []),
+      ...(left.allocationIdentity && !left.allocationIdentityKinds?.has(left.allocationIdentity)
+        ? [[left.allocationIdentity, left.kind]] : []),
+      ...(right.allocationIdentityKinds ?? []),
+      ...(right.allocationIdentity && !right.allocationIdentityKinds?.has(right.allocationIdentity)
+        ? [[right.allocationIdentity, right.kind]] : []),
+    ],
+    allocationMayBeUnknown: left.allocationMayBeUnknown === true || right.allocationMayBeUnknown === true,
   });
-  for (const [key, property] of left.props) {
-    merged.props.set(key, right.props.has(key) ? mergeValues(property, right.props.get(key)) : property);
-  }
-  for (const [key, property] of right.props) {
-    if (!merged.props.has(key)) merged.props.set(key, property);
+  const rightPairs = priorPairs ?? new Map();
+  if (!priorPairs) seen.set(left, rightPairs);
+  rightPairs.set(right, merged);
+  const propertyKeys = new Set([...left.props.keys(), ...right.props.keys()]);
+  for (const key of propertyKeys) {
+    const leftValue = left.props.has(key) ? left.props.get(key) : missingAlternative;
+    const rightValue = right.props.has(key) ? right.props.get(key) : missingAlternative;
+    merged.props.set(key, mergeValues(leftValue, rightValue, seen, missingAlternative));
   }
   for (const [key, property] of left.historyProps ?? []) merged.historyProps.set(key, property);
   for (const [key, property] of right.historyProps ?? []) merged.historyProps.set(key, property);
   for (const child of [...(left.refs ?? []), ...(right.refs ?? [])]) rememberReference(merged, child);
-  for (const [key, method] of left.methods ?? []) merged.methods.set(key, method);
-  for (const [key, method] of right.methods ?? []) {
-    merged.methods.set(key, merged.methods.has(key) ? mergeValues(merged.methods.get(key), method) : method);
+  const methodKeys = new Set([...(left.methods?.keys?.() ?? []), ...(right.methods?.keys?.() ?? [])]);
+  for (const key of methodKeys) {
+    const leftMethod = left.methods?.get(key) ?? missingAlternative;
+    const rightMethod = right.methods?.get(key) ?? missingAlternative;
+    merged.methods.set(key, mergeValues(leftMethod, rightMethod, seen, missingAlternative));
   }
-  if (left.kind === "array" && right.kind === "array" &&
-      left.elements?.length === right.elements?.length) {
-    merged.elements = left.elements.map((item, index) => mergeValues(item, right.elements[index]));
+  if (left.kind === "array" && right.kind === "array") {
+    const length = Math.max(left.elements?.length ?? 0, right.elements?.length ?? 0);
+    merged.elements = Array.from({ length }, (_item, index) => mergeValues(
+      left.elements?.[index] ?? missingAlternative,
+      right.elements?.[index] ?? missingAlternative,
+      seen,
+      missingAlternative,
+    ));
   }
   if (left.map instanceof Map || right.map instanceof Map) {
-    merged.map = new Map([...(left.map ?? []), ...(right.map ?? [])]);
+    merged.map = new Map();
+    const leftEntries = left.map ?? new Map();
+    const rightEntries = right.map ?? new Map();
+    const keys = new Set([...leftEntries.keys(), ...rightEntries.keys()]);
+    for (const key of keys) {
+      const leftValue = leftEntries.has(key) ? leftEntries.get(key) : missingAlternative;
+      const rightValue = rightEntries.has(key) ? rightEntries.get(key) : missingAlternative;
+      merged.map.set(key, mergeValues(leftValue, rightValue, seen, missingAlternative));
+    }
   }
   return merged;
 }
@@ -798,6 +1008,9 @@ class ClosureAnalyzer {
     this.functionActive = new Set();
     this.weakMapRecords = new Map();
     this.poolConstructs = 0;
+    this.poolAllocationValues = new Map();
+    this.abstractAllocations = new Map();
+    this.declassificationAssignmentEvents = new Map();
     this.poolOptions = null;
     this.authorityToken = null;
     this.authorityRecord = null;
@@ -811,6 +1024,20 @@ class ClosureAnalyzer {
     this.operationInvocationNodes = [];
     this.analysisConverged = true;
     this.pendingSummaries = new Set();
+    this.summaryStates = new Map();
+    this.expressionCompletionOutcomes = new WeakMap();
+    this.summaryWorklist = [];
+    this.queuedSummaryIds = new Set();
+    this.summaryExecutionStack = [];
+    this.activationStack = [];
+    this.activationIds = new Map();
+    this.environmentCellIds = new WeakMap();
+    this.cellValues = new Map();
+    this.cellDependents = new Map();
+    this.bindingDeclarations = new Map();
+    this.summaryWorkBudget = 50000;
+    this.replayingSummary = false;
+    this.rootSummaryKey = null;
     this.activeExecutionObligations = new Set();
     this.executionObligations = new Map();
     this.activatedFunctionNodes = new Set();
@@ -826,6 +1053,8 @@ class ClosureAnalyzer {
     this.poolEndAttempts = 0;
     this.poolEndNodes = new Set();
     this.poolConstructionNodes = new Set();
+    this.authoritySetNodes = new Set();
+    this.identityQueryNodes = new Set();
     this.fingerprintComparisons = new Set();
     this.fingerprintsEqual = false;
     this.authorityGuardPassed = false;
@@ -837,6 +1066,7 @@ class ClosureAnalyzer {
     this.graphNodes = new Map();
     this.graphEdges = new Set();
     this.graphNodeCounter = 0;
+    this.publicEscapeFunctionIds = new Set();
     this.dormantBodies = [];
     this.originIdentities = new Map();
     this.captureKeyCache = new WeakMap();
@@ -857,6 +1087,400 @@ class ClosureAnalyzer {
     return String(node.kind) + ":" + String(node.pos) + ":" + String(node.end);
   }
 
+  activationContextFor(node, callsite = null) {
+    const functionId = String(node.pos) + ":" + String(node.end);
+    const parent = this.activationStack.at(-1)?.id ?? "module";
+    const site = callsite && Number.isInteger(callsite.pos) && Number.isInteger(callsite.end)
+      ? String(callsite.pos) + ":" + String(callsite.end)
+      : "implicit";
+    const key = parent + "/" + functionId + "@" + site;
+    if (!this.activationIds.has(key)) this.activationIds.set(key, key);
+    return this.activationIds.get(key);
+  }
+
+  cloneEnvironment(source) {
+    const environment = new Map(source ?? []);
+    if (source && this.environmentCellIds.has(source)) {
+      const copied = new Map();
+      for (const [key, identities] of this.environmentCellIds.get(source)) {
+        copied.set(key, new Set(identities));
+      }
+      this.environmentCellIds.set(environment, copied);
+    }
+    return environment;
+  }
+
+  allocationFor(node, kind) {
+    const activation = this.summaryExecutionStack.at(-1)?.id ??
+      this.activationStack.map((frame) => frame.id).join("/");
+    const key = (activation || "module") + "::" + kind + "::" + node.pos;
+    if (!this.abstractAllocations.has(key)) this.abstractAllocations.set(key, value({ kind, allocationIdentity: key }));
+    return this.abstractAllocations.get(key);
+  }
+
+  cellIdentitiesFor(environment, key) {
+    let cells = this.environmentCellIds.get(environment);
+    if (!cells) {
+      cells = new Map();
+      this.environmentCellIds.set(environment, cells);
+    }
+    if (!cells.has(key)) {
+      const activation = this.activationStack.at(-1)?.id ?? "module";
+      const identity = activation + "::" + key;
+      cells.set(key, new Set([identity]));
+      if (environment.has(key) && !this.cellValues.has(identity)) {
+        this.cellValues.set(identity, environment.get(key));
+      }
+    }
+    return cells.get(key);
+  }
+
+  captureCellsFor(keys, environment) {
+    const captured = new Map();
+    for (const key of keys ?? []) {
+      captured.set(key, new Set(this.cellIdentitiesFor(environment, key)));
+    }
+    return captured;
+  }
+
+  mergeCaptureCellMaps(left, right) {
+    const merged = new Map();
+    for (const source of [left, right]) {
+      if (!(source instanceof Map)) continue;
+      for (const [key, identities] of source) {
+        if (!merged.has(key)) merged.set(key, new Set());
+        const values = identities instanceof Set ? identities : new Set([identities]);
+        for (const identity of values) merged.get(key).add(identity);
+      }
+    }
+    return merged;
+  }
+
+  cellInputSignature(summary) {
+    const identities = new Set();
+    for (const values of summary.captureCells.values()) {
+      for (const identity of values) identities.add(identity);
+    }
+    return [...identities].sort().map((identity) =>
+      identity + "=" + abstractValueSignature(this.cellValues.get(identity) ?? unknownValue())).join("|");
+  }
+
+  cellStateSignature() {
+    return [...this.cellValues.entries()].sort(([left], [right]) => left.localeCompare(right))
+      .map(([identity, item]) => identity + '=' + abstractValueSignature(item)).join('|');
+  }
+
+  enqueueSummary(summaryId) {
+    const summary = this.summaryStates.get(summaryId);
+    if (!summary) return;
+    summary.stable = false;
+    if (this.queuedSummaryIds.has(summaryId)) return;
+    this.queuedSummaryIds.add(summaryId);
+    summary.queued = true;
+    this.summaryWorklist.push(summaryId);
+  }
+
+  recordCellRead(environment, key) {
+    const summary = this.summaryExecutionStack.at(-1);
+    if (!summary || !summary.captureKeys.has(key)) return;
+    for (const identity of this.cellIdentitiesFor(environment, key)) {
+      summary.cellReads.add(identity);
+      if (!this.cellDependents.has(identity)) this.cellDependents.set(identity, new Set());
+      this.cellDependents.get(identity).add(summary.id);
+      if (!this.cellValues.has(identity)) {
+        this.cellValues.set(identity, environment.get(key) ?? unknownValue());
+      }
+    }
+  }
+
+  recordCellWrite(environment, key, nextValue) {
+    const summary = this.summaryExecutionStack.at(-1);
+    for (const identity of this.cellIdentitiesFor(environment, key)) {
+      if (summary) summary.cellWrites.add(identity);
+      const dependents = this.cellDependents.get(identity);
+      if (!dependents?.size) continue;
+      const before = this.cellValues.get(identity);
+      const after = before ? mergeValues(before, nextValue) : nextValue;
+      if (before && abstractValueSignature(before) === abstractValueSignature(after)) continue;
+      this.cellValues.set(identity, after);
+      for (const dependent of dependents) this.enqueueSummary(dependent);
+    }
+  }
+
+  setBinding(environment, key, nextValue) {
+    environment.set(key, nextValue);
+    this.recordCellWrite(environment, key, nextValue);
+    return nextValue;
+  }
+
+  loopHasCapturedCallable(node, environment) {
+    let found = false;
+    const visit = (candidate) => {
+      if (found) return;
+      if (ts.isCallExpression(candidate) && ts.isIdentifier(candidate.expression)) {
+        const resolved = this.resolveDeclaration(candidate.expression);
+        if (resolved?.kind === "local") {
+          const key = keyForDeclaration(resolved.declaration.name ?? resolved.declaration);
+          const target = environment.get(key);
+          const captures = target?.captureCells instanceof Map && target.captureCells.size > 0 ||
+            (target?.callableTargets ?? []).some((item) => item.captureCells instanceof Map && item.captureCells.size > 0);
+          if (captures && this.hasCallableTarget(target)) found = true;
+        }
+      }
+      ts.forEachChild(candidate, visit);
+    };
+    visit(node);
+    return found;
+  }
+
+  cellStateSnapshot(environment = null) {
+    const identities = environment
+      ? new Set([...(this.environmentCellIds.get(environment)?.values() ?? [])].flatMap((items) => [...items]))
+      : new Set(this.cellValues.keys());
+    return new Map([...identities]
+      .filter((identity) => this.cellValues.has(identity))
+      .map((identity) => [identity, abstractValueSignature(this.cellValues.get(identity))]));
+  }
+
+  changedCellIdentities(snapshot) {
+    const changed = new Set();
+    for (const [identity, previous] of snapshot) {
+      const item = this.cellValues.get(identity);
+      if (item && previous !== abstractValueSignature(item)) changed.add(identity);
+    }
+    return changed;
+  }
+
+  refreshCapturedCells(environment, changedIdentities) {
+    const cells = this.environmentCellIds.get(environment);
+    if (!(cells instanceof Map) || !(changedIdentities instanceof Set)) return environment;
+    for (const [key, identities] of cells) {
+      if (!environment.has(key)) continue;
+      for (const identity of identities) {
+        if (!changedIdentities.has(identity)) continue;
+        const captured = this.cellValues.get(identity);
+        if (captured) environment.set(key, mergeValues(environment.get(key), captured));
+      }
+    }
+    return environment;
+  }
+
+  registerSummaryDependencies(summary) {
+    for (const identities of summary.captureCells.values()) {
+      for (const identity of identities) {
+        if (!this.cellDependents.has(identity)) this.cellDependents.set(identity, new Set());
+        this.cellDependents.get(identity).add(summary.id);
+        if (!this.cellValues.has(identity)) {
+          const key = [...summary.captureCells].find((entry) => entry[1].has(identity))?.[0];
+          this.cellValues.set(identity, summary.closure?.get(key) ?? unknownValue());
+        }
+      }
+    }
+  }
+
+  summaryFor(node, args, closure, thisValue, parentContext, callsite, captureCells) {
+    const functionId = String(node.pos) + ":" + String(node.end);
+    const activationId = this.activationContextFor(node, callsite);
+    const capturedIds = [...captureCells.values()].flatMap((ids) => [...ids]).sort();
+    const caller = this.summaryExecutionStack.at(-1) ?? null;
+    const id = functionId + "@" + activationId + "#" + capturedIds.join(",");
+    let summary = this.summaryStates.get(id);
+    if (!summary) {
+      summary = {
+        id, functionId, activationId, node, closure, thisValue,
+        captureKeys: this.captureKeysFor(node), captureCells: this.mergeCaptureCellMaps(captureCells),
+        capturedCellIds: new Set(capturedIds), cellReads: new Set(), cellWrites: new Set(),
+        calleeDependencies: new Set(), callers: new Set(), args: [...args],
+        contextSeed: this.cloneAnalysisContext(parentContext ?? {}), finalContext: null,
+        completionAlternatives: [], lifecycleTransfers: [], result: null,
+        sideEffectSeed: this.captureSideEffectState(), sideEffectResult: null,
+        revision: 0, stable: false, running: false, queued: false,
+        lastCellInput: null, lastExecution: null,
+      };
+      this.summaryStates.set(id, summary);
+      this.registerSummaryDependencies(summary);
+    } else {
+      summary.closure = closure;
+      summary.thisValue = thisValue;
+      summary.captureCells = this.mergeCaptureCellMaps(summary.captureCells, captureCells);
+      summary.capturedCellIds = new Set([...summary.captureCells.values()].flatMap((ids) => [...ids]));
+      summary.args = args.map((argument, index) => mergeValues(summary.args[index], argument));
+      summary.contextSeed = this.cloneAnalysisContext(parentContext ?? summary.contextSeed ?? {});
+      summary.sideEffectSeed = this.captureSideEffectState();
+      this.registerSummaryDependencies(summary);
+    }
+    if (caller && caller.id !== id && !caller.calleeDependencies.has(id)) {
+      caller.calleeDependencies.add(id);
+      summary.callers.add(caller.id);
+      if (caller.revision > 0) this.enqueueSummary(caller.id);
+    }
+    if (node === this.rootFunction && !caller) this.rootSummaryKey = id;
+    return summary;
+  }
+
+  executeSummary(summary, args, closure, thisValue, parentContext, callsite, replay = false) {
+    if (summary.running) fail(SAFE.internal, "FIXED_POINT_RECURSION", "CF_RECURSION");
+    summary.running = true;
+    summary.queued = false;
+    summary.lastCellInput = this.cellInputSignature(summary);
+    summary.contextSeed = this.cloneAnalysisContext(parentContext ?? {});
+    const frame = { id: summary.activationId, node: summary.node, summary };
+    this.activationStack.push(frame);
+    this.summaryExecutionStack.push(summary);
+    const previousReplay = this.replayingSummary;
+    this.replayingSummary = previousReplay || replay;
+    const beforeResult = summary.result ? abstractValueSignature(summary.result) : null;
+    try {
+      const result = this.executeFunctionBody(summary.node, args, closure, thisValue, parentContext);
+      summary.result = summary.result ? mergeValues(summary.result, result) : result;
+      const afterResult = summary.result ? abstractValueSignature(summary.result) : null;
+      if (beforeResult !== afterResult) {
+        summary.revision += 1;
+        for (const callerId of summary.callers) this.enqueueSummary(callerId);
+      }
+      summary.finalContext = this.cloneAnalysisContext(parentContext ?? {});
+      summary.lifecycleTransfers = [{
+        input: summary.contextSeed.ap,
+        output: summary.finalContext.ap,
+      }];
+      summary.sideEffectResult = this.captureSideEffectState();
+      summary.lastExecution ??= { result, completion: "NORMAL", callsite };
+      summary.stable = !summary.queued;
+      return result;
+    } finally {
+      this.replayingSummary = previousReplay;
+      this.summaryExecutionStack.pop();
+      this.activationStack.pop();
+      summary.running = false;
+    }
+  }
+
+  drainSummaryWorklist() {
+    let processed = 0;
+    while (this.summaryWorklist.length > 0) {
+      if (++processed > this.summaryWorkBudget) {
+        this.analysisConverged = false;
+        break;
+      }
+      const summaryId = this.summaryWorklist.shift();
+      this.queuedSummaryIds.delete(summaryId);
+      const summary = this.summaryStates.get(summaryId);
+      if (!summary) continue;
+      summary.queued = false;
+      if (summary.running) continue;
+      const inputSignature = this.cellInputSignature(summary);
+      if (summary.stable && summary.lastCellInput === inputSignature) continue;
+      const previousSideEffects = this.captureSideEffectState();
+      this.restoreSideEffectState(summary.sideEffectSeed);
+      const context = this.cloneAnalysisContext(summary.contextSeed);
+      let replayCompleted = false;
+      try {
+        this.executeSummary(summary, summary.args, summary.closure, summary.thisValue,
+          context, null, true);
+        replayCompleted = true;
+      } finally {
+        const replaySideEffects = summary.sideEffectResult;
+        this.restoreSideEffectState(previousSideEffects);
+        if (replayCompleted && summary.node === this.rootFunction && replaySideEffects) {
+          this.restoreSideEffectState(replaySideEffects);
+        }
+      }
+      if (!summary.queued && summary.lastCellInput === this.cellInputSignature(summary)) summary.stable = true;
+    }
+    return this.analysisConverged && this.pendingSummaries.size === 0 &&
+      this.summaryWorklist.length === 0 && [...this.summaryStates.values()].every((summary) =>
+        summary.stable && !summary.queued && !summary.running);
+  }
+
+  captureSideEffectState() {
+    return {
+      poolConstructs: this.poolConstructs,
+      poolOptions: this.poolOptions,
+      authorityToken: this.authorityToken,
+      authorityRecord: this.authorityRecord,
+      authoritySetCount: this.authoritySetCount,
+      declassificationCount: this.declassificationCount,
+      identityQueryCount: this.identityQueryCount,
+      identityQueryPool: this.identityQueryPool,
+      identityQueryArguments: this.identityQueryArguments?.map((item) => new Set(item)) ?? null,
+      authoritySecondIdentityChecked: this.authoritySecondIdentityChecked,
+      operationInvocations: this.operationInvocations,
+      operationInvocationNodes: [...this.operationInvocationNodes],
+      authorityRevoked: this.authorityRevoked,
+      migrationCompleted: this.migrationCompleted,
+      poolEndAttempts: this.poolEndAttempts,
+      poolEndNodes: new Set(this.poolEndNodes),
+      poolConstructionNodes: new Set(this.poolConstructionNodes),
+      authoritySetNodes: new Set(this.authoritySetNodes),
+      identityQueryNodes: new Set(this.identityQueryNodes),
+      fingerprintComparisons: new Set(this.fingerprintComparisons),
+      fingerprintsEqual: this.fingerprintsEqual,
+      authorityGuardPassed: this.authorityGuardPassed,
+      pendingSecretStorage: this.pendingSecretStorage,
+      pendingPasswordOperation: this.pendingPasswordOperation,
+      provenanceObligations: new Set(this.provenanceObligations),
+      declassificationAssignmentEvents: new Map(this.declassificationAssignmentEvents),
+    };
+  }
+
+  restoreSideEffectState(state) {
+    if (!state) return;
+    for (const key of Object.keys(state)) {
+      const value = state[key];
+      this[key] = value instanceof Set ? new Set(value)
+        : value instanceof Map ? new Map(value)
+          : Array.isArray(value) ? value.map((item) => item instanceof Set ? new Set(item) : item)
+            : value;
+    }
+  }
+
+  mergeSideEffectStates(states) {
+    if (!Array.isArray(states) || states.length === 0) return this.captureSideEffectState();
+    const merged = this.captureSideEffectState();
+    const unionSet = (key) => new Set(states.flatMap((state) => [...(state[key] ?? [])]));
+    for (const key of ["poolEndNodes", "poolConstructionNodes", "authoritySetNodes", "identityQueryNodes", "fingerprintComparisons"]) {
+      merged[key] = unionSet(key);
+    }
+    merged.poolConstructs = merged.poolConstructionNodes.size;
+    merged.authoritySetCount = merged.authoritySetNodes.size;
+    merged.identityQueryCount = maximumOf(states, (state) => state.identityQueryCount ?? 0);
+    merged.poolEndAttempts = merged.poolEndNodes.size;
+    merged.operationInvocationNodes = [...new Set(states.flatMap((state) => state.operationInvocationNodes ?? []))];
+    merged.operationInvocations = merged.operationInvocationNodes.length;
+    merged.declassificationAssignmentEvents = new Map();
+    for (const state of states) {
+      for (const [key, receiver] of state.declassificationAssignmentEvents ?? []) {
+        const previous = merged.declassificationAssignmentEvents.get(key);
+        merged.declassificationAssignmentEvents.set(key, previous && previous !== receiver ? null : receiver);
+      }
+    }
+    merged.declassificationCount = maximumOf(states, (state) => state.declassificationCount ?? 0);
+    for (const key of ["authorityRevoked", "migrationCompleted", "fingerprintsEqual", "authorityGuardPassed", "authoritySecondIdentityChecked"]) {
+      merged[key] = states.every((state) => state[key] === true);
+    }
+    for (const key of ["pendingSecretStorage", "pendingPasswordOperation"]) {
+      merged[key] = states.some((state) => state[key] === true);
+    }
+    merged.provenanceObligations = new Set(states.flatMap((state) => [...(state.provenanceObligations ?? [])]));
+    for (const key of ["poolOptions", "authorityToken", "authorityRecord"]) {
+      const values = states.map((state) => state[key]);
+      if (values.every((item) => item === values[0])) merged[key] = values[0];
+      else if (values.some((item) => item == null)) merged[key] = null;
+      else merged[key] = values.reduce((result, item) => mergeValues(result, item), null);
+    }
+    return merged;
+  }
+
+  analyzeStatementWithState(node, env, context) {
+    const before = this.captureSideEffectState();
+    const result = this.analyzeStatement(node, env, context);
+    const observed = this.captureSideEffectState();
+    const outcomes = this.statementOutcomes(result, env, context).map((outcome) =>
+      outcome.sideEffects ? outcome : { ...outcome, sideEffects: observed });
+    this.restoreSideEffectState(before);
+    return { ...result, completionAlternatives: outcomes };
+  }
+
   dischargeExecution(node) {
     if (!node || !(ts.isStatement(node) || ts.isExpression(node))) return;
     const key = this.executionKey(node);
@@ -875,7 +1499,11 @@ class ClosureAnalyzer {
   initialAnalysisFacts() {
     return {
       poolAllocated: false,
+      poolAllocatedAny: false,
+      poolAllocationCleanupAttempts: { min: 0, max: 0 },
       authorityMinted: false,
+      authorityMintedAny: false,
+      authorityRevokedWhenMinted: false,
       authorityGuardPassed: false,
       identity2Validated: false,
       fingerprintsEqual: false,
@@ -883,6 +1511,12 @@ class ClosureAnalyzer {
       migrationCompleted: false,
       authorityRevoked: false,
       cleanupAttempts: { min: 0, max: 0 },
+      cleanupEntryCount: { min: 0, max: 0 },
+      cleanupSites: new Set(),
+      cleanupAttempted: false,
+      cleanupSucceeded: false,
+      originalCompletion: null,
+      propagatedCompletion: null,
     };
   }
 
@@ -893,20 +1527,154 @@ class ClosureAnalyzer {
     return {
       ...source,
       operationRange: { min: range.min, max: range.max },
-      ap: { ...facts, cleanupAttempts: { ...facts.cleanupAttempts } },
+      ap: {
+        ...facts,
+        cleanupAttempts: { ...facts.cleanupAttempts },
+        cleanupEntryCount: { ...(facts.cleanupEntryCount ?? facts.cleanupAttempts) },
+        poolAllocationCleanupAttempts: { ...(facts.poolAllocationCleanupAttempts ?? { min: 0, max: 0 }) },
+        cleanupSites: new Set(facts.cleanupSites ?? []),
+      },
     };
+  }
+
+  appendPathPredicate(context, predicate) {
+    const previous = context.pathPredicateFormula ?? {
+      kind: "path",
+      predicates: [...(context.pathPredicates ?? [])],
+    };
+    context.pathPredicateFormula = { kind: "and", previous, predicate };
+    context.pathPredicates = [...(context.pathPredicates ?? []), predicate];
+  }
+
+  mergePathPredicateState(target, contexts) {
+    if (!contexts.length) return;
+    const formulaAlternatives = [];
+    for (const context of contexts) {
+      const formula = context.pathPredicateFormula ?? {
+        kind: "path",
+        predicates: [...(context.pathPredicates ?? [])],
+      };
+      const alternatives = formula.kind === "or" ? formula.alternatives : [formula];
+      for (const alternative of alternatives) {
+        if (!formulaAlternatives.includes(alternative)) formulaAlternatives.push(alternative);
+      }
+    }
+    target.pathPredicateFormula = formulaAlternatives.length === 1
+      ? formulaAlternatives[0]
+      : { kind: "or", alternatives: formulaAlternatives };
+    const common = [...(contexts[0].pathPredicates ?? [])];
+    for (const context of contexts.slice(1)) {
+      const keys = new Set((context.pathPredicates ?? []).map((predicate) => JSON.stringify(predicate)));
+      for (let index = common.length - 1; index >= 0; index -= 1) {
+        if (!keys.has(JSON.stringify(common[index]))) common.splice(index, 1);
+      }
+    }
+    target.pathPredicates = common;
+  }
+
+  mergeCompletionAlternatives(outcomes) {
+    const groups = new Map();
+    for (const outcome of outcomes) {
+      const completion = outcome.completion ?? "NORMAL";
+      const predicates = [...(outcome.predicates ?? outcome.context?.pathPredicates ?? [])];
+      const normalized = { ...outcome, completion, predicates };
+      const lifecycle = normalized.context?.ap;
+      const lifecycleKey = lifecycle ? JSON.stringify({
+        poolAllocated: lifecycle.poolAllocated,
+        poolAllocatedAny: lifecycle.poolAllocatedAny,
+        authorityMinted: lifecycle.authorityMinted,
+        authorityMintedAny: lifecycle.authorityMintedAny,
+        authorityGuardPassed: lifecycle.authorityGuardPassed,
+        identity2Validated: lifecycle.identity2Validated,
+        fingerprintsEqual: lifecycle.fingerprintsEqual,
+        migrationAttempted: lifecycle.migrationAttempted,
+        migrationCompleted: lifecycle.migrationCompleted,
+        authorityRevoked: lifecycle.authorityRevoked,
+        authorityRevokedWhenMinted: lifecycle.authorityRevokedWhenMinted,
+        cleanupAttempts: lifecycle.cleanupAttempts,
+        cleanupEntryCount: lifecycle.cleanupEntryCount,
+        poolAllocationCleanupAttempts: lifecycle.poolAllocationCleanupAttempts,
+        cleanupSites: [...(lifecycle.cleanupSites ?? [])].sort(),
+        cleanupAttempted: lifecycle.cleanupAttempted,
+        cleanupSucceeded: lifecycle.cleanupSucceeded,
+      }) : "";
+      const catchKey = normalized.context?.publicReturnFromCatch === true ? "catch" : "ordinary";
+      const groupKey = completion + "::" + catchKey + "::" + lifecycleKey;
+      const existing = groups.get(groupKey);
+      if (!existing) {
+        groups.set(groupKey, {
+          ...normalized,
+          env: normalized.env ? this.cloneEnvironment(normalized.env) : normalized.env,
+          context: normalized.context ? this.cloneAnalysisContext(normalized.context) : null,
+          pathPredicateAlternativeCount: normalized.pathPredicateAlternativeCount ?? 1,
+        });
+        continue;
+      }
+      if (existing.env && normalized.env) {
+        existing.env = this.joinEnvironments(existing.env, normalized.env);
+      } else {
+        existing.env ??= normalized.env;
+      }
+      if (existing.context || normalized.context) {
+        const mergedContext = this.cloneAnalysisContext(existing.context ?? normalized.context);
+        this.mergeAnalysisContexts(mergedContext,
+          [existing.context, normalized.context].filter(Boolean));
+        existing.context = mergedContext;
+      }
+      if (existing.value && normalized.value) {
+        existing.value = mergeValues(existing.value, normalized.value);
+      } else {
+        existing.value ??= normalized.value;
+      }
+      if (existing.error && normalized.error) {
+        existing.error = mergeValues(existing.error, normalized.error);
+      } else {
+        existing.error ??= normalized.error;
+      }
+      if (existing.sideEffects && normalized.sideEffects) {
+        existing.sideEffects = this.mergeSideEffectStates([existing.sideEffects, normalized.sideEffects]);
+      } else if (existing.sideEffects !== normalized.sideEffects) {
+        existing.sideEffects = null;
+      }
+      const predicateKeys = new Set(normalized.predicates.map((predicate) => JSON.stringify(predicate)));
+      existing.predicates = existing.predicates.filter((predicate) => predicateKeys.has(JSON.stringify(predicate)));
+      existing.pathPredicateAlternativeCount += normalized.pathPredicateAlternativeCount ?? 1;
+      for (const key of ["originalCompletion", "propagatedCompletion"]) {
+        if (existing[key] !== normalized[key]) existing[key] = null;
+      }
+    }
+    return [...groups.values()];
   }
 
   mergeAnalysisContexts(target, contexts) {
     const ranges = contexts.map((context) => context.operationRange ?? { min: 0, max: 0 });
     target.operationRange = {
-      min: Math.min(...ranges.map((range) => range.min)),
-      max: Math.max(...ranges.map((range) => range.max)),
+      min: minimumOf(ranges, (range) => range.min),
+      max: maximumOf(ranges, (range) => range.max),
     };
+    this.mergePathPredicateState(target, contexts);
     const facts = contexts.map((context) => context.ap ?? this.initialAnalysisFacts());
+    const cleanupSites = new Set(facts[0].cleanupSites ?? []);
+    for (const fact of facts.slice(1)) {
+      for (const site of [...cleanupSites]) {
+        if (!(fact.cleanupSites instanceof Set) || !fact.cleanupSites.has(site)) cleanupSites.delete(site);
+      }
+    }
+    const allocatedPoolFacts = facts.filter((fact) => fact.poolAllocatedAny ?? fact.poolAllocated);
+    const mintedAuthorityFacts = facts.filter((fact) => fact.authorityMintedAny ?? fact.authorityMinted);
     target.ap = {
       poolAllocated: facts.every((fact) => fact.poolAllocated),
+      poolAllocatedAny: facts.some((fact) => fact.poolAllocatedAny ?? fact.poolAllocated),
+      poolAllocationCleanupAttempts: allocatedPoolFacts.length === 0
+        ? { min: 0, max: 0 }
+        : {
+          min: minimumOf(allocatedPoolFacts, (fact) => fact.poolAllocationCleanupAttempts?.min ?? fact.cleanupAttempts.min),
+          max: maximumOf(allocatedPoolFacts, (fact) => fact.poolAllocationCleanupAttempts?.max ?? fact.cleanupAttempts.max),
+        },
       authorityMinted: facts.every((fact) => fact.authorityMinted),
+      authorityMintedAny: facts.some((fact) => fact.authorityMintedAny ?? fact.authorityMinted),
+      authorityRevokedWhenMinted: mintedAuthorityFacts.length > 0 && mintedAuthorityFacts.every((fact) =>
+        fact.authorityRevokedWhenMinted ?? fact.authorityRevoked),
       authorityGuardPassed: facts.every((fact) => fact.authorityGuardPassed),
       identity2Validated: facts.every((fact) => fact.identity2Validated),
       fingerprintsEqual: facts.every((fact) => fact.fingerprintsEqual),
@@ -914,15 +1682,35 @@ class ClosureAnalyzer {
       migrationCompleted: facts.every((fact) => fact.migrationCompleted),
       authorityRevoked: facts.every((fact) => fact.authorityRevoked),
       cleanupAttempts: {
-        min: Math.min(...facts.map((fact) => fact.cleanupAttempts.min)),
-        max: Math.max(...facts.map((fact) => fact.cleanupAttempts.max)),
+        min: minimumOf(facts, (fact) => fact.cleanupAttempts.min),
+        max: maximumOf(facts, (fact) => fact.cleanupAttempts.max),
       },
+      cleanupEntryCount: {
+        min: minimumOf(facts, (fact) => fact.cleanupEntryCount?.min ?? fact.cleanupAttempts.min),
+        max: maximumOf(facts, (fact) => fact.cleanupEntryCount?.max ?? fact.cleanupAttempts.max),
+      },
+      cleanupSites,
+      cleanupAttempted: facts.every((fact) => fact.cleanupAttempted === true),
+      cleanupSucceeded: facts.every((fact) => fact.cleanupSucceeded === true),
+      originalCompletion: facts.every((fact) => fact.originalCompletion === facts[0].originalCompletion)
+        ? facts[0].originalCompletion : null,
+      propagatedCompletion: facts.every((fact) => fact.propagatedCompletion === facts[0].propagatedCompletion)
+        ? facts[0].propagatedCompletion : null,
     };
+    target.publicReturnFromCatch = contexts.length > 0 && contexts.every((context) =>
+      context.publicReturnFromCatch === true);
     return target;
   }
 
   markAnalysisFact(context, name) {
-    if (context && context.ap) context.ap[name] = true;
+    if (!context?.ap) return;
+    context.ap[name] = true;
+    if (name === "poolAllocated") {
+      context.ap.poolAllocatedAny = true;
+      context.ap.poolAllocationCleanupAttempts ??= { min: 0, max: 0 };
+    }
+    if (name === "authorityMinted") context.ap.authorityMintedAny = true;
+    if (name === "authorityRevoked") context.ap.authorityRevokedWhenMinted = true;
   }
 
   captureKeysFor(node) {
@@ -952,7 +1740,10 @@ class ClosureAnalyzer {
         for (const declaration of symbol?.declarations ?? []) {
           if (declaration.getSourceFile() !== this.sourceFile || isWithinNode(declaration, node)) continue;
           const key = declarationKey(declaration);
-          if (key) keys.add(key);
+          if (key) {
+            keys.add(key);
+            this.bindingDeclarations.set(key, declaration);
+          }
         }
       }
       ts.forEachChild(current, visit);
@@ -984,6 +1775,7 @@ class ClosureAnalyzer {
     const result = primitiveValue(node.text, { literalType: "string" });
     const defaultOrigin = this.canonicalDefaultOrigin(node);
     if (defaultOrigin) result.provenance.add(defaultOrigin);
+    if (defaultOrigin) result.exactRelations.add(defaultOrigin);
     return result;
   }
 
@@ -995,12 +1787,17 @@ class ClosureAnalyzer {
     this.validateIdentityQueryDefinition();
     const input = value({ kind: "input" });
     const operation = value({ kind: "opaque-function", caps: ["OPAQUE_OPERATION"] });
-    const rootContext = {
+    const initialRootContext = {
+      pathPredicates: [],
       operationRange: { min: 0, max: 0 },
       loopDepth: 0,
       ap: {
         poolAllocated: false,
+        poolAllocatedAny: false,
+        poolAllocationCleanupAttempts: { min: 0, max: 0 },
         authorityMinted: false,
+        authorityMintedAny: false,
+        authorityRevokedWhenMinted: false,
         authorityGuardPassed: false,
         identity2Validated: false,
         fingerprintsEqual: false,
@@ -1008,16 +1805,46 @@ class ClosureAnalyzer {
         migrationCompleted: false,
         authorityRevoked: false,
         cleanupAttempts: { min: 0, max: 0 },
+        cleanupEntryCount: { min: 0, max: 0 },
+        cleanupSites: new Set(),
+        cleanupAttempted: false,
+        cleanupSucceeded: false,
+        originalCompletion: null,
+        propagatedCompletion: null,
       },
     };
-    const rootResult = this.analyzeFunction(this.rootFunction, [input, operation], null, null, rootContext);
-    const summariesConverged = this.analysisConverged && this.pendingSummaries.size === 0;
-    const totalTraversal = this.executionObligations.size > 0 &&
-      [...this.executionObligations.values()].every((state) => state === "executed" || state === "dormant") &&
-      this.activeExecutionObligations.size === 0;
-    this.traversalClosed = totalTraversal;
-    const provenanceComplete = this.provenanceObligations.size === 0;
+    const initialRootResult = this.analyzeFunction(
+      this.rootFunction, [input, operation], null, null, initialRootContext, this.rootFunction,
+    );
+    let summariesConverged = this.drainSummaryWorklist();
+    const rootSummary = this.summaryStates.get(this.rootSummaryKey);
+    let rootResult = rootSummary?.result ?? initialRootResult;
+    let rootContext = rootSummary?.finalContext ?? initialRootContext;
+    const rootSuccessAlternatives = (rootSummary?.completionAlternatives ?? [])
+      .filter((outcome) => outcome.completion === "NORMAL" || outcome.completion === "RETURN");
+    const successfulSideEffects = rootSuccessAlternatives.map((outcome) => outcome.sideEffects).filter(Boolean);
+    if (successfulSideEffects.length > 0) {
+      this.restoreSideEffectState(this.mergeSideEffectStates(successfulSideEffects));
+    }
     const terminalFailures = [];
+    const completionCleanupFailure = (rootSummary?.completionAlternatives ?? []).some((outcome) => {
+      const lifecycle = outcome.context?.ap;
+      if (!lifecycle) return false;
+      const attempts = lifecycle.poolAllocationCleanupAttempts ?? lifecycle.cleanupEntryCount;
+      return (lifecycle.poolAllocatedAny ?? lifecycle.poolAllocated) &&
+        (attempts?.min !== 1 || attempts?.max !== 1);
+    });
+    if (completionCleanupFailure) {
+      terminalFailures.push(new StaticFailure(SAFE.flow, "CAPABILITY_CLEANUP", "AP_CLEANUP"));
+    }
+    const completionRevocationFailure = (rootSummary?.completionAlternatives ?? []).some((outcome) => {
+      const lifecycle = outcome.context?.ap;
+      return Boolean((lifecycle?.authorityMintedAny ?? lifecycle?.authorityMinted) &&
+        !(lifecycle.authorityRevokedWhenMinted ?? lifecycle.authorityRevoked));
+    });
+    if (completionRevocationFailure) {
+      terminalFailures.push(new StaticFailure(SAFE.authority, "AUTHORITY_SCHEMA", "AP_REVOCATION"));
+    }
     const collectTerminalFailure = (action) => {
       try {
         action();
@@ -1027,7 +1854,37 @@ class ClosureAnalyzer {
       }
     };
     collectTerminalFailure(() => this.inspectEscapedValue(rootResult, new Set()));
+    if (this.summaryWorklist.length > 0) {
+      summariesConverged = this.drainSummaryWorklist() && summariesConverged;
+      rootResult = rootSummary?.result ?? rootResult;
+      rootContext = rootSummary?.finalContext ?? rootContext;
+      collectTerminalFailure(() => this.inspectEscapedValue(rootResult, new Set()));
+    }
+    const totalTraversal = this.executionObligations.size > 0 &&
+      [...this.executionObligations.values()].every((state) => state === "executed" || state === "dormant") &&
+      this.activeExecutionObligations.size === 0;
+    this.traversalClosed = totalTraversal;
+    const provenanceComplete = this.provenanceObligations.size === 0;
     const rootRisk = summarizeRisk(rootResult);
+    const publicThrown = (rootSummary?.completionAlternatives ?? []).some((outcome) => {
+      if (outcome.completion !== "THROW") return false;
+      const sensitiveCause = (item, seen = new Set()) => {
+        if (!item || (typeof item !== "object" && typeof item !== "function") || seen.has(item)) return false;
+        seen.add(item);
+        if (item.kind === "input" ||
+            (summarizeRisk(item).taint & (Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC)) !== 0) return true;
+        return [
+          ...(item.refs ?? []),
+          ...(item.props?.values?.() ?? []),
+          ...(item.elements ?? []),
+          ...(item.map?.values?.() ?? []),
+        ].some((child) => sensitiveCause(child, seen));
+      };
+      const thrown = outcome.error ?? outcome.value;
+      const thrownRisk = summarizeRisk(thrown);
+      return sensitiveCause(thrown) || (thrownRisk.caps.size > 0 && !thrownRisk.caps.has("CATCH_ERROR"));
+    });
+    if (publicThrown) terminalFailures.push(new StaticFailure("SSC_PUBLIC_SURFACE", "PUBLIC_CAUSE", "CF_PUBLIC_THROW"));
     if (rootResult.kind === "unknown" ||
         rootResult.kind === "input" ||
         rootResult.kind === "authority-token" ||
@@ -1037,11 +1894,29 @@ class ClosureAnalyzer {
     }
     const publicBoundaryFailure = terminalFailures.some((failure) =>
       failure.violations.has("CF_PUBLIC_ESCAPE") || failure.violations.has("CF_PUBLIC_THROW"));
-    const publicReturnEscape = terminalFailures.some((failure) => failure.violations.has("CF_PUBLIC_ESCAPE")) &&
-      !terminalFailures.some((failure) => failure.violations.has("CF_PUBLIC_THROW")) &&
-      !rootRisk.caps.has("CATCH_ERROR");
-    if (publicReturnEscape &&
-        (rootContext.operationRange.min !== 1 || rootContext.operationRange.max !== 1)) {
+    const rootReturnLeaks = terminalFailures.some((failure) =>
+      failure.detector === "PUBLIC_RETURN" && failure.violations.has("CF_PUBLIC_ESCAPE"));
+    const publicReturnOperationFailure = (rootSummary?.completionAlternatives ?? []).some((outcome) => {
+      if (!(["NORMAL", "RETURN"].includes(outcome.completion)) ||
+          outcome.context?.publicReturnFromCatch === true) return false;
+      const item = outcome.value ?? outcome.result;
+      const risk = summarizeRisk(item);
+      const leaks = item?.kind === "unknown" || item?.kind === "input" || item?.kind === "authority-token" ||
+        (risk.taint & (Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC | Taint.MAYBE_SENSITIVE)) !== 0 ||
+        risk.caps.size > 0 || containsPublicBoundaryValue(item, new Set(), this.publicEscapeFunctionIds);
+      const range = outcome.context?.operationRange ?? { min: 0, max: 0 };
+      return leaks && (range.min !== 1 || range.max !== 1);
+    });
+    const hasEscapingPublicReturnBeforeOperation = publicReturnOperationFailure ||
+      (rootReturnLeaks && (rootSummary?.completionAlternatives ?? []).some((outcome) => {
+        if (!["NORMAL", "RETURN"].includes(outcome.completion) ||
+            outcome.context?.publicReturnFromCatch === true) return false;
+        const range = outcome.context?.operationRange ?? { min: 0, max: 0 };
+        return range.min !== 1 || range.max !== 1;
+      }));
+    if (terminalFailures.some((failure) => failure.violations.has("CF_PUBLIC_ESCAPE")) &&
+        !terminalFailures.some((failure) => failure.violations.has("CF_PUBLIC_THROW")) &&
+        hasEscapingPublicReturnBeforeOperation) {
       terminalFailures.push(new StaticFailure(SAFE.flow, "CAPABILITY_CALLBACK", "AP_OPERATION"));
     }
     if (!publicBoundaryFailure) {
@@ -1072,11 +1947,13 @@ class ClosureAnalyzer {
       if (!rootContext.ap.migrationCompleted) {
         terminalFailures.push(new StaticFailure(SAFE.flow, "CAPABILITY_MIGRATE", "AP_MIGRATION"));
       }
-      if (rootContext.ap.authorityMinted && !rootContext.ap.authorityRevoked) {
+      if ((rootContext.ap.authorityMintedAny ?? rootContext.ap.authorityMinted) &&
+          !(rootContext.ap.authorityRevokedWhenMinted ?? rootContext.ap.authorityRevoked)) {
         terminalFailures.push(new StaticFailure(SAFE.authority, "AUTHORITY_SCHEMA", "AP_REVOCATION"));
       }
-      if (rootContext.ap.poolAllocated &&
-          (rootContext.ap.cleanupAttempts.min !== 1 || rootContext.ap.cleanupAttempts.max !== 1)) {
+      const poolCleanupAttempts = rootContext.ap.poolAllocationCleanupAttempts ?? rootContext.ap.cleanupAttempts;
+      if ((rootContext.ap.poolAllocatedAny ?? rootContext.ap.poolAllocated) &&
+          (poolCleanupAttempts.min !== 1 || poolCleanupAttempts.max !== 1)) {
         terminalFailures.push(new StaticFailure(SAFE.flow, "CAPABILITY_CLEANUP", "AP_CLEANUP"));
       }
       if (this.pendingSecretStorage) {
@@ -1224,11 +2101,22 @@ class ClosureAnalyzer {
       if (captured?.kind === "input") fail(SAFE.flow, "PUBLIC_RETURN", "CF_PUBLIC_ESCAPE");
       this.inspectEscapedValue(captured, seen);
     }
-    if (item.fn && isFunctionLike(item.fn) && !this.functionActive.has(`${item.fn.pos}:${item.fn.end}`)) {
-      const args = item.fn.parameters.map(() => value({ kind: "escaped-argument" }));
-      const result = this.analyzeFunction(item.fn, args, item.closure, item.bound);
+    const callableTargets = item.callableTargets?.length
+      ? item.callableTargets
+      : item.fn && isFunctionLike(item.fn)
+        ? [{ fn: item.fn, closure: item.closure, captureKeys: item.captureKeys,
+          captureCells: item.captureCells, bound: item.bound }]
+        : [];
+    for (const target of callableTargets) {
+      if (!target.fn || !isFunctionLike(target.fn)) fail(SAFE.unresolved, "CALL_RESOLUTION", "TV_CALLBACK_UNMODELED");
+      const signature = String(target.fn.pos) + ":" + String(target.fn.end);
+      if (this.functionActive.has(signature)) continue;
+      const args = target.fn.parameters.map(() => value({ kind: "escaped-argument" }));
+      const result = this.analyzeFunction(target.fn, args, target.closure, target.bound,
+        {}, null, target.captureCells);
       const risk = summarizeRisk(result);
       if (result?.kind === "unknown" || risk.taint !== Taint.NONE || risk.caps.size > 0) {
+        this.publicEscapeFunctionIds.add(signature);
         fail(SAFE.flow, "PUBLIC_RETURN");
       }
       this.inspectEscapedValue(result, seen);
@@ -1290,16 +2178,16 @@ class ClosureAnalyzer {
     }
     for (const statement of this.sourceFile.statements) {
       if (ts.isFunctionDeclaration(statement) && statement.name) {
-        const fn = value({ kind: "function", fn: statement, closure: moduleEnv, captureKeys: this.captureKeysFor(statement) });
+        const fn = value({ kind: "function", fn: statement, closure: moduleEnv, captureKeys: this.captureKeysFor(statement), captureCells: this.captureCellsFor(this.captureKeysFor(statement), moduleEnv) });
         const key = keyForDeclaration(statement.name);
-        moduleEnv.set(key, fn);
+        this.setBinding(moduleEnv, key, fn);
         this.topValues.set(key, fn);
         this.topValuesByName.set(statement.name.text, fn);
         this.bindingNames.set(key, statement.name.text);
       } else if (ts.isClassDeclaration(statement) && statement.name) {
         const cls = value({ kind: "class", fn: statement, closure: moduleEnv, captureKeys: this.captureKeysFor(statement) });
         const key = keyForDeclaration(statement.name);
-        moduleEnv.set(key, cls);
+        this.setBinding(moduleEnv, key, cls);
         this.topValues.set(key, cls);
         this.topValuesByName.set(statement.name.text, cls);
         this.bindingNames.set(key, statement.name.text);
@@ -1322,14 +2210,14 @@ class ClosureAnalyzer {
             this.topValues.set(key, initialized);
             this.topValuesByName.set(declaration.name.text, initialized);
             if (declaration.name.text === "migrationAuthorityValues") initialized.role = "authority-store";
-            moduleEnv.set(key, initialized);
+            this.setBinding(moduleEnv, key, initialized);
             this.bindingNames.set(key, declaration.name.text);
           } else {
             const empty = unknownValue();
           this.topValues.set(key, empty);
           this.topValuesByName.set(declaration.name.text, empty);
           if (declaration.name.text === "migrationAuthorityValues") empty.role = "authority-store";
-            moduleEnv.set(key, empty);
+            this.setBinding(moduleEnv, key, empty);
             this.bindingNames.set(key, declaration.name.text);
           }
         }
@@ -1360,7 +2248,7 @@ class ClosureAnalyzer {
         this.evalExpression(member.initializer, env, {});
       }
       if (ts.isClassStaticBlockDeclaration(member)) {
-        this.analyzeStatements(member.body.statements, new Map(env), {});
+        this.analyzeStatements(member.body.statements, this.cloneEnvironment(env), {});
       }
     }
   }
@@ -1413,12 +2301,18 @@ class ClosureAnalyzer {
       const key = keyForDeclaration(
         ts.isIdentifier(declaration.name) ? declaration.name : declaration,
       );
-      if (env.has(key)) return env.get(key);
+      if (env.has(key)) {
+        this.recordCellRead(env, key);
+        return env.get(key);
+      }
       if (ts.isShorthandPropertyAssignment(declaration)) {
         const matches = [...env.entries()].filter(([candidate]) => this.bindingNames.get(candidate) === identifier.text);
         if (matches.length === 1) return matches[0][1];
       }
-      if (this.topValues.has(key)) return this.topValues.get(key);
+      if (this.topValues.has(key)) {
+        this.recordCellRead(this.topValues, key);
+        return this.topValues.get(key);
+      }
       if (ts.isVariableDeclaration(declaration)) {
         if (this.topInitialising.has(key)) return unknownValue();
         this.topInitialising.add(key);
@@ -1430,7 +2324,7 @@ class ClosureAnalyzer {
         return initialized;
       }
       if (ts.isFunctionDeclaration(declaration) && declaration.body) {
-        return value({ kind: "function", fn: declaration, closure: env, captureKeys: this.captureKeysFor(declaration) });
+        return value({ kind: "function", fn: declaration, closure: env, captureKeys: this.captureKeysFor(declaration), captureCells: this.captureCellsFor(this.captureKeysFor(declaration), env) });
       }
       if (ts.isClassDeclaration(declaration)) {
         return value({ kind: "class", fn: declaration, closure: env, captureKeys: this.captureKeysFor(declaration) });
@@ -1482,18 +2376,52 @@ class ClosureAnalyzer {
     return globals[name] ?? unknownValue();
   }
 
-  analyzeFunction(node, args, closure, thisValue = null, parentContext = null) {
+  analyzeFunction(node, args, closure, thisValue = null, parentContext = null, callsite = null, captureCells = null) {
+    const captureKeys = this.captureKeysFor(node);
+    const captures = captureCells instanceof Map
+      ? this.mergeCaptureCellMaps(captureCells, new Map())
+      : this.captureCellsFor(captureKeys, closure ?? this.topValues);
+    const summary = this.summaryFor(node, args, closure ?? this.topValues, thisValue,
+      parentContext ?? {}, callsite, captures);
+    const result = this.executeSummary(summary, summary.args, summary.closure, summary.thisValue,
+      parentContext ?? {}, callsite, false);
+    const outcomes = summary.completionAlternatives ?? [];
+    this.expressionCompletionOutcomes.set(result, outcomes.map((outcome) => ({
+      completion: outcome.completion === "THROW" ? "THROW" : "NORMAL",
+      value: outcome.completion === "RETURN" ? outcome.value : result,
+      error: outcome.error ?? null,
+      context: outcome.context ?? summary.finalContext ?? parentContext,
+      sideEffects: outcome.sideEffects ?? summary.sideEffectResult,
+    })));
+    return result;
+  }
+
+  expressionOutcomes(expressionValue, fallbackEnv, fallbackContext, normalCompletion = "NORMAL") {
+    const outcomes = expressionValue && this.expressionCompletionOutcomes.get(expressionValue);
+    if (!outcomes?.length) return null;
+    return outcomes.map((outcome) => ({
+      completion: outcome.completion === "THROW" ? "THROW" : normalCompletion,
+      env: fallbackEnv,
+      context: outcome.context ?? fallbackContext,
+      value: normalCompletion === "RETURN" ? outcome.value ?? expressionValue : null,
+      error: outcome.completion === "THROW" ? outcome.error : null,
+      sideEffects: outcome.sideEffects,
+      predicates: [...((outcome.context ?? fallbackContext)?.pathPredicates ?? [])],
+    }));
+  }
+
+  executeFunctionBody(node, args, closure, thisValue = null, parentContext = null) {
     const signature = String(node.pos) + ":" + String(node.end);
     this.activatedFunctionNodes.add(signature);
     if (node.body) this.markDormantSubtree(node.body);
     if (this.functionActive.has(signature)) fail(SAFE.flow, "FIXED_POINT_RECURSION");
     this.functionActive.add(signature);
     this.pendingSummaries.add(signature);
-    this.activeExecutionObligations.add(`function:${signature}`);
+    this.activeExecutionObligations.add("function:" + signature);
     const previousThis = this.currentThis;
     this.currentThis = thisValue ?? previousThis;
     try {
-      const env = new Map(closure ?? this.topValues);
+      const env = this.cloneEnvironment(closure ?? this.topValues);
       const captureNode = value({ kind: "callable" });
       const captureKeys = this.captureKeysFor(node);
       for (const key of captureKeys) {
@@ -1506,15 +2434,36 @@ class ClosureAnalyzer {
       this.dischargeExecution(node.body);
       const result = ts.isBlock(node.body)
         ? this.analyzeStatements(node.body.statements, env, parentContext ?? {})
-        : { env, returnValue: this.evalExpression(node.body, env, parentContext ?? {}) };
+        : { env, returnValue: this.evalExpression(node.body, env, parentContext ?? {}), completion: "NORMAL" };
+      const continuingContexts = (result.completionAlternatives ?? [])
+        .filter((outcome) => outcome.completion === "NORMAL" || outcome.completion === "RETURN")
+        .map((outcome) => outcome.context)
+        .filter(Boolean);
+      if (continuingContexts.length > 0 && parentContext) {
+        this.mergeAnalysisContexts(parentContext, continuingContexts);
+      }
       this.propagateClosure(closure, result.env ?? env, captureKeys);
       this.graphNode(result.returnValue, "return");
+      const summary = this.summaryExecutionStack.at(-1);
+      if (summary) {
+        summary.completionAlternatives = result.completionAlternatives ?? [{
+          completion: result.completion ?? "NORMAL",
+          value: result.returnValue ?? primitiveValue("undefined"),
+          environment: result.env ?? env,
+          lifecycle: this.cloneAnalysisContext(parentContext ?? {}).ap,
+        }];
+        summary.lastExecution = {
+          result: result.returnValue ?? primitiveValue("undefined"),
+          completion: result.completion ?? "NORMAL",
+          environment: result.env ?? env,
+        };
+      }
       return result.returnValue ?? primitiveValue("undefined");
     } finally {
       this.currentThis = previousThis;
       this.functionActive.delete(signature);
       this.pendingSummaries.delete(signature);
-      this.activeExecutionObligations.delete(`function:${signature}`);
+      this.activeExecutionObligations.delete("function:" + signature);
     }
   }
 
@@ -1531,7 +2480,7 @@ class ClosureAnalyzer {
       if (parameter.initializer && argument) {
         // The initializer is a conditional value; the supplied argument is the precise branch.
       }
-      env.set(keyForDeclaration(parameter.name), source);
+      this.setBinding(env, keyForDeclaration(parameter.name), source);
       this.bindingNames.set(keyForDeclaration(parameter.name), parameter.name.text);
       return;
     }
@@ -1545,7 +2494,7 @@ class ClosureAnalyzer {
           : element.name.text;
         let item = this.getProperty(source, propertyName, false);
         if (item.kind === "unknown" && element.initializer) item = this.evalExpression(element.initializer, env, {});
-        env.set(keyForDeclaration(element.name), item);
+        this.setBinding(env, keyForDeclaration(element.name), item);
         this.bindingNames.set(keyForDeclaration(element.name), element.name.text);
       }
       return;
@@ -1557,7 +2506,7 @@ class ClosureAnalyzer {
         const item = source.elements?.[index] ?? (element.initializer
           ? this.evalExpression(element.initializer, env, {})
           : unknownValue());
-        env.set(keyForDeclaration(element.name), item);
+        this.setBinding(env, keyForDeclaration(element.name), item);
         this.bindingNames.set(keyForDeclaration(element.name), element.name.text);
       }
       return;
@@ -1569,7 +2518,9 @@ class ClosureAnalyzer {
     if (!(closure instanceof Map)) return;
     const keys = new Set([...closure.keys(), ...(captureKeys ?? [])]);
     for (const key of keys) {
-      if (env.has(key)) closure.set(key, mergeValues(closure.get(key), env.get(key)));
+      if (env.has(key)) {
+        this.setBinding(closure, key, mergeValues(closure.get(key), env.get(key)));
+      }
     }
   }
 
@@ -1589,7 +2540,7 @@ class ClosureAnalyzer {
     }
     const constructor = node.members.find((member) => ts.isConstructorDeclaration(member));
     const captureKeys = this.captureKeysFor(node);
-    const env = new Map(classRef.closure ?? this.topValues);
+    const env = this.cloneEnvironment(classRef.closure ?? this.topValues);
     for (const [index, parameter] of (constructor?.parameters ?? []).entries()) {
       this.bindParameter(parameter, args[index], env);
     }
@@ -1639,23 +2590,76 @@ class ClosureAnalyzer {
       provenanceOf(item).size > 0);
   }
 
-  analyzeStatements(statements, env, context) {
+  statementOutcomes(result, fallbackEnv, fallbackContext) {
+    if (Array.isArray(result?.completionAlternatives)) return this.mergeCompletionAlternatives(result.completionAlternatives.map((outcome) => ({
+      ...outcome,
+      context: outcome.context ? this.cloneAnalysisContext(outcome.context)
+        : fallbackContext ? this.cloneAnalysisContext(fallbackContext) : null,
+      predicates: [...(outcome.predicates ?? outcome.context?.pathPredicates ?? [])],
+    })));
+    return [{ completion: result?.completion ?? "NORMAL", env: result?.env ?? fallbackEnv,
+      context: fallbackContext ? this.cloneAnalysisContext(fallbackContext) : null,
+      value: result?.completion === "RETURN" ? result.returnValue : null,
+      error: result?.error ?? null, predicates: [...(fallbackContext?.pathPredicates ?? [])] }];
+  }
+
+  summarizeStatementOutcomes(outcomes, fallbackEnv, fallbackContext) {
+    const alternatives = outcomes.length > 0 ? outcomes : [{ completion: "NORMAL", env: fallbackEnv,
+      context: fallbackContext, value: null, error: null,
+      predicates: [...(fallbackContext?.pathPredicates ?? [])] }];
+    const feasible = this.mergeCompletionAlternatives(alternatives.map((outcome) => ({
+      ...outcome,
+      context: outcome.context ? this.cloneAnalysisContext(outcome.context)
+        : fallbackContext ? this.cloneAnalysisContext(fallbackContext) : null,
+      predicates: [...(outcome.predicates ?? outcome.context?.pathPredicates ?? [])],
+    })));
+    const contexts = feasible.map((outcome) => outcome.context).filter(Boolean);
+    if (fallbackContext && contexts.length > 0) this.mergeAnalysisContexts(fallbackContext, contexts);
+    const sideEffectStates = feasible.map((outcome) => outcome.sideEffects).filter(Boolean);
+    if (sideEffectStates.length > 0) this.restoreSideEffectState(this.mergeSideEffectStates(sideEffectStates));
+    let joinedEnv = feasible[0].env ?? fallbackEnv;
+    for (const outcome of feasible.slice(1)) joinedEnv = this.joinEnvironments(joinedEnv, outcome.env ?? fallbackEnv);
     let returnValue = null;
-    let current = env;
-    for (const [index, statement] of statements.entries()) {
-      const obligation = this.executionKey(statement);
-      this.activeExecutionObligations.add(obligation);
-      const result = this.analyzeStatement(statement, current, context);
-      this.activeExecutionObligations.delete(obligation);
-      current = result.env;
-      returnValue = mergeValues(returnValue, result.returnValue);
-      const completion = result.completion ?? "NORMAL";
-      if (completion !== "NORMAL") {
-        for (const unreachable of statements.slice(index + 1)) this.markDormantSubtree(unreachable);
-        return { ...result, env: current, returnValue };
-      }
+    let errorValue = null;
+    for (const outcome of feasible) {
+      if (outcome.completion === "RETURN") returnValue = mergeValues(returnValue, outcome.value);
+      if (outcome.completion === "THROW") errorValue = mergeValues(errorValue, outcome.error);
     }
-    return { env: current, returnValue, completion: "NORMAL" };
+    const completions = new Set(feasible.map((outcome) => outcome.completion));
+    return { env: joinedEnv, returnValue, error: errorValue,
+      completion: completions.has("NORMAL") ? "NORMAL" : completions.size === 1 ? feasible[0].completion : "ABRUPT",
+      completionAlternatives: feasible };
+  }
+
+  analyzeStatements(statements, env, context) {
+    let normal = [{ completion: "NORMAL", env, context, value: null, error: null,
+      sideEffects: this.captureSideEffectState(), predicates: [...(context?.pathPredicates ?? [])] }];
+    const pending = [];
+    for (const [index, statement] of statements.entries()) {
+      const next = [];
+      const pendingNext = [];
+      for (const frame of normal) {
+        const obligation = this.executionKey(statement);
+        this.activeExecutionObligations.add(obligation);
+        this.restoreSideEffectState(frame.sideEffects);
+        const result = this.analyzeStatementWithState(statement, frame.env, frame.context);
+        this.activeExecutionObligations.delete(obligation);
+        for (const outcome of this.statementOutcomes(result, frame.env, frame.context)) {
+          if (outcome.completion === "NORMAL") next.push(outcome);
+          else pendingNext.push(outcome);
+        }
+      }
+      pending.splice(0, pending.length,
+        ...this.mergeCompletionAlternatives([...pending, ...pendingNext]));
+      if (next.length === 0) {
+        for (const unreachable of statements.slice(index + 1)) this.markDormantSubtree(unreachable);
+        normal = [];
+        break;
+      }
+      normal = this.mergeCompletionAlternatives(next);
+    }
+    return this.summarizeStatementOutcomes([...pending,
+      ...normal.map((frame) => ({ ...frame, completion: "NORMAL" }))], env, context);
   }
 
   analyzeStatement(node, env, context) {
@@ -1667,165 +2671,188 @@ class ClosureAnalyzer {
     if (ts.isVariableStatement(node)) {
       for (const declaration of node.declarationList.declarations) {
         if (!ts.isIdentifier(declaration.name)) fail(SAFE.ast, "SYNTAX_POLICY");
+        const beforeInitialization = this.cloneEnvironment(env);
         const initialized = declaration.initializer
           ? this.evalExpression(declaration.initializer, env, context)
-          : unknownValue();
+          : primitiveValue("undefined");
         if (initialized.caps.has("OUTPUT") || initialized.caps.has("CRYPTO")) initialized.aliasProvenance = true;
-        env.set(keyForDeclaration(declaration.name), initialized);
+        this.setBinding(env, keyForDeclaration(declaration.name), initialized);
         this.bindingNames.set(keyForDeclaration(declaration.name), declaration.name.text);
+        const outcomes = this.expressionOutcomes(initialized, env, context);
+        if (outcomes) return { env, returnValue: null, completionAlternatives: outcomes.map((outcome) => ({
+          ...outcome,
+          env: outcome.completion === "THROW" ? beforeInitialization : this.cloneEnvironment(env),
+        })) };
       }
       return { env, returnValue: null };
     }
     if (ts.isExpressionStatement(node)) {
-      this.evalExpression(node.expression, env, context);
-      return { env, returnValue: null };
+      const expressionValue = this.evalExpression(node.expression, env, context);
+      const outcomes = this.expressionOutcomes(expressionValue, env, context);
+      return outcomes
+        ? { env, returnValue: null, completionAlternatives: outcomes }
+        : { env, returnValue: null };
     }
     if (ts.isFunctionDeclaration(node)) {
       if (node.body) this.markDormantSubtree(node.body);
       if (node.name) {
-        const fn = value({ kind: "function", fn: node, closure: env, captureKeys: this.captureKeysFor(node) });
-        env.set(keyForDeclaration(node.name), fn);
+        const fn = value({ kind: "function", fn: node, closure: env, captureKeys: this.captureKeysFor(node), captureCells: this.captureCellsFor(this.captureKeysFor(node), env) });
+        this.setBinding(env, keyForDeclaration(node.name), fn);
         this.bindingNames.set(keyForDeclaration(node.name), node.name.text);
         this.graphNode(fn, "function");
       }
       return { env, returnValue: null };
     }
     if (ts.isReturnStatement(node)) {
-      return {
-        env,
-        returnValue: node.expression ? this.evalExpression(node.expression, env, context) : primitiveValue("undefined"),
-        completion: "RETURN",
-      };
+      const returned = node.expression ? this.evalExpression(node.expression, env, context) : primitiveValue("undefined");
+      const outcomes = this.expressionOutcomes(returned, env, context, "RETURN");
+      if (outcomes) return { env, returnValue: returned, completion: "ABRUPT",
+        completionAlternatives: outcomes };
+      return { env, returnValue: returned, completion: "RETURN",
+        completionAlternatives: [{ completion: "RETURN", env, context, value: returned, error: null,
+          predicates: [...(context?.pathPredicates ?? [])] }] };
     }
     if (ts.isThrowStatement(node)) {
       const thrown = this.evalExpression(node.expression, env, context);
-      if (Array.isArray(context?.throwCollector)) {
-        context.throwCollector.push(thrown);
-        return { env, returnValue: null, completion: "THROW" };
-      }
-      if (hasTaint(thrown, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC)) {
-        if (!context.allowCatchRethrow || !thrown.caps.has("CATCH_ERROR")) {
-          const point = this.sourceFile.getLineAndCharacterOfPosition(node.getStart(this.sourceFile));
-          const failure = new StaticFailure("SSC_PUBLIC_SURFACE", "PUBLIC_CAUSE", "CF_PUBLIC_THROW", {
-            line: point.line + 1,
-            column: point.character + 1,
-          });
-          throw failure;
-        }
-      }
-      return { env, returnValue: null, completion: "THROW" };
+      const expressionOutcomes = this.expressionOutcomes(thrown, env, context, "THROW");
+      if (expressionOutcomes) return { env, returnValue: null, error: thrown, completion: "ABRUPT",
+        completionAlternatives: expressionOutcomes.map((outcome) => ({
+          ...outcome,
+          error: outcome.completion === "THROW" && outcome.error ? outcome.error : thrown,
+        })) };
+      return { env, returnValue: null, error: thrown, completion: "THROW",
+        completionAlternatives: [{ completion: "THROW", env, context, value: null, error: thrown,
+          predicates: [...(context?.pathPredicates ?? [])] }] };
     }
     if (ts.isIfStatement(node)) {
       const condition = this.evalExpression(node.expression, env, context);
       const concrete = concreteBoolean(condition);
-      const thenContext = this.isAdmissionCatchGuard(node.expression, env)
-        ? { ...context, allowCatchRethrow: true }
-        : context;
+      const baseContext = this.isAdmissionCatchGuard(node.expression, env)
+        ? { ...context, allowCatchRethrow: true } : context;
+      const refineTruthyIdentifier = (expression, targetEnv, targetContext) => {
+        if (!ts.isIdentifier(expression)) return;
+        const resolved = this.resolveDeclaration(expression);
+        if (resolved?.kind !== "local") return;
+        const key = keyForDeclaration(resolved.declaration.name ?? resolved.declaration);
+        const current = targetEnv.get(key);
+        const candidates = current?.allocationIdentityCandidates ?? new Set();
+        if (candidates.size === 1 && current?.allocationMayBeUnknown !== true) {
+          const identity = candidates.values().next().value;
+          const kind = current.allocationIdentityKinds?.get(identity) ?? current.kind;
+          this.setBinding(targetEnv, key, {
+            ...current,
+            allocationIdentity: identity,
+            kind,
+            allocationMayBeUnknown: false,
+          });
+          if (kind === "pool") {
+            targetContext.ap.poolAllocated = true;
+            targetContext.ap.poolAllocatedAny = true;
+            targetContext.ap.poolAllocationCleanupAttempts ??= { min: 0, max: 0 };
+          }
+          if (kind === "authority-token" && identity === this.authorityToken?.allocationIdentity) {
+            this.markAnalysisFact(targetContext, "authorityMinted");
+          }
+        }
+      };
+      const branch = (statement, truth, branchEnv = this.cloneEnvironment(env)) => {
+        const branchContext = this.cloneAnalysisContext(baseContext);
+        if (truth) refineTruthyIdentifier(node.expression, branchEnv, branchContext);
+        this.appendPathPredicate(branchContext, { node: this.executionKey(node.expression), truth });
+        if (!statement) return [{ completion: "NORMAL", env: branchEnv, context: branchContext,
+          value: null, error: null, predicates: branchContext.pathPredicates }];
+        return this.statementOutcomes(this.analyzeStatementWithState(statement, branchEnv, branchContext), branchEnv, branchContext);
+      };
       if (concrete === true) {
         if (node.elseStatement) this.markDormantSubtree(node.elseStatement);
-        if (this.isAuthorityGuardCondition(node.expression) && this.statementAlwaysThrows(node.thenStatement)) {
-          this.authorityGuardPassed = true;
-        }
-        if (this.isFingerprintGuardCondition(node.expression) && this.statementAlwaysThrows(node.thenStatement)) {
-          this.fingerprintsEqual = true;
-        }
-        return this.analyzeStatement(node.thenStatement, new Map(env), thenContext);
+        if (this.isAuthorityGuardCondition(node.expression) && this.statementAlwaysThrows(node.thenStatement)) this.authorityGuardPassed = true;
+        if (this.isFingerprintGuardCondition(node.expression) && this.statementAlwaysThrows(node.thenStatement)) this.fingerprintsEqual = true;
+        return this.summarizeStatementOutcomes(branch(node.thenStatement, true), env, context);
       }
       if (concrete === false) {
         this.markDormantSubtree(node.thenStatement);
+        const falseContext = this.cloneAnalysisContext(context);
         if (this.statementAlwaysThrows(node.thenStatement)) {
-          if (this.isAuthorityGuardCondition(node.expression)) this.markAnalysisFact(context, "authorityGuardPassed");
-          if (this.isFingerprintGuardCondition(node.expression)) this.markAnalysisFact(context, "fingerprintsEqual");
+          if (this.isAuthorityGuardCondition(node.expression)) this.markAnalysisFact(falseContext, "authorityGuardPassed");
+          if (this.isFingerprintGuardCondition(node.expression)) this.markAnalysisFact(falseContext, "fingerprintsEqual");
         }
-        return node.elseStatement
-          ? this.analyzeStatement(node.elseStatement, new Map(env), context)
-          : { env, returnValue: null };
+        const outcomes = node.elseStatement
+          ? this.statementOutcomes(this.analyzeStatementWithState(node.elseStatement, this.cloneEnvironment(env), falseContext), env, falseContext)
+          : [{ completion: "NORMAL", env: this.cloneEnvironment(env), context: falseContext,
+            value: null, error: null, predicates: [...(falseContext.pathPredicates ?? [])] }];
+        return this.summarizeStatementOutcomes(outcomes, env, context);
       }
-      if (this.isAuthorityGuardCondition(node.expression) && this.statementAlwaysThrows(node.thenStatement)) {
-        this.authorityGuardPassed = true;
-      }
-      if (this.isFingerprintGuardCondition(node.expression) && this.statementAlwaysThrows(node.thenStatement)) {
-        this.fingerprintsEqual = true;
-      }
-      const truePathContext = this.cloneAnalysisContext(thenContext);
-      const falsePathContext = this.cloneAnalysisContext(context);
+      if (this.isAuthorityGuardCondition(node.expression) && this.statementAlwaysThrows(node.thenStatement)) this.authorityGuardPassed = true;
+      if (this.isFingerprintGuardCondition(node.expression) && this.statementAlwaysThrows(node.thenStatement)) this.fingerprintsEqual = true;
+      const trueContext = this.cloneAnalysisContext(baseContext);
+      const falseContext = this.cloneAnalysisContext(context);
+      this.appendPathPredicate(trueContext, { node: this.executionKey(node.expression), truth: true });
+      this.appendPathPredicate(falseContext, { node: this.executionKey(node.expression), truth: false });
       if (this.statementAlwaysThrows(node.thenStatement)) {
-        if (this.isAuthorityGuardCondition(node.expression)) this.markAnalysisFact(falsePathContext, "authorityGuardPassed");
-        if (this.isFingerprintGuardCondition(node.expression)) this.markAnalysisFact(falsePathContext, "fingerprintsEqual");
+        if (this.isAuthorityGuardCondition(node.expression)) this.markAnalysisFact(falseContext, "authorityGuardPassed");
+        if (this.isFingerprintGuardCondition(node.expression)) this.markAnalysisFact(falseContext, "fingerprintsEqual");
       }
-      const thenResult = this.analyzeStatement(node.thenStatement, new Map(env), truePathContext);
+      const trueEnv = this.cloneEnvironment(env);
+      refineTruthyIdentifier(node.expression, trueEnv, trueContext);
+      const thenResult = this.analyzeStatementWithState(node.thenStatement, trueEnv, trueContext);
       const elseResult = node.elseStatement
-        ? this.analyzeStatement(node.elseStatement, new Map(env), falsePathContext)
-        : { env: new Map(env), returnValue: null };
-      const thenCompletion = thenResult.completion ?? "NORMAL";
-      const elseCompletion = elseResult.completion ?? "NORMAL";
-      const hasNormalPath = thenCompletion === "NORMAL" || elseCompletion === "NORMAL";
-      const continuingContexts = [];
-      if (thenCompletion === "NORMAL") continuingContexts.push(truePathContext);
-      if (elseCompletion === "NORMAL") continuingContexts.push(falsePathContext);
-      this.mergeAnalysisContexts(context, continuingContexts.length > 0
-        ? continuingContexts
-        : [truePathContext, falsePathContext]);
-      return {
-        env: this.joinEnvironments(thenResult.env, elseResult.env),
-        returnValue: mergeValues(thenResult.returnValue, elseResult.returnValue),
-        completion: hasNormalPath ? "NORMAL" : thenCompletion === elseCompletion ? thenCompletion : "ABRUPT",
-      };
+        ? this.analyzeStatementWithState(node.elseStatement, this.cloneEnvironment(env), falseContext)
+        : { env: this.cloneEnvironment(env), returnValue: null };
+      return this.summarizeStatementOutcomes([
+        ...this.statementOutcomes(thenResult, env, trueContext),
+        ...this.statementOutcomes(elseResult, env, falseContext),
+      ], env, context);
     }
     if (ts.isTryStatement(node)) {
-      const caughtThrows = [];
       const tryContext = this.cloneAnalysisContext(context);
-      if (node.catchClause) tryContext.throwCollector = caughtThrows;
-      const tryResult = this.analyzeStatement(node.tryBlock, new Map(env), tryContext);
-      let activeResult = tryResult;
-      let activeContexts = [tryContext];
-      if (node.catchClause && caughtThrows.length > 0) {
-        const catchEnv = new Map(tryResult.env);
+      const tryResult = this.analyzeStatementWithState(node.tryBlock, this.cloneEnvironment(env), tryContext);
+      const active = [];
+      let caughtCount = 0;
+      for (const outcome of this.statementOutcomes(tryResult, env, tryContext)) {
+        if (outcome.completion !== "THROW" || !node.catchClause) { active.push(outcome); continue; }
+        caughtCount += 1;
+        const catchEnv = this.cloneEnvironment(outcome.env);
         if (node.catchClause.variableDeclaration) {
           const catchName = node.catchClause.variableDeclaration.name;
           if (!ts.isIdentifier(catchName)) fail(SAFE.ast, "SYNTAX_POLICY");
-          const caughtValue = value({
-            kind: "caught-error",
-            taint: Taint.MAYBE_SENSITIVE | combinedTaint(caughtThrows),
-            caps: ["CATCH_ERROR"],
-          });
-          for (const thrown of caughtThrows) rememberReference(caughtValue, thrown);
-          catchEnv.set(keyForDeclaration(catchName), caughtValue);
+          const caughtValue = value({ kind: "caught-error",
+            taint: Taint.MAYBE_SENSITIVE | combinedTaint([outcome.error]), caps: ["CATCH_ERROR"] });
+          if (outcome.error) rememberReference(caughtValue, outcome.error);
+          this.setBinding(catchEnv, keyForDeclaration(catchName), caughtValue);
         }
-        const catchContext = this.cloneAnalysisContext(context);
-        const catchResult = this.analyzeStatement(node.catchClause.block, catchEnv, catchContext);
-        activeContexts = [];
-        if (["NORMAL", "RETURN"].includes(tryResult.completion ?? "NORMAL")) {
-          activeContexts.push(tryContext);
-        }
-        if (["NORMAL", "RETURN"].includes(catchResult.completion ?? "NORMAL")) {
-          activeContexts.push(catchContext);
-        }
-        if (activeContexts.length === 0) activeContexts = [tryContext, catchContext];
-        activeResult = {
-          env: tryResult.completion === "THROW"
-            ? catchResult.env
-            : this.joinEnvironments(tryResult.env, catchResult.env),
-          returnValue: mergeValues(tryResult.returnValue, catchResult.returnValue),
-          completion: tryResult.completion === "THROW" ? catchResult.completion ?? "NORMAL" : "NORMAL",
-        };
-      } else if (node.catchClause) {
-        this.markDormantSubtree(node.catchClause.block);
+        const catchContext = this.cloneAnalysisContext(outcome.context ?? context);
+        catchContext.allowCatchRethrow = true;
+        catchContext.publicReturnFromCatch = true;
+        this.appendPathPredicate(catchContext, { node: this.executionKey(node.catchClause), caught: true });
+        const catchResult = this.analyzeStatementWithState(node.catchClause.block, catchEnv, catchContext);
+        active.push(...this.statementOutcomes(catchResult, catchEnv, catchContext));
       }
-      this.mergeAnalysisContexts(context, activeContexts);
+      if (node.catchClause && caughtCount === 0) this.markDormantSubtree(node.catchClause.block);
+      let completed = active;
       if (node.finallyBlock) {
-        const finalResult = this.analyzeStatement(node.finallyBlock, new Map(activeResult.env), context);
-        activeResult = {
-          env: finalResult.env,
-          returnValue: finalResult.completion && finalResult.completion !== "NORMAL"
-            ? finalResult.returnValue
-            : mergeValues(activeResult.returnValue, finalResult.returnValue),
-          completion: finalResult.completion && finalResult.completion !== "NORMAL"
-            ? finalResult.completion
-            : activeResult.completion ?? "NORMAL",
-        };
+        completed = [];
+        for (const incoming of active) {
+          const finalContext = this.cloneAnalysisContext(incoming.context ?? context);
+          this.restoreSideEffectState(incoming.sideEffects ?? this.captureSideEffectState());
+          const finalResult = this.analyzeStatementWithState(node.finallyBlock,
+            this.cloneEnvironment(incoming.env), finalContext);
+          for (const finalOutcome of this.statementOutcomes(finalResult, incoming.env, finalContext)) {
+            const originalCompletion = incoming.originalCompletion ?? incoming.completion;
+            const propagatedCompletion = finalOutcome.completion === "NORMAL"
+              ? incoming.completion : finalOutcome.completion;
+            const completionContext = this.cloneAnalysisContext(finalOutcome.context ?? finalContext);
+            completionContext.ap.originalCompletion = originalCompletion;
+            completionContext.ap.propagatedCompletion = propagatedCompletion;
+            if (finalOutcome.completion === "NORMAL") completed.push({ ...finalOutcome,
+              context: completionContext, completion: incoming.completion,
+              value: incoming.value, error: incoming.error,
+              originalCompletion, propagatedCompletion });
+            else completed.push({ ...finalOutcome, context: completionContext,
+              originalCompletion, propagatedCompletion });
+          }
+        }
       }
-      return activeResult;
+      return this.summarizeStatementOutcomes(completed, env, context);
     }
     if (ts.isForOfStatement(node)) {
       const iterable = this.evalExpression(node.expression, env, context);
@@ -1844,23 +2871,26 @@ class ClosureAnalyzer {
             }))
             : [unknownValue()];
       if (loopValues.length === 0) this.markDormantSubtree(node.statement);
-      let current = new Map(env);
+      let current = this.cloneEnvironment(env);
       let returnValue = null;
       if (ts.isVariableDeclarationList(node.initializer) && node.initializer.declarations.length === 1) {
         const declaration = node.initializer.declarations[0];
         if (!ts.isIdentifier(declaration.name)) fail(SAFE.ast, "SYNTAX_POLICY");
         this.bindingNames.set(keyForDeclaration(declaration.name), declaration.name.text);
         for (const item of loopValues) {
-          const loopEnv = new Map(current);
-          loopEnv.set(keyForDeclaration(declaration.name), item);
+          const loopEnv = this.cloneEnvironment(current);
+          this.setBinding(loopEnv, keyForDeclaration(declaration.name), item);
+          const trackCapturedCells = this.loopHasCapturedCallable(node.statement, env);
+          const cellSnapshot = trackCapturedCells ? this.cellStateSnapshot() : null;
           const result = this.analyzeStatement(node.statement, loopEnv, context);
+          if (trackCapturedCells) this.refreshCapturedCells(result.env, this.changedCellIdentities(cellSnapshot));
           current = this.joinEnvironments(current, result.env);
           returnValue = mergeValues(returnValue, result.returnValue);
         }
         return { env: current, returnValue };
       }
       for (const item of loopValues) {
-        const loopEnv = new Map(current);
+        const loopEnv = this.cloneEnvironment(current);
         this.assignTarget(node.initializer, item, loopEnv, context);
         const result = this.analyzeStatement(node.statement, loopEnv, context);
         current = this.joinEnvironments(current, result.env);
@@ -1873,7 +2903,7 @@ class ClosureAnalyzer {
         if (ts.isVariableDeclarationList(node.initializer)) {
           for (const declaration of node.initializer.declarations) {
             if (!ts.isIdentifier(declaration.name)) fail(SAFE.ast, "SYNTAX_POLICY");
-            env.set(
+            this.setBinding(env,
               keyForDeclaration(declaration.name),
               declaration.initializer
                 ? this.evalExpression(declaration.initializer, env, context)
@@ -1887,13 +2917,14 @@ class ClosureAnalyzer {
       }
       const condition = ts.isForStatement(node) ? node.condition : node.expression;
       const doLoop = ts.isDoStatement(node);
-      let current = new Map(env);
+      let current = this.cloneEnvironment(env);
       let returnValue = null;
       let firstIteration = true;
       const loopContext = this.cloneAnalysisContext(context);
+      const trackCapturedCells = this.loopHasCapturedCallable(node.statement, env);
       loopContext.loopDepth = (context?.loopDepth ?? 0) + 1;
       while (true) {
-        const before = environmentSignature(current);
+        const before = environmentSignature(current) + (trackCapturedCells ? "::" + this.cellStateSignature() : "");
         let conditionValue = null;
         let conditionResult = true;
         if (!doLoop || !firstIteration) {
@@ -1901,13 +2932,17 @@ class ClosureAnalyzer {
           conditionResult = concreteBoolean(conditionValue);
           if (conditionResult === false) { this.markDormantSubtree(node.statement); break; }
         }
-        const body = this.analyzeStatement(node.statement, new Map(current), loopContext);
+        const cellSnapshot = trackCapturedCells ? this.cellStateSnapshot() : null;
+        const body = this.analyzeStatement(node.statement, this.cloneEnvironment(current), loopContext);
         returnValue = mergeValues(returnValue, body.returnValue);
         if (body.completion === "RETURN" || body.completion === "THROW") {
           this.mergeAnalysisContexts(context, [context, loopContext]);
           return { env: body.env, returnValue, completion: body.completion };
         }
-        const backEdge = new Map(body.env);
+        const changedCells = trackCapturedCells ? this.changedCellIdentities(cellSnapshot) : new Set();
+        const backEdge = trackCapturedCells
+          ? this.refreshCapturedCells(this.cloneEnvironment(body.env), changedCells)
+          : this.cloneEnvironment(body.env);
         if (body.completion !== "BREAK" && node.incrementor) this.evalExpression(node.incrementor, backEdge, loopContext);
         current = this.joinEnvironments(current, backEdge);
         firstIteration = false;
@@ -1918,7 +2953,7 @@ class ClosureAnalyzer {
           if (doResult === false) break;
           if (doResult === null) current = this.joinEnvironments(current, backEdge);
         }
-        if (environmentSignature(current) === before) break;
+        if (environmentSignature(current) + (trackCapturedCells ? "::" + this.cellStateSignature() : "") === before) break;
       }
       this.mergeAnalysisContexts(context, [context, loopContext]);
       return { env: current, returnValue };
@@ -1927,7 +2962,7 @@ class ClosureAnalyzer {
     if (ts.isClassDeclaration(node)) {
       if (!node.name) fail(SAFE.ast, "SYNTAX_POLICY");
       const cls = this.evalClass(node, env);
-      env.set(keyForDeclaration(node.name), cls);
+      this.setBinding(env, keyForDeclaration(node.name), cls);
       this.bindingNames.set(keyForDeclaration(node.name), node.name.text);
       this.graphNode(cls, "class");
       return { env, returnValue: null };
@@ -2010,9 +3045,19 @@ class ClosureAnalyzer {
   }
 
   joinEnvironments(left, right) {
-    const joined = new Map();
+    const joined = this.cloneEnvironment(left);
     const keys = new Set([...left.keys(), ...right.keys()]);
-    for (const key of keys) joined.set(key, mergeValues(left.get(key), right.get(key)));
+    const leftCells = this.environmentCellIds.get(left) ?? new Map();
+    const rightCells = this.environmentCellIds.get(right) ?? new Map();
+    const joinedCells = this.environmentCellIds.get(joined) ?? new Map();
+    for (const key of keys) {
+      const leftValue = left.has(key) ? left.get(key) : value({ kind: "unknown", exact: false });
+      const rightValue = right.has(key) ? right.get(key) : value({ kind: "unknown", exact: false });
+      this.setBinding(joined, key, mergeValues(leftValue, rightValue));
+      const cellIds = new Set([...(leftCells.get(key) ?? []), ...(rightCells.get(key) ?? [])]);
+      if (cellIds.size > 0) joinedCells.set(key, cellIds);
+    }
+    this.environmentCellIds.set(joined, joinedCells);
     return joined;
   }
 
@@ -2089,7 +3134,7 @@ class ClosureAnalyzer {
       case ts.SyntaxKind.ArrowFunction:
       case ts.SyntaxKind.FunctionExpression:
         if (node.body) this.markDormantSubtree(node.body);
-        return value({ kind: "function", fn: node, closure: env, captureKeys: this.captureKeysFor(node) });
+        return value({ kind: "function", fn: node, closure: env, captureKeys: this.captureKeysFor(node), captureCells: this.captureCellsFor(this.captureKeysFor(node), env) });
       case ts.SyntaxKind.BinaryExpression:
         return this.evalBinary(node, env, context);
       case ts.SyntaxKind.PrefixUnaryExpression:
@@ -2109,15 +3154,15 @@ class ClosureAnalyzer {
           this.markDormantSubtree(node.whenTrue);
           return this.evalExpression(node.whenFalse, env, context);
         }
-        const trueEnv = new Map(env);
-        const falseEnv = new Map(env);
+        const trueEnv = this.cloneEnvironment(env);
+        const falseEnv = this.cloneEnvironment(env);
         const truePathContext = this.cloneAnalysisContext(context);
         const falsePathContext = this.cloneAnalysisContext(context);
         const whenTrue = this.evalExpression(node.whenTrue, trueEnv, truePathContext);
         const whenFalse = this.evalExpression(node.whenFalse, falseEnv, falsePathContext);
         this.mergeAnalysisContexts(context, [truePathContext, falsePathContext]);
         const joined = this.joinEnvironments(trueEnv, falseEnv);
-        for (const [key, item] of joined) env.set(key, item);
+        for (const [key, item] of joined) this.setBinding(env, key, item);
         return mergeValues(whenTrue, whenFalse);
       }
       case ts.SyntaxKind.TemplateExpression:
@@ -2165,13 +3210,14 @@ class ClosureAnalyzer {
     if (elements.some((item) => hasTaint(item, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC))) {
       this.pendingSecretStorage = true;
     }
-    const result = value({
+    const result = this.allocationFor(node, "array");
+    result.elements = elements;
+    rememberRisk(result, value({
       kind: "array",
-      elements,
       taint: combinedTaint(elements),
       caps: combinedCaps(elements),
       provenance: combinedProvenance(elements),
-    });
+    }));
     for (const element of elements) rememberReference(result, element);
     return result;
   }
@@ -2185,7 +3231,14 @@ class ClosureAnalyzer {
     const poolOptionKeys = ["host", "port", "user", "database", "max"];
     const isPoolOptions = sameTextSet(propertyNames, poolOptionKeys) ||
       sameTextSet(propertyNames, [...poolOptionKeys, "password"]);
-    const result = value({ kind: isPoolOptions ? "pool-options" : "object" });
+    const result = this.allocationFor(node, isPoolOptions ? "pool-options" : "object");
+    result.frozen = false;
+    const currentPropertyNames = new Set(propertyNames.filter((name) => name !== null));
+    for (const [name, previous] of result.props) {
+      if (!currentPropertyNames.has(name)) result.historyProps.set(name, mergeValues(result.historyProps.get(name), previous));
+    }
+    result.props = new Map();
+    result.methods = new Map();
     for (const { property, name } of namedProperties) {
       if (ts.isSpreadAssignment(property) || ts.isGetAccessorDeclaration(property) ||
           ts.isSetAccessorDeclaration(property)) {
@@ -2197,7 +3250,7 @@ class ClosureAnalyzer {
       if (ts.isMethodDeclaration(property)) {
         if (!property.body) fail(SAFE.ast, "SYNTAX_POLICY");
         this.markDormantSubtree(property.body);
-        const method = value({ kind: "function", fn: property, closure: env, captureKeys: this.captureKeysFor(property) });
+        const method = value({ kind: "function", fn: property, closure: env, captureKeys: this.captureKeysFor(property), captureCells: this.captureCellsFor(this.captureKeysFor(property), env) });
         result.methods.set(name, method);
         rememberReference(result, method);
         continue;
@@ -2266,12 +3319,12 @@ class ClosureAnalyzer {
         }
       }
       if (ts.isClassStaticBlockDeclaration(member)) {
-        this.analyzeStatements(member.body.statements, new Map(env), {});
+        this.analyzeStatements(member.body.statements, this.cloneEnvironment(env), {});
       }
       if (ts.isMethodDeclaration(member) && member.name) {
         const name = this.propertyName(member.name, env, {});
         if (name === null || !member.body) fail(SAFE.ast, "SYNTAX_POLICY");
-        const method = value({ kind: "function", fn: member, closure: env, captureKeys: this.captureKeysFor(member) });
+        const method = value({ kind: "function", fn: member, closure: env, captureKeys: this.captureKeysFor(member), captureCells: this.captureCellsFor(this.captureKeysFor(member), env) });
         if (member.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword)) {
           result.methods.set(name, method);
         } else {
@@ -2381,13 +3434,25 @@ class ClosureAnalyzer {
           fail(SAFE.flow, "CAPABILITY_PASSWORD");
         }
       }
-      this.poolConstructs += 1;
+      if (!this.poolConstructionNodes.has(node.pos)) {
+        this.poolConstructs += 1;
+        this.poolConstructionNodes.add(node.pos);
+      }
       if (this.poolConstructs > 1) fail(SAFE.flow, "CAPABILITY_POOL");
       this.markAnalysisFact(context, "poolAllocated");
       this.poolConstructionNodes.add(node.pos);
       this.provenanceObligations.delete("pool-target");
-      const pool = value({ kind: "pool" });
-      pool.options = options;
+      const activation = this.summaryExecutionStack.at(-1)?.id ??
+        this.activationStack.map((frame) => frame.id).join("/");
+      const allocationKey = (activation || "module") + "::pool::" + node.pos;
+      let pool = this.poolAllocationValues.get(allocationKey);
+      if (pool) {
+        pool.options = mergeValues(pool.options, options);
+      } else {
+        pool = value({ kind: "pool", allocationIdentity: allocationKey });
+        pool.options = options;
+        this.poolAllocationValues.set(allocationKey, pool);
+      }
       rememberReference(pool, options);
       return pool;
     }
@@ -2429,7 +3494,7 @@ class ClosureAnalyzer {
         if (pair.kind !== "array" || pair.elements?.length !== 2 || pair.elements[0].kind === "primitive") {
           fail(SAFE.flow, "CAPABILITY_COLLECTION");
         }
-        weakmap.map.set(pair.elements[0], pair.elements[1]);
+        weakmap.map.set(abstractIdentityKey(pair.elements[0]), pair.elements[1]);
         rememberReference(weakmap, pair.elements[0]);
         rememberReference(weakmap, pair.elements[1]);
       }
@@ -2461,7 +3526,7 @@ class ClosureAnalyzer {
       if (!callee.fn || (!ts.isClassDeclaration(callee.fn) && !ts.isClassExpression(callee.fn))) fail(SAFE.unresolved, "CALL_RESOLUTION");
       return this.analyzeClassConstructor(callee.fn, args, callee.closure);
     }
-    if (callee.fn && isFunctionLike(callee.fn)) return this.analyzeFunction(callee.fn, args, callee.closure, null, context);
+    if (this.hasCallableTarget(callee)) return this.invokeFunctionValue(callee, args, null, context, node, env);
     fail(SAFE.unresolved, "CALL_RESOLUTION");
   }
 
@@ -2469,7 +3534,7 @@ class ClosureAnalyzer {
     const operator = node.operatorToken.kind;
     if (operator === ts.SyntaxKind.EqualsToken) {
       const right = this.evalExpression(node.right, env, context);
-      this.assignTarget(node.left, right, env, context);
+      this.assignTarget(node.left, right, env, context, node);
       return right;
     }
     if (operator === ts.SyntaxKind.CommaToken) {
@@ -2496,11 +3561,29 @@ class ClosureAnalyzer {
       if (leftConcrete) return this.evalExpression(node.right, env, context);
       const skippedContext = this.cloneAnalysisContext(context);
       const rightContext = this.cloneAnalysisContext(context);
-      const rightEnv = new Map(env);
+      const rightEnv = this.cloneEnvironment(env);
       const right = this.evalExpression(node.right, rightEnv, rightContext);
       this.mergeAnalysisContexts(context, [skippedContext, rightContext]);
-      for (const [key, item] of this.joinEnvironments(env, rightEnv)) env.set(key, item);
-      return mergeValues(left, right);
+      for (const [key, item] of this.joinEnvironments(env, rightEnv)) this.setBinding(env, key, item);
+      const merged = mergeValues(left, right);
+      const defaultOrigin = operator === ts.SyntaxKind.QuestionQuestionToken
+        ? this.canonicalDefaultOrigin(node.right)
+        : null;
+      const defaultKey = defaultOrigin === this.originIdentity("default.expectedUser.cloud_admin")
+        ? "input.expectedUser"
+        : defaultOrigin === this.originIdentity("default.phase.initialization")
+          ? "input.phase"
+          : null;
+      const inputOrigin = defaultKey ? this.originIdentity(defaultKey) : null;
+      if (defaultOrigin && inputOrigin && exactRelationsOf(left).has(inputOrigin) &&
+          exactRelationsOf(right).has(defaultOrigin)) {
+        merged.exactRelations = new Set([inputOrigin, defaultOrigin]);
+        merged.exact = true;
+        merged.derived = false;
+        merged.precision = "canonical-normalization";
+        merged.normalization = "canonical-default";
+      }
+      return merged;
     }
     if ([
       ts.SyntaxKind.PlusEqualsToken,
@@ -2701,7 +3784,7 @@ class ClosureAnalyzer {
     }
     if (receiver.kind === "instance" && receiver.classRef?.instanceMethods?.has(name)) {
       const method = receiver.classRef.instanceMethods.get(name);
-      const bound = value({ kind: "function", fn: method.fn, closure: method.closure, captureKeys: method.captureKeys, bound: receiver });
+      const bound = value({ kind: "function", fn: method.fn, closure: method.closure, captureKeys: method.captureKeys, captureCells: method.captureCells, bound: receiver });
       this.graphEdge(receiver, bound, "MEMBER_VALUE");
       return bound;
     }
@@ -2714,6 +3797,7 @@ class ClosureAnalyzer {
       if (SAFE_INPUT_FIELDS.has(name)) {
         const result = primitiveValue(`input.${name}`, { constant: undefined });
         result.provenance.add(this.originIdentity(`input.${name}`));
+        result.exactRelations.add(this.originIdentity(`input.${name}`));
         this.graphEdge(receiver, result, "READS");
         return result;
       }
@@ -2721,6 +3805,7 @@ class ClosureAnalyzer {
     if (receiver.kind === "row" && QUERY_ROW_FIELDS.has(name)) {
       const result = primitiveValue(`query.${name}`, { constant: undefined });
       result.provenance.add(this.originIdentity(`query.${name}`));
+      result.exactRelations.add(this.originIdentity(`query.${name}`));
       this.graphEdge(receiver, result, "READS");
       return result;
     }
@@ -2824,6 +3909,40 @@ class ClosureAnalyzer {
     return unknownValue();
   }
 
+  hasCallableTarget(item) {
+    return Boolean(item?.fn && isFunctionLike(item.fn)) || Boolean(item?.callableTargets?.length);
+  }
+
+  invokeFunctionValue(item, args, thisValue, parentContext, callsite, callerEnv = null) {
+    const targets = item?.callableTargets?.length
+      ? item.callableTargets
+      : item?.fn && isFunctionLike(item.fn)
+        ? [{ fn: item.fn, closure: item.closure, captureKeys: item.captureKeys,
+          captureCells: item.captureCells, bound: item.bound }]
+        : [];
+    if (targets.length === 0) fail(SAFE.unresolved, "CALL_RESOLUTION", "TV_CALLBACK_UNMODELED");
+    let result = null;
+    const completionOutcomes = [];
+    for (const target of targets) {
+      if (!target.fn || !isFunctionLike(target.fn)) {
+        fail(SAFE.unresolved, "CALL_RESOLUTION", "TV_CALLBACK_UNMODELED");
+      }
+      const cellSnapshot = callerEnv ? this.cellStateSnapshot(callerEnv) : null;
+      const observed = this.analyzeFunction(target.fn, args, target.closure,
+        target.bound ?? thisValue, parentContext, callsite, target.captureCells);
+      if (callerEnv && target.captureCells instanceof Map) {
+        this.refreshCapturedCells(callerEnv, this.changedCellIdentities(cellSnapshot));
+      }
+      completionOutcomes.push(...(this.expressionCompletionOutcomes.get(observed) ?? [{
+        completion: "NORMAL", value: observed, context: parentContext,
+      }]));
+      result = mergeValues(result, observed);
+    }
+    const returned = result ?? primitiveValue("undefined");
+    this.expressionCompletionOutcomes.set(returned, completionOutcomes);
+    return returned;
+  }
+
   call(callee, args, node, env, context) {
     this.graphNode(callee, "callee");
     for (const argument of args) this.graphEdge(callee, argument, "ARGUMENT");
@@ -2882,7 +4001,14 @@ class ClosureAnalyzer {
         fail(SAFE.flow, "CAPABILITY_QUERY", "AP_IDENTITY_ARGUMENTS");
       }
       if (callee.bound?.kind !== "pool") fail(SAFE.flow, "CAPABILITY_QUERY", "AP_IDENTITY_SQL");
-      if (this.identityQueryCount >= 2) fail(SAFE.flow, "CAPABILITY_QUERY", "AP_IDENTITY_SQL");
+      if ((context?.loopDepth ?? 0) > 0) fail(SAFE.flow, "CAPABILITY_QUERY", "AP_IDENTITY_SQL");
+      const activationId = this.summaryExecutionStack.at(-1)?.id ??
+        this.activationStack.at(-1)?.id ?? "module";
+      const querySite = activationId + "::" + String(node.pos);
+      const repeatedQuerySite = this.identityQueryNodes.has(querySite);
+      if (!repeatedQuerySite && this.identityQueryCount >= 2) {
+        fail(SAFE.flow, "CAPABILITY_QUERY", "AP_IDENTITY_SQL");
+      }
       const identityArguments = args[1].elements.map((item) => new Set(provenanceOf(item)));
       if (this.identityQueryPool && this.identityQueryPool !== callee.bound) fail(SAFE.flow, "CAPABILITY_QUERY");
       if (this.identityQueryArguments && !sameIdentitySequence(identityArguments, this.identityQueryArguments)) {
@@ -2890,7 +4016,8 @@ class ClosureAnalyzer {
       }
       this.identityQueryPool = callee.bound;
       this.identityQueryArguments ??= identityArguments;
-      this.identityQueryCount = (this.identityQueryCount ?? 0) + 1;
+      this.identityQueryNodes.add(querySite);
+      if (!repeatedQuerySite) this.identityQueryCount += 1;
       this.provenanceObligations.delete("identity-target");
       if (this.identityQueryCount >= 2 && this.authoritySetCount === 1) {
         this.authoritySecondIdentityChecked = true;
@@ -2899,19 +4026,47 @@ class ClosureAnalyzer {
       return value({ kind: "query-result" });
     }
     if (callee.caps.has("POOL_END")) {
+      const cleanupRange = context?.ap?.cleanupAttempts ?? { min: 0, max: 0 };
+      const cleanupEntryRange = context?.ap?.cleanupEntryCount ?? cleanupRange;
+      const activationId = this.summaryExecutionStack.at(-1)?.id ??
+        this.activationStack.at(-1)?.id ?? "module";
+      const cleanupSite = activationId + "::" + String(node.pos);
+      const repeatedCleanupSite = context?.ap?.cleanupSites?.has(cleanupSite) === true;
+      if (context?.ap) {
+        context.ap.cleanupSites ??= new Set();
+        context.ap.cleanupSites.add(cleanupSite);
+        context.ap.cleanupAttempted = true;
+        if (!repeatedCleanupSite) {
+          context.ap.cleanupEntryCount = (context?.loopDepth ?? 0) > 0
+            ? { min: cleanupEntryRange.min, max: 2 }
+            : {
+              min: Math.min(2, cleanupEntryRange.min + 1),
+              max: Math.min(2, cleanupEntryRange.max + 1),
+            };
+          context.ap.cleanupAttempts = (context?.loopDepth ?? 0) > 0
+            ? { min: cleanupRange.min, max: 2 }
+            : {
+              min: Math.min(2, cleanupRange.min + 1),
+              max: Math.min(2, cleanupRange.max + 1),
+            };
+          if (context.ap.poolAllocated) {
+            const allocatedRange = context.ap.poolAllocationCleanupAttempts ?? { min: 0, max: 0 };
+            context.ap.poolAllocationCleanupAttempts = (context?.loopDepth ?? 0) > 0
+              ? { min: allocatedRange.min, max: 2 }
+              : {
+                min: Math.min(2, allocatedRange.min + 1),
+                max: Math.min(2, allocatedRange.max + 1),
+              };
+          }
+        }
+      }
+      if (!this.poolEndNodes.has(node.pos)) {
+        this.poolEndAttempts += 1;
+        this.poolEndNodes.add(node.pos);
+      }
       if (args.length !== 0) fail(SAFE.flow, "CAPABILITY_CLEANUP");
       if (callee.bound?.kind !== "pool") fail(SAFE.flow, "CAPABILITY_CLEANUP");
-      const cleanupRange = context?.ap?.cleanupAttempts ?? { min: 0, max: 0 };
-      if ((context?.loopDepth ?? 0) > 0 || this.poolEndNodes.has(node.pos)) {
-        context.ap.cleanupAttempts = { min: cleanupRange.min, max: 2 };
-      } else {
-        context.ap.cleanupAttempts = {
-          min: Math.min(2, cleanupRange.min + 1),
-          max: Math.min(2, cleanupRange.max + 1),
-        };
-      }
-      this.poolEndAttempts += 1;
-      this.poolEndNodes.add(node.pos);
+      if (context?.ap) context.ap.cleanupSucceeded = true;
       return capabilityValue("CLEANUP_PROMISE", { bound: callee.bound, taint: Taint.SENSITIVE_DIAGNOSTIC });
     }
     if (callee.caps.has("POOL_CONNECT")) {
@@ -2929,8 +4084,11 @@ class ClosureAnalyzer {
       }
       this.identityQueryPool = callee.bound.pool;
       this.identityQueryArguments ??= identityArguments;
+      if ((context?.loopDepth ?? 0) > 0) fail(SAFE.flow, "CAPABILITY_QUERY", "AP_IDENTITY_SQL");
+      const querySite = String(node.pos);
       if (this.identityQueryCount >= 2) fail(SAFE.flow, "CAPABILITY_QUERY", "AP_IDENTITY_SQL");
-      this.identityQueryCount = (this.identityQueryCount ?? 0) + 1;
+      this.identityQueryNodes.add(querySite);
+      this.identityQueryCount += 1;
       this.provenanceObligations.delete("identity-target");
       if (this.identityQueryCount >= 2 && this.authoritySetCount === 1) {
         this.authoritySecondIdentityChecked = true;
@@ -2950,7 +4108,8 @@ class ClosureAnalyzer {
       this.markAnalysisFact(context, "migrationAttempted");
       if (args.length !== 2 || args[0].kind !== "drizzle-db" || args[1].kind !== "object" ||
           !sameTextSet([...args[1].props.keys()], ["migrationsFolder"]) ||
-          args[1].props.get("migrationsFolder") !== this.authorityRecord?.props.get("migrationsFolder") ||
+          !sameExactPrimitiveValue(args[1].props.get("migrationsFolder"),
+            this.authorityRecord?.props.get("migrationsFolder")) ||
           args[1].props.get("migrationsFolder")?.exact === false ||
           hasTaint(args[1], Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC) ||
           !this.authorityRecord || this.authoritySetCount !== 1 || !this.authoritySecondIdentityChecked ||
@@ -2968,7 +4127,7 @@ class ClosureAnalyzer {
           fail(SAFE.flow, "CAPABILITY_STORAGE");
         }
         callee.bound.map ??= new Map();
-        callee.bound.map.set(args[0], args[1]);
+        callee.bound.map.set(abstractIdentityKey(args[0]), args[1]);
         rememberReference(callee.bound, args[0]);
         rememberReference(callee.bound, args[1]);
         return callee.bound;
@@ -2982,56 +4141,57 @@ class ClosureAnalyzer {
         fail(SAFE.authority, "AUTHORITY_SCHEMA");
       }
       this.validateAuthorityRecord(args[0], args[1]);
-      callee.bound.map.set(args[0], args[1]);
+      callee.bound.map.set(abstractIdentityKey(args[0]), args[1]);
       this.authorityRecord = args[1];
       this.authorityToken = args[0];
-      this.authoritySetCount += 1;
+      if (!this.authoritySetNodes.has(node.pos)) {
+        this.authoritySetNodes.add(node.pos);
+        this.authoritySetCount += 1;
+      }
+      if (this.authoritySetCount > 1) fail(SAFE.authority, "AUTHORITY_SCHEMA");
       this.markAnalysisFact(context, "authorityMinted");
       return callee.bound;
     }
     if (callee.caps.has("WEAKMAP_GET")) {
       if (args.length !== 1) fail(SAFE.authority, "AUTHORITY_SCHEMA");
-      const record = callee.bound.map.get(args[0]);
+      const record = callee.bound.map.get(abstractIdentityKey(args[0]));
       if (!record && callee.bound?.role === "authority-store") fail(SAFE.authority, "AUTHORITY_SCHEMA");
       return record ?? unknownValue();
     }
     if (callee.caps.has("CLEANUP_CATCH")) {
-      if (args.length !== 1 || !args[0].fn) fail(SAFE.flow, "CLEANUP_DIAGNOSTIC");
-      const callbackResult = this.analyzeFunction(
-        args[0].fn,
+      if (args.length !== 1 || !this.hasCallableTarget(args[0])) fail(SAFE.flow, "CLEANUP_DIAGNOSTIC");
+      return this.invokeFunctionValue(args[0],
         [value({ kind: "diagnostic", taint: Taint.SENSITIVE_DIAGNOSTIC, caps: ["CLEANUP_DIAGNOSTIC"] })],
-        args[0].closure,
-      );
-      return callbackResult;
+        null, context, node, env);
     }
     if (callee.caps.has("ARRAY_SOME")) {
-      if (args.length < 1 || !args[0].fn) fail(SAFE.ast, "SYNTAX_POLICY");
+      if (args.length < 1 || !this.hasCallableTarget(args[0])) fail(SAFE.ast, "SYNTAX_POLICY");
       for (const [index, item] of (callee.bound?.elements ?? [unknownValue()]).entries()) {
-        this.analyzeFunction(args[0].fn, [item, primitiveValue(String(index)), callee.bound], args[0].closure, null, context);
+        this.invokeFunctionValue(args[0], [item, primitiveValue(String(index)), callee.bound], null, context, node, env);
       }
       return primitiveValue("boolean");
     }
     if (callee.caps.has("ARRAY_EVERY")) {
-      if (args.length < 1 || !args[0].fn) fail(SAFE.ast, "SYNTAX_POLICY");
+      if (args.length < 1 || !this.hasCallableTarget(args[0])) fail(SAFE.ast, "SYNTAX_POLICY");
       for (const [index, item] of (callee.bound?.elements ?? [unknownValue()]).entries()) {
-        this.analyzeFunction(args[0].fn, [item, primitiveValue(String(index)), callee.bound], args[0].closure, null, context);
+        this.invokeFunctionValue(args[0], [item, primitiveValue(String(index)), callee.bound], null, context, node, env);
       }
       return primitiveValue("boolean");
     }
     if (callee.caps.has("ARRAY_MAP")) {
-      if (args.length < 1 || !args[0].fn) fail(SAFE.ast, "SYNTAX_POLICY");
+      if (args.length < 1 || !this.hasCallableTarget(args[0])) fail(SAFE.ast, "SYNTAX_POLICY");
       const elements = [];
       for (const [index, item] of (callee.bound?.elements ?? []).entries()) {
-        elements.push(this.analyzeFunction(args[0].fn, [item, primitiveValue(String(index)), callee.bound], args[0].closure, null, context));
+        elements.push(this.invokeFunctionValue(args[0], [item, primitiveValue(String(index)), callee.bound], null, context, node, env));
       }
       const result = value({ kind: "array", elements });
       for (const item of elements) rememberReference(result, item);
       return result;
     }
     if (callee.caps.has("ARRAY_FOREACH")) {
-      if (args.length < 1 || !args[0].fn) fail(SAFE.ast, "SYNTAX_POLICY");
+      if (args.length < 1 || !this.hasCallableTarget(args[0])) fail(SAFE.ast, "SYNTAX_POLICY");
       for (const [index, item] of (callee.bound?.elements ?? []).entries()) {
-        this.analyzeFunction(args[0].fn, [item, primitiveValue(String(index)), callee.bound], args[0].closure, null, context);
+        this.invokeFunctionValue(args[0], [item, primitiveValue(String(index)), callee.bound], null, context, node, env);
       }
       return primitiveValue("undefined");
     }
@@ -3099,9 +4259,9 @@ class ClosureAnalyzer {
       return primitiveValue("undefined");
     }
     if (callee.caps.has("SET_FOREACH")) {
-      if (args.length < 1 || !args[0].fn) fail(SAFE.ast, "SYNTAX_POLICY");
+      if (args.length < 1 || !this.hasCallableTarget(args[0])) fail(SAFE.ast, "SYNTAX_POLICY");
       for (const item of callee.bound.map?.values?.() ?? []) {
-        this.analyzeFunction(args[0].fn, [item, item, callee.bound], args[0].closure, null, context);
+        this.invokeFunctionValue(args[0], [item, item, callee.bound], null, context, node, env);
       }
       return primitiveValue("undefined");
     }
@@ -3116,7 +4276,7 @@ class ClosureAnalyzer {
     if (callee.caps.has("MAP_SET")) {
       if (args.length !== 2) fail(SAFE.flow, "CAPABILITY_COLLECTION");
       callee.bound.map ??= new Map();
-      callee.bound.map.set(args[0], args[1]);
+      callee.bound.map.set(abstractIdentityKey(args[0]), args[1]);
       rememberReference(callee.bound, args[0]);
       rememberReference(callee.bound, args[1]);
       return callee.bound;
@@ -3138,9 +4298,9 @@ class ClosureAnalyzer {
       return primitiveValue("undefined");
     }
     if (callee.caps.has("MAP_FOREACH")) {
-      if (args.length < 1 || !args[0].fn) fail(SAFE.ast, "SYNTAX_POLICY");
+      if (args.length < 1 || !this.hasCallableTarget(args[0])) fail(SAFE.ast, "SYNTAX_POLICY");
       for (const [key, item] of callee.bound.map ?? []) {
-        this.analyzeFunction(args[0].fn, [item, key, callee.bound], args[0].closure, null, context);
+        this.invokeFunctionValue(args[0], [item, key, callee.bound], null, context, node, env);
       }
       return primitiveValue("undefined");
     }
@@ -3179,12 +4339,12 @@ class ClosureAnalyzer {
           (callee.label !== "trim" || !this.isPasswordValidationCall(node))) {
         this.pendingPasswordOperation = true;
       }
-      if (callee.label === "replace" && args[1]?.fn) {
-        this.analyzeFunction(args[1].fn, [
+      if (callee.label === "replace" && this.hasCallableTarget(args[1])) {
+        this.invokeFunctionValue(args[1], [
           primitiveValue("match"),
           primitiveValue("offset"),
           callee.bound,
-        ], args[1].closure);
+        ], null, context, node, env);
       }
       const hostNormalization = provenanceOf(callee.bound).size === 1 &&
         provenanceOf(callee.bound).has(this.originIdentity("url.hostname")) &&
@@ -3246,7 +4406,7 @@ class ClosureAnalyzer {
     if (callee.caps.has("STRING_CONSTRUCTOR")) {
       const target = args[0];
       const toString = target?.methods?.get("toString");
-      if (toString?.fn) this.analyzeFunction(toString.fn, [], toString.closure, target, context);
+      if (toString && this.hasCallableTarget(toString)) this.invokeFunctionValue(toString, [], target, context, node, env);
       if (args.some((item) => hasTaint(item, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC))) fail(SAFE.flow, "CAPABILITY_RECONSTRUCTION");
       return value({
         kind: "string",
@@ -3259,13 +4419,13 @@ class ClosureAnalyzer {
     if (callee.caps.has("JSON_STRINGIFY")) {
       const target = args[0];
       const toJson = target?.methods?.get("toJSON");
-      if (toJson?.fn) this.analyzeFunction(toJson.fn, [], toJson.closure, target, context);
+      if (toJson && this.hasCallableTarget(toJson)) this.invokeFunctionValue(toJson, [], target, context, node, env);
       const replacer = args[1];
-      if (replacer?.fn) {
-        this.analyzeFunction(replacer.fn, [
+      if (this.hasCallableTarget(replacer)) {
+        this.invokeFunctionValue(replacer, [
           primitiveValue("key"),
           target ?? unknownValue(),
-        ], replacer.closure);
+        ], null, context, node, env);
       }
       return value({
         kind: "string",
@@ -3316,12 +4476,12 @@ class ClosureAnalyzer {
     if (callee.caps.has("PROMISE_RESOLVE")) {
       fail(SAFE.unresolved, "CALL_RESOLUTION", "TV_CALLBACK_UNMODELED");
     }
-    if (callee.fn && isFunctionLike(callee.fn)) return this.analyzeFunction(callee.fn, args, callee.closure, callee.bound, context);
+    if (this.hasCallableTarget(callee)) return this.invokeFunctionValue(callee, args, callee.bound, context, node, env);
     const locationAtCall = () => {
       const point = this.sourceFile.getLineAndCharacterOfPosition(node.getStart(this.sourceFile));
       return { line: point.line + 1, column: point.character + 1 };
     };
-    if (callee.kind === "function" && !callee.fn) {
+    if (callee.kind === "function" && !this.hasCallableTarget(callee)) {
       fail(SAFE.unresolved, "CALL_RESOLUTION", "TV_CALLBACK_UNMODELED", locationAtCall());
     }
     if (callee.kind === "class") {
@@ -3345,8 +4505,13 @@ class ClosureAnalyzer {
         if (item?.kind !== "pool") fail(SAFE.authority, "AUTHORITY_SCHEMA");
         continue;
       }
-      if (!item || item.kind === "unknown" ||
-          hasTaint(item, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC | Taint.MAYBE_SENSITIVE)) {
+      if (!item || item.kind === "unknown") {
+        if (["database", "user", "clusterFingerprint", "lifecycleFingerprint", "migrationsFolder", "phase"].includes(name)) {
+          fail(SAFE.authority, "AUTHORITY_SCHEMA", "PV_EXACT_RELATION");
+        }
+        fail(SAFE.flow, "AUTHORITY_SCHEMA");
+      }
+      if (hasTaint(item, Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC | Taint.MAYBE_SENSITIVE)) {
         fail(SAFE.flow, "AUTHORITY_SCHEMA");
       }
       if (name !== "authority" && name !== "brand" && name !== "pool" &&
@@ -3372,8 +4537,8 @@ class ClosureAnalyzer {
       if (item?.exact === false && item.literalType === "number") {
         fail(SAFE.authority, "AUTHORITY_SCHEMA", "PV_EXACT_RELATION");
       }
-      if (!item || item.exact === false || !sameIdentitySet(provenanceOf(item), expected)) {
-        fail(SAFE.authority, "AUTHORITY_SCHEMA");
+      if (!item || item.exact === false || !sameIdentitySet(exactRelationsOf(item), expected)) {
+        fail(SAFE.authority, "AUTHORITY_SCHEMA", "PV_EXACT_RELATION");
       }
     };
     exact("database", ["input.expectedDatabase"]);
@@ -3386,19 +4551,20 @@ class ClosureAnalyzer {
       this.originIdentity("input.phase"),
       this.originIdentity("default.phase.initialization"),
     ]);
-    if (!phase || phase.exact === false || !sameIdentitySet(provenanceOf(phase), expectedPhase)) {
+    if (!phase || phase.exact === false || !sameIdentitySet(exactRelationsOf(phase), expectedPhase)) {
       fail(SAFE.authority, "AUTHORITY_SCHEMA", "PV_EXACT_RELATION");
     }
+    record.authorityRecord = true;
     this.provenanceObligations.delete("authority-record");
     this.provenanceObligations.delete("migration-folder");
   }
 
-  assignTarget(target, right, env, context) {
+  assignTarget(target, right, env, context, assignmentNode = target) {
     this.graphNode(right, "assignment-value");
     if (ts.isIdentifier(target)) {
       const resolved = this.resolveDeclaration(target);
       if (!resolved || resolved.kind !== "local") fail(SAFE.unresolved, "CALL_RESOLUTION");
-      env.set(keyForDeclaration(resolved.declaration.name ?? resolved.declaration), right);
+      this.setBinding(env, keyForDeclaration(resolved.declaration.name ?? resolved.declaration), right);
       this.graphEdge(resolved.declaration, right, "ASSIGNS");
       this.bindingNames.set(keyForDeclaration(resolved.declaration.name ?? resolved.declaration), target.text);
       return;
@@ -3410,18 +4576,35 @@ class ClosureAnalyzer {
       if (receiver.kind === "unknown") fail(SAFE.flow, "CAPABILITY_STORAGE");
       if (receiver.frozen && receiver.kind !== "authority-token") fail(SAFE.flow, "CAPABILITY_STORAGE");
       if (receiver.kind === "pool-options") {
-        if (name !== "password" || receiver.props.has("password") || !right.directCredential ||
+        const activation = this.summaryExecutionStack.at(-1)?.id ??
+          this.activationStack.map((frame) => frame.id).join("/");
+        const eventKey = (activation || "module") + "::" + assignmentNode.pos;
+        const previousReceiver = this.declassificationAssignmentEvents.get(eventKey);
+        const replayedAssignment = previousReceiver === receiver && receiver.props.has("password");
+        const previousCredential = receiver.props.get("password");
+        const sameCredential = previousCredential === right ||
+          (previousCredential?.directCredential === true && right.directCredential === true &&
+            sameIdentitySet(provenanceOf(previousCredential), provenanceOf(right)) &&
+            summarizeRisk(previousCredential).taint === Taint.CREDENTIAL &&
+            summarizeRisk(right).taint === Taint.CREDENTIAL);
+        if (name !== "password" || (receiver.props.has("password") &&
+            !(replayedAssignment && sameCredential)) || !right.directCredential ||
             right.kind !== "credential" || summarizeRisk(right).taint !== Taint.CREDENTIAL ||
             summarizeRisk(right).caps.size > 0) {
           fail(SAFE.flow, "CAPABILITY_PASSWORD");
         }
-        assignValueProperty(receiver, name, right);
-        this.declassificationCount += 1;
-        if (this.declassificationCount > 1) fail(SAFE.flow, "CAPABILITY_PASSWORD");
+        this.declassificationAssignmentEvents.set(eventKey, receiver);
+        if (replayedAssignment) assignValueProperty(receiver, name, mergeValues(previousCredential, right));
+        else {
+          assignValueProperty(receiver, name, right);
+          this.declassificationCount += 1;
+          if (this.declassificationCount > 1) fail(SAFE.flow, "CAPABILITY_PASSWORD");
+        }
         this.graphEdge(right, receiver, "DECLASSIFICATION_USE");
         return;
       }
-      if (receiver === this.authorityRecord && name === "valid" && isBooleanValue(right, false)) {
+      if ((receiver === this.authorityRecord || receiver.authorityRecord === true) &&
+          name === "valid" && isBooleanValue(right, false)) {
         assignValueProperty(receiver, name, right);
         this.authorityRevoked = true;
         this.markAnalysisFact(context, "authorityRevoked");
@@ -3856,7 +5039,7 @@ async function readFrozenSource() {
     .update(canonicalBytes)
     .digest("hex");
   if (digest !== FROZEN_HELPER_BLOB) fail(SAFE.flow, "FROZEN_HELPER_BLOB");
-  return { helperPath, source: bytes.toString("utf8") };
+  return { helperPath, source: canonicalBytes.toString("utf8") };
 }
 
 function rootBodyInsertion(source) {

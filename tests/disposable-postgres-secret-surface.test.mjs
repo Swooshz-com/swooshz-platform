@@ -190,6 +190,9 @@ const SCENARIO_IDS = Object.freeze([
   "SC03_OPERATION_REJECT_CLEANUP_REJECT",
   "SC04_SECOND_IDENTITY_REJECT_CLEANUP_REJECT",
   "SC05_PASSWORD_ABSENT",
+  "SC06_PRE_POOL_FAILURE",
+  "SC07_MIGRATION_REJECT_CLEANUP",
+  "SC08_MIGRATION_REJECT_CLEANUP_REJECT",
 ]);
 
 const INDEPENDENT_POSITIVE_SNIPPETS = Object.freeze([
@@ -529,15 +532,17 @@ function buildRun657SupplementaryStaticVariants(source) {
 }
 
 const RUN657_STATIC_ORACLE_GROUPS = Object.freeze([
-  ["SSC_AUTHORITY_SHAPE", "AUTHORITY_SCHEMA", "PV_EXACT_RELATION", ["LITERAL_phase", "SERIALIZED_phase", "SPOOF_DEFAULT_PHASE_ORIGIN"]],
+  ["SSC_AUTHORITY_SHAPE", "AUTHORITY_SCHEMA", "PV_EXACT_RELATION", [
+    "LITERAL_database", "LITERAL_clusterFingerprint", "LITERAL_migrationsFolder", "LITERAL_user",
+    "LITERAL_lifecycleFingerprint", "LITERAL_phase", "SERIALIZED_database", "SERIALIZED_user",
+    "SERIALIZED_clusterFingerprint", "SERIALIZED_migrationsFolder", "SERIALIZED_lifecycleFingerprint",
+    "SERIALIZED_phase", "EQUAL_TEXT_ALIAS", "EQUAL_TEXT_OBJECT",
+    "EQUAL_TEXT_ARRAY", "EQUAL_TEXT_SET", "EQUAL_TEXT_MAP", "EQUAL_TEXT_WEAKMAP",
+    "EQUAL_TEXT_CLOSURE", "EQUAL_TEXT_CLASS", "FORGED_DEFAULT_USER", "SPOOF_DEFAULT_USER_ORIGIN",
+    "SPOOF_DEFAULT_PHASE_ORIGIN",
+  ]],
   ["SSC_AUTHORITY_SHAPE", "AUTHORITY_SCHEMA", "AP_AUTHORITY_GUARD", [
-    "LITERAL_database", "LITERAL_clusterFingerprint", "LITERAL_migrationsFolder",
-    "LITERAL_user", "LITERAL_lifecycleFingerprint", "LITERAL_brand", "LITERAL_authority", "LITERAL_pool",
-    "SERIALIZED_database", "SERIALIZED_lifecycleFingerprint", "SERIALIZED_clusterFingerprint",
-    "SERIALIZED_migrationsFolder", "SERIALIZED_user",
-    "EQUAL_TEXT_ALIAS", "EQUAL_TEXT_OBJECT", "EQUAL_TEXT_ARRAY", "EQUAL_TEXT_SET", "EQUAL_TEXT_MAP",
-    "EQUAL_TEXT_WEAKMAP", "EQUAL_TEXT_CLOSURE", "EQUAL_TEXT_CLASS", "FORGED_DEFAULT_USER",
-    "SPOOF_DEFAULT_USER_ORIGIN", "NO_AUTHORITY_GUARD",
+    "LITERAL_brand", "LITERAL_authority", "LITERAL_pool", "NO_AUTHORITY_GUARD",
   ]],
   ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_POOL", "AP_POOL_OPTIONS", ["DEFAULT_USER_WRONG_LHS"]],
   ["SSC_SECRET_FLOW_DENIED", "PUBLIC_RETURN", ["AP_OPERATION", "CF_PUBLIC_ESCAPE"], [
@@ -547,7 +552,7 @@ const RUN657_STATIC_ORACLE_GROUPS = Object.freeze([
     "ROOT_INPUT_ESCAPE", "ROOT_INPUT_FROZEN_ESCAPE", "DELETE_CLOSURE_HISTORY",
     "CLEAR_CLOSURE_HISTORY", "OVERWRITE_CLOSURE_HISTORY", "CLASS_PROTOTYPE_RETAINED",
   ]],
-  ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_STORAGE", ["AP_OPERATION", "CF_PUBLIC_ESCAPE"], ["RETURN_CLASS"]],
+  ["SSC_SECRET_FLOW_DENIED", "PUBLIC_RETURN", ["AP_OPERATION", "CF_PUBLIC_ESCAPE"], ["RETURN_CLASS"]],
   ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_STORAGE", "CF_PUBLIC_ESCAPE", ["LATE_ALIAS_CLOSURE", "PASSWORD_EXTRA_STORAGE"]],
   ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_RECONSTRUCTION", "PV_EXACT_RELATION", ["ARITHMETIC_LAUNDER", "REGEXP_LAUNDER", "PASSWORD_RECONSTRUCT"]],
   ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_CALLBACK", "AP_OPERATION", ["CYCLE_CLEAN", "OPERATION_EARLY", "NO_MIGRATION"]],
@@ -763,12 +768,13 @@ test("RUN657_INDEPENDENT_STATIC_CORPUS", async () => {
   assert.equal(supplementary.length, 25);
   assert.equal(expected.size, variants.length);
   assert.equal(new Set(variants.map((variant) => variant.id)).size, variants.length);
-  const results = await analyzeMigrationClosureVariants(variants);
-  assert.equal(results.length, variants.length);
-  assert.deepEqual(results.map((result) => result.id), variants.map((variant) => variant.id));
-  for (const result of results) {
-    const oracle = expected.get(result.id);
-    assert.ok(oracle, "missing independent oracle: " + result.id);
+  const results = [];
+  for (const variant of variants) {
+    const [result] = await analyzeMigrationClosureVariants([variant]);
+    const oracle = expected.get(variant.id);
+    assert.ok(oracle, "missing independent oracle: " + variant.id);
+    assert.equal(result.id, variant.id);
+    results.push(result);
     if (oracle.ok) {
       assert.equal(result.ok, true, result.id);
       assert.equal(result.result.ok, true, result.id);
@@ -791,6 +797,8 @@ test("RUN657_INDEPENDENT_STATIC_CORPUS", async () => {
       violations: oracle.violations,
     }, result.id);
   }
+  assert.equal(results.length, variants.length);
+  assert.deepEqual(results.map((result) => result.id), variants.map((variant) => variant.id));
 });
 
 async function assertRun657RepresentationMatrix(source, protocolPreserving) {
@@ -919,7 +927,7 @@ test("RUN660_HS5_DP6_RUNTIME_BOUNDARY_CONTROLS", async () => {
   assert.equal(result.id, "RUN660_HS5_DP6_RUNTIME_CONTROLS");
   assert.equal(result.pass, true);
   assert.equal(result.hs.pass, true);
-  assert.equal(result.hs.count, 10);
+  assert.equal(result.hs.count, 14);
   assert.deepEqual(result.hs.effects, { getter: 0, callable: 0, thenable: 0, renderer: 0, iterator: 0, toJSON: 0 });
   for (const item of result.hs.cases) {
     assert.equal(item.safe, false, item.id);
@@ -929,7 +937,7 @@ test("RUN660_HS5_DP6_RUNTIME_BOUNDARY_CONTROLS", async () => {
     assert.equal(item.publicFailureRejected, true, item.id);
   }
   assert.equal(result.dp6.pass, true);
-  assert.equal(result.dp6.count, 6);
+  assert.equal(result.dp6.count, 17);
   const byId = new Map(result.dp6.cases.map((item) => [item.id, item]));
   for (const [id, detector] of [
     ["RUN660_DP6_WRONG_RECEIVER", "DP_RECEIVER"],
@@ -959,6 +967,49 @@ test("RUN660_HS5_DP6_RUNTIME_BOUNDARY_CONTROLS", async () => {
   });
   assert.equal(admitted.hashOutputsMatch, true);
   assert.equal(admitted.pass, true);
+  for (const [id, detector] of [
+    ["RUN663_DP6_WRONG_HASH_RECEIVER", "DP_RECEIVER"],
+    ["RUN663_DP6_WRONG_OPEN_RECEIVER", "DP_RECEIVER"],
+    ["RUN663_DP6_WRONG_OPEN_ARGUMENTS", "DP_ARGUMENTS"],
+    ["RUN663_DP6_POST_REVOCATION_FILE_OPEN", "DP_STATE"],
+    ["RUN663_DP6_POST_CLEANUP_FILE_OPEN", "DP_STATE"],
+    ["RUN663_DP6_POST_PUBLIC_COMPLETION_FILE_OPEN", "DP_STATE"],
+    ["RUN663_DP6_CREATE_HASH_AFTER_TERMINAL", "DP_STATE"],
+    ["RUN663_DP6_UPDATE_AFTER_REVOCATION", "DP_STATE"],
+    ["RUN663_DP6_DIGEST_AFTER_CLEANUP", "DP_STATE"],
+    ["RUN663_DP6_CROSS_RUN_HASH_REUSE", "DP_RECEIVER"],
+    ["RUN663_DP6_CONSUMED_HASH_REPLAY", "DP_RECEIVER"],
+  ]) {
+    const item = byId.get(id);
+    assert.ok(item, id);
+    assert.equal(item.code, "SSC_RUNTIME_CAPABILITY", id);
+    assert.equal(item.detector, detector, id);
+    assert.equal(item.underlyingDelegateDelta, 0, id);
+    assert.equal(item.pass, true, id);
+  }
+});
+
+test("RUN668_RUN660_TO_F3_SAME_PROCESS_REGRESSION", async () => {
+  const processId = process.pid;
+  const run660 = await runSecretSurfaceRun660RuntimeControls();
+  assert.equal(run660.id, "RUN660_HS5_DP6_RUNTIME_CONTROLS");
+  assert.equal(run660.pass, true);
+  assert.equal(run660.hs.pass, true);
+  assert.equal(run660.dp6.pass, true);
+
+  const f3 = await runSecretSurfaceF3();
+  assert.equal(process.pid, processId);
+  assert.equal(f3.id, "F3_RUNTIME_LIFECYCLE_SCENARIOS");
+  assert.equal(f3.pass, true);
+  assert.equal(f3.scenarios.length, 8);
+  assert.deepEqual(f3.scenarios.map((scenario) => scenario.id), SCENARIO_IDS);
+  for (const scenario of f3.scenarios) {
+    const prePoolFailure = scenario.id === "SC06_PRE_POOL_FAILURE";
+    assert.equal(scenario.pass, true, scenario.id);
+    assert.equal(scenario.resourcesStable, true, scenario.id);
+    assert.equal(scenario.poolCount, prePoolFailure ? 0 : 1, scenario.id);
+  }
+  assert.equal(f3.scenarios.filter((scenario) => scenario.poolCount === 1).length, 7);
 });
 
 function run660PrependRoot(source, statements) {
@@ -1118,6 +1169,167 @@ test("RUN660_CF1_TV2_PV3_AP4_STATIC_WITNESSES", async () => {
   assert.deepEqual(externalOutput, []);
 });
 
+test("RUN663_CF1_DECLARATION_CELL_WITNESSES", async () => {
+  const frozen = await readFrozenMigrationClosureSource();
+  const replaceOperation = (body) => run660ReplaceOnce(frozen.source,
+    "return await operation();", body);
+  const fiveCell = "await operation(); let a=\"clean\", b=\"clean\", c=\"clean\", d=\"clean\", e=\"clean\"; " +
+    "const move=()=>{ a=b; b=c; c=d; d=e; e=input.connectionPassword; }; " +
+    "for(let k=0;k<7;k++){ move(); } return a;";
+  const thirteenCell = "await operation(); let cell0=input.connectionPassword; " +
+    Array.from({ length: 13 }, (_item, index) =>
+      `function returnedCell${index + 1}(){ return ${index === 0 ? "cell0" : `returnedCell${index}()`}; }`,
+    ).join(" ") + " return returnedCell13();";
+  const nestedClosure = "await operation(); const outer=()=>{ let cell=input.connectionPassword; return ()=>cell; }; " +
+    "const nested=outer(); return nested();";
+  const propertyAlias = "await operation(); let cell=input.connectionPassword; const carry=()=>cell; " +
+    "const box={inner:carry}; const alias=box.inner; return alias();";
+  const cases = [
+    ["RUN663_CF_FIVE_CELL", fiveCell, fiveCell.replace("input.connectionPassword", "\"clean\"").replace(" return a;", "")],
+    ["RUN663_CF_THIRTEEN_CELL", thirteenCell, thirteenCell.replace("input.connectionPassword", "\"clean\"").replace(" return returnedCell13();", " const clean=returnedCell13(); if(clean!==\"clean\") throw new Error();")],
+    ["RUN663_CF_NESTED_RETURNED_CLOSURE", nestedClosure, nestedClosure.replace("input.connectionPassword", "\"clean\"").replace(" return nested();", " const clean=nested(); if(clean!==\"clean\") throw new Error();")],
+    ["RUN663_CF_ALIASED_PROPERTY_CALLABLE", propertyAlias, propertyAlias.replace("input.connectionPassword", "\"clean\"").replace(" return alias();", " const clean=alias(); if(clean!==\"clean\") throw new Error();")],
+  ];
+  const results = await analyzeMigrationClosureVariants([
+    ...cases.map(([id, body]) => ({ id, source: replaceOperation(body) })),
+    ...cases.map(([id, _body, cleanBody]) => ({ id: id + "_CLEAN", source: replaceOperation(cleanBody) })),
+  ]);
+  const byId = new Map(results.map((item) => [item.id, item]));
+  assert.equal(results.length, cases.length * 2);
+  for (const [id, body] of cases) {
+    const observed = byId.get(id)?.result;
+    assert.equal(byId.get(id)?.ok, false, id);
+    assert.deepEqual([observed.code, observed.detector, observed.obligation],
+      ["SSC_SECRET_FLOW_DENIED", "PUBLIC_RETURN", "CF_PUBLIC_ESCAPE"], id);
+    const marker = "run663-synthetic-connection-marker";
+    let operationCalls = 0;
+    const run = new Function("input", "operation",
+      `return (async () => { ${body} })();`);
+    assert.equal(await run({ connectionPassword: marker }, async () => {
+      operationCalls += 1;
+      return undefined;
+    }), marker, id + " runtime");
+    assert.equal(operationCalls, 1, id + " operation count");
+  }
+  for (const [id] of cases) {
+    assert.equal(byId.get(id + "_CLEAN")?.ok, true, id + " clean counterpart");
+    assert.equal(byId.get(id + "_CLEAN")?.result?.ok, true, id + " clean result");
+  }
+});
+
+test("RUN663_PV3_EXACT_RELATION_JOINS", async () => {
+  const frozen = await readFrozenMigrationClosureSource();
+  const recordAnchor = "migrationAuthorityValues.set(authority, {";
+  const replaceField = (source, field, original, replacement) => {
+    const start = source.indexOf(recordAnchor);
+    if (start < 0) throw new Error("RUN663_PV_RECORD_ANCHOR");
+    return source.slice(0, start) + run660ReplaceOnce(source.slice(start),
+      `${field}: ${original},`, `${field}: ${replacement},`);
+  };
+  const joinedFields = [
+    ["RUN663_PV_JOIN_DATABASE", "database", "target.expectedDatabase",
+      "target.expectedDatabase === \"runtime_posture_test\" ? \"different\" : target.expectedDatabase"],
+    ["RUN663_PV_JOIN_USER", "user", "target.expectedUser",
+      "target.expectedUser === \"cloud_admin\" ? \"different\" : target.expectedUser"],
+    ["RUN663_PV_JOIN_CLUSTER", "clusterFingerprint", "identity.catalogFingerprint",
+      "identity.catalogFingerprint === \"100\" ? \"different\" : identity.catalogFingerprint"],
+    ["RUN663_PV_JOIN_LIFECYCLE", "lifecycleFingerprint", "identity.lifecycleFingerprint",
+      "identity.lifecycleFingerprint === \"200\" ? \"different\" : identity.lifecycleFingerprint"],
+    ["RUN663_PV_JOIN_PHASE", "phase", "target.phase",
+      "target.phase === \"initialization\" ? \"different\" : target.phase"],
+  ];
+  const negatives = joinedFields.map(([id, field, original, replacement]) => ({
+    id,
+    source: replaceField(frozen.source, field, original, replacement),
+  }));
+  negatives.push(
+    { id: "RUN663_PV_TRUSTED_STRING_TRANSFORM", source: replaceField(frozen.source,
+      "database", "target.expectedDatabase", "String(target.expectedDatabase)") },
+    { id: "RUN663_PV_TRUSTED_UNKNOWN_PROPERTY", source: replaceField(frozen.source,
+      "database", "target.expectedDatabase", "target.unresolvedAuthorityField") },
+    { id: "RUN663_PV_SOURCE_A_SOURCE_B", source: replaceField(frozen.source,
+      "database", "target.expectedDatabase",
+      "input.expectedUser === target.expectedDatabase ? input.expectedUser : target.expectedDatabase") },
+    { id: "RUN663_PV_SAME_TEXT_DIFFERENT_ORIGIN", source: replaceField(frozen.source,
+      "database", "target.expectedDatabase",
+      "target.expectedDatabase === \"runtime_posture_test\" ? \"runtime_posture_test\" : target.expectedDatabase") },
+  );
+  const aliasSource = run660ReplaceOnce(frozen.source, recordAnchor,
+    "const run663DatabaseAlias = target.expectedDatabase;\n    " + recordAnchor);
+  const identitySource = run660ReplaceOnce(frozen.source, recordAnchor,
+    "const run663Identity = (item) => item;\n    " + recordAnchor);
+  const positives = [
+    { id: "RUN663_PV_EXACT_BASELINE", source: frozen.source },
+    { id: "RUN663_PV_EXACT_ALIAS", source: replaceField(aliasSource,
+      "database", "target.expectedDatabase", "run663DatabaseAlias") },
+    { id: "RUN663_PV_EXACT_PROPERTY", source: replaceField(frozen.source,
+      "database", "target.expectedDatabase", "({ value: target.expectedDatabase }).value") },
+    { id: "RUN663_PV_EXACT_IDENTITY", source: replaceField(identitySource,
+      "database", "target.expectedDatabase", "run663Identity(target.expectedDatabase)") },
+  ];
+  const results = await analyzeMigrationClosureVariants([...negatives, ...positives]);
+  const byId = new Map(results.map((item) => [item.id, item]));
+  assert.equal(results.length, negatives.length + positives.length);
+  for (const item of negatives) {
+    const observed = byId.get(item.id)?.result;
+    assert.equal(byId.get(item.id)?.ok, false, item.id);
+    assert.deepEqual([observed.code, observed.detector, observed.obligation],
+      ["SSC_AUTHORITY_SHAPE", "AUTHORITY_SCHEMA", "PV_EXACT_RELATION"], item.id);
+    assert.deepEqual(observed.violations, ["PV_EXACT_RELATION"], item.id);
+  }
+  for (const item of positives) {
+    assert.equal(byId.get(item.id)?.ok, true, item.id);
+    assert.equal(byId.get(item.id)?.result?.provenanceComplete, true, item.id);
+    assert.equal(byId.get(item.id)?.result?.authoritySets, 1, item.id);
+  }
+});
+
+test("RUN663_AP4_PER_COMPLETION_CLEANUP", async () => {
+  const frozen = await readFrozenMigrationClosureSource();
+  const migrationCall = "await runScopedFixtureMigration(authority, pool, target.migrationsFolder, target);";
+  const cleanupCall = "if (pool) await pool.end().catch(() => {});";
+  const variants = [
+    { id: "RUN663_AP_THROW_BEFORE_CLEANUP", source: run660ReplaceOnce(frozen.source,
+      cleanupCall, "if (input.expectedDatabase) throw new Error();\n    " + cleanupCall) },
+    { id: "RUN663_AP_NESTED_FINALLY_BYPASS", source: run660ReplaceOnce(frozen.source,
+      cleanupCall, "try { throw new Error(); } finally { throw new Error(); }\n    " + cleanupCall) },
+    { id: "RUN663_AP_THROW_AFTER_POOL_ALLOCATION", source: run660ReplaceOnce(frozen.source,
+      "pool = new Pool(poolOptions);", "pool = new Pool(poolOptions);\n    throw new Error();") },
+    { id: "RUN663_AP_THROW_AFTER_MIGRATION", source: run660ReplaceOnce(frozen.source,
+      "return await operation();", "throw new Error();") },
+    { id: "RUN663_AP_MIGRATION_REJECTION", source: run660ReplaceOnce(frozen.source,
+      migrationCall, "throw new Error();") },
+    { id: "RUN663_AP_OPERATION_REJECTION", source: run660ReplaceOnce(frozen.source,
+      "return await operation();", "await operation();\n    throw new Error();") },
+    { id: "RUN663_AP_UNREACHABLE_THROW", source: run660PrependRoot(frozen.source,
+      "if (false) throw new Error();") },
+  ];
+  const results = await analyzeMigrationClosureVariants([
+    { id: "RUN663_AP_NORMAL_RETURN_CLEANUP", source: frozen.source },
+    ...variants,
+  ]);
+  const byId = new Map(results.map((item) => [item.id, item]));
+  assert.equal(results.length, variants.length + 1);
+  for (const id of ["RUN663_AP_NORMAL_RETURN_CLEANUP", "RUN663_AP_UNREACHABLE_THROW"]) {
+    assert.equal(byId.get(id)?.ok, true, id);
+    assert.equal(byId.get(id)?.result?.ok, true, id);
+  }
+  for (const id of ["RUN663_AP_THROW_BEFORE_CLEANUP", "RUN663_AP_NESTED_FINALLY_BYPASS"]) {
+    const observed = byId.get(id)?.result;
+    assert.equal(byId.get(id)?.ok, false, id);
+    assert.ok(observed.violations.includes("AP_CLEANUP"), id);
+    assert.deepEqual([observed.code, observed.detector, observed.obligation],
+      ["SSC_SECRET_FLOW_DENIED", "CAPABILITY_CLEANUP", "AP_CLEANUP"], id);
+  }
+  for (const id of ["RUN663_AP_THROW_AFTER_POOL_ALLOCATION", "RUN663_AP_THROW_AFTER_MIGRATION",
+    "RUN663_AP_MIGRATION_REJECTION", "RUN663_AP_OPERATION_REJECTION"]) {
+    const observed = byId.get(id)?.result;
+    assert.equal(byId.get(id)?.ok, false, id);
+    assert.equal(observed.violations.includes("AP_CLEANUP"), false, id);
+    assert.equal(observed.violations.includes("AP_REVOCATION"), false, id);
+  }
+});
+
 test("SSC_BASELINE_SECRET_SURFACE", async (suite) => {
   let baseline;
   let staticControls;
@@ -1185,12 +1397,17 @@ test("SSC_BASELINE_SECRET_SURFACE", async (suite) => {
   assert.equal(behavioral.allScenariosPass, true);
   for (const scenario of behavioral.scenarios) {
     await suite.test(scenario.id, () => {
+      const prePoolFailure = scenario.id === "SC06_PRE_POOL_FAILURE";
       assert.equal(scenario.pass, true, scenario.id);
-      assert.equal(scenario.poolCount, 1, scenario.id);
-      assert.equal(scenario.authorityCaptureCount, 1, scenario.id);
-      assert.equal(scenario.authorityValidAtCapture, true, scenario.id);
+      assert.equal(scenario.poolCount, prePoolFailure ? 0 : 1, scenario.id);
+      assert.equal(scenario.authorityCaptureCount, prePoolFailure ? 0 : 1, scenario.id);
+      assert.equal(scenario.authorityValidAtCapture, !prePoolFailure, scenario.id);
       assert.equal(scenario.authorityRevoked, true, scenario.id);
-      assert.equal(scenario.cleanupCalls, 1, scenario.id);
+      assert.equal(scenario.cleanupCalls, prePoolFailure ? 0 : 1, scenario.id);
+      if (prePoolFailure) {
+        assert.equal(scenario.cleanupEntryCount, 0, scenario.id);
+        assert.equal(scenario.cleanupAttempted, false, scenario.id);
+      }
       assert.equal(scenario.publicSurfaceSafe, true, scenario.id);
       assert.equal(scenario.noRuntimeEffects, true, scenario.id);
       assert.equal(scenario.resourcesStable, true, scenario.id);
