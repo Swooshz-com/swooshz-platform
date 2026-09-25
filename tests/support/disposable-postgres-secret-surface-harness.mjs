@@ -1,11 +1,11 @@
 import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
 import { inspect, types } from "node:util";
-import { Worker, parentPort, workerData } from "node:worker_threads";
+import { spawn } from "node:child_process";
 import ts from "typescript";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { readFrozenMigrationClosureSource } from "./disposable-postgres-migration-closure.mjs";
+import { readFrozenMigrationClosureSource, runFrozenReceiptStaticGate } from "./disposable-postgres-migration-closure.mjs";
 
 const SUBJECT_RELATIVE = "tests/support/disposable-postgres-fixture.mjs";
 const MIGRATIONS_FOLDER = "./drizzle/migrations";
@@ -248,6 +248,8 @@ function newRunState() {
     observedPool: null,
     require: null,
     subjectUrl: null,
+    receiptOperation: null,
+    receiptSubject: null,
     admissionErrorPrototype: null,
     scenarioSerial: 0,
     identitySql: null,
@@ -419,20 +421,31 @@ function installWeakMapObserver(ledger, state, ObservedPool) {
   if (!descriptor || typeof descriptor.value !== "function") fail(SAFE.install, "INSTALL_LEDGER");
   const original = descriptor.value;
   const wrapper = function observedWeakMapSet(key, record) {
+    if (state.selfTest && key === state.weakMapCanaryKey) {
+      const result = original.call(this, key, record);
+      recordEvent(state, "WEAKMAP_CANARY");
+      return result;
+    }
+    const current = state.current;
+    const subject = state.active ? current?.receiptSubject : null;
+    const operation = state.active ? current?.receiptOperation : null;
+    const consumed = subject && operation
+      ? subject.consumeDisposablePostgresAuthorityReceipt(operation, key, record)
+      : false;
     const result = original.call(this, key, record);
-    if (state.selfTest && key === state.weakMapCanaryKey) recordEvent(state, "WEAKMAP_CANARY");
     if (state.active && isAuthorityRecord(key, record, ObservedPool)) {
-      if (!Object.isFrozen(key) || record.valid !== true) {
-        if (state.current) state.current.protocolRejected = true;
+      if (consumed !== true || !Object.isFrozen(key) || record.valid !== true) {
+        if (current) current.protocolRejected = true;
         return result;
       }
       rememberSurfaceOrigin(state, key, "ordinary", "trusted-authority-token-allocation");
       state.authorityRecord = record;
       state.authorityPool = record.pool;
-      state.current.authorityCaptureCount += 1;
-      state.current.authorityValidAtCapture = record.valid === true;
-      state.current.authorityTokenFrozen = Object.isFrozen(key);
-      state.current.events.push("AUTHORITY_SET");
+      current.authorityCaptureCount += 1;
+      current.authorityReceiptAccepted = true;
+      current.authorityValidAtCapture = record.valid === true;
+      current.authorityTokenFrozen = Object.isFrozen(key);
+      current.events.push("AUTHORITY_SET");
     }
     return result;
   };
@@ -1450,6 +1463,9 @@ function createScenarioState(scenario, markers) {
     scenario,
     cleanupError: makeDiagnosticError(markers, "cleanup"),
     authorityCaptureCount: 0,
+    authorityReceiptAccepted: false,
+    freshErrorReceiptAccepted: false,
+    receiptInvocationBegan: false,
     authorityValidAtCapture: false,
     poolCount: 0,
     pools: [],
@@ -1748,8 +1764,8 @@ function poolBindingContract(current, state) {
 function scenarioChecks(current, result, error, state) {
   const scenario = current.scenario;
   const prePoolFailure = scenario.prePoolFailure === true;
-  const expectedFailure = prePoolFailure || scenario.rejectOperation ||
-    scenario.rejectSecondIdentity || scenario.rejectMigration;
+  const expectedFailure = Boolean(prePoolFailure || scenario.rejectOperation ||
+    scenario.rejectSecondIdentity || scenario.rejectMigration);
   const poolBinding = poolBindingContract(current, state);
   const firstIdentity = eventIndex(current.events, "IDENTITY_1");
   const authoritySet = eventIndex(current.events, "AUTHORITY_SET");
@@ -1807,6 +1823,10 @@ function scenarioChecks(current, result, error, state) {
   const pass = (prePoolFailure ? current.poolCount === 0 && current.pools.length === 0 : poolBinding) &&
     ordering && expectedPublic && cleanupSuppressed && surface.safe && noRuntimeEffects &&
     authorityRevoked && metadataSafe && cleanupWasAsyncPromise &&
+    current.receiptInvocationBegan &&
+    current.authorityReceiptAccepted === !prePoolFailure &&
+    current.freshErrorReceiptAccepted === expectedFailure &&
+    current.protocolRejected === (scenario.rejectSecondIdentity === true) &&
     (prePoolFailure || current.authorityValidAtCapture) && operationCount && hashCount &&
     !current.operationOrderViolation &&
     migrationCount && cleanupCount && successOrFailure;
@@ -2012,7 +2032,7 @@ async function runScenario(state, scenario) {
   let error;
   let subject;
   try {
-    subject = await import(`${state.subjectUrl}?ssc=${scenario.id}-${state.scenarioSerial++}`);
+    subject = await import(state.subjectUrl + "?ssc=" + scenario.id + "-" + state.scenarioSerial++);
     state.admissionErrorPrototype = subject.DisposablePostgresFixtureAdmissionError?.prototype ?? null;
   } catch (importError) {
     error = importError;
@@ -2040,16 +2060,34 @@ async function runScenario(state, scenario) {
       rememberSurfaceOrigin(state, operationResult, "ordinary", "operation-output-boundary");
       return operationResult;
     };
+    current.receiptOperation = operation;
+    current.receiptSubject = subject;
+    current.receiptInvocationBegan =
+      subject.beginDisposablePostgresReceiptInvocation(operation) === true;
     try {
+      if (!current.receiptInvocationBegan) fail(SAFE.authority, "RECEIPT_BEGIN");
       result = await subject.withDisposablePostgresFixtureMigration(input, operation);
     } catch (caught) {
       error = caught;
+      current.freshErrorReceiptAccepted =
+        subject.consumeDisposablePostgresFreshErrorReceipt(operation, caught) === true;
+      if (current.freshErrorReceiptAccepted) {
+        rememberSurfaceOrigin(state, caught, "admission-error", "frozen-helper-allocation");
+      }
+    } finally {
+      try {
+        subject.finishDisposablePostgresReceiptInvocation(operation);
+      } catch {
+        current.protocolRejected = true;
+      }
+      current.receiptOperation = null;
+      current.receiptSubject = null;
     }
   }
-  if (error && subject?.DisposablePostgresFixtureAdmissionError &&
+  if (error && current.freshErrorReceiptAccepted &&
+      subject?.DisposablePostgresFixtureAdmissionError &&
       Object.getPrototypeOf(error) === subject.DisposablePostgresFixtureAdmissionError.prototype) {
     state.admissionErrorPrototype = subject.DisposablePostgresFixtureAdmissionError.prototype;
-    rememberSurfaceOrigin(state, error, "admission-error", "frozen-helper-allocation");
   }
   current.originalCompletion ??= error ? "THROW" : "RETURN";
   current.propagatedCompletion = error ? "THROW" : "RETURN";
@@ -2388,6 +2426,16 @@ async function runRuntimeCapabilityControl(state) {
   const fs = require("node:fs");
   const fsPromises = require("node:fs/promises");
   const os = require("node:os");
+  const run660Fs = fs;
+  const run660Crypto = crypto;
+  const run660Pg = require("pg");
+  const beforeRun660 = Object.freeze({
+    fsReadFileSync: run660Fs.readFileSync,
+    fsExistsSync: run660Fs.existsSync,
+    fsOpenSync: run660Fs.openSync,
+    cryptoCreateHash: run660Crypto.createHash,
+    pgPool: run660Pg.Pool,
+  });
   const previousCurrent = state.current;
   const previousActive = state.active;
   const effects = new Set();
@@ -2485,7 +2533,7 @@ async function runRuntimeCapabilityControl(state) {
   ];
   const outputEffect = (state.runtimeEvents.get("STDOUT_WRITE") ?? 0) > outputBefore;
   const pass = requiredIds.every((id) => (state.runtimeEvents.get(id) ?? 0) > 0) &&
-    effects.size === 0 && !outputEffect && process.env.SSC_RUNTIME_GATE === undefined;
+    effects.size === 0 && !outputEffect && process.env.SSC_RUNTIME_GATE === undefined && run660Fs.readFileSync === beforeRun660.fsReadFileSync && run660Fs.existsSync === beforeRun660.fsExistsSync && run660Fs.openSync === beforeRun660.fsOpenSync && run660Crypto.createHash === beforeRun660.cryptoCreateHash && run660Pg.Pool === beforeRun660.pgPool;
   state.runtimeEvents.clear();
   return Object.freeze({
     id: "NC22_RUNTIME_PRE_EFFECT_CAPABILITY",
@@ -2662,9 +2710,27 @@ async function runSecretSurfaceBehavioralHarnessInCurrentThread(options = {}) {
     state.observedPool = ObservedPool;
     installWeakMapObserver(installed.ledger, state, ObservedPool);
     state.subjectUrl = pathToFileURL(subjectPath).href;
-    const observerControls = await runBehavioralControls(state);
+    const selectedScenarioIds = Array.isArray(options.scenarioIds)
+      ? new Set(options.scenarioIds)
+      : options.scenarioId ? new Set([options.scenarioId]) : null;
+    const runScenarios = selectedScenarioIds
+      ? SCENARIOS.filter((scenario) => selectedScenarioIds.has(scenario.id))
+      : (options.controlId || options.controlOnly) ? [] : SCENARIOS;
+    const allObserverControls = runScenarios.length > 0
+      ? Object.freeze({ count: 0, ids: Object.freeze([]), results: Object.freeze([]) })
+      : await runBehavioralControls(state);
+    const filteredControls = options.controlId
+      ? allObserverControls.results.filter((control) => control.id === options.controlId)
+      : allObserverControls.results;
+    const observerControls = options.controlId
+      ? Object.freeze({
+        count: filteredControls.length,
+        ids: Object.freeze(filteredControls.map((control) => control.id)),
+        results: Object.freeze(filteredControls),
+      })
+      : allObserverControls;
     const scenarioResults = [];
-    for (const scenario of SCENARIOS) {
+    for (const scenario of runScenarios) {
       const result = await runScenario(state, scenario);
       scenarioResults.push(Object.freeze(result));
     }
@@ -2698,84 +2764,279 @@ async function runSecretSurfaceBehavioralHarnessInCurrentThread(options = {}) {
   return finalized;
 }
 
-function freezeStructuredResult(value) {
-  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
-  for (const item of Object.values(value)) freezeStructuredResult(item);
-  return Object.freeze(value);
+export const behavioralSecretSurfaceScenarioIds = Object.freeze(SCENARIOS.map((scenario) => scenario.id));
+export const behavioralSecretSurfaceControlIds = Object.freeze(BEHAVIORAL_CONTROLS.map((control) => control.id));
+
+const MAX_CHILD_OUTPUT_BYTES = 2 * 1024 * 1024;
+const CHILD_TIMEOUT_MS = 60_000;
+const CHILD_SPECIAL_CASES = new Set([
+  "RUN660_HS5_DP6_RUNTIME_CONTROLS",
+  "RUN669_HS5_PRIVATE_STATE_ORIGIN_CONTROLS",
+  "RUN657_INDEPENDENT_RUNTIME_CORPUS",
+  "SSC_FORCE_RESTORE_MISMATCH",
+]);
+
+function repoRootFromHarness() {
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 }
 
-function runSecretSurfaceHarnessWorker(options) {
+function receiptGateEvidence(result) {
+  return Object.freeze({
+    id: result.id,
+    ok: result.ok === true,
+    fixtureGitBlobId: result.fixtureGitBlobId ?? "",
+    harnessGitBlobId: result.harnessGitBlobId ?? "",
+  });
+}
+
+function allowedChildEnvironment() {
+  const permitted = process.platform === "win32"
+    ? new Set(["systemroot", "windir", "temp", "tmp"])
+    : new Set(["tmpdir"]);
+  const env = Object.create(null);
+  for (const [key, value] of Object.entries(process.env)) {
+    if (permitted.has(key.toLowerCase()) && typeof value === "string") env[key] = value;
+  }
+  return env;
+}
+
+function safeChildTree(value, depth = 0) {
+  if (depth > 24) return false;
+  if (value === null || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value === "string") return value.length <= 512 && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/u.test(value);
+  if (Array.isArray(value)) return value.length <= 512 && value.every((item) => safeChildTree(item, depth + 1));
+  if (typeof value !== "object" || Object.getPrototypeOf(value) !== Object.prototype) return false;
+  const entries = Object.entries(value);
+  return entries.length <= 128 && entries.every(([key, item]) =>
+    /^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(key) && safeChildTree(item, depth + 1));
+}
+
+function validChildCase(mode, caseId) {
+  if (mode === "scenario") return SCENARIOS.some((scenario) => scenario.id === caseId);
+  if (mode !== "control") return false;
+  return BEHAVIORAL_CONTROLS.some((control) => control.id === caseId) || CHILD_SPECIAL_CASES.has(caseId);
+}
+
+function runHarnessChild(mode, caseId, expectedGate) {
+  if (expectedGate?.ok !== true || !["scenario", "control", "run660-f3-pair"].includes(mode) ||
+      (mode === "run660-f3-pair" ? caseId !== undefined : !validChildCase(mode, caseId))) {
+    return Promise.reject(new Error("SSC_CHILD_REQUEST_REJECTED"));
+  }
+  const harnessPath = path.resolve(fileURLToPath(import.meta.url));
+  const args = caseId === undefined
+    ? [harnessPath, "--ssc-child", mode]
+    : [harnessPath, "--ssc-child", mode, caseId];
   return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL(import.meta.url), {
-      workerData: { sscHarnessWorker: true, options },
+    const child = spawn(process.execPath, args, {
+      shell: false,
+      cwd: repoRootFromHarness(),
+      env: allowedChildEnvironment(),
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     });
-    let result;
-    let receivedResult = false;
+    const stdout = [];
+    const stderr = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let overflow = false;
     let settled = false;
-    const rejectWorker = (code) => {
+    const finishFailure = (code) => {
       if (settled) return;
       settled = true;
       reject(new Error(code));
     };
-    worker.once("message", (message) => {
-      if (message?.ok !== true) return;
-      result = freezeStructuredResult(message.result);
-      receivedResult = true;
+    const timer = setTimeout(() => {
+      overflow = true;
+      child.kill();
+    }, CHILD_TIMEOUT_MS);
+    child.stdout.on("data", (chunk) => {
+      stdoutBytes += chunk.length;
+      if (stdoutBytes > MAX_CHILD_OUTPUT_BYTES) {
+        overflow = true;
+        child.kill();
+      } else {
+        stdout.push(chunk);
+      }
     });
-    worker.once("error", () => rejectWorker("SSC_HARNESS_WORKER_FAILURE"));
-    worker.once("exit", (code) => {
+    child.stderr.on("data", (chunk) => {
+      stderrBytes += chunk.length;
+      if (stderrBytes > 64 * 1024) {
+        overflow = true;
+        child.kill();
+      } else {
+        stderr.push(chunk);
+      }
+    });
+    child.once("error", () => finishFailure("SSC_CHILD_SPAWN_FAILURE"));
+    child.once("close", (code, signal) => {
+      clearTimeout(timer);
       if (settled) return;
-      if (code !== 0 || !receivedResult) {
-        rejectWorker(code === 0 ? "SSC_HARNESS_WORKER_NO_RESULT" : "SSC_HARNESS_WORKER_FAILURE");
-        return;
+      if (overflow) return finishFailure("SSC_CHILD_TIMEOUT_OR_OUTPUT_LIMIT");
+      if (signal !== null || code !== 0 || stderrBytes !== 0) return finishFailure("SSC_CHILD_ABNORMAL_EXIT");
+      const output = Buffer.concat(stdout).toString("utf8");
+      if (!output.endsWith("\n") || output.includes("\r") ||
+          output.indexOf("\n") !== output.length - 1) return finishFailure("SSC_CHILD_OUTPUT_INVALID");
+      const line = output.slice(0, -1);
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        return finishFailure("SSC_CHILD_OUTPUT_INVALID");
+      }
+      if (JSON.stringify(message) !== line || !safeChildTree(message) ||
+          message.ok !== true || message.mode !== mode ||
+          (caseId === undefined ? Object.hasOwn(message, "caseId") : message.caseId !== caseId) ||
+          !Number.isSafeInteger(message.childPid) || message.childPid < 1 ||
+          message.gateEvidence?.id !== expectedGate.id ||
+          message.gateEvidence?.fixtureGitBlobId !== expectedGate.fixtureGitBlobId ||
+          message.gateEvidence?.harnessGitBlobId !== expectedGate.harnessGitBlobId) {
+        return finishFailure("SSC_CHILD_RESULT_INVALID");
       }
       settled = true;
-      resolve(result);
+      resolve(message);
     });
+  });
+}
+
+async function collectScenarioChildren(ids, gate) {
+  const results = [];
+  const evidence = [];
+  for (const id of ids) {
+    try {
+      const child = await runHarnessChild("scenario", id, gate);
+      results.push(child.value);
+      evidence.push(Object.freeze({
+        id,
+        childPid: child.childPid,
+        fixtureGitBlobId: child.gateEvidence.fixtureGitBlobId,
+        harnessGitBlobId: child.gateEvidence.harnessGitBlobId,
+      }));
+    } catch {
+      results.push(Object.freeze({
+        id, pass: false, code: "SSC_CHILD_BOUNDARY_FAILURE",
+        resourcesStable: false,
+      }));
+    }
+  }
+  return Object.freeze({
+    count: results.length,
+    ids: Object.freeze(results.map((item) => item.id)),
+    results: Object.freeze(results),
+    evidence: Object.freeze(evidence),
+  });
+}
+
+async function collectControlChildren(ids, gate) {
+  const results = [];
+  const evidence = [];
+  for (const id of ids) {
+    try {
+      const child = await runHarnessChild("control", id, gate);
+      results.push(child.value);
+      evidence.push(Object.freeze({
+        id,
+        childPid: child.childPid,
+        fixtureGitBlobId: child.gateEvidence.fixtureGitBlobId,
+        harnessGitBlobId: child.gateEvidence.harnessGitBlobId,
+      }));
+    } catch {
+      const definition = BEHAVIORAL_CONTROLS.find((control) => control.id === id);
+      results.push(Object.freeze({
+        id,
+        code: definition?.code ?? "SSC_CHILD_BOUNDARY_FAILURE",
+        detector: "CHILD_BOUNDARY",
+        pass: false,
+      }));
+    }
+  }
+  return Object.freeze({
+    count: results.length,
+    ids: Object.freeze(results.map((item) => item.id)),
+    results: Object.freeze(results),
+    evidence: Object.freeze(evidence),
+  });
+}
+
+function runtimeGateFailure(gate) {
+  const result = failureResult(new HarnessFailure(SAFE.internal, gate.failureCode ?? "SSC_RECEIPT_STATIC_SOURCE_INVALID"));
+  return Object.freeze({
+    ...result,
+    receiptGate: receiptGateEvidence(gate),
+    childEvidence: Object.freeze([]),
   });
 }
 
 export async function runSecretSurfaceBehavioralHarness(options = {}) {
+  const gate = await runFrozenReceiptStaticGate();
+  if (gate.ok !== true) return runtimeGateFailure(gate);
   const defaultRun = Object.keys(options).length === 0;
   if (defaultRun && defaultHarnessResultCache) return defaultHarnessResultCache;
-  const result = workerData?.sscHarnessWorker === true
-    ? await runSecretSurfaceBehavioralHarnessInCurrentThread(options)
-    : await runSecretSurfaceHarnessWorker(options);
-  if (defaultRun && result.allScenariosPass === true && result.allControlsPass === true) {
-    defaultHarnessResultCache = result;
+  if (options.forceRestoreMismatch === true) {
+    try {
+      const child = await runHarnessChild("control", "SSC_FORCE_RESTORE_MISMATCH", gate);
+      return child.value;
+    } catch {
+      return fixedRestoreFailure();
+    }
   }
+  const scenarioIds = options.scenarioId
+    ? [options.scenarioId]
+    : Array.isArray(options.scenarioIds)
+      ? options.scenarioIds
+      : options.controlOnly ? [] : SCENARIOS.map((scenario) => scenario.id);
+  const controlIds = options.controlId
+    ? [options.controlId]
+    : (options.scenarioId || Array.isArray(options.scenarioIds) || options.scenarioOnly)
+      ? []
+      : BEHAVIORAL_CONTROLS.map((control) => control.id);
+  if (scenarioIds.some((id) => !SCENARIOS.some((scenario) => scenario.id === id)) ||
+      controlIds.some((id) => !BEHAVIORAL_CONTROLS.some((control) => control.id === id))) {
+    return failureResult(new HarnessFailure(SAFE.internal, "CHILD_CASE_ID"));
+  }
+  const scenarios = await collectScenarioChildren(scenarioIds, gate);
+  const controls = await collectControlChildren(controlIds, gate);
+  const result = Object.freeze({
+    scenarioCount: scenarios.count,
+    scenarioIds: scenarios.ids,
+    scenarios: scenarios.results,
+    controls: Object.freeze({
+      count: controls.count,
+      ids: controls.ids,
+      results: controls.results,
+    }),
+    allScenariosPass: scenarios.results.every((item) => item.pass === true && item.resourcesStable === true),
+    allControlsPass: controls.results.every((item) => item.pass === true),
+    receiptGate: receiptGateEvidence(gate),
+    childEvidence: Object.freeze([...scenarios.evidence, ...controls.evidence]),
+  });
+  if (defaultRun && result.allScenariosPass && result.allControlsPass) defaultHarnessResultCache = result;
   return result;
 }
 
-if (workerData?.sscHarnessWorker === true) {
-  try {
-    const result = await runSecretSurfaceBehavioralHarnessInCurrentThread(workerData.options);
-    parentPort?.postMessage({ ok: true, result });
-  } catch {
-    parentPort?.postMessage({ ok: false });
-  } finally {
-    parentPort?.close();
-  }
-}
-
-export const behavioralSecretSurfaceScenarioIds = Object.freeze(SCENARIOS.map((scenario) => scenario.id));
-export const behavioralSecretSurfaceControlIds = Object.freeze(BEHAVIORAL_CONTROLS.map((control) => control.id));
-
 export async function runSecretSurfaceF2(options = {}) {
-  const result = await runSecretSurfaceBehavioralHarness(options);
+  const gate = await runFrozenReceiptStaticGate();
+  if (gate.ok !== true) return Object.freeze({ id: "F2_RUNTIME_BEHAVIOURAL_CONTROLS", pass: false, controls: runtimeGateFailure(gate).controls, receiptGate: receiptGateEvidence(gate) });
+  const result = await runSecretSurfaceBehavioralHarness({ ...options, controlOnly: true });
   return Object.freeze({
     id: "F2_RUNTIME_BEHAVIOURAL_CONTROLS",
     pass: result.allControlsPass === true,
     controls: result.controls,
+    receiptGate: result.receiptGate,
+    childEvidence: result.childEvidence,
   });
 }
 
 export async function runSecretSurfaceF3(options = {}) {
-  const result = await runSecretSurfaceBehavioralHarness(options);
+  const gate = await runFrozenReceiptStaticGate();
+  if (gate.ok !== true) return Object.freeze({ id: "F3_RUNTIME_LIFECYCLE_SCENARIOS", pass: false, scenarios: [], receiptGate: receiptGateEvidence(gate) });
+  const result = await runSecretSurfaceBehavioralHarness({ ...options, scenarioOnly: true });
   return Object.freeze({
     id: "F3_RUNTIME_LIFECYCLE_SCENARIOS",
     pass: result.allScenariosPass === true,
     scenarios: result.scenarios,
+    receiptGate: result.receiptGate,
+    childEvidence: result.childEvidence,
   });
 }
 
@@ -2915,7 +3176,7 @@ function hashDelegationCount(state) {
   return totals.createHash + totals.update + totals.digest;
 }
 
-export async function runSecretSurfaceRun660RuntimeControls() {
+async function runSecretSurfaceRun660RuntimeControlsInCurrentThread() {
   const require = createRequire(import.meta.url);
   const crypto = require("node:crypto");
   const fs = require("node:fs");
@@ -3288,7 +3549,7 @@ export async function runSecretSurfaceRun660RuntimeControls() {
   });
 }
 
-export async function runSecretSurfaceRun669PrivateStateOriginControls() {
+async function runSecretSurfaceRun669PrivateStateOriginControlsInCurrentThread() {
   const surfaceState = newRunState();
   surfaceState.current = { runId: surfaceState.runSerial++ };
   surfaceState.observedPool = function ObservedPool() {};
@@ -3451,7 +3712,7 @@ export async function runSecretSurfaceRun669PrivateStateOriginControls() {
   }
 }
 
-export async function runSecretSurfaceIndependentRuntimeCorpus() {
+async function runSecretSurfaceIndependentRuntimeCorpusInCurrentThread() {
   const require = createRequire(import.meta.url);
   const crypto = require("node:crypto");
   const fs = require("node:fs");
@@ -3818,4 +4079,186 @@ export async function runSecretSurfaceIndependentRuntimeCorpus() {
     count: cases.length,
     cases,
   });
+}
+
+
+export async function runSecretSurfaceRun660RuntimeControls() {
+  const gate = await runFrozenReceiptStaticGate();
+  if (gate.ok !== true) return Object.freeze({
+    id: "RUN660_HS5_DP6_RUNTIME_CONTROLS", pass: false,
+    hs: Object.freeze({ pass: false }), dp6: Object.freeze({ pass: false }),
+    receiptGate: receiptGateEvidence(gate),
+  });
+  try {
+    const child = await runHarnessChild("control", "RUN660_HS5_DP6_RUNTIME_CONTROLS", gate);
+    return Object.freeze({ ...child.value, childPid: child.childPid, receiptGate: receiptGateEvidence(gate) });
+  } catch {
+    return Object.freeze({
+      id: "RUN660_HS5_DP6_RUNTIME_CONTROLS", pass: false,
+      hs: Object.freeze({ pass: false }), dp6: Object.freeze({ pass: false }),
+      receiptGate: receiptGateEvidence(gate),
+    });
+  }
+}
+
+export async function runSecretSurfaceRun669PrivateStateOriginControls() {
+  const gate = await runFrozenReceiptStaticGate();
+  if (gate.ok !== true) return Object.freeze({
+    id: "RUN669_HS5_PRIVATE_STATE_ORIGIN_PROVENANCE", pass: false,
+    negatives: Object.freeze([]), positives: Object.freeze([]),
+    receiptGate: receiptGateEvidence(gate),
+  });
+  try {
+    const child = await runHarnessChild("control", "RUN669_HS5_PRIVATE_STATE_ORIGIN_CONTROLS", gate);
+    return Object.freeze({ ...child.value, childPid: child.childPid, receiptGate: receiptGateEvidence(gate) });
+  } catch {
+    return Object.freeze({
+      id: "RUN669_HS5_PRIVATE_STATE_ORIGIN_PROVENANCE", pass: false,
+      negatives: Object.freeze([]), positives: Object.freeze([]),
+      receiptGate: receiptGateEvidence(gate),
+    });
+  }
+}
+
+export async function runSecretSurfaceIndependentRuntimeCorpus() {
+  const gate = await runFrozenReceiptStaticGate();
+  if (gate.ok !== true) return Object.freeze({
+    id: "RUN657_INDEPENDENT_RUNTIME_CORPUS", count: 0,
+    cases: Object.freeze([]), receiptGate: receiptGateEvidence(gate),
+  });
+  try {
+    const child = await runHarnessChild("control", "RUN657_INDEPENDENT_RUNTIME_CORPUS", gate);
+    return Object.freeze({ ...child.value, childPid: child.childPid, receiptGate: receiptGateEvidence(gate) });
+  } catch {
+    return Object.freeze({
+      id: "RUN657_INDEPENDENT_RUNTIME_CORPUS", count: 0,
+      cases: Object.freeze([]), receiptGate: receiptGateEvidence(gate),
+    });
+  }
+}
+
+export async function runSecretSurfaceRun660F3Pair() {
+  const gate = await runFrozenReceiptStaticGate();
+  if (gate.ok !== true) return Object.freeze({
+    id: "RUN660_F3_SAME_CHILD_PROCESS", pass: false,
+    childPid: 0, parentPid: process.pid, run660Pid: 0, f3Pid: 0,
+    sameChildPid: false, scenarioCount: 0, resourcesStable: false,
+    receiptGate: receiptGateEvidence(gate),
+  });
+  try {
+    const child = await runHarnessChild("run660-f3-pair", undefined, gate);
+    const value = child.value;
+    const sameChildPid = value.sameChildPid === true &&
+      value.run660Pid === value.f3Pid && value.run660Pid === child.childPid;
+    const separateFromParent = child.childPid !== process.pid;
+    return Object.freeze({
+      id: "RUN660_F3_SAME_CHILD_PROCESS",
+      pass: value.pass === true && sameChildPid && separateFromParent,
+      childPid: child.childPid,
+      parentPid: process.pid,
+      run660Pid: value.run660Pid,
+      f3Pid: value.f3Pid,
+      sameChildPid,
+      separateFromParent,
+      scenarioCount: value.scenarioCount,
+      resourcesStable: value.resourcesStable === true,
+      receiptGate: receiptGateEvidence(gate),
+    });
+  } catch {
+    return Object.freeze({
+      id: "RUN660_F3_SAME_CHILD_PROCESS", pass: false,
+      childPid: 0, parentPid: process.pid, run660Pid: 0, f3Pid: 0,
+      sameChildPid: false, separateFromParent: false,
+      scenarioCount: 0, resourcesStable: false,
+      receiptGate: receiptGateEvidence(gate),
+    });
+  }
+}
+
+async function runHarnessChildMode() {
+  const args = process.argv.slice(2);
+  const mode = args[1];
+  const caseId = args[2];
+  const expectedCount = mode === "run660-f3-pair" ? 2 : 3;
+  const environmentAllowlist = process.platform === "win32"
+    ? new Set(["systemroot", "windir", "temp", "tmp"])
+    : new Set(["tmpdir"]);
+  const validEnvironment = Object.keys(process.env).every((key) => environmentAllowlist.has(key.toLowerCase()));
+  const validRequest = args[0] === "--ssc-child" &&
+    args.length === expectedCount &&
+    process.execArgv.length === 0 &&
+    process.versions.node.split(".")[0] === "22" &&
+    path.isAbsolute(process.execPath) &&
+    path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url)) &&
+    path.resolve(process.cwd()) === repoRootFromHarness() &&
+    validEnvironment &&
+    (mode === "run660-f3-pair"
+      ? caseId === undefined
+      : validChildCase(mode, caseId));
+  if (!validRequest) {
+    process.stdout.write(JSON.stringify({ ok: false, mode: mode ?? "", code: "SSC_CHILD_REQUEST_REJECTED" }) + "\n");
+    process.exitCode = 1;
+    return;
+  }
+  const gate = await runFrozenReceiptStaticGate();
+  if (gate.ok !== true) {
+    process.stdout.write(JSON.stringify({ ok: false, mode, caseId, code: "SSC_RECEIPT_GATE_BLOCKED" }) + "\n");
+    process.exitCode = 1;
+    return;
+  }
+  try {
+    let value;
+    if (mode === "scenario") {
+      const result = await runSecretSurfaceBehavioralHarnessInCurrentThread({ scenarioId: caseId });
+      value = result.scenarios.find((item) => item.id === caseId) ??
+        Object.freeze({ id: caseId, pass: false, code: "SSC_CHILD_CASE_MISSING", resourcesStable: false });
+    } else if (mode === "control" && caseId === "RUN660_HS5_DP6_RUNTIME_CONTROLS") {
+      value = await runSecretSurfaceRun660RuntimeControlsInCurrentThread();
+    } else if (mode === "control" && caseId === "RUN669_HS5_PRIVATE_STATE_ORIGIN_CONTROLS") {
+      value = await runSecretSurfaceRun669PrivateStateOriginControlsInCurrentThread();
+    } else if (mode === "control" && caseId === "RUN657_INDEPENDENT_RUNTIME_CORPUS") {
+      value = await runSecretSurfaceIndependentRuntimeCorpusInCurrentThread();
+    } else if (mode === "control" && caseId === "SSC_FORCE_RESTORE_MISMATCH") {
+      const restoration = runRestoreBoundaryControl();
+      value = restoration.pass === true ? fixedRestoreFailure() : restoration;
+    } else if (mode === "control") {
+      const result = await runSecretSurfaceBehavioralHarnessInCurrentThread({ controlId: caseId });
+      value = result.controls.results.find((item) => item.id === caseId) ??
+        Object.freeze({ id: caseId, pass: false, code: "SSC_CHILD_CASE_MISSING", detector: "CHILD_BOUNDARY" });
+    } else {
+      const run660 = await runSecretSurfaceRun660RuntimeControlsInCurrentThread();
+      const run660Pid = process.pid;
+      const f3 = await runSecretSurfaceBehavioralHarness({
+        scenarioIds: SCENARIOS.map((scenario) => scenario.id),
+      });
+      const f3Pid = process.pid;
+      value = Object.freeze({
+        id: "RUN660_F3_SAME_CHILD_PROCESS",
+        pass: run660.pass === true && f3.allScenariosPass === true,
+        run660Pid,
+        f3Pid,
+        sameChildPid: run660Pid === f3Pid,
+        scenarioCount: f3.scenarioCount,
+        resourcesStable: f3.scenarios.length === SCENARIOS.length &&
+          f3.scenarios.every((scenario) => scenario.resourcesStable === true),
+      });
+    }
+    const payload = {
+      ok: true,
+      mode,
+      ...(caseId === undefined ? {} : { caseId }),
+      childPid: process.pid,
+      gateEvidence: receiptGateEvidence(gate),
+      value,
+    };
+    if (!safeChildTree(payload)) throw new Error("SSC_CHILD_RESULT_UNSAFE");
+    process.stdout.write(JSON.stringify(payload) + "\n");
+  } catch {
+    process.stdout.write(JSON.stringify({ ok: false, mode, caseId, code: "SSC_CHILD_FAILURE" }) + "\n");
+    process.exitCode = 1;
+  }
+}
+
+if (process.argv[2] === "--ssc-child") {
+  await runHarnessChildMode();
 }

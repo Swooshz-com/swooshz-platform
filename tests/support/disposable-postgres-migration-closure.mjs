@@ -107,7 +107,7 @@ export const MIGRATION_CLOSURE_RESULT_INTERFACE = Object.freeze({
 });
 
 const HELPER_RELATIVE = "tests/support/disposable-postgres-fixture.mjs";
-const FROZEN_HELPER_BLOB = "0767d4dade1bc7e7a61f984296e0f96bb0575ffb";
+const FROZEN_HELPER_BLOB = "f065fe714d560e72578184e4efc02c6e2a5efe72";
 const ROOT_EXPORT = "withDisposablePostgresFixtureMigration";
 
 const IMPORT_TABLE = Object.freeze({
@@ -5196,11 +5196,20 @@ export async function runMigrationClosureF2() {
 }
 
 export async function runMigrationClosureF3() {
+  const receiptGate = await runFrozenReceiptStaticGate();
+  if (receiptGate.ok !== true) {
+    return Object.freeze({
+      id: "F3_REPRESENTATION_ASSURANCE",
+      pass: false,
+      receiptGate,
+    });
+  }
   const positive = await runMigrationClosurePositiveControls();
   const matrix = await runMigrationClosureOrthogonalRepresentationMatrix();
   return Object.freeze({
     id: "F3_REPRESENTATION_ASSURANCE",
-    pass: positive.pass === true && matrix.pass === true,
+    pass: receiptGate.ok === true && positive.pass === true && matrix.pass === true,
+    receiptGate,
     positive,
     matrix,
   });
@@ -5273,6 +5282,396 @@ export async function runMigrationClosureNegativeControls() {
     });
     return negativeControlResultCache;
   }
+}
+
+
+const RECEIPT_STATIC_ROOTS = Object.freeze([
+  "fixture.withDisposablePostgresFixtureMigration",
+  "fixture.beginDisposablePostgresReceiptInvocation",
+  "fixture.consumeDisposablePostgresAuthorityReceipt",
+  "fixture.consumeDisposablePostgresFreshErrorReceipt",
+  "fixture.finishDisposablePostgresReceiptInvocation",
+]);
+const RECEIPT_STATIC_API_NAMES = Object.freeze(RECEIPT_STATIC_ROOTS.slice(1).map((root) => root.slice("fixture.".length)));
+const RECEIPT_STATIC_FAILURES = Object.freeze([
+  "SSC_RECEIPT_STATIC_SOURCE_INVALID", "SSC_RECEIPT_ROOTS_INVALID",
+  "SSC_RECEIPT_ISSUER_SITE_INVALID", "SSC_RECEIPT_REVOCATION_INVALID",
+  "SSC_RECEIPT_CALLSITE_INVALID", "SSC_RECEIPT_FLOW_UNSUPPORTED",
+  "SSC_RECEIPT_GATE_INTERNAL",
+]);
+const RECEIPT_STATIC_EXPECTED_BODY_IDENTITIES = Object.freeze({
+  withDisposablePostgresFixtureMigration: "caa6e78d2821dd32015da22816ffedc975da5c2bb1527cc9df95ddbf76aaac4b",
+  installDisposablePostgresAuthoritySetReceipt: "caf52ebb66e90cc3a3433e1d41310b60324aa4c9258c266a812988783376ca96",
+  beginDisposablePostgresReceiptInvocation: "0d9ae4825f729e2af5378f833e7de5408bbce17281dd527f14cb99dd7fc58b0c",
+  consumeDisposablePostgresAuthorityReceipt: "bdf0930723c7dce2b34ec181a9ec287a0ce4eb9770a0a51ff52ab3f0ec7a7b0f",
+  consumeDisposablePostgresFreshErrorReceipt: "341aaf495f1e597db25a628e2fc913c266e47f11b7f076d20c18393f6b7b6b6e",
+  finishDisposablePostgresReceiptInvocation: "c1174829f305fbe1cfde4702a7afb563dc4f28ab55ff1b5fef08483d1bf1bfb5",
+  issueDisposablePostgresReceipt: "cb2afacd875091d306f471e2eb47491d5d262d9adfba4ae423f93963f08ce7f8",
+  invalidateDisposablePostgresReceiptInvocation: "9cf8faa004b7514a72080b716f6aeeff428786a597e447f3fc64eb1d17992768",
+  consumeDisposablePostgresReceipt: "f08593fbcd4b89a3ff2e31a82e306263a1d89c88d37cc54d68c7901ed3b2ad9a",
+  "harness.installWeakMapObserver": "516d3dfc4a79f92658b0c63dff1594c4b4bbf6388782939752e53f840f67df47",
+  "harness.runScenario": "ffb38b456d4f8c6e5930aadd8b1ba83b920cd3de8b3d910d6cfb41e8267383f8",
+  "harness.runHarnessChild": "28102048862702cac54efdf4f313ec4bdd5adec654d3908014379561c57cf51d",
+  "harness.runSecretSurfaceBehavioralHarnessInCurrentThread": "16f1aa93a5263af59873905f57f043cde4852bd7ff98e51ab275b06d8a4ecdf7",
+  "harness.runSecretSurfaceBehavioralHarness": "ddb89a5a8fcf5a7cf3672423ced30ca36863f04935d8f6fa7e69109cdc74b30d",
+  "harness.runSecretSurfaceF2": "6a4f9bff17d84dbeccf9177311fe00ad18cd76f91b9cade79c7ec1f9d31b646c",
+  "harness.runSecretSurfaceF3": "7a0dd3e03decb8f7aac56cabeace3687e93fcf45820921042a8cc4d04a1cf566",
+  "harness.runSecretSurfaceRun660RuntimeControls": "e4932498622f3a9a775037c724b44ed123765545a0eaebbc54c256c3aeefcd5d",
+  "harness.runSecretSurfaceRun669PrivateStateOriginControls": "909a315e166aca40447d2c5ce7a852b2d9ffae882a86321cdac3da0149e36cdd",
+  "harness.runSecretSurfaceIndependentRuntimeCorpus": "3c2ed57fb51c34bffc55f40dada1496eac84f1701f4f2b58b9ded0680db2e360",
+  "harness.runSecretSurfaceRun660F3Pair": "b6b21fd63ac5bd483315ea8afb7538dcc04a4ad3fc82cf45b66df00c9391cb70",
+  "harness.runHarnessChildMode": "4662e8f35e1c2398d910574af7b68ce7aa1d5d788920422309fbab873c02bfd2",
+  "harness.allowedChildEnvironment": "a11170f0077c0301117e9393f9aaf9b53d949c100a366387dcdcd44cc9adcbf7",
+  "harness.safeChildTree": "d8a99a2d6fd7630e9c8d14fe007f1e975abb4c728c652961dfb1d8cc5ef2fe1f",
+  "harness.validChildCase": "46c676e91419827e2c7df92d1ab54245471a176a38052b5ba11058ba5eb14d24",
+  "harness.repoRootFromHarness": "98ae54fa37a038c381aa8c25c36b1a6ccb905d74b9b9c9962415053ea06f58c2",
+  "harness.receiptGateEvidence": "71b756a870e549764696040b4b1e1a9de1dcebe65bc6cd063603600be5f6f3bd",
+});
+const RECEIPT_STATIC_CALLSITE_IDENTITY = "c7292cb3435f61cc246787f2bc8208139fcb5c68c805940ec21de878aea7610b";
+export const RECEIPT_STATIC_GATE_RESULT_INTERFACE = Object.freeze({
+  schemaVersion: 1, id: "SSC_RECEIPT_STATIC_GATE",
+  successFields: Object.freeze(["schemaVersion", "id", "ok", "rootsExpected", "rootsAnalyzed", "fixtureGitBlobId", "harnessGitBlobId", "bodyIdentities", "callsiteIdentity"]),
+  failureFields: Object.freeze(["schemaVersion", "id", "ok", "failureCode", "rootsExpected", "rootsAnalyzed"]),
+  receiptStore: "PRIVATE_SINGLE_ACTIVE_INVOCATION_STATE",
+  rootsExpected: RECEIPT_STATIC_ROOTS,
+});
+export const receiptStaticPositiveControlIds = Object.freeze([
+  "RECEIPT_STATIC_GREEN_BASELINE", "RECEIPT_STATIC_GREEN_ALLOCATE_CONSUME", "RECEIPT_STATIC_GREEN_FINISH_CLEANUP",
+]);
+export const receiptStaticNegativeControlIds = Object.freeze([
+  "RECEIPT_STATIC_RED_WRONG_OPERATION", "RECEIPT_STATIC_RED_WRONG_IDENTITY",
+  "RECEIPT_STATIC_RED_DUPLICATE_ISSUER", "RECEIPT_STATIC_RED_MISSING_DELETE",
+  "RECEIPT_STATIC_RED_MISSING_FINISH", "RECEIPT_STATIC_RED_ISSUER_ESCAPE",
+  "RECEIPT_STATIC_RED_ERROR_RETHROW_ISSUE", "RECEIPT_STATIC_RED_OBSERVER_BEFORE_CONSUME",
+  "RECEIPT_STATIC_RED_WORKER_BOUNDARY", "RECEIPT_STATIC_RED_EXTRA_ROOT",
+  "RECEIPT_STATIC_RED_BODY_DRIFT", "RECEIPT_STATIC_RED_PUBLIC_GATE_AFTER_CACHE",
+  "RECEIPT_STATIC_RED_SHELL_ENABLED", "RECEIPT_STATIC_RED_CHILD_GATE_BYPASS",
+  "RECEIPT_STATIC_RED_NONCANONICAL_CHILD_OUTPUT", "RECEIPT_STATIC_RED_CHILD_ENV_LEAK",
+  "RECEIPT_STATIC_RED_OUTPUT_LIMIT_WIDENED", "RECEIPT_STATIC_RED_TIMEOUT_WIDENED",
+]);
+function receiptStaticBlobId(source) {
+  const bytes = Buffer.from(source.replace(/\r\n/g, "\n"), "utf8");
+  return createHash("sha1").update("blob " + bytes.byteLength + "\0").update(bytes).digest("hex");
+}
+function receiptStaticSha256(value) {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+function receiptStaticSource(source, filename) {
+  if (typeof source !== "string" || !source) throw new Error("SSC_RECEIPT_STATIC_SOURCE_INVALID");
+  const file = ts.createSourceFile(filename, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  if (file.parseDiagnostics.length) throw new Error("SSC_RECEIPT_STATIC_SOURCE_INVALID");
+  return file;
+}
+function receiptStaticFunction(sourceFile, name) {
+  const matches = sourceFile.statements.filter((node) => ts.isFunctionDeclaration(node) && node.name?.text === name);
+  if (matches.length !== 1 || !matches[0].body) throw new Error("SSC_RECEIPT_ROOTS_INVALID");
+  return matches[0];
+}
+function receiptStaticExported(node) {
+  return node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) === true;
+}
+function receiptStaticCalls(node, name) {
+  const found = [];
+  const visit = (candidate) => {
+    if (ts.isCallExpression(candidate)) {
+      const expression = candidate.expression;
+      if ((ts.isIdentifier(expression) && expression.text === name) ||
+          (ts.isPropertyAccessExpression(expression) && expression.name.text === name)) found.push(candidate);
+    }
+    ts.forEachChild(candidate, visit);
+  };
+  visit(node);
+  return found;
+}
+
+function receiptStaticBody(source, node) {
+  return source.slice(node.body.getStart(), node.body.end);
+}
+function analyzeReceiptStaticPair({ fixtureSource, harnessSource, id = "variant" }) {
+  const rootsAnalyzed = [...RECEIPT_STATIC_ROOTS];
+  const failure = (failureCode) => Object.freeze({
+    schemaVersion: 1, id: String(id), ok: false, failureCode,
+    rootsExpected: RECEIPT_STATIC_ROOTS, rootsAnalyzed: Object.freeze(rootsAnalyzed),
+  });
+  try {
+    const fixture = receiptStaticSource(fixtureSource, "disposable-postgres-fixture.mjs");
+    const harness = receiptStaticSource(harnessSource, "disposable-postgres-secret-surface-harness.mjs");
+    const rootNames = ["withDisposablePostgresFixtureMigration", ...RECEIPT_STATIC_API_NAMES];
+    const apiNodes = RECEIPT_STATIC_API_NAMES.map((name) => receiptStaticFunction(fixture, name));
+    const allocationInstaller = receiptStaticFunction(fixture, "installDisposablePostgresAuthoritySetReceipt");
+    if (apiNodes.some((node) => !receiptStaticExported(node)) ||
+        receiptStaticExported(allocationInstaller) ||
+        receiptStaticExported(receiptStaticFunction(fixture, "issueDisposablePostgresReceipt")) ||
+        receiptStaticExported(receiptStaticFunction(fixture, "invalidateDisposablePostgresReceiptInvocation"))) return failure("SSC_RECEIPT_ROOTS_INVALID");
+    const receiptExports = fixture.statements.filter((node) =>
+      ts.isFunctionDeclaration(node) && receiptStaticExported(node) && node.name?.text?.toLowerCase().includes("receipt")).map((node) => node.name.text);
+    if (receiptExports.length !== RECEIPT_STATIC_API_NAMES.length ||
+        RECEIPT_STATIC_API_NAMES.some((name) => !receiptExports.includes(name))) return failure("SSC_RECEIPT_ROOTS_INVALID");
+
+    const migration = receiptStaticFunction(fixture, "withDisposablePostgresFixtureMigration");
+    const beginInvocation = receiptStaticFunction(fixture, "beginDisposablePostgresReceiptInvocation");
+    const issueCalls = receiptStaticCalls(migration, "issueDisposablePostgresReceipt");
+    const authorityIssueCalls = receiptStaticCalls(allocationInstaller, "issueDisposablePostgresReceipt");
+    const invalidationCalls = receiptStaticCalls(migration, "invalidateDisposablePostgresReceiptInvocation");
+    const beginInstallerCalls = receiptStaticCalls(beginInvocation, "installDisposablePostgresAuthoritySetReceipt");
+    const authoritySetCalls = receiptStaticCalls(migration, "set").filter((call) =>
+      ts.isPropertyAccessExpression(call.expression) &&
+      call.expression.expression.getText(fixture) === "migrationAuthorityValues" && call.expression.name.text === "set");
+    const weakMapSetCalls = receiptStaticCalls(allocationInstaller, "call").filter((call) =>
+      ts.isPropertyAccessExpression(call.expression) &&
+      call.expression.expression.getText(fixture) === "WeakMap.prototype.set" && call.expression.name.text === "call");
+    const issueBody = receiptStaticBody(fixtureSource, receiptStaticFunction(fixture, "issueDisposablePostgresReceipt"));
+    const invalidationBody = receiptStaticBody(fixtureSource, receiptStaticFunction(fixture, "invalidateDisposablePostgresReceiptInvocation"));
+    const consumeBody = receiptStaticBody(fixtureSource, receiptStaticFunction(fixture, "consumeDisposablePostgresReceipt"));
+    const authorityIssue = authorityIssueCalls[0];
+    const delegatedSet = weakMapSetCalls[0];
+    const authorityRecordArgument = authoritySetCalls[0]?.arguments?.[1];
+    const beginBody = receiptStaticBody(fixtureSource, beginInvocation);
+    const finishBody = receiptStaticBody(fixtureSource,
+      receiptStaticFunction(fixture, "finishDisposablePostgresReceiptInvocation"));
+    if (issueCalls.length !== 1 || authorityIssueCalls.length !== 1 || invalidationCalls.length !== 1 ||
+        authoritySetCalls.length !== 1 || !ts.isObjectLiteralExpression(authorityRecordArgument) ||
+        beginInstallerCalls.length !== 1 || weakMapSetCalls.length !== 1 || !authorityIssue || !delegatedSet ||
+        authorityIssue.arguments.length !== 5 ||
+        authorityIssue.arguments.map((argument) => argument.getText(fixture)).join("|") !==
+          'invocation.invocationKey|authority|authorityRecord|"authority"|"migration-authority-allocation"' ||
+        authorityIssue.pos >= delegatedSet.pos ||
+        delegatedSet.arguments.length !== 3 || delegatedSet.arguments[0].getText(fixture) !== "this" ||
+        delegatedSet.arguments[1].getText(fixture) !== "authority" ||
+        delegatedSet.arguments[2].getText(fixture) !== "authorityRecord" ||
+        !beginBody.includes("installDisposablePostgresAuthoritySetReceipt()") ||
+        beginBody.indexOf("installDisposablePostgresAuthoritySetReceipt()") > beginBody.indexOf("activeDisposablePostgresReceiptInvocation = invocation") ||
+        !finishBody.includes("delete migrationAuthorityValues.set") ||
+        issueCalls[0].arguments.length !== 5 ||
+        issueCalls[0].arguments[3].getText(fixture) !== '"fresh-error"' ||
+        issueCalls[0].arguments[4].getText(fixture) !== '"replacement-admission-error-allocation"' ||
+        !issueBody.includes("disposablePostgresReceipts.set(identity, receipt)") ||
+        !issueBody.includes("invocation.identities.add(identity)") ||
+        !invalidationBody.includes('receipt.kind === "authority"') ||
+        !invalidationBody.includes("disposablePostgresReceipts.delete(identity)") ||
+        !consumeBody.includes("invocation.operation !== operation") ||
+        !consumeBody.includes("receipt.identityRecord !== identityRecord") ||
+        !consumeBody.includes("disposablePostgresReceipts.delete(identity)") ||
+        !fixtureSource.includes("completedDisposablePostgresReceiptOperations.set(operation, true)")) return failure("SSC_RECEIPT_ISSUER_SITE_INVALID");
+    const runScenario = receiptStaticFunction(harness, "runScenario");
+    const observer = receiptStaticFunction(harness, "installWeakMapObserver");
+    const begin = receiptStaticCalls(runScenario, "beginDisposablePostgresReceiptInvocation");
+    const finish = receiptStaticCalls(runScenario, "finishDisposablePostgresReceiptInvocation");
+    const fresh = receiptStaticCalls(runScenario, "consumeDisposablePostgresFreshErrorReceipt");
+    const authority = receiptStaticCalls(observer, "consumeDisposablePostgresAuthorityReceipt");
+    const shape = receiptStaticCalls(observer, "isAuthorityRecord");
+    const fixtureCalls = receiptStaticCalls(runScenario, "withDisposablePostgresFixtureMigration");
+    const prototype = receiptStaticCalls(runScenario, "getPrototypeOf");
+    if (begin.length !== 1 || finish.length !== 1 || fresh.length !== 1 ||
+        authority.length !== 1 || shape.length < 1 || fixtureCalls.length !== 1 ||
+        authority[0].pos >= shape[0].pos || begin[0].pos >= fixtureCalls[0].pos ||
+        (prototype.length && fresh[0].pos >= prototype[0].pos) ||
+        !receiptStaticBody(harnessSource, runScenario).includes("current.receiptOperation = null") ||
+        !receiptStaticBody(harnessSource, runScenario).includes("current.receiptSubject = null")) return failure("SSC_RECEIPT_CALLSITE_INVALID");
+    if (/worker_threads|new Worker\s*\(|workerData|parentPort/u.test(harnessSource) ||
+        /JSON\.stringify\s*\(\s*(?:authorityToken|authorityRecord|error|identityRecord|invocationKey)/u.test(issueBody) ||
+        /\b(?:console\.(?:log|error)|process\.(?:stdout|stderr)|postMessage|send)\s*\(/u.test(fixtureSource)) return failure("SSC_RECEIPT_FLOW_UNSUPPORTED");
+
+    const bodies = Object.create(null);
+    for (const name of Object.keys(RECEIPT_STATIC_EXPECTED_BODY_IDENTITIES)) {
+      const isHarness = name.startsWith("harness.");
+      const functionName = isHarness ? name.slice("harness.".length) : name;
+      const sourceFile = isHarness ? harness : fixture;
+      const source = isHarness ? harnessSource : fixtureSource;
+      bodies[name] = receiptStaticSha256(receiptStaticBody(source,
+        receiptStaticFunction(sourceFile, functionName)));
+    }
+    if (Object.keys(bodies).length !== Object.keys(RECEIPT_STATIC_EXPECTED_BODY_IDENTITIES).length ||
+        Object.entries(RECEIPT_STATIC_EXPECTED_BODY_IDENTITIES).some(([name, expected]) => bodies[name] !== expected)) {
+      return failure("SSC_RECEIPT_STATIC_SOURCE_INVALID");
+    }
+
+    const runChild = receiptStaticFunction(harness, "runHarnessChild");
+    const spawnCalls = receiptStaticCalls(runChild, "spawn").filter((call) =>
+      ts.isIdentifier(call.expression) && call.expression.text === "spawn");
+    const spawnOptions = spawnCalls[0]?.arguments?.[2];
+    const spawnProperty = (name) => ts.isObjectLiteralExpression(spawnOptions)
+      ? spawnOptions.properties.find((property) => ts.isPropertyAssignment(property) &&
+        (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) && property.name.text === name)?.initializer
+      : undefined;
+    const stdio = spawnProperty("stdio");
+    const exactStdio = ts.isArrayLiteralExpression(stdio) && stdio.elements.length === 3 &&
+      stdio.elements.every((item, index) => ts.isStringLiteral(item) && item.text === ["ignore", "pipe", "pipe"][index]);
+    const exactSpawn = spawnCalls.length === 1 && spawnCalls[0].arguments.length === 3 &&
+      spawnCalls[0].arguments[0].getText(harness) === "process.execPath" &&
+      spawnCalls[0].arguments[1].getText(harness) === "args" &&
+      ts.isObjectLiteralExpression(spawnOptions) && spawnOptions.properties.length === 5 &&
+      spawnProperty("shell")?.kind === ts.SyntaxKind.FalseKeyword &&
+      spawnProperty("cwd")?.getText(harness) === "repoRootFromHarness()" &&
+      spawnProperty("env")?.getText(harness) === "allowedChildEnvironment()" &&
+      spawnProperty("windowsHide")?.kind === ts.SyntaxKind.TrueKeyword && exactStdio;
+    if (!exactSpawn || !receiptStaticBody(harnessSource, runChild).includes("expectedGate?.ok !== true")) {
+      return failure("SSC_RECEIPT_FLOW_UNSUPPORTED");
+    }
+
+    const childVariableInitializers = new Map();
+    for (const statement of harness.statements) {
+      if (!ts.isVariableStatement(statement)) continue;
+      for (const declaration of statement.declarationList.declarations) {
+        if (ts.isIdentifier(declaration.name)) childVariableInitializers.set(declaration.name.text, declaration.initializer);
+      }
+    }
+    const specialCases = childVariableInitializers.get("CHILD_SPECIAL_CASES");
+    const specialArgument = specialCases && ts.isNewExpression(specialCases) ? specialCases.arguments?.[0] : undefined;
+    const specialCaseValues = specialArgument && ts.isArrayLiteralExpression(specialArgument)
+      ? specialArgument.elements.filter((item) => ts.isStringLiteral(item)).map((item) => item.text) : [];
+    if (childVariableInitializers.get("MAX_CHILD_OUTPUT_BYTES")?.getText(harness) !== "2 * 1024 * 1024" ||
+        childVariableInitializers.get("CHILD_TIMEOUT_MS")?.getText(harness) !== "60_000" ||
+        JSON.stringify(specialCaseValues) !== JSON.stringify([
+          "RUN660_HS5_DP6_RUNTIME_CONTROLS", "RUN669_HS5_PRIVATE_STATE_ORIGIN_CONTROLS",
+          "RUN657_INDEPENDENT_RUNTIME_CORPUS", "SSC_FORCE_RESTORE_MISMATCH",
+        ])) return failure("SSC_RECEIPT_FLOW_UNSUPPORTED");
+    const gatedEntrypoints = [
+      "runSecretSurfaceBehavioralHarness", "runSecretSurfaceF2", "runSecretSurfaceF3",
+      "runSecretSurfaceRun660RuntimeControls", "runSecretSurfaceRun669PrivateStateOriginControls",
+      "runSecretSurfaceIndependentRuntimeCorpus", "runSecretSurfaceRun660F3Pair",
+    ];
+    for (const name of gatedEntrypoints) {
+      const entry = receiptStaticFunction(harness, name);
+      const calls = receiptStaticCalls(entry, "runFrozenReceiptStaticGate");
+      if (!receiptStaticExported(entry) || calls.length !== 1) return failure("SSC_RECEIPT_CALLSITE_INVALID");
+      const body = receiptStaticBody(harnessSource, entry);
+      const gateAt = calls[0].getStart() - entry.body.getStart();
+      for (const barrier of ["defaultHarnessResultCache", "runHarnessChild(",
+        "runSecretSurfaceBehavioralHarness("]) {
+        const barrierAt = body.indexOf(barrier);
+        if (barrierAt >= 0 && gateAt >= barrierAt) return failure("SSC_RECEIPT_CALLSITE_INVALID");
+      }
+    }
+    const childMode = receiptStaticFunction(harness, "runHarnessChildMode");
+    const childGateCalls = receiptStaticCalls(childMode, "runFrozenReceiptStaticGate");
+    const childModeBody = receiptStaticBody(harnessSource, childMode);
+    const childGateAt = childGateCalls.length === 1
+      ? childGateCalls[0].getStart() - childMode.body.getStart() : -1;
+    if (childGateAt < 0 || [
+      "runSecretSurfaceBehavioralHarnessInCurrentThread(",
+      "runSecretSurfaceRun660RuntimeControlsInCurrentThread(",
+      "runSecretSurfaceRun669PrivateStateOriginControlsInCurrentThread(",
+      "runSecretSurfaceIndependentRuntimeCorpusInCurrentThread(",
+      "runSecretSurfaceBehavioralHarness(",
+    ].some((call) => {
+      const at = childModeBody.indexOf(call);
+      return at >= 0 && childGateAt >= at;
+    })) return failure("SSC_RECEIPT_CALLSITE_INVALID");
+
+    const callsites = [
+      ...issueCalls.map((node) => "issue:" + node.getText(fixture)),
+      ...authorityIssueCalls.map((node) => "authority-issue:" + node.getText(fixture)),
+      ...invalidationCalls.map((node) => "invalidate:" + node.getText(fixture)),
+      ...beginInstallerCalls.map((node) => "install-set-receipt:" + node.getText(fixture)),
+      ...weakMapSetCalls.map((node) => "weakmap-set:" + node.getText(fixture)),
+      ...authoritySetCalls.map((node) => "authority-set:" + node.getText(fixture)),
+      ...begin.map((node) => "begin:" + node.getText(harness)),
+      ...finish.map((node) => "finish:" + node.getText(harness)),
+      ...fresh.map((node) => "fresh:" + node.getText(harness)),
+      ...authority.map((node) => "authority:" + node.getText(harness)),
+    ];
+    if (receiptStaticSha256(callsites.join("\n")) !== RECEIPT_STATIC_CALLSITE_IDENTITY) return failure("SSC_RECEIPT_CALLSITE_INVALID");
+    return Object.freeze({
+      schemaVersion: 1, id: String(id), ok: true,
+      rootsExpected: RECEIPT_STATIC_ROOTS, rootsAnalyzed: Object.freeze(rootsAnalyzed),
+      fixtureGitBlobId: receiptStaticBlobId(fixtureSource),
+      harnessGitBlobId: receiptStaticBlobId(harnessSource),
+      bodyIdentities: Object.freeze(bodies),
+      callsiteIdentity: receiptStaticSha256(callsites.join("\n")),
+    });
+  } catch (error) {
+    const code = RECEIPT_STATIC_FAILURES.includes(error?.message) ? error.message : "SSC_RECEIPT_GATE_INTERNAL";
+    return failure(code);
+  }
+}
+export function analyzeReceiptStaticVariant({ fixtureSource, harnessSource, id = "variant" } = {}) {
+  return analyzeReceiptStaticPair({ fixtureSource, harnessSource, id });
+}
+export function analyzeReceiptStaticVariants(variants) {
+  if (!Array.isArray(variants)) return Object.freeze([]);
+  return Object.freeze(variants.map((variant, index) => analyzeReceiptStaticVariant({
+    fixtureSource: variant?.fixtureSource, harnessSource: variant?.harnessSource, id: variant?.id ?? "variant-" + index,
+  })));
+}
+export async function runFrozenReceiptStaticGate() {
+  try {
+    const frozen = await readFrozenSource();
+    const harnessPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "disposable-postgres-secret-surface-harness.mjs");
+    const harnessSource = (await readFile(harnessPath, "utf8")).replace(/\r\n/g, "\n");
+    return analyzeReceiptStaticVariant({ fixtureSource: frozen.source, harnessSource, id: "SSC_RECEIPT_STATIC_GATE" });
+  } catch (error) {
+    return Object.freeze({
+      schemaVersion: 1, id: "SSC_RECEIPT_STATIC_GATE", ok: false,
+      failureCode: error?.message === "FROZEN_HELPER_BLOB" ? "SSC_RECEIPT_STATIC_SOURCE_INVALID" : "SSC_RECEIPT_GATE_INTERNAL",
+      rootsExpected: RECEIPT_STATIC_ROOTS, rootsAnalyzed: Object.freeze([]),
+    });
+  }
+}
+export async function runReceiptStaticPositiveControls() {
+  const sources = await readFrozenReceiptClosureSources();
+  const results = analyzeReceiptStaticVariants(receiptStaticPositiveControlIds.map((id) => ({ id, ...sources })))
+    .map((item) => Object.freeze({ ...item, pass: item.ok }));
+  return Object.freeze({
+    count: results.length, ids: Object.freeze(results.map((item) => item.id)), results: Object.freeze(results),
+    pass: results.length === receiptStaticPositiveControlIds.length && results.every((item) => item.pass),
+  });
+}
+export async function runReceiptStaticNegativeControls() {
+  const sources = await readFrozenReceiptClosureSources();
+  const replaceOnce = (source, before, after) => {
+    const at = source.indexOf(before);
+    if (at < 0) throw new Error("SSC_RECEIPT_GATE_INTERNAL");
+    return source.slice(0, at) + after + source.slice(at + before.length);
+  };
+  const publicGateOriginal = [
+    "  const gate = await runFrozenReceiptStaticGate();",
+    "  if (gate.ok !== true) return runtimeGateFailure(gate);",
+    "  const defaultRun = Object.keys(options).length === 0;",
+  ].join("\n");
+  const childGateOriginal = [
+    "  const gate = await runFrozenReceiptStaticGate();",
+    "  if (gate.ok !== true) {",
+    "    process.stdout.write(JSON.stringify({ ok: false, mode, caseId, code: \"SSC_RECEIPT_GATE_BLOCKED\" }) + \"\\n\");",
+    "    process.exitCode = 1;",
+    "    return;",
+    "  }",
+  ].join("\n");
+  const variants = [
+    { id: receiptStaticNegativeControlIds[0], fixtureSource: replaceOnce(sources.fixtureSource, "invocation.operation !== operation", "invocation.operation === operation"), harnessSource: sources.harnessSource },
+    { id: receiptStaticNegativeControlIds[1], fixtureSource: replaceOnce(sources.fixtureSource, "receipt.identityRecord !== identityRecord", "receipt.identityRecord === identityRecord"), harnessSource: sources.harnessSource },
+    { id: receiptStaticNegativeControlIds[2], fixtureSource: replaceOnce(sources.fixtureSource, "migrationAuthorityValues.set(authority, {", 'issueDisposablePostgresReceipt(key, authority, {}, "authority", "migration-authority-allocation");\n    const authorityRecord = {'), harnessSource: sources.harnessSource },
+    { id: receiptStaticNegativeControlIds[3], fixtureSource: replaceOnce(sources.fixtureSource, "if (!receipt) return false;\n  disposablePostgresReceipts.delete(identity);\n  receipt.invocation.identities.delete(identity);", "if (!receipt) return false;\n  receipt.invocation.identities.delete(identity);"), harnessSource: sources.harnessSource },
+    { id: receiptStaticNegativeControlIds[4], fixtureSource: sources.fixtureSource, harnessSource: replaceOnce(sources.harnessSource, "subject.finishDisposablePostgresReceiptInvocation(operation);", "void operation;") },
+    { id: receiptStaticNegativeControlIds[5], fixtureSource: replaceOnce(sources.fixtureSource, "function issueDisposablePostgresReceipt(", "export function issueDisposablePostgresReceipt("), harnessSource: sources.harnessSource },
+    { id: receiptStaticNegativeControlIds[6], fixtureSource: replaceOnce(sources.fixtureSource, 'if (error instanceof DisposablePostgresFixtureAdmissionError) throw error;', 'issueDisposablePostgresReceipt(key, error, error, "fresh-error", "replacement-admission-error-allocation");\n    if (error instanceof DisposablePostgresFixtureAdmissionError) throw error;'), harnessSource: sources.harnessSource },
+    { id: receiptStaticNegativeControlIds[7], fixtureSource: sources.fixtureSource, harnessSource: replaceOnce(sources.harnessSource, "const consumed = subject && operation", "const inspectedFirst = isAuthorityRecord(key, record, ObservedPool);\n    const consumed = subject && operation") },
+    { id: receiptStaticNegativeControlIds[8], fixtureSource: sources.fixtureSource, harnessSource: replaceOnce(sources.harnessSource, 'import { spawn } from "node:child_process";', 'import { Worker } from "node:worker_threads";') },
+    { id: receiptStaticNegativeControlIds[9], fixtureSource: sources.fixtureSource + "\nexport function unexpectedReceiptRoot() {}", harnessSource: sources.harnessSource },
+    { id: receiptStaticNegativeControlIds[10], fixtureSource: replaceOnce(sources.fixtureSource, "invocation.active = false;", "invocation.active = true;"), harnessSource: sources.harnessSource },
+    { id: receiptStaticNegativeControlIds[11], fixtureSource: sources.fixtureSource, harnessSource: replaceOnce(sources.harnessSource, publicGateOriginal, [
+      "  const defaultRun = Object.keys(options).length === 0;",
+      "  const gate = await runFrozenReceiptStaticGate();",
+      "  if (gate.ok !== true) return runtimeGateFailure(gate);",
+    ].join("\n")) },
+    { id: receiptStaticNegativeControlIds[12], fixtureSource: sources.fixtureSource, harnessSource: replaceOnce(sources.harnessSource, "shell: false", "shell: true") },
+    { id: receiptStaticNegativeControlIds[13], fixtureSource: sources.fixtureSource, harnessSource: replaceOnce(sources.harnessSource, childGateOriginal, childGateOriginal.replace("const gate = await runFrozenReceiptStaticGate();", "const gate = { ok: true };")) },
+    { id: receiptStaticNegativeControlIds[14], fixtureSource: sources.fixtureSource, harnessSource: replaceOnce(sources.harnessSource, "JSON.stringify(message) !== line", "JSON.stringify(message) === line") },
+    { id: receiptStaticNegativeControlIds[15], fixtureSource: sources.fixtureSource, harnessSource: replaceOnce(sources.harnessSource, "const env = Object.create(null);", "const env = { ...process.env };") },
+    { id: receiptStaticNegativeControlIds[16], fixtureSource: sources.fixtureSource, harnessSource: replaceOnce(sources.harnessSource, "2 * 1024 * 1024", "16 * 1024 * 1024") },
+    { id: receiptStaticNegativeControlIds[17], fixtureSource: sources.fixtureSource, harnessSource: replaceOnce(sources.harnessSource, "const CHILD_TIMEOUT_MS = 60_000;", "const CHILD_TIMEOUT_MS = 61_000;") },
+  ];
+  const results = analyzeReceiptStaticVariants(variants).map((item) => Object.freeze({ ...item, pass: !item.ok }));
+  return Object.freeze({
+    count: results.length, ids: Object.freeze(results.map((item) => item.id)), results: Object.freeze(results),
+    pass: results.length === receiptStaticNegativeControlIds.length && results.every((item) => item.pass),
+  });
+}
+async function readFrozenReceiptClosureSources() {
+  const frozen = await readFrozenSource();
+  const harnessPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "disposable-postgres-secret-surface-harness.mjs");
+  const harnessSource = (await readFile(harnessPath, "utf8")).replace(/\r\n/g, "\n");
+  return Object.freeze({ fixtureSource: frozen.source, harnessSource });
 }
 
 export const migrationClosureNegativeControlIds = Object.freeze(

@@ -3,6 +3,14 @@ import test from "node:test";
 
 import {
   MIGRATION_CLOSURE_OBLIGATION_IDS,
+  RECEIPT_STATIC_GATE_RESULT_INTERFACE,
+  receiptStaticPositiveControlIds,
+  receiptStaticNegativeControlIds,
+  analyzeReceiptStaticVariant,
+  analyzeReceiptStaticVariants,
+  runFrozenReceiptStaticGate,
+  runReceiptStaticPositiveControls,
+  runReceiptStaticNegativeControls,
   MIGRATION_CLOSURE_RESULT_INTERFACE,
   migrationClosurePositiveControlIds,
   migrationClosureNegativeControlIds,
@@ -25,6 +33,7 @@ import {
   runSecretSurfaceIndependentRuntimeCorpus,
   runSecretSurfaceRun660RuntimeControls,
   runSecretSurfaceRun669PrivateStateOriginControls,
+  runSecretSurfaceRun660F3Pair,
 } from "./support/disposable-postgres-secret-surface-harness.mjs";
 
 const RUN658_OBLIGATION_IDS = Object.freeze([
@@ -468,7 +477,7 @@ function buildRun657IndependentStaticVariants(source) {
     ["WRONG_MAX", "max: 1,", "max: 7,"],
     ["WRONG_QUERY_ARGS", "[target.expectedDatabase, target.expectedUser]", "[\"different_database\", \"different_user\"]"],
     ["FAKE_SQL_BINDING", "const identitySql = `", "const identitySql = \"select 1\"; const unusedSql = `"],
-    ["NO_REVOKE", "if (value) value.valid = false;", "if (value) void 0;"],
+    ["NO_REVOKE", "value.valid = false;", "value.valid = true;"],
     ["UNFROZEN_TOKEN", "authority = Object.freeze({});", "authority = {};"],
     ["NO_FINGERPRINT_COMPARE", "identity.catalogFingerprint !== value.clusterFingerprint ||\n    identity.lifecycleFingerprint !== value.lifecycleFingerprint", "false"],
     ["WRONG_MIGRATION_FOLDER", "await migrate(drizzle(pool), { migrationsFolder });", "await migrate(drizzle(pool), { migrationsFolder: \"different_folder\" });"],
@@ -656,7 +665,15 @@ function buildRun657RepresentationMatrix(source, protocolPreserving = false) {
   };
   const diagnosticAnchor =
     "if (error instanceof DisposablePostgresFixtureAdmissionError) throw error;\n" +
-    "    throw new DisposablePostgresFixtureAdmissionError();";
+    "    const freshError = new DisposablePostgresFixtureAdmissionError();\n" +
+    "    issueDisposablePostgresReceipt(\n" +
+    "      disposablePostgresReceiptOperationKeys.get(operation),\n" +
+    "      freshError,\n" +
+    "      freshError,\n" +
+    "      \"fresh-error\",\n" +
+    "      \"replacement-admission-error-allocation\",\n" +
+    "    );\n" +
+    "    throw freshError;";
   for (const [fact, expression] of Object.entries(facts)) {
     for (const [representation, make] of Object.entries(RUN657_MATRIX_REPRESENTATIONS)) {
       for (const [index, originalExpression] of make(expression).entries()) {
@@ -1012,16 +1029,63 @@ test("RUN669_G4_669_01_PRIVATE_STATE_ORIGIN_PROVENANCE", async () => {
   assert.equal(result.positives[7].publicAccepted, true);
 });
 
-test("RUN668_RUN660_TO_F3_SAME_PROCESS_REGRESSION", async () => {
-  const processId = process.pid;
+test("SSC_RECEIPT_STATIC_GATE", async () => {
+  assert.equal(RECEIPT_STATIC_GATE_RESULT_INTERFACE.schemaVersion, 1);
+  assert.equal(RECEIPT_STATIC_GATE_RESULT_INTERFACE.id, "SSC_RECEIPT_STATIC_GATE");
+  const gate = await runFrozenReceiptStaticGate();
+  assert.equal(gate.ok, true, gate.failureCode);
+  assert.deepEqual(gate.rootsExpected, RECEIPT_STATIC_GATE_RESULT_INTERFACE.rootsExpected);
+  assert.deepEqual(gate.rootsAnalyzed, RECEIPT_STATIC_GATE_RESULT_INTERFACE.rootsExpected);
+  assert.match(gate.fixtureGitBlobId, /^[a-f0-9]{40}$/u);
+  assert.match(gate.harnessGitBlobId, /^[a-f0-9]{40}$/u);
+  assert.deepEqual(Object.keys(gate.bodyIdentities).sort(), [
+    "beginDisposablePostgresReceiptInvocation", "consumeDisposablePostgresAuthorityReceipt",
+    "consumeDisposablePostgresFreshErrorReceipt", "consumeDisposablePostgresReceipt",
+    "finishDisposablePostgresReceiptInvocation", "invalidateDisposablePostgresReceiptInvocation",
+    "installDisposablePostgresAuthoritySetReceipt", "issueDisposablePostgresReceipt", "withDisposablePostgresFixtureMigration",
+    "harness.allowedChildEnvironment", "harness.installWeakMapObserver", "harness.receiptGateEvidence",
+    "harness.repoRootFromHarness", "harness.runHarnessChild", "harness.runHarnessChildMode",
+    "harness.runScenario", "harness.runSecretSurfaceBehavioralHarness",
+    "harness.runSecretSurfaceBehavioralHarnessInCurrentThread", "harness.runSecretSurfaceF2",
+    "harness.runSecretSurfaceF3", "harness.runSecretSurfaceIndependentRuntimeCorpus",
+    "harness.runSecretSurfaceRun660F3Pair", "harness.runSecretSurfaceRun660RuntimeControls",
+    "harness.runSecretSurfaceRun669PrivateStateOriginControls", "harness.safeChildTree",
+    "harness.validChildCase",
+  ].sort());
+  assert.equal(gate.callsiteIdentity, "c7292cb3435f61cc246787f2bc8208139fcb5c68c805940ec21de878aea7610b");
+  assert.match(gate.callsiteIdentity, /^[a-f0-9]{64}$/u);
+
+  const positive = await runReceiptStaticPositiveControls();
+  assert.equal(positive.pass, true);
+  assert.deepEqual(positive.ids, receiptStaticPositiveControlIds);
+  assert.equal(positive.count, receiptStaticPositiveControlIds.length);
+
+  const negative = await runReceiptStaticNegativeControls();
+  assert.equal(negative.pass, true);
+  assert.deepEqual(negative.ids, receiptStaticNegativeControlIds);
+  assert.equal(negative.count, receiptStaticNegativeControlIds.length);
+});
+
+test("RUN668_RUN660_TO_F3_SAME_CHILD_PROCESS", async () => {
   const run660 = await runSecretSurfaceRun660RuntimeControls();
   assert.equal(run660.id, "RUN660_HS5_DP6_RUNTIME_CONTROLS");
   assert.equal(run660.pass, true);
   assert.equal(run660.hs.pass, true);
   assert.equal(run660.dp6.pass, true);
+  assert.notEqual(run660.childPid, process.pid);
+
+  const pair = await runSecretSurfaceRun660F3Pair();
+  assert.equal(pair.id, "RUN660_F3_SAME_CHILD_PROCESS");
+  assert.equal(pair.pass, true);
+  assert.equal(pair.sameChildPid, true);
+  assert.equal(pair.separateFromParent, true);
+  assert.equal(pair.run660Pid, pair.f3Pid);
+  assert.equal(pair.childPid, pair.run660Pid);
+  assert.notEqual(pair.childPid, pair.parentPid);
+  assert.equal(pair.scenarioCount, 8);
+  assert.equal(pair.resourcesStable, true);
 
   const f3 = await runSecretSurfaceF3();
-  assert.equal(process.pid, processId);
   assert.equal(f3.id, "F3_RUNTIME_LIFECYCLE_SCENARIOS");
   assert.equal(f3.pass, true);
   assert.equal(f3.scenarios.length, 8);
@@ -1033,6 +1097,11 @@ test("RUN668_RUN660_TO_F3_SAME_PROCESS_REGRESSION", async () => {
     assert.equal(scenario.poolCount, prePoolFailure ? 0 : 1, scenario.id);
   }
   assert.equal(f3.scenarios.filter((scenario) => scenario.poolCount === 1).length, 7);
+  assert.equal(f3.childEvidence.length, 8);
+  assert.ok(f3.childEvidence.every((item) =>
+    item.childPid !== process.pid &&
+    item.fixtureGitBlobId === f3.receiptGate.fixtureGitBlobId &&
+    item.harnessGitBlobId === f3.receiptGate.harnessGitBlobId));
 });
 
 function run660PrependRoot(source, statements) {
@@ -1129,7 +1198,7 @@ test("RUN660_CF1_TV2_PV3_AP4_STATIC_WITNESSES", async () => {
     "await runScopedFixtureMigration(authority, pool, target.migrationsFolder, target);\n    return await operation();",
     "return await operation();\n    await runScopedFixtureMigration(authority, pool, target.migrationsFolder, target);"));
   add("RUN660_AP_REVOCATION_FALSE", run660ReplaceOnce(frozen.source,
-    "if (value) value.valid = false;", "if (false) value.valid = false;"));
+    "value.valid = false;", "value.valid = true;"));
   add("RUN660_AP_CLEANUP_FALSE", run660ReplaceOnce(frozen.source,
     "if (pool) await pool.end().catch(() => {});", "if (false) await pool.end().catch(() => {});"));
   const guardPattern = /if\s*\(\s*identity\.catalogFingerprint\s*!==\s*value\.clusterFingerprint\s*\|\|\s*identity\.lifecycleFingerprint\s*!==\s*value\.lifecycleFingerprint\s*\)/u;

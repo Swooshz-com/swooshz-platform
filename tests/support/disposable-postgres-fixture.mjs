@@ -30,6 +30,153 @@ const configuredAggregateValues = new WeakMap();
 const configuredTargetValues = new WeakMap();
 const mutationTargetValues = new WeakMap();
 const migrationAuthorityValues = new WeakMap();
+const disposablePostgresReceiptOperationKeys = new WeakMap();
+const disposablePostgresReceipts = new WeakMap();
+const completedDisposablePostgresReceiptOperations = new WeakMap();
+let activeDisposablePostgresReceiptInvocation = null;
+
+function installDisposablePostgresAuthoritySetReceipt() {
+  Object.defineProperty(migrationAuthorityValues, "set", {
+    configurable: true,
+    value(authority, authorityRecord) {
+      const invocation = activeDisposablePostgresReceiptInvocation;
+      if (this === migrationAuthorityValues && invocation?.active && !invocation.authorityRevoked &&
+          authorityRecord?.authority === authority && authorityRecord?.brand === migrationAuthorityBrand) {
+        issueDisposablePostgresReceipt(
+          invocation.invocationKey,
+          authority,
+          authorityRecord,
+          "authority",
+          "migration-authority-allocation",
+        );
+      }
+      return WeakMap.prototype.set.call(this, authority, authorityRecord);
+    },
+  });
+}
+export function beginDisposablePostgresReceiptInvocation(operation) {
+  if (typeof operation !== "function" ||
+      completedDisposablePostgresReceiptOperations.get(operation) === true ||
+      activeDisposablePostgresReceiptInvocation !== null) return false;
+  const invocationKey = Object.freeze(Object.create(null));
+  const invocation = {
+    operation,
+    invocationKey,
+    active: true,
+    authorityRevoked: false,
+    identities: new Set(),
+  };
+  disposablePostgresReceiptOperationKeys.set(operation, invocationKey);
+  try {
+    installDisposablePostgresAuthoritySetReceipt();
+  } catch {
+    disposablePostgresReceiptOperationKeys.delete(operation);
+    return false;
+  }
+  activeDisposablePostgresReceiptInvocation = invocation;
+  return true;
+}
+
+function issueDisposablePostgresReceipt(
+  invocationKey,
+  identity,
+  identityRecord,
+  kind,
+  allocationSite,
+) {
+  const invocation = activeDisposablePostgresReceiptInvocation;
+  if (!invocation || !invocation.active ||
+      invocation.authorityRevoked ||
+      invocation.invocationKey !== invocationKey ||
+      !["authority", "fresh-error"].includes(kind) ||
+      (kind === "authority" && allocationSite !== "migration-authority-allocation") ||
+      (kind === "fresh-error" && allocationSite !== "replacement-admission-error-allocation") ||
+      (typeof identity !== "object" && typeof identity !== "function") ||
+      identity === null ||
+      disposablePostgresReceipts.has(identity)) return undefined;
+  const receipt = {
+    invocation,
+    invocationKey,
+    identityRecord,
+    kind,
+    allocationSite,
+  };
+  disposablePostgresReceipts.set(identity, receipt);
+  invocation.identities.add(identity);
+  return undefined;
+}
+
+function invalidateDisposablePostgresReceiptInvocation(invocationKey) {
+  const invocation = activeDisposablePostgresReceiptInvocation;
+  if (!invocation || !invocation.active ||
+      invocation.invocationKey !== invocationKey) return undefined;
+  invocation.authorityRevoked = true;
+  for (const identity of invocation.identities) {
+    const receipt = disposablePostgresReceipts.get(identity);
+    if (receipt?.invocation === invocation && receipt.kind === "authority") {
+      disposablePostgresReceipts.delete(identity);
+      invocation.identities.delete(identity);
+    }
+  }
+  return undefined;
+}
+
+export function consumeDisposablePostgresAuthorityReceipt(
+  operation,
+  authorityToken,
+  authorityRecord,
+) {
+  return consumeDisposablePostgresReceipt(
+    "authority",
+    operation,
+    authorityToken,
+    authorityRecord,
+  );
+}
+
+export function consumeDisposablePostgresFreshErrorReceipt(operation, error) {
+  return consumeDisposablePostgresReceipt("fresh-error", operation, error, error);
+}
+
+function consumeDisposablePostgresReceipt(kind, operation, identity, identityRecord) {
+  if ((typeof identity !== "object" && typeof identity !== "function") || identity === null) {
+    return false;
+  }
+  const receipt = disposablePostgresReceipts.get(identity);
+  if (!receipt) return false;
+  disposablePostgresReceipts.delete(identity);
+  receipt.invocation.identities.delete(identity);
+  const invocation = activeDisposablePostgresReceiptInvocation;
+  if (!invocation || !invocation.active ||
+      receipt.invocation !== invocation ||
+      invocation.operation !== operation ||
+      invocation.invocationKey !== receipt.invocationKey ||
+      disposablePostgresReceiptOperationKeys.get(operation) !== receipt.invocationKey ||
+      receipt.kind !== kind ||
+      receipt.identityRecord !== identityRecord) return false;
+  if (kind === "authority" && invocation.authorityRevoked) return false;
+  return true;
+}
+
+export function finishDisposablePostgresReceiptInvocation(operation) {
+  const invocationKey = disposablePostgresReceiptOperationKeys.get(operation);
+  const invocation = activeDisposablePostgresReceiptInvocation;
+  if (!invocationKey) return;
+  if (invocation?.operation === operation &&
+      invocation.invocationKey === invocationKey) {
+    invocation.active = false;
+    for (const identity of invocation.identities) {
+      disposablePostgresReceipts.delete(identity);
+    }
+    invocation.identities.clear();
+    if (activeDisposablePostgresReceiptInvocation === invocation) {
+      activeDisposablePostgresReceiptInvocation = null;
+      delete migrationAuthorityValues.set;
+    }
+  }
+  disposablePostgresReceiptOperationKeys.delete(operation);
+  completedDisposablePostgresReceiptOperations.set(operation, true);
+}
 
 const mutationKeyword =
   /\b(?:grant|revoke|alter|create|drop|truncate|insert|update|delete|merge|copy|vacuum|refresh)\b/iu;
@@ -142,11 +289,23 @@ export async function withDisposablePostgresFixtureMigration(
     return await operation();
   } catch (error) {
     if (error instanceof DisposablePostgresFixtureAdmissionError) throw error;
-    throw new DisposablePostgresFixtureAdmissionError();
+    const freshError = new DisposablePostgresFixtureAdmissionError();
+    issueDisposablePostgresReceipt(
+      disposablePostgresReceiptOperationKeys.get(operation),
+      freshError,
+      freshError,
+      "fresh-error",
+      "replacement-admission-error-allocation",
+    );
+    throw freshError;
   } finally {
     if (authority) {
       const value = migrationAuthorityValues.get(authority);
-      if (value) value.valid = false;
+      if (value) {
+        value.valid = false;
+        const invocationKey = disposablePostgresReceiptOperationKeys.get(operation);
+        if (invocationKey) invalidateDisposablePostgresReceiptInvocation(invocationKey);
+      }
     }
     if (pool) await pool.end().catch(() => {});
   }
