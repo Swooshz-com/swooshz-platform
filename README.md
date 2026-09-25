@@ -1,5 +1,9 @@
 # Swooshz Platform
 
+## Production database authority
+
+Production database observation and migration are provider-brokered and credential-free to repository processes. The broker session is bound by provider role name/OID and exact project, branch, endpoint, database OID, cluster identifier, and PostgreSQL 17 evidence. Migration 0010 executes only through the reviewed immutable bundle with transaction-local `SET LOCAL ROLE platform_migrator`; `platform_migrator` remains `NOLOGIN PASSWORD NULL`. `DATABASE_OPERATOR_URL` and direct migrator credentials are prohibited in production. Direct PostgreSQL execution exists only inside runner-owned loopback disposable fixtures.
+
 Swooshz Platform is the future shared platform layer for Swooshz apps. It will own account identity, workspace membership, app access, app whitelisting, and eventually billing or credits when those are explicitly approved.
 
 The current priority is a minimal internal platform shell over the existing backend contracts, not a polished dashboard or public product surface. The platform still prioritizes clear account, workspace, and app-access boundaries before broader UI or app integration work.

@@ -1,13 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { drizzle } from "drizzle-orm/node-postgres";
-import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Pool } from "pg";
 
 import * as schema from "../dist/db/schema.js";
@@ -15,24 +13,20 @@ import { createDrizzlePlatformRepositories } from "../dist/db/repositories.js";
 import { removeWorkspaceMembership } from "../dist/platform/workspace-admin-service.js";
 
 const rootDir = resolve(".");
-const migrationDatabaseUrl = process.env.ROLE_COLLAPSE_TEST_MIGRATION_OPERATOR_URL;
-const concurrencyDatabaseUrl = process.env.ROLE_COLLAPSE_TEST_CONCURRENCY_OPERATOR_URL;
-const proofEnabled =
-  Boolean(migrationDatabaseUrl && concurrencyDatabaseUrl) &&
-  process.env.ROLE_COLLAPSE_TEST_CONFIRM === "disposable-only";
-const skipReason = proofEnabled
-  ? false
-  : "requires the Run-153 disposable PostgreSQL 17 runner";
+const isStandalone =
+  process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
-test("PostgreSQL 17 proves the real 0009 to 0010 role-collapse migration", {
-  skip: skipReason,
-}, async () => {
-  assert.ok(migrationDatabaseUrl);
-  const pool = new Pool({ connectionString: migrationDatabaseUrl, max: 4 });
+async function proveRoleCollapseMigration({
+  databaseUrl,
+  migrateTo0009Impl,
+  runRepositoryMigratorImpl,
+}) {
+  assert.ok(databaseUrl);
+  const pool = new Pool({ connectionString: databaseUrl, max: 4 });
   let baseline;
 
   try {
-    await migrateTo0009(migrationDatabaseUrl);
+    await migrateTo0009Impl(databaseUrl);
     const historicalAuditMetadata = await seedLegacyState(pool);
     baseline = await captureState(pool);
 
@@ -55,14 +49,14 @@ test("PostgreSQL 17 proves the real 0009 to 0010 role-collapse migration", {
     for (const invalidCase of invalidCases) {
       await installInvalidCase(pool, invalidCase);
       const beforeFailure = await captureState(pool);
-      const result = await runRepositoryMigrator(migrationDatabaseUrl);
+      const result = await runRepositoryMigratorImpl(databaseUrl);
       assert.notEqual(result.code, 0);
       assert.equal(result.timedOut, false);
       assert.deepEqual(await captureState(pool), beforeFailure);
       await cleanupInvalidCase(pool, invalidCase);
     }
 
-    const successfulMigration = await runRepositoryMigrator(migrationDatabaseUrl);
+    const successfulMigration = await runRepositoryMigratorImpl(databaseUrl);
     assert.equal(successfulMigration.code, 0);
     assert.equal(successfulMigration.timedOut, false);
 
@@ -110,17 +104,15 @@ test("PostgreSQL 17 proves the real 0009 to 0010 role-collapse migration", {
   } finally {
     await pool.end();
   }
-});
+}
 
-test("PostgreSQL 17 proves concurrent last-admin protection and FOR UPDATE waiting", {
-  skip: skipReason,
-}, async () => {
-  assert.ok(concurrencyDatabaseUrl);
-  await migrateToLatest(concurrencyDatabaseUrl);
+async function proveRoleCollapseConcurrency({ databaseUrl, migrateToLatestImpl }) {
+  assert.ok(databaseUrl);
+  await migrateToLatestImpl(databaseUrl);
 
-  const seedPool = new Pool({ connectionString: concurrencyDatabaseUrl, max: 8 });
-  const clientA = createProductionClient(concurrencyDatabaseUrl);
-  const clientB = createProductionClient(concurrencyDatabaseUrl);
+  const seedPool = new Pool({ connectionString: databaseUrl, max: 8 });
+  const clientA = createProductionClient(databaseUrl);
+  const clientB = createProductionClient(databaseUrl);
   let blocker;
   let blockedOperation;
   let blockedOperationSettled = false;
@@ -217,91 +209,52 @@ test("PostgreSQL 17 proves concurrent last-admin protection and FOR UPDATE waiti
     await clientB.pool.end();
     await seedPool.end();
   }
-});
-
-async function migrateTo0009(databaseUrl) {
-  const temporaryRoot = await mkdtemp(join(tmpdir(), "swooshz-role-collapse-0009-"));
-  const temporaryMigrations = join(temporaryRoot, "migrations");
-
-  try {
-    await cp(join(rootDir, "drizzle", "migrations"), temporaryMigrations, {
-      recursive: true,
-    });
-    await rm(
-      join(
-        temporaryMigrations,
-        "0010_admin_operator_viewer_role_collapse.sql",
-      ),
-    );
-    await rm(join(temporaryMigrations, "meta", "0010_snapshot.json"));
-
-    const journalPath = join(temporaryMigrations, "meta", "_journal.json");
-    const journal = JSON.parse(await readFile(journalPath, "utf8"));
-    journal.entries = journal.entries.filter(
-      (entry) => entry.tag !== "0010_admin_operator_viewer_role_collapse",
-    );
-    await writeFile(journalPath, JSON.stringify(journal, null, 2) + "\n");
-
-    const pool = new Pool({ connectionString: databaseUrl, max: 1 });
-    try {
-      await migrate(drizzle(pool), { migrationsFolder: temporaryMigrations });
-    } finally {
-      await pool.end();
-    }
-  } finally {
-    await rm(temporaryRoot, { recursive: true, force: true });
-  }
 }
 
-async function migrateToLatest(databaseUrl) {
-  const result = await runRepositoryMigrator(databaseUrl);
-  assert.equal(result.code, 0);
-  assert.equal(result.timedOut, false);
-}
-
-async function runRepositoryMigrator(databaseUrl) {
-  const env = { ...process.env };
-  for (const key of [
-    "DATABASE_URL",
-    "DATABASE_EXPECTED_RUNTIME_ROLE",
-    "DATABASE_MIGRATIONS_CONFIRM",
-    "PGDATABASE",
-    "PGHOST",
-    "PGPASSWORD",
-    "PGPORT",
-    "PGSERVICE",
-    "PGSERVICEFILE",
-    "PGUSER",
-  ]) {
-    delete env[key];
+export async function runRoleCollapseProofs({
+  migrationDatabaseUrl,
+  concurrencyDatabaseUrl,
+  migrateTo0009Impl,
+  migrateToLatestImpl,
+  runRepositoryMigratorImpl,
+} = {}) {
+  if (
+    typeof migrateTo0009Impl !== "function" ||
+    typeof migrateToLatestImpl !== "function" ||
+    typeof runRepositoryMigratorImpl !== "function"
+  ) {
+    throw new Error();
   }
-  env.DATABASE_OPERATOR_URL = databaseUrl;
-  env.DATABASE_MIGRATIONS_CONFIRM = "apply-reviewed-migrations";
-  env.DATABASE_SSL_MODE = "disable";
-  env.NODE_ENV = "test";
-
-  return new Promise((resolvePromise, rejectPromise) => {
-    let timedOut = false;
-    const child = spawn(process.execPath, ["scripts/db-migrate.mjs"], {
-      cwd: rootDir,
-      env,
-      stdio: "ignore",
-      windowsHide: true,
-    });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill();
-    }, 45_000);
-
-    child.once("error", (error) => {
-      clearTimeout(timer);
-      rejectPromise(error);
-    });
-    child.once("close", (code) => {
-      clearTimeout(timer);
-      resolvePromise({ code, timedOut });
-    });
+  const startedAt = Date.now();
+  await proveRoleCollapseMigration({
+    databaseUrl: migrationDatabaseUrl,
+    migrateTo0009Impl,
+    runRepositoryMigratorImpl,
   });
+  await proveRoleCollapseConcurrency({
+    databaseUrl: concurrencyDatabaseUrl,
+    migrateToLatestImpl,
+  });
+  return {
+    cancelled: 0,
+    durationMs: Date.now() - startedAt,
+    failed: 0,
+    passed: 2,
+    skipped: 0,
+    suites: 0,
+    todo: 0,
+    total: 2,
+  };
+}
+
+if (isStandalone) {
+  test("PostgreSQL 17 proves the real 0009 to 0010 role-collapse migration", {
+    skip: "requires runner-owned fixture migration orchestration",
+  }, () => {});
+
+  test("PostgreSQL 17 proves concurrent last-admin protection and FOR UPDATE waiting", {
+    skip: "requires runner-owned fixture migration orchestration",
+  }, () => {});
 }
 
 async function seedLegacyState(pool) {

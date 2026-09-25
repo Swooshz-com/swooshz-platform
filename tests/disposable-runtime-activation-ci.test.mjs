@@ -1528,6 +1528,18 @@ test("activation runner source launches only the contracted child and clears cre
   assert.match(source, /RUNTIME_ACTIVATION_TEST_RUNTIME_PASSWORD/u);
   assert.match(source, /RUNTIME_ACTIVATION_TEST_OPERATOR_PASSWORD/u);
   assert.doesNotMatch(source, /\bPGPASSWORD\s*:/u);
+  const migrationCall = source.match(
+    /withDisposablePostgresFixtureMigration\(\s*\{[\s\S]*?\n\s*\},\s*async \(\) => \{\},\s*\)/u,
+  )?.[0];
+  assert.ok(migrationCall);
+  assert.match(
+    migrationCall,
+    /connectionString,\s*connectionPassword: operatorPassword,/u,
+  );
+  assert.doesNotMatch(
+    migrationCall,
+    /operatorPassword@|process\.env|PGPASSWORD/u,
+  );
   assert.doesNotMatch(source, /buildLoopbackUrl\("platform_app"/u);
   assert.match(source, /buildLoopbackUrl\("cloud_admin"/u);
   assert.match(source, /expectedUser: "cloud_admin"/u);

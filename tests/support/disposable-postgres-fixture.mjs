@@ -1,3 +1,5 @@
+import { drizzle } from "drizzle-orm/node-postgres";
+import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Client, Pool } from "pg";
 
 import {
@@ -18,6 +20,7 @@ const databaseCreationTargetBrand = Symbol("database-creation-target");
 const configuredAggregateBrand = Symbol("configured-aggregate");
 const configuredTargetBrand = Symbol("configured-target");
 const mutationTargetBrand = Symbol("mutation-target");
+const migrationAuthorityBrand = Symbol("migration-authority");
 const managedTransportValues = new WeakMap();
 const parsedUrlValues = new WeakMap();
 const constructionAggregateValues = new WeakMap();
@@ -26,6 +29,154 @@ const databaseCreationTargetValues = new WeakMap();
 const configuredAggregateValues = new WeakMap();
 const configuredTargetValues = new WeakMap();
 const mutationTargetValues = new WeakMap();
+const migrationAuthorityValues = new WeakMap();
+const disposablePostgresReceiptOperationKeys = new WeakMap();
+const disposablePostgresReceipts = new WeakMap();
+const completedDisposablePostgresReceiptOperations = new WeakMap();
+let activeDisposablePostgresReceiptInvocation = null;
+
+function installDisposablePostgresAuthoritySetReceipt() {
+  Object.defineProperty(migrationAuthorityValues, "set", {
+    configurable: true,
+    value(authority, authorityRecord) {
+      const invocation = activeDisposablePostgresReceiptInvocation;
+      if (this === migrationAuthorityValues && invocation?.active && !invocation.authorityRevoked &&
+          authorityRecord?.authority === authority && authorityRecord?.brand === migrationAuthorityBrand) {
+        issueDisposablePostgresReceipt(
+          invocation.invocationKey,
+          authority,
+          authorityRecord,
+          "authority",
+          "migration-authority-allocation",
+        );
+      }
+      return WeakMap.prototype.set.call(this, authority, authorityRecord);
+    },
+  });
+}
+export function beginDisposablePostgresReceiptInvocation(operation) {
+  if (typeof operation !== "function" ||
+      completedDisposablePostgresReceiptOperations.get(operation) === true ||
+      activeDisposablePostgresReceiptInvocation !== null) return false;
+  const invocationKey = Object.freeze(Object.create(null));
+  const invocation = {
+    operation,
+    invocationKey,
+    active: true,
+    authorityRevoked: false,
+    identities: new Set(),
+  };
+  disposablePostgresReceiptOperationKeys.set(operation, invocationKey);
+  try {
+    installDisposablePostgresAuthoritySetReceipt();
+  } catch {
+    disposablePostgresReceiptOperationKeys.delete(operation);
+    return false;
+  }
+  activeDisposablePostgresReceiptInvocation = invocation;
+  return true;
+}
+
+function issueDisposablePostgresReceipt(
+  invocationKey,
+  identity,
+  identityRecord,
+  kind,
+  allocationSite,
+) {
+  const invocation = activeDisposablePostgresReceiptInvocation;
+  if (!invocation || !invocation.active ||
+      invocation.authorityRevoked ||
+      invocation.invocationKey !== invocationKey ||
+      !["authority", "fresh-error"].includes(kind) ||
+      (kind === "authority" && allocationSite !== "migration-authority-allocation") ||
+      (kind === "fresh-error" && allocationSite !== "replacement-admission-error-allocation") ||
+      (typeof identity !== "object" && typeof identity !== "function") ||
+      identity === null ||
+      disposablePostgresReceipts.has(identity)) return undefined;
+  const receipt = {
+    invocation,
+    invocationKey,
+    identityRecord,
+    kind,
+    allocationSite,
+  };
+  disposablePostgresReceipts.set(identity, receipt);
+  invocation.identities.add(identity);
+  return undefined;
+}
+
+function invalidateDisposablePostgresReceiptInvocation(invocationKey) {
+  const invocation = activeDisposablePostgresReceiptInvocation;
+  if (!invocation || !invocation.active ||
+      invocation.invocationKey !== invocationKey) return undefined;
+  invocation.authorityRevoked = true;
+  for (const identity of invocation.identities) {
+    const receipt = disposablePostgresReceipts.get(identity);
+    if (receipt?.invocation === invocation && receipt.kind === "authority") {
+      disposablePostgresReceipts.delete(identity);
+      invocation.identities.delete(identity);
+    }
+  }
+  return undefined;
+}
+
+export function consumeDisposablePostgresAuthorityReceipt(
+  operation,
+  authorityToken,
+  authorityRecord,
+) {
+  return consumeDisposablePostgresReceipt(
+    "authority",
+    operation,
+    authorityToken,
+    authorityRecord,
+  );
+}
+
+export function consumeDisposablePostgresFreshErrorReceipt(operation, error) {
+  return consumeDisposablePostgresReceipt("fresh-error", operation, error, error);
+}
+
+function consumeDisposablePostgresReceipt(kind, operation, identity, identityRecord) {
+  if ((typeof identity !== "object" && typeof identity !== "function") || identity === null) {
+    return false;
+  }
+  const receipt = disposablePostgresReceipts.get(identity);
+  if (!receipt) return false;
+  disposablePostgresReceipts.delete(identity);
+  receipt.invocation.identities.delete(identity);
+  const invocation = activeDisposablePostgresReceiptInvocation;
+  if (!invocation || !invocation.active ||
+      receipt.invocation !== invocation ||
+      invocation.operation !== operation ||
+      invocation.invocationKey !== receipt.invocationKey ||
+      disposablePostgresReceiptOperationKeys.get(operation) !== receipt.invocationKey ||
+      receipt.kind !== kind ||
+      receipt.identityRecord !== identityRecord) return false;
+  if (kind === "authority" && invocation.authorityRevoked) return false;
+  return true;
+}
+
+export function finishDisposablePostgresReceiptInvocation(operation) {
+  const invocationKey = disposablePostgresReceiptOperationKeys.get(operation);
+  const invocation = activeDisposablePostgresReceiptInvocation;
+  if (!invocationKey) return;
+  if (invocation?.operation === operation &&
+      invocation.invocationKey === invocationKey) {
+    invocation.active = false;
+    for (const identity of invocation.identities) {
+      disposablePostgresReceipts.delete(identity);
+    }
+    invocation.identities.clear();
+    if (activeDisposablePostgresReceiptInvocation === invocation) {
+      activeDisposablePostgresReceiptInvocation = null;
+      delete migrationAuthorityValues.set;
+    }
+  }
+  disposablePostgresReceiptOperationKeys.delete(operation);
+  completedDisposablePostgresReceiptOperations.set(operation, true);
+}
 
 const mutationKeyword =
   /\b(?:grant|revoke|alter|create|drop|truncate|insert|update|delete|merge|copy|vacuum|refresh)\b/iu;
@@ -95,6 +246,178 @@ export class DisposablePostgresFixtureAdmissionError extends Error {
       this.stage = stage;
     }
   }
+}
+
+export async function withDisposablePostgresFixtureMigration(
+  input,
+  operation,
+) {
+  if (typeof operation !== "function") {
+    throw new DisposablePostgresFixtureAdmissionError();
+  }
+  let authority;
+  let pool;
+  try {
+    const connectionPassword = readMigrationConnectionPassword(input);
+    const target = normalizeMigrationTarget(input);
+    const poolOptions = {
+      host: target.hostname,
+      port: Number(target.port),
+      user: target.expectedUser,
+      database: target.expectedDatabase,
+      max: 1,
+    };
+    if (connectionPassword !== undefined) {
+      poolOptions.password = connectionPassword;
+    }
+    pool = new Pool(poolOptions);
+    const identity = await readMigrationAuthorityIdentity(pool, target);
+    authority = Object.freeze({});
+    migrationAuthorityValues.set(authority, {
+      authority,
+      brand: migrationAuthorityBrand,
+      database: target.expectedDatabase,
+      user: target.expectedUser,
+      clusterFingerprint: identity.catalogFingerprint,
+      lifecycleFingerprint: identity.lifecycleFingerprint,
+      migrationsFolder: target.migrationsFolder,
+      phase: target.phase,
+      pool,
+      valid: true,
+    });
+    await runScopedFixtureMigration(authority, pool, target.migrationsFolder, target);
+    return await operation();
+  } catch (error) {
+    if (error instanceof DisposablePostgresFixtureAdmissionError) throw error;
+    const freshError = new DisposablePostgresFixtureAdmissionError();
+    issueDisposablePostgresReceipt(
+      disposablePostgresReceiptOperationKeys.get(operation),
+      freshError,
+      freshError,
+      "fresh-error",
+      "replacement-admission-error-allocation",
+    );
+    throw freshError;
+  } finally {
+    if (authority) {
+      const value = migrationAuthorityValues.get(authority);
+      if (value) {
+        value.valid = false;
+        const invocationKey = disposablePostgresReceiptOperationKeys.get(operation);
+        if (invocationKey) invalidateDisposablePostgresReceiptInvocation(invocationKey);
+      }
+    }
+    if (pool) await pool.end().catch(() => {});
+  }
+}
+
+function normalizeMigrationTarget(input) {
+  if (!input || typeof input !== "object") throw new Error();
+  const allowedKeys = new Set([
+    "connectionString",
+    "connectionPassword",
+    "expectedDatabase",
+    "expectedUser",
+    "migrationsFolder",
+    "phase",
+  ]);
+  if (Object.keys(input).some((key) => !allowedKeys.has(key))) throw new Error();
+  const expectedDatabase = input.expectedDatabase;
+  const expectedUser = input.expectedUser ?? "cloud_admin";
+  const phase = input.phase ?? "initialization";
+  if (
+    typeof input.connectionString !== "string" ||
+    typeof input.migrationsFolder !== "string" ||
+    input.migrationsFolder.length === 0 ||
+    phase !== "initialization" ||
+    !safeIdentifier.test(expectedDatabase) ||
+    !safeIdentifier.test(expectedUser)
+  ) throw new Error();
+
+  let parsed;
+  try {
+    parsed = new URL(input.connectionString);
+  } catch {
+    throw new Error();
+  }
+  const hostname = parsed.hostname.replace(/^\[|\]$/gu, "").toLowerCase();
+  const port = parsed.port;
+  const username = decodeURIComponent(parsed.username);
+  const database = decodeURIComponent(parsed.pathname.slice(1));
+  if (
+    !["postgres:", "postgresql:"].includes(parsed.protocol) ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash ||
+    !loopbackHosts.has(hostname) ||
+    !port ||
+    !validPort(port) ||
+    username !== expectedUser ||
+    database !== expectedDatabase ||
+    parsed.pathname !== `/${database}` ||
+    !safeIdentifier.test(database)
+  ) throw new Error();
+  return Object.freeze({
+    connectionString: input.connectionString,
+    expectedDatabase,
+    expectedUser,
+    migrationsFolder: input.migrationsFolder,
+    phase,
+    hostname,
+    port,
+  });
+}
+
+function readMigrationConnectionPassword(input) {
+  if (!input || typeof input !== "object") throw new Error();
+  const password = input.connectionPassword;
+  if (
+    password !== undefined &&
+    (typeof password !== "string" || password.trim().length === 0)
+  ) {
+    throw new Error();
+  }
+  return password;
+}
+
+async function readMigrationAuthorityIdentity(pool, target) {
+  const result = await pool.query(identitySql, [target.expectedDatabase, target.expectedUser]);
+  const row = result?.rows?.[0];
+  if (
+    result?.rows?.length !== 1 ||
+    row?.database_matches !== true ||
+    row?.user_matches !== true ||
+    row?.postgres17 !== true ||
+    row?.non_recovery !== true ||
+    typeof row.catalog_fingerprint !== "string" ||
+    !/^\d+$/u.test(row.catalog_fingerprint) ||
+    typeof row.lifecycle_fingerprint !== "string" ||
+    !/^\d+$/u.test(row.lifecycle_fingerprint)
+  ) throw new Error();
+  return Object.freeze({
+    catalogFingerprint: row.catalog_fingerprint,
+    lifecycleFingerprint: row.lifecycle_fingerprint,
+  });
+}
+
+async function runScopedFixtureMigration(authority, pool, migrationsFolder, target) {
+  const value = migrationAuthorityValues.get(authority);
+  if (
+    !value ||
+    value.brand !== migrationAuthorityBrand ||
+    value.authority !== authority ||
+    !value.valid ||
+    value.pool !== pool ||
+    value.migrationsFolder !== migrationsFolder ||
+    value.database !== target.expectedDatabase ||
+    value.user !== target.expectedUser
+  ) throw new Error();
+  const identity = await readMigrationAuthorityIdentity(pool, target);
+  if (
+    identity.catalogFingerprint !== value.clusterFingerprint ||
+    identity.lifecycleFingerprint !== value.lifecycleFingerprint
+  ) throw new Error();
+  await migrate(drizzle(pool), { migrationsFolder });
 }
 
 export function parseDisposablePostgresUrl(
