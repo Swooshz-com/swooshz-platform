@@ -717,6 +717,20 @@ function buildRun657RepresentationMatrix(source, protocolPreserving = false) {
 }
 
 function run657MatrixOracle(variant) {
+  const forbiddenCleanPublicReturn = variant.fact === "clean" &&
+    variant.observation === "retained" &&
+    ["closure", "WeakMap", "class", "callback", "functionReturn"].includes(variant.representation);
+  if (forbiddenCleanPublicReturn) {
+    return Object.freeze({
+      ok: false,
+      code: "SSC_SECRET_FLOW_DENIED",
+      detector: "PUBLIC_RETURN",
+      obligation: "CF_PUBLIC_ESCAPE",
+      violations: Object.freeze(variant.protocolPreserving
+        ? ["CF_PUBLIC_ESCAPE"]
+        : ["AP_OPERATION", "CF_PUBLIC_ESCAPE"]),
+    });
+  }
   if (variant.protocolPreserving && variant.fact === "clean") {
     return Object.freeze({ ok: true });
   }
@@ -871,7 +885,7 @@ test("RUN659_PROTOCOL_PRESERVING_REPRESENTATION_MATRIX", async () => {
   const frozen = await readFrozenMigrationClosureSource();
   assert.deepEqual(
     await assertRun657RepresentationMatrix(frozen.source, true),
-    { count: 110, passes: 22, failures: 88 },
+    { count: 110, passes: 17, failures: 93 },
   );
 });
 

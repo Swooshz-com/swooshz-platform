@@ -523,6 +523,36 @@ function containsPublicBoundaryValue(item, seen = new Set(), publicFunctionWitne
   ].some((child) => containsPublicBoundaryValue(child, seen, publicFunctionWitnesses));
 }
 
+const PUBLIC_DATA_KINDS = new Set([
+  "primitive",
+  "string",
+  "symbol",
+  "object",
+  "array",
+  "set",
+  "map",
+]);
+
+function hasForbiddenPublicDataShape(item, seen = new Set(), allowOperationResult = false) {
+  // The operation-result sentinel is a caller-owned pass-through only at the root.
+  if (item?.kind === "operation-result") return !allowOperationResult;
+  if (item === null || item === undefined) return false;
+  if (typeof item !== "object" || !PUBLIC_DATA_KINDS.has(item.kind)) return true;
+  if (seen.has(item)) return false;
+  seen.add(item);
+  if (item.fn || item.closure || item.bound || item.classRef || item.baseClass ||
+      item.instanceMethods?.size) return true;
+  const children = [
+    ...(item.props?.values?.() ?? []),
+    ...(item.elements ?? []),
+    ...(item.map?.keys?.() ?? []),
+    ...(item.map?.values?.() ?? []),
+    ...(item.methods?.values?.() ?? []),
+    ...(item.refs ?? []),
+  ];
+  return children.some((child) => hasForbiddenPublicDataShape(child, seen));
+}
+
 function sameIdentitySet(left, right) {
   const actual = left instanceof Set ? left : new Set(left ?? []);
   const expected = right instanceof Set ? right : new Set(right ?? []);
@@ -1885,6 +1915,11 @@ class ClosureAnalyzer {
       return sensitiveCause(thrown) || (thrownRisk.caps.size > 0 && !thrownRisk.caps.has("CATCH_ERROR"));
     });
     if (publicThrown) terminalFailures.push(new StaticFailure("SSC_PUBLIC_SURFACE", "PUBLIC_CAUSE", "CF_PUBLIC_THROW"));
+    const forbiddenPublicReturnShape = rootSuccessAlternatives.some((outcome) =>
+      hasForbiddenPublicDataShape(outcome.value ?? outcome.result, new Set(), true));
+    if (forbiddenPublicReturnShape) {
+      terminalFailures.push(new StaticFailure(SAFE.flow, "PUBLIC_RETURN", "CF_PUBLIC_ESCAPE"));
+    }
     if (rootResult.kind === "unknown" ||
         rootResult.kind === "input" ||
         rootResult.kind === "authority-token" ||
@@ -1903,7 +1938,8 @@ class ClosureAnalyzer {
       const risk = summarizeRisk(item);
       const leaks = item?.kind === "unknown" || item?.kind === "input" || item?.kind === "authority-token" ||
         (risk.taint & (Taint.CREDENTIAL | Taint.SENSITIVE_DIAGNOSTIC | Taint.MAYBE_SENSITIVE)) !== 0 ||
-        risk.caps.size > 0 || containsPublicBoundaryValue(item, new Set(), this.publicEscapeFunctionIds);
+        risk.caps.size > 0 || containsPublicBoundaryValue(item, new Set(), this.publicEscapeFunctionIds) ||
+        hasForbiddenPublicDataShape(item, new Set(), true);
       const range = outcome.context?.operationRange ?? { min: 0, max: 0 };
       return leaks && (range.min !== 1 || range.max !== 1);
     });
