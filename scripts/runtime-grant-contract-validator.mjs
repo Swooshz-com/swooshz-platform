@@ -102,7 +102,7 @@ const databaseSourceShapeAuthority = new Map([
   ],
   [
     "src/db/repositories.ts",
-    "79329b71a434e5e7b78b4e7edd274a4d42b9d60374bfbc9c575ee15820aba835",
+    "a32253149f1f960a166a1c21a0f14fc68f0725b30b910586bf0fd14ffe4e7dd0",
   ],
   [
     "src/db/runtime-posture.ts",
@@ -253,6 +253,15 @@ const builtInImportAuthorityRecords = [
       namedBuiltInBinding("promisify"),
     ],
   }),
+  builtInImportAuthorityRecord({
+    sourcePath: "src/db/repositories.ts",
+    moduleName: "node:util",
+    capability: "non_network_runtime_support",
+    bindings: [
+      namedBuiltInBinding("types", "nodeUtilTypes"),
+    ],
+    sourceShapeDigest: null,
+  }),
 ];
 
 const builtInImportAuthority = new Map(
@@ -394,7 +403,12 @@ const databaseExternalImportAuthority = new Set([
   databaseExternalImportKey(
     "src/db/repositories.ts",
     "drizzle-orm",
-    ["and", "eq", "isNull"],
+    ["DrizzleQueryError", "and", "eq", "isNull"],
+  ),
+  databaseExternalImportKey(
+    "src/db/repositories.ts",
+    "pg",
+    ["DatabaseError"],
   ),
   databaseExternalImportKey(
     "src/db/schema.ts",

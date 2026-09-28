@@ -107,7 +107,7 @@ export const MIGRATION_CLOSURE_RESULT_INTERFACE = Object.freeze({
 });
 
 const HELPER_RELATIVE = "tests/support/disposable-postgres-fixture.mjs";
-const FROZEN_HELPER_BLOB = "f065fe714d560e72578184e4efc02c6e2a5efe72";
+const FROZEN_HELPER_BLOB = "c7a498e753a28a41ff1202d87486b0dafba3298e";
 const ROOT_EXPORT = "withDisposablePostgresFixtureMigration";
 
 const IMPORT_TABLE = Object.freeze({

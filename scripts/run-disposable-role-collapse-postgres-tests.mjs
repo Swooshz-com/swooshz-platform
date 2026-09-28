@@ -62,7 +62,7 @@ export async function run({ spawnImpl = spawn } = {}) {
         "POSTGRES_DB=postgres",
         "--publish",
         "127.0.0.1::5432",
-        "postgres:17",
+        "postgres@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f",
       ],
       rootDir,
     );

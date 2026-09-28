@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import ts from "typescript";
+
 import {
   RUNTIME_TABLE_GRANT_CONTRACT,
   RUNTIME_TABLE_GRANT_DIGEST,
@@ -203,6 +205,327 @@ test("production database access inventory is recursive, explicit, and closed", 
     ["src/runtime/node-bootstrap.ts", "operational_control_plane"],
     ["src/runtime/platform-runtime-dependencies.ts", "runtime_data_adapter"],
   ]);
+});
+
+const run701RepositoryPath = "src/db/repositories.ts";
+const run701RepositoryDigest =
+  "a32253149f1f960a166a1c21a0f14fc68f0725b30b910586bf0fd14ffe4e7dd0";
+const run701PriorRepositoryDigest =
+  "79329b71a434e5e7b78b4e7edd274a4d42b9d60374bfbc9c575ee15820aba835";
+
+function run701CountOccurrences(source, fragment) {
+  return source.split(fragment).length - 1;
+}
+
+function run701RepositoryImports(source) {
+  const parsed = ts.createSourceFile(
+    run701RepositoryPath,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const relevantModules = new Set(["drizzle-orm", "node:util", "pg"]);
+  return parsed.statements
+    .filter(ts.isImportDeclaration)
+    .filter((statement) => relevantModules.has(statement.moduleSpecifier.text))
+    .map((statement) => {
+      const clause = statement.importClause;
+      const namedBindings = clause?.namedBindings;
+      return {
+        sourcePath: run701RepositoryPath,
+        moduleName: statement.moduleSpecifier.text,
+        importKind: "import",
+        typeOnly: clause?.isTypeOnly ?? false,
+        defaultBinding: clause?.name?.text ?? null,
+        bindingForm: !namedBindings
+          ? "none"
+          : ts.isNamedImports(namedBindings)
+            ? "named"
+            : "namespace",
+        bindings:
+          namedBindings && ts.isNamedImports(namedBindings)
+            ? namedBindings.elements.map((binding) => ({
+                kind: binding.isTypeOnly ? "type" : "named",
+                exported: (binding.propertyName ?? binding.name).text,
+                local: binding.name.text,
+              }))
+            : [],
+      };
+    });
+}
+
+function run701PriorRepositorySource(source) {
+  const start = source.indexOf("const isProxy = nodeUtilTypes.isProxy;");
+  const end = source.indexOf("function userToValues(", start);
+  assert.ok(start >= 0 && end > start);
+  const priorClassifier = [
+    "function isSerializationFailure(error: unknown): boolean {",
+    "  return Boolean(",
+    "    error &&",
+    '      typeof error === "object" &&',
+    '      "code" in error &&',
+    '      (error as { code?: unknown }).code === "40001",',
+    "  );",
+    "}",
+    "",
+    "",
+  ].join("\n");
+  const currentImports = [
+    'import { DrizzleQueryError, and, eq, isNull } from "drizzle-orm";',
+    'import { types as nodeUtilTypes } from "node:util";',
+    'import { DatabaseError } from "pg";',
+  ].join("\n");
+  assert.equal(run701CountOccurrences(source, currentImports), 1);
+  return (
+    source.slice(0, start) +
+    priorClassifier +
+    source.slice(end)
+  ).replace(currentImports, 'import { and, eq, isNull } from "drizzle-orm";');
+}
+
+async function run701ImportAuthorityWithoutRepositoryDigest() {
+  const validator = await readFile(
+    "scripts/runtime-grant-contract-validator.mjs",
+    "utf8",
+  );
+  const admitted = '    "src/db/repositories.ts",\n    "' + run701RepositoryDigest + '",';
+  const neutral = '    "src/db/repositories.ts",\n    null,';
+  assert.equal(run701CountOccurrences(validator, admitted), 1);
+  assert.equal(run701CountOccurrences(validator, 'from "typescript";'), 1);
+  assert.equal(
+    run701CountOccurrences(
+      validator,
+      'from "../dist/db/runtime-grant-contract.js";',
+    ),
+    1,
+  );
+  const testOnlySource = validator
+    .replace(admitted, neutral)
+    .replace(
+      'from "typescript";',
+      'from "' + import.meta.resolve("typescript") + '";',
+    )
+    .replace(
+      'from "../dist/db/runtime-grant-contract.js";',
+      'from "' +
+        new URL("../dist/db/runtime-grant-contract.js", import.meta.url).href +
+        '";',
+    );
+  return import(
+    "data:text/javascript;base64," +
+      Buffer.from(testOnlySource, "utf8").toString("base64")
+  );
+}
+
+test("Run-701 repository source and runtime-grant authority are exact", async () => {
+  const source = await readFile(run701RepositoryPath, "utf8");
+  const validator = await readFile(
+    "scripts/runtime-grant-contract-validator.mjs",
+    "utf8",
+  );
+
+  assert.equal(sourceShapeDigest(source), run701RepositoryDigest);
+  assert.deepEqual(run701RepositoryImports(source), [
+    {
+      sourcePath: run701RepositoryPath,
+      moduleName: "drizzle-orm",
+      importKind: "import",
+      typeOnly: false,
+      defaultBinding: null,
+      bindingForm: "named",
+      bindings: [
+        { kind: "named", exported: "DrizzleQueryError", local: "DrizzleQueryError" },
+        { kind: "named", exported: "and", local: "and" },
+        { kind: "named", exported: "eq", local: "eq" },
+        { kind: "named", exported: "isNull", local: "isNull" },
+      ],
+    },
+    {
+      sourcePath: run701RepositoryPath,
+      moduleName: "node:util",
+      importKind: "import",
+      typeOnly: false,
+      defaultBinding: null,
+      bindingForm: "named",
+      bindings: [{ kind: "named", exported: "types", local: "nodeUtilTypes" }],
+    },
+    {
+      sourcePath: run701RepositoryPath,
+      moduleName: "pg",
+      importKind: "import",
+      typeOnly: false,
+      defaultBinding: null,
+      bindingForm: "named",
+      bindings: [
+        { kind: "named", exported: "DatabaseError", local: "DatabaseError" },
+      ],
+    },
+  ]);
+
+  const nodeAuthority = [
+    "  builtInImportAuthorityRecord({",
+    '    sourcePath: "src/db/repositories.ts",',
+    '    moduleName: "node:util",',
+    '    capability: "non_network_runtime_support",',
+    "    bindings: [",
+    '      namedBuiltInBinding("types", "nodeUtilTypes"),',
+    "    ],",
+    "    sourceShapeDigest: null,",
+    "  }),",
+  ].join("\n");
+  const drizzleAuthority = [
+    "  databaseExternalImportKey(",
+    '    "src/db/repositories.ts",',
+    '    "drizzle-orm",',
+    '    ["DrizzleQueryError", "and", "eq", "isNull"],',
+    "  ),",
+  ].join("\n");
+  const pgAuthority = [
+    "  databaseExternalImportKey(",
+    '    "src/db/repositories.ts",',
+    '    "pg",',
+    '    ["DatabaseError"],',
+    "  ),",
+  ].join("\n");
+  assert.equal(run701CountOccurrences(validator, nodeAuthority), 1);
+  assert.equal(run701CountOccurrences(validator, drizzleAuthority), 1);
+  assert.equal(run701CountOccurrences(validator, pgAuthority), 1);
+  assert.equal(
+    (validator.match(/databaseExternalImportKey\(\s*"src\/db\/repositories\.ts"/gu) ?? [])
+      .length,
+    2,
+  );
+
+  const inventory = await inspectProductionDatabaseAccessInventory();
+  assert.equal(inventory.length, 13);
+  const operations = await extractProductionAdapterOperations();
+  assert.equal(operations.length, 60);
+  assert.equal(RUNTIME_TABLE_GRANT_CONTRACT.length, 39);
+  assert.equal(
+    RUNTIME_TABLE_GRANT_DIGEST,
+    "9474972215869ec9b194f537c3b2400d8701aa8f00494bcfc0ede849dd94bf65",
+  );
+});
+
+test("Run-701 source digest admits formatting and rejects the prior source and token drift", async () => {
+  const source = await readFile(run701RepositoryPath, "utf8");
+  const accepted = [
+    ["comment-only", "// Run-701 comment-only control\n" + source],
+    ["whitespace-only", " \n\n" + source],
+    ["LF/CRLF equivalent", source.replace(/\n/gu, "\r\n")],
+  ];
+  for (const [name, candidate] of accepted) {
+    assert.equal(sourceShapeDigest(candidate), run701RepositoryDigest, name);
+    await assert.doesNotReject(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([[run701RepositoryPath, candidate]]),
+        }),
+      name,
+    );
+  }
+
+  const prior = run701PriorRepositorySource(source);
+  assert.equal(sourceShapeDigest(prior), run701PriorRepositoryDigest);
+  const tokenDrift = source + "\nconst run701UnapprovedSourceToken = true;\n";
+  assert.notEqual(sourceShapeDigest(tokenDrift), run701RepositoryDigest);
+  for (const [name, candidate] of [
+    ["prior repositories.ts source", prior],
+    ["token-level source drift", tokenDrift],
+  ]) {
+    await assert.rejects(
+      () =>
+        inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([[run701RepositoryPath, candidate]]),
+        }),
+      contractError("runtime_grant_inventory_unclassified"),
+      name,
+    );
+  }
+});
+
+test("Run-701 import authority rejects drift after the source-digest gate is isolated", async () => {
+  const source = await readFile(run701RepositoryPath, "utf8");
+  const isolated = await run701ImportAuthorityWithoutRepositoryDigest();
+  const sourceOverrides = (candidate) =>
+    new Map([[run701RepositoryPath, candidate]]);
+  await assert.doesNotReject(() =>
+    isolated.inspectProductionDatabaseAccessInventory({
+      sourceOverrides: sourceOverrides(source),
+    }),
+  );
+  await assert.doesNotReject(
+    () =>
+      isolated.inspectProductionDatabaseAccessInventory({
+        sourceOverrides: sourceOverrides(
+          source + "\nconst run701DigestBypassControl = true;\n",
+        ),
+      }),
+    "test-only validator must reach import checks without the repository digest",
+  );
+
+  const drizzleImport =
+    'import { DrizzleQueryError, and, eq, isNull } from "drizzle-orm";';
+  const utilImport = 'import { types as nodeUtilTypes } from "node:util";';
+  const pgImport = 'import { DatabaseError } from "pg";';
+  const edit = (before, after) => {
+    assert.equal(run701CountOccurrences(source, before), 1);
+    return source.replace(before, after);
+  };
+  const rejected = [
+    ["extra pg constructor", edit(pgImport, 'import { DatabaseError, Pool } from "pg";')],
+    ["extra Drizzle symbol", edit(drizzleImport, 'import { DrizzleQueryError, and, eq, isNull, sql } from "drizzle-orm";')],
+    ["renamed Drizzle binding", edit(drizzleImport, 'import { DrizzleQueryError as QueryError, and, eq, isNull } from "drizzle-orm";')],
+    ["renamed pg binding", edit(pgImport, 'import { DatabaseError as PgError } from "pg";')],
+    ["renamed Node binding", edit(utilImport, 'import { types as utilTypes } from "node:util";')],
+    ["missing Drizzle import", edit(drizzleImport, "")],
+    ["missing pg import", edit(pgImport, "")],
+    ["missing Node import", edit(utilImport, "")],
+    ["node:util/types", edit(utilImport, 'import { types as nodeUtilTypes } from "node:util/types";')],
+    ["bare util", edit(utilImport, 'import { types as nodeUtilTypes } from "util";')],
+    ["pg subpath", edit(pgImport, 'import { DatabaseError } from "pg/lib";')],
+    ["namespace import", edit(utilImport, 'import * as nodeUtilTypes from "node:util";')],
+    ["default import", edit(utilImport, 'import nodeUtilTypes from "node:util";')],
+    ["namespace pg import", edit(pgImport, 'import * as pg from "pg";')],
+    ["default Drizzle import", edit(drizzleImport, 'import drizzle from "drizzle-orm";')],
+    ["extra Node binding", edit(utilImport, 'import { types as nodeUtilTypes, promisify } from "node:util";')],
+    ["dynamic loading", source + '\nvoid import("pg");\n'],
+    ["re-export", source + '\nexport { types } from "node:util";\n'],
+  ];
+  for (const [name, candidate] of rejected) {
+    assert.notEqual(candidate, source, name);
+    await assert.rejects(
+      () =>
+        isolated.inspectProductionDatabaseAccessInventory({
+          sourceOverrides: sourceOverrides(candidate),
+        }),
+      contractError("runtime_grant_inventory_unclassified"),
+      name,
+    );
+  }
+
+  for (const [name, path, candidate] of [
+    [
+      "pg binding from unrelated path",
+      "src/platform/run701-unrelated-pg.ts",
+      'import { DatabaseError } from "pg";\nexport const unrelated = DatabaseError;\n',
+    ],
+    [
+      "Node binding from unrelated path",
+      "src/platform/run701-unrelated-util.ts",
+      'import { types as nodeUtilTypes } from "node:util";\nexport const unrelated = nodeUtilTypes;\n',
+    ],
+  ]) {
+    await assert.rejects(
+      () =>
+        isolated.inspectProductionDatabaseAccessInventory({
+          sourceOverrides: new Map([[path, candidate]]),
+        }),
+      contractError("runtime_grant_inventory_unclassified"),
+      name,
+    );
+  }
 });
 
 test("durable database operations are exact operator-only source authority", async () => {

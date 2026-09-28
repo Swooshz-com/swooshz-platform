@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { DrizzleQueryError } from "drizzle-orm";
+import { DatabaseError } from "pg";
 
 import * as schema from "../dist/db/schema.js";
 import {
@@ -714,81 +717,196 @@ test("Drizzle repositories expose a transaction runner for admin mutations", asy
   assert.deepEqual(transactionConfig, { isolationLevel: "serializable" });
 });
 
-test("Drizzle admin transactions replay the whole operation after SQLSTATE 40001", async () => {
-  const fakeDb = createFakeDrizzleDb();
-  let transactionAttempts = 0;
-  let operationCalls = 0;
-  fakeDb.transaction = async (operation, config) => {
-    transactionAttempts += 1;
-    assert.deepEqual(config, { isolationLevel: "serializable" });
-    const result = await operation(fakeDb);
-    if (transactionAttempts === 1) {
-      const error = new Error("synthetic serialization failure");
-      error.code = "40001";
-      throw error;
-    }
-    return result;
-  };
+test("Drizzle admin transactions admit only direct pg or one ESM Drizzle 40001 signal", async () => {
+  const directSerializationError = createPgDatabaseError("40001");
+  const wrappedSerializationError = new DrizzleQueryError(
+    "delete from memberships",
+    [],
+    directSerializationError,
+  );
+  const require = createRequire(import.meta.url);
+  const cjsDrizzleQueryError = require("drizzle-orm").DrizzleQueryError;
+  assert.equal(typeof cjsDrizzleQueryError, "function");
+  assert.notEqual(cjsDrizzleQueryError.prototype, DrizzleQueryError.prototype);
+  const cjsWrappedSerializationError = new cjsDrizzleQueryError(
+    "delete from memberships",
+    [],
+    createPgDatabaseError("40001"),
+  );
 
-  const repositories = createDrizzlePlatformRepositories(fakeDb);
-  const result = await repositories.workspaceAdminTransactions.run(async () => {
-    operationCalls += 1;
-    return "committed";
+  const directCodeAccessorError = createPgDatabaseError("40001");
+  const causeAccessorError = new DrizzleQueryError(
+    "delete from memberships",
+    [],
+    createPgDatabaseError("40001"),
+  );
+  let prohibitedEffects = 0;
+  Object.defineProperty(directCodeAccessorError, "code", {
+    configurable: true,
+    get() {
+      prohibitedEffects += 1;
+      return "40001";
+    },
+  });
+  Object.defineProperty(causeAccessorError, "cause", {
+    configurable: true,
+    get() {
+      prohibitedEffects += 1;
+      return createPgDatabaseError("40001");
+    },
   });
 
-  assert.equal(result, "committed");
-  assert.equal(transactionAttempts, 2);
-  assert.equal(operationCalls, 2);
-});
+  const proxyHandler = {
+    get() {
+      prohibitedEffects += 1;
+      throw new Error("proxy get trap executed");
+    },
+    getOwnPropertyDescriptor() {
+      prohibitedEffects += 1;
+      throw new Error("proxy descriptor trap executed");
+    },
+    getPrototypeOf() {
+      prohibitedEffects += 1;
+      throw new Error("proxy prototype trap executed");
+    },
+  };
+  const proxiedSerializationError = new Proxy(
+    createPgDatabaseError("40001"),
+    proxyHandler,
+  );
+  const revokedProxy = Proxy.revocable(
+    createPgDatabaseError("40001"),
+    proxyHandler,
+  );
+  revokedProxy.revoke();
 
-test("Drizzle admin transactions bound SQLSTATE 40001 retries and fail deterministically", async () => {
-  async function runExhaustedSequence() {
-    const fakeDb = createFakeDrizzleDb();
-    const serializationError = (message) => {
-      const error = new Error(message);
-      error.code = "40001";
-      return error;
-    };
-    const errors = [
-      serializationError("serialization failure one"),
-      serializationError("serialization failure two"),
-      serializationError("serialization failure three"),
-    ];
-    let transactionAttempts = 0;
-    let operationCalls = 0;
-    fakeDb.transaction = async (operation, config) => {
-      transactionAttempts += 1;
-      assert.deepEqual(config, { isolationLevel: "serializable" });
-      await operation(fakeDb);
-      throw errors[transactionAttempts - 1];
-    };
+  const selfWrapped = new DrizzleQueryError("delete from memberships", []);
+  Object.defineProperty(selfWrapped, "cause", {
+    configurable: true,
+    value: selfWrapped,
+  });
+  const twoWrapperFirst = new DrizzleQueryError("delete from memberships", []);
+  const twoWrapperSecond = new DrizzleQueryError(
+    "delete from memberships",
+    [],
+    twoWrapperFirst,
+  );
+  Object.defineProperty(twoWrapperFirst, "cause", {
+    configurable: true,
+    value: twoWrapperSecond,
+  });
 
-    const repositories = createDrizzlePlatformRepositories(fakeDb);
-    let error;
-    try {
-      await repositories.workspaceAdminTransactions.run(async () => {
-        operationCalls += 1;
-        return "never committed";
-      });
-      assert.fail("serialization retries unexpectedly committed");
-    } catch (candidate) {
-      error = candidate;
-      assert.equal(candidate, errors[2]);
+  const ordinaryErrorWithCode = new Error("ordinary error");
+  Object.defineProperty(ordinaryErrorWithCode, "code", { value: "40001" });
+  const ordinaryErrorWithPgCause = new Error("ordinary wrapper");
+  Object.defineProperty(ordinaryErrorWithPgCause, "cause", {
+    value: createPgDatabaseError("40001"),
+  });
+
+  const unsupportedDrizzleSubclass = new (class extends DrizzleQueryError {})(
+    "delete from memberships",
+    [],
+    createPgDatabaseError("40001"),
+  );
+  const unsupportedPgSubclass = new (class extends DatabaseError {})(
+    "serialization failure",
+    0,
+    "ErrorResponse",
+  );
+  Object.defineProperty(unsupportedPgSubclass, "code", { value: "40001" });
+
+  const signalCases = [
+    { error: directSerializationError, admitted: true },
+    { error: wrappedSerializationError, admitted: true },
+    { error: createPgDatabaseError("40P01"), admitted: false },
+    { error: { code: "40001" }, admitted: false },
+    { error: ordinaryErrorWithCode, admitted: false },
+    { error: ordinaryErrorWithPgCause, admitted: false },
+    {
+      error: new DrizzleQueryError("delete from memberships", [], {
+        code: "40001",
+      }),
+      admitted: false,
+    },
+    { error: directCodeAccessorError, admitted: false },
+    { error: causeAccessorError, admitted: false },
+    { error: proxiedSerializationError, admitted: false },
+    { error: revokedProxy.proxy, admitted: false },
+    { error: selfWrapped, admitted: false },
+    { error: twoWrapperSecond, admitted: false },
+    { error: cjsWrappedSerializationError, admitted: false },
+    { error: unsupportedDrizzleSubclass, admitted: false },
+    { error: unsupportedPgSubclass, admitted: false },
+  ];
+
+  for (const { error, admitted } of signalCases) {
+    const outcome = await exerciseSerializationRetrySignal(error);
+    if (admitted) {
+      assert.equal(outcome.error, undefined);
+      assert.equal(outcome.result, "committed");
+      assert.equal(outcome.transactionAttempts, 2);
+      assert.equal(outcome.operationCalls, 2);
+      assert.notEqual(
+        outcome.transactionRepositories[0],
+        outcome.transactionRepositories[1],
+      );
+    } else {
+      assert.equal(outcome.error, error);
+      assert.equal(outcome.transactionAttempts, 1);
+      assert.equal(outcome.operationCalls, 1);
     }
-
-    return { error, transactionAttempts, operationCalls };
   }
 
-  const first = await runExhaustedSequence();
-  const second = await runExhaustedSequence();
-  assert.equal(first.error.code, "40001");
-  assert.equal(first.error.message, "serialization failure three");
-  assert.equal(second.error.code, first.error.code);
-  assert.equal(second.error.message, first.error.message);
-  assert.equal(first.transactionAttempts, 3);
-  assert.equal(second.transactionAttempts, 3);
-  assert.equal(first.operationCalls, 3);
-  assert.equal(second.operationCalls, 3);
+  assert.equal(prohibitedEffects, 0);
+});
+
+test("Drizzle admin transactions replay the whole operation and stop after three total attempts", async () => {
+  for (const successAtAttempt of [2, 3]) {
+    const outcome = await exerciseSerializationSequence({
+      failures: Array.from(
+        { length: successAtAttempt - 1 },
+        () => createPgDatabaseError("40001"),
+      ),
+      successAtAttempt,
+    });
+
+    assert.equal(outcome.error, undefined);
+    assert.equal(outcome.result, "committed");
+    assert.equal(outcome.transactionAttempts, successAtAttempt);
+    assert.equal(outcome.operationCalls, successAtAttempt);
+    for (let index = 1; index < successAtAttempt; index += 1) {
+      assert.notEqual(
+        outcome.transactionRepositories[index - 1],
+        outcome.transactionRepositories[index],
+      );
+    }
+  }
+
+  const exhaustionErrors = [
+    createPgDatabaseError("40001"),
+    new DrizzleQueryError(
+      "delete from memberships",
+      [],
+      createPgDatabaseError("40001"),
+    ),
+    createPgDatabaseError("40001"),
+  ];
+  const exhausted = await exerciseSerializationSequence({
+    failures: exhaustionErrors,
+    successAtAttempt: Infinity,
+  });
+
+  assert.equal(exhausted.error, exhaustionErrors[2]);
+  assert.equal(exhausted.transactionAttempts, 3);
+  assert.equal(exhausted.operationCalls, 3);
+  assert.notEqual(
+    exhausted.transactionRepositories[0],
+    exhausted.transactionRepositories[1],
+  );
+  assert.notEqual(
+    exhausted.transactionRepositories[1],
+    exhausted.transactionRepositories[2],
+  );
 });
 
 test("pure domain and platform port modules do not import database adapter details", async () => {
@@ -811,6 +929,96 @@ test("pure domain and platform port modules do not import database adapter detai
     assert.doesNotMatch(contents, /migrations?/i);
   }
 });
+
+async function exerciseSerializationRetrySignal(error) {
+  const fakeDb = createFakeDrizzleDb();
+  let transactionAttempts = 0;
+  let operationCalls = 0;
+  const transactionRepositories = [];
+  fakeDb.transaction = async (operation, config) => {
+    transactionAttempts += 1;
+    assert.deepEqual(config, { isolationLevel: "serializable" });
+    await operation(fakeDb);
+    if (transactionAttempts === 1) {
+      throw error;
+    }
+    return "committed";
+  };
+
+  let result;
+  let caughtError;
+  try {
+    result = await createDrizzlePlatformRepositories(fakeDb).workspaceAdminTransactions.run(
+      async (repositories) => {
+        operationCalls += 1;
+        transactionRepositories.push(repositories);
+        return "operation-result";
+      },
+    );
+  } catch (candidate) {
+    caughtError = candidate;
+  }
+
+  return {
+    result,
+    error: caughtError,
+    transactionAttempts,
+    operationCalls,
+    transactionRepositories,
+  };
+}
+
+async function exerciseSerializationSequence({ failures, successAtAttempt }) {
+  const fakeDb = createFakeDrizzleDb();
+  let transactionAttempts = 0;
+  let operationCalls = 0;
+  const transactionRepositories = [];
+  fakeDb.transaction = async (operation, config) => {
+    transactionAttempts += 1;
+    assert.deepEqual(config, { isolationLevel: "serializable" });
+    await operation(fakeDb);
+    if (transactionAttempts < successAtAttempt) {
+      throw failures[transactionAttempts - 1];
+    }
+    if (transactionAttempts === successAtAttempt) {
+      return "committed";
+    }
+    throw failures.at(-1);
+  };
+
+  let result;
+  let caughtError;
+  try {
+    result = await createDrizzlePlatformRepositories(fakeDb).workspaceAdminTransactions.run(
+      async (repositories) => {
+        operationCalls += 1;
+        transactionRepositories.push(repositories);
+        return "operation-result";
+      },
+    );
+  } catch (candidate) {
+    caughtError = candidate;
+  }
+
+  return {
+    result,
+    error: caughtError,
+    transactionAttempts,
+    operationCalls,
+    transactionRepositories,
+  };
+}
+
+function createPgDatabaseError(code) {
+  const error = new DatabaseError("synthetic PostgreSQL error", 0, "ErrorResponse");
+  Object.defineProperty(error, "code", {
+    configurable: true,
+    enumerable: true,
+    value: code,
+    writable: true,
+  });
+  return error;
+}
 
 function createFakeDrizzleDb({ selectRows, insertRows, updateRows, deleteRows } = {}) {
   const calls = [];

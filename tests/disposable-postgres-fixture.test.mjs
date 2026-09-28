@@ -2246,7 +2246,7 @@ test("managed transport and non-vacuous fingerprints cannot be caller-spoofed", 
             phase: "final_start",
             attestation: {
               alias: "postgres-primary",
-              image: "postgres:17",
+              image: "postgres@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f",
               phase: "final_start",
             },
           },

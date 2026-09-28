@@ -483,7 +483,7 @@ export function parseDisposablePostgresUrl(
       if (
         !value ||
         value.phase !== phase ||
-        value.image !== "postgres:17" ||
+        value.image !== "postgres@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f" ||
         value.alias !== hostname
       ) {
         throw new Error();

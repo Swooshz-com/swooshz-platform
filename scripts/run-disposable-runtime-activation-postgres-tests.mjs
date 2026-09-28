@@ -796,7 +796,7 @@ export function ownedContainerDockerArguments(containerName, networkName) {
     "POSTGRES_PASSWORD",
     "--mount",
     `type=bind,source=${identitiesSql},target=/docker-entrypoint-initdb.d/runtime-postgres-identities.sql,readonly`,
-    "postgres:17",
+    "postgres@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f",
   ];
 }
 
@@ -1506,7 +1506,7 @@ export async function assertOwnedDockerTopology(
     "IMAGE_INVALID",
     target,
   );
-  if (image.stdout.trim() !== "postgres:17") {
+  if (image.stdout.trim() !== "postgres@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f") {
     throw activationRunnerFailure(
       "TOPOLOGY_PORT_VERIFY", "IMAGE_INVALID", target,
     );

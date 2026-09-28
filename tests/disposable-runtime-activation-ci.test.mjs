@@ -105,7 +105,7 @@ test("activation runner owns exactly two ordinary bridges and two password-safe 
     assert.equal(args[args.indexOf("--network") + 1], networkName);
     assert.equal(args[args.indexOf("--network-alias") + 1], networkAlias);
     assert.equal(args[args.indexOf("--publish") + 1], "127.0.0.1::5432");
-    assert.equal(args.at(-1), "postgres:17");
+    assert.equal(args.at(-1), "postgres@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f");
     assert.ok(args.includes("POSTGRES_PASSWORD"));
     assert.ok(args.includes("POSTGRES_USER=cloud_admin"));
     assert.equal(args.includes("POSTGRES_USER=platform_app"), false);
@@ -1128,7 +1128,7 @@ test("activation topology wiring keeps converged-to-exact evidence on the failur
       })}\n`;
     }
     if (args[0] === "port") return "127.0.0.1:41001\n";
-    if (format === "{{.Config.Image}}") return "postgres:17\n";
+    if (format === "{{.Config.Image}}") return "postgres@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f\n";
     if (format === "{{json .NetworkSettings.Networks}}") {
       return `${JSON.stringify({
         [primaryNetwork]: { Aliases: [networkAlias] },
@@ -1827,7 +1827,7 @@ function activationTopologySpawn({
       return `${networkOutput ?? JSON.stringify(network)}\n`;
     }
     if (args[0] === "port") return `127.0.0.1:${queriedPort}\n`;
-    if (format === "{{.Config.Image}}") return "postgres:17\n";
+    if (format === "{{.Config.Image}}") return "postgres@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f\n";
     if (format === "{{json .NetworkSettings.Networks}}") {
       return `${JSON.stringify({
         [networkName]: { Aliases: [networkAlias] },
