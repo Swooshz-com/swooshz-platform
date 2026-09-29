@@ -903,6 +903,10 @@ function advisoryWaitEvidenceMatches(rows, expected) {
     row.blocking_pids.some((pid) => String(pid) === String(expected.holderPid));
 }
 
+function admitBlockedWaitEvidence(rows, expected) {
+  return advisoryWaitEvidenceMatches(rows, expected) ? rows[0] : null;
+}
+
 async function waitForAdvisoryLockWait(observer, waiterPid, holderPid, expected, waiterState, ownership, options = {}) {
   const deadline = waiterState.submittedAt + ADVISORY_LOCK_TIMING.admissionMilliseconds;
   let deferralApplied = false;
@@ -929,7 +933,8 @@ async function waitForAdvisoryLockWait(observer, waiterPid, holderPid, expected,
       clearTimeout(timer);
       if (performance.now() >= deadline) throw advisoryLockError("ADVISORY_LOCK_WAIT_EVIDENCE_TIMEOUT");
       if (waiterState.settled) throw advisoryLockError("ADVISORY_LOCK_EARLY_SETTLEMENT");
-      if (advisoryWaitEvidenceMatches(result.rows, expected)) return result.rows[0];
+      const admitted = admitBlockedWaitEvidence(result.rows, expected);
+      if (admitted) return admitted;
     } catch (error) {
       clearTimeout(timer);
       if (error?.code === "ADVISORY_LOCK_EARLY_SETTLEMENT" ||
@@ -944,23 +949,38 @@ async function waitForAdvisoryLockWait(observer, waiterPid, holderPid, expected,
   throw advisoryLockError("ADVISORY_LOCK_WAIT_EVIDENCE_TIMEOUT");
 }
 
-function assertFalseObserverIdentities(evidence, expected) {
-  const negatives = [
-    { ...expected, waiterPid: String(Number(expected.waiterPid) + 1) },
-    { ...expected, holderPid: String(Number(expected.holderPid) + 1) },
-    { ...expected, database: String(Number(expected.database) + 1) },
-    { ...expected, classid: String((BigInt(expected.classid) + 1n) & 4294967295n) },
-    { ...expected, objid: String((BigInt(expected.objid) + 1n) & 4294967295n) },
-    { ...expected, objsubid: "2" },
-    { ...expected, waiterMode: "ShareLock" },
-    { ...expected, holderMode: "ShareLock" },
-    { ...expected, waiterGranted: true },
-    { ...expected, holderGranted: false },
-    { ...expected, activityState: "idle" },
-    { ...expected, waitEventType: "LWLock" },
-    { ...expected, waitEvent: "relation" },
+function advisoryWaitFalseIdentityCases(expected) {
+  return [
+    { label: "wrong waiter PID", expected: { ...expected, waiterPid: String(Number(expected.waiterPid) + 1) } },
+    { label: "wrong holder PID", expected: { ...expected, holderPid: String(Number(expected.holderPid) + 1) } },
+    { label: "wrong database identity", expected: { ...expected, database: String(Number(expected.database) + 1) } },
+    { label: "wrong key high half", expected: { ...expected, classid: String((BigInt(expected.classid) + 1n) & 4294967295n) } },
+    { label: "wrong key low half", expected: { ...expected, objid: String((BigInt(expected.objid) + 1n) & 4294967295n) } },
+    { label: "wrong objsubid", expected: { ...expected, objsubid: "2" } },
+    { label: "wrong mode", expected: { ...expected, waiterMode: "ShareLock" } },
+    { label: "wrong granted state", expected: { ...expected, waiterGranted: true } },
+    { label: "wrong wait_event_type", expected: { ...expected, waitEventType: "LWLock" } },
+    { label: "wrong wait_event", expected: { ...expected, waitEvent: "relation" } },
   ];
-  for (const negative of negatives) assert.equal(advisoryWaitEvidenceMatches([evidence], negative), false);
+}
+
+function assertFalseObserverIdentities(evidence, expected, isolation = null) {
+  for (const negative of advisoryWaitFalseIdentityCases(expected)) {
+    assert.equal(admitBlockedWaitEvidence([evidence], negative.expected), null, negative.label);
+    if (isolation) {
+      assert.equal(isolation.proof.pgCancelBackendInvocations, 0, negative.label);
+      assert.equal(isolation.proof.cancellationProofSatisfied, false, negative.label);
+      assert.equal(isolation.waiterState.settled, false, negative.label);
+      assertNoDownstreamAdvisoryDispatch(isolation.adapter, isolation.lockStatement, negative.label);
+    }
+  }
+}
+
+function assertNoDownstreamAdvisoryDispatch(adapter, lockStatement, label) {
+  assert.deepEqual(adapter.dispatchedOrdinals, [lockStatement.ordinal], label);
+  assert.deepEqual(adapter.dispatchedStatementDigests, [lockStatement.sha256], label);
+  assert.deepEqual(adapter.roleAssumptionStatements, [], label);
+  assert.deepEqual(adapter.migrationStatements, [], label);
 }
 async function queryCompiledTargetLock(client, observationBundle, lockStatement) {
   const result = await client.query(lockStatement.sql);
@@ -1360,7 +1380,7 @@ async function runAdvisoryLockCleanupRegressionProofs(pool, context, lockStateme
   await runPartialAdvisoryClientAcquisitionProof(pool);
   await runObserverFailureCleanupProof(pool, context, lockStatement, migrationSql);
   await runEarlySettlementCleanupProof(pool, context, lockStatement, migrationSql);
-  await runCancellationFailureCleanupProof(pool, context, lockStatement, migrationSql);
+  await runFalseIdentityCancellationProof(pool, context, lockStatement, migrationSql);
   await runHolderReleaseRaceCleanupProof(pool, context, lockStatement, migrationSql);
 }
 
@@ -1478,10 +1498,12 @@ async function runEarlySettlementCleanupProof(pool, context, lockStatement, migr
   await assertCompleteClusterBaseline(pool, context, migrationSql, "early settlement cleanup: after");
 }
 
-async function runCancellationFailureCleanupProof(pool, context, lockStatement, migrationSql) {
-  const before = await assertCompleteClusterBaseline(pool, context, migrationSql, "cancellation failure cleanup: before");
+async function runFalseIdentityCancellationProof(pool, context, lockStatement, migrationSql) {
+  const before = await assertCompleteClusterBaseline(pool, context, migrationSql, "false identity cancellation: before");
   const ownership = await reserveAdvisoryLockClients(pool);
   const identity = await deriveExpectedAdvisoryLockIdentity(ownership.observer, context.observationBundle);
+  const waiterPid = ownership.waiter.processID;
+  const holderPid = ownership.holder.processID;
   const waiterState = createAdvisoryWaiterState();
   const proof = {
     waiterClient: ownership.waiter,
@@ -1489,29 +1511,57 @@ async function runCancellationFailureCleanupProof(pool, context, lockStatement, 
     waiterState,
     stopFurtherDispatch: false,
     onTargetLockQuery: null,
+    pgCancelBackendInvocations: 0,
+    cancellationProofSatisfied: false,
   };
   proof.onTargetLockQuery = (entry) => captureNativeTargetQuery(proof, entry);
   let primaryError = null;
   try {
     await prepareAdvisoryTransaction(ownership.holder);
     assert.deepEqual(await queryCompiledTargetLock(ownership.holder, context.observationBundle, lockStatement), [{ lock_acquired: true }]);
-    await assertExactHolderAdvisoryLock(ownership.observer, ownership.holder.processID, identity);
+    await assertExactHolderAdvisoryLock(ownership.observer, holderPid, identity);
     await prepareAdvisoryTransaction(ownership.waiter);
-    await launchBrokeredAdvisoryProof(pool, context, lockStatement, migrationSql, before, ownership, proof);
-    await waitForAdvisoryLockWait(
-      ownership.observer,
-      ownership.waiter.processID,
-      ownership.holder.processID,
-      advisoryWaitContract(ownership.waiter.processID, ownership.holder.processID, identity),
-      waiterState,
-      ownership,
+
+    const { adapter, terminal } = await launchBrokeredAdvisoryProof(
+      pool, context, lockStatement, migrationSql, before, ownership, proof,
     );
-    const wrongTargetCancellation = await ownership.observer.query(
-      "select pg_catalog.pg_cancel_backend($1) as cancelled",
-      [ownership.holder.processID],
+    const expected = advisoryWaitContract(waiterPid, holderPid, identity);
+    const evidence = await waitForAdvisoryLockWait(
+      ownership.observer, waiterPid, holderPid, expected, waiterState, ownership,
     );
-    assert.deepEqual(wrongTargetCancellation.rows, [{ cancelled: false }]);
-    proof.stopFurtherDispatch = true;
+    assert.equal(waiterState.settled, false);
+    assertFalseObserverIdentities(evidence, expected, { proof, waiterState, adapter, lockStatement });
+    const exactAdmission = admitBlockedWaitEvidence([evidence], expected);
+    assert.equal(exactAdmission, evidence);
+    assert.equal(exactAdmission.waiter_pid, String(waiterPid));
+    assert.equal(proof.pgCancelBackendInvocations, 0);
+    assert.equal(proof.cancellationProofSatisfied, false);
+    await assertExactHolderAdvisoryLock(ownership.observer, holderPid, identity);
+
+    proof.pgCancelBackendInvocations += 1;
+    const cancelResult = await ownership.observer.query(
+      "select pg_catalog.pg_cancel_backend($1) as cancelled", [waiterPid],
+    );
+    assert.deepEqual(cancelResult.rows, [{ cancelled: true }]);
+    const nativeOutcome = await awaitAdvisoryOutcome(
+      waiterState.nativeOutcome, ADVISORY_LOCK_TIMING.waiterDeadlineMilliseconds,
+      "ADVISORY_LOCK_EARLY_SETTLEMENT", waiterState.submittedAt,
+    );
+    assert.equal(nativeOutcome.state, "rejected");
+    assert.equal(nativeOutcome.code, "57014");
+    const terminalResult = await awaitAdvisoryOutcome(
+      terminal, ADVISORY_LOCK_TIMING.cleanupMilliseconds, "ADVISORY_LOCK_CLEANUP_FAILED",
+    );
+    assert.equal(terminalResult.error, undefined);
+    const receipt = terminalResult.receipt;
+    assert.ok(receipt);
+    assert.equal(receipt.outcome, "FAIL");
+    assert.equal(receipt.commit_state, "NOT_COMMITTED");
+    assert.equal(receipt.rollback_state, "VERIFIED");
+    assert.equal(adapter.lastFailure?.code, "57014");
+    assertNoDownstreamAdvisoryDispatch(adapter, lockStatement, "exact cancel must stop at target lock");
+    assert.equal(adapter.cleanupProofs, 1);
+    assert.equal(proof.pgCancelBackendInvocations, 1);
   } catch (error) {
     primaryError = error;
     proof.stopFurtherDispatch = true;
@@ -1523,9 +1573,10 @@ async function runCancellationFailureCleanupProof(pool, context, lockStatement, 
     throw cleanupError;
   }
   if (primaryError) throw primaryError;
-  await assertCompleteClusterBaseline(pool, context, migrationSql, "cancellation failure cleanup: after");
+  await assertCompleteClusterBaseline(pool, context, migrationSql, "false identity cancellation: after");
+  proof.cancellationProofSatisfied = true;
+  assert.equal(proof.cancellationProofSatisfied, true);
 }
-
 async function runHolderReleaseRaceCleanupProof(pool, context, lockStatement, migrationSql) {
   const before = await assertCompleteClusterBaseline(pool, context, migrationSql, "holder release race cleanup: before");
   const ownership = await reserveAdvisoryLockClients(pool);
