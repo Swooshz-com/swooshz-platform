@@ -1,11 +1,15 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { Pool } from "pg";
+
+import { withDisposablePostgresFixtureMigration } from "../tests/support/disposable-postgres-fixture.mjs";
 
 const rootDir = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const containerNames = [
@@ -15,7 +19,7 @@ const containerNames = [
 const databaseName = "durable_operations_test";
 const maxOutputBytes = 64 * 1024;
 const maxDiagnosticChars = 2_000;
-const SAFE_TEST_TITLE = "Run-190 durable database operations on two disposable PostgreSQL 17 clusters";
+const SAFE_TEST_TITLE = "Run-598 exact durable broker bundle on two disposable PostgreSQL 17 clusters";
 const SAFE_FAILURE_CODES = new Set([
   "ERR_ASSERTION",
   "ERR_MODULE_NOT_FOUND",
@@ -30,8 +34,21 @@ const SAFE_FAILURE_CODES = new Set([
   "RESTORE_CAPABILITY_REQUIRED",
   "TARGET_MISMATCH",
   "UNEXPECTED_FAILURE",
+  "BROKER_AUTHORITY_GRAPH_REJECTED",
+  "BROKER_CANONICAL_POSTURE_REJECTED",
+  "BROKER_MIGRATION_IDENTITY_REJECTED",
+  "BROKER_SESSION_IDENTITY_REJECTED",
+  "BROKER_STATEMENT_RESULT_REJECTED",
+  "BROKER_TARGET_MISMATCH",
+  "ADVISORY_LOCK_WAIT_EVIDENCE_TIMEOUT",
+  "ADVISORY_LOCK_OBSERVER_FAILED",
+  "ADVISORY_LOCK_EARLY_SETTLEMENT",
+  "ADVISORY_LOCK_CLEANUP_FAILED",
+  "RUNNER_PRIMARY_FAILURE",
+  "RUNNER_CLEANUP_FAILED",
+  "RUNNER_CHILD_TERMINATION_UNCONFIRMED",
 ]);
-const SAFE_POSTGRES_CODES = new Set(["25006", "23505", "42501", "42703", "42P01", "55006", "57P01", "57P02", "57P03"]);
+const SAFE_POSTGRES_CODES = new Set(["25006", "23505", "42501", "42703", "42P01", "55006", "55P03", "57014", "57P01", "57P02", "57P03"]);
 const SAFE_FAILURE_TYPES = new Set(["testCodeFailure", "uncaughtException", "unhandledRejection", "testTimeout"]);
 const SAFE_ASSERT_OPERATORS = new Set(["deepEqual", "deepStrictEqual", "doesNotMatch", "doesNotReject", "doesNotThrow", "equal", "match", "notDeepEqual", "notEqual", "ok", "rejects", "strictEqual", "throws"]);
 const SAFE_ASSERT_MESSAGES = new Set([
@@ -116,7 +133,7 @@ function projectDiagnosticLine(line) {
   if (safeMessage) return "message: " + safeMessage;
   const errorType = compact.match(/^(?:Error|AssertionError|DurableOperationError)(?:\s|\[|:)/u)?.[0].replace(/[\s[:\[]+$/u, "");
   if (errorType) return "error_type: " + errorType;
-  const postgresCode = compact.match(/\b(?:25006|23505|42501|42703|42P01|55006|57P01|57P02|57P03)\b/u)?.[0];
+  const postgresCode = compact.match(/\b(?:25006|23505|42501|42703|42P01|55006|55P03|57014|57P01|57P02|57P03)\b/u)?.[0];
   if (postgresCode && SAFE_POSTGRES_CODES.has(postgresCode)) return "postgres_code: " + postgresCode;
   if (/^(?:[+-]|actual|expected|error|name):/u.test(compact)) {
     const observed = [...SAFE_ASSERT_SCALARS]
@@ -128,7 +145,7 @@ function projectDiagnosticLine(line) {
   }
   const detail = compact.match(/^(?:#\s*)?(reason|status|code|failureType|operator|expected|actual|location|at|message|name):\s*(.*)$/u);
   if (!detail) {
-    const errorCode = compact.match(/\b(ERR_[A-Z0-9_]+)\b/u)?.[1];
+    const errorCode = compact.match(/\b(?:ERR_[A-Z0-9_]+|ADVISORY_LOCK_[A-Z0-9_]+|RUNNER_[A-Z0-9_]+)\b/u)?.[0];
     if (errorCode && SAFE_FAILURE_CODES.has(errorCode)) return "error_code: " + errorCode;
     return null;
   }
@@ -196,16 +213,16 @@ export async function run({ spawnImpl = spawn } = {}) {
     await Promise.all(containerNames.map((containerName) => assertExactContainerAbsent(spawnImpl, containerName)));
     phase = "container-start";
     for (const [index, containerName] of containerNames.entries()) {
+      started[index] = true;
       const startedResult = await runCommand(spawnImpl, "docker", [
         "run", "--detach", "--name", containerName,
         "--publish", "127.0.0.1::5432",
         "--env", "POSTGRES_DB=postgres",
         "--env", "POSTGRES_USER=cloud_admin",
         "--env", "POSTGRES_HOST_AUTH_METHOD=trust",
-        "postgres:17",
+        "postgres@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f",
       ]);
-      if (startedResult.code !== 0 || !startedResult.stdout.trim()) throw new Error();
-      started[index] = true;
+      if (startedResult.code !== 0 || startedResult.timedOut || startedResult.terminationUnconfirmed || !startedResult.stdout.trim()) throw new Error();
     }
     phase = "port-discovery";
     for (const [index, containerName] of containerNames.entries()) ports[index] = await readPublishedPort(spawnImpl, containerName);
@@ -224,19 +241,39 @@ export async function run({ spawnImpl = spawn } = {}) {
     });
   }
 
-  let cleanupError = null;
+  let cleanupCategories = [];
   try {
-    await cleanup(spawnImpl, ports, started);
+    cleanupCategories = await cleanup(spawnImpl, ports, started);
   } catch {
-    cleanupError = Object.assign(new Error(), { phase: "cleanup" });
+    cleanupCategories = ["RUNNER_CLEANUP_FAILED"];
   }
-  if (primaryError) throw primaryError;
-  if (cleanupError) throw cleanupError;
+  if (primaryError || cleanupCategories.length > 0) {
+    throw combineRunnerFailures(primaryError, cleanupCategories);
+  }
   process.stdout.write("Disposable PostgreSQL 17 durable-operation proofs: passed.\n");
   return { containers: containerNames, database: databaseName, postgresMajor: 17 };
 }
 
+export function combineRunnerFailures(primaryError, cleanupCategories) {
+  const categories = [
+    ...(primaryError ? ["RUNNER_PRIMARY_FAILURE"] : []),
+    ...cleanupCategories,
+  ];
+  if (categories.length === 0) return null;
+  const safeDetails = [
+    ...(primaryError?.diagnostics ? [primaryError.diagnostics] : []),
+    ...cleanupCategories.map((code) => "error_code: " + code),
+    ...(primaryError ? ["error_code: RUNNER_PRIMARY_FAILURE"] : []),
+  ];
+  return Object.assign(new Error(primaryError ? "RUNNER_PRIMARY_FAILURE" : "RUNNER_CLEANUP_FAILED"), {
+    phase: primaryError?.phase ?? "cleanup",
+    diagnostics: sanitizeDisposableDiagnostics({ stdout: safeDetails.join("\n") }),
+    categories,
+  });
+}
+
 async function runFocusedTests(spawnImpl, ports) {
+  await Promise.all(ports.map((port) => applyFirstNine(port)));
   const childEnv = { ...process.env };
   for (const key of Object.keys(childEnv)) {
     if (/DATABASE_URL|DATABASE_OPERATOR_URL|DURABLE_OPERATIONS_TEST/u.test(key)) delete childEnv[key];
@@ -248,7 +285,7 @@ async function runFocusedTests(spawnImpl, ports) {
     env: childEnv,
     timeoutMs: 180_000,
   });
-  if (result.code !== 0 || result.timedOut || result.stdout.includes("fail 1")) {
+  if (result.code !== 0 || result.timedOut || result.terminationUnconfirmed || result.stdout.includes("fail 1")) {
     throw Object.assign(new Error(), {
       phase: "focused-tests",
       diagnostics: sanitizeDisposableDiagnostics({
@@ -267,6 +304,30 @@ async function runFocusedTests(spawnImpl, ports) {
         outputOverflow: result.outputOverflow,
       }),
     });
+  }
+}
+
+async function applyFirstNine(port) {
+  const migrationsFolder = resolve(rootDir, "drizzle", "migrations");
+  const temporaryRoot = await mkdtemp(join(tmpdir(), "swooshz-run598-first-nine-"));
+  const target = join(temporaryRoot, "drizzle", "migrations");
+  try {
+    await mkdir(join(target, "meta"), { recursive: true });
+    const journal = JSON.parse(await readFile(join(migrationsFolder, "meta", "_journal.json"), "utf8"));
+    journal.entries = journal.entries.slice(0, 9);
+    await writeFile(join(target, "meta", "_journal.json"), `${JSON.stringify(journal, null, 2)}\n`, "utf8");
+    for (const entry of journal.entries) await cp(join(migrationsFolder, `${entry.tag}.sql`), join(target, `${entry.tag}.sql`));
+    await withDisposablePostgresFixtureMigration(
+      {
+        connectionString: `postgres://cloud_admin@127.0.0.1:${port}/${databaseName}`,
+        expectedDatabase: databaseName,
+        expectedUser: "cloud_admin",
+        migrationsFolder: target,
+      },
+      async () => {},
+    );
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
   }
 }
 
@@ -299,39 +360,94 @@ async function waitForPostgres(port) {
 
 async function readPublishedPort(spawnImpl, containerName) {
   const result = await runCommand(spawnImpl, "docker", ["port", containerName, "5432/tcp"]);
-  if (result.code !== 0) throw new Error();
+  if (result.code !== 0 || result.timedOut || result.terminationUnconfirmed) throw new Error();
   const match = result.stdout.match(/^127\.0\.0\.1:(\d+)$/mu);
   const port = Number(match?.[1]);
   if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error();
   return port;
 }
 
-async function cleanup(spawnImpl, ports, started) {
+export async function cleanup(spawnImpl, ports, started) {
+  const deadline = Date.now() + 60_000;
+  const failures = [];
+  const runCleanupCommand = async (command, args) => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      failures.push("RUNNER_CLEANUP_FAILED");
+      return null;
+    }
+    try {
+      const result = await runCommand(spawnImpl, command, args, {
+        timeoutMs: Math.min(5_000, remaining),
+      });
+      if (result.timedOut || result.terminationUnconfirmed || result.code !== 0) {
+        failures.push(result.terminationUnconfirmed
+          ? "RUNNER_CHILD_TERMINATION_UNCONFIRMED"
+          : "RUNNER_CLEANUP_FAILED");
+      }
+      return result;
+    } catch {
+      failures.push("RUNNER_CLEANUP_FAILED");
+      return null;
+    }
+  };
+
   for (const [index, port] of ports.entries()) {
-    if (started[index] && Number.isInteger(port)) {
-      const pool = new Pool({ connectionString: `postgres://cloud_admin@127.0.0.1:${port}/postgres`, max: 1 });
+    if (started[index] && Number.isInteger(port) && deadline - Date.now() > 0) {
+      let pool;
       try {
-        await pool.query(`drop database if exists "${databaseName}" with (force)`);
+        pool = new Pool({
+          connectionString: "postgres://cloud_admin@127.0.0.1:" + port + "/postgres",
+          max: 1,
+          connectionTimeoutMillis: 1_000,
+          statement_timeout: 1_000,
+        });
+        await pool.query('drop database if exists "' + databaseName + '" with (force)');
+      } catch {
+        failures.push("RUNNER_CLEANUP_FAILED");
       } finally {
-        await pool.end().catch(() => {});
+        if (pool) {
+          try {
+            await pool.end();
+          } catch {
+            failures.push("RUNNER_CLEANUP_FAILED");
+          }
+        }
       }
     }
-    if (started[index]) {
-      const result = await runCommand(spawnImpl, "docker", ["rm", "--force", containerNames[index]]);
-      if (result.code !== 0) throw new Error();
+    if (started[index] && deadline - Date.now() > 0) {
+      await runCleanupCommand("docker", ["rm", "--force", containerNames[index]]);
     }
   }
-  await Promise.all(containerNames.map((containerName) => assertExactContainerAbsent(spawnImpl, containerName)));
-  for (const port of ports) if (Number.isInteger(port)) await assertPortAbsent(port);
+
+  for (const containerName of containerNames) {
+    try {
+      if (deadline - Date.now() <= 0) throw new Error();
+      await assertExactContainerAbsent(spawnImpl, containerName, {
+        deadline: Math.min(deadline, Date.now() + 5_000),
+      });
+    } catch {
+      failures.push("RUNNER_CLEANUP_FAILED");
+    }
+  }
+  for (const port of ports) {
+    if (!Number.isInteger(port)) continue;
+    try {
+      await assertPortAbsent(port, Math.min(deadline, Date.now() + 5_000));
+    } catch {
+      failures.push("RUNNER_CLEANUP_FAILED");
+    }
+  }
+  return [...new Set(failures)];
+}
+async function assertExactContainerAbsent(spawnImpl, containerName, { deadline = Date.now() + 5_000 } = {}) {
+  const result = await runCommand(spawnImpl, "docker", ["ps", "--all", "--filter", "name=^/" + containerName + "$", "--format", "{{.Names}}"], {
+    timeoutMs: Math.min(5_000, Math.max(1, deadline - Date.now())),
+  });
+  if (result.timedOut || result.terminationUnconfirmed || result.code !== 0 || result.stdout.trim() !== "") throw new Error();
 }
 
-async function assertExactContainerAbsent(spawnImpl, containerName) {
-  const result = await runCommand(spawnImpl, "docker", ["ps", "--all", "--filter", `name=^/${containerName}$`, "--format", "{{.Names}}"]);
-  if (result.code !== 0 || result.stdout.trim() !== "") throw new Error();
-}
-
-async function assertPortAbsent(port) {
-  const deadline = Date.now() + 5_000;
+async function assertPortAbsent(port, deadline = Date.now() + 5_000) {
   while (Date.now() < deadline) {
     const present = await new Promise((resolvePromise) => {
       const socket = net.createConnection({ host: "127.0.0.1", port });
@@ -344,19 +460,18 @@ async function assertPortAbsent(port) {
       };
       socket.once("connect", () => settle(true));
       socket.once("error", () => settle(false));
-      socket.setTimeout(1_000, () => settle(false));
+      socket.setTimeout(Math.max(1, Math.min(1_000, deadline - Date.now())), () => settle(false));
     });
     if (!present) return;
     await delay(100);
   }
   throw new Error();
 }
-
 function assertNoCallerSuppliedFixture(env) {
   if (Object.keys(env ?? {}).some((key) => /DURABLE_OPERATIONS_TEST_DATABASE_URL/u.test(key))) throw new Error();
 }
 
-function runCommand(spawnImpl, command, args, { cwd = rootDir, env, timeoutMs } = {}) {
+export function runCommand(spawnImpl, command, args, { cwd = rootDir, env, timeoutMs } = {}) {
   return new Promise((resolvePromise, rejectPromise) => {
     let child;
     try {
@@ -370,18 +485,52 @@ function runCommand(spawnImpl, command, args, { cwd = rootDir, env, timeoutMs } 
     let stdoutBytes = 0;
     let stderrBytes = 0;
     let timedOut = false;
-    const timer = Number.isInteger(timeoutMs) ? setTimeout(() => { timedOut = true; child.kill?.("SIGTERM"); }, timeoutMs) : null;
+    let terminationUnconfirmed = false;
+    const timers = [];
+    const clearTimers = () => {
+      for (const timer of timers) clearTimeout(timer);
+    };
     const append = (target, chunk, current) => {
       const next = current + Buffer.byteLength(chunk);
       if (next <= maxOutputBytes) target.push(Buffer.from(chunk));
       return next;
     };
+    const complete = (code, signal) => {
+      clearTimers();
+      resolvePromise({
+        code,
+        signal,
+        timedOut,
+        terminationUnconfirmed,
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8"),
+        outputOverflow: stdoutBytes > maxOutputBytes || stderrBytes > maxOutputBytes,
+      });
+    };
+    const requestTermination = () => {
+      timedOut = true;
+      child.kill?.("SIGTERM");
+      timers.push(setTimeout(() => {
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        child.kill?.("SIGKILL");
+        timers.push(setTimeout(() => {
+          if (child.exitCode !== null || child.signalCode !== null) return;
+          terminationUnconfirmed = true;
+          complete(null, null);
+        }, killGraceMilliseconds));
+      }, termGraceMilliseconds));
+    };
+    const commandTimeoutMilliseconds = Number.isInteger(timeoutMs) ? timeoutMs : 30_000;
+    const escalationWindow = Math.min(4_000, Math.max(1, commandTimeoutMilliseconds));
+    const termGraceMilliseconds = Math.min(2_000, escalationWindow / 2);
+    const killGraceMilliseconds = escalationWindow - termGraceMilliseconds;
+    timers.push(setTimeout(requestTermination, Math.max(0, commandTimeoutMilliseconds - escalationWindow)));
     child.stdout?.on("data", (chunk) => { stdoutBytes = append(stdout, chunk, stdoutBytes); });
     child.stderr?.on("data", (chunk) => { stderrBytes = append(stderr, chunk, stderrBytes); });
-    child.once("error", (error) => { if (timer) clearTimeout(timer); rejectPromise(error); });
-    child.once("close", (code, signal) => {
-      if (timer) clearTimeout(timer);
-      resolvePromise({ code, signal, timedOut, stdout: Buffer.concat(stdout).toString("utf8"), stderr: Buffer.concat(stderr).toString("utf8"), outputOverflow: stdoutBytes > maxOutputBytes || stderrBytes > maxOutputBytes });
+    child.once("error", (error) => {
+      clearTimers();
+      rejectPromise(error);
     });
+    child.once("close", complete);
   });
 }

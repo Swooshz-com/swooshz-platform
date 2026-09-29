@@ -4,6 +4,8 @@
 
 Accepted.
 
+Amended by the brokered production authority contract. Production migration and operator readiness no longer accept `DATABASE_OPERATOR_URL` or a direct `platform_migrator` login. They use a provider-brokered, digest-bound transaction with exact target/session/OID admission and transaction-local `SET LOCAL ROLE platform_migrator`. Direct URL execution remains only for runner-owned disposable fixtures. The runtime `DATABASE_URL` contract is unchanged and never carries migration authority.
+
 ## Context
 
 ADR 0003 selected Postgres-compatible relational persistence for platform account state. ADR 0004 selected Drizzle ORM and Drizzle Kit as the preferred TypeScript schema and migration tooling. Later implementation PRs added the first Drizzle schema, review-only migration artifacts, storage-agnostic repository/service ports, and Drizzle-backed repository adapters.

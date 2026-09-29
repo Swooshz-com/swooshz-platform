@@ -1070,7 +1070,7 @@ export function ownedContainerDockerArguments() {
     "POSTGRES_HOST_AUTH_METHOD=trust",
     "--mount",
     `type=bind,source=${runtimePostgresIdentitiesSql},target=/docker-entrypoint-initdb.d/runtime-postgres-identities.sql,readonly`,
-    "postgres:17",
+    "postgres@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f",
   ];
 }
 
