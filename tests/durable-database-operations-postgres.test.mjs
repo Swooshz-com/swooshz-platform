@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -6,6 +8,8 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { Pool } from "pg";
+
+import { cleanup as cleanupDisposableRunner, combineRunnerFailures, runCommand as runDisposableCommand, sanitizeDisposableDiagnostics } from "../scripts/run-disposable-durable-db-operations-tests.mjs";
 
 import {
   bindDurablePlanV2ToBrokerBundle,
@@ -43,6 +47,117 @@ const rootDir = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const migrationsFolder = resolve(rootDir, "drizzle", "migrations");
 const databaseName = "durable_operations_test";
 const migrationSha256 = "452829e49a5571a8b4e14a2cbf155e671fe81ef8ee2fa3583935b7cc2ffd996b";
+
+function fakeCommandSpawn(onCommand) {
+  return (command, args) => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = () => true;
+    queueMicrotask(() => {
+      const result = onCommand(command, args);
+      child.stdout.end(result.stdout ?? "");
+      child.stderr.end(result.stderr ?? "");
+      child.emit("close", result.code ?? 0, null);
+    });
+    return child;
+  };
+}
+
+test("disposable runner diagnostics retain only the admitted lock SQLSTATEs and fixed categories", () => {
+  const projected = sanitizeDisposableDiagnostics({
+    stderr: [
+      "postgres_code: 55P03",
+      "postgres_code: 57014",
+      "ADVISORY_LOCK_WAIT_EVIDENCE_TIMEOUT",
+      "postgres://fixture:private@localhost/private-db",
+      "DSN=private-value",
+    ].join("\n"),
+  });
+  assert.match(projected, /postgres_code: 55P03/u);
+  assert.match(projected, /postgres_code: 57014/u);
+  assert.match(projected, /ADVISORY_LOCK_WAIT_EVIDENCE_TIMEOUT/u);
+  assert.doesNotMatch(projected, /private|postgres:\/\//iu);
+});
+
+test("disposable runner records a completed child without timeout", async () => {
+  const result = await runDisposableCommand(
+    fakeCommandSpawn(() => ({ code: 0, stdout: "complete" })),
+    "docker",
+    ["version"],
+    { timeoutMs: 5_000 },
+  );
+  assert.equal(result.code, 0);
+  assert.equal(result.timedOut, false);
+  assert.equal(result.terminationUnconfirmed, false);
+  assert.equal(result.stdout, "complete");
+});
+test("disposable runner escalates an unresponsive child and reports unconfirmed termination", async () => {
+  const signals = [];
+  const spawnImpl = () => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.exitCode = null;
+    child.signalCode = null;
+    child.kill = (signal) => { signals.push(signal); return true; };
+    return child;
+  };
+  const result = await runDisposableCommand(spawnImpl, "docker", ["rm"], { timeoutMs: 100 });
+  assert.equal(result.timedOut, true);
+  assert.equal(result.terminationUnconfirmed, true);
+  assert.equal(result.code, null);
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+});
+
+test("disposable runner aggregates primary and cleanup failures using safe categories", () => {
+  const failure = combineRunnerFailures({
+    phase: "focused-tests",
+    diagnostics: "postgres_code: 55P03\npostgres://fixture:private@localhost/private-db",
+  }, ["RUNNER_CLEANUP_FAILED", "RUNNER_CHILD_TERMINATION_UNCONFIRMED"]);
+  assert.equal(failure.phase, "focused-tests");
+  assert.deepEqual(failure.categories, [
+    "RUNNER_PRIMARY_FAILURE",
+    "RUNNER_CLEANUP_FAILED",
+    "RUNNER_CHILD_TERMINATION_UNCONFIRMED",
+  ]);
+  assert.match(failure.diagnostics, /RUNNER_PRIMARY_FAILURE/u);
+  assert.match(failure.diagnostics, /RUNNER_CLEANUP_FAILED/u);
+  assert.match(failure.diagnostics, /RUNNER_CHILD_TERMINATION_UNCONFIRMED/u);
+  assert.match(failure.diagnostics, /postgres_code: 55P03/u);
+  assert.doesNotMatch(failure.diagnostics, /postgres:\/\/|private-db/u);
+});
+
+test("disposable runner cleanup attempts both containers and verifies both after an rm error", async () => {
+  const removed = [];
+  const verified = [];
+  let failFirstRemoval = true;
+  const spawnImpl = fakeCommandSpawn((_command, args) => {
+    if (args[0] === "rm") {
+      removed.push(args.at(-1));
+      if (failFirstRemoval) {
+        failFirstRemoval = false;
+        return { code: 1 };
+      }
+      return { code: 0 };
+    }
+    if (args[0] === "ps") {
+      const filter = args[args.indexOf("--filter") + 1];
+      const name = filter.slice("name=^/".length, -1);
+      verified.push(name);
+      return { code: 0, stdout: "" };
+    }
+    throw new Error("unexpected test command");
+  });
+  const failures = await cleanupDisposableRunner(spawnImpl, [null, null], [true, true]);
+  assert.deepEqual(removed, [
+    "codex-platform190-durable-db-operations-pg17-a",
+    "codex-platform190-durable-db-operations-pg17-b",
+  ]);
+  assert.deepEqual(verified, removed);
+  assert.ok(failures.includes("RUNNER_CLEANUP_FAILED"));
+});
+
 
 function restoreCapabilityProviderFor(plan) {
   return {
@@ -180,6 +295,9 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
       assert.deepEqual(adapterA.dispatchedOrdinals, adapterA.dispatchedOrdinals.map((_, index) => index));
       assert.equal(adapterA.dispatchedStatementDigests.every((digest, index) => digest === adapterA.lastMutationBundle.statements[index].sha256), true);
       assert.equal(adapterA.backendPid, adapterA.protectedEvidence[0]?.pid);
+      assert.equal(adapterA.dispatchedOrdinals[0], 0);
+      assert.ok(adapterA.dispatchedOrdinals.length > 1);
+      assert.ok(adapterA.migrationStatements.length > 0);
       assert.equal(adapterA.protectedEvidence.length, 2);
       assert.equal(adapterA.protectedEvidence[0].label, "RESTORED_PROVIDER");
       assert.equal(adapterA.protectedEvidence[1].label, "PROVIDER_FINAL");
@@ -201,7 +319,8 @@ if (!testDatabaseUrlA || !testDatabaseUrlB) {
       assert.ok(lockStatementB);
       await runUncontendedAdvisoryLockProof(providerB, contextB.observationBundle, lockStatementB);
       await runAdvisoryLockContentionProof(providerB, contextB.observationBundle, lockStatementB);
-      await runAdvisoryLockFailureProof(providerB, contextB.observationBundle, lockStatementB);
+      await runAdvisoryLockFailureProof(providerB, contextB, lockStatementB, contextB.migrationSql);
+      await runAdvisoryLockCleanupRegressionProofs(providerB, contextB, lockStatementB, contextB.migrationSql);
 
       const rejectedLockBaseline = await assertCompleteClusterBaseline(providerB, contextB, migrationSql, "rejected advisory lock: before");
       const rejectedLockAdapter = new DisposableBrokerAdapter(providerB, contextB, {
@@ -484,6 +603,9 @@ class DisposableBrokerAdapter {
   }
 
   async dispatchMutation(serialized, digest, reservation) {
+    if (this.options.advisoryLockProof?.stopFurtherDispatch) {
+      throw advisoryLockError("ADVISORY_LOCK_EARLY_SETTLEMENT");
+    }
     this.dispatchCount += 1;
     if (!this.lastPreEvidence) throw new Error("BROKER_OBSERVATION_REQUIRED");
     const parsed = strictCanonicalJson(serialized);
@@ -495,7 +617,8 @@ class DisposableBrokerAdapter {
       this.beforeDispatchUsed = true;
       await this.options.beforeDispatch();
     }
-    const client = await this.pool.connect();
+    const advisoryLockProof = this.options.advisoryLockProof;
+    const client = advisoryLockProof?.waiterClient ?? await this.pool.connect();
     const lockedResultMap = {};
     let committed = false;
     let rolledBack = false;
@@ -507,16 +630,30 @@ class DisposableBrokerAdapter {
     const transportLoss = (boundary) => this.options.transportLoss?.boundary === boundary;
     const transportError = (boundary) => Object.assign(new Error(`transport lost at ${boundary}`), { transportLoss: true, boundary });
     try {
-      await client.query("begin isolation level serializable read write");
+      if (advisoryLockProof) {
+        assert.equal(client.getTransactionStatus(), "T");
+      } else {
+        await client.query("begin isolation level serializable read write");
+      }
       this.backendPid = client.processID;
       for (const statement of bundle.statements.filter((entry) => entry.phase !== "CLEANUP")) {
+        if (advisoryLockProof?.stopFurtherDispatch || (advisoryLockProof && statement.id !== "target_advisory_lock")) {
+          throw Object.assign(new Error("ADVISORY_LOCK_EARLY_SETTLEMENT"), { code: "ADVISORY_LOCK_EARLY_SETTLEMENT" });
+        }
         currentStatement = statement;
         this.dispatchedOrdinals.push(statement.ordinal);
         this.dispatchedStatementDigests.push(statement.sha256);
         failureStage = 1;
         if (sameInjection(this.options.failureInjection, statement.ordinal, "BEFORE")) throw injectedFailure(this.options.failureInjection);
         failureStage = 2;
-        const result = await client.query(statement.sql);
+        if (advisoryLockProof && statement.id === "target_advisory_lock") {
+          assert.equal(statement.sha256, advisoryLockProof.targetLockStatementDigest);
+        }
+        const queryPromise = client.query(statement.sql);
+        if (advisoryLockProof && statement.id === "target_advisory_lock") {
+          advisoryLockProof.onTargetLockQuery({ statement, client, queryPromise });
+        }
+        const result = await queryPromise;
         const rows = this.options.resultOverride?.(statement, result.rows) ?? result.rows;
         if (statement.phase === "ASSUME_ROLE") this.roleAssumptionStatements.push(statement.id);
         if (statement.phase === "MIGRATION") this.migrationStatements.push(statement.id);
@@ -555,6 +692,7 @@ class DisposableBrokerAdapter {
       await client.query("commit");
       committed = true;
     } catch (error) {
+      if (advisoryLockProof) advisoryLockProof.stopFurtherDispatch = true;
       this.lastFailure = { ordinal: currentStatement?.ordinal ?? -1, stage: failureStage, code: typeof error?.code === "string" ? error.code : error?.message ?? "NONE" };
       if (error?.transportLoss) {
         client.release(true);
@@ -579,7 +717,7 @@ class DisposableBrokerAdapter {
       cleanupState = error?.transportLoss ? "INDETERMINATE" : "FAILED";
       this.lastFailure ??= { ordinal: 39, stage: 7, code: typeof error?.code === "string" ? error.code : error?.message ?? "NONE" };
     } finally {
-      client.release(true);
+      if (!advisoryLockProof) client.release(true);
     }
     assert.equal(committed || rolledBack, true);
     return brokerResult(bundle, reservation, committed ? "COMMITTED" : "NOT_COMMITTED", cleanupState);
@@ -610,30 +748,220 @@ function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-async function waitForAdvisoryLockWait(pool, waiterPid, holderPid, timeoutMilliseconds = 4_000) {
-  const deadline = Date.now() + timeoutMilliseconds;
-  while (Date.now() < deadline) {
-    const result = await pool.query(`
-      select waiter.pid as waiter_pid, holder.pid as holder_pid, activity.wait_event_type, activity.wait_event
-        from pg_catalog.pg_locks waiter
-        join pg_catalog.pg_locks holder
-          on holder.locktype = 'advisory'
-         and holder.pid = $2
-         and holder.granted
-         and holder.database = waiter.database
-         and holder.classid = waiter.classid
-         and holder.objid = waiter.objid
-         and holder.objsubid = waiter.objsubid
-        join pg_catalog.pg_stat_activity activity on activity.pid = waiter.pid
-       where waiter.locktype = 'advisory'
-         and waiter.pid = $1
-         and not waiter.granted`, [waiterPid, holderPid]);
-    if (result.rows.length === 1) return result.rows[0];
-    await delay(25);
-  }
-  throw new Error("ADVISORY_LOCK_WAIT_EVIDENCE_TIMEOUT");
+const ADVISORY_LOCK_TIMING = Object.freeze({
+  acquisitionMilliseconds: 4_000,
+  lockTimeoutMilliseconds: 8_000,
+  admissionMilliseconds: 4_000,
+  pollMilliseconds: 25,
+  observerStatementMilliseconds: 1_000,
+  observerResponseMilliseconds: 1_250,
+  waiterDeadlineMilliseconds: 12_000,
+  cleanupMilliseconds: 8_000,
+});
+
+function advisoryLockError(code) {
+  return Object.assign(new Error(code), { code });
 }
 
+async function reserveAdvisoryLockClients(pool) {
+  const clients = [];
+  let acquisitionFailed = false;
+  const requests = Array.from({ length: 3 }, () => pool.connect().then((client) => {
+    if (acquisitionFailed) {
+      client.release(true);
+      return null;
+    }
+    clients.push(client);
+    return client;
+  }));
+  try {
+    const results = await Promise.all(requests);
+    if (results.some((client) => !client)) throw advisoryLockError("ADVISORY_LOCK_CLEANUP_FAILED");
+    const [holder, waiter, observer] = results;
+    assert.equal(new Set(results).size, 3);
+    await observer.query("set statement_timeout = '1000ms'");
+    await observer.query("select 1");
+    return { holder, waiter, observer, released: new Set() };
+  } catch (error) {
+    acquisitionFailed = true;
+    await Promise.allSettled(requests);
+    for (const client of clients) client.release(true);
+    throw error;
+  }
+}
+
+async function releaseAdvisoryClient(ownership, client, destroy = false) {
+  if (ownership.released.has(client)) return;
+  ownership.released.add(client);
+  client.release(destroy);
+}
+
+async function deriveExpectedAdvisoryLockIdentity(observer, observationBundle) {
+  const result = await observer.query(`
+    with target_key as (
+      select pg_catalog.hashtextextended($1::text, 0) as lock_key
+    )
+    select database_record.oid::text as database_oid,
+           ((target_key.lock_key >> 32) & 4294967295)::oid::text as classid,
+           (target_key.lock_key & 4294967295)::oid::text as objid,
+           '1'::text as objsubid
+      from target_key
+      join pg_catalog.pg_database database_record
+        on database_record.datname = current_database()`, [observationBundle.target_binding_digest]);
+  assert.equal(result.rows.length, 1);
+  return {
+    database: result.rows[0].database_oid,
+    classid: result.rows[0].classid,
+    objid: result.rows[0].objid,
+    objsubid: result.rows[0].objsubid,
+  };
+}
+
+async function assertExactHolderAdvisoryLock(observer, holderPid, identity) {
+  const result = await observer.query(`
+    select locktype, mode, granted,
+           database::text as database_oid,
+           classid::text as classid,
+           objid::text as objid,
+           objsubid::text as objsubid
+      from pg_catalog.pg_locks
+     where pid = $1
+       and locktype = 'advisory'
+       and database = $2::oid
+       and classid = $3::oid
+       and objid = $4::oid
+       and objsubid = $5::smallint`, [
+    holderPid, identity.database, identity.classid, identity.objid, identity.objsubid,
+  ]);
+  assert.deepEqual(result.rows, [{
+    locktype: "advisory",
+    mode: "ExclusiveLock",
+    granted: true,
+    database_oid: identity.database,
+    classid: identity.classid,
+    objid: identity.objid,
+    objsubid: identity.objsubid,
+  }]);
+}
+
+async function readAdvisoryLockWait(observer, waiterPid, holderPid) {
+  return observer.query(`
+    select waiter.pid::text as waiter_pid,
+           holder.pid::text as holder_pid,
+           waiter.mode as waiter_mode,
+           holder.mode as holder_mode,
+           waiter.granted as waiter_granted,
+           holder.granted as holder_granted,
+           waiter.database::text as waiter_database,
+           waiter.classid::text as waiter_classid,
+           waiter.objid::text as waiter_objid,
+           waiter.objsubid::text as waiter_objsubid,
+           holder.database::text as holder_database,
+           holder.classid::text as holder_classid,
+           holder.objid::text as holder_objid,
+           holder.objsubid::text as holder_objsubid,
+           activity.state as activity_state,
+           activity.wait_event_type,
+           activity.wait_event,
+           pg_catalog.pg_blocking_pids(waiter.pid) as blocking_pids
+      from pg_catalog.pg_locks waiter
+      join pg_catalog.pg_locks holder
+        on holder.pid = $2
+       and holder.locktype = 'advisory'
+       and waiter.locktype = 'advisory'
+       and holder.database = waiter.database
+       and holder.classid = waiter.classid
+       and holder.objid = waiter.objid
+       and holder.objsubid = waiter.objsubid
+      join pg_catalog.pg_stat_activity activity
+        on activity.pid = waiter.pid
+     where waiter.pid = $1`, [waiterPid, holderPid]);
+}
+
+function advisoryWaitEvidenceMatches(rows, expected) {
+  if (rows.length !== 1) return false;
+  const row = rows[0];
+  return row.waiter_pid === String(expected.waiterPid) &&
+    row.holder_pid === String(expected.holderPid) &&
+    row.holder_pid !== row.waiter_pid &&
+    row.waiter_mode === expected.waiterMode &&
+    row.holder_mode === expected.holderMode &&
+    row.waiter_granted === expected.waiterGranted &&
+    row.holder_granted === expected.holderGranted &&
+    row.waiter_database === expected.database &&
+    row.waiter_classid === expected.classid &&
+    row.waiter_objid === expected.objid &&
+    row.waiter_objsubid === expected.objsubid &&
+    row.holder_database === expected.database &&
+    row.holder_classid === expected.classid &&
+    row.holder_objid === expected.objid &&
+    row.holder_objsubid === expected.objsubid &&
+    row.activity_state === expected.activityState &&
+    row.wait_event_type === expected.waitEventType &&
+    row.wait_event === expected.waitEvent &&
+    Array.isArray(row.blocking_pids) &&
+    row.blocking_pids.some((pid) => String(pid) === String(expected.holderPid));
+}
+
+async function waitForAdvisoryLockWait(observer, waiterPid, holderPid, expected, waiterState, ownership, options = {}) {
+  const deadline = waiterState.submittedAt + ADVISORY_LOCK_TIMING.admissionMilliseconds;
+  let deferralApplied = false;
+  while (performance.now() < deadline) {
+    if (waiterState.settled) throw advisoryLockError("ADVISORY_LOCK_EARLY_SETTLEMENT");
+    if (options.observationDeferralMilliseconds > 0 && !deferralApplied) {
+      deferralApplied = true;
+      await delay(options.observationDeferralMilliseconds);
+      if (performance.now() >= deadline) throw advisoryLockError("ADVISORY_LOCK_WAIT_EVIDENCE_TIMEOUT");
+    }
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) break;
+    const queryPromise = readAdvisoryLockWait(observer, waiterPid, holderPid);
+    queryPromise.catch(() => {});
+    let timer;
+    try {
+      const result = await Promise.race([
+        queryPromise,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(advisoryLockError("ADVISORY_LOCK_OBSERVER_FAILED")),
+            Math.max(1, Math.min(ADVISORY_LOCK_TIMING.observerResponseMilliseconds, remaining)));
+        }),
+      ]);
+      clearTimeout(timer);
+      if (performance.now() >= deadline) throw advisoryLockError("ADVISORY_LOCK_WAIT_EVIDENCE_TIMEOUT");
+      if (waiterState.settled) throw advisoryLockError("ADVISORY_LOCK_EARLY_SETTLEMENT");
+      if (advisoryWaitEvidenceMatches(result.rows, expected)) return result.rows[0];
+    } catch (error) {
+      clearTimeout(timer);
+      if (error?.code === "ADVISORY_LOCK_EARLY_SETTLEMENT" ||
+          error?.code === "ADVISORY_LOCK_WAIT_EVIDENCE_TIMEOUT") throw error;
+      await releaseAdvisoryClient(ownership, observer, true);
+      throw advisoryLockError("ADVISORY_LOCK_OBSERVER_FAILED");
+    }
+    const wait = Math.min(ADVISORY_LOCK_TIMING.pollMilliseconds, deadline - performance.now());
+    if (wait > 0) await delay(wait);
+  }
+  if (waiterState.settled) throw advisoryLockError("ADVISORY_LOCK_EARLY_SETTLEMENT");
+  throw advisoryLockError("ADVISORY_LOCK_WAIT_EVIDENCE_TIMEOUT");
+}
+
+function assertFalseObserverIdentities(evidence, expected) {
+  const negatives = [
+    { ...expected, waiterPid: String(Number(expected.waiterPid) + 1) },
+    { ...expected, holderPid: String(Number(expected.holderPid) + 1) },
+    { ...expected, database: String(Number(expected.database) + 1) },
+    { ...expected, classid: String((BigInt(expected.classid) + 1n) & 4294967295n) },
+    { ...expected, objid: String((BigInt(expected.objid) + 1n) & 4294967295n) },
+    { ...expected, objsubid: "2" },
+    { ...expected, waiterMode: "ShareLock" },
+    { ...expected, holderMode: "ShareLock" },
+    { ...expected, waiterGranted: true },
+    { ...expected, holderGranted: false },
+    { ...expected, activityState: "idle" },
+    { ...expected, waitEventType: "LWLock" },
+    { ...expected, waitEvent: "relation" },
+  ];
+  for (const negative of negatives) assert.equal(advisoryWaitEvidenceMatches([evidence], negative), false);
+}
 async function queryCompiledTargetLock(client, observationBundle, lockStatement) {
   const result = await client.query(lockStatement.sql);
   validateBrokerStatementResult(observationBundle, lockStatement, result.rows);
@@ -642,102 +970,616 @@ async function queryCompiledTargetLock(client, observationBundle, lockStatement)
 
 async function runUncontendedAdvisoryLockProof(pool, observationBundle, lockStatement) {
   const client = await pool.connect();
+  const observer = await pool.connect();
   try {
+    const identity = await deriveExpectedAdvisoryLockIdentity(observer, observationBundle);
     await client.query("begin isolation level serializable read write");
     assert.deepEqual(await queryCompiledTargetLock(client, observationBundle, lockStatement), [{ lock_acquired: true }]);
+    await assertExactHolderAdvisoryLock(observer, client.processID, identity);
     await client.query("commit");
   } catch (error) {
     await client.query("rollback").catch(() => {});
     throw error;
   } finally {
+    observer.release();
     client.release();
   }
 }
 
+function createAdvisoryWaiterState() {
+  let resolveSubmitted;
+  const submitted = new Promise((resolve) => { resolveSubmitted = resolve; });
+  const state = {
+    submitted: false,
+    settled: false,
+    submittedAt: 0,
+    nativePromise: null,
+    nativeOutcome: null,
+    resolveSubmitted,
+    submittedPromise: submitted,
+  };
+  return state;
+}
+
+async function prepareAdvisoryTransaction(client) {
+  await client.query("begin isolation level serializable read write");
+  await client.query("set local lock_timeout = '8000ms'");
+  await client.query("set local statement_timeout = '0'");
+  await client.query("set local transaction_timeout = '0'");
+  await client.query("set local idle_in_transaction_session_timeout = '0'");
+  assert.equal(client.getTransactionStatus(), "T");
+}
+
+function captureDirectAdvisoryQuery(waiterState, queryPromise) {
+  waiterState.nativePromise = queryPromise;
+  waiterState.submittedAt = performance.now();
+  waiterState.submitted = true;
+  waiterState.nativeOutcome = queryPromise.then(
+    (result) => {
+      waiterState.settled = true;
+      return { state: "resolved", result: { rows: result.rows } };
+    },
+    (error) => {
+      waiterState.settled = true;
+      return { state: "rejected", error, code: error?.code };
+    },
+  );
+  waiterState.resolveSubmitted();
+}
+
+function advisoryWaitContract(waiterPid, holderPid, identity) {
+  return {
+    waiterPid,
+    holderPid,
+    ...identity,
+    waiterMode: "ExclusiveLock",
+    holderMode: "ExclusiveLock",
+    waiterGranted: false,
+    holderGranted: true,
+    activityState: "active",
+    waitEventType: "Lock",
+    waitEvent: "advisory",
+  };
+}
+
+function captureNativeTargetQuery(proof, { statement, client, queryPromise }) {
+  assert.equal(statement.id, "target_advisory_lock");
+  assert.equal(statement.sha256, proof.targetLockStatementDigest);
+  assert.equal(client.processID, proof.waiterClient.processID);
+  proof.waiterState.nativePromise = queryPromise;
+  proof.waiterState.submittedAt = performance.now();
+  proof.waiterState.submitted = true;
+  proof.waiterState.nativeOutcome = queryPromise.then(
+    (result) => {
+      proof.waiterState.settled = true;
+      proof.stopFurtherDispatch = true;
+      return { state: "resolved", result };
+    },
+    (error) => {
+      proof.waiterState.settled = true;
+      proof.stopFurtherDispatch = true;
+      return { state: "rejected", error, code: error?.code };
+    },
+  );
+  proof.waiterState.resolveSubmitted();
+}
+
+async function launchBrokeredAdvisoryProof(pool, context, lockStatement, migrationSql, before, ownership, proof) {
+  const adapter = new DisposableBrokerAdapter(pool, context, { advisoryLockProof: proof });
+  const terminal = executeBrokeredMigrationPlan({
+    observationBundle: context.observationBundle,
+    prestate: before.artifacts.prestate,
+    plan: before.artifacts.plan,
+    migrationSql,
+    broker: adapter,
+    attemptStore: new SingleUseAttemptStore(),
+    restoreCapabilityProvider: restoreCapabilityProviderFor(before.artifacts.plan),
+  }).then(
+    (receipt) => ({ receipt }),
+    (error) => ({ error }),
+  );
+  proof.terminal = terminal;
+  let submissionTimer;
+  const submitted = await Promise.race([
+    proof.waiterState.submittedPromise.then(() => true),
+    terminal.then(() => false),
+    new Promise((resolve) => { submissionTimer = setTimeout(() => resolve(false), 30_000); }),
+  ]);
+  clearTimeout(submissionTimer);
+  if (!submitted) throw advisoryLockError("ADVISORY_LOCK_EARLY_SETTLEMENT");
+  assert.equal(proof.waiterState.nativePromise instanceof Promise, true);
+  assert.deepEqual(adapter.dispatchedOrdinals, [lockStatement.ordinal]);
+  assert.deepEqual(adapter.dispatchedStatementDigests, [lockStatement.sha256]);
+  return { adapter, terminal };
+}
+
+async function awaitAdvisoryOutcome(promise, timeoutMilliseconds, code, startedAt = performance.now()) {
+  let timer;
+  const remainingMilliseconds = Math.max(1, timeoutMilliseconds - (performance.now() - startedAt));
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(advisoryLockError(code)), remainingMilliseconds);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function verifyAdvisoryProofCleanup(pool, ownership, waiterState, identity, holderReleased, proof = null) {
+  const deadline = performance.now() + ADVISORY_LOCK_TIMING.cleanupMilliseconds;
+  const errors = [];
+  const holder = ownership.holder;
+  const waiter = ownership.waiter;
+  const observer = ownership.observer;
+  const remaining = () => Math.max(1, deadline - performance.now());
+  const bounded = async (promise, limit) => {
+    promise.catch(() => {});
+    let timer;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(advisoryLockError("ADVISORY_LOCK_CLEANUP_FAILED")),
+            Math.max(1, Math.min(limit, remaining())));
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  if (!holderReleased) {
+    try {
+      await bounded(holder.query("rollback"), 1_000);
+    } catch {
+      errors.push("holder-rollback");
+    }
+  }
+  if (waiterState?.nativeOutcome && !waiterState.settled) {
+    try {
+      await bounded(waiterState.nativeOutcome, 1_000);
+    } catch {
+      try {
+        const cancel = await bounded(
+          observer.query("select pg_catalog.pg_cancel_backend($1) as cancelled", [waiter.processID]),
+          ADVISORY_LOCK_TIMING.observerResponseMilliseconds,
+        );
+        if (cancel.rows[0]?.cancelled !== true) errors.push("waiter-cancel");
+      } catch {
+        errors.push("waiter-cancel");
+      }
+      try {
+        await bounded(waiterState.nativeOutcome, 1_000);
+      } catch {
+        errors.push("waiter-settlement");
+      }
+    }
+  }
+  if (proof?.terminal) {
+    try {
+      const terminal = await bounded(proof.terminal, ADVISORY_LOCK_TIMING.cleanupMilliseconds);
+      if (terminal.error) errors.push("broker-terminal");
+    } catch {
+      errors.push("broker-terminal");
+    }
+  }
+  for (const client of [waiter, holder]) {
+    if (ownership.released.has(client)) continue;
+    try {
+      const status = client.getTransactionStatus();
+      if (status === "T" || status === "E") await bounded(client.query("rollback"), 500);
+    } catch {
+      errors.push("transaction-rollback");
+    }
+  }
+  for (const client of [waiter, holder, observer]) {
+    try {
+      await releaseAdvisoryClient(ownership, client, true);
+    } catch {
+      errors.push("client-release");
+    }
+  }
+  const pids = [holder.processID, waiter.processID, observer.processID].filter(Number.isInteger);
+  let absent = false;
+  while (performance.now() < deadline) {
+    try {
+      const [result, lockResult] = await Promise.all([
+        bounded(pool.query(
+          "select count(*)::text as remaining from pg_catalog.pg_stat_activity where pid = any($1::int[])",
+          [pids],
+        ), 500),
+        bounded(pool.query(
+          "select count(*)::text as remaining from pg_catalog.pg_locks where pid = any($1::int[]) and locktype = 'advisory' and database = $2::oid and classid = $3::oid and objid = $4::oid and objsubid = $5::smallint",
+          [pids, identity.database, identity.classid, identity.objid, identity.objsubid],
+        ), 500),
+      ]);
+      if (result.rows[0]?.remaining === "0" && lockResult.rows[0]?.remaining === "0") {
+        absent = true;
+        break;
+      }
+    } catch {
+      errors.push("independent-observer");
+      break;
+    }
+    if (performance.now() < deadline) {
+      await delay(Math.min(ADVISORY_LOCK_TIMING.pollMilliseconds, remaining()));
+    }
+  }
+  if (!absent) errors.push("owned-session-or-lock-remains");
+  if (errors.length > 0) throw advisoryLockError("ADVISORY_LOCK_CLEANUP_FAILED");
+}
 async function runAdvisoryLockContentionProof(pool, observationBundle, lockStatement) {
   for (const releaseStatement of ["commit", "rollback"]) {
-    const holder = await pool.connect();
-    const waiter = await pool.connect();
+    const ownership = await reserveAdvisoryLockClients(pool);
+    const identity = await deriveExpectedAdvisoryLockIdentity(ownership.observer, observationBundle);
+    const holderPid = ownership.holder.processID;
+    const waiterPid = ownership.waiter.processID;
     let holderReleased = false;
-    let waiterFinished = false;
-    let waiterPromise;
+    let waiterState = null;
+    let primaryError = null;
     try {
-      await holder.query("begin isolation level serializable read write");
-      assert.deepEqual(await queryCompiledTargetLock(holder, observationBundle, lockStatement), [{ lock_acquired: true }]);
+      await prepareAdvisoryTransaction(ownership.holder);
+      assert.deepEqual(await queryCompiledTargetLock(ownership.holder, observationBundle, lockStatement), [{ lock_acquired: true }]);
+      await assertExactHolderAdvisoryLock(ownership.observer, holderPid, identity);
+      await prepareAdvisoryTransaction(ownership.waiter);
 
-      let waiterStartedResolve;
-      const waiterStarted = new Promise((resolve) => { waiterStartedResolve = resolve; });
-      const waiterDispatchTrace = [];
-      waiterPromise = (async () => {
-        await waiter.query("begin isolation level serializable read write");
-        waiterStartedResolve();
-        waiterDispatchTrace.push(lockStatement.id);
-        try {
-          return await queryCompiledTargetLock(waiter, observationBundle, lockStatement);
-        } finally {
-          waiterFinished = true;
-        }
-      })();
-      await waiterStarted;
+      waiterState = createAdvisoryWaiterState();
+      const nativePromise = ownership.waiter.query(lockStatement.sql);
+      captureDirectAdvisoryQuery(waiterState, nativePromise);
 
-      const waitEvidence = await waitForAdvisoryLockWait(pool, waiter.processID, holder.processID);
-      assert.equal(waitEvidence.waiter_pid, waiter.processID);
-      assert.equal(waitEvidence.holder_pid, holder.processID);
-      assert.equal(waitEvidence.wait_event_type, "Lock");
-      assert.equal(waitEvidence.wait_event, "advisory");
-      assert.equal(waiterFinished, false);
-      assert.deepEqual(waiterDispatchTrace, ["target_advisory_lock"]);
-
-      await holder.query(releaseStatement);
+      const expected = advisoryWaitContract(waiterPid, holderPid, identity);
+      const evidence = await waitForAdvisoryLockWait(
+        ownership.observer, waiterPid, holderPid, expected, waiterState, ownership,
+      );
+      assert.equal(waiterState.settled, false);
+      if (releaseStatement === "commit") assertFalseObserverIdentities(evidence, expected);
+      await ownership.holder.query(releaseStatement);
       holderReleased = true;
-      assert.deepEqual(await waiterPromise, [{ lock_acquired: true }]);
-      assert.deepEqual(waiterDispatchTrace, ["target_advisory_lock"]);
-      await waiter.query("commit");
-    } finally {
-      if (waiterPromise) await waiterPromise.catch(() => {});
-      if (!holderReleased) await holder.query("rollback").catch(() => {});
-      await waiter.query("rollback").catch(() => {});
-      holder.release();
-      waiter.release();
+      const outcome = await awaitAdvisoryOutcome(
+        waiterState.nativeOutcome,
+        ADVISORY_LOCK_TIMING.waiterDeadlineMilliseconds,
+        "ADVISORY_LOCK_EARLY_SETTLEMENT",
+        waiterState.submittedAt,
+      );
+      assert.equal(outcome.state, "resolved");
+      validateBrokerStatementResult(observationBundle, lockStatement, outcome.result.rows);
+      assert.deepEqual(outcome.result.rows, [{ lock_acquired: true }]);
+      await ownership.waiter.query("commit");
+    } catch (error) {
+      primaryError = error;
+    }
+    try {
+      await verifyAdvisoryProofCleanup(pool, ownership, waiterState, identity, holderReleased);
+    } catch (error) {
+      if (primaryError) throw new AggregateError([primaryError, error], "ADVISORY_LOCK_CLEANUP_FAILED");
+      throw error;
+    }
+    if (primaryError) throw primaryError;
+  }
+}
+
+async function runAdvisoryLockFailureProof(pool, context, lockStatement, migrationSql) {
+  for (const mode of ["timeout", "cancel"]) {
+    for (const observationDeferralMilliseconds of [0, 2_500]) {
+      const before = await assertCompleteClusterBaseline(
+        pool, context, migrationSql, mode + " advisory lock: before",
+      );
+      const ownership = await reserveAdvisoryLockClients(pool);
+      const identity = await deriveExpectedAdvisoryLockIdentity(ownership.observer, context.observationBundle);
+      const holderPid = ownership.holder.processID;
+      const waiterPid = ownership.waiter.processID;
+      const waiterState = createAdvisoryWaiterState();
+      const proof = {
+        waiterClient: ownership.waiter,
+        targetLockStatementDigest: lockStatement.sha256,
+        onTargetLockQuery: null,
+        waiterState,
+        stopFurtherDispatch: false,
+      };
+      proof.onTargetLockQuery = (entry) => captureNativeTargetQuery(proof, entry);
+      let holderReleased = false;
+      let primaryError = null;
+      try {
+        await prepareAdvisoryTransaction(ownership.holder);
+        assert.deepEqual(await queryCompiledTargetLock(ownership.holder, context.observationBundle, lockStatement), [{ lock_acquired: true }]);
+        await assertExactHolderAdvisoryLock(ownership.observer, holderPid, identity);
+        await prepareAdvisoryTransaction(ownership.waiter);
+
+        const { adapter, terminal } = await launchBrokeredAdvisoryProof(
+          pool, context, lockStatement, migrationSql, before, ownership, proof,
+        );
+        const expected = advisoryWaitContract(waiterPid, holderPid, identity);
+        const evidence = await waitForAdvisoryLockWait(
+          ownership.observer, waiterPid, holderPid, expected, waiterState, ownership,
+          { observationDeferralMilliseconds },
+        );
+        assert.equal(waiterState.settled, false);
+        if (mode === "timeout" && observationDeferralMilliseconds === 0) {
+          assertFalseObserverIdentities(evidence, expected);
+        }
+        await assertExactHolderAdvisoryLock(ownership.observer, holderPid, identity);
+
+        if (mode === "cancel") {
+          const cancelResult = await awaitAdvisoryOutcome(
+            ownership.observer.query("select pg_catalog.pg_cancel_backend($1) as cancelled", [waiterPid]),
+            ADVISORY_LOCK_TIMING.observerResponseMilliseconds,
+            "ADVISORY_LOCK_OBSERVER_FAILED",
+          );
+          assert.deepEqual(cancelResult.rows, [{ cancelled: true }]);
+        }
+
+        const nativeOutcome = await awaitAdvisoryOutcome(
+          waiterState.nativeOutcome,
+          ADVISORY_LOCK_TIMING.waiterDeadlineMilliseconds,
+          "ADVISORY_LOCK_EARLY_SETTLEMENT",
+          waiterState.submittedAt,
+        );
+        assert.equal(nativeOutcome.state, "rejected");
+        assert.equal(nativeOutcome.code, mode === "timeout" ? "55P03" : "57014");
+        if (mode === "timeout") {
+          assert.equal(ownership.holder.getTransactionStatus(), "T");
+          await assertExactHolderAdvisoryLock(ownership.observer, holderPid, identity);
+        }
+
+        const terminalResult = await awaitAdvisoryOutcome(
+          terminal, ADVISORY_LOCK_TIMING.cleanupMilliseconds, "ADVISORY_LOCK_CLEANUP_FAILED",
+        );
+        assert.equal(terminalResult.error, undefined);
+        const receipt = terminalResult.receipt;
+        assert.ok(receipt);
+        assert.equal(receipt.outcome, "FAIL");
+        assert.equal(receipt.commit_state, "NOT_COMMITTED");
+        assert.equal(receipt.rollback_state, "VERIFIED");
+        assert.equal(adapter.lastFailure?.code, mode === "timeout" ? "55P03" : "57014");
+        assert.deepEqual(adapter.dispatchedOrdinals, [lockStatement.ordinal]);
+        assert.deepEqual(adapter.dispatchedStatementDigests, [lockStatement.sha256]);
+        assert.deepEqual(adapter.roleAssumptionStatements, []);
+        assert.deepEqual(adapter.migrationStatements, []);
+        assert.equal(adapter.cleanupProofs, 1);
+      } catch (error) {
+        primaryError = error;
+        proof.stopFurtherDispatch = true;
+      }
+      try {
+        await verifyAdvisoryProofCleanup(pool, ownership, waiterState, identity, holderReleased, proof);
+      } catch (cleanupError) {
+        if (primaryError) throw new AggregateError([primaryError, cleanupError], "ADVISORY_LOCK_CLEANUP_FAILED");
+        throw cleanupError;
+      }
+      if (primaryError) throw primaryError;
+      await assertCompleteClusterBaseline(
+        pool, context, migrationSql, mode + " advisory lock: after",
+      );
     }
   }
 }
 
-async function runAdvisoryLockFailureProof(pool, observationBundle, lockStatement) {
-  const runBlockedFailure = async (mode) => {
-    const holder = await pool.connect();
-    const waiter = await pool.connect();
-    let holderReleased = false;
-    try {
-      await holder.query("begin isolation level serializable read write");
-      assert.deepEqual(await queryCompiledTargetLock(holder, observationBundle, lockStatement), [{ lock_acquired: true }]);
-      await waiter.query("begin isolation level serializable read write");
-      if (mode === "timeout") await waiter.query("set local lock_timeout = '200ms'");
-      const downstreamDispatches = [];
-      const waiterQuery = (async () => {
-        const trace = [lockStatement.id];
-        const rows = await queryCompiledTargetLock(waiter, observationBundle, lockStatement);
-        return { rows, trace };
-      })();
-      await waitForAdvisoryLockWait(pool, waiter.processID, holder.processID);
-      if (mode === "cancel") {
-        const cancelResult = await pool.query("select pg_catalog.pg_cancel_backend($1) as cancelled", [waiter.processID]);
-        assert.deepEqual(cancelResult.rows, [{ cancelled: true }]);
-      }
-      await assert.rejects(waiterQuery, (error) => mode === "timeout" ? error?.code === "55P03" : error?.code === "57014");
-      assert.deepEqual(downstreamDispatches, []);
-      await waiter.query("rollback");
-      await holder.query("rollback");
-      holderReleased = true;
-    } finally {
-      if (!holderReleased) await holder.query("rollback").catch(() => {});
-      await waiter.query("rollback").catch(() => {});
-      holder.release();
-      waiter.release();
-    }
+async function runAdvisoryLockCleanupRegressionProofs(pool, context, lockStatement, migrationSql) {
+  await runPartialAdvisoryClientAcquisitionProof(pool);
+  await runObserverFailureCleanupProof(pool, context, lockStatement, migrationSql);
+  await runEarlySettlementCleanupProof(pool, context, lockStatement, migrationSql);
+  await runCancellationFailureCleanupProof(pool, context, lockStatement, migrationSql);
+  await runHolderReleaseRaceCleanupProof(pool, context, lockStatement, migrationSql);
+}
+
+async function runPartialAdvisoryClientAcquisitionProof(pool) {
+  const originalConnect = pool.connect.bind(pool);
+  const acquiredPids = [];
+  let calls = 0;
+  pool.connect = (...args) => {
+    calls += 1;
+    if (calls === 3) return Promise.reject(new Error("INJECTED_PARTIAL_ACQUISITION_FAILURE"));
+    return originalConnect(...args).then((client) => {
+      acquiredPids.push(client.processID);
+      return client;
+    });
   };
-  await runBlockedFailure("timeout");
-  await runBlockedFailure("cancel");
+  try {
+    await assert.rejects(() => reserveAdvisoryLockClients(pool));
+  } finally {
+    pool.connect = originalConnect;
+  }
+  assert.equal(calls, 3);
+  assert.equal(acquiredPids.length, 2);
+  const result = await pool.query(
+    "select count(*)::text as remaining from pg_catalog.pg_stat_activity where pid = any($1::int[])",
+    [acquiredPids],
+  );
+  assert.deepEqual(result.rows, [{ remaining: "0" }]);
+}
+
+async function runObserverFailureCleanupProof(pool, context, lockStatement, migrationSql) {
+  const before = await assertCompleteClusterBaseline(pool, context, migrationSql, "observer failure cleanup: before");
+  const ownership = await reserveAdvisoryLockClients(pool);
+  const identity = await deriveExpectedAdvisoryLockIdentity(ownership.observer, context.observationBundle);
+  const waiterState = createAdvisoryWaiterState();
+  const proof = {
+    waiterClient: ownership.waiter,
+    targetLockStatementDigest: lockStatement.sha256,
+    waiterState,
+    stopFurtherDispatch: false,
+    onTargetLockQuery: null,
+  };
+  proof.onTargetLockQuery = (entry) => captureNativeTargetQuery(proof, entry);
+  let primaryError = null;
+  try {
+    await prepareAdvisoryTransaction(ownership.holder);
+    assert.deepEqual(await queryCompiledTargetLock(ownership.holder, context.observationBundle, lockStatement), [{ lock_acquired: true }]);
+    await assertExactHolderAdvisoryLock(ownership.observer, ownership.holder.processID, identity);
+    await prepareAdvisoryTransaction(ownership.waiter);
+    await launchBrokeredAdvisoryProof(pool, context, lockStatement, migrationSql, before, ownership, proof);
+    await releaseAdvisoryClient(ownership, ownership.observer, true);
+    await assert.rejects(
+      () => waitForAdvisoryLockWait(
+        ownership.observer,
+        ownership.waiter.processID,
+        ownership.holder.processID,
+        advisoryWaitContract(ownership.waiter.processID, ownership.holder.processID, identity),
+        waiterState,
+        ownership,
+      ),
+      (error) => error?.code === "ADVISORY_LOCK_OBSERVER_FAILED",
+    );
+  } catch (error) {
+    primaryError = error;
+    proof.stopFurtherDispatch = true;
+  }
+  try {
+    await verifyAdvisoryProofCleanup(pool, ownership, waiterState, identity, false, proof);
+  } catch (cleanupError) {
+    if (primaryError) throw new AggregateError([primaryError, cleanupError], "ADVISORY_LOCK_CLEANUP_FAILED");
+    throw cleanupError;
+  }
+  if (primaryError) throw primaryError;
+  await assertCompleteClusterBaseline(pool, context, migrationSql, "observer failure cleanup: after");
+}
+
+async function runEarlySettlementCleanupProof(pool, context, lockStatement, migrationSql) {
+  const before = await assertCompleteClusterBaseline(pool, context, migrationSql, "early settlement cleanup: before");
+  const ownership = await reserveAdvisoryLockClients(pool);
+  const identity = await deriveExpectedAdvisoryLockIdentity(ownership.observer, context.observationBundle);
+  const waiterState = createAdvisoryWaiterState();
+  let primaryError = null;
+  try {
+    await prepareAdvisoryTransaction(ownership.waiter);
+    const nativePromise = ownership.waiter.query(lockStatement.sql);
+    captureDirectAdvisoryQuery(waiterState, nativePromise);
+    const outcome = await awaitAdvisoryOutcome(
+      waiterState.nativeOutcome,
+      ADVISORY_LOCK_TIMING.waiterDeadlineMilliseconds,
+      "ADVISORY_LOCK_EARLY_SETTLEMENT",
+      waiterState.submittedAt,
+    );
+    assert.equal(outcome.state, "resolved");
+    assert.deepEqual(outcome.result.rows, [{ lock_acquired: true }]);
+    await assert.rejects(
+      () => waitForAdvisoryLockWait(
+        ownership.observer,
+        ownership.waiter.processID,
+        ownership.holder.processID,
+        advisoryWaitContract(ownership.waiter.processID, ownership.holder.processID, identity),
+        waiterState,
+        ownership,
+      ),
+      (error) => error?.code === "ADVISORY_LOCK_EARLY_SETTLEMENT",
+    );
+  } catch (error) {
+    primaryError = error;
+  }
+  try {
+    await verifyAdvisoryProofCleanup(pool, ownership, waiterState, identity, true);
+  } catch (cleanupError) {
+    if (primaryError) throw new AggregateError([primaryError, cleanupError], "ADVISORY_LOCK_CLEANUP_FAILED");
+    throw cleanupError;
+  }
+  if (primaryError) throw primaryError;
+  await assertCompleteClusterBaseline(pool, context, migrationSql, "early settlement cleanup: after");
+}
+
+async function runCancellationFailureCleanupProof(pool, context, lockStatement, migrationSql) {
+  const before = await assertCompleteClusterBaseline(pool, context, migrationSql, "cancellation failure cleanup: before");
+  const ownership = await reserveAdvisoryLockClients(pool);
+  const identity = await deriveExpectedAdvisoryLockIdentity(ownership.observer, context.observationBundle);
+  const waiterState = createAdvisoryWaiterState();
+  const proof = {
+    waiterClient: ownership.waiter,
+    targetLockStatementDigest: lockStatement.sha256,
+    waiterState,
+    stopFurtherDispatch: false,
+    onTargetLockQuery: null,
+  };
+  proof.onTargetLockQuery = (entry) => captureNativeTargetQuery(proof, entry);
+  let primaryError = null;
+  try {
+    await prepareAdvisoryTransaction(ownership.holder);
+    assert.deepEqual(await queryCompiledTargetLock(ownership.holder, context.observationBundle, lockStatement), [{ lock_acquired: true }]);
+    await assertExactHolderAdvisoryLock(ownership.observer, ownership.holder.processID, identity);
+    await prepareAdvisoryTransaction(ownership.waiter);
+    await launchBrokeredAdvisoryProof(pool, context, lockStatement, migrationSql, before, ownership, proof);
+    await waitForAdvisoryLockWait(
+      ownership.observer,
+      ownership.waiter.processID,
+      ownership.holder.processID,
+      advisoryWaitContract(ownership.waiter.processID, ownership.holder.processID, identity),
+      waiterState,
+      ownership,
+    );
+    const wrongTargetCancellation = await ownership.observer.query(
+      "select pg_catalog.pg_cancel_backend($1) as cancelled",
+      [ownership.holder.processID],
+    );
+    assert.deepEqual(wrongTargetCancellation.rows, [{ cancelled: false }]);
+    proof.stopFurtherDispatch = true;
+  } catch (error) {
+    primaryError = error;
+    proof.stopFurtherDispatch = true;
+  }
+  try {
+    await verifyAdvisoryProofCleanup(pool, ownership, waiterState, identity, false, proof);
+  } catch (cleanupError) {
+    if (primaryError) throw new AggregateError([primaryError, cleanupError], "ADVISORY_LOCK_CLEANUP_FAILED");
+    throw cleanupError;
+  }
+  if (primaryError) throw primaryError;
+  await assertCompleteClusterBaseline(pool, context, migrationSql, "cancellation failure cleanup: after");
+}
+
+async function runHolderReleaseRaceCleanupProof(pool, context, lockStatement, migrationSql) {
+  const before = await assertCompleteClusterBaseline(pool, context, migrationSql, "holder release race cleanup: before");
+  const ownership = await reserveAdvisoryLockClients(pool);
+  const identity = await deriveExpectedAdvisoryLockIdentity(ownership.observer, context.observationBundle);
+  const waiterState = createAdvisoryWaiterState();
+  const proof = {
+    waiterClient: ownership.waiter,
+    targetLockStatementDigest: lockStatement.sha256,
+    waiterState,
+    stopFurtherDispatch: false,
+    onTargetLockQuery: null,
+  };
+  proof.onTargetLockQuery = (entry) => captureNativeTargetQuery(proof, entry);
+  let holderReleased = false;
+  let releaseError = null;
+  let primaryError = null;
+  try {
+    await prepareAdvisoryTransaction(ownership.holder);
+    assert.deepEqual(await queryCompiledTargetLock(ownership.holder, context.observationBundle, lockStatement), [{ lock_acquired: true }]);
+    await assertExactHolderAdvisoryLock(ownership.observer, ownership.holder.processID, identity);
+    await prepareAdvisoryTransaction(ownership.waiter);
+    await launchBrokeredAdvisoryProof(pool, context, lockStatement, migrationSql, before, ownership, proof);
+    const holderRelease = delay(100).then(async () => {
+      await ownership.holder.query("rollback");
+      holderReleased = true;
+    }).catch((error) => { releaseError = error; });
+    await assert.rejects(
+      () => waitForAdvisoryLockWait(
+        ownership.observer,
+        ownership.waiter.processID,
+        ownership.holder.processID,
+        advisoryWaitContract(ownership.waiter.processID, ownership.holder.processID, identity),
+        waiterState,
+        ownership,
+        { observationDeferralMilliseconds: 2_500 },
+      ),
+      (error) => error?.code === "ADVISORY_LOCK_EARLY_SETTLEMENT",
+    );
+    await holderRelease;
+    if (releaseError) throw releaseError;
+    assert.equal(holderReleased, true);
+    assert.equal(waiterState.settled, true);
+  } catch (error) {
+    primaryError = error;
+    proof.stopFurtherDispatch = true;
+  }
+  try {
+    await verifyAdvisoryProofCleanup(pool, ownership, waiterState, identity, holderReleased, proof);
+  } catch (cleanupError) {
+    if (primaryError) throw new AggregateError([primaryError, cleanupError], "ADVISORY_LOCK_CLEANUP_FAILED");
+    throw cleanupError;
+  }
+  if (primaryError) throw primaryError;
+  await assertCompleteClusterBaseline(pool, context, migrationSql, "holder release race cleanup: after");
 }
 
 function strictCanonicalJson(serialized) {
