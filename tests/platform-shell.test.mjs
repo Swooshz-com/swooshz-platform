@@ -845,9 +845,3 @@ test("platform shell module does not import frontend frameworks provider SDKs DB
   assert.doesNotMatch(contents, /from\s+["'][^"']*(?:db|drizzle|pg|migrations?)/i);
   assert.doesNotMatch(contents, /node:http|src\/db|\.{1,2}\/db|\.{1,2}\/\.{1,2}\/db/i);
 });
-
-function extractTopbarActions(html) {
-  const match = html.match(/<div class="portal-topbar-actions" aria-hidden="true">[\s\S]*?<\/div>/);
-  assert.ok(match, "expected portal topbar actions container");
-  return match[0];
-}
