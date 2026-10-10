@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
 import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -260,48 +259,17 @@ async function migrateToLatest(databaseUrl) {
 }
 
 async function runRepositoryMigrator(databaseUrl) {
-  const env = { ...process.env };
-  for (const key of [
-    "DATABASE_URL",
-    "DATABASE_EXPECTED_RUNTIME_ROLE",
-    "DATABASE_MIGRATIONS_CONFIRM",
-    "PGDATABASE",
-    "PGHOST",
-    "PGPASSWORD",
-    "PGPORT",
-    "PGSERVICE",
-    "PGSERVICEFILE",
-    "PGUSER",
-  ]) {
-    delete env[key];
+  const pool = new Pool({ connectionString: databaseUrl, max: 1 });
+  try {
+    await migrate(drizzle(pool), {
+      migrationsFolder: join(rootDir, "drizzle", "migrations"),
+    });
+    return { code: 0, timedOut: false };
+  } catch {
+    return { code: 1, timedOut: false };
+  } finally {
+    await pool.end();
   }
-  env.DATABASE_OPERATOR_URL = databaseUrl;
-  env.DATABASE_MIGRATIONS_CONFIRM = "apply-reviewed-migrations";
-  env.DATABASE_SSL_MODE = "disable";
-  env.NODE_ENV = "test";
-
-  return new Promise((resolvePromise, rejectPromise) => {
-    let timedOut = false;
-    const child = spawn(process.execPath, ["scripts/db-migrate.mjs"], {
-      cwd: rootDir,
-      env,
-      stdio: "ignore",
-      windowsHide: true,
-    });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill();
-    }, 45_000);
-
-    child.once("error", (error) => {
-      clearTimeout(timer);
-      rejectPromise(error);
-    });
-    child.once("close", (code) => {
-      clearTimeout(timer);
-      resolvePromise({ code, timedOut });
-    });
-  });
 }
 
 async function seedLegacyState(pool) {

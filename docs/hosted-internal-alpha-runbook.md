@@ -1,10 +1,14 @@
 # Hosted Internal Alpha Runbook
 
-This runbook prepares Swooshz Platform for a reviewed hosted internal-alpha handoff. It is documentation, guardrails, and readiness tooling only. It does not deploy, provision, expose, sync, restart, or configure hosted infrastructure. This PR is readiness only, not full production readiness.
-## Current Run-164 control-plane contract (authoritative)
+## Current Run-594 production database authority (authoritative)
 
-The current repository contract is direct-role based and supersedes conflicting
-historical role-transition rehearsal text below. Run-164 does not create or
+This brokered contract supersedes the Run-164 direct-role production instructions below; those sections remain historical evidence only. Production database operations require the reviewed provider broker, exact target/provider role name-and-OID binding, complete application/runtime authority-graph closure, and canonical `platform_migrator NOLOGIN PASSWORD NULL`. The broker executes the repository-generated migration 0010 bundle in one transaction using `SET LOCAL ROLE platform_migrator`; the ledger insertion is part of that same transaction. A durable single-use reservation is consumed before dispatch and no indeterminate result may be retried. `DATABASE_OPERATOR_URL`, migrator credentials, browser OAuth, and direct production PostgreSQL sessions are prohibited. Runner-owned loopback disposable fixtures are the only direct-client exception.
+
+This runbook prepares Swooshz Platform for a reviewed hosted internal-alpha handoff. It is documentation, guardrails, and readiness tooling only. It does not deploy, provision, expose, sync, restart, or configure hosted infrastructure. This PR is readiness only, not full production readiness.
+## Historical Run-164 direct-role contract (superseded)
+
+The former repository contract was direct-role based. It is retained as
+historical role-transition rehearsal text only. Run-164 did not create or
 alter any live Neon role, credential, membership, ownership, ACL, deployment,
 DNS/TLS, Coolify, Auth0, Resend, or Ledger state.
 

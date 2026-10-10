@@ -436,13 +436,16 @@ test("hosted internal alpha runbook avoids private material and unsafe callback 
   assert.doesNotMatch(runbook, /127\.0\.0\.1/);
 });
 
-test("hosted runbook and repository contract align to the current direct-role model", async () => {
+test("hosted runbook and repository contract align to the current brokered authority model", async () => {
   const runbook = await readRunbook();
 
-  assert.match(runbook, /Current Run-164 control-plane contract \(authoritative\)/i);
-  assert.match(runbook, /DATABASE_URL.*direct.*platform_runtime/i);
-  assert.match(runbook, /DATABASE_OPERATOR_URL.*direct.*platform_migrator/i);
-  assert.match(runbook, /never falls back to `?DATABASE_URL`?/i);
+  assert.match(runbook, /Current Run-594 production database authority \(authoritative\)/i);
+  assert.match(runbook, /provider broker/i);
+  assert.match(runbook, /SET LOCAL ROLE platform_migrator/i);
+  assert.match(runbook, /platform_migrator NOLOGIN PASSWORD NULL/i);
+  assert.match(runbook, /DATABASE_OPERATOR_URL.*prohibited/i);
+  assert.match(runbook, /single-use reservation/i);
+  assert.match(runbook, /no indeterminate result may be retried/i);
   assert.match(runbook, /database owner.*platform_app/i);
   assert.match(runbook, /public.*schema owner.*pg_database_owner/i);
   assert.match(runbook, /No\s+`platform_maintenance`\s+role exists/i);
@@ -455,7 +458,7 @@ test("hosted runbook and repository contract align to the current direct-role mo
   assert.match(runbook, /`NEONDB_SWOOSHZ_PLATFORM_LEGACY_OWNER_URL`/i);
   assert.match(runbook, /`NEONDB_SWOOSHZ_PLATFORM_API_KEY`/i);
   assert.match(runbook, /`NEONDB_SWOOSHZ_PLATFORM_MIGRATOR_URL`/i);
-  assert.match(runbook, /`DATABASE_OPERATOR_URL`/i);
+  assert.match(runbook, /Historical Run-164 direct-role contract \(superseded\)/i);
   assert.match(runbook, /not yet created/i);
   assert.match(runbook, /npm run test:disposable-migrator-alignment/i);
   assert.match(runbook, /docs\/architecture\/PLATFORM-MIGRATOR-ALIGNMENT\.md/i);

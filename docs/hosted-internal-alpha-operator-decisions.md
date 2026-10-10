@@ -1,5 +1,9 @@
 # Hosted Internal Alpha Operator Decisions
 
+## Current database operator prerequisite
+
+The production database decision is now provider-brokered and secret-free to the repository process. An operator may proceed only with exact provider/target/OID evidence, complete authority-graph closure, dormant `platform_migrator NOLOGIN PASSWORD NULL`, the canonical migration 0010 bundle, durable one-attempt reservation, and fresh final observation. Direct operator URLs, migrator credentials, browser OAuth, and arbitrary SQL are not alternatives. Earlier direct-role options in this record are historical and not current production authority.
+
 This decision record defines the operator decisions required before any real hosted internal-alpha execution. It is documentation and approval tracking only. It does not deploy, provision, expose, configure, restart, run migrations, connect to databases, call OIDC, call SQAG, seed access, or approve hosted infrastructure.
 
 Hosted deployment is not approved by this PR. Do not deploy until every required decision is approved outside repo.

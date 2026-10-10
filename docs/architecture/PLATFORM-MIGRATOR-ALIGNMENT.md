@@ -1,5 +1,11 @@
 # Platform Migrator Alignment
 
+## Current brokered authority model
+
+This section supersedes earlier direct-credential execution guidance while retaining that material as historical rehearsal evidence. Production uses an existing provider-controlled session bound by exact role name/OID and target identifiers. The repository supplies an immutable, canonical statement bundle; the broker owns one fail-on-error transaction. After target, graph, ledger, source/build, and dormancy assertions, the transaction uses `SET LOCAL ROLE platform_migrator`. The session user remains the bound provider and the current user becomes the exact migrator. `platform_migrator` is canonically `NOLOGIN PASSWORD NULL`, and application/runtime principals have no direct, transitive, ADMIN, INHERIT, USAGE, or SET route to it or provider-control authority. The separate exact runtime-creator tuple remains unchanged.
+
+Production `DATABASE_OPERATOR_URL`, direct migrator credentials, browser OAuth, arbitrary SQL, reconnects, callbacks, and general pending-migration loops are prohibited. Only migration 0010 may be bundled, with its ledger insertion in the same atomic transaction. A durable reservation consumes the one attempt before dispatch; indeterminate transport is never retried. Fresh post-dispatch observation is required for finality.
+
 ## Purpose
 
 This document is the repository contract for issue #128 (dedicated Platform
