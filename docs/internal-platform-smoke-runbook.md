@@ -1,5 +1,9 @@
 # Internal Platform Smoke Runbook
 
+## Database prerequisite
+
+Hosted smoke may consume only a separately accepted broker receipt proving exact target/provider admission, dormant `platform_migrator`, complete authority closure, exact migration 0010 plus ledger atomicity, one-attempt accounting, and fresh final observation. Smoke operators must not configure `DATABASE_OPERATOR_URL`, retrieve migrator credentials, or run a direct migration. Runner-owned disposable PostgreSQL fixtures remain local validation only.
+
 This runbook verifies the current internal Swooshz Platform flow using already-approved platform services and routes. It is an operator checklist, not a product feature, deployment guide, or database provisioning guide.
 
 SQAG-side PR #122 and Platform PR #79 established the historical `appKey=sqag` baseline. They do not prove compatibility with the current cross-origin finalization and live-access-validation protocol. Record and jointly review the exact companion Platform and SQAG revisions before running hosted smoke. Live Platform-to-SQAG smoke remains pending until an operator deliberately runs the hosted/live smoke; this runbook must not be used to claim production readiness before that operator smoke is actually performed.

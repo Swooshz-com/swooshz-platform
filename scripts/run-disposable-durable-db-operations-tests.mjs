@@ -15,7 +15,7 @@ const containerNames = [
 const databaseName = "durable_operations_test";
 const maxOutputBytes = 64 * 1024;
 const maxDiagnosticChars = 2_000;
-const SAFE_TEST_TITLE = "Run-190 durable database operations on two disposable PostgreSQL 17 clusters";
+const SAFE_TEST_TITLE = "Run-598 exact durable broker bundle on two disposable PostgreSQL 17 clusters";
 const SAFE_FAILURE_CODES = new Set([
   "ERR_ASSERTION",
   "ERR_MODULE_NOT_FOUND",
@@ -30,6 +30,12 @@ const SAFE_FAILURE_CODES = new Set([
   "RESTORE_CAPABILITY_REQUIRED",
   "TARGET_MISMATCH",
   "UNEXPECTED_FAILURE",
+  "BROKER_AUTHORITY_GRAPH_REJECTED",
+  "BROKER_CANONICAL_POSTURE_REJECTED",
+  "BROKER_MIGRATION_IDENTITY_REJECTED",
+  "BROKER_SESSION_IDENTITY_REJECTED",
+  "BROKER_STATEMENT_RESULT_REJECTED",
+  "BROKER_TARGET_MISMATCH",
 ]);
 const SAFE_POSTGRES_CODES = new Set(["25006", "23505", "42501", "42703", "42P01", "55006", "57P01", "57P02", "57P03"]);
 const SAFE_FAILURE_TYPES = new Set(["testCodeFailure", "uncaughtException", "unhandledRejection", "testTimeout"]);
