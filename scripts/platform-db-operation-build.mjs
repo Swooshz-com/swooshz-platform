@@ -9,13 +9,22 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-export const OPERATOR_BUILD_MANIFEST_VERSION = 1;
+export const OPERATOR_BUILD_MANIFEST_VERSION = 2;
 export const OPERATOR_BUILD_MANIFEST_RELATIVE_PATH = "dist/db/platform-db-operation-build.json";
 
 const OPERATOR_ENTRYPOINTS = Object.freeze({
   durableOperations: "db/durable-operations.js",
+  brokeredMigration: "db/brokered-migration.js",
   databaseClient: "db/client.js",
+  databaseReadiness: "db/readiness.js",
 });
+const OPERATOR_SOURCE_FILES = Object.freeze([
+  "scripts/platform-db-operation.mjs",
+  "scripts/db-migrate.mjs",
+  "scripts/platform-db-readiness-check.mjs",
+  "scripts/platform-db-operation-build.mjs",
+  "package.json",
+]);
 const HEX40 = /^[0-9a-f]{40}$/u;
 const HEX64 = /^[0-9a-f]{64}$/u;
 
@@ -184,8 +193,11 @@ function assertManifestShape(manifest, revision) {
     typeof manifest.entrypoints !== "object" ||
     Array.isArray(manifest.entrypoints) ||
     manifest.entrypoints.durableOperations !== OPERATOR_ENTRYPOINTS.durableOperations ||
+    manifest.entrypoints.brokeredMigration !== OPERATOR_ENTRYPOINTS.brokeredMigration ||
     manifest.entrypoints.databaseClient !== OPERATOR_ENTRYPOINTS.databaseClient ||
-    !Array.isArray(manifest.modules)
+    manifest.entrypoints.databaseReadiness !== OPERATOR_ENTRYPOINTS.databaseReadiness ||
+    !Array.isArray(manifest.modules) ||
+    !Array.isArray(manifest.source_files)
   ) {
     throw verificationError();
   }
@@ -194,6 +206,11 @@ function assertManifestShape(manifest, revision) {
     assertModuleRecord(record);
     if (paths.has(record.path)) throw verificationError();
     paths.add(record.path);
+  }
+  if (manifest.source_files.length !== OPERATOR_SOURCE_FILES.length) throw verificationError();
+  for (let index = 0; index < OPERATOR_SOURCE_FILES.length; index += 1) {
+    const record = manifest.source_files[index];
+    if (!record || record.path !== OPERATOR_SOURCE_FILES[index] || typeof record.sha256 !== "string" || !HEX64.test(record.sha256)) throw verificationError();
   }
 }
 
@@ -209,11 +226,16 @@ export async function writePlatformDbOperationBuildManifest({ rootDir }) {
   const revision = await readSourceRevision(resolvedRootDir);
   const distRoot = resolve(resolvedRootDir, "dist");
   const modules = await collectModuleManifest(distRoot);
+  const source_files = await Promise.all(OPERATOR_SOURCE_FILES.map(async (sourcePath) => ({
+    path: sourcePath,
+    sha256: createHash("sha256").update(await readFile(resolve(resolvedRootDir, sourcePath))).digest("hex"),
+  })));
   const manifest = {
     version: OPERATOR_BUILD_MANIFEST_VERSION,
     source_git_sha: revision,
     entrypoints: { ...OPERATOR_ENTRYPOINTS },
     modules,
+    source_files,
   };
   await writeFile(resolve(resolvedRootDir, OPERATOR_BUILD_MANIFEST_RELATIVE_PATH), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   return manifest;
@@ -233,13 +255,20 @@ export async function verifyPlatformDbOperationBuild({ rootDir, expectedGitSha }
   assertManifestShape(manifest, revision);
   const actualModules = await collectModuleManifest(resolve(resolvedRootDir, "dist"));
   if (!manifestsEqual(manifest.modules, actualModules)) throw verificationError();
+  const actualSourceFiles = await Promise.all(OPERATOR_SOURCE_FILES.map(async (sourcePath) => ({
+    path: sourcePath,
+    sha256: createHash("sha256").update(await readFile(resolve(resolvedRootDir, sourcePath))).digest("hex"),
+  })));
+  if (JSON.stringify(manifest.source_files) !== JSON.stringify(actualSourceFiles)) throw verificationError();
   await readSourceRevision(resolvedRootDir, expected, true);
   return {
     sourceGitSha: revision,
     manifestPath,
     entrypoints: {
       durableOperations: absoluteDistPath(resolve(resolvedRootDir, "dist"), manifest.entrypoints.durableOperations),
+      brokeredMigration: absoluteDistPath(resolve(resolvedRootDir, "dist"), manifest.entrypoints.brokeredMigration),
       databaseClient: absoluteDistPath(resolve(resolvedRootDir, "dist"), manifest.entrypoints.databaseClient),
+      databaseReadiness: absoluteDistPath(resolve(resolvedRootDir, "dist"), manifest.entrypoints.databaseReadiness),
     },
   };
 }
