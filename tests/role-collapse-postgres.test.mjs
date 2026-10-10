@@ -1,38 +1,34 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { types as nodeUtilTypes } from "node:util";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { DrizzleQueryError } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
-import { migrate } from "drizzle-orm/node-postgres/migrator";
-import { Pool } from "pg";
+import { DatabaseError, Pool } from "pg";
 
 import * as schema from "../dist/db/schema.js";
 import { createDrizzlePlatformRepositories } from "../dist/db/repositories.js";
 import { removeWorkspaceMembership } from "../dist/platform/workspace-admin-service.js";
 
 const rootDir = resolve(".");
-const migrationDatabaseUrl = process.env.ROLE_COLLAPSE_TEST_MIGRATION_OPERATOR_URL;
-const concurrencyDatabaseUrl = process.env.ROLE_COLLAPSE_TEST_CONCURRENCY_OPERATOR_URL;
-const proofEnabled =
-  Boolean(migrationDatabaseUrl && concurrencyDatabaseUrl) &&
-  process.env.ROLE_COLLAPSE_TEST_CONFIRM === "disposable-only";
-const skipReason = proofEnabled
-  ? false
-  : "requires the Run-153 disposable PostgreSQL 17 runner";
+const isStandalone =
+  process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
-test("PostgreSQL 17 proves the real 0009 to 0010 role-collapse migration", {
-  skip: skipReason,
-}, async () => {
-  assert.ok(migrationDatabaseUrl);
-  const pool = new Pool({ connectionString: migrationDatabaseUrl, max: 4 });
+async function proveRoleCollapseMigration({
+  databaseUrl,
+  migrateTo0009Impl,
+  runRepositoryMigratorImpl,
+}) {
+  assert.ok(databaseUrl);
+  const pool = new Pool({ connectionString: databaseUrl, max: 4 });
   let baseline;
 
   try {
-    await migrateTo0009(migrationDatabaseUrl);
+    await migrateTo0009Impl(databaseUrl);
     const historicalAuditMetadata = await seedLegacyState(pool);
     baseline = await captureState(pool);
 
@@ -55,14 +51,14 @@ test("PostgreSQL 17 proves the real 0009 to 0010 role-collapse migration", {
     for (const invalidCase of invalidCases) {
       await installInvalidCase(pool, invalidCase);
       const beforeFailure = await captureState(pool);
-      const result = await runRepositoryMigrator(migrationDatabaseUrl);
+      const result = await runRepositoryMigratorImpl(databaseUrl);
       assert.notEqual(result.code, 0);
       assert.equal(result.timedOut, false);
       assert.deepEqual(await captureState(pool), beforeFailure);
       await cleanupInvalidCase(pool, invalidCase);
     }
 
-    const successfulMigration = await runRepositoryMigrator(migrationDatabaseUrl);
+    const successfulMigration = await runRepositoryMigratorImpl(databaseUrl);
     assert.equal(successfulMigration.code, 0);
     assert.equal(successfulMigration.timedOut, false);
 
@@ -110,60 +106,203 @@ test("PostgreSQL 17 proves the real 0009 to 0010 role-collapse migration", {
   } finally {
     await pool.end();
   }
-});
+}
 
-test("PostgreSQL 17 proves concurrent last-admin protection and FOR UPDATE waiting", {
-  skip: skipReason,
-}, async () => {
-  assert.ok(concurrencyDatabaseUrl);
-  await migrateToLatest(concurrencyDatabaseUrl);
+async function proveRoleCollapseConcurrency({ databaseUrl, migrateToLatestImpl }) {
+  assert.ok(databaseUrl);
+  await migrateToLatestImpl(databaseUrl);
 
-  const seedPool = new Pool({ connectionString: concurrencyDatabaseUrl, max: 8 });
-  const clientA = createProductionClient(concurrencyDatabaseUrl);
-  const clientB = createProductionClient(concurrencyDatabaseUrl);
+  const seedPool = new Pool({ connectionString: databaseUrl, max: 8 });
+  const clientA = createProductionClient(databaseUrl);
+  const clientB = createProductionClient(databaseUrl);
   let blocker;
-  let blockedOperation;
-  let blockedOperationSettled = false;
   let blockerCommitted = false;
+  let outcomesPromise;
+  let outcomesSettled = false;
 
   try {
     await seedConcurrencyState(seedPool);
+    const directSignalEvidence = await proveDirectPostgresSerializationRetry(seedPool);
+    assert.equal(directSignalEvidence.signalKind, "DIRECT_PG");
+    assert.equal(directSignalEvidence.transactionAttempts, 2);
+    assert.equal(directSignalEvidence.operationCalls, 2);
+
     const pidA = Number((await clientA.pool.query("select pg_backend_pid() as pid")).rows[0].pid);
     const pidB = Number((await clientB.pool.query("select pg_backend_pid() as pid")).rows[0].pid);
     assert.notEqual(pidA, pidB);
 
     const now = "2026-08-23T15:00:00.000Z";
-    const simultaneous = await Promise.allSettled([
-      removeWorkspaceMembership(clientA.repositories, {
-        sessionId: "session_race_a",
-        workspaceId: "ws_race",
-        membershipId: "membership_race_b",
-        auditEventId: "audit_race_a",
-        now,
-      }),
-      removeWorkspaceMembership(clientB.repositories, {
-        sessionId: "session_race_b",
-        workspaceId: "ws_race",
-        membershipId: "membership_race_a",
-        auditEventId: "audit_race_b",
-        now,
-      }),
-    ]);
+    const sessionIds = ["session_race_a", "session_race_b", "session_race_c"];
+    const sessionsBefore = await captureSessionStates(seedPool, sessionIds);
+    blocker = await seedPool.connect();
+    await blocker.query("begin");
+    await blocker.query(
+      "select id from workspaces where id = $1 for update",
+      ["ws_race"],
+    );
 
+    const raceOperations = [
+      {
+        client: clientA,
+        actorUserId: "race_admin_a",
+        actorMembershipId: "membership_race_a",
+        sessionId: "session_race_a",
+        targetMembershipId: "membership_race_b",
+        auditEventId: "audit_race_a",
+      },
+      {
+        client: clientB,
+        actorUserId: "race_admin_b",
+        actorMembershipId: "membership_race_b",
+        sessionId: "session_race_b",
+        targetMembershipId: "membership_race_a",
+        auditEventId: "audit_race_b",
+      },
+    ];
+    outcomesPromise = Promise.allSettled(
+      raceOperations.map((operation) =>
+        removeWorkspaceMembership(operation.client.repositories, {
+          sessionId: operation.sessionId,
+          workspaceId: "ws_race",
+          membershipId: operation.targetMembershipId,
+          auditEventId: operation.auditEventId,
+          now,
+        }),
+      ),
+    ).then((outcomes) => {
+      outcomesSettled = true;
+      return outcomes;
+    });
+
+    let waitingBackendCount = 0;
+    const lockDeadline = Date.now() + 10_000;
+    while (Date.now() < lockDeadline && !outcomesSettled) {
+      const waiting = await seedPool.query(
+        "select count(*)::int as count " +
+          "from pg_stat_activity " +
+          "where datname = current_database() " +
+          "and pid = any($1::int[]) " +
+          "and wait_event_type = 'Lock'",
+        [[pidA, pidB]],
+      );
+      waitingBackendCount = waiting.rows[0].count;
+      if (waitingBackendCount === 2) break;
+      await delay(50);
+    }
+
+    assert.equal(waitingBackendCount, 2);
+    assert.equal(outcomesSettled, false);
+    await blocker.query("commit");
+    blockerCommitted = true;
+    blocker.release();
+    blocker = null;
+
+    const simultaneous = await outcomesPromise;
     assert.equal(simultaneous.filter((result) => result.status === "fulfilled").length, 1);
     assert.equal(simultaneous.filter((result) => result.status === "rejected").length, 1);
 
-    const remainingRaceAdmins = await activeAdminCount(seedPool, "ws_race");
-    assert.equal(remainingRaceAdmins, 1);
+    const winnerIndex = simultaneous.findIndex((result) => result.status === "fulfilled");
+    const loserIndex = 1 - winnerIndex;
+    const winner = raceOperations[winnerIndex];
+    const loser = raceOperations[loserIndex];
+    const loserOutcome = simultaneous[loserIndex];
+    assert.equal(loserOutcome.reason.code, "not_authorized");
+    assert.notEqual(loserOutcome.reason.code, "repository_failure");
+    assert.notEqual(loserOutcome.reason.code, "last_admin_required");
+    assert.equal(winner.client.transactionEvidence.transactionAttempts, 1);
+    assert.equal(loser.client.transactionEvidence.transactionAttempts, 2);
+
+    const observedSerializationErrors =
+      loser.client.transactionEvidence.transactionErrors
+        .map((error) => ({
+          error,
+          signalKind: observedSerializationSignalKind(error),
+        }))
+        .filter((record) => record.signalKind !== null);
+    assert.equal(observedSerializationErrors.length, 1);
+    assert.equal(
+      observedSerializationErrors[0].signalKind,
+      "ONE_EDGE_DRIZZLE_TO_PG",
+    );
+
+    assert.equal(await activeAdminCount(seedPool, "ws_race"), 1);
+    const activeRaceAdmins = await seedPool.query(
+      "select id from memberships " +
+        "where workspace_id = $1 and status = 'active' and role::text = 'admin' " +
+        "order by id",
+      ["ws_race"],
+    );
+    assert.deepEqual(activeRaceAdmins.rows, [{ id: winner.actorMembershipId }]);
+
+    const removalAudits = await seedPool.query(
+      "select id, actor_user_id, event_type, target_type, target_id " +
+        "from audit_events " +
+        "where workspace_id = $1 and event_type = $2 " +
+        "order by id",
+      ["ws_race", "workspace.membership.removed"],
+    );
+    assert.equal(removalAudits.rows.length, 1);
+    assert.deepEqual(removalAudits.rows[0], {
+      id: winner.auditEventId,
+      actor_user_id: winner.actorUserId,
+      event_type: "workspace.membership.removed",
+      target_type: "membership",
+      target_id: winner.targetMembershipId,
+    });
+    const losingAudit = await seedPool.query(
+      "select id from audit_events where id = $1",
+      [loser.auditEventId],
+    );
+    assert.equal(losingAudit.rowCount, 0);
+
+    const otherWorkspaceMemberships = await seedPool.query(
+      "select id from memberships " +
+        "where workspace_id = $1 and status = 'active' " +
+        "order by id",
+      ["ws_other"],
+    );
+    assert.deepEqual(otherWorkspaceMemberships.rows, [
+      { id: "membership_other_a" },
+      { id: "membership_other_b" },
+    ]);
+    assert.deepEqual(
+      await captureSessionStates(seedPool, sessionIds),
+      sessionsBefore,
+    );
+
+    const soleAdminBefore = await captureMembershipRemovalState(
+      seedPool,
+      "ws_sole",
+      ["session_race_c"],
+    );
+    await assert.rejects(
+      () =>
+        removeWorkspaceMembership(clientA.repositories, {
+          sessionId: "session_race_c",
+          workspaceId: "ws_sole",
+          membershipId: "membership_sole_c",
+          auditEventId: "audit_sole_control",
+          now,
+        }),
+      (error) => error?.code === "last_admin_required",
+    );
+    const soleAdminAfter = await captureMembershipRemovalState(
+      seedPool,
+      "ws_sole",
+      ["session_race_c"],
+    );
+    assert.deepEqual(soleAdminAfter, soleAdminBefore);
 
     blocker = await seedPool.connect();
+    blockerCommitted = false;
     await blocker.query("begin");
     await blocker.query(
       "select id from workspaces where id = $1 for update",
       ["ws_lock"],
     );
 
-    blockedOperation = removeWorkspaceMembership(clientA.repositories, {
+    let blockedOperationSettled = false;
+    const blockedOperation = removeWorkspaceMembership(clientA.repositories, {
       sessionId: "session_race_a",
       workspaceId: "ws_lock",
       membershipId: "membership_lock_b",
@@ -210,98 +349,58 @@ test("PostgreSQL 17 proves concurrent last-admin protection and FOR UPDATE waiti
       }
       blocker.release();
     }
-    if (blockedOperation && !blockedOperationSettled) {
-      await blockedOperation.catch(() => {});
+    if (outcomesPromise && !outcomesSettled) {
+      await outcomesPromise.catch(() => {});
     }
     await clientA.pool.end();
     await clientB.pool.end();
     await seedPool.end();
   }
-});
-
-async function migrateTo0009(databaseUrl) {
-  const temporaryRoot = await mkdtemp(join(tmpdir(), "swooshz-role-collapse-0009-"));
-  const temporaryMigrations = join(temporaryRoot, "migrations");
-
-  try {
-    await cp(join(rootDir, "drizzle", "migrations"), temporaryMigrations, {
-      recursive: true,
-    });
-    await rm(
-      join(
-        temporaryMigrations,
-        "0010_admin_operator_viewer_role_collapse.sql",
-      ),
-    );
-    await rm(join(temporaryMigrations, "meta", "0010_snapshot.json"));
-
-    const journalPath = join(temporaryMigrations, "meta", "_journal.json");
-    const journal = JSON.parse(await readFile(journalPath, "utf8"));
-    journal.entries = journal.entries.filter(
-      (entry) => entry.tag !== "0010_admin_operator_viewer_role_collapse",
-    );
-    await writeFile(journalPath, JSON.stringify(journal, null, 2) + "\n");
-
-    const pool = new Pool({ connectionString: databaseUrl, max: 1 });
-    try {
-      await migrate(drizzle(pool), { migrationsFolder: temporaryMigrations });
-    } finally {
-      await pool.end();
-    }
-  } finally {
-    await rm(temporaryRoot, { recursive: true, force: true });
-  }
 }
-
-async function migrateToLatest(databaseUrl) {
-  const result = await runRepositoryMigrator(databaseUrl);
-  assert.equal(result.code, 0);
-  assert.equal(result.timedOut, false);
-}
-
-async function runRepositoryMigrator(databaseUrl) {
-  const env = { ...process.env };
-  for (const key of [
-    "DATABASE_URL",
-    "DATABASE_EXPECTED_RUNTIME_ROLE",
-    "DATABASE_MIGRATIONS_CONFIRM",
-    "PGDATABASE",
-    "PGHOST",
-    "PGPASSWORD",
-    "PGPORT",
-    "PGSERVICE",
-    "PGSERVICEFILE",
-    "PGUSER",
-  ]) {
-    delete env[key];
+export async function runRoleCollapseProofs({
+  migrationDatabaseUrl,
+  concurrencyDatabaseUrl,
+  migrateTo0009Impl,
+  migrateToLatestImpl,
+  runRepositoryMigratorImpl,
+} = {}) {
+  if (
+    typeof migrateTo0009Impl !== "function" ||
+    typeof migrateToLatestImpl !== "function" ||
+    typeof runRepositoryMigratorImpl !== "function"
+  ) {
+    throw new Error();
   }
-  env.DATABASE_OPERATOR_URL = databaseUrl;
-  env.DATABASE_MIGRATIONS_CONFIRM = "apply-reviewed-migrations";
-  env.DATABASE_SSL_MODE = "disable";
-  env.NODE_ENV = "test";
-
-  return new Promise((resolvePromise, rejectPromise) => {
-    let timedOut = false;
-    const child = spawn(process.execPath, ["scripts/db-migrate.mjs"], {
-      cwd: rootDir,
-      env,
-      stdio: "ignore",
-      windowsHide: true,
-    });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill();
-    }, 45_000);
-
-    child.once("error", (error) => {
-      clearTimeout(timer);
-      rejectPromise(error);
-    });
-    child.once("close", (code) => {
-      clearTimeout(timer);
-      resolvePromise({ code, timedOut });
-    });
+  const startedAt = Date.now();
+  await proveRoleCollapseMigration({
+    databaseUrl: migrationDatabaseUrl,
+    migrateTo0009Impl,
+    runRepositoryMigratorImpl,
   });
+  await proveRoleCollapseConcurrency({
+    databaseUrl: concurrencyDatabaseUrl,
+    migrateToLatestImpl,
+  });
+  return {
+    cancelled: 0,
+    durationMs: Date.now() - startedAt,
+    failed: 0,
+    passed: 2,
+    skipped: 0,
+    suites: 0,
+    todo: 0,
+    total: 2,
+  };
+}
+
+if (isStandalone) {
+  test("PostgreSQL 17 proves the real 0009 to 0010 role-collapse migration", {
+    skip: "requires runner-owned fixture migration orchestration",
+  }, () => {});
+
+  test("PostgreSQL 17 proves concurrent last-admin protection and FOR UPDATE waiting", {
+    skip: "requires runner-owned fixture migration orchestration",
+  }, () => {});
 }
 
 async function seedLegacyState(pool) {
@@ -591,24 +690,31 @@ async function seedConcurrencyState(pool) {
   await insertWorkspaces(pool, [
     ["ws_race", "race", "Race"],
     ["ws_lock", "lock", "Lock"],
+    ["ws_other", "other", "Other Workspace"],
+    ["ws_sole", "sole", "Sole Admin Control"],
+    ["ws_direct_pg", "direct-pg", "Direct PostgreSQL Serialization"],
   ]);
 
-  for (const [id, workspaceId, userId] of [
-    ["membership_race_a", "ws_race", "race_admin_a"],
-    ["membership_race_b", "ws_race", "race_admin_b"],
-    ["membership_lock_a", "ws_lock", "race_admin_a"],
-    ["membership_lock_b", "ws_lock", "race_admin_b"],
+  for (const [id, workspaceId, userId, role] of [
+    ["membership_race_a", "ws_race", "race_admin_a", "admin"],
+    ["membership_race_b", "ws_race", "race_admin_b", "admin"],
+    ["membership_lock_a", "ws_lock", "race_admin_a", "admin"],
+    ["membership_lock_b", "ws_lock", "race_admin_b", "admin"],
+    ["membership_other_a", "ws_other", "race_admin_a", "operator"],
+    ["membership_other_b", "ws_other", "race_admin_b", "operator"],
+    ["membership_sole_c", "ws_sole", "race_admin_c", "admin"],
   ]) {
     await pool.query(
       "insert into memberships (id, workspace_id, user_id, role, status) " +
         "values ($1, $2, $3, $4, $5)",
-      [id, workspaceId, userId, "admin", "active"],
+      [id, workspaceId, userId, role, "active"],
     );
   }
 
   for (const [id, userId] of [
     ["session_race_a", "race_admin_a"],
     ["session_race_b", "race_admin_b"],
+    ["session_race_c", "race_admin_c"],
   ]) {
     await pool.query(
       "insert into sessions " +
@@ -617,7 +723,6 @@ async function seedConcurrencyState(pool) {
     );
   }
 }
-
 async function activeAdminCount(pool, workspaceId) {
   const result = await pool.query(
     "select count(*)::int as count " +
@@ -628,10 +733,186 @@ async function activeAdminCount(pool, workspaceId) {
   return result.rows[0].count;
 }
 
+async function captureSessionStates(pool, sessionIds) {
+  const result = await pool.query(
+    "select id, revoked_at::text as revoked_at, last_seen_at::text as last_seen_at " +
+      "from sessions where id = any($1::text[]) order by id",
+    [sessionIds],
+  );
+  return result.rows;
+}
+
+async function captureMembershipRemovalState(pool, workspaceId, sessionIds) {
+  const [memberships, audits, sessions] = await Promise.all([
+    pool.query(
+      "select id, user_id, role::text as role, status " +
+        "from memberships where workspace_id = $1 order by id",
+      [workspaceId],
+    ),
+    pool.query(
+      "select id, actor_user_id, event_type, target_type, target_id " +
+        "from audit_events where workspace_id = $1 order by id",
+      [workspaceId],
+    ),
+    captureSessionStates(pool, sessionIds),
+  ]);
+  return {
+    memberships: memberships.rows,
+    audits: audits.rows,
+    sessions,
+  };
+}
+
+async function proveDirectPostgresSerializationRetry(pool) {
+  const first = await pool.connect();
+  const second = await pool.connect();
+  let firstTransactionOpen = false;
+  let secondTransactionOpen = false;
+  try {
+    await first.query("begin isolation level serializable");
+    firstTransactionOpen = true;
+    await second.query("begin isolation level serializable");
+    secondTransactionOpen = true;
+    await Promise.all([
+      first.query("select display_name from workspaces where id = $1", ["ws_direct_pg"]),
+      second.query("select display_name from workspaces where id = $1", ["ws_direct_pg"]),
+    ]);
+
+    await first.query(
+      "update workspaces set display_name = display_name || $1 where id = $2",
+      [" first", "ws_direct_pg"],
+    );
+    await first.query("commit");
+    firstTransactionOpen = false;
+
+    let serializationError;
+    try {
+      await second.query(
+        "update workspaces set display_name = display_name || $1 where id = $2",
+        [" second", "ws_direct_pg"],
+      );
+    } catch (error) {
+      serializationError = error;
+    }
+    if (!serializationError) {
+      try {
+        await second.query("commit");
+        secondTransactionOpen = false;
+      } catch (error) {
+        serializationError = error;
+      }
+    }
+    if (serializationError && secondTransactionOpen) {
+      await second.query("rollback");
+      secondTransactionOpen = false;
+    }
+
+    const signalKind = observedSerializationSignalKind(serializationError);
+    assert.equal(signalKind, "DIRECT_PG");
+
+    let transactionAttempts = 0;
+    let operationCalls = 0;
+    const retryDb = {
+      async transaction(operation, config) {
+        transactionAttempts += 1;
+        assert.deepEqual(config, { isolationLevel: "serializable" });
+        await operation(retryDb);
+        if (transactionAttempts === 1) throw serializationError;
+        return "retried";
+      },
+    };
+    const result = await createDrizzlePlatformRepositories(retryDb)
+      .workspaceAdminTransactions.run(async () => {
+        operationCalls += 1;
+      });
+
+    assert.equal(result, "retried");
+    return {
+      signalKind,
+      transactionAttempts,
+      operationCalls,
+    };
+  } finally {
+    if (firstTransactionOpen) await first.query("rollback").catch(() => {});
+    if (secondTransactionOpen) await second.query("rollback").catch(() => {});
+    first.release();
+    second.release();
+  }
+}
+
+function observedSerializationSignalKind(error) {
+  if (
+    error === null ||
+    typeof error !== "object" ||
+    nodeUtilTypes.isProxy(error) ||
+    !nodeUtilTypes.isNativeError(error)
+  ) {
+    return null;
+  }
+
+  const prototype = Object.getPrototypeOf(error);
+  if (
+    prototype === DatabaseError.prototype &&
+    hasOwnDataPropertyValue(error, "code", "40001")
+  ) {
+    return "DIRECT_PG";
+  }
+  if (prototype !== DrizzleQueryError.prototype) {
+    return null;
+  }
+
+  const causeDescriptor = Object.getOwnPropertyDescriptor(error, "cause");
+  if (
+    causeDescriptor !== undefined &&
+    Object.hasOwn(causeDescriptor, "value") &&
+    isDirectPgSerializationFailure(causeDescriptor.value)
+  ) {
+    return "ONE_EDGE_DRIZZLE_TO_PG";
+  }
+  return null;
+}
+
+function isDirectPgSerializationFailure(error) {
+  return (
+    error !== null &&
+    typeof error === "object" &&
+    !nodeUtilTypes.isProxy(error) &&
+    nodeUtilTypes.isNativeError(error) &&
+    Object.getPrototypeOf(error) === DatabaseError.prototype &&
+    hasOwnDataPropertyValue(error, "code", "40001")
+  );
+}
+
+function hasOwnDataPropertyValue(candidate, key, expectedValue) {
+  const descriptor = Object.getOwnPropertyDescriptor(candidate, key);
+  return (
+    descriptor !== undefined &&
+    Object.hasOwn(descriptor, "value") &&
+    descriptor.value === expectedValue
+  );
+}
+
 function createProductionClient(databaseUrl) {
   const pool = new Pool({ connectionString: databaseUrl, max: 1 });
+  const db = drizzle(pool, { schema });
+  const transactionEvidence = {
+    transactionAttempts: 0,
+    transactionErrors: [],
+  };
+  const runDrizzleTransaction = db.transaction.bind(db);
+  db.transaction = async (operation, config) => {
+    transactionEvidence.transactionAttempts += 1;
+    try {
+      return await runDrizzleTransaction(operation, config);
+    } catch (error) {
+      transactionEvidence.transactionErrors.push(error);
+      throw error;
+    }
+  };
+
   return {
     pool,
-    repositories: createDrizzlePlatformRepositories(drizzle(pool, { schema })),
+    repositories: createDrizzlePlatformRepositories(db),
+    transactionEvidence,
   };
 }

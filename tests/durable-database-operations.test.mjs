@@ -30,17 +30,48 @@ import {
   createDurableInverse,
   createDurablePlan,
   createMutationSession,
+  executeDurablePlan,
   loadCanonicalMigrationJournal,
   mapFailureCode,
   normalizePrestate,
   parseCanonicalJson,
   projectReceipt,
   requireRestoreCapability,
-  runCanonicalMigrationPrimitive,
   serializeReceipt,
   validateReceipt,
   verifyRestoration,
+  executeBrokeredMigrationPlan,
+  bindDurablePlanV2ToBrokerBundle,
+  createBrokeredDurablePlanV2,
+  normalizeBrokeredPrestateV2,
+  createDurableInverseV2,
+  requireRestoreCapabilityV2,
+  RESTORE_CAPABILITY_VERSION,
+  RESTORE_CAPABILITY_PROVIDER_VERSION,
 } from "../dist/db/durable-operations.js";
+import {
+  BROKER_ATTEMPT_RESERVATION_DOMAIN_SEPARATOR,
+  BROKER_ATTEMPT_RESERVATION_OUTCOME_VERSION,
+  BROKER_ATTEMPT_RESERVATION_VERSION,
+  BROKER_AUTHORITY_CLASSIFICATION_VERSION,
+  BROKER_MUTATION_BUNDLE_DOMAIN_SEPARATOR,
+  BROKER_OBSERVATION_EVIDENCE_DOMAIN_SEPARATOR,
+  BROKER_OBSERVATION_EVIDENCE_VERSION,
+  BROKER_RESULT_DOMAIN_SEPARATOR,
+  BROKER_RESULT_VERSION,
+  BROKER_TARGET_BINDING_VERSION,
+  canonicalSerializeBrokerBundle,
+  compileBrokerMutationBundle,
+  compileBrokerObservationBundle,
+  computeBrokerBundleDigest,
+  deriveBrokerObservationEvidence,
+  normalizeBrokerAttemptReservation,
+  normalizeBrokerObservationEvidence,
+  validateBrokerProviderFinalResultSet,
+  validateBrokerMutationResult,
+  validateBrokerStatementResult,
+  validateLockedBrokerObservationResultSet,
+} from "../dist/db/brokered-migration.js";
 import { RUNTIME_TABLE_GRANT_CONTRACT } from "../dist/db/runtime-grant-contract.js";
 
 const HEX64 = "a".repeat(64);
@@ -48,6 +79,1306 @@ const HEX40 = "9ce40dce85484ef5fd8c849951527572e95afa24";
 const execFileAsync = promisify(execFile);
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+const CANONICAL_FIRST_NINE_LEDGER = [
+  { id: 1, hash: "d156026594b36870455ba6df7525310be1ce1838cda1d58725c6f3a07514c0a6", created_at: "1782546111134" },
+  { id: 2, hash: "861614ef57601aff17a15fe594becfc0206fa931f22052ba98217e300285666d", created_at: "1782571351615" },
+  { id: 3, hash: "76fd758786fa4583e18f3b89bf7fba0932bdb9c71de294f3291b19925bbd542b", created_at: "1782629131478" },
+  { id: 4, hash: "41567c07fcdb3b6e41da516d346d1a20d5e3aa4b0c5d3297e8b19091fa8f5f09", created_at: "1782651725342" },
+  { id: 5, hash: "01179c79b777732dc03dbef0471738e00dc85964082aa22764184362722ac5fe", created_at: "1783253616083" },
+  { id: 6, hash: "651eaa1668341fc8bdbc8d6f47ccfdd9ec1e2c80fef018de73ab0a79b9896bbe", created_at: "1783479304000" },
+  { id: 7, hash: "a8b5d90838c87ca3d74ada48295b92970c8a8476dacf5fc76b1a793995d7485b", created_at: "1783587520445" },
+  { id: 8, hash: "0e82a5892f22b71f8894f8776388341519ac48944a417552443d639d09cdcbc0", created_at: "1784354477743" },
+  { id: 9, hash: "bc54f927f5ab0a2ebc97a61ede57119f29e8673ab1b902a4e132191ac688820f", created_at: "1784620602227" },
+];
+const CANONICAL_FIRST_NINE_IDENTITY_DIGEST = computeBrokerBundleDigest(
+  BROKER_OBSERVATION_EVIDENCE_DOMAIN_SEPARATOR.replace(
+    "platform-db-broker-observation-evidence-v1",
+    "platform-db-first-nine-ledger-v1",
+  ),
+  CANONICAL_FIRST_NINE_LEDGER,
+);
+
+function brokerFixture() {
+  const target_binding = {
+    version: BROKER_TARGET_BINDING_VERSION,
+    project_id: "project-fixture",
+    branch_id: "branch-fixture",
+    endpoint_id: "endpoint-fixture",
+    endpoint_type: "read_write",
+    logical_database_name: "swooshz_platform",
+    expected_database_oid: "42",
+    expected_cluster_system_identifier: "777",
+    expected_postgres_major: 17,
+    expected_provider_role_name: "cloud_admin",
+    expected_provider_role_oid: "1",
+  };
+  const authority_classification = {
+    version: BROKER_AUTHORITY_CLASSIFICATION_VERSION,
+    nodes: [
+      { role_name: "cloud_admin", role_oid: "1", authority_class: "PROVIDER_CONTROL" },
+      { role_name: "platform_app", role_oid: "2", authority_class: "APPLICATION" },
+      { role_name: "platform_runtime", role_oid: "3", authority_class: "RUNTIME" },
+      { role_name: "platform_migrator", role_oid: "4", authority_class: "MIGRATOR" },
+    ],
+    runtime_creator_tuple: {
+      granted_role: "platform_runtime",
+      member: "platform_app",
+      grantor: "cloud_admin",
+      admin_option: true,
+      inherit_option: false,
+      set_option: false,
+    },
+  };
+  const observationBundle = compileBrokerObservationBundle({
+    run: "run-fixture",
+    lock: "lock-fixture",
+    git_sha: "1".repeat(40),
+    git_tree: "2".repeat(40),
+    contract_digest: "3".repeat(64),
+    source_manifest_digest: "4".repeat(64),
+    build_manifest_digest: "5".repeat(64),
+    target_binding,
+    authority_classification,
+  });
+  const evidencePayload = {
+    version: BROKER_OBSERVATION_EVIDENCE_VERSION,
+    observation_bundle_digest: observationBundle.bundle_digest,
+    target_binding_digest: observationBundle.target_binding_digest,
+    authority_classification_digest: observationBundle.authority_classification_digest,
+    provider: { current_user: "cloud_admin", session_user: "cloud_admin", role_oid: "1", rolsuper: false },
+    target: { logical_database_name: "swooshz_platform", database_oid: "42", cluster_system_identifier: "777", postgres_major: 17, in_recovery: false },
+    migrator: { role_name: "platform_migrator", role_oid: "4", rolcanlogin: false, rolinherit: false, rolsuper: false, rolcreatedb: false, rolcreaterole: false, rolreplication: false, rolbypassrls: false, password_is_null: true, provider_has_set: true },
+    authority_graph: {
+      nodes: [
+        { role_name: "cloud_admin", role_oid: "1", rolsuper: false, rolcreaterole: false },
+        { role_name: "platform_app", role_oid: "2", rolsuper: false, rolcreaterole: false },
+        { role_name: "platform_runtime", role_oid: "3", rolsuper: false, rolcreaterole: false },
+        { role_name: "platform_migrator", role_oid: "4", rolsuper: false, rolcreaterole: false },
+      ],
+      edges: [
+        { granted_role: "platform_runtime", granted_role_oid: "3", member: "platform_app", member_oid: "2", grantor: "cloud_admin", grantor_oid: "1", admin_option: true, inherit_option: false, set_option: false },
+        { granted_role: "platform_migrator", granted_role_oid: "4", member: "cloud_admin", member_oid: "1", grantor: "cloud_admin", grantor_oid: "1", admin_option: false, inherit_option: false, set_option: true },
+      ],
+      closure_complete: true,
+      application_authority_absent: true,
+    },
+    ledger: { first_nine_identity_digest: CANONICAL_FIRST_NINE_IDENTITY_DIGEST, row_count: 9, migration_0010_absent: true },
+    canonical_posture_digest: "7".repeat(64),
+  };
+  const evidence = {
+    ...evidencePayload,
+    evidence_digest: computeBrokerBundleDigest(BROKER_OBSERVATION_EVIDENCE_DOMAIN_SEPARATOR, evidencePayload),
+  };
+  const finalPayload = {
+    ...evidencePayload,
+    ledger: { ...evidencePayload.ledger, row_count: 10, migration_0010_absent: false },
+  };
+  const finalEvidence = {
+    ...finalPayload,
+    evidence_digest: computeBrokerBundleDigest(BROKER_OBSERVATION_EVIDENCE_DOMAIN_SEPARATOR, finalPayload),
+  };
+  return { observationBundle, evidence, finalEvidence };
+}
+
+function durableV2Artifacts(observationBundle, evidence, migrationSql) {
+  const prestate = normalizeBrokeredPrestateV2(observationBundle, evidence);
+  const preliminaryPlan = createBrokeredDurablePlanV2(prestate);
+  const bundle = compileBrokerMutationBundle({
+    observation_bundle: observationBundle,
+    observation_evidence: evidence,
+    prestate_digest: prestate.prestate_digest,
+    plan_digest: preliminaryPlan.plan_digest,
+    migration_sql: migrationSql,
+  });
+  return {
+    prestate,
+    plan: bindDurablePlanV2ToBrokerBundle(preliminaryPlan, bundle),
+    bundle,
+  };
+}
+
+function reservationFor(bundle) {
+  const payload = {
+    version: BROKER_ATTEMPT_RESERVATION_VERSION,
+    state: "RESERVED_CONSUMED",
+    run: bundle.run,
+    lock: bundle.lock,
+    target_binding_digest: bundle.target_binding_digest,
+    plan_digest: bundle.plan_digest,
+    mutation_bundle_digest: bundle.bundle_digest,
+    reservation_id: "fixture-reservation-1",
+  };
+  return { ...payload, reservation_digest: computeBrokerBundleDigest(BROKER_ATTEMPT_RESERVATION_DOMAIN_SEPARATOR, payload) };
+}
+
+function reservationForRequest(input) {
+  const payload = {
+    version: BROKER_ATTEMPT_RESERVATION_VERSION,
+    state: "RESERVED_CONSUMED",
+    run: input.run,
+    lock: input.lock,
+    target_binding_digest: input.target_binding_digest,
+    plan_digest: input.plan_digest,
+    mutation_bundle_digest: input.mutation_bundle_digest,
+    reservation_id: "fixture-reservation-1",
+  };
+  return { ...payload, reservation_digest: computeBrokerBundleDigest(BROKER_ATTEMPT_RESERVATION_DOMAIN_SEPARATOR, payload) };
+}
+
+function reservationOutcomeForRequest(input) {
+  return {
+    version: BROKER_ATTEMPT_RESERVATION_OUTCOME_VERSION,
+    state: "RESERVED_CONSUMED",
+    reservation: reservationForRequest(input),
+  };
+}
+
+function capabilityFor(inverse, overrides = {}) {
+  return {
+    version: RESTORE_CAPABILITY_VERSION,
+    target_binding_digest: inverse.target_binding_digest,
+    prestate_digest: inverse.prestate_digest,
+    plan_digest: inverse.plan_digest,
+    authority_graph_digest: inverse.authority_graph_digest,
+    broker_bundle_digest: inverse.broker_bundle_digest,
+    reservation_digest: inverse.reservation_digest,
+    execute: async () => {},
+    ...overrides,
+  };
+}
+
+function restoreCapabilityProviderFor(plan, { onBind, capability } = {}) {
+  return {
+    version: RESTORE_CAPABILITY_PROVIDER_VERSION,
+    target_binding_digest: plan.target_binding_digest,
+    prestate_digest: plan.prestate_digest,
+    plan_digest: plan.plan_digest,
+    authority_graph_digest: plan.authority_graph_digest,
+    broker_bundle_digest: plan.broker_bundle_digest,
+    bindReservation: async (inverse) => {
+      onBind?.(inverse);
+      return typeof capability === "function" ? capability(inverse) : capability ?? capabilityFor(inverse);
+    },
+  };
+}
+
+function resultFor(bundle, reservation) {
+  return resultForState(bundle, reservation, "COMMITTED", "DISCARDED");
+}
+
+function resultForState(bundle, reservation, commit_state, cleanup_state) {
+  const payload = {
+    version: BROKER_RESULT_VERSION,
+    mutation_bundle_digest: bundle.bundle_digest,
+    reservation_digest: reservation.reservation_digest,
+    dispatch_state: "DISPATCHED",
+    commit_state,
+    cleanup_state,
+    migration_tag: "0010_admin_operator_viewer_role_collapse",
+    migration_sql_sha256: "452829e49a5571a8b4e14a2cbf155e671fe81ef8ee2fa3583935b7cc2ffd996b",
+    safe_result_digest: "8".repeat(64),
+  };
+  return { ...payload, result_digest: computeBrokerBundleDigest(BROKER_RESULT_DOMAIN_SEPARATOR, payload) };
+}
+
+function rollbackResultFor(bundle, reservation) {
+  const payload = {
+    version: BROKER_RESULT_VERSION,
+    mutation_bundle_digest: bundle.bundle_digest,
+    reservation_digest: reservation.reservation_digest,
+    dispatch_state: "DISPATCHED",
+    commit_state: "NOT_COMMITTED",
+    cleanup_state: "DISCARDED",
+    migration_tag: "0010_admin_operator_viewer_role_collapse",
+    migration_sql_sha256: "452829e49a5571a8b4e14a2cbf155e671fe81ef8ee2fa3583935b7cc2ffd996b",
+    safe_result_digest: "8".repeat(64),
+  };
+  return { ...payload, result_digest: computeBrokerBundleDigest(BROKER_RESULT_DOMAIN_SEPARATOR, payload) };
+}
+
+function assertExactMutationBundle(candidate, expected) {
+  const { bundle_digest: claimedDigest, ...payload } = candidate;
+  if (canonicalSerializeBrokerBundle(candidate) !== canonicalSerializeBrokerBundle(expected)) throw new Error("BROKER_MUTATION_BUNDLE_REJECTED");
+  if (claimedDigest !== computeBrokerBundleDigest(BROKER_MUTATION_BUNDLE_DOMAIN_SEPARATOR, payload)) throw new Error("BROKER_MUTATION_BUNDLE_REJECTED");
+}
+
+function tamperStatement(bundle, ordinal, change) {
+  return {
+    ...bundle,
+    statements: bundle.statements.map((entry) => entry.ordinal === ordinal ? { ...entry, ...change } : entry),
+  };
+}
+
+function rehashMutationBundle(bundle) {
+  const { bundle_digest: _ignored, ...payload } = bundle;
+  return { ...payload, bundle_digest: computeBrokerBundleDigest(BROKER_MUTATION_BUNDLE_DOMAIN_SEPARATOR, payload) };
+}
+
+async function mutationFixture() {
+  const { observationBundle, evidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  return { observationBundle, evidence, migrationSql, ...durableV2Artifacts(observationBundle, evidence, migrationSql) };
+}
+
+async function providerFinalResultMap(observationBundle, evidence) {
+  const journal = JSON.parse(await readFile("drizzle/migrations/meta/_journal.json", "utf8"));
+  const ledger = await Promise.all(journal.entries.slice(0, 9).map(async (entry, index) => ({
+    id: index + 1,
+    hash: createHash("sha256").update(await readFile(`drizzle/migrations/${entry.tag}.sql`, "utf8")).digest("hex"),
+    created_at: String(entry.when),
+  })));
+  ledger.push({ id: 10, hash: "452829e49a5571a8b4e14a2cbf155e671fe81ef8ee2fa3583935b7cc2ffd996b", created_at: "1787479999088" });
+  const posture = observationBundle.statements.find((entry) => entry.id === "canonical_posture");
+  const roleData = observationBundle.statements.find((entry) => entry.id === "role_data_invariants");
+  assert.ok(posture);
+  assert.ok(roleData);
+  return {
+    provider_final_target_identity: [{ ...evidence.provider, ...evidence.target }],
+    provider_final_migrator_dormancy: [{ ...evidence.migrator }],
+    provider_final_authority_graph_nodes: evidence.authority_graph.nodes,
+    provider_final_authority_graph_edges: evidence.authority_graph.edges,
+    provider_final_migration_ledger: ledger,
+    provider_final_canonical_posture: [Object.fromEntries(posture.result_schema.map((key) => [key, true]))],
+    provider_final_role_data_invariants: [{ role_labels: "admin,operator,viewer", ...Object.fromEntries(roleData.result_schema.slice(1).map((key) => [key, true])) }],
+  };
+}
+
+test("blocking advisory lock compiler and native result contract are exact and fail closed before downstream dispatch", async () => {
+  const { observationBundle, evidence, migrationSql } = await mutationFixture();
+  const bundle = compileBrokerMutationBundle({
+    observation_bundle: observationBundle,
+    observation_evidence: evidence,
+    prestate_digest: "9".repeat(64),
+    plan_digest: "a".repeat(64),
+    migration_sql: migrationSql,
+  });
+  const lockStatements = bundle.statements.filter((entry) => entry.id === "target_advisory_lock");
+  assert.equal(lockStatements.length, 1);
+  const lock = lockStatements[0];
+  const expectedSql = `select true as lock_acquired from pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('${observationBundle.target_binding_digest}', 0)) as acquired`;
+  assert.equal(lock.ordinal, 0);
+  assert.equal(lock.phase, "LOCK");
+  assert.equal(lock.mutating, false);
+  assert.deepEqual(lock.result_schema, ["lock_acquired"]);
+  assert.equal(lock.sql, expectedSql);
+  assert.equal(lock.sha256, createHash("sha256").update(expectedSql, "utf8").digest("hex"));
+  assert.equal((lock.sql.match(/pg_catalog\.pg_advisory_xact_lock/gu) ?? []).length, 1);
+  assert.equal((lock.sql.match(/pg_catalog\.hashtextextended/gu) ?? []).length, 1);
+  assert.doesNotMatch(lock.sql, /pg_try_advisory_xact_lock|is null|select true\s*$/u);
+  assert.equal(bundle.statements.filter((entry) => entry.id === "target_advisory_lock").length, 1);
+
+  assert.doesNotThrow(() => validateBrokerStatementResult(observationBundle, lock, [{ lock_acquired: true }]));
+  for (const invalid of [
+    null,
+    undefined,
+    [],
+    [{ }],
+    [{ lock_acquired: false }],
+    [{ lock_acquired: null }],
+    [{ lock_acquired: "true" }],
+    [{ lock_acquired: "false" }],
+    [{ lock_acquired: 0 }],
+    [{ lock_acquired: 1 }],
+    [{ lock_acquired: true, extra: false }],
+    [{ lock_acquired: true }, { lock_acquired: true }],
+    [[{ lock_acquired: true }]],
+    [null],
+    "[{\"lock_acquired\":true}]",
+  ]) {
+    assert.throws(() => validateBrokerStatementResult(observationBundle, lock, invalid), /BROKER_/u);
+  }
+
+  const dispatchTrace = [];
+  assert.throws(() => {
+    for (const statement of bundle.statements.filter((entry) => entry.phase !== "CLEANUP")) {
+      dispatchTrace.push(statement.id);
+      validateBrokerStatementResult(observationBundle, statement, statement.id === "target_advisory_lock" ? [{ lock_acquired: false }] : []);
+    }
+  }, /BROKER_STATEMENT_RESULT_REJECTED/u);
+  assert.deepEqual(dispatchTrace, ["target_advisory_lock"]);
+});
+
+test("mutation, reservation, and result bindings reject deterministic identity and tamper matrices", async () => {
+  const { observationBundle, evidence, migrationSql } = await mutationFixture();
+  const { bundle } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+  assert.throws(
+    () => compileBrokerMutationBundle({
+      observation_bundle: { ...observationBundle, statements: [observationBundle.statements[1], observationBundle.statements[0], ...observationBundle.statements.slice(2)] },
+      observation_evidence: evidence,
+      prestate_digest: "9".repeat(64),
+      plan_digest: "a".repeat(64),
+      migration_sql: migrationSql,
+    }),
+    /BROKER_OBSERVATION_BUNDLE_REJECTED/u,
+  );
+  const tamperedBundles = [
+    ["statement id", tamperStatement(bundle, 0, { id: "wrong_lock" })],
+    ["ordinal", tamperStatement(bundle, 0, { ordinal: 1 })],
+    ["phase", tamperStatement(bundle, 0, { phase: "ADMISSION" })],
+    ["sql", tamperStatement(bundle, 0, { sql: "select false" })],
+    ["sql hash", tamperStatement(bundle, 0, { sha256: "f".repeat(64) })],
+    ["mutating", tamperStatement(bundle, 0, { mutating: true })],
+    ["result schema", tamperStatement(bundle, 0, { result_schema: ["wrong"] })],
+    ["statement order", { ...bundle, statements: [bundle.statements[1], bundle.statements[0], ...bundle.statements.slice(2)] }],
+    ["statement count", { ...bundle, statements: bundle.statements.slice(0, -1) }],
+    ["target binding", { ...bundle, target_binding_digest: "b".repeat(64) }],
+    ["observation evidence", { ...bundle, observation_evidence_digest: "c".repeat(64) }],
+    ["plan", { ...bundle, plan_digest: "d".repeat(64) }],
+    ["prestate", { ...bundle, prestate_digest: "e".repeat(64) }],
+    ["source manifest", { ...bundle, source_manifest_digest: "f".repeat(64) }],
+    ["build manifest", { ...bundle, build_manifest_digest: "0".repeat(64) }],
+    ["contract", { ...bundle, contract_digest: "1".repeat(64) }],
+    ["bundle digest", { ...bundle, bundle_digest: "2".repeat(64) }],
+  ];
+  for (const [label, candidate] of tamperedBundles) assert.throws(() => assertExactMutationBundle(candidate, bundle), /BROKER_MUTATION_BUNDLE_REJECTED/u, label);
+
+  const reservation = reservationFor(bundle);
+  for (const candidate of [
+    { ...reservation, target_binding_digest: "3".repeat(64) },
+    { ...reservation, plan_digest: "4".repeat(64) },
+    { ...reservation, mutation_bundle_digest: "5".repeat(64) },
+    { ...reservation, reservation_digest: "6".repeat(64) },
+    { ...reservation, reservation_id: "" },
+  ]) assert.throws(() => normalizeBrokerAttemptReservation(candidate, bundle), /BROKER_(?:ATTEMPT_RESERVATION_INVALID|ARTIFACT_INVALID)/u);
+
+  const result = resultFor(bundle, reservation);
+  for (const candidate of [
+    { ...result, mutation_bundle_digest: "7".repeat(64) },
+    { ...result, reservation_digest: "8".repeat(64) },
+    { ...result, safe_result_digest: "9".repeat(64) },
+    { ...result, result_digest: "a".repeat(64) },
+  ]) assert.throws(() => validateBrokerMutationResult(candidate, bundle, reservation), /BROKER_RESULT_INVALID/u);
+  for (const [dispatch_state, commit_state, cleanup_state] of [
+    ["NOT_DISPATCHED", "COMMITTED", "DISCARDED"],
+    ["NOT_DISPATCHED", "NOT_COMMITTED", "FAILED"],
+    ["INDETERMINATE", "NOT_COMMITTED", "INDETERMINATE"],
+    ["DISPATCHED", "INDETERMINATE", "DISCARDED"],
+  ]) {
+    const contradictory = resultForState(bundle, reservation, commit_state, cleanup_state);
+    contradictory.dispatch_state = dispatch_state;
+    contradictory.result_digest = computeBrokerBundleDigest(BROKER_RESULT_DOMAIN_SEPARATOR, Object.fromEntries(Object.entries(contradictory).filter(([key]) => key !== "result_digest")));
+    assert.throws(() => validateBrokerMutationResult(contradictory, bundle, reservation), /BROKER_RESULT_INVALID/u);
+  }
+  assert.doesNotThrow(() => validateBrokerMutationResult(result, bundle, reservation));
+});
+
+test("broker bundles are canonical, target-bound, and contain the exact 0010 transaction-local role path", async () => {
+  const { observationBundle, evidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  assert.doesNotThrow(() => normalizeBrokerObservationEvidence(evidence, observationBundle));
+  const bundle = compileBrokerMutationBundle({
+    observation_bundle: observationBundle,
+    observation_evidence: evidence,
+    prestate_digest: "9".repeat(64),
+    plan_digest: "a".repeat(64),
+    migration_sql: migrationSql,
+  });
+  assert.equal(bundle.attempt_policy.maximum, 1);
+  assert.equal(bundle.migration.journal_index, 9);
+  assert.equal(bundle.migration.created_at, 1787479999088);
+  assert.equal(bundle.migration.sql_sha256, "452829e49a5571a8b4e14a2cbf155e671fe81ef8ee2fa3583935b7cc2ffd996b");
+  assert.equal(bundle.statements.some((entry) => entry.sql === "set local role platform_migrator"), true);
+  assert.equal(bundle.statements.some((entry) => entry.sql === "set local search_path = pg_catalog, public, drizzle"), true);
+  assert.deepEqual(
+    bundle.statements.filter((entry) => entry.id.startsWith("locked_")).map((entry) => entry.id),
+    [
+      "locked_provider_target_identity",
+      "locked_migrator_dormancy",
+      "locked_authority_graph_nodes",
+      "locked_authority_graph_edges",
+      "locked_migration_ledger",
+      "locked_canonical_posture",
+      "locked_role_data_invariants",
+      "locked_binding_assertion",
+    ],
+  );
+  assert.equal(bundle.statements.at(-1).id, "cleanup_identity_assertion");
+  assert.equal(bundle.statements.every((entry, index) => entry.ordinal === index), true);
+  const authorityGraphEdges = observationBundle.statements.find((entry) => entry.id === "authority_graph_edges");
+  assert.match(authorityGraphEdges.sql, /where exists \(select 1 from role_closure closure where closure\.role_oid in/u);
+  assert.doesNotMatch(authorityGraphEdges.sql, /join role_closure closure on/u);
+  assert.equal(canonicalSerializeBrokerBundle(bundle).includes("postgres://"), false);
+  assert.equal(canonicalSerializeBrokerBundle(bundle).includes("rolpassword,"), false);
+});
+
+test("Repair-2 binds the v2 mutation tail and validates provider FINAL as an exact graph-first result set", async () => {
+  const { observationBundle, evidence, bundle } = await mutationFixture();
+  assert.equal(bundle.version, "platform-db-broker-mutation-bundle-v2");
+  assert.equal(BROKER_MUTATION_BUNDLE_DOMAIN_SEPARATOR, "Swooshz-platform:platform-db-broker-mutation-bundle-v2\0");
+  assert.equal(bundle.statements.length, 40);
+  assert.deepEqual(
+    bundle.statements.slice(0, 27).map(({ ordinal, id, phase }) => ({ ordinal, id, phase })),
+    [
+      { ordinal: 0, id: "target_advisory_lock", phase: "LOCK" },
+      { ordinal: 1, id: "ledger_lock", phase: "LOCK" },
+      { ordinal: 2, id: "locked_provider_target_identity", phase: "ADMISSION" },
+      { ordinal: 3, id: "locked_migrator_dormancy", phase: "ADMISSION" },
+      { ordinal: 4, id: "locked_authority_graph_nodes", phase: "ADMISSION" },
+      { ordinal: 5, id: "locked_authority_graph_edges", phase: "ADMISSION" },
+      { ordinal: 6, id: "locked_migration_ledger", phase: "ADMISSION" },
+      { ordinal: 7, id: "locked_canonical_posture", phase: "ADMISSION" },
+      { ordinal: 8, id: "locked_role_data_invariants", phase: "ADMISSION" },
+      { ordinal: 9, id: "locked_binding_assertion", phase: "ADMISSION" },
+      { ordinal: 10, id: "set_local_migrator", phase: "ASSUME_ROLE" },
+      { ordinal: 11, id: "assumed_identity_assertion", phase: "ASSUME_ROLE" },
+      { ordinal: 12, id: "set_local_search_path", phase: "ASSUME_ROLE" },
+      ...Array.from({ length: 13 }, (_, index) => ({ ordinal: 13 + index, id: `migration_0010_${String(index).padStart(2, "0")}`, phase: "MIGRATION" })),
+      { ordinal: 26, id: "migration_0010_ledger_insert", phase: "LEDGER" },
+    ],
+  );
+  assert.deepEqual(
+    bundle.statements.slice(27).map(({ ordinal, id, phase }) => ({ ordinal, id, phase })),
+    [
+      { ordinal: 27, id: "migrator_final_ledger_assertion", phase: "MIGRATOR_VERIFY" },
+      { ordinal: 28, id: "migrator_final_role_data_assertion", phase: "MIGRATOR_VERIFY" },
+      { ordinal: 29, id: "migrator_final_identity_assertion", phase: "MIGRATOR_VERIFY" },
+      { ordinal: 30, id: "restore_provider_role", phase: "RESTORE_PROVIDER" },
+      { ordinal: 31, id: "restored_provider_identity_assertion", phase: "RESTORE_PROVIDER" },
+      { ordinal: 32, id: "provider_final_target_identity", phase: "PROVIDER_VERIFY" },
+      { ordinal: 33, id: "provider_final_migrator_dormancy", phase: "PROVIDER_VERIFY" },
+      { ordinal: 34, id: "provider_final_authority_graph_nodes", phase: "PROVIDER_VERIFY" },
+      { ordinal: 35, id: "provider_final_authority_graph_edges", phase: "PROVIDER_VERIFY" },
+      { ordinal: 36, id: "provider_final_migration_ledger", phase: "PROVIDER_VERIFY" },
+      { ordinal: 37, id: "provider_final_canonical_posture", phase: "PROVIDER_VERIFY" },
+      { ordinal: 38, id: "provider_final_role_data_invariants", phase: "PROVIDER_VERIFY" },
+      { ordinal: 39, id: "cleanup_identity_assertion", phase: "CLEANUP" },
+    ],
+  );
+  assert.equal(bundle.statements[30].sql, "SET LOCAL ROLE NONE");
+  assert.equal(bundle.statements.every((entry) => entry.sha256 === createHash("sha256").update(entry.sql, "utf8").digest("hex")), true);
+  assert.equal(bundle.statements.slice(27).every((entry) => entry.mutating === false), true);
+
+  const assumedIdentity = bundle.statements.find((entry) => entry.id === "assumed_identity_assertion");
+  const migratorFinalIdentity = bundle.statements.find((entry) => entry.id === "migrator_final_identity_assertion");
+  const restoredIdentity = bundle.statements.find((entry) => entry.id === "restored_provider_identity_assertion");
+  const cleanupIdentity = bundle.statements.find((entry) => entry.id === "cleanup_identity_assertion");
+  const migratorIdentity = [{ current_user: "platform_migrator", session_user: "cloud_admin", current_role_oid: "4", session_role_oid: "1" }];
+  const providerIdentity = [{ current_user: "cloud_admin", session_user: "cloud_admin", current_role_oid: "1", session_role_oid: "1" }];
+  assert.doesNotThrow(() => validateBrokerStatementResult(observationBundle, assumedIdentity, migratorIdentity));
+  assert.doesNotThrow(() => validateBrokerStatementResult(observationBundle, migratorFinalIdentity, migratorIdentity, "FINAL"));
+  assert.doesNotThrow(() => validateBrokerStatementResult(observationBundle, restoredIdentity, providerIdentity, "FINAL"));
+  assert.doesNotThrow(() => validateBrokerStatementResult(observationBundle, cleanupIdentity, providerIdentity, "FINAL"));
+  for (const changed of [
+    [{ ...migratorIdentity[0], current_user: "cloud_admin" }],
+    [{ ...migratorIdentity[0], session_user: "platform_app" }],
+    [{ ...migratorIdentity[0], current_role_oid: "99" }],
+    [{ ...migratorIdentity[0], session_role_oid: "99" }],
+    [{ ...migratorIdentity[0], extra: false }],
+    [],
+  ]) assert.throws(() => validateBrokerStatementResult(observationBundle, migratorFinalIdentity, changed, "FINAL"), /BROKER_(?:SESSION_IDENTITY_REJECTED|STATEMENT_RESULT_REJECTED|ARTIFACT_INVALID)/u);
+  for (const changed of [
+    [{ ...providerIdentity[0], current_user: "platform_migrator" }],
+    [{ ...providerIdentity[0], session_user: "platform_app" }],
+    [{ ...providerIdentity[0], current_role_oid: "99" }],
+    [{ ...providerIdentity[0], session_role_oid: "99" }],
+    [{ ...providerIdentity[0], extra: false }],
+    [],
+  ]) assert.throws(() => validateBrokerStatementResult(observationBundle, restoredIdentity, changed, "FINAL"), /BROKER_(?:SESSION_IDENTITY_REJECTED|STATEMENT_RESULT_REJECTED|ARTIFACT_INVALID)/u);
+
+  const finalResults = await providerFinalResultMap(observationBundle, evidence);
+  const finalEvidence = validateBrokerProviderFinalResultSet(observationBundle, bundle, finalResults);
+  assert.equal(finalEvidence.ledger.row_count, 10);
+  assert.equal(finalEvidence.ledger.migration_0010_absent, false);
+  assert.equal(finalEvidence.authority_graph.closure_complete, true);
+  assert.equal(finalEvidence.migrator.password_is_null, true);
+  for (const changedBundle of [
+    rehashMutationBundle({ ...bundle, statements: bundle.statements.map((entry) => entry.ordinal === 32 ? { ...entry, phase: "MIGRATOR_VERIFY" } : entry) }),
+    rehashMutationBundle({ ...bundle, statements: bundle.statements.map((entry) => entry.ordinal === 35 ? { ...entry, sha256: "f".repeat(64) } : entry) }),
+    rehashMutationBundle({ ...bundle, statements: bundle.statements.map((entry) => entry.ordinal === 37 ? { ...entry, result_schema: ["wrong"] } : entry) }),
+    rehashMutationBundle({ ...bundle, statements: bundle.statements.map((entry) => entry.ordinal === 38 ? { ...entry, mutating: true } : entry) }),
+    rehashMutationBundle({ ...bundle, statements: bundle.statements.map((entry) => entry.ordinal === 34 ? { ...entry, ordinal: 35 } : entry) }),
+  ]) assert.throws(() => validateBrokerProviderFinalResultSet(observationBundle, changedBundle, finalResults), /BROKER_PROVIDER_FINAL_RESULT_SET_REJECTED/u);
+  assert.throws(() => validateBrokerProviderFinalResultSet(observationBundle, bundle, { ...finalResults, provider_final_role_data_invariants: undefined }), /BROKER_/u);
+  assert.throws(() => validateBrokerProviderFinalResultSet(observationBundle, bundle, { ...finalResults, extra: [] }), /BROKER_/u);
+  for (const changedResults of [
+    { ...finalResults, provider_final_migrator_dormancy: [{ ...finalResults.provider_final_migrator_dormancy[0], rolcanlogin: true }] },
+    { ...finalResults, provider_final_migrator_dormancy: [{ ...finalResults.provider_final_migrator_dormancy[0], password_is_null: false }] },
+    { ...finalResults, provider_final_role_data_invariants: [{ ...finalResults.provider_final_role_data_invariants[0], role_values_valid: null }] },
+    { ...finalResults, provider_final_role_data_invariants: [{ ...finalResults.provider_final_role_data_invariants[0], active_workspace_admin_valid: "true" }] },
+    { ...finalResults, provider_final_canonical_posture: [{ ...finalResults.provider_final_canonical_posture[0], application_migrator_authority_absent: false }] },
+  ]) assert.throws(() => validateBrokerProviderFinalResultSet(observationBundle, bundle, changedResults), /BROKER_/u);
+  const directForbiddenEdge = {
+    granted_role: "platform_migrator", granted_role_oid: "4", member: "platform_app", member_oid: "2", grantor: "cloud_admin", grantor_oid: "1", admin_option: false, inherit_option: false, set_option: false,
+  };
+  assert.throws(() => validateBrokerProviderFinalResultSet(observationBundle, bundle, { ...finalResults, provider_final_authority_graph_edges: [...finalResults.provider_final_authority_graph_edges, directForbiddenEdge] }), /BROKER_AUTHORITY_GRAPH_REJECTED/u);
+  const bridgeNode = { role_name: "run618_unknown_bridge", role_oid: "5", rolsuper: false, rolcreaterole: false };
+  const bridgeEdge = { granted_role: "platform_migrator", granted_role_oid: "4", member: "run618_unknown_bridge", member_oid: "5", grantor: "cloud_admin", grantor_oid: "1", admin_option: false, inherit_option: false, set_option: true };
+  assert.throws(() => validateBrokerProviderFinalResultSet(observationBundle, bundle, { ...finalResults, provider_final_authority_graph_nodes: [...finalResults.provider_final_authority_graph_nodes, bridgeNode], provider_final_authority_graph_edges: [...finalResults.provider_final_authority_graph_edges, bridgeEdge] }), /BROKER_AUTHORITY_GRAPH_REJECTED/u);
+});
+
+test("broker evidence rejects target, dormancy, graph, and application authority drift before reservation", () => {
+  const { observationBundle, evidence } = brokerFixture();
+  const rehash = (value) => {
+    const payload = { ...value };
+    delete payload.evidence_digest;
+    return { ...payload, evidence_digest: computeBrokerBundleDigest(BROKER_OBSERVATION_EVIDENCE_DOMAIN_SEPARATOR, payload) };
+  };
+  for (const changed of [
+    { ...evidence, provider: { ...evidence.provider, session_user: "platform_app" } },
+    { ...evidence, target: { ...evidence.target, database_oid: "43" } },
+    { ...evidence, migrator: { ...evidence.migrator, password_is_null: false } },
+    { ...evidence, authority_graph: { ...evidence.authority_graph, application_authority_absent: false } },
+    {
+      ...evidence,
+      authority_graph: {
+        ...evidence.authority_graph,
+        nodes: evidence.authority_graph.nodes.map((node) =>
+          node.role_name === "platform_app" ? { ...node, rolsuper: true } : node,
+        ),
+      },
+    },
+    {
+      ...evidence,
+      authority_graph: {
+        ...evidence.authority_graph,
+        nodes: evidence.authority_graph.nodes.map((node) =>
+          node.role_name === "platform_runtime" ? { ...node, rolcreaterole: true } : node,
+        ),
+      },
+    },
+  ]) {
+    assert.throws(() => normalizeBrokerObservationEvidence(rehash(changed), observationBundle), /BROKER_/u);
+  }
+  const directForbiddenEdge = {
+    granted_role: "platform_migrator",
+    granted_role_oid: "4",
+    member: "platform_app",
+    member_oid: "2",
+    grantor: "cloud_admin",
+    grantor_oid: "1",
+    admin_option: false,
+    inherit_option: false,
+    set_option: false,
+  };
+  assert.throws(
+    () => normalizeBrokerObservationEvidence(rehash({ ...evidence, authority_graph: { ...evidence.authority_graph, edges: [...evidence.authority_graph.edges, directForbiddenEdge] } }), observationBundle),
+    /BROKER_AUTHORITY_GRAPH_REJECTED/u,
+  );
+  const unknownBridgeNode = { role_name: "run610_unknown_bridge", role_oid: "5", rolsuper: false, rolcreaterole: false };
+  const unknownBridgeEdge = {
+    granted_role: "platform_migrator",
+    granted_role_oid: "4",
+    member: "run610_unknown_bridge",
+    member_oid: "5",
+    grantor: "cloud_admin",
+    grantor_oid: "1",
+    admin_option: false,
+    inherit_option: false,
+    set_option: true,
+  };
+  assert.throws(
+    () => normalizeBrokerObservationEvidence(rehash({ ...evidence, authority_graph: { ...evidence.authority_graph, nodes: [...evidence.authority_graph.nodes, unknownBridgeNode], edges: [...evidence.authority_graph.edges, unknownBridgeEdge] } }), observationBundle),
+    /BROKER_AUTHORITY_GRAPH_REJECTED/u,
+  );
+});
+
+test("locked admission derives the same graph proof and rejects direct and unknown bridge drift", async () => {
+  const { observationBundle, evidence: fixtureEvidence } = brokerFixture();
+  const journal = JSON.parse(await readFile("drizzle/migrations/meta/_journal.json", "utf8"));
+  const migrationLedger = await Promise.all(journal.entries.slice(0, 9).map(async (entry, index) => ({
+    id: index + 1,
+    hash: createHash("sha256").update(await readFile(`drizzle/migrations/${entry.tag}.sql`, "utf8")).digest("hex"),
+    created_at: String(entry.when),
+  })));
+  const postureStatement = observationBundle.statements.find((entry) => entry.id === "canonical_posture");
+  const roleDataStatement = observationBundle.statements.find((entry) => entry.id === "role_data_invariants");
+  assert.ok(postureStatement);
+  assert.ok(roleDataStatement);
+  const resultMap = {
+    provider_target_identity: [{ ...fixtureEvidence.provider, ...fixtureEvidence.target }],
+    migrator_dormancy: [{ ...fixtureEvidence.migrator }],
+    authority_graph_nodes: fixtureEvidence.authority_graph.nodes,
+    authority_graph_edges: fixtureEvidence.authority_graph.edges,
+    migration_ledger: migrationLedger,
+    canonical_posture: [Object.fromEntries(postureStatement.result_schema.map((key) => [key, true]))],
+    role_data_invariants: [{ role_labels: "owner,admin,member,viewer", ...Object.fromEntries(roleDataStatement.result_schema.slice(1).map((key) => [key, true])) }],
+  };
+  const evidence = deriveBrokerObservationEvidence(observationBundle, resultMap);
+  const mutationBundle = compileBrokerMutationBundle({
+    observation_bundle: observationBundle,
+    observation_evidence: evidence,
+    prestate_digest: "9".repeat(64),
+    plan_digest: "a".repeat(64),
+    migration_sql: await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8"),
+  });
+  const lockedResultMap = Object.fromEntries(observationBundle.statements.map((entry) => [`locked_${entry.id}`, resultMap[entry.id]]));
+  assert.equal(validateLockedBrokerObservationResultSet(observationBundle, mutationBundle, lockedResultMap).evidence_digest, evidence.evidence_digest);
+
+  const directEdge = {
+    granted_role: "platform_migrator",
+    granted_role_oid: "4",
+    member: "platform_app",
+    member_oid: "2",
+    grantor: "cloud_admin",
+    grantor_oid: "1",
+    admin_option: false,
+    inherit_option: false,
+    set_option: false,
+  };
+  assert.throws(
+    () => validateLockedBrokerObservationResultSet(observationBundle, mutationBundle, { ...lockedResultMap, locked_authority_graph_edges: [...resultMap.authority_graph_edges, directEdge] }),
+    /BROKER_AUTHORITY_GRAPH_REJECTED/u,
+  );
+  const unknownBridgeNode = { role_name: "run610_unknown_bridge", role_oid: "5", rolsuper: false, rolcreaterole: false };
+  const unknownBridgeEdge = {
+    granted_role: "platform_migrator",
+    granted_role_oid: "4",
+    member: "run610_unknown_bridge",
+    member_oid: "5",
+    grantor: "cloud_admin",
+    grantor_oid: "1",
+    admin_option: false,
+    inherit_option: false,
+    set_option: true,
+  };
+  assert.throws(
+    () => validateLockedBrokerObservationResultSet(observationBundle, mutationBundle, { ...lockedResultMap, locked_authority_graph_nodes: [...resultMap.authority_graph_nodes, unknownBridgeNode], locked_authority_graph_edges: [...resultMap.authority_graph_edges, unknownBridgeEdge] }),
+    /BROKER_AUTHORITY_GRAPH_REJECTED/u,
+  );
+});
+
+test("broker execution reserves once before dispatch, validates the result, and performs a fresh observation", async () => {
+  const { observationBundle, evidence, finalEvidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  const { prestate, plan } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+  let observes = 0;
+  let dispatches = 0;
+  let reservations = 0;
+  const attemptStore = {
+    async reserveOnce(input) {
+      reservations += 1;
+      return reservationOutcomeForRequest(input);
+    },
+  };
+  const broker = {
+    async observe() { observes += 1; return observes === 1 ? evidence : finalEvidence; },
+    async dispatchMutation(serialized, digest, reservation) {
+      dispatches += 1;
+      const parsed = JSON.parse(serialized);
+      assert.equal(parsed.bundle_digest, digest);
+      return resultFor(parsed, reservation);
+    },
+  };
+  const omitted = await executeBrokeredMigrationPlan({ observationBundle, prestate, plan, migrationSql, broker, attemptStore });
+  assert.equal(omitted.outcome, "BLOCKED");
+  assert.equal(omitted.phase, "RECOVERY_ADMISSION");
+  assert.equal(omitted.semantic_code, "RESTORE_CAPABILITY_REQUIRED");
+  assert.equal(omitted.attempts_used, 0);
+  assert.equal(omitted.dispatch_state, "NOT_DISPATCHED");
+  assert.equal(omitted.mutation_started, false);
+  assert.equal(omitted.recovery_state, "NOT_REQUIRED");
+  assert.equal(observes, 0);
+  assert.equal(reservations, 0);
+  assert.equal(dispatches, 0);
+  const receipt = await executeBrokeredMigrationPlan({ observationBundle, prestate, plan, migrationSql, broker, attemptStore, restoreCapabilityProvider: restoreCapabilityProviderFor(plan) });
+  assert.equal(receipt.outcome, "PASS");
+  assert.equal(receipt.attempts_used, 1);
+  assert.equal(receipt.cleanup_state, "DISCARDED");
+  assert.equal(observes, 2);
+  assert.equal(reservations, 1);
+  assert.equal(dispatches, 1);
+  assert.equal(receipt.recovery_state, "AVAILABLE");
+});
+
+test("recovery provider structural and pre-reservation digest admission fail closed", async () => {
+  const { observationBundle, evidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  const { prestate, plan } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+  for (const provider of [
+    undefined,
+    { ...restoreCapabilityProviderFor(plan), version: "restore-capability-provider-v1" },
+    { ...restoreCapabilityProviderFor(plan), bindReservation: null },
+    { ...restoreCapabilityProviderFor(plan), extra: true },
+  ]) {
+    let observes = 0;
+    let reservations = 0;
+    let dispatches = 0;
+    const receipt = await executeBrokeredMigrationPlan({
+      observationBundle,
+      prestate,
+      plan,
+      migrationSql,
+      restoreCapabilityProvider: provider,
+      broker: { async observe() { observes += 1; return evidence; }, async dispatchMutation() { dispatches += 1; } },
+      attemptStore: { async reserveOnce() { reservations += 1; throw new Error("must not reserve"); } },
+    });
+    assert.equal(receipt.outcome, "BLOCKED");
+    assert.equal(receipt.phase, "RECOVERY_ADMISSION");
+    assert.equal(receipt.semantic_code, "RESTORE_CAPABILITY_REQUIRED");
+    assert.equal(receipt.attempts_used, 0);
+    assert.equal(receipt.dispatch_state, "NOT_DISPATCHED");
+    assert.equal(receipt.mutation_started, false);
+    assert.equal(receipt.recovery_state, "NOT_REQUIRED");
+    assert.equal(observes, 0);
+    assert.equal(reservations, 0);
+    assert.equal(dispatches, 0);
+  }
+
+  for (const field of [
+    "target_binding_digest",
+    "prestate_digest",
+    "plan_digest",
+    "authority_graph_digest",
+    "broker_bundle_digest",
+  ]) {
+    const provider = { ...restoreCapabilityProviderFor(plan), [field]: "f".repeat(64) };
+    let observes = 0;
+    let reservations = 0;
+    let dispatches = 0;
+    const receipt = await executeBrokeredMigrationPlan({
+      observationBundle,
+      prestate,
+      plan,
+      migrationSql,
+      restoreCapabilityProvider: provider,
+      broker: { async observe() { observes += 1; return evidence; }, async dispatchMutation() { dispatches += 1; } },
+      attemptStore: { async reserveOnce() { reservations += 1; throw new Error("must not reserve"); } },
+    });
+    assert.equal(receipt.outcome, "BLOCKED");
+    assert.equal(receipt.phase, "RECOVERY_ADMISSION");
+    assert.equal(receipt.semantic_code, "RESTORE_CAPABILITY_REQUIRED");
+    assert.equal(receipt.attempts_used, 0);
+    assert.equal(receipt.dispatch_state, "NOT_DISPATCHED");
+    assert.equal(receipt.mutation_started, false);
+    assert.equal(receipt.recovery_state, "NOT_REQUIRED");
+    assert.equal(observes, 1);
+    assert.equal(reservations, 0);
+    assert.equal(dispatches, 0);
+  }
+});
+
+test("recovery provider admission captures only enumerable data descriptors", async () => {
+  const { observationBundle, evidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  const { prestate, plan } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+  const providerFields = [
+    "version",
+    "target_binding_digest",
+    "prestate_digest",
+    "plan_digest",
+    "authority_graph_digest",
+    "broker_bundle_digest",
+    "bindReservation",
+  ];
+
+  for (const field of providerFields) {
+    const provider = restoreCapabilityProviderFor(plan);
+    const original = provider[field];
+    let getterCalls = 0;
+    Object.defineProperty(provider, field, {
+      configurable: true,
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return original;
+      },
+    });
+    let observes = 0;
+    let reservations = 0;
+    const receipt = await executeBrokeredMigrationPlan({
+      observationBundle,
+      prestate,
+      plan,
+      migrationSql,
+      restoreCapabilityProvider: provider,
+      broker: { async observe() { observes += 1; return evidence; }, async dispatchMutation() {} },
+      attemptStore: { async reserveOnce() { reservations += 1; throw new Error("must not reserve"); } },
+    });
+    assert.equal(receipt.semantic_code, "RESTORE_CAPABILITY_REQUIRED");
+    assert.equal(receipt.attempts_used, 0);
+    assert.equal(observes, 0);
+    assert.equal(reservations, 0);
+    assert.equal(getterCalls, 0);
+  }
+
+  for (const provider of [
+    { ...restoreCapabilityProviderFor(plan), unknown: true },
+    (() => {
+      const value = restoreCapabilityProviderFor(plan);
+      Object.defineProperty(value, "unknown", { configurable: true, enumerable: false, value: true });
+      return value;
+    })(),
+    (() => {
+      const value = restoreCapabilityProviderFor(plan);
+      Object.defineProperty(value, "target_binding_digest", { configurable: true, enumerable: true, get() { throw new Error("getter must not run"); } });
+      return value;
+    })(),
+    (() => {
+      const value = restoreCapabilityProviderFor(plan);
+      Object.defineProperty(value, Symbol("unknown"), { configurable: true, enumerable: true, value: true });
+      return value;
+    })(),
+  ]) {
+    const receipt = await executeBrokeredMigrationPlan({
+      observationBundle,
+      prestate,
+      plan,
+      migrationSql,
+      restoreCapabilityProvider: provider,
+      broker: { async observe() { throw new Error("must not observe"); }, async dispatchMutation() {} },
+      attemptStore: { async reserveOnce() { throw new Error("must not reserve"); } },
+    });
+    assert.equal(receipt.phase, "RECOVERY_ADMISSION");
+    assert.equal(receipt.semantic_code, "RESTORE_CAPABILITY_REQUIRED");
+    assert.equal(receipt.attempts_used, 0);
+  }
+});
+
+test("recovery provider descriptor and get traps cannot substitute admitted authority", async () => {
+  const { observationBundle, evidence, finalEvidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  const { prestate, plan } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+  const source = restoreCapabilityProviderFor(plan);
+  let ownKeysCalls = 0;
+  let descriptorCalls = 0;
+  let getCalls = 0;
+  const provider = new Proxy(source, {
+    ownKeys(target) {
+      ownKeysCalls += 1;
+      return Reflect.ownKeys(target);
+    },
+    getOwnPropertyDescriptor(target, property) {
+      descriptorCalls += 1;
+      return Reflect.getOwnPropertyDescriptor(target, property);
+    },
+    get(target, property, receiver) {
+      getCalls += 1;
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  let observations = 0;
+  const receipt = await executeBrokeredMigrationPlan({
+    observationBundle,
+    prestate,
+    plan,
+    migrationSql,
+    restoreCapabilityProvider: provider,
+    broker: {
+      async observe() {
+        observations += 1;
+        if (observations === 1) {
+          source.target_binding_digest = "f".repeat(64);
+          source.bindReservation = async () => { throw new Error("replaced provider must not run"); };
+          return evidence;
+        }
+        return finalEvidence;
+      },
+      async dispatchMutation(serialized, digest, reservation) {
+        return resultFor(JSON.parse(serialized), reservation);
+      },
+    },
+    attemptStore: { async reserveOnce(input) { return reservationOutcomeForRequest(input); } },
+  });
+  assert.equal(receipt.outcome, "PASS");
+  assert.equal(ownKeysCalls, 1);
+  assert.equal(descriptorCalls, 7);
+  assert.equal(getCalls, 0);
+});
+
+test("recovery binding consumes the reservation once but prevents dispatch on any returned-capability mismatch", async () => {
+  const { observationBundle, evidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  const { prestate, plan } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+  for (const field of ["reservation_digest", "target_binding_digest"]) {
+    let reservations = 0;
+    let dispatches = 0;
+    let binds = 0;
+    const receipt = await executeBrokeredMigrationPlan({
+      observationBundle,
+      prestate,
+      plan,
+      migrationSql,
+      restoreCapabilityProvider: restoreCapabilityProviderFor(plan, {
+        onBind: () => { binds += 1; },
+        capability: (inverse) => capabilityFor(inverse, { [field]: "0".repeat(64) }),
+      }),
+      broker: { async observe() { return evidence; }, async dispatchMutation() { dispatches += 1; } },
+      attemptStore: { async reserveOnce(input) { reservations += 1; return reservationOutcomeForRequest(input); } },
+    });
+    assert.equal(receipt.outcome, "FAIL");
+    assert.equal(receipt.phase, "RECOVERY_ADMISSION");
+    assert.equal(receipt.semantic_code, "RESTORE_CAPABILITY_REQUIRED");
+    assert.equal(receipt.attempts_used, 1);
+    assert.equal(receipt.dispatch_state, "NOT_DISPATCHED");
+    assert.equal(receipt.commit_state, "NOT_COMMITTED");
+    assert.equal(receipt.mutation_started, false);
+    assert.equal(receipt.recovery_state, "NOT_REQUIRED");
+    assert.equal(reservations, 1);
+    assert.equal(binds, 1);
+    assert.equal(dispatches, 0);
+  }
+});
+
+test("post-reservation capability accessors fail before dispatch without invoking getters", async () => {
+  const { observationBundle, evidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  const { prestate, plan } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+
+  for (const field of ["execute", "reservation_digest"]) {
+    let getterCalls = 0;
+    let reservations = 0;
+    let binds = 0;
+    let dispatches = 0;
+    const provider = restoreCapabilityProviderFor(plan, {
+      onBind: () => { binds += 1; },
+      capability: (inverse) => {
+        const capability = capabilityFor(inverse);
+        const original = capability[field];
+        Object.defineProperty(capability, field, {
+          configurable: true,
+          enumerable: true,
+          get() {
+            getterCalls += 1;
+            return original;
+          },
+        });
+        return capability;
+      },
+    });
+    const receipt = await executeBrokeredMigrationPlan({
+      observationBundle,
+      prestate,
+      plan,
+      migrationSql,
+      restoreCapabilityProvider: provider,
+      broker: { async observe() { return evidence; }, async dispatchMutation() { dispatches += 1; } },
+      attemptStore: { async reserveOnce(input) { reservations += 1; return reservationOutcomeForRequest(input); } },
+    });
+    assert.equal(receipt.outcome, "FAIL");
+    assert.equal(receipt.phase, "RECOVERY_ADMISSION");
+    assert.equal(receipt.attempts_used, 1);
+    assert.equal(reservations, 1);
+    assert.equal(binds, 1);
+    assert.equal(dispatches, 0);
+    assert.equal(getterCalls, 0);
+  }
+});
+
+test("broker execution order is observe, reserve, bind capability, dispatch, final observe", async () => {
+  const { observationBundle, evidence, finalEvidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  const { prestate, plan } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+  const events = [];
+  let observations = 0;
+  const receipt = await executeBrokeredMigrationPlan({
+    observationBundle,
+    prestate,
+    plan,
+    migrationSql,
+    restoreCapabilityProvider: restoreCapabilityProviderFor(plan, { onBind: () => events.push("bind capability") }),
+    broker: {
+      async observe() { observations += 1; events.push(observations === 1 ? "observe" : "final observe"); return observations === 1 ? evidence : finalEvidence; },
+      async dispatchMutation(serialized, digest, reservation) { events.push("dispatch"); return resultFor(JSON.parse(serialized), reservation); },
+    },
+    attemptStore: { async reserveOnce(input) { events.push("reserve"); return reservationOutcomeForRequest(input); } },
+  });
+  assert.equal(receipt.outcome, "PASS");
+  assert.deepEqual(events, ["observe", "reserve", "bind capability", "dispatch", "final observe"]);
+});
+
+test("admitted provider and capability are copied before caller-owned mutation, and capability execute is never invoked", async () => {
+  const { observationBundle, evidence, finalEvidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  const { prestate, plan } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+  const provider = restoreCapabilityProviderFor(plan);
+  let returnedCapability;
+  let executeCalls = 0;
+  provider.bindReservation = async (inverse) => {
+    returnedCapability = capabilityFor(inverse, { execute: async () => { executeCalls += 1; } });
+    return returnedCapability;
+  };
+  let observations = 0;
+  const receipt = await executeBrokeredMigrationPlan({
+    observationBundle,
+    prestate,
+    plan,
+    migrationSql,
+    restoreCapabilityProvider: provider,
+    broker: {
+      async observe() {
+        observations += 1;
+        if (observations === 1) {
+          provider.target_binding_digest = "f".repeat(64);
+          provider.bindReservation = async () => { throw new Error("must not call replaced provider"); };
+          return evidence;
+        }
+        return finalEvidence;
+      },
+      async dispatchMutation(serialized, digest, reservation) {
+        returnedCapability.reservation_digest = "f".repeat(64);
+        assert.equal(returnedCapability.reservation_digest, "f".repeat(64));
+        return resultFor(JSON.parse(serialized), reservation);
+      },
+    },
+    attemptStore: { async reserveOnce(input) { return reservationOutcomeForRequest(input); } },
+  });
+  assert.equal(receipt.outcome, "PASS");
+  assert.equal(receipt.recovery_state, "AVAILABLE");
+  assert.equal(executeCalls, 0);
+});
+
+test("pre-dispatch rejection consumes no attempt and an indeterminate dispatch is never retried", async () => {
+  const { observationBundle, evidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  const { prestate, plan } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+  let reservations = 0;
+  let dispatches = 0;
+  const rejected = await executeBrokeredMigrationPlan({
+    observationBundle,
+    prestate,
+    plan,
+    migrationSql,
+    broker: { async observe() { return { ...evidence, target: { ...evidence.target, database_oid: "99" } }; }, async dispatchMutation() { dispatches += 1; } },
+    attemptStore: { async reserveOnce() { reservations += 1; throw new Error("must not run"); } },
+    restoreCapabilityProvider: restoreCapabilityProviderFor(plan),
+  });
+  assert.equal(rejected.attempts_used, 0);
+  assert.equal(reservations, 0);
+  assert.equal(dispatches, 0);
+
+  const failed = await executeBrokeredMigrationPlan({
+    observationBundle,
+    prestate,
+    plan,
+    migrationSql,
+    broker: { async observe() { return evidence; }, async dispatchMutation() { dispatches += 1; throw new Error("transport lost"); } },
+    attemptStore: {
+      async reserveOnce(input) {
+        reservations += 1;
+        return reservationOutcomeForRequest(input);
+      },
+    },
+    restoreCapabilityProvider: restoreCapabilityProviderFor(plan),
+  });
+  assert.equal(failed.attempts_used, 1);
+  assert.equal(failed.dispatch_state, "INDETERMINATE");
+  assert.equal(failed.recovery_state, "INDETERMINATE");
+  assert.equal(dispatches, 1);
+  assert.equal(reservations, 1);
+});
+
+test("v3 reservation outcomes close every non-reserved branch without dispatch", async () => {
+  const { observationBundle, evidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  const { prestate, plan } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+  const scenarios = [
+    {
+      name: "definitely not consumed",
+      outcome: { version: BROKER_ATTEMPT_RESERVATION_OUTCOME_VERSION, state: "DEFINITELY_NOT_CONSUMED" },
+      semanticCode: "ATTEMPT_RESERVATION_REJECTED",
+      reservationState: "DEFINITELY_NOT_CONSUMED",
+      attemptsUsed: 0,
+    },
+    {
+      name: "already consumed",
+      outcome: { version: BROKER_ATTEMPT_RESERVATION_OUTCOME_VERSION, state: "ALREADY_CONSUMED" },
+      semanticCode: "ATTEMPT_ALREADY_CONSUMED",
+      reservationState: "DEFINITELY_CONSUMED",
+      attemptsUsed: 1,
+    },
+    {
+      name: "explicitly indeterminate",
+      outcome: { version: BROKER_ATTEMPT_RESERVATION_OUTCOME_VERSION, state: "CONSUMPTION_INDETERMINATE" },
+      semanticCode: "ATTEMPT_RESERVATION_INDETERMINATE",
+      reservationState: "CONSUMPTION_INDETERMINATE",
+      attemptsUsed: null,
+    },
+    {
+      name: "malformed outcome",
+      outcome: "not-an-outcome",
+      semanticCode: "ATTEMPT_RESERVATION_INDETERMINATE",
+      reservationState: "CONSUMPTION_INDETERMINATE",
+      attemptsUsed: null,
+    },
+    {
+      name: "malformed reservation",
+      outcome: { version: BROKER_ATTEMPT_RESERVATION_OUTCOME_VERSION, state: "RESERVED_CONSUMED", reservation: {} },
+      semanticCode: "ATTEMPT_RESERVATION_INDETERMINATE",
+      reservationState: "CONSUMPTION_INDETERMINATE",
+      attemptsUsed: null,
+    },
+  ];
+  for (const scenario of scenarios) {
+    let dispatches = 0;
+    const receipt = await executeBrokeredMigrationPlan({
+      observationBundle,
+      prestate,
+      plan,
+      migrationSql,
+      broker: {
+        async observe() { return evidence; },
+        async dispatchMutation() { dispatches += 1; throw new Error(`${scenario.name} must not dispatch`); },
+      },
+      attemptStore: {
+        async reserveOnce() {
+          if (scenario.name === "throwing store") throw new Error("provider transport failed");
+          return scenario.outcome;
+        },
+      },
+      restoreCapabilityProvider: restoreCapabilityProviderFor(plan),
+    });
+    assert.equal(receipt.semantic_code, scenario.semanticCode, scenario.name);
+    assert.equal(receipt.reservation_state, scenario.reservationState, scenario.name);
+    assert.equal(receipt.attempts_used, scenario.attemptsUsed, scenario.name);
+    assert.equal(receipt.reservation_digest, null, scenario.name);
+    assert.equal(receipt.mutation_started, false, scenario.name);
+    assert.equal(dispatches, 0, scenario.name);
+  }
+  let dispatches = 0;
+  const thrown = await executeBrokeredMigrationPlan({
+    observationBundle,
+    prestate,
+    plan,
+    migrationSql,
+    broker: { async observe() { return evidence; }, async dispatchMutation() { dispatches += 1; } },
+    attemptStore: { async reserveOnce() { throw new Error("provider transport failed"); } },
+    restoreCapabilityProvider: restoreCapabilityProviderFor(plan),
+  });
+  assert.equal(thrown.semantic_code, "ATTEMPT_RESERVATION_INDETERMINATE");
+  assert.equal(thrown.reservation_state, "CONSUMPTION_INDETERMINATE");
+  assert.equal(thrown.attempts_used, null);
+  assert.equal(thrown.mutation_started, false);
+  assert.equal(dispatches, 0);
+});
+
+test("confirmed commit with cleanup failure is terminal and does not trigger a fresh observation", async () => {
+  const { observationBundle, evidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  const { prestate, plan } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+  let observes = 0;
+  let dispatches = 0;
+  const receipt = await executeBrokeredMigrationPlan({
+    observationBundle,
+    prestate,
+    plan,
+    migrationSql,
+    broker: {
+      async observe() { observes += 1; return evidence; },
+      async dispatchMutation(serialized, _digest, reservation) {
+        dispatches += 1;
+        return resultForState(JSON.parse(serialized), reservation, "COMMITTED", "FAILED");
+      },
+    },
+    attemptStore: { async reserveOnce(input) { return reservationOutcomeForRequest(input); } },
+    restoreCapabilityProvider: restoreCapabilityProviderFor(plan),
+  });
+  assert.equal(receipt.outcome, "FAIL");
+  assert.equal(receipt.phase, "SESSION_CLEANUP");
+  assert.equal(receipt.commit_state, "COMMITTED");
+  assert.equal(receipt.cleanup_state, "FAILED");
+  assert.equal(receipt.recovery_state, "REQUIRED");
+  assert.equal(receipt.final_observation_state, "NOT_RUN");
+  assert.equal(observes, 1);
+  assert.equal(dispatches, 1);
+});
+
+test("broker execution rejects a reservation for different exact bundle bytes before dispatch", async () => {
+  const { observationBundle, evidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  const { prestate, plan } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+  let dispatches = 0;
+  const receipt = await executeBrokeredMigrationPlan({
+    observationBundle,
+    prestate,
+    plan,
+    migrationSql,
+    broker: {
+      async observe() { return evidence; },
+      async dispatchMutation() { dispatches += 1; throw new Error("must not dispatch"); },
+    },
+    attemptStore: {
+      async reserveOnce(input) {
+        return reservationOutcomeForRequest({ ...input, mutation_bundle_digest: "f".repeat(64) });
+      },
+    },
+    restoreCapabilityProvider: restoreCapabilityProviderFor(plan),
+  });
+  assert.equal(receipt.outcome, "BLOCKED");
+  assert.equal(receipt.semantic_code, "ATTEMPT_RESERVATION_INDETERMINATE");
+  assert.equal(receipt.reservation_state, "CONSUMPTION_INDETERMINATE");
+  assert.equal(receipt.attempts_used, null);
+  assert.equal(receipt.phase, "ATTEMPT_RESERVATION");
+  assert.equal(receipt.recovery_state, "NOT_REQUIRED");
+  assert.equal(dispatches, 0);
+});
+
+test("determinate broker rollback requires a fresh exact restoration observation and never retries", async () => {
+  const { observationBundle, evidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  const { prestate, plan } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+  let observes = 0;
+  let dispatches = 0;
+  const receipt = await executeBrokeredMigrationPlan({
+    observationBundle,
+    prestate,
+    plan,
+    migrationSql,
+    broker: {
+      async observe() { observes += 1; return evidence; },
+      async dispatchMutation(serialized, _digest, reservation) {
+        dispatches += 1;
+        return rollbackResultFor(JSON.parse(serialized), reservation);
+      },
+    },
+    attemptStore: { async reserveOnce(input) { return reservationOutcomeForRequest(input); } },
+    restoreCapabilityProvider: restoreCapabilityProviderFor(plan),
+  });
+  assert.equal(receipt.outcome, "FAIL");
+  assert.equal(receipt.commit_state, "NOT_COMMITTED");
+  assert.equal(receipt.rollback_state, "VERIFIED");
+  assert.equal(receipt.recovery_state, "AVAILABLE");
+  assert.equal(receipt.final_observation_state, "PASS");
+  assert.equal(receipt.attempts_used, 1);
+  assert.equal(observes, 2);
+  assert.equal(dispatches, 1);
+});
+
+test("v2 durable broker artifacts reject legacy and tampered evidence before reservation", async () => {
+  const { observationBundle, evidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  const { prestate, plan } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+  let reservations = 0;
+  const attemptStore = { async reserveOnce() { reservations += 1; throw new Error("must not reserve"); } };
+  const broker = { async observe() { return evidence; }, async dispatchMutation() { throw new Error("must not dispatch"); } };
+  for (const changed of [
+    { prestate: { ...prestate, version: "platform-db-prestate-v1" }, plan },
+    { prestate, plan: { ...plan, version: "platform-db-plan-v1" } },
+    { prestate, plan: { ...plan, authority_graph_digest: "f".repeat(64) } },
+    { prestate, plan: { ...plan, source_manifest_digest: "e".repeat(64) } },
+    { prestate, plan: { ...plan, broker_bundle_digest: "d".repeat(64) } },
+  ]) {
+    const receipt = await executeBrokeredMigrationPlan({ observationBundle, ...changed, migrationSql, broker, attemptStore, restoreCapabilityProvider: restoreCapabilityProviderFor(changed.plan) });
+    assert.equal(receipt.outcome, "BLOCKED");
+    assert.equal(receipt.attempts_used, 0);
+  }
+  assert.equal(reservations, 0);
+});
+
+test("v2 inverse and restoration capability bind target graph bundle and reservation", async () => {
+  const { observationBundle, evidence } = brokerFixture();
+  const migrationSql = await readFile("drizzle/migrations/0010_admin_operator_viewer_role_collapse.sql", "utf8");
+  const { plan, bundle } = durableV2Artifacts(observationBundle, evidence, migrationSql);
+  const reservation = reservationFor(bundle);
+  const inverse = createDurableInverseV2(plan, reservation);
+  const capability = {
+    version: RESTORE_CAPABILITY_VERSION,
+    target_binding_digest: inverse.target_binding_digest,
+    prestate_digest: inverse.prestate_digest,
+    plan_digest: inverse.plan_digest,
+    authority_graph_digest: inverse.authority_graph_digest,
+    broker_bundle_digest: inverse.broker_bundle_digest,
+    reservation_digest: inverse.reservation_digest,
+    async execute() {},
+  };
+  const admittedCapability = requireRestoreCapabilityV2(capability, inverse);
+  assert.notEqual(admittedCapability, capability);
+  assert.equal(Object.isFrozen(admittedCapability), true);
+  assert.equal(admittedCapability.execute, capability.execute);
+  assert.throws(
+    () => requireRestoreCapabilityV2({ ...capability, reservation_digest: "0".repeat(64) }, inverse),
+    (error) => error?.semanticCode === "RESTORE_CAPABILITY_REQUIRED",
+  );
+});
 
 async function currentRepositoryRevision() {
   const result = await execFileAsync("git", ["rev-parse", "--verify", "HEAD"], {
@@ -138,7 +1469,7 @@ function targetBinding({ transactionReadOnly = "on" } = {}) {
   };
   return {
     binding: {
-      version: "target-binding-v1",
+      version: "target-binding-v2",
       logicalDatabaseName: "fixture",
       expectedClusterSystemIdentifier: "7000000000000001",
       expectedDatabaseOid: "16384",
@@ -185,7 +1516,7 @@ function independentTargetBinding({
   };
   return {
     binding: {
-      version: "target-binding-v1",
+      version: "target-binding-v2",
       logicalDatabaseName: "fixture",
       expectedClusterSystemIdentifier: clusterSystemIdentifier ?? "7000000000000001",
       expectedDatabaseOid: databaseOid,
@@ -200,7 +1531,7 @@ function independentTargetBinding({
 
 function legacyPrestate() {
   return {
-    version: "platform-db-prestate-v1",
+    version: "platform-db-prestate-v2",
     target: {
       logical_database_name: "fixture",
       current_user: "cloud_admin",
@@ -341,7 +1672,7 @@ function planForOperation(operation, prestate = completePrestateFixture()) {
 
 function receiptFixture(overrides = {}) {
   return {
-    receipt_version: 1,
+    receipt_version: 2,
     phase: "FINAL_VERIFY",
     outcome: "PASS",
     semantic_code: "SUCCESS",
@@ -385,8 +1716,8 @@ function assertReceiptRejected(overrides) {
 }
 
 test("locked domain separators and query ids are exact", () => {
-  assert.equal(PRESTATE_DOMAIN_SEPARATOR, "swooshz-platform:platform-db-prestate-v1\0");
-  assert.equal(PLAN_DOMAIN_SEPARATOR, "Swooshz-platform:platform-db-plan-v1\0");
+  assert.equal(PRESTATE_DOMAIN_SEPARATOR, "swooshz-platform:platform-db-prestate-v2\0");
+  assert.equal(PLAN_DOMAIN_SEPARATOR, "Swooshz-platform:platform-db-plan-v2\0");
   assert.deepEqual(OBSERVATION_QUERY_IDS, [
     "target_identity",
     "role_state",
@@ -413,8 +1744,8 @@ test("locked domain separators and query ids are exact", () => {
 test("canonical serialization sorts UTF-16 object keys and digest deterministically", () => {
   assert.equal(canonicalSerialize({ z: 1, a: [true, null, "x"] }), '{"a":[true,null,"x"],"z":1}');
   assert.equal(
-    canonicalDigest("swooshz-platform:platform-db-prestate-v1\0", { b: 2, a: 1 }),
-    canonicalDigest("swooshz-platform:platform-db-prestate-v1\0", { a: 1, b: 2 }),
+    canonicalDigest("swooshz-platform:platform-db-prestate-v2\0", { b: 2, a: 1 }),
+    canonicalDigest("swooshz-platform:platform-db-prestate-v2\0", { a: 1, b: 2 }),
   );
   assert.throws(() => canonicalSerialize({ value: undefined }), /unsupported/i);
   assert.throws(() => canonicalSerialize({ value: 1.5 }), /floating/i);
@@ -776,11 +2107,11 @@ test("Run-192 RED evidence: disposable runner must retain bounded sanitized diag
   const runner = await import("../scripts/run-disposable-durable-db-operations-tests.mjs");
   assert.equal(typeof runner.sanitizeDisposableDiagnostics, "function");
   const diagnostics = runner.sanitizeDisposableDiagnostics({
-    stdout: "TAP version 13\nnot ok 1 - Run-190 durable database operations on two disposable PostgreSQL 17 clusters\n# reason: expected status 1\n# reason: internal customer@example.invalid detail\npostgres://secret@example.invalid/db",
+    stdout: "TAP version 13\nnot ok 1 - Run-598 exact durable broker bundle on two disposable PostgreSQL 17 clusters\n# reason: expected status 1\n# reason: internal customer@example.invalid detail\npostgres://secret@example.invalid/db",
     stderr: "Error: private driver detail\nDATABASE_URL=postgres://secret@example.invalid/db",
     outputOverflow: false,
   });
-  assert.match(diagnostics, /Run-190 durable database operations/u);
+  assert.match(diagnostics, /Run-598 exact durable broker bundle/u);
   assert.match(diagnostics, /expected status 1/u);
   assert.doesNotMatch(diagnostics, /postgres:\/\/|DATABASE_URL|private driver detail/u);
   assert.doesNotMatch(diagnostics, /internal customer|example\.invalid/u);
@@ -844,7 +2175,7 @@ test("Run-192 receipt state machine accepts only the closed outcome/phase/recove
 
 test("malformed prestates and unknown drift are rejected", () => {
   assert.throws(
-    () => normalizePrestate({ version: "platform-db-prestate-v1" }),
+    () => normalizePrestate({ version: "platform-db-prestate-v2" }),
     (error) => error.semanticCode === "PRESTATE_INVALID",
   );
   assert.throws(
@@ -928,95 +2259,35 @@ test("one-way migration plans require restore authority before mutation", () => 
   );
 });
 
-test("migration admission accepts only exact historical CRLF aliases", async () => {
-  const journal = await loadCanonicalMigrationJournal(repositoryRoot);
-  const historicalTags = new Set([
-    "0000_overconfident_onslaught",
-    "0001_lovely_famine",
-    "0002_futuristic_aaron_stack",
-    "0003_worthless_scourge",
-    "0004_illegal_william_stryker",
-    "0005_sqag_app_key_migration",
-    "0007_remove_legacy_kqag_tables",
-    "0009_wonderful_star_brand",
-  ]);
-  const crlfHash = async (tag) => {
-    const contents = await readFile(
-      join(repositoryRoot, "drizzle", "migrations", `${tag}.sql`),
-    );
-    const crlfBytes = [];
-    for (const byte of contents) {
-      if (byte === 0x0a) crlfBytes.push(0x0d);
-      crlfBytes.push(byte);
-    }
-    return createHash("sha256").update(Buffer.from(crlfBytes)).digest("hex");
-  };
-  const canonicalRows = journal.entries.map((entry) => ({
-    when: entry.when,
-    sql_sha256: entry.sql_sha256,
-  }));
-  const historicalRows = [];
-  for (const entry of journal.entries) {
-    historicalRows.push({
-      when: entry.when,
-      sql_sha256: historicalTags.has(entry.tag)
-        ? await crlfHash(entry.tag)
-        : entry.sql_sha256,
-    });
-  }
-
-  const canonicalResult = await runCanonicalMigrationPrimitive({
-    pool: migrationLedgerPool(canonicalRows),
-    migrationsFolder: join(repositoryRoot, "drizzle", "migrations"),
+test("durable production execution rejects every migration plan before target access", async () => {
+  const plan = createDurablePlan({
+    expected_git_sha: HEX40,
+    contract_digest: HEX64,
+    target_binding_digest: HEX64,
+    prestate_digest: HEX64,
+    operations: [{
+      kind: "migration",
+      tag: "0010_admin_operator_viewer_role_collapse",
+      journal_index: 9,
+      when: "1787479999088",
+      sql_sha256: HEX64,
+      expected_applied_prefix_digest: HEX64,
+      expected_post_journal_digest: HEX64,
+    }],
   });
-  assert.equal(canonicalResult.mutation_started, false);
-  assert.deepEqual(canonicalResult.before, canonicalRows);
-
-  const historicalResult = await runCanonicalMigrationPrimitive({
-    pool: migrationLedgerPool(historicalRows),
-    migrationsFolder: join(repositoryRoot, "drizzle", "migrations"),
-  });
-  assert.equal(historicalResult.mutation_started, false);
-  assert.deepEqual(historicalResult.before, historicalRows);
-
-  const arbitraryRows = historicalRows.map((row) => ({ ...row }));
-  arbitraryRows[0].sql_sha256 = "0".repeat(64);
-  await assert.rejects(
-    () => runCanonicalMigrationPrimitive({
-      pool: migrationLedgerPool(arbitraryRows),
-      migrationsFolder: join(repositoryRoot, "drizzle", "migrations"),
-    }),
-    (error) => error?.semanticCode === "MIGRATION_IDENTITY_MISMATCH",
-  );
-
-  const futureAliasRows = historicalRows.map((row) => ({ ...row }));
-  futureAliasRows[9].sql_sha256 = await crlfHash(
-    "0010_admin_operator_viewer_role_collapse",
-  );
-  await assert.rejects(
-    () => runCanonicalMigrationPrimitive({
-      pool: migrationLedgerPool(futureAliasRows),
-      migrationsFolder: join(repositoryRoot, "drizzle", "migrations"),
-    }),
-    (error) => error?.semanticCode === "MIGRATION_IDENTITY_MISMATCH",
-  );
-});
-
-function migrationLedgerPool(rows) {
-  return {
-    async connect() {
-      return {
-        async query(text) {
-          if (text.includes("select exists")) {
-            return { rows: [{ ledger_present: true }] };
-          }
-          return { rows };
-        },
-        release() {},
-      };
+  let targetAccesses = 0;
+  const binding = new Proxy({}, {
+    get() {
+      targetAccesses += 1;
+      throw new Error("target must not be accessed");
     },
-  };
-}
+  });
+  await assert.rejects(
+    () => executeDurablePlan({ plan, binding }),
+    (error) => error?.semanticCode === "OPERATION_UNSUPPORTED",
+  );
+  assert.equal(targetAccesses, 0);
+});
 
 test("mutation boundary is set before first send and remains true on indeterminate send", async () => {
   let attempts = 0;
@@ -1109,7 +2380,7 @@ test("inverse vectors cover every admitted reversible operation kind", () => {
   for (const operation of operations) {
     const plan = planForOperation(operation, prestate);
     const inverse = createDurableInverse(plan, prestate);
-    assert.equal(inverse.version, "platform-db-inverse-v1");
+    assert.equal(inverse.version, "platform-db-inverse-v2");
     assert.equal(inverse.source_plan_digest, plan.plan_digest);
     assert.equal(inverse.steps.length, 1);
     assert.equal(inverse.steps[0].original_operation_index, 0);
@@ -1308,7 +2579,7 @@ test("semantic failures, prewrite drift, and revision binding remain fail-closed
     (error) => error.semanticCode === "SESSION_IDENTITY_MISMATCH",
   );
   const unavailableBinding = {
-    version: "target-binding-v1",
+    version: "target-binding-v2",
     logicalDatabaseName: "fixture",
     expectedClusterSystemIdentifier: "7000000000000001",
     expectedDatabaseOid: "16384",
@@ -1342,7 +2613,7 @@ test("restore authority and receipt invariants reject ambiguous recovery", () =>
   });
   assert.throws(
     () => requireRestoreCapability({
-      version: "restore-capability-v1",
+      version: "restore-capability-v2",
       target_binding_digest: HEX64,
       prestate_digest: HEX64,
       plan_digest: "b".repeat(64),

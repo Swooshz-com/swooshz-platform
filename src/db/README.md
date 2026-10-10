@@ -1,5 +1,9 @@
 # Database Scaffold
 
+## Current production operator boundary
+
+Production readiness and migration use the closed provider-broker interface in `brokered-migration.ts`. Repository code transmits canonical, digest-bound observation or mutation bundles; it never receives a connection string or migrator credential. The admitted provider session uses transaction-local `SET LOCAL ROLE platform_migrator`, while the canonical migrator remains `NOLOGIN PASSWORD NULL`. Migration 0010 and its ledger insertion are one atomic, single-attempt bundle. `DATABASE_OPERATOR_URL` is rejected; direct clients are limited to runner-owned loopback disposable fixtures.
+
 This folder contains the Drizzle schema scaffold for platform-owned persistence records.
 
 Current scope:

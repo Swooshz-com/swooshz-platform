@@ -6,6 +6,7 @@ import test from "node:test";
 import vm from "node:vm";
 
 const workflowPath = ".github/workflows/ci.yml";
+const runtimeRunnerPath = "scripts/run-disposable-runtime-postgres-tests.mjs";
 const roleCollapseRunnerPath = "scripts/run-disposable-role-collapse-postgres-tests.mjs";
 const activationRunnerPath = "scripts/run-disposable-runtime-activation-postgres-tests.mjs";
 const dockerfilePath = "Dockerfile";
@@ -57,6 +58,7 @@ function normalizeVmValue(value) {
 
 test("CI workflow runs guardrails, install, typecheck, build, test, and container build without deploy", async () => {
   const workflow = await readFile(workflowPath, "utf8");
+  const runtimeRunner = await readFile(runtimeRunnerPath, "utf8");
   const roleCollapseRunner = await readFile(roleCollapseRunnerPath, "utf8");
   const activationRunner = await readFile(activationRunnerPath, "utf8");
 
@@ -75,13 +77,16 @@ test("CI workflow runs guardrails, install, typecheck, build, test, and containe
     "npm run test:disposable-role-collapse-postgres",
     "codex-platform127-pg17",
     "POSTGRES_HOST_AUTH_METHOD=trust",
-    "postgres:17",
     "npm run test:disposable-runtime-postgres",
     "docker build --pull --tag swooshz-platform:ci .",
   ];
 
+  assert.match(runtimeRunner, /codex-platform127-pg17/i);
+  assert.match(runtimeRunner, /POSTGRES_HOST_AUTH_METHOD=trust/i);
+  assert.match(runtimeRunner, /postgres@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f/i);
+
   assert.match(roleCollapseRunner, /codex-platform153-role-collapse-pg17/i);
-  assert.match(roleCollapseRunner, /postgres:17/i);
+  assert.match(roleCollapseRunner, /postgres@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f/i);
   assert.match(roleCollapseRunner, /POSTGRES_HOST_AUTH_METHOD=trust/i);
 
   const activationPhrases = [
@@ -89,7 +94,7 @@ test("CI workflow runs guardrails, install, typecheck, build, test, and containe
     "codex-platform169-activation-secondary-pg17",
     "codex-platform169-activation-primary-net",
     "codex-platform169-activation-secondary-net",
-    "postgres:17",
+    "postgres@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f",
     "127.0.0.1::5432",
     "POSTGRES_PASSWORD",
     "RUNTIME_ACTIVATION_TEST_RUNTIME_PASSWORD",

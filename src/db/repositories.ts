@@ -1,4 +1,6 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { DrizzleQueryError, and, eq, isNull } from "drizzle-orm";
+import { types as nodeUtilTypes } from "node:util";
+import { DatabaseError } from "pg";
 
 import {
   appEntitlements,
@@ -508,12 +510,62 @@ function mapOneRequired<T, RowType>(
   return mapper(row as unknown as RowType);
 }
 
+const isProxy = nodeUtilTypes.isProxy;
+const isNativeError = nodeUtilTypes.isNativeError;
+const getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const getPrototypeOf = Object.getPrototypeOf;
+const hasOwn = Object.hasOwn;
+const pgDatabaseErrorPrototype = DatabaseError.prototype;
+const drizzleQueryErrorPrototype = DrizzleQueryError.prototype;
+
 function isSerializationFailure(error: unknown): boolean {
-  return Boolean(
-    error &&
-      typeof error === "object" &&
-      "code" in error &&
-      (error as { code?: unknown }).code === "40001",
+  if (!isAdmittedNativeError(error)) {
+    return false;
+  }
+
+  const prototype = getPrototypeOf(error);
+  if (prototype === pgDatabaseErrorPrototype) {
+    return hasOwnDataPropertyValue(error, "code", "40001");
+  }
+  if (prototype !== drizzleQueryErrorPrototype) {
+    return false;
+  }
+
+  const causeDescriptor = getOwnPropertyDescriptor(error, "cause");
+  return (
+    causeDescriptor !== undefined &&
+    hasOwn(causeDescriptor, "value") &&
+    isDirectPgSerializationFailure(causeDescriptor.value)
+  );
+}
+
+function isDirectPgSerializationFailure(error: unknown): boolean {
+  return (
+    isAdmittedNativeError(error) &&
+    getPrototypeOf(error) === pgDatabaseErrorPrototype &&
+    hasOwnDataPropertyValue(error, "code", "40001")
+  );
+}
+
+function isAdmittedNativeError(error: unknown): error is object {
+  return (
+    error !== null &&
+    typeof error === "object" &&
+    !isProxy(error) &&
+    isNativeError(error)
+  );
+}
+
+function hasOwnDataPropertyValue(
+  candidate: object,
+  key: PropertyKey,
+  expectedValue: unknown,
+): boolean {
+  const descriptor = getOwnPropertyDescriptor(candidate, key);
+  return (
+    descriptor !== undefined &&
+    hasOwn(descriptor, "value") &&
+    descriptor.value === expectedValue
   );
 }
 

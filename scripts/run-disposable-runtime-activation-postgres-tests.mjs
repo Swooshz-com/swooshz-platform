@@ -18,8 +18,6 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { drizzle } from "drizzle-orm/node-postgres";
-import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Client, Pool } from "pg";
 
 import {
@@ -28,6 +26,7 @@ import {
 import {
   admitDisposablePostgresFixtures,
   invalidateDisposablePostgresAdmission,
+  withDisposablePostgresFixtureMigration,
 } from "../tests/support/disposable-postgres-fixture.mjs";
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const databaseName = "runtime_posture_test";
@@ -797,7 +796,7 @@ export function ownedContainerDockerArguments(containerName, networkName) {
     "POSTGRES_PASSWORD",
     "--mount",
     `type=bind,source=${identitiesSql},target=/docker-entrypoint-initdb.d/runtime-postgres-identities.sql,readonly`,
-    "postgres:17",
+    "postgres@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f",
   ];
 }
 
@@ -1207,7 +1206,16 @@ async function provisionFixture(
     );
     await withActivationFailure(
       "FIXTURE_PROVISION", "MIGRATION_FAILED", target,
-      () => migrate(drizzle(pool), { migrationsFolder }),
+      () => withDisposablePostgresFixtureMigration(
+        {
+          connectionString,
+          connectionPassword: operatorPassword,
+          expectedDatabase: databaseName,
+          expectedUser: "cloud_admin",
+          migrationsFolder,
+        },
+        async () => {},
+      ),
     );
     creatorEdgeEvidence = await establishCreatorEdge(pool, target);
     await withActivationFailure(
@@ -1498,7 +1506,7 @@ export async function assertOwnedDockerTopology(
     "IMAGE_INVALID",
     target,
   );
-  if (image.stdout.trim() !== "postgres:17") {
+  if (image.stdout.trim() !== "postgres@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f") {
     throw activationRunnerFailure(
       "TOPOLOGY_PORT_VERIFY", "IMAGE_INVALID", target,
     );

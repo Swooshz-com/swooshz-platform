@@ -29,7 +29,7 @@ test("owned PostgreSQL 17 construction fixes distinct bootstrap identities", asy
     "POSTGRES_HOST_AUTH_METHOD=trust",
     "--mount",
     mount,
-    "postgres:17",
+    "postgres@sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f",
   ]);
   assert.equal(args.filter((value) => value === "--mount").length, 1);
   assert.match(

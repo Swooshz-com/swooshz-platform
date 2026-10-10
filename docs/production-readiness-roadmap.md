@@ -1,5 +1,9 @@
 # Swooshz Platform Production Readiness Roadmap
 
+## Current database authority gate
+
+Repository readiness requires the provider-brokered, secret-free production DB contract: exact provider/target/OID binding, complete authority-graph closure, canonical dormant `platform_migrator NOLOGIN PASSWORD NULL`, immutable migration 0010 plus ledger atomicity, durable one-attempt reservation, no retry after possible dispatch, and fresh final observation. `DATABASE_OPERATOR_URL`, direct migrator credentials, browser OAuth, and arbitrary SQL are blocked. Live feasibility and migration remain separate gates; repository validation consumes no migration attempt.
+
 Production readiness is not yet approved.
 
 Goal: prod-ready, not just MVP. This roadmap is a living launch checklist for Swooshz Platform. Codex must update it gate-by-gate as PRs merge, blockers change, or operator evidence is reviewed.
